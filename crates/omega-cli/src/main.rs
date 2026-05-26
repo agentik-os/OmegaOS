@@ -5,7 +5,11 @@ use omega_core::done::{DoneSignal, DoneStatus};
 use omega_core::session::SessionManager;
 
 #[derive(Parser)]
-#[command(name = "omega", about = "OmegaOS — Agentic Terminal Operating System")]
+#[command(
+    name = "omega",
+    about = "OmegaOS — Agentic Terminal Operating System",
+    version
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
