@@ -9,6 +9,14 @@ pub enum Tab {
     Help,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    NewSession,
+    DispatchProject,
+    DispatchMission(String),
+}
+
 #[derive(Debug)]
 pub struct SessionEntry {
     pub session: OmegaSession,
@@ -24,7 +32,9 @@ pub struct App {
     pub selected: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
-    config: OmegaConfig,
+    pub input_mode: InputMode,
+    pub input_buffer: String,
+    pub config: OmegaConfig,
 }
 
 impl App {
@@ -35,6 +45,8 @@ impl App {
             selected: 0,
             should_quit: false,
             status_message: None,
+            input_mode: InputMode::Normal,
+            input_buffer: String::new(),
             config,
         }
     }

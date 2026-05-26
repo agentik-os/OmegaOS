@@ -286,13 +286,51 @@ async fn run_tui_loop(
                 }
                 Action::KillSession(name) => {
                     let mgr = SessionManager::connect().await?;
+                    let cfg = OmegaConfig::load().unwrap_or_default();
                     match mgr.kill_session(&name).await {
                         Ok(()) => {
+                            let _ = omega_core::scope::ScopeClaim::release(&cfg.state_dir, &name);
                             app.status_message = Some(format!("Killed {}", name));
                             let _ = app.refresh().await;
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Kill failed: {}", e));
+                        }
+                    }
+                }
+                Action::CreateSession(name) => {
+                    let mgr = SessionManager::connect().await?;
+                    match mgr.create_session(&name, None, None).await {
+                        Ok(_) => {
+                            app.status_message = Some(format!("Created {}", name));
+                            let _ = app.refresh().await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Create failed: {}", e));
+                        }
+                    }
+                }
+                Action::DispatchOracle(project, mission) => {
+                    let cfg = OmegaConfig::load().unwrap_or_default();
+                    let mgr = SessionManager::connect().await?;
+                    let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, cfg.clone());
+                    match dispatcher.dispatch_oracle(&project, &mission).await {
+                        Ok(oracle_name) => {
+                            let sessions_dir = cfg.state_dir.join("sessions");
+                            if let Ok(mut log) =
+                                omega_core::session_log::SessionLog::create(&sessions_dir, &oracle_name, ".")
+                            {
+                                let _ = log.append_message(
+                                    "system",
+                                    &format!("Mission dispatched: {}", mission),
+                                );
+                            }
+                            app.status_message =
+                                Some(format!("◆ Dispatched: {}", oracle_name));
+                            let _ = app.refresh().await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Dispatch failed: {}", e));
                         }
                     }
                 }

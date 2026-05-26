@@ -1,4 +1,4 @@
-use crate::app::{App, SessionEntry, Tab};
+use crate::app::{App, InputMode, SessionEntry, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -113,14 +113,14 @@ fn render_session_item(entry: &SessionEntry, _selected: bool) -> ListItem<'stati
 
 fn draw_menu(frame: &mut Frame, _app: &App, area: Rect) {
     let menu_items = vec![
-        "[n] New session",
-        "[o] New oracle for project",
-        "[w] New worker",
-        "[d] Dispatch mission",
-        "[k] Kill session",
-        "[K] Kill all workers",
-        "[p] Protect/unprotect",
-        "[r] Refresh",
+        "[n] New session         — prompts for name",
+        "[d] Dispatch oracle     — prompts for project + mission",
+        "[Enter] Attach session  — to selected entry",
+        "[x] Kill session        — to selected entry",
+        "[.] Toggle protection   — prevent accidental kill",
+        "[r] Refresh list",
+        "[?] Show help",
+        "[Tab] Switch view",
         "[q] Quit",
     ];
 
@@ -157,25 +157,36 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "  OmegaOS — Agentic Terminal Operating System",
         "",
         "  Navigation:",
-        "    Tab/Shift+Tab    Switch tabs",
-        "    ↑/↓ or j/k       Navigate sessions",
-        "    Enter             Attach to session",
-        "    q/Esc             Quit menu",
+        "    Tab / Shift+Tab    Switch tabs (Sessions ↔ Menu ↔ Help)",
+        "    ↑/↓ or j/k         Navigate sessions",
+        "    Enter              Attach to selected session",
+        "    q / Esc            Quit",
         "",
-        "  Session Management:",
-        "    n                 New session",
-        "    o                 New oracle (project picker)",
-        "    x                 Kill selected session",
-        "    .                 Toggle protection",
-        "    r                 Refresh session list",
+        "  Session Actions:",
+        "    n                  New session (prompts for name)",
+        "    d                  Dispatch oracle (prompts for project + mission)",
+        "    x                  Kill selected session",
+        "    .                  Toggle protection",
+        "    r                  Refresh session list",
+        "    ?                  Show this help",
         "",
-        "  Dispatch:",
-        "    d                 Dispatch mission to project",
-        "    w                 Spawn worker under oracle",
+        "  Input Mode:",
+        "    Type to fill, Enter to submit, Esc to cancel",
+        "    Backspace to delete",
         "",
         "  Status Icons:",
-        "    ◆  Oracle         ●  Worker",
-        "    ⌂  Home           ⚙  System",
+        "    ◆  Oracle           ●  Worker",
+        "    ⌂  Home             ⚙  System",
+        "",
+        "  CLI (outside TUI):",
+        "    omega list                       Show all sessions",
+        "    omega new <name> [--cmd claude]  Create session",
+        "    omega dispatch <project> <msg>   Dispatch oracle",
+        "    omega attach <name>              Attach to session",
+        "    omega send <name> <text>         Send text to pane",
+        "    omega capture <name>             Show pane content",
+        "    omega kill <name>                Kill session",
+        "    omega --help                     All commands",
         "",
     ];
 
@@ -195,15 +206,36 @@ fn draw_help(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let msg = app
-        .status_message
-        .as_deref()
-        .unwrap_or("Press ? for help | Tab to switch views | q to quit");
+    let (prompt, value) = match &app.input_mode {
+        InputMode::Normal => {
+            let msg = app
+                .status_message
+                .as_deref()
+                .unwrap_or("n=new  d=dispatch  Enter=attach  x=kill  .=protect  r=refresh  Tab=tabs  q=quit");
+            let status = Paragraph::new(Line::from(vec![
+                Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(" "),
+                Span::raw(msg.to_string()),
+            ]));
+            frame.render_widget(status, area);
+            return;
+        }
+        InputMode::NewSession => ("New session name", app.input_buffer.clone()),
+        InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),
+        InputMode::DispatchMission(p) => (
+            "Dispatch — mission",
+            format!("[{}] {}", p, app.input_buffer),
+        ),
+    };
 
     let status = Paragraph::new(Line::from(vec![
-        Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::raw(" "),
-        Span::raw(msg),
+        Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+        Span::styled(
+            format!(" {}: ", prompt),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(value),
+        Span::styled("█", Style::default().fg(Color::Yellow)),
     ]));
 
     frame.render_widget(status, area);
