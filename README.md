@@ -19,17 +19,34 @@ cd OmegaOS
 ## Usage
 
 ```bash
-omega                           # Launch TUI session manager
+# Session management
+omega                           # Launch TUI session manager (alias: omega menu)
 omega new my-session            # Create a new rmux session
 omega new worker-1 --cmd claude # Create session running Claude Code
-omega list                      # List sessions (grouped by project)
+omega new w-auth --files "src/auth.rs,src/db.rs"  # Create with scope-claim
+omega list                      # List sessions (grouped by project, with scopes)
+omega attach my-session         # Attach to a session
+omega kill my-session           # Kill a session (auto-releases scope)
+omega status my-session         # Show last 30 lines of pane
+omega send my-session "hello"   # Send text + Enter to a session
+omega capture my-session        # Capture full pane content
+
+# Orchestration
 omega dispatch MyProject "Fix the auth bug"  # Dispatch oracle mission
-omega send my-session "hello"   # Send text to a session
-omega capture my-session        # Capture pane output
-omega status my-session         # Show last 30 lines
-omega kill my-session           # Kill a session
+omega spawn-worker auth "Fix login flow" --files "src/auth.rs"  # Spawn scoped worker
+omega team MyProject builder:"Build the UI" tester:"Write tests"  # Multi-agent team
 omega done worker-1 done_clean "Implemented feature X"  # Signal completion
-omega init                      # Initialize config
+
+# Quality & monitoring
+omega gate oracle-MyProject --mission "Build auth"  # Create quality rubric
+omega gate oracle-MyProject                          # Check rubric criteria
+omega scope worker-B src/auth.rs src/api.rs          # Check scope conflicts
+omega patrol --once                                  # Run health check once
+omega patrol --interval 60                           # Run patrol daemon
+
+# History & config
+omega log oracle-MyProject      # View JSONL session history
+omega init                      # Initialize OmegaOS configuration
 ```
 
 ## Architecture
@@ -120,19 +137,63 @@ path = "/home/user/projects/myproject"
 category = "Work"
 ```
 
+## Scope-Claim File Locking
+
+Prevents two workers from editing the same files concurrently:
+
+```bash
+omega new worker-auth --files "src/auth.rs,src/session.rs"
+omega new worker-db --files "src/auth.rs"  # ERROR: scope conflict with worker-auth
+omega done worker-auth done_clean "Done"   # Auto-releases scope
+omega new worker-db --files "src/auth.rs"  # Now succeeds
+```
+
+## Team Spawning
+
+Create N agents in split panes within a single rmux session:
+
+```bash
+omega team MyProject \
+  architect:"Design the API schema" \
+  builder:"Implement the endpoints" \
+  tester:"Write integration tests"
+```
+
+## Patrol Daemon
+
+Background watchdog for session health:
+
+```bash
+omega patrol                # Run as daemon (60s interval)
+omega patrol --once         # Single health check
+omega patrol --interval 30  # Custom interval
+```
+
+Detects: orphaned sessions, done workers awaiting acknowledgment, stale scope claims.
+
 ## Project Structure
 
 ```
 OmegaOS/
 ├── crates/
-│   ├── omega-core/     # rmux SDK integration, session model, dispatch, done signals
+│   ├── omega-core/     # Core library
+│   │   ├── session.rs      # rmux SDK integration, session roles
+│   │   ├── dispatch.rs     # Oracle/worker dispatch
+│   │   ├── scope.rs        # File-lock scope claims
+│   │   ├── team.rs         # Multi-agent team spawning
+│   │   ├── patrol.rs       # Session health watchdog
+│   │   ├── session_log.rs  # JSONL session persistence
+│   │   ├── gate.rs         # Rubric-based quality gates
+│   │   ├── done.rs         # Done signal protocol
+│   │   ├── progress.rs     # Progress tracking
+│   │   └── config.rs       # Configuration management
 │   ├── omega-tui/      # ratatui session manager with project grouping
-│   └── omega-cli/      # `omega` binary with subcommands
+│   └── omega-cli/      # `omega` binary with 18 subcommands
 ├── scripts/
-│   ├── dispatch-to-oracle.sh   # Create oracle session for a project
-│   ├── dispatch-to-session.sh  # Create worker session with prompt
+│   ├── dispatch-to-oracle.sh   # Create oracle session
+│   ├── dispatch-to-session.sh  # Create worker session
 │   ├── worker-mark-done.sh     # Signal task completion
-│   └── close-gate.sh           # Quality gate checks
+│   └── close-gate.sh           # 3-tier quality gate checks
 ├── config/
 │   └── default.toml            # Default configuration
 └── install.sh                  # One-command installer
