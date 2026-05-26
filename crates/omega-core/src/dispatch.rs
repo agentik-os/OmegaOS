@@ -22,14 +22,15 @@ impl Dispatcher {
         project: &str,
         mission: &str,
     ) -> Result<String> {
-        let project_config = self
-            .config
-            .find_project(project)
-            .context("Unknown project")?
-            .clone();
+        let work_dir = match self.config.find_project(project) {
+            Some(pc) => pc.path.to_string_lossy().to_string(),
+            None => std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .to_string_lossy()
+                .to_string(),
+        };
 
         let oracle_name = self.find_available_oracle(project).await?;
-        let work_dir = project_config.path.to_string_lossy().to_string();
 
         let prompt = format!(
             "## Mission: {}\n## Project: {} ({})\n## Role: ORACLE\n\

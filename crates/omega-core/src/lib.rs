@@ -1,5 +1,10 @@
 pub mod config;
 pub mod dispatch;
 pub mod done;
+pub mod gate;
+pub mod patrol;
 pub mod progress;
+pub mod scope;
 pub mod session;
+pub mod session_log;
+pub mod team;
