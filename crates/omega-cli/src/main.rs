@@ -156,6 +156,15 @@ enum Commands {
         count: usize,
     },
 
+    /// Run in RPC mode (JSONL stdin/stdout for external orchestration)
+    Rpc,
+
+    /// Classify a mission's complexity (SIMPLE/MEDIUM/COMPLEX/EPIC)
+    Route {
+        /// Mission text to classify
+        mission: String,
+    },
+
     /// Generate shell completions
     Completions {
         /// Shell type: bash, zsh, fish, elvish, powershell
@@ -203,6 +212,8 @@ async fn main() -> Result<()> {
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
         Some(Commands::Capture { name }) => cmd_capture(&name).await,
         Some(Commands::Log { session, count }) => cmd_log(&session, count).await,
+        Some(Commands::Rpc) => omega_core::rpc::run_rpc_loop().await,
+        Some(Commands::Route { mission }) => cmd_route(&mission),
         Some(Commands::Completions { shell }) => cmd_completions(&shell),
         Some(Commands::Init) => cmd_init().await,
     }
@@ -342,8 +353,9 @@ async fn run_tui_loop(
             }
         }
 
-        if last_refresh.elapsed() > std::time::Duration::from_secs(5) {
+        if last_refresh.elapsed() > std::time::Duration::from_secs(2) {
             let _ = app.refresh().await;
+            let _ = app.refresh_preview().await;
             last_refresh = std::time::Instant::now();
         }
 
@@ -715,6 +727,25 @@ async fn cmd_log(session: &str, count: usize) -> Result<()> {
         None => {
             println!("No session log found for {}", session);
         }
+    }
+    Ok(())
+}
+
+fn cmd_route(mission: &str) -> Result<()> {
+    let decision = omega_core::routing::classify_mission(mission);
+    println!("Mission: {}", mission);
+    println!();
+    println!("Complexity:        {}", decision.complexity.label());
+    println!("Suggested agent:   {}", decision.suggested_agent);
+    println!("Recommended team:  {} agent(s)", decision.complexity.recommended_agents());
+    println!("Estimated time:    ~{} min", decision.complexity.estimated_minutes());
+    println!("Decompose:         {}", decision.decompose);
+    println!("Use team:          {}", decision.use_team);
+    println!("Use quality gate:  {}", decision.use_quality_gate);
+    println!();
+    println!("Reasoning:");
+    for r in &decision.reasoning {
+        println!("  • {}", r);
     }
     Ok(())
 }

@@ -1,0 +1,24 @@
+# OmegaOS rmux integration
+# Source from your ~/.rmux.conf with:
+#   source-file ~/.omega/rmux.conf.omega
+#
+# This adds the Option+Z (Alt+Z) keybinding to launch the OmegaOS
+# session manager as a popup over any rmux session.
+
+# Option+Z / Alt+Z → OmegaOS session manager popup (full-screen)
+bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
+
+# Option+/ → alias for omega menu
+bind-key -n M-/ display-popup -E -w 100% -h 100% "omega menu"
+
+# Prefix + o → omega menu (works even on terminals that swallow Alt)
+bind-key o display-popup -E -w 100% -h 100% "omega menu"
+
+# Prefix + O → dispatch oracle (interactive)
+bind-key O display-popup -E -w 80% -h 30% "read -p 'Project: ' p && read -p 'Mission: ' m && omega dispatch \"\$p\" \"\$m\""
+
+# Prefix + L → omega list (in-place)
+bind-key L display-popup -E -w 80% -h 60% "omega list; read -p 'Press Enter to close...'"
+
+# Prefix + P → omega patrol once
+bind-key P display-popup -E -w 80% -h 40% "omega patrol --once; read -p 'Press Enter to close...'"

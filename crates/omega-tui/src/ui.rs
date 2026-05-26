@@ -51,6 +51,11 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(area);
+
     let items: Vec<ListItem> = app
         .sessions
         .iter()
@@ -66,7 +71,35 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
-    frame.render_widget(list, area);
+    frame.render_widget(list, split[0]);
+
+    // Live preview pane (right side)
+    let preview_title = match app.selected_session() {
+        Some(e) => format!(" Preview: {} ", e.session.name),
+        None => " Preview ".to_string(),
+    };
+
+    let preview_lines: Vec<Line> = if app.preview_content.is_empty() {
+        vec![Line::from(Span::styled(
+            "(select a session to preview)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        app.preview_content
+            .lines()
+            .map(|l| Line::from(l.to_string()))
+            .collect()
+    };
+
+    let preview = Paragraph::new(preview_lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(preview_title)
+                .border_style(Style::default().fg(Color::DarkGray)),
+        );
+
+    frame.render_widget(preview, split[1]);
 }
 
 fn render_session_item(entry: &SessionEntry, _selected: bool) -> ListItem<'static> {

@@ -35,6 +35,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub input_buffer: String,
     pub config: OmegaConfig,
+    pub preview_content: String,
 }
 
 impl App {
@@ -48,7 +49,30 @@ impl App {
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             config,
+            preview_content: String::new(),
         }
+    }
+
+    pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
+        let name = match self.selected_session() {
+            Some(e) => e.session.name.clone(),
+            None => {
+                self.preview_content = String::new();
+                return Ok(());
+            }
+        };
+        let mgr = omega_core::session::SessionManager::connect().await?;
+        match mgr.capture_pane(&name).await {
+            Ok(content) => {
+                let lines: Vec<&str> = content.lines().collect();
+                let start = lines.len().saturating_sub(40);
+                self.preview_content = lines[start..].join("\n");
+            }
+            Err(_) => {
+                self.preview_content = String::from("(no content)");
+            }
+        }
+        Ok(())
     }
 
     pub async fn refresh(&mut self) -> anyhow::Result<()> {
