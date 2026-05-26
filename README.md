@@ -231,6 +231,40 @@ OmegaOS integrates patterns from four projects:
 - **[OmegaSetup](https://github.com/agentik-os/OmegaSetup)** — Orchestration layer (dispatch, quality gates, done signals)
 - **[earendil/coding-agent](https://github.com/earendil-works/pi)** — Session architecture patterns (JSONL persistence, RPC mode)
 
+## Telegram Bot (Optional)
+
+Remote dispatch via Telegram:
+
+```bash
+cd bot/
+pip install -r requirements.txt
+export OMEGA_BOT_TOKEN="your-bot-token-from-@BotFather"
+export OMEGA_CHAT_ID="your-chat-id"
+python main.py
+```
+
+Then in Telegram:
+- `/dispatch MyProject Fix the login bug` → dispatches an oracle
+- `/list` → shows active sessions
+- `/status oracle-MyProject` → captures session output
+- `/patrol` → runs health check
+
+Done signals are automatically posted back to the chat as workers complete.
+
+## Shell Completions
+
+```bash
+omega completions bash > /etc/bash_completion.d/omega
+omega completions zsh > ~/.zsh/completions/_omega
+omega completions fish > ~/.config/fish/completions/omega.fish
+```
+
+Auto-installed by `install.sh` based on your shell.
+
+## Agent Templates
+
+System prompts for oracle/worker/team-lead live in `agents/` and are installed to `~/.omega/agents/`. Customize them per project to inject domain knowledge.
+
 ## License
 
-MIT OR Apache-2.0
+Licensed under either of MIT or Apache-2.0 at your option.

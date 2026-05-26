@@ -135,6 +135,35 @@ cp scripts/*.sh "$SCRIPT_DIR/"
 chmod +x "$SCRIPT_DIR"/*.sh
 ok "Scripts installed to $SCRIPT_DIR/"
 
+# Install agent templates
+AGENTS_DIR="$OMEGA_DIR/agents"
+mkdir -p "$AGENTS_DIR"
+cp agents/*.md "$AGENTS_DIR/"
+ok "Agent templates installed to $AGENTS_DIR/"
+
+# Install shell completions
+SHELL_NAME="$(basename "${SHELL:-bash}")"
+case "$SHELL_NAME" in
+    zsh)
+        COMP_DIR="${HOME}/.zsh/completions"
+        mkdir -p "$COMP_DIR"
+        "$INSTALL_DIR/omega" completions zsh > "$COMP_DIR/_omega"
+        ok "Zsh completions installed"
+        ;;
+    bash)
+        COMP_DIR="${HOME}/.local/share/bash-completion/completions"
+        mkdir -p "$COMP_DIR"
+        "$INSTALL_DIR/omega" completions bash > "$COMP_DIR/omega"
+        ok "Bash completions installed"
+        ;;
+    fish)
+        COMP_DIR="${HOME}/.config/fish/completions"
+        mkdir -p "$COMP_DIR"
+        "$INSTALL_DIR/omega" completions fish > "$COMP_DIR/omega.fish"
+        ok "Fish completions installed"
+        ;;
+esac
+
 # ─── Phase 6: Shell Integration ──────────────────────────────────────────────
 
 step "Phase 6: Shell Integration"

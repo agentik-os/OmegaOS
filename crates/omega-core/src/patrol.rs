@@ -18,15 +18,11 @@ pub struct PatrolReport {
 
 pub struct Patrol {
     config: OmegaConfig,
-    idle_threshold: Duration,
 }
 
 impl Patrol {
     pub fn new(config: OmegaConfig) -> Self {
-        Self {
-            config,
-            idle_threshold: Duration::from_secs(300),
-        }
+        Self { config }
     }
 
     pub async fn run_once(&self) -> Result<PatrolReport> {

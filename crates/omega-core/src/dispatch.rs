@@ -1,7 +1,7 @@
 use crate::config::OmegaConfig;
 use crate::done::DoneSignal;
 use crate::session::{SessionManager, SessionRole};
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use std::time::Duration;
 
 pub struct Dispatcher {

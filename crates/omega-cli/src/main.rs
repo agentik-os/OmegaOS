@@ -152,6 +152,12 @@ enum Commands {
         count: usize,
     },
 
+    /// Generate shell completions
+    Completions {
+        /// Shell type: bash, zsh, fish, elvish, powershell
+        shell: String,
+    },
+
     /// Initialize OmegaOS configuration
     Init,
 }
@@ -193,6 +199,7 @@ async fn main() -> Result<()> {
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
         Some(Commands::Capture { name }) => cmd_capture(&name).await,
         Some(Commands::Log { session, count }) => cmd_log(&session, count).await,
+        Some(Commands::Completions { shell }) => cmd_completions(&shell),
         Some(Commands::Init) => cmd_init().await,
     }
 }
@@ -481,7 +488,7 @@ async fn cmd_team(
     };
 
     let spawner = omega_core::team::TeamSpawner::new(&mgr);
-    let panes = spawner.spawn_team(&team_config).await?;
+    let _panes = spawner.spawn_team(&team_config).await?;
 
     println!("◆ Team spawned: {}", session_name);
     for (i, member) in members.iter().enumerate() {
@@ -667,6 +674,24 @@ async fn cmd_log(session: &str, count: usize) -> Result<()> {
             println!("No session log found for {}", session);
         }
     }
+    Ok(())
+}
+
+fn cmd_completions(shell: &str) -> Result<()> {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+
+    let shell = match shell.to_lowercase().as_str() {
+        "bash" => Shell::Bash,
+        "zsh" => Shell::Zsh,
+        "fish" => Shell::Fish,
+        "elvish" => Shell::Elvish,
+        "powershell" | "ps" => Shell::PowerShell,
+        _ => anyhow::bail!("Unknown shell: {}. Use: bash, zsh, fish, elvish, powershell", shell),
+    };
+
+    let mut cmd = Cli::command();
+    generate(shell, &mut cmd, "omega", &mut std::io::stdout());
     Ok(())
 }
 
