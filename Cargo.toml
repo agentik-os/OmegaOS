@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/omega-core",
+    "crates/omega-tui",
+    "crates/omega-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/agentik-os/OmegaOS"
+
+[workspace.dependencies]
+omega-core = { path = "crates/omega-core" }
+omega-tui = { path = "crates/omega-tui" }
+
+rmux-sdk = { path = "/tmp/rmux-analysis/crates/rmux-sdk", features = ["regex"] }
+rmux-proto = { path = "/tmp/rmux-analysis/crates/rmux-proto" }
+ratatui-rmux = { path = "/tmp/rmux-analysis/crates/ratatui-rmux" }
+
+tokio = { version = "1.48", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.29"
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6.0"
+toml = "0.8"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+strip = "symbols"

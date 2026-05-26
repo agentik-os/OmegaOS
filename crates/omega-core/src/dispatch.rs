@@ -1,0 +1,133 @@
+use crate::config::OmegaConfig;
+use crate::done::DoneSignal;
+use crate::session::{SessionManager, SessionRole};
+use anyhow::{bail, Context, Result};
+use std::time::Duration;
+
+pub struct Dispatcher {
+    session_mgr: SessionManager,
+    config: OmegaConfig,
+}
+
+impl Dispatcher {
+    pub fn new(session_mgr: SessionManager, config: OmegaConfig) -> Self {
+        Self {
+            session_mgr,
+            config,
+        }
+    }
+
+    pub async fn dispatch_oracle(
+        &self,
+        project: &str,
+        mission: &str,
+    ) -> Result<String> {
+        let project_config = self
+            .config
+            .find_project(project)
+            .context("Unknown project")?
+            .clone();
+
+        let oracle_name = self.find_available_oracle(project).await?;
+        let work_dir = project_config.path.to_string_lossy().to_string();
+
+        let prompt = format!(
+            "## Mission: {}\n## Project: {} ({})\n## Role: ORACLE\n\
+             You are the Oracle for this project. Analyze the mission, decompose into tasks, \
+             and dispatch workers via `omega spawn-worker <task>`. Monitor progress and verify \
+             quality before reporting done.",
+            mission, project, work_dir
+        );
+
+        self.session_mgr
+            .create_agent_session(
+                &oracle_name,
+                &work_dir,
+                &self.config.agent_command,
+                Some(&prompt),
+            )
+            .await?;
+
+        tracing::info!(oracle = %oracle_name, project = %project, "Oracle dispatched");
+        Ok(oracle_name)
+    }
+
+    pub async fn dispatch_worker(
+        &self,
+        oracle_name: &str,
+        task_name: &str,
+        prompt: &str,
+        working_dir: &str,
+    ) -> Result<String> {
+        let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
+
+        let worker_prompt = format!(
+            "[DISPATCHED] You are an autonomous worker. Third Law: decide and proceed, never wait.\n\n\
+             {}\n\n\
+             When done, run: omega done {} done_clean \"<summary>\"",
+            prompt, worker_name
+        );
+
+        self.session_mgr
+            .create_agent_session(
+                &worker_name,
+                working_dir,
+                &self.config.agent_command,
+                Some(&worker_prompt),
+            )
+            .await?;
+
+        tracing::info!(worker = %worker_name, oracle = %oracle_name, "Worker dispatched");
+        Ok(worker_name)
+    }
+
+    async fn find_available_oracle(&self, project: &str) -> Result<String> {
+        let sessions = self.session_mgr.list_sessions().await?;
+        let existing_oracles: Vec<_> = sessions
+            .iter()
+            .filter(|s| {
+                s.role == SessionRole::Oracle
+                    && s.project.as_deref() == Some(project)
+            })
+            .collect();
+
+        if existing_oracles.is_empty() {
+            return Ok(format!("oracle-{}", project));
+        }
+
+        let max_index = existing_oracles
+            .iter()
+            .filter_map(|s| s.oracle_index)
+            .max()
+            .unwrap_or(1);
+
+        Ok(format!("oracle-{}-{}", project, max_index + 1))
+    }
+
+    pub async fn wait_for_done(
+        &self,
+        session_name: &str,
+        timeout: Duration,
+    ) -> Result<DoneSignal> {
+        let done_path = self
+            .config
+            .state_dir
+            .join(format!("worker-{}.done.json", session_name));
+
+        let start = std::time::Instant::now();
+        loop {
+            if done_path.exists() {
+                let content = std::fs::read_to_string(&done_path)?;
+                return Ok(serde_json::from_str(&content)?);
+            }
+            if start.elapsed() > timeout {
+                bail!("Timeout waiting for done signal from {}", session_name);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
+    pub fn session_manager(&self) -> &SessionManager {
+        &self.session_mgr
+    }
+}

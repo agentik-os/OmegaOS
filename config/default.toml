@@ -1,0 +1,25 @@
+# OmegaOS default configuration
+# Copy to ~/.omega/config.toml and customize
+
+# Directories for state, logs, and locks
+state_dir = "~/.omega/state"
+logs_dir = "~/.omega/logs"
+locks_dir = "~/.omega/locks"
+
+# Agent CLI command (e.g., "claude", "codex", or path to custom agent)
+agent_command = "claude"
+
+# Default model for agents
+default_model = "opus"
+
+# Project definitions
+# [[projects]]
+# name = "MyProject"
+# path = "/home/user/projects/myproject"
+# category = "Work"
+# icon = "🚀"
+
+# Optional Telegram integration
+# [telegram]
+# bot_token = "YOUR_BOT_TOKEN"
+# chat_id = 123456789
