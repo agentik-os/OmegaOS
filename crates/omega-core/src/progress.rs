@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -12,6 +13,8 @@ pub struct ProgressInfo {
     pub blocked: bool,
     #[serde(default)]
     pub current_task: Option<String>,
+    #[serde(default)]
+    pub last_updated: Option<DateTime<Utc>>,
 }
 
 impl ProgressInfo {

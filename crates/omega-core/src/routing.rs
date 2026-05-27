@@ -45,6 +45,74 @@ pub struct RoutingDecision {
     pub decompose: bool,
     pub use_team: bool,
     pub use_quality_gate: bool,
+    pub audit_skills: Vec<AuditSkill>,
+}
+
+/// Maps audit keywords to specific forensic skill invocations.
+/// Mirrors the live system's 17-audit Quality Arsenal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditSkill {
+    pub skill: String,
+    pub trigger: String,
+}
+
+/// Detect audit keywords and return matching skills.
+fn detect_audit_skills(text: &str) -> Vec<AuditSkill> {
+    let lower = text.to_lowercase();
+    let mut skills = Vec::new();
+
+    let audit_table: &[(&[&str], &str)] = &[
+        (&["ux", "ui", "design audit", "audit visuel", "audit design", "ui/ux"], "uiuxaudit"),
+        (&["refonte", "refontaudit", "redesign dashboard"], "refontaudit"),
+        (&["flow", "user flow", "parcours", "audit flow"], "flowaudit"),
+        (&["code audit", "code quality", "audit code"], "codeaudit"),
+        (&["perf", "performance", "core web vitals", "audit perf"], "perfaudit"),
+        (&["security", "vulnerab", "owasp", "audit sec"], "secaudit"),
+        (&["a11y", "accessibility", "wcag"], "a11yaudit"),
+        (&["seo", "audit seo", "crawlability"], "seoaudit"),
+        (&["feature audit", "completeness", "audit feature"], "featureaudit"),
+        (&["copy audit", "messaging audit", "audit copy"], "copyaudit"),
+        (&["dx audit", "developer experience", "audit dx"], "dxaudit"),
+        (&["motion audit", "animation audit", "audit motion"], "motionaudit"),
+        (&["data integrity", "data audit", "audit data", "schema audit"], "dataaudit"),
+        (&["api audit", "audit api", "api contracts"], "apiaudit"),
+        (&["debugaudit", "runtime bug", "debug audit"], "debugaudit"),
+        (&["automation", "cron", "crontab", "scripts audit", "daemon health"], "automationaudit"),
+        (&["logic", "optimize logic", "system optimization", "architecture logic"], "logicaudit"),
+        (&["retention", "retentionaudit", "feature opportunities", "make it sticky"], "retentionaudit"),
+    ];
+
+    for (triggers, skill) in audit_table {
+        for trigger in *triggers {
+            if lower.contains(trigger) {
+                skills.push(AuditSkill {
+                    skill: skill.to_string(),
+                    trigger: trigger.to_string(),
+                });
+                break;
+            }
+        }
+    }
+
+    if (lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits"))
+        && skills.len() < 5
+    {
+        let all_skills = [
+            "codeaudit", "flowaudit", "uiuxaudit", "debugaudit", "featureaudit",
+            "perfaudit", "secaudit", "a11yaudit", "seoaudit", "dataaudit",
+            "apiaudit", "copyaudit", "dxaudit", "motionaudit", "automationaudit",
+            "logicaudit", "retentionaudit",
+        ];
+        skills.clear();
+        for skill in all_skills {
+            skills.push(AuditSkill {
+                skill: skill.to_string(),
+                trigger: "full audit".to_string(),
+            });
+        }
+    }
+
+    skills
 }
 
 pub fn classify_mission(mission: &str) -> RoutingDecision {
@@ -139,6 +207,14 @@ pub fn classify_mission(mission: &str) -> RoutingDecision {
         Complexity::Epic => "oracle",
     };
 
+    let audit_skills = detect_audit_skills(mission);
+    if !audit_skills.is_empty() {
+        reasoning.push(format!(
+            "Audit skills detected: {}",
+            audit_skills.iter().map(|a| a.skill.as_str()).collect::<Vec<_>>().join(", ")
+        ));
+    }
+
     RoutingDecision {
         complexity,
         reasoning,
@@ -146,7 +222,9 @@ pub fn classify_mission(mission: &str) -> RoutingDecision {
         decompose: matches!(complexity, Complexity::Complex | Complexity::Epic),
         use_team: matches!(complexity, Complexity::Epic),
         use_quality_gate: matches!(complexity, Complexity::Complex | Complexity::Epic)
-            || lower.contains("audit"),
+            || lower.contains("audit")
+            || !audit_skills.is_empty(),
+        audit_skills,
     }
 }
 

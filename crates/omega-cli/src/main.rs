@@ -190,13 +190,34 @@ enum Commands {
     Done {
         /// Session name
         session: String,
-        /// Status: done_clean, pending, failed
+        /// Status: done_clean, pending, failed, blocked
         status: String,
         /// Summary of work done
         summary: String,
         /// Git commit hash (optional)
         #[arg(short, long)]
         commit: Option<String>,
+    },
+
+    /// Read/drain oracle inbox events (JSONL event queue)
+    Inbox {
+        /// Oracle name
+        oracle: String,
+        /// Action: peek, drain, count
+        #[arg(default_value = "peek")]
+        action: String,
+    },
+
+    /// Ship pipeline: build → commit → push → deploy → verify
+    Ship {
+        /// Project name
+        project: String,
+        /// Commit message
+        #[arg(short, long, default_value = "chore: ship via omega")]
+        message: String,
+        /// Unfreeze a frozen pipeline
+        #[arg(long)]
+        unfreeze: bool,
     },
 
     /// Run patrol daemon (session health watchdog)
@@ -319,6 +340,10 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Done { session, status, summary, commit }) => {
             cmd_done(&session, &status, &summary, commit.as_deref()).await
+        }
+        Some(Commands::Inbox { oracle, action }) => cmd_inbox(&oracle, &action).await,
+        Some(Commands::Ship { project, message, unfreeze }) => {
+            cmd_ship(&project, &message, unfreeze).await
         }
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
         Some(Commands::Gate { oracle, mission }) => cmd_gate(&oracle, mission.as_deref()).await,
@@ -1677,7 +1702,8 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         "done_clean" => DoneStatus::DoneClean,
         "pending" => DoneStatus::Pending,
         "failed" => DoneStatus::Failed,
-        _ => anyhow::bail!("Invalid status: {}. Use: done_clean, pending, failed", status),
+        "blocked" => DoneStatus::Blocked,
+        _ => anyhow::bail!("Invalid status: {}. Use: done_clean, pending, failed, blocked", status),
     };
 
     let mut signal = DoneSignal::new(session, done_status, summary);
@@ -1693,6 +1719,111 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
     Ok(())
 }
 
+async fn cmd_inbox(oracle: &str, action: &str) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    config.ensure_dirs()?;
+    let inbox = omega_core::inbox::Inbox::for_oracle(&config.state_dir, oracle);
+
+    match action {
+        "peek" => {
+            let events = inbox.peek()?;
+            if events.is_empty() {
+                println!("No events in inbox for {}", oracle);
+            } else {
+                for event in &events {
+                    println!(
+                        "[{}] {:?} → {}",
+                        event.timestamp.format("%H:%M:%S"),
+                        event.event_type,
+                        event.payload
+                    );
+                }
+            }
+        }
+        "drain" => {
+            let events = inbox.drain()?;
+            if events.is_empty() {
+                println!("No events to drain for {}", oracle);
+            } else {
+                println!("Drained {} events:", events.len());
+                for event in &events {
+                    println!(
+                        "  [{:?}] {}",
+                        event.event_type,
+                        event.payload
+                    );
+                }
+            }
+        }
+        "count" => {
+            let count = inbox.count()?;
+            println!("{}", count);
+        }
+        _ => anyhow::bail!("Invalid action: {}. Use: peek, drain, count", action),
+    }
+    Ok(())
+}
+
+async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    config.ensure_dirs()?;
+
+    let project_dir = match config.find_project(project) {
+        Some(pc) => pc.path.clone(),
+        None => std::env::current_dir()?,
+    };
+
+    let ship_config = omega_core::ship::ShipConfig::default();
+    let pipeline = omega_core::ship::ShipPipeline::new(
+        project_dir,
+        config.state_dir.clone(),
+        ship_config,
+    );
+
+    if unfreeze {
+        pipeline.unfreeze(project)?;
+        println!("✓ Ship pipeline unfrozen for {}", project);
+        return Ok(());
+    }
+
+    if pipeline.is_frozen(project) {
+        println!("✗ Ship pipeline is FROZEN for {}. Use --unfreeze to clear.", project);
+        return Ok(());
+    }
+
+    println!("◆ Ship pipeline starting for {}...", project);
+    let result = pipeline.execute(project, message).await;
+
+    for step in &result.steps_completed {
+        let icon = if step.passed { "✓" } else { "✗" };
+        println!("  {} {} ({}ms)", icon, step.name, step.duration_ms);
+    }
+
+    match result.result {
+        omega_core::ship::ShipOutcome::Ok => {
+            println!("◆ Ship complete!");
+            if let Some(ref commit) = result.commit {
+                println!("  Commit: {}", commit);
+            }
+            if let Some(ref url) = result.deploy_url {
+                println!("  Deploy: {}", url);
+            }
+        }
+        omega_core::ship::ShipOutcome::Failed => {
+            println!("✗ Ship failed: {}", result.error.as_deref().unwrap_or("unknown"));
+        }
+        omega_core::ship::ShipOutcome::Frozen => {
+            println!("✗ Ship pipeline is frozen — resolve the issue first");
+        }
+        omega_core::ship::ShipOutcome::Skipped => {
+            println!("- Ship skipped");
+        }
+    }
+
+    pipeline.write_result(project, &result)?;
+    Ok(())
+}
+
 async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
@@ -1703,6 +1834,12 @@ async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
         println!("Sessions: {} (◆{} ●{})", report.total_sessions, report.oracles, report.workers);
         if !report.done_workers.is_empty() {
             println!("Done workers: {}", report.done_workers.join(", "));
+        }
+        if !report.stalled_workers.is_empty() {
+            println!("⚠ Stalled: {}", report.stalled_workers.join(", "));
+        }
+        if !report.blocked_workers.is_empty() {
+            println!("⊘ Blocked: {}", report.blocked_workers.join(", "));
         }
         if !report.orphaned_sessions.is_empty() {
             println!("Orphaned: {}", report.orphaned_sessions.join(", "));
@@ -1864,6 +2001,13 @@ fn cmd_route(mission: &str) -> Result<()> {
     println!("Reasoning:");
     for r in &decision.reasoning {
         println!("  • {}", r);
+    }
+    if !decision.audit_skills.is_empty() {
+        println!();
+        println!("Audit skills detected:");
+        for audit in &decision.audit_skills {
+            println!("  /{} (trigger: '{}')", audit.skill, audit.trigger);
+        }
     }
     Ok(())
 }
