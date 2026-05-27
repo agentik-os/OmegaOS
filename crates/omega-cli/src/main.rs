@@ -732,8 +732,6 @@ async fn run_tui_loop(
                     }
                 }
                 Action::RunShellCommand { label, command } => {
-                    // Spawn a fresh rmux session that runs the command — user can
-                    // watch the output and the session stays alive.
                     let mgr = SessionManager::connect().await?;
                     let safe = label
                         .chars()
@@ -745,7 +743,16 @@ async fn run_tui_loop(
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
                     let name = format!("install-{}-{:06x}", safe, ts & 0xffffff);
-                    let cmd = format!("bash -c {}", shell_escape_for_bash(&format!("{}; echo; echo '─── done ───'; exec bash", command)));
+                    // After install completes, auto-run `omega sync` to wire the
+                    // new LLM into the centralized ~/.omega/ config
+                    let post_install = if label.contains("nstall") {
+                        "; echo '── syncing OmegaOS config ──'; omega sync 2>/dev/null || true"
+                    } else {
+                        ""
+                    };
+                    let cmd = format!("bash -c {}", shell_escape_for_bash(
+                        &format!("{}{}; echo; echo '─── done ───'; exec bash", command, post_install)
+                    ));
                     match mgr.create_session(&name, None, Some(&cmd)).await {
                         Ok(_) => {
                             app.status_message = Some(format!("Running '{}' in session '{}' — switching", label, name));
@@ -1068,6 +1075,11 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
         );
         println!("  You may need to restart your shell or add the binary directory to PATH.");
     }
+
+    // Auto-sync: wire the new LLM into ~/.omega/ centralized config
+    println!("\nSyncing OmegaOS config...");
+    let _ = cmd_sync();
+
     Ok(())
 }
 
