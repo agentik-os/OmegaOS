@@ -768,6 +768,10 @@ async fn run_tui_loop(
                             app.status_message = Some(format!("Disconnect failed: {}", e));
                         }
                     }
+                    // Return focus to section list so user can navigate to
+                    // reconnect or pick another section.
+                    app.detail_focused = false;
+                    app.detail_scroll = 0;
                 }
                 Action::SendToSession { session, text } => {
                     let mgr = SessionManager::connect().await?;

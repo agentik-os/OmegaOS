@@ -1,5 +1,5 @@
 use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionFocus, Tab};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 pub enum Action {
     None,
@@ -52,10 +52,76 @@ pub enum Action {
 pub fn handle_event(app: &mut App, event: Event) -> Action {
     match event {
         Event::Key(key) => handle_key(app, key),
-        // Bracketed paste — arrives as one big string. Route to the active
-        // text input (chat or modal) without firing any submit triggers.
         Event::Paste(text) => handle_paste(app, text),
+        Event::Mouse(mouse) => handle_mouse(app, mouse),
         _ => Action::None,
+    }
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
+    match mouse.kind {
+        MouseEventKind::ScrollDown => {
+            scroll_active_panel(app, 3, true);
+            Action::None
+        }
+        MouseEventKind::ScrollUp => {
+            scroll_active_panel(app, 3, false);
+            Action::None
+        }
+        _ => Action::None,
+    }
+}
+
+fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
+    match app.tab {
+        Tab::Sessions => {
+            if matches!(app.session_focus, SessionFocus::Chat | SessionFocus::ChatFullscreen) {
+                if down { app.scroll_preview_down(lines); }
+                else { app.scroll_preview_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.select_next(); } else { app.select_prev(); }
+                }
+            }
+        }
+        Tab::Menu => {
+            let max = MenuAction::all().len().saturating_sub(1);
+            for _ in 0..lines {
+                if down {
+                    app.menu_selected = (app.menu_selected + 1).min(max);
+                } else {
+                    app.menu_selected = app.menu_selected.saturating_sub(1);
+                }
+            }
+        }
+        Tab::Monitor => {
+            if down { app.scroll_detail_down(lines); }
+            else { app.scroll_detail_up(lines); }
+        }
+        Tab::Settings => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.select_settings_next(); } else { app.select_settings_prev(); }
+                }
+            }
+        }
+        Tab::Info => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.select_info_next(); } else { app.select_info_prev(); }
+                }
+            }
+        }
+        Tab::Help => {
+            if down { app.scroll_detail_down(lines); }
+            else { app.scroll_detail_up(lines); }
+        }
     }
 }
 
@@ -689,10 +755,29 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::Esc => {
-            // Esc → switch to Sessions tab from anywhere, or quit if already there
-            if app.tab == Tab::Sessions {
-                app.should_quit = true;
-                Action::Quit
+            // Esc is a layered "back" key:
+            // 1. If detail/fullscreen focused → return to section list
+            // 2. If on section list → go to Sessions tab
+            // 3. If on Sessions tab → quit
+            if app.detail_fullscreen {
+                app.detail_fullscreen = false;
+                app.status_message = Some("Exited fullscreen".to_string());
+                Action::None
+            } else if app.detail_focused {
+                app.detail_focused = false;
+                app.detail_scroll = 0;
+                app.status_message = Some("Focus: section list".to_string());
+                Action::None
+            } else if app.tab == Tab::Sessions {
+                if matches!(app.session_focus, SessionFocus::Chat | SessionFocus::ChatFullscreen) {
+                    app.session_focus = SessionFocus::List;
+                    app.chat_input.clear();
+                    app.status_message = Some("Focus: session list".to_string());
+                    Action::None
+                } else {
+                    app.should_quit = true;
+                    Action::Quit
+                }
             } else {
                 app.tab = Tab::Sessions;
                 Action::None

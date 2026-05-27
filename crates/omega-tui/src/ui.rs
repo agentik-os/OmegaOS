@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
     Frame,
 };
 
@@ -374,6 +374,19 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::Gray)
     };
 
+    // Map app.selected (entry index) to rendered row index (includes headers)
+    let rendered_selected = {
+        let mut eidx: usize = 0;
+        let mut result: Option<usize> = None;
+        for (row_idx, row) in app.rows.iter().enumerate() {
+            if let SessionRow::Entry(_) = row {
+                if eidx == app.selected { result = Some(row_idx); break; }
+                eidx += 1;
+            }
+        }
+        result
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
@@ -381,9 +394,10 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
                 .title(format!(" Sessions ({}) ", app.sessions.len()))
                 .border_style(list_border_style),
         )
-        .highlight_style(Style::default().bg(Color::Gray));
+        .highlight_style(Style::default());
 
-    frame.render_widget(list, split[0]);
+    let mut state = ListState::default().with_selected(rendered_selected);
+    frame.render_stateful_widget(list, split[0], &mut state);
 
     draw_sessions_right(frame, app, split[1], chat_focused);
 }
@@ -626,14 +640,35 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
         ])));
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Actions — ↑/↓ navigate, Enter runs the highlighted action ")
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
+    // Compute rendered row index for the selected action (accounting for
+    // header rows + blank separator rows between groups).
+    let rendered_selected = {
+        let mut idx: usize = 0;
+        let mut last: Option<&'static str> = None;
+        for (i, action) in MenuAction::all().iter().enumerate() {
+            let g = menu_group(action);
+            if last != Some(g) {
+                if last.is_some() { idx += 1; } // blank line
+                idx += 1; // header line
+                last = Some(g);
+            }
+            if i == app.menu_selected { break; }
+            idx += 1;
+        }
+        idx
+    };
 
-    frame.render_widget(list, area);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Actions — ↑/↓ navigate, Enter runs the highlighted action ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .highlight_style(Style::default()); // selection visual is already baked into items
+
+    let mut state = ListState::default().with_selected(Some(rendered_selected));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
@@ -1054,13 +1089,17 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         " Settings — Tab to focus list "
     };
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(list_title)
-            .border_style(Style::default().fg(list_border)),
-    );
-    frame.render_widget(list, split[0]);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+
+    let mut settings_list_state = ListState::default().with_selected(Some(app.settings_selected));
+    frame.render_stateful_widget(list, split[0], &mut settings_list_state);
 
     // ── Right: details panel ────────────────────────────────────────────────
     let detail_title = if app.detail_focused {
@@ -1506,13 +1545,17 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         " Info — Tab to focus list "
     };
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(list_title)
-            .border_style(Style::default().fg(list_border)),
-    );
-    frame.render_widget(list, split[0]);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+
+    let mut info_list_state = ListState::default().with_selected(Some(app.info_section_selected));
+    frame.render_stateful_widget(list, split[0], &mut info_list_state);
 
     let detail_title = if app.detail_focused {
         format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
