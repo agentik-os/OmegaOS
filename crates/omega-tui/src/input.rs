@@ -101,6 +101,16 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
             if down { app.scroll_detail_down(lines); }
             else { app.scroll_detail_up(lines); }
         }
+        Tab::Projects => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.select_project_next(); } else { app.select_project_prev(); }
+                }
+            }
+        }
         Tab::Settings => {
             if app.detail_focused {
                 if down { app.scroll_detail_down(lines); }
@@ -435,7 +445,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "Focus: chat (Tab to list, Tab-Tab → fullscreen, Enter to send)".to_string(),
                     SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab → back to list)".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+            } else if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on Settings, snap cursor to first actionable
@@ -465,7 +475,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Scroll: depends on the active tab + focus
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(10);
@@ -473,7 +483,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(10);
@@ -481,7 +491,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
                 app.detail_scroll = 0;
             } else {
                 app.scroll_preview_home();
@@ -489,7 +499,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
                 app.detail_scroll = u16::MAX / 2;
             } else {
                 app.scroll_preview_end();
@@ -524,12 +534,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.scroll_detail_down(1);
                 return Action::None;
             }
+            if app.tab == Tab::Projects && app.detail_focused {
+                app.scroll_detail_down(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
                 Tab::Monitor => app.select_monitor_next(),
+                Tab::Projects => app.select_project_next(),
                 Tab::Settings => app.select_settings_next(),
-                Tab::Info => app.select_info_next(), // list focus → switch sub-section
+                Tab::Info => app.select_info_next(),
                 Tab::Help => {}
             }
             Action::None
@@ -558,10 +573,15 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.scroll_detail_up(1);
                 return Action::None;
             }
+            if app.tab == Tab::Projects && app.detail_focused {
+                app.scroll_detail_up(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Monitor => app.select_monitor_prev(),
+                Tab::Projects => app.select_project_prev(),
                 Tab::Settings => app.select_settings_prev(),
                 Tab::Info => app.select_info_prev(),
                 Tab::Help => {}
@@ -646,6 +666,16 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         _ => Action::None,
                     }
                 }
+            }
+            Tab::Projects => {
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: project detail (↑/↓ scroll, Tab → list, Tab-Tab → fullscreen)".to_string(),
+                    );
+                }
+                Action::None
             }
             Tab::Info => {
                 // Enter on Info section list → focus the right detail panel

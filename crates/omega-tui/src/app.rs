@@ -7,6 +7,7 @@ pub enum Tab {
     Sessions,
     Menu,
     Monitor,
+    Projects,
     Settings,
     Info,
     Help,
@@ -648,6 +649,10 @@ pub struct App {
     pub detail_scroll: u16,
     pub chat_input: String,
     pub current_session: Option<String>,
+    /// Projects tab — selected project index.
+    pub projects_selected: usize,
+    /// Cached project registry for the Projects tab.
+    pub project_registry: omega_core::project_manager::ProjectRegistry,
 }
 
 impl App {
@@ -691,7 +696,40 @@ impl App {
             detail_scroll: 0,
             chat_input: String::new(),
             current_session,
+            projects_selected: 0,
+            project_registry: omega_core::project_manager::ProjectRegistry::load(),
         }
+    }
+
+    pub fn refresh_projects(&mut self) {
+        self.project_registry = omega_core::project_manager::ProjectRegistry::load();
+        if self.projects_selected >= self.project_registry.projects.len()
+            && !self.project_registry.projects.is_empty()
+        {
+            self.projects_selected = self.project_registry.projects.len() - 1;
+        }
+    }
+
+    pub fn select_project_next(&mut self) {
+        let count = self.project_registry.projects.len();
+        if count > 0 {
+            self.projects_selected = (self.projects_selected + 1) % count;
+        }
+    }
+
+    pub fn select_project_prev(&mut self) {
+        let count = self.project_registry.projects.len();
+        if count > 0 {
+            self.projects_selected = if self.projects_selected == 0 {
+                count - 1
+            } else {
+                self.projects_selected - 1
+            };
+        }
+    }
+
+    pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
+        self.project_registry.projects.get(self.projects_selected)
     }
 
     /// Select a session by name (used after creating a session to auto-focus it).
@@ -1042,7 +1080,8 @@ impl App {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
             Tab::Menu => Tab::Monitor,
-            Tab::Monitor => Tab::Settings,
+            Tab::Monitor => Tab::Projects,
+            Tab::Projects => Tab::Settings,
             Tab::Settings => Tab::Info,
             Tab::Info => Tab::Help,
             Tab::Help => Tab::Sessions,
@@ -1054,7 +1093,8 @@ impl App {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
             Tab::Monitor => Tab::Menu,
-            Tab::Settings => Tab::Monitor,
+            Tab::Projects => Tab::Monitor,
+            Tab::Settings => Tab::Projects,
             Tab::Info => Tab::Settings,
             Tab::Help => Tab::Info,
         };

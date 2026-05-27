@@ -24,6 +24,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
         Tab::Monitor => draw_monitor(frame, app, chunks[1]),
+        Tab::Projects => draw_projects(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Info => draw_info(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, chunks[1]),
@@ -292,14 +293,15 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Monitor", "Settings", "Info", "Help"];
+    let titles = vec!["Sessions", "Menu", "Monitor", "Projects", "Settings", "Info", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
         Tab::Monitor => 2,
-        Tab::Settings => 3,
-        Tab::Info => 4,
-        Tab::Help => 5,
+        Tab::Projects => 3,
+        Tab::Settings => 4,
+        Tab::Info => 5,
+        Tab::Help => 6,
     };
 
     let tabs = Tabs::new(titles)
@@ -1037,6 +1039,293 @@ fn short_num(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
+    let registry = &app.project_registry;
+
+    // Fullscreen detail
+    if app.detail_fullscreen {
+        let lines = render_project_detail(app);
+        let title = app
+            .selected_project()
+            .map(|p| format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", p.name))
+            .unwrap_or_else(|| " Projects  [FULLSCREEN] ".to_string());
+        let paragraph = Paragraph::new(lines)
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+        .split(area);
+
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
+
+    // Left: project list
+    let items: Vec<ListItem> = if registry.projects.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            "  (no projects registered)",
+            Style::default().fg(Color::Gray),
+        )))]
+    } else {
+        registry
+            .projects
+            .iter()
+            .enumerate()
+            .map(|(i, project)| {
+                let selected = i == app.projects_selected && list_focused;
+                let prefix = if i == app.projects_selected { "▶ " } else { "  " };
+                let icon = project.icon.as_deref().unwrap_or("📁");
+                let style = if selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else if i == app.projects_selected {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                    Span::raw(format!("{} ", icon)),
+                    Span::styled(project.name.clone(), style),
+                ]))
+            })
+            .collect()
+    };
+
+    let list_title = if list_focused {
+        format!(" Projects ({}) — ↑/↓ select, Tab → detail ", registry.projects.len())
+    } else {
+        format!(" Projects ({}) — Tab to focus list ", registry.projects.len())
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+
+    let mut state = ListState::default().with_selected(Some(app.projects_selected));
+    frame.render_stateful_widget(list, split[0], &mut state);
+
+    // Right: project detail
+    let lines = render_project_detail(app);
+    let detail_title = if app.detail_focused {
+        " Project Detail  [FOCUSED — ↑/↓ scroll, Tab → list] "
+    } else {
+        " Project Detail "
+    };
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
+    frame.render_widget(paragraph, split[1]);
+}
+
+fn render_project_detail(app: &App) -> Vec<Line<'static>> {
+    let Some(project) = app.selected_project() else {
+        return vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No project selected.",
+                Style::default().fg(Color::Gray),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Add projects via CLI:",
+                Style::default().fg(Color::Cyan),
+            )),
+            Line::from(Span::styled(
+                "    omega project add /path/to/project",
+                Style::default().fg(Color::Yellow),
+            )),
+            Line::from(Span::styled(
+                "    omega project scan ~/VibeCoding/work",
+                Style::default().fg(Color::Yellow),
+            )),
+        ];
+    };
+
+    let icon = project.icon.as_deref().unwrap_or("📁");
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!("  {} ", icon)),
+            Span::styled(
+                project.name.clone(),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+    ];
+
+    // Path
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:20}", "Path"),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(project.path.to_string_lossy().to_string()),
+    ]));
+
+    // Git email
+    if let Some(ref email) = project.git_email {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:20}", "Git email"),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(email.clone()),
+        ]));
+    }
+
+    // Telegram topic
+    if let Some(topic_id) = project.telegram_topic_id {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:20}", "Telegram topic"),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(topic_id.to_string()),
+        ]));
+    }
+
+    // Oracle session
+    if let Some(ref oracle) = project.oracle_session {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:20}", "Oracle session"),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::raw(oracle.clone()),
+        ]));
+    }
+
+    // Created at
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!("  {:20}", "Created"),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(project.created_at.clone()),
+    ]));
+
+    lines.push(Line::from(""));
+
+    // Planner status (if .planner/tracker.json exists)
+    let tracker = omega_core::planner::PlanTracker::load(&project.path);
+    if let Some(ref tracker) = tracker {
+        let status = tracker.status();
+        lines.push(Line::from(Span::styled(
+            "  ── Planner ──",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(format!(
+            "    Phase {}/{} — {:.0}% complete ({}/{} steps)",
+            status.active_phase,
+            status.total_phases,
+            status.progress_pct(),
+            status.done,
+            status.total,
+        )));
+        if status.in_progress > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("    {} in progress", status.in_progress),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        if status.failed > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("    {} failed", status.failed),
+                Style::default().fg(Color::Red),
+            )));
+        }
+        if status.ready > 0 {
+            lines.push(Line::from(Span::styled(
+                format!("    {} ready to start", status.ready),
+                Style::default().fg(Color::Green),
+            )));
+        }
+
+        // Show phases
+        lines.push(Line::from(""));
+        for phase in &tracker.phases {
+            let phase_done = phase.step_ids.iter().all(|sid| {
+                tracker
+                    .get_step(sid)
+                    .map(|s| s.status == omega_core::planner::StepStatus::Done)
+                    .unwrap_or(false)
+            });
+            let phase_icon = if phase_done { "✅" } else if phase.id == status.active_phase { "⏳" } else { "⬚" };
+            lines.push(Line::from(format!(
+                "    {} Phase {}: {}",
+                phase_icon, phase.id, phase.name
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  No planner active — run /planner to create a plan.",
+            Style::default().fg(Color::Gray),
+        )));
+    }
+
+    // Bootstrap status
+    let bootstrap = omega_core::bootstrap::BootstrapState::load(&project.path);
+    if let Some(ref state) = bootstrap {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  ── Bootstrap Pipeline ──",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+        for phase in omega_core::bootstrap::BootstrapPhase::all() {
+            let done = state.is_done(*phase);
+            let active = *phase == state.current_phase && !done;
+            let icon = if done {
+                "✅"
+            } else if active {
+                "⏳"
+            } else {
+                "⬚"
+            };
+            lines.push(Line::from(format!(
+                "    {} {} {}",
+                icon,
+                phase.icon(),
+                phase.label()
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ── Actions ──",
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    [d] Dispatch oracle    [p] Run planner    [Enter] Open in terminal",
+        Style::default().fg(Color::Cyan),
+    )));
+
+    lines
 }
 
 fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
