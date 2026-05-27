@@ -102,6 +102,15 @@ enum Commands {
         caption: Option<String>,
     },
 
+    /// List, export, or manage operational rules
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
+
+    /// Sync OmegaOS config into all LLM config directories (symlinks)
+    Sync,
+
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
     InstallBindings,
 
@@ -292,6 +301,8 @@ async fn main() -> Result<()> {
         Some(Commands::Pdf { template, data, demo, theme, out, send, caption }) => {
             cmd_pdf(&template, data.as_deref(), demo, &theme, &out, send, caption.as_deref()).await
         }
+        Some(Commands::Rules { action }) => cmd_rules(action),
+        Some(Commands::Sync) => cmd_sync(),
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -1089,7 +1100,15 @@ fn cmd_projects() -> Result<()> {
     Ok(())
 }
 
-#[derive(clap::Subcommand)]
+#[derive(Subcommand)]
+enum RulesAction {
+    /// List all operational rules
+    List,
+    /// Export compiled rules to ~/.omega/rules/ as individual .md files
+    Export,
+}
+
+#[derive(Subcommand)]
 enum TelegramAction {
     /// Save bot token + chat id (+ optional sender allow-list) to ~/.omega/telegram.toml
     Setup {
@@ -1994,6 +2013,128 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
         anyhow::bail!("Telegram sendDocument failed: {}", body);
     }
 
+    Ok(())
+}
+
+fn cmd_rules(action: RulesAction) -> Result<()> {
+    use omega_core::rules;
+    match action {
+        RulesAction::List => {
+            let all = rules::all_rules();
+            println!("OmegaOS — {} operational rules\n", all.len());
+            let mut current_cat = String::new();
+            for r in &all {
+                let cat = format!("{:?}", r.category);
+                if cat != current_cat {
+                    println!("─── {} ───", cat);
+                    current_cat = cat;
+                }
+                println!("  {:16} {}", r.id, r.title);
+            }
+            println!("\nRules dir: ~/.omega/rules/");
+            println!("Export:    omega rules export");
+        }
+        RulesAction::Export => {
+            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+            let rules_dir = home.join(".omega/rules");
+            std::fs::create_dir_all(&rules_dir)?;
+
+            let all = rules::all_rules();
+            for r in &all {
+                let slug = r.title.to_lowercase()
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
+                    .collect::<String>();
+                let slug = slug.trim_matches('-').replace("--", "-");
+                let fname = format!("{}-{}.md", r.id, &slug[..slug.len().min(40)]);
+                let content = format!(
+                    "# {} — {}\n\n**Category:** {:?}\n**Added:** {}\n\n## Rule\n\n{}\n\n## Origin\n\n{}\n",
+                    r.id, r.title, r.category, r.added_at, r.description, r.reason
+                );
+                std::fs::write(rules_dir.join(&fname), &content)?;
+                println!("  ✓ {}", fname);
+            }
+            println!("\n{} rules exported to {}", all.len(), rules_dir.display());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_sync() -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let omega_dir = home.join(".omega");
+
+    // Ensure master dirs exist
+    for sub in &["rules", "agents", "agents/aisb", "skills", "hooks", "plugins", "docs", "projects", "state", "logs"] {
+        std::fs::create_dir_all(omega_dir.join(sub))?;
+    }
+
+    // Export rules if not already present
+    let rules_dir = omega_dir.join("rules");
+    if std::fs::read_dir(&rules_dir)?.count() == 0 {
+        println!("Exporting rules...");
+        cmd_rules(RulesAction::Export)?;
+    }
+
+    // Copy OMEGA.md to ~/.omega/ if not present
+    let omega_md_src = std::path::Path::new("OMEGA.md");
+    let omega_md_dst = omega_dir.join("OMEGA.md");
+    if omega_md_src.exists() && !omega_md_dst.exists() {
+        std::fs::copy(omega_md_src, &omega_md_dst)?;
+        println!("✓ OMEGA.md → {}", omega_md_dst.display());
+    }
+
+    // ── Claude Code integration ──
+    let claude_dir = home.join(".claude");
+    if claude_dir.exists() {
+        let claude_rules = claude_dir.join("rules");
+        std::fs::create_dir_all(&claude_rules)?;
+
+        // Symlink each omega rule into Claude's rules/ with omega- prefix
+        for entry in std::fs::read_dir(&rules_dir)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.ends_with(".md") { continue; }
+            let link = claude_rules.join(format!("omega-{}", name_str));
+            if !link.exists() {
+                #[cfg(unix)]
+                std::os::unix::fs::symlink(entry.path(), &link)?;
+                println!("  ✓ Claude: {}", link.display());
+            }
+        }
+        println!("✓ Claude Code rules synced");
+    }
+
+    // ── Gemini CLI integration ──
+    let gemini_dir = home.join(".gemini");
+    if gemini_dir.exists() {
+        let gemini_md = gemini_dir.join("GEMINI.md");
+        let omega_ref = "\n# OmegaOS\n@import ~/.omega/OMEGA.md\n";
+        if gemini_md.exists() {
+            let content = std::fs::read_to_string(&gemini_md)?;
+            if !content.contains("OmegaOS") {
+                std::fs::write(&gemini_md, format!("{}{}", content, omega_ref))?;
+                println!("✓ Gemini: appended OmegaOS reference to GEMINI.md");
+            }
+        } else {
+            std::fs::write(&gemini_md, omega_ref)?;
+            println!("✓ Gemini: created GEMINI.md → OmegaOS");
+        }
+    }
+
+    // ── Codex integration ──
+    let codex_dir = home.join(".codex");
+    if codex_dir.exists() || std::fs::create_dir_all(&codex_dir).is_ok() {
+        let agents_md = codex_dir.join("AGENTS.md");
+        if !agents_md.exists() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&omega_md_dst, &agents_md)?;
+            println!("✓ Codex: AGENTS.md → OMEGA.md");
+        }
+    }
+
+    println!("\n✓ OmegaOS sync complete — all LLMs reference ~/.omega/");
     Ok(())
 }
 

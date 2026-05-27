@@ -146,6 +146,26 @@ else
     info "PDF generator source not found — skipping (can be added later)"
 fi
 
+# Install OMEGA.md master system prompt
+if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
+    cp "$OMEGA_SRC/OMEGA.md" "$OMEGA_DIR/OMEGA.md"
+    ok "OMEGA.md installed (universal agent instructions)"
+fi
+
+# Export operational rules to ~/.omega/rules/
+info "Exporting operational rules..."
+"$INSTALL_DIR/omega" rules export 2>/dev/null || true
+ok "Rules exported to $OMEGA_DIR/rules/"
+
+# Copy agent prompts to ~/.omega/agents/
+cp -r "$OMEGA_SRC/agents/"* "$AGENTS_DIR/" 2>/dev/null || true
+ok "Agent prompts installed"
+
+# Sync rules + OMEGA.md into all LLM config directories
+info "Syncing to LLM config directories..."
+"$INSTALL_DIR/omega" sync 2>/dev/null || true
+ok "LLM configs synced (Claude, Gemini, Codex)"
+
 # Install OPTIONAL rmux keybinding config — user has to opt-in via:
 #   omega install-bindings
 mkdir -p "$OMEGA_DIR"
