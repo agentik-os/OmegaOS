@@ -44,6 +44,10 @@ enum Commands {
     /// List supported agents and their availability
     Agents,
 
+    /// Attach to the Master AISB session (auto-spawns if missing)
+    #[command(alias = "aisb")]
+    Master,
+
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
     InstallBindings,
 
@@ -208,6 +212,7 @@ async fn main() -> Result<()> {
             cmd_new(&name, dir.as_deref(), cmd.as_deref(), agent.as_deref(), prompt.as_deref(), files).await
         }
         Some(Commands::Agents) => cmd_agents(),
+        Some(Commands::Master) => cmd_master().await,
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -245,6 +250,30 @@ async fn run_menu() -> Result<()> {
     if let Err(e) = app.refresh().await {
         eprintln!("Warning: could not refresh sessions: {}", e);
     }
+
+    // Auto-spawn Master AISB on first launch (if enabled and not already present)
+    let cfg = OmegaConfig::load().unwrap_or_default();
+    if cfg.auto_spawn_master {
+        if let Ok(mgr) = SessionManager::connect().await {
+            if let Some(agent) = omega_core::agents::Agent::from_name(&cfg.aisb_agent) {
+                let cwd = std::env::current_dir()
+                    .ok()
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| "/home".to_string());
+                match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
+                    Ok(true) => app.status_message = Some(
+                        "Master AISB session spawned automatically — ready to delegate".to_string()
+                    ),
+                    Ok(false) => app.status_message = Some(
+                        "Master AISB already running".to_string()
+                    ),
+                    Err(e) => eprintln!("Warning: Master AISB auto-spawn failed: {}", e),
+                }
+                let _ = app.refresh().await;
+            }
+        }
+    }
+
     let _ = app.refresh_preview().await;
 
     crossterm::terminal::enable_raw_mode()?;
@@ -381,6 +410,31 @@ async fn run_tui_loop(
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Create failed: {}", e));
+                        }
+                    }
+                }
+                Action::CreateSessionAutoName { agent, prompt } => {
+                    let mgr = SessionManager::connect().await?;
+                    match omega_core::naming::auto_name(agent, &mgr).await {
+                        Ok(name) => {
+                            match mgr
+                                .create_session_with_agent(&name, None, agent, prompt.as_deref())
+                                .await
+                            {
+                                Ok(_) => {
+                                    app.status_message = Some(format!(
+                                        "Created {} (auto-named)",
+                                        name
+                                    ));
+                                    let _ = app.refresh().await;
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(format!("Create failed: {}", e));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Auto-name failed: {}", e));
                         }
                     }
                 }
@@ -530,6 +584,41 @@ bind-key o display-popup -E -w 100% -h 100% "omega menu"
         println!("✓ Persistent config written to {}", conf_path.display());
     }
 
+    Ok(())
+}
+
+async fn cmd_master() -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    config.ensure_dirs()?;
+    let mgr = SessionManager::connect().await?;
+
+    let agent = omega_core::agents::Agent::from_name(&config.aisb_agent)
+        .unwrap_or(omega_core::agents::Agent::Claude);
+    let cwd = std::env::current_dir()?
+        .to_str()
+        .unwrap_or("/home")
+        .to_string();
+
+    let created = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await?;
+    if created {
+        println!("★ Master AISB spawned");
+    } else {
+        println!("★ Master AISB already running — attaching");
+    }
+
+    // Attach (use switch-client if inside rmux, else attach-session)
+    let inside_rmux = std::env::var("RMUX").is_ok();
+    let arg = if inside_rmux {
+        "switch-client"
+    } else {
+        "attach-session"
+    };
+    let status = std::process::Command::new("rmux")
+        .args([arg, "-t", omega_core::aisb::MASTER_SESSION_NAME])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("Failed to attach to Master AISB");
+    }
     Ok(())
 }
 

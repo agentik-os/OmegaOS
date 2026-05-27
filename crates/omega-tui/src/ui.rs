@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.tab {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
+        Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, chunks[1]),
     }
 
@@ -103,11 +104,12 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Help"];
+    let titles = vec!["Sessions", "Menu", "Settings", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
-        Tab::Help => 2,
+        Tab::Settings => 2,
+        Tab::Help => 3,
     };
 
     let tabs = Tabs::new(titles)
@@ -176,18 +178,28 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {
-    let icon = match entry.session.role {
-        SessionRole::Oracle => "◆",
-        SessionRole::Worker => "●",
-        SessionRole::Home => "⌂",
-        SessionRole::System => "⚙",
+    let is_master = omega_core::aisb::is_master(&entry.session.name);
+
+    let icon = if is_master {
+        "★"
+    } else {
+        match entry.session.role {
+            SessionRole::Oracle => "◆",
+            SessionRole::Worker => "●",
+            SessionRole::Home => "⌂",
+            SessionRole::System => "⚙",
+        }
     };
 
-    let icon_color = match entry.session.role {
-        SessionRole::Oracle => Color::Yellow,
-        SessionRole::Worker => Color::Green,
-        SessionRole::Home => Color::Blue,
-        SessionRole::System => Color::DarkGray,
+    let icon_color = if is_master {
+        Color::Magenta
+    } else {
+        match entry.session.role {
+            SessionRole::Oracle => Color::Yellow,
+            SessionRole::Worker => Color::Green,
+            SessionRole::Home => Color::Blue,
+            SessionRole::System => Color::DarkGray,
+        }
     };
 
     let progress_str = match &entry.progress {
@@ -205,6 +217,10 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
         Style::default()
             .fg(Color::Black)
             .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if is_master {
+        Style::default()
+            .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::BOLD)
@@ -262,6 +278,58 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     frame.render_widget(list, area);
+}
+
+fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  OmegaOS Settings",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!("  Default agent for Master AISB:  {}", app.config.aisb_agent)),
+        Line::from(format!("  Default model:                  {}", app.config.default_model)),
+        Line::from(format!("  Auto-spawn Master on launch:    {}", app.config.auto_spawn_master)),
+        Line::from(format!("  Auto-naming sessions:           {}", app.config.auto_naming)),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Installed agents (✓ available, ✗ not installed):",
+            Style::default().fg(Color::Yellow),
+        )),
+    ];
+
+    for agent in omega_core::agents::Agent::all() {
+        let (icon, color) = if agent.is_available() {
+            ("✓", Color::Green)
+        } else {
+            ("✗", Color::Red)
+        };
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(icon, Style::default().fg(color)),
+            Span::raw(format!("  {:8}  {}", agent.name(), agent.display_name())),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Edit ~/.omega/config.toml to change settings.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Master AISB session: aisb-master (always pinned at top of Sessions list).",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Settings "),
+    );
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {

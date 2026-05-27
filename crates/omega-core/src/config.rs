@@ -10,7 +10,25 @@ pub struct OmegaConfig {
     pub projects: Vec<ProjectConfig>,
     pub agent_command: String,
     pub default_model: String,
+    #[serde(default = "default_aisb_agent")]
+    pub aisb_agent: String,
+    #[serde(default = "default_auto_master")]
+    pub auto_spawn_master: bool,
+    #[serde(default = "default_auto_naming")]
+    pub auto_naming: bool,
     pub telegram: Option<TelegramConfig>,
+}
+
+fn default_aisb_agent() -> String {
+    "claude".to_string()
+}
+
+fn default_auto_master() -> bool {
+    true
+}
+
+fn default_auto_naming() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +64,9 @@ impl Default for OmegaConfig {
             projects: Vec::new(),
             agent_command: "claude".to_string(),
             default_model: "opus".to_string(),
+            aisb_agent: default_aisb_agent(),
+            auto_spawn_master: default_auto_master(),
+            auto_naming: default_auto_naming(),
             telegram: None,
         }
     }

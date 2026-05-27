@@ -13,6 +13,10 @@ pub enum Action {
         agent: omega_core::agents::Agent,
         prompt: Option<String>,
     },
+    CreateSessionAutoName {
+        agent: omega_core::agents::Agent,
+        prompt: Option<String>,
+    },
     DispatchOracle(String, String),
 }
 
@@ -47,20 +51,28 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             })
         }
 
-        // Direct-agent flow: step 2 — optional prompt
+        // Direct-agent flow: step 2 — optional prompt (name may be empty = auto-generate)
         InputMode::NewSessionPromptDirect(name, agent_name) => {
             let agent = omega_core::agents::Agent::from_name(&agent_name)
                 .unwrap_or(omega_core::agents::Agent::Shell);
             match key.code {
                 KeyCode::Esc => {
                     app.input_mode = InputMode::Normal;
-                    Action::CreateSessionWithAgent { name, agent, prompt: None }
+                    if name.is_empty() {
+                        Action::CreateSessionAutoName { agent, prompt: None }
+                    } else {
+                        Action::CreateSessionWithAgent { name, agent, prompt: None }
+                    }
                 }
                 KeyCode::Enter => {
                     let value = std::mem::take(&mut app.input_buffer);
                     let prompt = if value.trim().is_empty() { None } else { Some(value) };
                     app.input_mode = InputMode::Normal;
-                    Action::CreateSessionWithAgent { name, agent, prompt }
+                    if name.is_empty() {
+                        Action::CreateSessionAutoName { agent, prompt }
+                    } else {
+                        Action::CreateSessionWithAgent { name, agent, prompt }
+                    }
                 }
                 KeyCode::Backspace => {
                     app.input_buffer.pop();
@@ -198,7 +210,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
-                Tab::Help => {}
+                Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -207,7 +219,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
-                Tab::Help => {}
+                Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -222,7 +234,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
-            Tab::Help => Action::None,
+            Tab::Settings | Tab::Help => Action::None,
         },
 
         // Shortcut keys (work in any tab) — direct agent launchers
@@ -320,8 +332,27 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
-    // Per-agent direct launchers: prompt for session name, agent pre-selected
+    // Per-agent direct launchers: auto-generate name, optionally ask for prompt
     if let Some(agent) = action.agent() {
+        // Auto-naming enabled by default — generate session name from agent + count
+        if app.config.auto_naming {
+            // For Terminal: launch immediately with auto-name, no prompt step
+            if matches!(agent, omega_core::agents::Agent::Shell) {
+                return Action::CreateSessionAutoName { agent, prompt: None };
+            }
+            // For AI agents: skip name input, go straight to optional prompt
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewSessionPromptDirect(
+                String::new(), // empty name → auto-generate
+                agent.name().to_string(),
+            );
+            app.status_message = Some(format!(
+                "Optional initial prompt for new {} (Enter to launch, Esc to skip — name auto-generated)",
+                agent.display_name()
+            ));
+            return Action::None;
+        }
+        // Auto-naming disabled → ask for name
         app.input_buffer = String::new();
         app.input_mode = InputMode::NewNamedSession(agent.name().to_string());
         app.status_message = Some(format!(

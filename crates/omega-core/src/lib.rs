@@ -1,6 +1,8 @@
 pub mod agents;
+pub mod aisb;
 pub mod config;
 pub mod dispatch;
+pub mod naming;
 pub mod done;
 pub mod gate;
 pub mod metrics;

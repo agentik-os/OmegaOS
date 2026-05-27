@@ -6,6 +6,7 @@ use omega_core::session::{OmegaSession, SessionManager, SessionRole};
 pub enum Tab {
     Sessions,
     Menu,
+    Settings,
     Help,
 }
 
@@ -229,10 +230,28 @@ impl App {
 
         self.sessions.clear();
 
+        // Pin Master AISB at the top with a special marker
+        if let Some(master) = sessions
+            .iter()
+            .find(|s| omega_core::aisb::is_master(&s.name))
+        {
+            self.sessions.push(SessionEntry {
+                session: master.clone(),
+                progress: None,
+                is_current: false,
+                is_protected: true, // master is always protected from accidental kill
+                tree_prefix: "★ ".to_string(),
+            });
+        }
+
         let mut last_project: Option<String> = None;
         let mut group: Vec<(usize, &OmegaSession)> = Vec::new();
 
         for (idx, session) in sessions.iter().enumerate() {
+            // Skip Master AISB — already rendered at top
+            if omega_core::aisb::is_master(&session.name) {
+                continue;
+            }
             let current_project = session.project.clone();
 
             if current_project != last_project && !group.is_empty() {
@@ -296,7 +315,8 @@ impl App {
     pub fn next_tab(&mut self) {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
-            Tab::Menu => Tab::Help,
+            Tab::Menu => Tab::Settings,
+            Tab::Settings => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
     }
@@ -305,7 +325,8 @@ impl App {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
-            Tab::Help => Tab::Menu,
+            Tab::Settings => Tab::Menu,
+            Tab::Help => Tab::Settings,
         };
     }
 
