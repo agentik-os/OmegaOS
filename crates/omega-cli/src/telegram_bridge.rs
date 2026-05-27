@@ -237,40 +237,43 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                 }
             }
 
-            // Send a quick "thinking" indicator
-            let _ = send_html(
-                &client,
-                &cfg.bot_token,
-                reply_chat_id,
-                &format!("⏳ → <code>{}</code>", escape_html(&cfg.relay_session)),
-            )
-            .await;
+            // Show "typing..." in Telegram while agent processes
+            let _ = send_chat_action(&client, &cfg.bot_token, reply_chat_id, "typing").await;
 
-            // Wait for the agent to process, then capture the response
-            tokio::time::sleep(Duration::from_secs(3)).await;
+            // Snapshot pane BEFORE the agent responds
+            let before = mgr.capture_pane(&cfg.relay_session).await.unwrap_or_default();
 
-            // Poll up to 30s for a response delta
-            let mut attempts = 0;
-            loop {
-                if let Ok(content) = mgr.capture_pane(&cfg.relay_session).await {
-                    let delta = compute_delta(&last_capture, &content);
-                    last_capture = content;
-                    if !delta.is_empty() {
-                        let cleaned = clean_terminal_output(&delta);
-                        if !cleaned.is_empty() {
-                            let formatted = format_agent_response(&cleaned);
-                            let _ =
-                                send_html(&client, &cfg.bot_token, reply_chat_id, &formatted)
-                                    .await;
-                        }
-                        break;
-                    }
+            // Poll until agent finishes (idle prompt appears) or timeout
+            let mut response_text = String::new();
+            for tick in 0..30 {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+
+                // Keep typing indicator alive (expires after 5s)
+                if tick % 3 == 2 {
+                    let _ = send_chat_action(&client, &cfg.bot_token, reply_chat_id, "typing").await;
                 }
-                attempts += 1;
-                if attempts >= 6 {
+
+                let after = mgr.capture_pane(&cfg.relay_session).await.unwrap_or_default();
+                if after == before { continue; } // nothing changed yet
+
+                // Check if agent is done: idle prompt at the bottom
+                let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
+                let is_idle = last_lines.iter().any(|l| {
+                    let t = l.trim();
+                    t.starts_with("❯") && t.len() <= 2 // bare prompt = idle
+                });
+
+                if is_idle || tick >= 25 {
+                    // Extract the response: new lines between before and after
+                    response_text = extract_response(&before, &after);
                     break;
                 }
-                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+
+            let cleaned = clean_terminal_output(&response_text);
+            if !cleaned.is_empty() {
+                let formatted = format_agent_response(&cleaned);
+                let _ = send_html(&client, &cfg.bot_token, reply_chat_id, &formatted).await;
             }
         }
     }
@@ -502,6 +505,45 @@ async fn handle_command(
         }
         _ => None,
     }
+}
+
+/// Extract the agent's actual response from before/after pane snapshots.
+fn extract_response(before: &str, after: &str) -> String {
+    let before_lines: Vec<&str> = before.lines().collect();
+    let after_lines: Vec<&str> = after.lines().collect();
+
+    // Find the first line in `after` that differs from `before`
+    let common_prefix = before_lines
+        .iter()
+        .zip(after_lines.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    // Take new content, skip from common prefix to end
+    if common_prefix >= after_lines.len() {
+        return String::new();
+    }
+
+    after_lines[common_prefix..]
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn send_chat_action(
+    client: &reqwest::Client,
+    bot_token: &str,
+    chat_id: i64,
+    action: &str,
+) -> Result<()> {
+    let url = format!("{}/bot{}/sendChatAction", API_BASE, bot_token);
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "action": action,
+    });
+    client.post(&url).json(&body).send().await.context("sendChatAction")?;
+    Ok(())
 }
 
 async fn send_html(

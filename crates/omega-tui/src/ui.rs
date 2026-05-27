@@ -1929,6 +1929,26 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key("Enter (on field)", "Activate (install/edit/toggle)"),
         Line::from(""),
 
+        section("Integrated Tools"),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Hermes  ", cy),
+            Span::styled("Nous Research multi-agent coordinator", gr),
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("Pi      ", cy),
+            Span::styled("earendil-works coding agent (OpenRouter)", gr),
+        ]),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("PDF Gen ", cy),
+            Span::styled("Whitepaper/audit/marketing reports → Telegram", gr),
+        ]),
+        Line::from(Span::styled("    Install: omega install hermes | omega install pi", mg)),
+        Line::from(Span::styled("    Generate: omega pdf --template=whitepaper --demo --send", mg)),
+        Line::from(""),
+
         section("CLI Commands"),
     ]);
 
