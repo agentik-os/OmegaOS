@@ -536,18 +536,16 @@ async fn run_tui_loop(
                     app.status_message = Some("Refreshed".to_string());
                 }
                 Action::LoginClaude => {
-                    // Spawn a fresh rmux session that runs `claude /login`
                     let mgr = SessionManager::connect().await?;
-                    let name = match omega_core::naming::auto_name(omega_core::agents::Agent::Claude, &mgr).await {
-                        Ok(n) => format!("login-{}", &n[n.len().saturating_sub(2)..]),
-                        Err(_) => "claude-login".to_string(),
-                    };
+                    let name = "claude-login".to_string();
                     let cmd = "bash -c 'claude /login; exec bash'";
                     if let Err(e) = mgr.create_session(&name, None, Some(cmd)).await {
                         app.status_message = Some(format!("Login spawn failed: {}", e));
                     } else {
-                        app.status_message = Some(format!("Login session '{}' opened — switch to it to enter code", name));
-                        let _ = app.refresh().await;
+                        // Switch to Sessions tab + chat-focus the new login session
+                        app.status_message =
+                            Some(format!("✓ {} opened — paste the code from your browser into the chat box.", name));
+                        auto_focus_chat(app, &name).await;
                     }
                 }
                 Action::RefreshBilling => {
@@ -568,9 +566,38 @@ async fn run_tui_loop(
                     }
                 }
                 Action::TelegramSetup => {
+                    app.input_buffer = String::new();
+                    app.input_mode = omega_tui::app::InputMode::TelegramSetupToken;
                     app.status_message = Some(
-                        "From shell: omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id 12345]".to_string(),
+                        "Step 1/3: paste your Telegram BOT_TOKEN (from @BotFather) — Enter to confirm, Esc to cancel"
+                            .to_string(),
                     );
+                }
+                Action::TelegramSetupCommit { bot_token, chat_id, user_ids } => {
+                    let cfg = omega_core::monitor::OmegaTelegramConfig {
+                        bot_token,
+                        chat_id,
+                        allow_user_ids: user_ids,
+                        relay_session: omega_core::aisb::MASTER_SESSION_NAME.to_string(),
+                        label: String::new(),
+                        enabled: true,
+                    };
+                    match cfg.write() {
+                        Ok(()) => {
+                            let filter = if cfg.allow_user_ids.is_empty() {
+                                "chat_id only".to_string()
+                            } else {
+                                format!("user_ids {:?}", cfg.allow_user_ids)
+                            };
+                            app.status_message = Some(format!(
+                                "✓ Telegram configured (chat={}, filter={}). Run `omega telegram run` to start.",
+                                cfg.chat_id, filter
+                            ));
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Telegram setup failed: {}", e));
+                        }
+                    }
                 }
                 Action::RenameSession { old, new } => {
                     let mgr = SessionManager::connect().await?;
@@ -674,18 +701,14 @@ async fn cmd_new(
 }
 
 async fn cmd_install_bindings() -> Result<()> {
-    // Multiple bindings — fallbacks for terminals that don't pass Alt as Meta:
-    //   M-z / M-/         classic Alt+Z and Alt+/
-    //   Ctrl+Space        easy chord for terminals that swallow Alt
-    //   C-b o / C-b z     prefix variants (Ctrl-B then o or z)
-    //   C-Space           one more no-prefix fallback
+    // Option+Z / Option+/ have been REMOVED — they didn't toggle (popup spawned
+    // a nested omega instead of returning to the main one). Use Tab-Tab in the
+    // TUI for fullscreen and Ctrl+Space / prefix+z for popup entry.
     let popup_cmd = "display-popup -E -w 100% -h 100% \"omega menu\"";
 
-    // Root-table bindings (no prefix required)
+    // Root-table bindings (no prefix required) — single reliable shortcut
     let root_bindings: Vec<(&str, &str)> = vec![
-        ("M-z", "Open OmegaOS menu (Option+Z)"),
-        ("M-/", "Open OmegaOS menu (Option+/)"),
-        ("C-Space", "Open OmegaOS menu (Ctrl+Space — most reliable)"),
+        ("C-Space", "Open OmegaOS menu (Ctrl+Space)"),
     ];
 
     // Prefix-table bindings (Ctrl-B then key)
@@ -741,14 +764,16 @@ async fn cmd_install_bindings() -> Result<()> {
         .join(".omega");
     std::fs::create_dir_all(&omega_dir)?;
     let conf_path = omega_dir.join("rmux.conf.omega");
-    let content = r#"# OmegaOS rmux bindings — multiple fallbacks for opening the session menu.
+    let content = r#"# OmegaOS rmux bindings — open the session menu from any rmux session.
+#
+# Option+Z and Option+/ were REMOVED — they spawned a nested popup that
+# couldn't return to the parent omega cleanly. Use Tab-Tab inside the TUI
+# for fullscreen, and one of these to open omega from anywhere:
 #
 # Source from your ~/.rmux.conf with:
 #   source-file ~/.omega/rmux.conf.omega
 #
 # Root-table (no prefix):
-bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
-bind-key -n M-/ display-popup -E -w 100% -h 100% "omega menu"
 bind-key -n C-Space display-popup -E -w 100% -h 100% "omega menu"
 
 # Prefix-table (C-b first, then key):
@@ -779,11 +804,20 @@ bind-key z display-popup -E -w 100% -h 100% "omega menu"
     }
 
     println!();
-    println!("Try one of these to open the menu:");
-    println!("  • Option+Z  (or Alt+Z)");
-    println!("  • Option+/  (or Alt+/)");
-    println!("  • Ctrl+Space");
-    println!("  • Ctrl+B then o  (or z)");
+    println!("Open the OmegaOS menu from any rmux session with:");
+    println!("  • Ctrl+Space        — most reliable, no prefix needed");
+    println!("  • Ctrl+B then o     — prefix chord");
+    println!("  • Ctrl+B then z     — prefix chord (alternate)");
+    println!();
+    println!("Inside the TUI: Tab toggles chat focus, Tab-Tab → fullscreen.");
+
+    // Also remove any stale Option+Z / Option+/ bindings the user might have
+    // from earlier OmegaOS versions.
+    for stale in &["M-z", "M-/"] {
+        let _ = std::process::Command::new("rmux")
+            .args(["unbind-key", "-n", stale])
+            .output();
+    }
 
     Ok(())
 }

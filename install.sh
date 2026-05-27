@@ -128,24 +128,22 @@ else
     ok "Config already exists: $OMEGA_DIR/config.toml"
 fi
 
-# Install scripts
-SCRIPT_DIR="$OMEGA_DIR/scripts"
-mkdir -p "$SCRIPT_DIR"
-cp scripts/*.sh "$SCRIPT_DIR/"
-chmod +x "$SCRIPT_DIR"/*.sh
-ok "Scripts installed to $SCRIPT_DIR/"
-
-# Install agent templates
+# Install agent templates (Master AISB system prompt + the 13 agent prompts)
 AGENTS_DIR="$OMEGA_DIR/agents"
-mkdir -p "$AGENTS_DIR"
-cp agents/*.md "$AGENTS_DIR/"
+mkdir -p "$AGENTS_DIR/aisb"
+cp agents/*.md "$AGENTS_DIR/" 2>/dev/null || true
+cp -r agents/aisb/*.md "$AGENTS_DIR/aisb/" 2>/dev/null || true
 ok "Agent templates installed to $AGENTS_DIR/"
 
-# Install rmux keybinding config (Option+Z → omega menu)
-cp config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"
-ok "rmux config installed to $OMEGA_DIR/rmux.conf.omega"
+# Install OPTIONAL rmux keybinding config — user has to opt-in via:
+#   omega install-bindings
+mkdir -p "$OMEGA_DIR"
+if [[ -f config/rmux.conf.omega ]]; then
+    cp config/rmux.conf.omega "$OMEGA_DIR/rmux.conf.omega"
+    ok "rmux config available at $OMEGA_DIR/rmux.conf.omega (run 'omega install-bindings' to activate)"
+fi
 
-# Hook into user's rmux config
+# Hook into user's rmux config (idempotent — only adds source line if absent)
 RMUX_CONF="${RMUX_CONF:-$HOME/.rmux.conf}"
 RMUX_SOURCE_LINE="source-file $OMEGA_DIR/rmux.conf.omega"
 if [[ -f "$RMUX_CONF" ]]; then
@@ -225,12 +223,26 @@ echo -e "${GREEN}${BOLD}  OmegaOS v${OMEGA_VERSION} installed successfully!${NC}
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
 echo ""
 echo "  Quick start:"
-echo "    omega            # Launch session manager TUI"
-echo "    omega new test   # Create a new session"
-echo "    omega list       # List all sessions"
-echo "    omega dispatch MyProject 'Fix the auth bug'"
+echo "    omega                   # Launch the TUI session manager"
+echo "    omega list              # List all sessions"
+echo "    omega master            # Attach the AISB Master (the 13-agent brain)"
 echo ""
-echo "  Configuration: $OMEGA_DIR/config.toml"
+echo "  Install optional CLI agents (each is a one-line installer):"
+echo "    omega install hermes    # Hermes from Nous Research"
+echo "    omega install pi        # Pi from earendil-works"
+echo "    omega install codex     # Codex from OpenAI"
+echo "    omega install gemini    # Gemini from Google"
+echo "    omega install glm       # GLM from Z.AI"
+echo "    omega install --help"
 echo ""
-echo "  Restart your shell or run: source $RC_FILE"
+echo "  Optional Telegram bridge (talk to AISB from your phone):"
+echo "    omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>"
+echo "    omega telegram run"
+echo ""
+echo "  Optional global keybinding (popup omega from any rmux session):"
+echo "    omega install-bindings  # binds Ctrl+Space, Ctrl-B z, Ctrl-B o"
+echo ""
+echo "  Config files: $OMEGA_DIR/config.toml + $OMEGA_DIR/providers.toml"
+echo ""
+echo "  Restart your shell or run:  source $RC_FILE"
 echo ""

@@ -242,9 +242,16 @@ fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: b
     };
 
     if chat_focused {
+        // Dynamic chat input height: 1 line minimum, grows up to 6 lines based
+        // on visual lines needed for the current buffer at this terminal width.
+        let inner_width = area.width.saturating_sub(4) as usize; // borders + "▶ "
+        let visual_lines = visual_line_count(&app.chat_input, inner_width.max(1));
+        // height = visual_lines + 2 (borders). Clamp: min 3, max 8.
+        let input_height = (visual_lines as u16 + 2).clamp(3, 8);
+
         let right_split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .constraints([Constraint::Min(0), Constraint::Length(input_height)])
             .split(area);
 
         let preview = Paragraph::new(preview_lines)
@@ -266,12 +273,31 @@ fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: b
         } else {
             " (Enter send, Tab-Tab fullscreen, Tab/Esc back) "
         };
-        let input_line = Line::from(vec![
-            Span::styled("▶ ", Style::default().fg(Color::Yellow)),
-            Span::raw(app.chat_input.clone()),
-            Span::styled("█", Style::default().fg(Color::Yellow)),
-        ]);
-        let chat = Paragraph::new(input_line).block(
+
+        // Render the buffer as multiple visual lines so the user sees everything
+        let wrapped = wrap_text(&app.chat_input, inner_width.max(1));
+        let mut input_lines: Vec<Line> = Vec::with_capacity(wrapped.len().max(1));
+        if wrapped.is_empty() {
+            input_lines.push(Line::from(vec![
+                Span::styled("▶ ", Style::default().fg(Color::Yellow)),
+                Span::styled("█", Style::default().fg(Color::Yellow)),
+            ]));
+        } else {
+            for (i, line) in wrapped.iter().enumerate() {
+                let is_last = i + 1 == wrapped.len();
+                let prefix = if i == 0 { "▶ " } else { "  " };
+                let mut spans = vec![
+                    Span::styled(prefix.to_string(), Style::default().fg(Color::Yellow)),
+                    Span::raw(line.clone()),
+                ];
+                if is_last {
+                    spans.push(Span::styled("█", Style::default().fg(Color::Yellow)));
+                }
+                input_lines.push(Line::from(spans));
+            }
+        }
+
+        let chat = Paragraph::new(input_lines).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(format!(" → {}{}", target, hint))
@@ -312,7 +338,7 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
             SessionRole::Oracle => Color::Yellow,
             SessionRole::Worker => Color::Green,
             SessionRole::Home => Color::Blue,
-            SessionRole::System => Color::DarkGray,
+            SessionRole::System => Color::Gray,
         }
     };
 
@@ -337,7 +363,10 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
             .fg(Color::Magenta)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().add_modifier(Modifier::BOLD)
+        // Brighter than the previous default — clearly visible on dark terminals
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
     };
 
     let protect_marker = if entry.is_protected { "§ " } else { "" };
@@ -668,6 +697,57 @@ fn pct_color(pct: f32) -> Color {
     else { Color::Red }
 }
 
+/// Wrap a string into visual lines, soft-wrapping on word boundaries when
+/// possible (falls back to hard cuts mid-word for long tokens).
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 || text.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        // Hard-cut long words
+        if word.chars().count() > width {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+            let mut buf = String::new();
+            for c in word.chars() {
+                if buf.chars().count() + 1 > width {
+                    out.push(std::mem::take(&mut buf));
+                }
+                buf.push(c);
+            }
+            current = buf;
+            continue;
+        }
+        let needed = if current.is_empty() {
+            word.chars().count()
+        } else {
+            current.chars().count() + 1 + word.chars().count()
+        };
+        if needed > width {
+            out.push(std::mem::take(&mut current));
+            current.push_str(word);
+        } else {
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+fn visual_line_count(text: &str, width: usize) -> usize {
+    let n = wrap_text(text, width).len();
+    n.max(1)
+}
+
 fn short_num(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}G", n as f64 / 1_000_000_000.0)
@@ -928,6 +1008,15 @@ fn kv(key: &str, value: &str) -> Line<'static> {
 
 fn default_or<'a>(value: &'a str, default: &'a str) -> &'a str {
     if value.is_empty() { default } else { value }
+}
+
+/// Mask sensitive characters in an inline input (show prefix/suffix only).
+fn mask_inline(s: &str) -> String {
+    if s.len() <= 6 {
+        "•".repeat(s.len())
+    } else {
+        format!("{}…{}", &s[..3], "•".repeat(s.len() - 3))
+    }
 }
 
 fn mask_key(key: &str) -> String {
@@ -1331,6 +1420,18 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
                 "Rename session",
                 format!("[{} →] {}", old, app.input_buffer),
             ),
+            InputMode::TelegramSetupToken => (
+                "Telegram setup 1/3 — BOT_TOKEN",
+                mask_inline(&app.input_buffer),
+            ),
+            InputMode::TelegramSetupChatId(_) => (
+                "Telegram setup 2/3 — CHAT_ID (numeric)",
+                app.input_buffer.clone(),
+            ),
+            InputMode::TelegramSetupUserId(_, chat) => (
+                "Telegram setup 3/3 — user_id (Esc to skip)",
+                format!("[chat={}] {}", chat, app.input_buffer),
+            ),
         };
 
         let status = Paragraph::new(Line::from(vec![
@@ -1376,20 +1477,30 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(60)])
         .split(area);
 
-    // Left side: Ω badge + selected session
+    // Left side: Ω badge (no bg, bold) + selected session + status message
     let left = Paragraph::new(Line::from(vec![
-        Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Ω ",
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
-        Span::styled(session_info, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            session_info,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled(
             app.status_message.as_deref().unwrap_or(""),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ),
     ]));
     frame.render_widget(left, split[0]);
 
-    // Right side: system stats
+    // Right side: system stats (n_sessions in BOLD white so it pops)
     let stat_color = |pct: u8| -> Color {
         match pct {
             0..=60 => Color::Green,
@@ -1405,7 +1516,12 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled(disk, Style::default().fg(stat_color(stats.disk_used_pct))),
         Span::raw("  "),
-        Span::styled(n_sessions, Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            n_sessions,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled(
             time_str,

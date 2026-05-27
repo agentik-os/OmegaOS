@@ -29,6 +29,12 @@ pub enum Action {
     TelegramDisconnect,
     /// Rename a session (old, new).
     RenameSession { old: String, new: String },
+    /// Commit a freshly-completed Telegram setup wizard.
+    TelegramSetupCommit {
+        bot_token: String,
+        chat_id: i64,
+        user_ids: Vec<i64>,
+    },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -189,6 +195,73 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 Action::RenameSession { old: old_name.clone(), new: new_name }
             })
         }
+
+        // ── Telegram setup wizard (3 steps) ─────────────────────────────────
+        InputMode::TelegramSetupToken => handle_key_input(app, key, |app, token| {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::TelegramSetupChatId(token);
+            app.status_message = Some(
+                "Step 2/3: Telegram CHAT_ID (numeric, get yours from @userinfobot)".to_string(),
+            );
+            Action::None
+        }),
+        InputMode::TelegramSetupChatId(token) => {
+            handle_key_input(app, key, move |app, chat_id_str| {
+                let chat_id: i64 = match chat_id_str.trim().parse() {
+                    Ok(n) => n,
+                    Err(_) => {
+                        app.status_message = Some(
+                            format!("Invalid chat_id '{}' — must be numeric", chat_id_str),
+                        );
+                        app.input_mode = InputMode::Normal;
+                        return Action::None;
+                    }
+                };
+                app.input_buffer = String::new();
+                app.input_mode =
+                    InputMode::TelegramSetupUserId(token.clone(), chat_id.to_string());
+                app.status_message = Some(
+                    "Step 3/3: ALLOWED user_id (or Esc to skip — chat_id-only filter)".to_string(),
+                );
+                Action::None
+            })
+        }
+        InputMode::TelegramSetupUserId(token, chat_id_str) => {
+            let token = token.clone();
+            let chat_id: i64 = chat_id_str.parse().unwrap_or(0);
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    Action::TelegramSetupCommit {
+                        bot_token: token,
+                        chat_id,
+                        user_ids: Vec::new(),
+                    }
+                }
+                KeyCode::Enter => {
+                    let value = std::mem::take(&mut app.input_buffer);
+                    let user_ids = value
+                        .split(',')
+                        .filter_map(|s| s.trim().parse::<i64>().ok())
+                        .collect();
+                    app.input_mode = InputMode::Normal;
+                    Action::TelegramSetupCommit {
+                        bot_token: token,
+                        chat_id,
+                        user_ids,
+                    }
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    Action::None
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
     }
 }
 
@@ -214,26 +287,38 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Tab switching: ←/→ for tabs, Tab inside Sessions toggles focus list↔chat
         KeyCode::Left => {
             app.prev_tab();
+            app.reset_2col_focus();
             Action::None
         }
         KeyCode::Right => {
             app.next_tab();
+            app.reset_2col_focus();
             Action::None
         }
         KeyCode::BackTab => {
             app.prev_tab();
+            app.reset_2col_focus();
             Action::None
         }
         KeyCode::Tab => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.prev_tab();
             } else if app.tab == Tab::Sessions {
-                // Tab in Sessions: cycle List → Chat → (double-tap) Fullscreen → List
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
                     SessionFocus::List => "Focus: session list (Tab → chat, Tab-Tab → fullscreen)".to_string(),
                     SessionFocus::Chat => "Focus: chat (Tab to list, Tab-Tab → fullscreen, Enter to send)".to_string(),
                     SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab → back to list)".to_string(),
+                });
+            } else if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+                // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
+                app.handle_tab_in_2col();
+                app.status_message = Some(if app.detail_fullscreen {
+                    "Focus: detail FULLSCREEN (Tab → list, Tab-Tab → exit)".to_string()
+                } else if app.detail_focused {
+                    "Focus: detail panel (↑/↓ scroll, Tab → list, Tab-Tab → fullscreen)".to_string()
+                } else {
+                    "Focus: section list (Tab → detail, Tab-Tab → detail fullscreen)".to_string()
                 });
             } else {
                 app.next_tab();

@@ -51,6 +51,13 @@ pub enum InputMode {
     DispatchMission(String),
     /// Renaming an existing session — holds the original name.
     RenameSession(String),
+
+    /// Telegram setup wizard — step 1: bot token
+    TelegramSetupToken,
+    /// Step 2: chat id (carries the bot token)
+    TelegramSetupChatId(String),
+    /// Step 3: optional user id allow-list (carries token + chat_id)
+    TelegramSetupUserId(String, String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,8 +302,13 @@ pub struct App {
     /// unless the user manually scrolls up.
     pub preview_follow_tail: bool,
     pub session_focus: SessionFocus,
-    /// Tracks the last Tab press for double-tap detection.
+    /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
+    /// Generic right-panel focus for non-Sessions 2-column tabs (Settings/Info).
+    /// false = list focused, true = detail focused.
+    pub detail_focused: bool,
+    /// Detail panel fullscreen (Tab-Tab on a 2-column tab).
+    pub detail_fullscreen: bool,
     pub chat_input: String,
     pub current_session: Option<String>,
 }
@@ -336,6 +348,8 @@ impl App {
             preview_follow_tail: true,
             session_focus: SessionFocus::List,
             last_tab_press: None,
+            detail_focused: false,
+            detail_fullscreen: false,
             chat_input: String::new(),
             current_session,
         }
@@ -392,6 +406,39 @@ impl App {
     /// Legacy alias kept for older call sites.
     pub fn toggle_session_focus(&mut self) {
         self.handle_tab_in_sessions();
+    }
+
+    /// Tab in a 2-column tab (Settings / Info): single = toggle list↔detail,
+    /// double = fullscreen detail, double again = back to list.
+    pub fn handle_tab_in_2col(&mut self) {
+        const DOUBLE_TAP_MS: u128 = 400;
+        let now = std::time::Instant::now();
+        let is_double = self
+            .last_tab_press
+            .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
+            .unwrap_or(false);
+        self.last_tab_press = Some(now);
+
+        if is_double {
+            // Double tap: toggle fullscreen
+            self.detail_fullscreen = !self.detail_fullscreen;
+            self.detail_focused = self.detail_fullscreen;
+        } else {
+            if self.detail_fullscreen {
+                // Single tap from fullscreen → back to list
+                self.detail_fullscreen = false;
+                self.detail_focused = false;
+            } else {
+                // Toggle list ↔ detail
+                self.detail_focused = !self.detail_focused;
+            }
+        }
+    }
+
+    /// Reset 2-column focus to list when switching tabs.
+    pub fn reset_2col_focus(&mut self) {
+        self.detail_focused = false;
+        self.detail_fullscreen = false;
     }
 
     pub fn scroll_preview_down(&mut self, lines: u16) {
