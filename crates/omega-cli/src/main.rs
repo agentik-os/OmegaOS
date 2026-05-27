@@ -228,6 +228,7 @@ async fn run_menu() -> Result<()> {
     if let Err(e) = app.refresh().await {
         eprintln!("Warning: could not refresh sessions: {}", e);
     }
+    let _ = app.refresh_preview().await;
 
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
@@ -271,28 +272,54 @@ async fn run_tui_loop(
 
         if crossterm::event::poll(tick_rate)? {
             let evt = crossterm::event::read()?;
+            let selected_before = app.selected;
+            let tab_before = app.tab;
             match handle_event(app, evt) {
                 Action::Quit => break,
                 Action::AttachSession(name) => {
-                    crossterm::terminal::disable_raw_mode()?;
-                    crossterm::execute!(
-                        terminal.backend_mut(),
-                        crossterm::terminal::LeaveAlternateScreen
-                    )?;
+                    let inside_rmux = std::env::var("RMUX").is_ok();
 
-                    let status = std::process::Command::new("rmux")
-                        .args(["attach-session", "-t", &name])
-                        .status();
+                    if inside_rmux {
+                        // We're already inside rmux — use switch-client to swap to target session
+                        // without nesting. Doesn't need terminal handover.
+                        let status = std::process::Command::new("rmux")
+                            .args(["switch-client", "-t", &name])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => {
+                                app.should_quit = true;
+                                break;
+                            }
+                            Ok(s) => {
+                                app.status_message =
+                                    Some(format!("switch-client failed (exit {})", s.code().unwrap_or(-1)));
+                            }
+                            Err(e) => {
+                                app.status_message = Some(format!("switch-client error: {}", e));
+                            }
+                        }
+                    } else {
+                        // Standalone mode — full terminal handover
+                        crossterm::terminal::disable_raw_mode()?;
+                        crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::terminal::LeaveAlternateScreen
+                        )?;
 
-                    crossterm::execute!(
-                        terminal.backend_mut(),
-                        crossterm::terminal::EnterAlternateScreen
-                    )?;
-                    crossterm::terminal::enable_raw_mode()?;
-                    terminal.clear()?;
-                    let _ = app.refresh().await;
-                    if let Err(e) = status {
-                        app.status_message = Some(format!("Attach failed: {}", e));
+                        let status = std::process::Command::new("rmux")
+                            .args(["attach-session", "-t", &name])
+                            .status();
+
+                        crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::terminal::EnterAlternateScreen
+                        )?;
+                        crossterm::terminal::enable_raw_mode()?;
+                        terminal.clear()?;
+                        let _ = app.refresh().await;
+                        if let Err(e) = status {
+                            app.status_message = Some(format!("Attach failed: {}", e));
+                        }
                     }
                 }
                 Action::KillSession(name) => {
@@ -347,9 +374,15 @@ async fn run_tui_loop(
                 }
                 Action::Refresh => {
                     let _ = app.refresh().await;
+                    let _ = app.refresh_preview().await;
                     app.status_message = Some("Refreshed".to_string());
                 }
                 Action::None => {}
+            }
+
+            // Immediate preview refresh when user changes selection or tab
+            if app.selected != selected_before || app.tab != tab_before {
+                let _ = app.refresh_preview().await;
             }
         }
 

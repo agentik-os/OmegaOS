@@ -17,6 +17,55 @@ pub enum InputMode {
     DispatchMission(String),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuAction {
+    NewSession,
+    DispatchOracle,
+    Refresh,
+    ToggleProtection,
+    KillSelected,
+    Help,
+    Quit,
+}
+
+impl MenuAction {
+    pub fn all() -> &'static [MenuAction] {
+        &[
+            MenuAction::NewSession,
+            MenuAction::DispatchOracle,
+            MenuAction::Refresh,
+            MenuAction::ToggleProtection,
+            MenuAction::KillSelected,
+            MenuAction::Help,
+            MenuAction::Quit,
+        ]
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            MenuAction::NewSession => "New session",
+            MenuAction::DispatchOracle => "Dispatch oracle",
+            MenuAction::Refresh => "Refresh sessions",
+            MenuAction::ToggleProtection => "Toggle protection",
+            MenuAction::KillSelected => "Kill selected session",
+            MenuAction::Help => "Show help",
+            MenuAction::Quit => "Quit OmegaOS",
+        }
+    }
+
+    pub fn shortcut(&self) -> &'static str {
+        match self {
+            MenuAction::NewSession => "n",
+            MenuAction::DispatchOracle => "d",
+            MenuAction::Refresh => "r",
+            MenuAction::ToggleProtection => ".",
+            MenuAction::KillSelected => "x",
+            MenuAction::Help => "?",
+            MenuAction::Quit => "q",
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct SessionEntry {
     pub session: OmegaSession,
@@ -30,27 +79,60 @@ pub struct App {
     pub tab: Tab,
     pub sessions: Vec<SessionEntry>,
     pub selected: usize,
+    pub menu_selected: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub input_mode: InputMode,
     pub input_buffer: String,
     pub config: OmegaConfig,
     pub preview_content: String,
+    pub current_session: Option<String>,
 }
 
 impl App {
     pub fn new(config: OmegaConfig) -> Self {
+        let current_session = std::env::var("RMUX")
+            .ok()
+            .and_then(|rmux_var| {
+                rmux_var
+                    .split(',')
+                    .next()
+                    .map(|s| s.to_string())
+            })
+            .or_else(|| std::env::var("RMUX_SESSION").ok())
+            .or_else(|| std::env::var("TMUX_SESSION").ok());
+
         Self {
             tab: Tab::Sessions,
             sessions: Vec::new(),
             selected: 0,
+            menu_selected: 0,
             should_quit: false,
             status_message: None,
             input_mode: InputMode::Normal,
             input_buffer: String::new(),
             config,
             preview_content: String::new(),
+            current_session,
         }
+    }
+
+    pub fn select_menu_next(&mut self) {
+        let count = MenuAction::all().len();
+        self.menu_selected = (self.menu_selected + 1) % count;
+    }
+
+    pub fn select_menu_prev(&mut self) {
+        let count = MenuAction::all().len();
+        self.menu_selected = if self.menu_selected == 0 {
+            count - 1
+        } else {
+            self.menu_selected - 1
+        };
+    }
+
+    pub fn selected_menu_action(&self) -> MenuAction {
+        MenuAction::all()[self.menu_selected]
     }
 
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
@@ -61,6 +143,17 @@ impl App {
                 return Ok(());
             }
         };
+
+        // Avoid recursion: if previewing the session we're running inside, show static msg
+        if let Some(ref cur) = self.current_session {
+            if cur == &name {
+                self.preview_content =
+                    "(this is the session running OmegaOS — preview disabled to prevent recursion)"
+                        .to_string();
+                return Ok(());
+            }
+        }
+
         let mgr = omega_core::session::SessionManager::connect().await?;
         match mgr.capture_pane(&name).await {
             Ok(content) => {
@@ -69,7 +162,7 @@ impl App {
                 self.preview_content = lines[start..].join("\n");
             }
             Err(_) => {
-                self.preview_content = String::from("(no content)");
+                self.preview_content = String::from("(session has no pane content)");
             }
         }
         Ok(())

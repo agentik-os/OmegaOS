@@ -37,28 +37,45 @@ impl OmegaSession {
     }
 
     fn parse_session_name(name: &str) -> (SessionRole, Option<String>, Option<u32>) {
-        if name.starts_with("Home") || name.starts_with("c-") {
-            return (SessionRole::Home, None, None);
-        }
-
-        if name.starts_with("AISB-") || name.starts_with("earthbit-") {
-            return (SessionRole::System, None, None);
-        }
-
+        // Oracle pattern first — most specific
         if let Some(rest) = name.strip_prefix("oracle-") {
             let (project, idx) = Self::extract_project_and_index(rest);
             return (SessionRole::Oracle, Some(project), idx);
         }
 
+        // Worker pattern: <Project>-(worker|fix|dev|dispatch|...)-
+        // Check this BEFORE the system-prefix check so that e.g. AISB-worker-X
+        // is correctly identified as a Worker under project AISB.
         let worker_suffixes = [
             "-worker-", "-fix-", "-dev-", "-dispatch-", "-work-", "-linear", "-task-", "-audit-",
-            "-challenger-", "-report-", "-verify-", "-build-", "-deploy-",
+            "-challenger-", "-report-", "-verify-", "-build-", "-deploy-", "-team-",
         ];
         for suffix in &worker_suffixes {
             if let Some(pos) = name.find(suffix) {
                 let project = name[..pos].to_string();
                 return (SessionRole::Worker, Some(project), None);
             }
+        }
+
+        // Team session: Team-<Project>
+        if let Some(rest) = name.strip_prefix("Team-") {
+            return (SessionRole::Worker, Some(rest.to_string()), None);
+        }
+
+        // Home sessions
+        if name.starts_with("Home") || name.starts_with("c-") {
+            return (SessionRole::Home, None, None);
+        }
+
+        // System daemons (only true daemons, not project-prefixed sessions)
+        let system_exact = ["AISB-monitor", "AISB-daemon", "AISB-master"];
+        for sys in &system_exact {
+            if name == *sys {
+                return (SessionRole::System, None, None);
+            }
+        }
+        if name.starts_with("earthbit-") {
+            return (SessionRole::System, None, None);
         }
 
         (SessionRole::Home, None, None)

@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, SessionEntry, Tab};
+use crate::app::{App, InputMode, MenuAction, SessionEntry, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -102,7 +102,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(preview, split[1]);
 }
 
-fn render_session_item(entry: &SessionEntry, _selected: bool) -> ListItem<'static> {
+fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {
     let icon = match entry.session.role {
         SessionRole::Oracle => "◆",
         SessionRole::Worker => "●",
@@ -122,63 +122,70 @@ fn render_session_item(entry: &SessionEntry, _selected: bool) -> ListItem<'stati
         None => String::new(),
     };
 
-    let project_tag = match &entry.session.project {
-        Some(p) => format!(" [{}]", p),
-        None => String::new(),
+    let prefix = if selected {
+        "▶ ".to_string()
+    } else {
+        "  ".to_string()
     };
 
+    let name_style = if selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::BOLD)
+    };
+
+    let protect_marker = if entry.is_protected { "§ " } else { "" };
+
     let line = Line::from(vec![
+        Span::styled(prefix, Style::default().fg(Color::Cyan)),
         Span::raw(entry.tree_prefix.clone()),
         Span::styled(
             format!("{} ", icon),
             Style::default().fg(icon_color),
         ),
-        Span::styled(
-            entry.session.name.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(project_tag, Style::default().fg(Color::DarkGray)),
+        Span::styled(protect_marker, Style::default().fg(Color::Magenta)),
+        Span::styled(entry.session.name.clone(), name_style),
         Span::styled(progress_str, Style::default().fg(Color::Cyan)),
     ]);
 
     ListItem::new(line)
 }
 
-fn draw_menu(frame: &mut Frame, _app: &App, area: Rect) {
-    let menu_items = vec![
-        "[n] New session         — prompts for name",
-        "[d] Dispatch oracle     — prompts for project + mission",
-        "[Enter] Attach session  — to selected entry",
-        "[x] Kill session        — to selected entry",
-        "[.] Toggle protection   — prevent accidental kill",
-        "[r] Refresh list",
-        "[?] Show help",
-        "[Tab] Switch view",
-        "[q] Quit",
-    ];
-
-    let items: Vec<ListItem> = menu_items
-        .into_iter()
-        .map(|s| {
-            let parts: Vec<&str> = s.splitn(2, ']').collect();
-            if parts.len() == 2 {
-                ListItem::new(Line::from(vec![
-                    Span::styled(
-                        format!("{}]", parts[0]),
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(parts[1]),
-                ]))
+fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = MenuAction::all()
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            let selected = i == app.menu_selected;
+            let prefix = if selected { "▶ " } else { "  " };
+            let label_style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
-                ListItem::new(s.to_string())
-            }
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("[{}] ", action.shortcut()),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(action.label(), label_style),
+            ]))
         })
         .collect();
 
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Actions "),
+            .title(" Actions — ↑/↓ navigate, Enter to execute "),
     );
 
     frame.render_widget(list, area);
@@ -190,10 +197,11 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "  OmegaOS — Agentic Terminal Operating System",
         "",
         "  Navigation:",
-        "    Tab / Shift+Tab    Switch tabs (Sessions ↔ Menu ↔ Help)",
-        "    ↑/↓ or j/k         Navigate sessions",
-        "    Enter              Attach to selected session",
-        "    q / Esc            Quit",
+        "    ← / →              Switch tabs (Sessions ↔ Menu ↔ Help)",
+        "    ↑ / ↓ or j/k       Navigate items in current tab",
+        "    Enter              Attach session / execute menu action",
+        "    q                  Quit",
+        "    Esc                Back to Sessions tab (or quit if there)",
         "",
         "  Session Actions:",
         "    n                  New session (prompts for name)",

@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, MenuAction, Tab};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 pub enum Action {
@@ -45,11 +45,21 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
 fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        // Quit
+        KeyCode::Char('q') => {
             app.should_quit = true;
             Action::Quit
         }
 
+        // Tab switching: ←/→ AND Tab/Shift+Tab
+        KeyCode::Left | KeyCode::BackTab => {
+            app.prev_tab();
+            Action::None
+        }
+        KeyCode::Right => {
+            app.next_tab();
+            Action::None
+        }
         KeyCode::Tab => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.prev_tab();
@@ -59,35 +69,50 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
-            app.select_next();
+            match app.tab {
+                Tab::Sessions => app.select_next(),
+                Tab::Menu => app.select_menu_next(),
+                Tab::Help => {}
+            }
             Action::None
         }
 
         KeyCode::Up | KeyCode::Char('k') => {
-            app.select_prev();
+            match app.tab {
+                Tab::Sessions => app.select_prev(),
+                Tab::Menu => app.select_menu_prev(),
+                Tab::Help => {}
+            }
             Action::None
         }
 
-        KeyCode::Enter => {
-            if let Some(entry) = app.selected_session() {
-                Action::AttachSession(entry.session.name.clone())
-            } else {
-                Action::None
+        // Enter: context-aware
+        KeyCode::Enter => match app.tab {
+            Tab::Sessions => {
+                if let Some(entry) = app.selected_session() {
+                    Action::AttachSession(entry.session.name.clone())
+                } else {
+                    Action::None
+                }
             }
-        }
+            Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
+            Tab::Help => Action::None,
+        },
 
+        // Shortcut keys (work in any tab)
         KeyCode::Char('n') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewSession;
-            app.status_message = Some("New session name (Enter to confirm, Esc to cancel)".to_string());
+            app.status_message = Some("Session name (Enter to confirm, Esc to cancel)".to_string());
             Action::None
         }
 
         KeyCode::Char('d') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::DispatchProject;
-            app.status_message = Some("Dispatch — project name? (Enter to continue)".to_string());
+            app.status_message = Some("Project name (Enter to continue)".to_string());
             Action::None
         }
 
@@ -120,12 +145,73 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        KeyCode::Char('?') => {
-            app.tab = crate::app::Tab::Help;
+        KeyCode::Char('?') | KeyCode::F(1) => {
+            app.tab = Tab::Help;
             Action::None
         }
 
+        KeyCode::Esc => {
+            // Esc → switch to Sessions tab from anywhere, or quit if already there
+            if app.tab == Tab::Sessions {
+                app.should_quit = true;
+                Action::Quit
+            } else {
+                app.tab = Tab::Sessions;
+                Action::None
+            }
+        }
+
         _ => Action::None,
+    }
+}
+
+fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
+    match action {
+        MenuAction::NewSession => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewSession;
+            app.status_message = Some("Session name (Enter to confirm)".to_string());
+            Action::None
+        }
+        MenuAction::DispatchOracle => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::DispatchProject;
+            app.status_message = Some("Project name (Enter to continue)".to_string());
+            Action::None
+        }
+        MenuAction::Refresh => Action::Refresh,
+        MenuAction::ToggleProtection => {
+            if let Some(entry) = app.sessions.get_mut(app.selected) {
+                entry.is_protected = !entry.is_protected;
+                app.status_message = Some(format!(
+                    "{} {}",
+                    entry.session.name,
+                    if entry.is_protected { "protected" } else { "unprotected" }
+                ));
+            }
+            Action::None
+        }
+        MenuAction::KillSelected => {
+            if let Some(entry) = app.selected_session() {
+                if entry.is_protected {
+                    app.status_message = Some("Selected session is protected".to_string());
+                    Action::None
+                } else {
+                    Action::KillSession(entry.session.name.clone())
+                }
+            } else {
+                app.status_message = Some("No session selected".to_string());
+                Action::None
+            }
+        }
+        MenuAction::Help => {
+            app.tab = Tab::Help;
+            Action::None
+        }
+        MenuAction::Quit => {
+            app.should_quit = true;
+            Action::Quit
+        }
     }
 }
 
