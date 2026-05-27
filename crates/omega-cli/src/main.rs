@@ -1823,7 +1823,7 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     }
 
     println!("◆ Ship pipeline starting for {}...", project);
-    let result = pipeline.execute(project, message).await;
+    let result = pipeline.execute(project, message, &Vec::<String>::new()).await;
 
     for step in &result.steps_completed {
         let icon = if step.passed { "✓" } else { "✗" };
