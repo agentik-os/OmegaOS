@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use omega_core::config::OmegaConfig;
 use omega_core::done::{DoneSignal, DoneStatus};
@@ -52,6 +52,12 @@ enum Commands {
     /// Attach to the Master AISB session (auto-spawns if missing)
     #[command(alias = "aisb")]
     Master,
+
+    /// Get or set provider configuration values (propagates to all sessions)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
 
     /// Show billing / accounts / bot status (one-shot, also visible in TUI Monitor tab)
     Monitor,
@@ -245,6 +251,7 @@ async fn main() -> Result<()> {
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::Projects) => cmd_projects(),
         Some(Commands::Master) => cmd_master().await,
+        Some(Commands::Config { action }) => cmd_config(action),
         Some(Commands::Monitor) => cmd_monitor(),
         Some(Commands::Telegram { action }) => cmd_telegram(action).await,
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
@@ -554,6 +561,19 @@ async fn run_tui_loop(
                     app.status_message = Some(
                         "From shell: omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id 12345]".to_string(),
                     );
+                }
+                Action::RenameSession { old, new } => {
+                    let mgr = SessionManager::connect().await?;
+                    match mgr.rename_session(&old, &new).await {
+                        Ok(()) => {
+                            app.status_message = Some(format!("Renamed {} → {}", old, new));
+                            let _ = app.refresh().await;
+                            let _ = app.select_by_name(&new);
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Rename failed: {}", e));
+                        }
+                    }
                 }
                 Action::TelegramDisconnect => {
                     match omega_core::monitor::OmegaTelegramConfig::disconnect() {
@@ -904,6 +924,93 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             telegram_bridge::run(cfg).await
         }
     }
+}
+
+#[derive(clap::Subcommand)]
+enum ConfigAction {
+    /// Get a config value: <provider>.<key>  e.g. claude.model
+    Get { key: String },
+    /// Set a config value: <provider>.<key> <value>  e.g. claude.model opus
+    Set { key: String, value: String },
+    /// Show all provider configs
+    Show,
+}
+
+fn cmd_config(action: ConfigAction) -> Result<()> {
+    use omega_core::providers::ProvidersConfig;
+    let mut cfg = ProvidersConfig::load();
+
+    match action {
+        ConfigAction::Show => {
+            let toml = toml::to_string_pretty(&cfg)?;
+            println!("{}", toml);
+        }
+        ConfigAction::Get { key } => {
+            let value = get_config_value(&cfg, &key)?;
+            println!("{}", value);
+        }
+        ConfigAction::Set { key, value } => {
+            set_config_value(&mut cfg, &key, &value)?;
+            cfg.save()?;
+            println!("✓ Set {} = {}", key, value);
+            println!("Applies to all newly spawned sessions.");
+        }
+    }
+    Ok(())
+}
+
+fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> Result<String> {
+    let mut parts = key.splitn(2, '.');
+    let provider = parts.next().context("missing provider")?;
+    let field = parts.next().context("missing field (use provider.field)")?;
+    let s = match (provider, field) {
+        ("claude", "model") => cfg.claude.model.clone(),
+        ("claude", "effort") => cfg.claude.effort.clone(),
+        ("claude", "api_key") => cfg.claude.api_key.clone(),
+        ("claude", "dangerously_skip_permissions") => cfg.claude.dangerously_skip_permissions.to_string(),
+        ("codex", "model") => cfg.codex.model.clone(),
+        ("codex", "api_key") => cfg.codex.api_key.clone(),
+        ("codex", "base_url") => cfg.codex.base_url.clone(),
+        ("gemini", "model") => cfg.gemini.model.clone(),
+        ("gemini", "api_key") => cfg.gemini.api_key.clone(),
+        ("pi", "provider") => cfg.pi.provider.clone(),
+        ("pi", "model") => cfg.pi.model.clone(),
+        ("pi", "extension") => cfg.pi.extension.clone(),
+        ("glm", "model") => cfg.glm.model.clone(),
+        ("glm", "api_key") => cfg.glm.api_key.clone(),
+        _ => anyhow::bail!("Unknown key: {}", key),
+    };
+    Ok(s)
+}
+
+fn set_config_value(
+    cfg: &mut omega_core::providers::ProvidersConfig,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    let mut parts = key.splitn(2, '.');
+    let provider = parts.next().context("missing provider")?;
+    let field = parts.next().context("missing field (use provider.field)")?;
+    match (provider, field) {
+        ("claude", "model") => cfg.claude.model = value.to_string(),
+        ("claude", "effort") => cfg.claude.effort = value.to_string(),
+        ("claude", "api_key") => cfg.claude.api_key = value.to_string(),
+        ("claude", "dangerously_skip_permissions") => {
+            cfg.claude.dangerously_skip_permissions = value.parse().unwrap_or(false);
+        }
+        ("codex", "model") => cfg.codex.model = value.to_string(),
+        ("codex", "api_key") => cfg.codex.api_key = value.to_string(),
+        ("codex", "base_url") => cfg.codex.base_url = value.to_string(),
+        ("gemini", "model") => cfg.gemini.model = value.to_string(),
+        ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
+        ("pi", "provider") => cfg.pi.provider = value.to_string(),
+        ("pi", "model") => cfg.pi.model = value.to_string(),
+        ("pi", "extension") => cfg.pi.extension = value.to_string(),
+        ("glm", "model") => cfg.glm.model = value.to_string(),
+        ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        _ => anyhow::bail!("Unknown key: {}", key),
+    }
+    Ok(())
 }
 
 fn cmd_monitor() -> Result<()> {

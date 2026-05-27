@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, Tab};
+use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -136,12 +136,26 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     let list_focused = app.session_focus == SessionFocus::List;
     let chat_focused = app.session_focus == SessionFocus::Chat;
 
-    // ── Left: session list ──────────────────────────────────────────────────
+    // ── Left: session list with project headers ─────────────────────────────
+    let mut entry_idx: usize = 0;
     let items: Vec<ListItem> = app
-        .sessions
+        .rows
         .iter()
-        .enumerate()
-        .map(|(i, entry)| render_session_item(entry, i == app.selected && list_focused))
+        .map(|row| match row {
+            SessionRow::Header(label) => ListItem::new(Line::from(vec![
+                Span::styled(
+                    format!("  {} ", label),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ])),
+            SessionRow::Entry(entry) => {
+                let item = render_session_item(entry, entry_idx == app.selected && list_focused);
+                entry_idx += 1;
+                item
+            }
+        })
         .collect();
 
     let list_border_style = if list_focused {
@@ -561,55 +575,209 @@ fn short_num(n: u64) -> String {
 }
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  OmegaOS Settings",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(format!("  Default agent for Master AISB:  {}", app.config.aisb_agent)),
-        Line::from(format!("  Default model:                  {}", app.config.default_model)),
-        Line::from(format!("  Auto-spawn Master on launch:    {}", app.config.auto_spawn_master)),
-        Line::from(format!("  Auto-naming sessions:           {}", app.config.auto_naming)),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  Installed agents (✓ available, ✗ not installed):",
-            Style::default().fg(Color::Yellow),
-        )),
-    ];
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
 
-    for agent in omega_core::agents::Agent::all() {
-        let (icon, color) = if agent.is_available() {
-            ("✓", Color::Green)
-        } else {
-            ("✗", Color::Red)
-        };
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(icon, Style::default().fg(color)),
-            Span::raw(format!("  {:8}  {}", agent.name(), agent.display_name())),
-        ]));
-    }
+    // ── Left: section list ──────────────────────────────────────────────────
+    let items: Vec<ListItem> = SettingsSection::all()
+        .iter()
+        .enumerate()
+        .map(|(i, section)| {
+            let selected = i == app.settings_selected;
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(section.label(), style),
+            ]))
+        })
+        .collect();
 
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Edit ~/.omega/config.toml to change settings.",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
-        "  Master AISB session: aisb-master (always pinned at top of Sessions list).",
-        Style::default().fg(Color::DarkGray),
-    )));
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Settings — ↑/↓ to select ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, split[0]);
+
+    // ── Right: details panel for the selected section ──────────────────────
+    let providers = omega_core::providers::ProvidersConfig::load();
+    let lines = render_settings_detail(app, &providers);
 
     let paragraph = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Settings "),
+            .title(format!(" {} ", app.selected_settings_section().label()))
+            .border_style(Style::default().fg(Color::DarkGray)),
     );
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, split[1]);
+}
+
+fn render_settings_detail(
+    app: &App,
+    providers: &omega_core::providers::ProvidersConfig,
+) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    let cfg = &app.config;
+    let section = app.selected_settings_section();
+
+    match section {
+        SettingsSection::General => {
+            lines.push(kv("Default AISB agent", &cfg.aisb_agent));
+            lines.push(kv("Default model", &cfg.default_model));
+            lines.push(kv("Auto-spawn Master on launch", &cfg.auto_spawn_master.to_string()));
+            lines.push(kv("Auto-naming sessions", &cfg.auto_naming.to_string()));
+            lines.push(kv("State dir", &cfg.state_dir.to_string_lossy()));
+            lines.push(kv("Logs dir", &cfg.logs_dir.to_string_lossy()));
+        }
+        SettingsSection::Claude => {
+            let c = &providers.claude;
+            lines.push(kv("Model", default_or(&c.model, "(opus)")));
+            lines.push(kv("Effort", default_or(&c.effort, "(default)")));
+            lines.push(kv("API key", &mask_key(&c.api_key)));
+            lines.push(kv("Skip-perms by default", &c.dangerously_skip_permissions.to_string()));
+            availability(&mut lines, omega_core::agents::Agent::Claude);
+        }
+        SettingsSection::Codex => {
+            let c = &providers.codex;
+            lines.push(kv("Model", default_or(&c.model, "(default)")));
+            lines.push(kv("API key", &mask_key(&c.api_key)));
+            lines.push(kv("Base URL", default_or(&c.base_url, "(default)")));
+            availability(&mut lines, omega_core::agents::Agent::Codex);
+        }
+        SettingsSection::Gemini => {
+            let c = &providers.gemini;
+            lines.push(kv("Model", default_or(&c.model, "(default)")));
+            lines.push(kv("API key", &mask_key(&c.api_key)));
+            availability(&mut lines, omega_core::agents::Agent::Gemini);
+        }
+        SettingsSection::Pi => {
+            let c = &providers.pi;
+            lines.push(kv("Provider", default_or(&c.provider, "openrouter")));
+            lines.push(kv("Model", default_or(&c.model, "anthropic/claude-sonnet-4.6")));
+            lines.push(kv("Extension", default_or(&c.extension, "(none)")));
+            availability(&mut lines, omega_core::agents::Agent::Pi);
+        }
+        SettingsSection::Glm => {
+            let c = &providers.glm;
+            lines.push(kv("Model", default_or(&c.model, "(default)")));
+            lines.push(kv("API key", &mask_key(&c.api_key)));
+            availability(&mut lines, omega_core::agents::Agent::Glm);
+        }
+        SettingsSection::Aisb => {
+            lines.push(kv("Master session name", omega_core::aisb::MASTER_SESSION_NAME));
+            lines.push(kv("Auto-spawn", &cfg.auto_spawn_master.to_string()));
+            lines.push(kv("Agent", &cfg.aisb_agent));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  System prompt: agents/aisb-master.md (compiled into binary)",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Materialised at: ~/.omega/aisb-master.system.md",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        SettingsSection::Telegram => {
+            match omega_core::monitor::OmegaTelegramConfig::read() {
+                Some(tg) => {
+                    if !tg.label.is_empty() {
+                        lines.push(kv("Label", &tg.label));
+                    }
+                    lines.push(kv("Enabled", &tg.enabled.to_string()));
+                    lines.push(kv("Chat ID", &tg.chat_id.to_string()));
+                    lines.push(kv("Relay session", &tg.relay_session));
+                    let sender_filter = if tg.allow_user_ids.is_empty() {
+                        "chat_id only".to_string()
+                    } else {
+                        format!("user_ids {:?}", tg.allow_user_ids)
+                    };
+                    lines.push(kv("Sender filter", &sender_filter));
+                }
+                None => {
+                    lines.push(Line::from(Span::styled(
+                        "  Not configured.",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from("  Set up with:"));
+                    lines.push(Line::from(Span::styled(
+                        "    omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id …]",
+                        Style::default().fg(Color::Yellow),
+                    )));
+                }
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Edit settings via CLI (changes apply to all sessions):",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    omega config set <provider>.<key> <value>      (e.g. claude.model opus)",
+        Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    omega config get <provider>.<key>",
+        Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    ~/.omega/providers.toml  ~/.omega/config.toml",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    lines
+}
+
+fn kv(key: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("{:30}", key),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw(value.to_string()),
+    ])
+}
+
+fn default_or<'a>(value: &'a str, default: &'a str) -> &'a str {
+    if value.is_empty() { default } else { value }
+}
+
+fn mask_key(key: &str) -> String {
+    if key.is_empty() {
+        "(not set)".to_string()
+    } else if key.len() <= 8 {
+        "•".repeat(key.len())
+    } else {
+        format!("{}…{}", &key[..4], &key[key.len() - 4..])
+    }
+}
+
+fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent) {
+    let (icon, color, label) = if agent.is_available() {
+        ("✓", Color::Green, "installed")
+    } else {
+        ("✗", Color::Red, "not installed")
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(format!("{:30}", "CLI availability"), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{} {}", icon, label), Style::default().fg(color)),
+    ]));
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
@@ -699,6 +867,10 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::DispatchMission(p) => (
                 "Dispatch — mission",
                 format!("[{}] {}", p, app.input_buffer),
+            ),
+            InputMode::RenameSession(old) => (
+                "Rename session",
+                format!("[{} →] {}", old, app.input_buffer),
             ),
         };
 

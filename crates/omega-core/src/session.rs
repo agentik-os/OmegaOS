@@ -196,6 +196,22 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Rename a session via the rmux CLI (the SDK doesn't expose rename yet).
+    /// Equivalent to: rmux rename-session -t <old> <new>
+    pub async fn rename_session(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let _ = SessionName::new(new_name)
+            .context("invalid new session name")?;
+        let status = tokio::process::Command::new("rmux")
+            .args(["rename-session", "-t", old_name, new_name])
+            .status()
+            .await
+            .context("spawning rmux rename-session")?;
+        if !status.success() {
+            anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
+        }
+        Ok(())
+    }
+
     pub async fn get_active_pane(&self, name: &str) -> Result<Pane> {
         let session = self.get_session(name).await?;
         Ok(session.pane(0, 0))

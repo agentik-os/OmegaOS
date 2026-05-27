@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod patrol;
 pub mod progress;
 pub mod projects;
+pub mod providers;
 pub mod routing;
 pub mod rpc;
 pub mod scope;

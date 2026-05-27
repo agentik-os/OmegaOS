@@ -14,15 +14,15 @@ pub enum Tab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
-    // Direct-agent flow: agent already chosen via menu
-    NewNamedSession(String),               // agent_name — typing session name
-    NewSessionPromptDirect(String, String), // (session_name, agent_name) — optional prompt
-    // Legacy "n" key flow: 3-step picker
+    NewNamedSession(String),
+    NewSessionPromptDirect(String, String),
     NewSession,
     NewSessionAgent(String),
     NewSessionPrompt(String, String),
     DispatchProject,
     DispatchMission(String),
+    /// Renaming an existing session — holds the original name.
+    RenameSession(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +103,25 @@ impl MenuAction {
 }
 
 #[derive(Debug)]
+pub enum SessionRow {
+    /// A visible section header (e.g. "── Causio ──")
+    Header(String),
+    Entry(SessionEntry),
+}
+
+impl SessionRow {
+    pub fn is_selectable(&self) -> bool {
+        matches!(self, SessionRow::Entry(_))
+    }
+    pub fn as_entry(&self) -> Option<&SessionEntry> {
+        match self {
+            SessionRow::Entry(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SessionEntry {
     pub session: OmegaSession,
     pub progress: Option<ProgressInfo>,
@@ -111,11 +130,66 @@ pub struct SessionEntry {
     pub tree_prefix: String,
 }
 
+impl SessionEntry {
+    pub fn clone_for_row(&self) -> Self {
+        self.clone()
+    }
+}
+
+fn section_for(session: &OmegaSession) -> String {
+    use omega_core::session::SessionRole;
+    match (&session.role, &session.project) {
+        (SessionRole::Oracle | SessionRole::Worker, Some(p)) => p.clone(),
+        (SessionRole::Home, _) => "Home".to_string(),
+        (SessionRole::System, _) => "System".to_string(),
+        _ => "Other".to_string(),
+    }
+}
+
 /// Which side of the Sessions tab has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFocus {
     List,
     Chat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSection {
+    General,
+    Claude,
+    Codex,
+    Gemini,
+    Pi,
+    Glm,
+    Aisb,
+    Telegram,
+}
+
+impl SettingsSection {
+    pub fn all() -> &'static [SettingsSection] {
+        &[
+            SettingsSection::General,
+            SettingsSection::Claude,
+            SettingsSection::Codex,
+            SettingsSection::Gemini,
+            SettingsSection::Pi,
+            SettingsSection::Glm,
+            SettingsSection::Aisb,
+            SettingsSection::Telegram,
+        ]
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            SettingsSection::General => "General",
+            SettingsSection::Claude => "Claude (Anthropic)",
+            SettingsSection::Codex => "Codex (OpenAI)",
+            SettingsSection::Gemini => "Gemini (Google)",
+            SettingsSection::Pi => "Pi (earendil)",
+            SettingsSection::Glm => "GLM (Z.AI)",
+            SettingsSection::Aisb => "AISB Master",
+            SettingsSection::Telegram => "Telegram",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,9 +230,13 @@ impl MonitorAction {
 pub struct App {
     pub tab: Tab,
     pub sessions: Vec<SessionEntry>,
+    /// Renderable rows including section headers (parallel to sessions, but
+    /// includes Header variants between groups). Built by refresh().
+    pub rows: Vec<SessionRow>,
     pub selected: usize,
     pub menu_selected: usize,
     pub monitor_selected: usize,
+    pub settings_selected: usize,
     pub agent_picker_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -191,9 +269,11 @@ impl App {
         Self {
             tab: Tab::Sessions,
             sessions: Vec::new(),
+            rows: Vec::new(),
             selected: 0,
             menu_selected: 0,
             monitor_selected: 0,
+            settings_selected: 0,
             agent_picker_index: 0,
             should_quit: false,
             status_message: None,
@@ -316,6 +396,24 @@ impl App {
         MonitorAction::all()[self.monitor_selected]
     }
 
+    pub fn select_settings_next(&mut self) {
+        let count = SettingsSection::all().len();
+        self.settings_selected = (self.settings_selected + 1) % count;
+    }
+
+    pub fn select_settings_prev(&mut self) {
+        let count = SettingsSection::all().len();
+        self.settings_selected = if self.settings_selected == 0 {
+            count - 1
+        } else {
+            self.settings_selected - 1
+        };
+    }
+
+    pub fn selected_settings_section(&self) -> SettingsSection {
+        SettingsSection::all()[self.settings_selected]
+    }
+
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
         let name = match self.selected_session() {
             Some(e) => e.session.name.clone(),
@@ -358,41 +456,45 @@ impl App {
         let all_progress = ProgressInfo::read_all(&self.config.state_dir);
 
         self.sessions.clear();
+        self.rows.clear();
 
-        // Pin Master AISB at the top with a special marker
+        // ── Section 1: Master AISB pinned at top ────────────────────────────
         if let Some(master) = sessions
             .iter()
             .find(|s| omega_core::aisb::is_master(&s.name))
         {
-            self.sessions.push(SessionEntry {
+            self.rows.push(SessionRow::Header("─ AISB Master ─".to_string()));
+            let entry = SessionEntry {
                 session: master.clone(),
                 progress: None,
                 is_current: false,
-                is_protected: true, // master is always protected from accidental kill
+                is_protected: true,
                 tree_prefix: "★ ".to_string(),
-            });
+            };
+            self.sessions.push(entry);
+            self.rows.push(SessionRow::Entry(
+                self.sessions.last().unwrap().clone_for_row(),
+            ));
         }
 
-        let mut last_project: Option<String> = None;
-        let mut group: Vec<(usize, &OmegaSession)> = Vec::new();
+        // ── Section 2: Project-grouped sessions (Oracles + Workers + Home) ──
+        let mut last_section: Option<String> = None;
+        let mut group: Vec<&OmegaSession> = Vec::new();
 
-        for (idx, session) in sessions.iter().enumerate() {
-            // Skip Master AISB — already rendered at top
+        for session in sessions.iter() {
             if omega_core::aisb::is_master(&session.name) {
                 continue;
             }
-            let current_project = session.project.clone();
-
-            if current_project != last_project && !group.is_empty() {
-                self.flush_group(&group, &all_progress);
+            let section_label = section_for(session);
+            if last_section.as_ref() != Some(&section_label) && !group.is_empty() {
+                self.flush_group_rows(&group, &all_progress, last_section.as_deref());
                 group.clear();
             }
-
-            group.push((idx, session));
-            last_project = current_project;
+            group.push(session);
+            last_section = Some(section_label);
         }
         if !group.is_empty() {
-            self.flush_group(&group, &all_progress);
+            self.flush_group_rows(&group, &all_progress, last_section.as_deref());
         }
 
         if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
@@ -402,16 +504,22 @@ impl App {
         Ok(())
     }
 
-    fn flush_group(
+    fn flush_group_rows(
         &mut self,
-        group: &[(usize, &OmegaSession)],
+        group: &[&OmegaSession],
         all_progress: &[ProgressInfo],
+        section_label: Option<&str>,
     ) {
-        let has_oracle = group.iter().any(|(_, s)| s.role == SessionRole::Oracle);
-        let worker_count = group.iter().filter(|(_, s)| s.role == SessionRole::Worker).count();
+        let has_oracle = group.iter().any(|s| s.role == SessionRole::Oracle);
+        let worker_count = group.iter().filter(|s| s.role == SessionRole::Worker).count();
         let show_tree = has_oracle && worker_count > 0;
 
-        for (i, (_, session)) in group.iter().enumerate() {
+        if let Some(label) = section_label {
+            self.rows
+                .push(SessionRow::Header(format!("─ {} ─", label)));
+        }
+
+        for (i, session) in group.iter().enumerate() {
             let progress = all_progress
                 .iter()
                 .find(|p| p.session == session.name)
@@ -427,13 +535,17 @@ impl App {
                 String::new()
             };
 
-            self.sessions.push(SessionEntry {
+            let entry = SessionEntry {
                 session: (*session).clone(),
                 progress,
                 is_current: false,
                 is_protected: false,
                 tree_prefix,
-            });
+            };
+            self.sessions.push(entry);
+            self.rows.push(SessionRow::Entry(
+                self.sessions.last().unwrap().clone_for_row(),
+            ));
         }
     }
 

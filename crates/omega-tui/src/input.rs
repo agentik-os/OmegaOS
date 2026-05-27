@@ -27,6 +27,8 @@ pub enum Action {
     TelegramSetup,
     /// Disconnect the currently active Omega Telegram bot.
     TelegramDisconnect,
+    /// Rename a session (old, new).
+    RenameSession { old: String, new: String },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -176,6 +178,17 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 Action::DispatchOracle(project.clone(), mission)
             })
         }
+
+        InputMode::RenameSession(old_name) => {
+            handle_key_input(app, key, move |app, new_name| {
+                app.input_mode = InputMode::Normal;
+                if new_name.trim() == old_name {
+                    app.status_message = Some("(no change)".to_string());
+                    return Action::None;
+                }
+                Action::RenameSession { old: old_name.clone(), new: new_name }
+            })
+        }
     }
 }
 
@@ -245,7 +258,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
                 Tab::Monitor => app.select_monitor_next(),
-                Tab::Settings | Tab::Help => {}
+                Tab::Settings => app.select_settings_next(),
+                Tab::Help => {}
             }
             Action::None
         }
@@ -255,7 +269,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Monitor => app.select_monitor_prev(),
-                Tab::Settings | Tab::Help => {}
+                Tab::Settings => app.select_settings_prev(),
+                Tab::Help => {}
             }
             Action::None
         }
@@ -325,12 +340,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        KeyCode::Char('x') => {
+        // Kill — both lowercase x and uppercase X work
+        KeyCode::Char('x') | KeyCode::Char('X') => {
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
                 } else {
-                    app.status_message = Some("Session is protected (press . to unprotect)".to_string());
+                    app.status_message = Some("Session is protected (press . to unlock)".to_string());
                     Action::None
                 }
             } else {
@@ -338,7 +354,21 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
-        KeyCode::Char('r') => Action::Refresh,
+        // Rename selected session
+        KeyCode::Char('r') | KeyCode::Char('R') => {
+            if let Some(entry) = app.selected_session() {
+                let old = entry.session.name.clone();
+                app.input_buffer = old.clone();
+                app.input_mode = InputMode::RenameSession(old.clone());
+                app.status_message = Some(format!("Rename '{}' (Enter to confirm, Esc to cancel)", old));
+            } else {
+                app.status_message = Some("No session selected".to_string());
+            }
+            Action::None
+        }
+
+        // Refresh
+        KeyCode::F(5) => Action::Refresh,
 
         KeyCode::Char('.') => {
             if let Some(entry) = app.sessions.get_mut(app.selected) {
