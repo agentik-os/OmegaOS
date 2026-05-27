@@ -494,6 +494,7 @@ async fn run_tui_loop(
             let evt = crossterm::event::read()?;
             let selected_before = app.selected;
             let tab_before = app.tab;
+            let detail_focused_before = app.detail_focused;
             match handle_event(app, evt) {
                 Action::Quit => break,
                 Action::AttachSession(name) => {
@@ -842,7 +843,12 @@ async fn run_tui_loop(
                 Action::None => {}
             }
 
-            // Immediate preview refresh when user changes selection or tab
+            // Auto-reframe: clear terminal when tab/focus changes so frames
+            // never stay corrupted after resize or navigation
+            if app.tab != tab_before || app.detail_focused != detail_focused_before {
+                terminal.clear()?;
+            }
+
             if app.selected != selected_before || app.tab != tab_before {
                 let _ = app.refresh_preview().await;
             }

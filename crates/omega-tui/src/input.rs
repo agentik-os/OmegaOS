@@ -56,6 +56,7 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
         Event::Key(key) => handle_key(app, key),
         Event::Paste(text) => handle_paste(app, text),
         Event::Mouse(mouse) => handle_mouse(app, mouse),
+        Event::Resize(_, _) => Action::ForceRedraw,
         _ => Action::None,
     }
 }
