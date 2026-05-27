@@ -1921,28 +1921,23 @@ async fn cmd_pdf(
 }
 
 fn find_pdfgen_dir(exe_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf> {
-    // 1. Check relative to the OmegaOS repo (dev mode)
-    let candidates = [
-        std::path::PathBuf::from("tools/pdfgen"),
-        std::path::PathBuf::from("/home/hacker/VibeCoding/work/OmegaOS/tools/pdfgen"),
-    ];
-    for c in &candidates {
-        if c.join("bin/pdfgen.ts").exists() {
-            return Ok(c.clone());
-        }
+    // 1. ~/.omega/pdfgen (installed location — preferred)
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let user_dir = home.join(".omega/pdfgen");
+    if user_dir.join("bin/pdfgen.ts").exists() {
+        return Ok(user_dir);
     }
-    // 2. Check relative to binary
+    // 2. Relative to the OmegaOS repo (dev mode)
+    let cwd = std::path::PathBuf::from("tools/pdfgen");
+    if cwd.join("bin/pdfgen.ts").exists() {
+        return Ok(cwd);
+    }
+    // 3. Relative to binary
     if let Some(dir) = exe_dir {
         let rel = dir.join("../tools/pdfgen");
         if rel.join("bin/pdfgen.ts").exists() {
             return Ok(rel);
         }
-    }
-    // 3. Check ~/.omega/pdfgen (installed location)
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let user_dir = home.join(".omega/pdfgen");
-    if user_dir.join("bin/pdfgen.ts").exists() {
-        return Ok(user_dir);
     }
     anyhow::bail!(
         "PDF generator not found. Expected at tools/pdfgen/ or ~/.omega/pdfgen/.\n\

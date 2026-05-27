@@ -1837,86 +1837,143 @@ fn render_info_rules() -> Vec<Line<'static>> {
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {
-    let help_text = vec![
-        "",
-        "  OmegaOS — Agentic Terminal Operating System",
-        "",
-        "  Tabs:",
-        "    ← / →              Switch tabs (Sessions | Menu | Monitor | Settings | Help)",
-        "    Shift+Tab          Same as ←",
-        "",
-        "  Tab is per-tab:  each menu has its own Tab semantics.",
-        "    Sessions     Tab toggles list↔chat. Tab-Tab → chat FULLSCREEN.",
-        "    Settings     Tab toggles list↔detail. Tab-Tab → detail FULLSCREEN.",
-        "    Info         Tab toggles list↔detail. Tab-Tab → detail FULLSCREEN.",
-        "    Monitor      Tab focuses scrollable detail. Tab-Tab → FULLSCREEN.",
-        "    Menu/Help    Tab moves to the next top-level tab.",
-        "",
-        "  Sessions tab:",
-        "    ↑ / ↓ or j/k       Navigate sessions",
-        "    Enter              Attach to selected session (rmux switch-client)",
-        "    Tab                Focus the chat pane (talk to selected session)",
-        "    Tab-Tab (rapide)   Toggle chat FULLSCREEN (hides list)",
-        "    Esc (in chat)      Back to session list",
-        "    r / R              Rename selected session",
-        "    x / X              Kill selected session (skipped if locked)",
-        "    .                  Toggle lock/protection",
-        "    F5                 Refresh session list + preview",
-        "    PageUp / PageDown  Scroll the preview pane",
-        "    Home / End         Jump to top / bottom of preview (tail-follow on at End)",
-        "",
-        "  Menu tab — direct agent launchers:",
-        "    [c] New Claude     [C] New Codex      [g] New Gemini",
-        "    [p] New Pi         [G] New GLM        [t] New Terminal",
-        "    [d] Dispatch oracle (project + mission)",
-        "    [.] Toggle lock    [x] Kill selected",
-        "",
-        "  Monitor tab — billing / accounts / Telegram:",
-        "    ↑ / ↓ + Enter      Run the highlighted action",
-        "    [L] Login Claude   (opens session with `claude /login`)",
-        "    [T] Telegram setup [D] Telegram disconnect",
-        "    [B] Refresh billing now",
-        "",
-        "  Settings tab — provider configuration:",
-        "    ↑ / ↓              Browse sections (General / Claude / Codex / ... / Telegram)",
-        "    Per-provider:      model, API key (masked), CLI availability ✓/✗",
-        "    Edit via CLI:      omega config set claude.model opus",
-        "                       omega config set codex.api_key sk-…",
-        "",
-        "  Global keys (everywhere):",
-        "    Option+Z, Option+/, Ctrl+Space",
-        "      → Pop the OmegaOS menu from ANY rmux session (install with",
-        "        `omega install-bindings`).",
-        "    q                  Quit OmegaOS TUI",
-        "",
-        "  CLI cheatsheet (outside the TUI):",
-        "    omega                       Launch TUI",
-        "    omega master / omega aisb   Attach the AISB Master",
-        "    omega list                  List all sessions",
-        "    omega monitor               Billing / accounts / bot status",
-        "    omega orchestrate <P> <M>   Full mission pipeline",
-        "    omega telegram setup …      Bot setup with --user-id allow-list",
-        "    omega config set …          Provider config (propagates to sessions)",
-        "    omega projects              Auto-discover projects under $HOME",
-        "    omega install-bindings      Install Option+Z global bindings",
-        "",
-        "  Status Icons:",
-        "    ★  Master AISB      ◆  Oracle      ●  Worker      ⌂  Home      ⚙  System",
-        "    §  Locked / protected (immune to `x` kill)",
-        "",
+    let cy = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+    let yl = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+    let wh = Style::default().fg(Color::White);
+    let gr = Style::default().fg(Color::Gray);
+    let mg = Style::default().fg(Color::Magenta);
+
+    let section = |title: &str| -> Line<'static> {
+        Line::from(Span::styled(format!("  ─── {} ───", title), yl))
+    };
+    let key = |k: &str, desc: &str| -> Line<'static> {
+        Line::from(vec![
+            Span::styled(format!("    {:22}", k), cy),
+            Span::styled(desc.to_string(), wh),
+        ])
+    };
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Ω  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("OmegaOS", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("  —  Agentic Terminal Operating System", gr),
+        ]),
+        Line::from(""),
+
+        section("Navigation"),
+        key("← / →", "Switch tabs"),
+        key("Shift+Tab", "Previous tab"),
+        key("Ctrl+L", "Redraw screen (fix corrupted view)"),
+        key("Esc", "Back (detail → list → Sessions → quit)"),
+        key("q", "Quit OmegaOS"),
+        Line::from(""),
+
+        section("Tab Behavior (Enter & Tab)"),
+        Line::from(vec![
+            Span::styled("    Tab", cy),
+            Span::styled("  = focus right panel  ", wh),
+            Span::styled("Tab-Tab", cy),
+            Span::styled("  = fullscreen  ", wh),
+            Span::styled("Esc", cy),
+            Span::styled("  = back", wh),
+        ]),
+        Line::from(Span::styled("    Same pattern on Sessions, Settings, Info, Monitor.", gr)),
+        Line::from(""),
+
+        section("Sessions"),
+        key("↑ / ↓  or  j / k", "Navigate sessions"),
+        key("Enter / Tab", "Focus chat (talk to agent)"),
+        key("Tab-Tab", "Chat fullscreen (hide list)"),
+        key("r  /  R", "Rename selected session"),
+        key("x  /  X", "Kill session (skip if locked)"),
+        key(".", "Toggle lock/protection"),
+        key("PgUp / PgDn", "Scroll preview"),
+        key("Home / End", "Top / bottom (tail-follow)"),
+        Line::from(""),
+
+        section("Menu — Agent Launchers"),
     ];
 
-    let paragraph = Paragraph::new(
-        help_text
-            .into_iter()
-            .map(|s| Line::from(s.to_string()))
-            .collect::<Vec<_>>(),
-    )
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Help "),
-    );
+    let launchers = [
+        ("c", "Claude"), ("C", "Codex"), ("g", "Gemini"),
+        ("p", "Pi"), ("h", "Hermes"), ("G", "GLM"), ("t", "Terminal"),
+    ];
+    let mut row = vec![Span::raw("    ")];
+    for (i, (k, name)) in launchers.iter().enumerate() {
+        row.push(Span::styled(format!("[{}]", k), yl));
+        row.push(Span::styled(format!(" {:10}", name), wh));
+        if (i + 1) % 4 == 0 {
+            lines.push(Line::from(std::mem::take(&mut row)));
+            row.push(Span::raw("    "));
+        }
+    }
+    if row.len() > 1 { lines.push(Line::from(row)); }
+
+    lines.extend([
+        key("d", "Dispatch oracle → project + mission"),
+        key("r", "Refresh sessions"),
+        Line::from(""),
+
+        section("Monitor"),
+        key("↑ / ↓ + Enter", "Run highlighted action"),
+        key("L", "Login Claude (OAuth)"),
+        key("T / D", "Telegram setup / disconnect"),
+        key("B", "Refresh billing"),
+        Line::from(""),
+
+        section("Settings"),
+        key("↑ / ↓", "Browse sections"),
+        key("Enter / Tab", "Focus detail panel → edit fields"),
+        key("Enter (on field)", "Activate (install/edit/toggle)"),
+        Line::from(""),
+
+        section("CLI Commands"),
+    ]);
+
+    let cmds = [
+        ("omega", "Launch TUI"),
+        ("omega master", "Attach AISB Master"),
+        ("omega list", "List sessions"),
+        ("omega pdf --demo --send", "Generate + send PDF to Telegram"),
+        ("omega orchestrate <P> <M>", "Full mission pipeline"),
+        ("omega telegram setup …", "Bot setup"),
+        ("omega config set …", "Provider config"),
+        ("omega projects", "Auto-discover projects"),
+        ("omega install <agent>", "Install an agent CLI"),
+    ];
+    for (cmd, desc) in cmds {
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(format!("{:30}", cmd), mg),
+            Span::styled(desc.to_string(), gr),
+        ]));
+    }
+
+    lines.extend([
+        Line::from(""),
+        section("Status Icons"),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled("★ ", cy), Span::styled("Master   ", gr),
+            Span::styled("◆ ", cy), Span::styled("Oracle   ", gr),
+            Span::styled("● ", cy), Span::styled("Worker   ", gr),
+            Span::styled("⌂ ", cy), Span::styled("Home   ", gr),
+            Span::styled("⚙ ", cy), Span::styled("System   ", gr),
+            Span::styled("§ ", yl), Span::styled("Locked", gr),
+        ]),
+        Line::from(""),
+    ]);
+
+    let paragraph = Paragraph::new(lines)
+        .scroll((0, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Help — OmegaOS ")
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
 
     frame.render_widget(paragraph, area);
 }

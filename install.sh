@@ -135,6 +135,17 @@ cp agents/*.md "$AGENTS_DIR/" 2>/dev/null || true
 cp -r agents/aisb/*.md "$AGENTS_DIR/aisb/" 2>/dev/null || true
 ok "Agent templates installed to $AGENTS_DIR/"
 
+# Install PDF generator (templates + engine — deps installed on first use)
+PDFGEN_SRC="$OMEGA_SRC/tools/pdfgen"
+PDFGEN_DST="$OMEGA_DIR/pdfgen"
+if [[ -d "$PDFGEN_SRC" ]]; then
+    mkdir -p "$PDFGEN_DST"
+    rsync -a --exclude='node_modules' --exclude='.next' --exclude='output' "$PDFGEN_SRC/" "$PDFGEN_DST/"
+    ok "PDF generator installed to $PDFGEN_DST/ (deps auto-install on first 'omega pdf')"
+else
+    info "PDF generator source not found — skipping (can be added later)"
+fi
+
 # Install OPTIONAL rmux keybinding config — user has to opt-in via:
 #   omega install-bindings
 mkdir -p "$OMEGA_DIR"
