@@ -219,38 +219,45 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 /// Remove ANSI escape codes and terminal artifacts from pane capture.
 fn clean_terminal_output(text: &str) -> String {
     let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap_or_else(|_| {
-        regex::Regex::new(r"$^").unwrap() // fallback no-match
+        regex::Regex::new(r"$^").unwrap()
     });
-    let lines: Vec<&str> = text
+    let stripped = ansi_re.replace_all(text, "");
+    let lines: Vec<&str> = stripped
         .lines()
         .map(|l| l.trim_end())
         .filter(|l| {
-            // Skip common terminal chrome
             if l.is_empty() { return false; }
-            if l.starts_with("❯ ") { return false; } // prompt lines
-            if l.starts_with("⎿") { return false; } // Claude meta lines
-            if l.contains("bypass permissions") { return false; }
-            if l.contains("shift+tab to cycle") { return false; }
-            if l.contains("← for agents") { return false; }
-            if l.contains("esc to interrupt") { return false; }
-            if l.contains("Press up to edit") { return false; }
-            if l.starts_with("────") { return false; } // separator lines
-            if l.starts_with("━━━") { return false; }
-            if l.contains("skills available") { return false; }
-            if l.contains("Cultivating") || l.contains("Brewing") || l.contains("Brewed") {
-                return false;
-            }
+            let t = l.trim();
+            // Claude prompt / status chrome
+            if t.starts_with("❯") { return false; }
+            if t.starts_with("⎿") { return false; }
+            if t.starts_with("●") { return false; }
+            if t.starts_with("·") { return false; }
+            if t.starts_with("✻") { return false; }
+            // Claude activity indicators
+            if t.contains("Cultivating") { return false; }
+            if t.contains("Brewing") || t.contains("Brewed") { return false; }
+            if t.contains("Crunched") || t.contains("Crunching") { return false; }
+            if t.contains("Pontificating") { return false; }
+            if t.contains("Thinking") && t.len() < 30 { return false; }
+            if t.contains("skills available") { return false; }
+            // Terminal chrome
+            if t.contains("bypass permissions") { return false; }
+            if t.contains("shift+tab to cycle") { return false; }
+            if t.contains("← for agents") { return false; }
+            if t.contains("esc to interrupt") { return false; }
+            if t.contains("Press up to edit") { return false; }
+            if t.chars().all(|c| c == '─' || c == '━' || c == ' ') { return false; }
             true
         })
         .collect();
-    let cleaned = ansi_re.replace_all(&lines.join("\n"), "").to_string();
-    cleaned.trim().to_string()
+    lines.join("\n").trim().to_string()
 }
 
 /// Format the agent's response for Telegram with HTML.
+/// No prefix — the user knows they're talking to the agent.
 fn format_agent_response(text: &str) -> String {
     let escaped = escape_html(text);
-    // If it looks like code (has indentation, brackets, etc.), wrap in <pre>
     let code_lines = escaped
         .lines()
         .filter(|l| l.starts_with("  ") || l.starts_with("\t") || l.contains("fn ") || l.contains("{}"))
@@ -259,14 +266,8 @@ fn format_agent_response(text: &str) -> String {
 
     if code_lines as f32 / total_lines as f32 > 0.5 {
         format!("<pre>{}</pre>", escaped)
-    } else if escaped.len() > 500 {
-        // Long response → blockquote with header
-        format!(
-            "🤖 <b>Ω AISB</b>\n━━━━━━━━━━\n<blockquote>{}</blockquote>",
-            escaped
-        )
     } else {
-        format!("🤖 <b>Ω</b>  {}", escaped)
+        escaped
     }
 }
 
