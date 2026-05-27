@@ -157,6 +157,7 @@ pub struct Outcome {
     pub status: OutcomeStatus,
     pub workers: Vec<WorkerResult>,
     pub gate: Option<crate::gate::GateResult>,
+    pub audit_recommendations: Vec<String>,
     pub started_at: DateTime<Utc>,
     pub finished_at: DateTime<Utc>,
     pub summary: String,

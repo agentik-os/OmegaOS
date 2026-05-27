@@ -124,6 +124,7 @@ impl Orchestrator {
                         status: OutcomeStatus::Failed,
                         workers: Vec::new(),
                         gate: None,
+                        audit_recommendations: Vec::new(),
                         started_at,
                         finished_at: Utc::now(),
                         summary: format!("Dispatch failed: {}", e),
@@ -191,6 +192,23 @@ impl Orchestrator {
             None
         };
 
+        // 6.5 Select and record audit recommendations for the oracle to dispatch
+        let modified_files: Vec<String> = results
+            .iter()
+            .flat_map(|r| r.commit.as_deref().map(|_| r.task_id.clone()))
+            .collect();
+        let audit_recommendations = crate::audit::select_audits(&mission.text, &modified_files)
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        if !audit_recommendations.is_empty() {
+            tracing::info!(
+                mission_id = %mission.id.0,
+                audits = ?audit_recommendations,
+                "Audit recommendations selected"
+            );
+        }
+
         // 7. Build final outcome
         let final_status = match (&gate, status) {
             (Some(g), OutcomeStatus::Success) if !g.overall_pass => OutcomeStatus::PartialSuccess,
@@ -204,6 +222,7 @@ impl Orchestrator {
             status: final_status,
             workers: results,
             gate,
+            audit_recommendations,
             started_at,
             finished_at: Utc::now(),
             summary,

@@ -3,10 +3,10 @@
 //! Mirrors the live system's oracle-ship.sh as typed Rust with
 //! async steps, freeze-on-failure, and structured results.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

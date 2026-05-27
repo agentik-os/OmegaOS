@@ -50,6 +50,8 @@ pub struct GateResult {
     pub consensus_pass: bool,
     pub adversarial_pass: bool,
     pub regression_pass: bool,
+    pub audit_results: Vec<crate::audit::AuditResult>,
+    pub audit_pass: bool,
     pub overall_pass: bool,
     pub score: f32,
     pub details: GateDetails,
@@ -155,7 +157,10 @@ impl GateResult {
             0.0
         };
 
-        let overall_pass = rubric_pass && consensus_pass && adversarial_pass && regression_pass;
+        // audit_pass defaults to true (no audits run yet at gate-evaluate time);
+        // the orchestrator populates audit_results post-gate and can flip this.
+        let audit_pass = true;
+        let overall_pass = rubric_pass && consensus_pass && adversarial_pass && regression_pass && audit_pass;
 
         Self {
             oracle: String::new(),
@@ -164,6 +169,8 @@ impl GateResult {
             consensus_pass,
             adversarial_pass,
             regression_pass,
+            audit_results: Vec::new(),
+            audit_pass,
             overall_pass,
             score,
             details: GateDetails {

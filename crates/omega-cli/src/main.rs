@@ -108,6 +108,12 @@ enum Commands {
         action: RulesAction,
     },
 
+    /// Manage Quality Arsenal audits (17 Gestalt-Popper forensic audits)
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+
     /// Sync OmegaOS config into all LLM config directories (symlinks)
     Sync,
 
@@ -323,6 +329,7 @@ async fn main() -> Result<()> {
             cmd_pdf(&template, data.as_deref(), demo, &theme, &out, send, caption.as_deref()).await
         }
         Some(Commands::Rules { action }) => cmd_rules(action),
+        Some(Commands::Audit { action }) => cmd_audit(action),
         Some(Commands::Sync) => cmd_sync(),
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
@@ -1149,6 +1156,30 @@ enum RulesAction {
     List,
     /// Export compiled rules to ~/.omega/rules/ as individual .md files
     Export,
+}
+
+#[derive(Subcommand)]
+enum AuditAction {
+    /// List all 17 Quality Arsenal audits with metadata
+    List,
+    /// Show which audits would be selected for a mission
+    Select {
+        /// Mission text to match against
+        mission: String,
+    },
+    /// Show audit results for an oracle/mission
+    Results {
+        /// Oracle session name
+        oracle: String,
+    },
+    /// Dispatch an audit worker
+    Run {
+        /// Audit id (e.g. codeaudit, secaudit)
+        audit_id: String,
+        /// Working directory for the audit
+        #[arg(short, long, default_value = ".")]
+        dir: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -2222,6 +2253,95 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
                 println!("  ✓ {}", fname);
             }
             println!("\n{} rules exported to {}", all.len(), rules_dir.display());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_audit(action: AuditAction) -> Result<()> {
+    use omega_core::audit;
+    match action {
+        AuditAction::List => {
+            let all = audit::all_audits();
+            println!("Quality Arsenal — {} forensic audits\n", all.len());
+            println!(
+                "  {:<18} {:<24} {:<8} {:<6} {:<6} {}",
+                "ID", "NAME", "DOMAIN", "PHASES", "MAX", "READ-ONLY"
+            );
+            println!("  {}", "─".repeat(80));
+            for a in &all {
+                println!(
+                    "  {:<18} {:<24} {:<8} {:<6} {:<6} {}",
+                    a.id,
+                    a.name,
+                    a.domain.label(),
+                    a.phases,
+                    format!("/{}", a.max_score),
+                    if a.read_only { "yes" } else { "" }
+                );
+            }
+            println!("\nUsage:");
+            println!("  omega audit select \"fix the auth flow\"");
+            println!("  omega audit run codeaudit --dir ~/project");
+        }
+        AuditAction::Select { mission } => {
+            let selected = audit::select_audits(&mission, &[]);
+            println!("Mission: {}\n", mission);
+            if selected.is_empty() {
+                println!("No audits matched.");
+            } else {
+                println!("Selected {} audit(s):\n", selected.len());
+                for id in &selected {
+                    if let Some(a) = audit::find_audit(id) {
+                        println!(
+                            "  /{:<18} {} — {}",
+                            a.id, a.domain.label(), a.description
+                        );
+                    }
+                }
+            }
+        }
+        AuditAction::Results { oracle } => {
+            let config = OmegaConfig::load().unwrap_or_default();
+            let path = config.state_dir.join(format!("{}.audit-report.json", oracle));
+            if path.exists() {
+                let content = std::fs::read_to_string(&path)?;
+                let report: audit::AuditReport = serde_json::from_str(&content)?;
+                println!("Audit Report for: {}\n", report.mission_id);
+                println!(
+                    "  Overall: {:.1}/100 ({:?})\n",
+                    report.overall_score, report.overall_verdict
+                );
+                for r in &report.audits {
+                    println!(
+                        "  {:<18} {:.1}/100  {:?}  (raw {:.0}/{})",
+                        r.audit_id, r.normalized_score, r.verdict, r.raw_score, r.max_score
+                    );
+                }
+            } else {
+                println!("No audit results found for {}.", oracle);
+                println!("Results are stored at: {}", path.display());
+            }
+        }
+        AuditAction::Run { audit_id, dir } => {
+            let skill = audit::find_audit(&audit_id).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Unknown audit: {}. Run `omega audit list` to see available audits.",
+                    audit_id
+                )
+            })?;
+            println!("◆ Audit: {} ({})", skill.name, skill.domain.label());
+            println!("  Phases: {}, Max score: /{}", skill.phases, skill.max_score);
+            println!("  Skill:  {}", skill.skill_path);
+            println!("  Dir:    {}", dir);
+            if skill.read_only {
+                println!("  Mode:   READ-ONLY (proposes, never edits)");
+            }
+            println!("\nTo dispatch as a worker session:");
+            println!(
+                "  omega spawn-worker {0} \"/{0} --dir={1}\" --dir {1}",
+                audit_id, dir
+            );
         }
     }
     Ok(())
