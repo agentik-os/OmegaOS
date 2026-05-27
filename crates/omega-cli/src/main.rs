@@ -448,7 +448,7 @@ async fn run_tui_loop(
     let mut last_refresh = std::time::Instant::now();
 
     loop {
-        terminal.draw(|f| draw(f, app))?;
+        terminal.draw(|f| draw(f, app))?; // app is &mut, allows auto-scroll
 
         if crossterm::event::poll(tick_rate)? {
             let evt = crossterm::event::read()?;

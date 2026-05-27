@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -291,7 +291,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
-fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let titles = vec!["Sessions", "Menu", "Monitor", "Settings", "Info", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
@@ -318,7 +318,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(tabs, area);
 }
 
-fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_focused = app.session_focus == SessionFocus::List;
     let chat_focused = matches!(
         app.session_focus,
@@ -404,7 +404,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 
 /// Render the right column of the Sessions tab (preview + optional chat input).
 /// Used both in split layout and chat-fullscreen mode.
-fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: bool) {
+fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focused: bool) {
     let fullscreen = app.session_focus == SessionFocus::ChatFullscreen;
 
     let preview_title = match app.selected_session() {
@@ -604,7 +604,7 @@ fn menu_group(action: &MenuAction) -> &'static str {
     }
 }
 
-fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
     // Build items with section headers so the menu reads as grouped sections.
     let mut items: Vec<ListItem> = Vec::new();
     let mut last_group: Option<&'static str> = None;
@@ -671,7 +671,7 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
     use omega_core::monitor;
 
     let snap = monitor::UsageSnapshot::read().ok().flatten();
@@ -898,6 +898,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
         "  ── Actions  (↑/↓ navigate, Enter to run, or press letter) ──",
         Style::default().fg(Color::Yellow),
     )));
+    let monitor_actions_start_line = lines.len();
     for (i, action) in MonitorAction::all().iter().enumerate() {
         let selected = i == app.monitor_selected;
         let prefix = if selected { "  ▶ " } else { "    " };
@@ -923,6 +924,17 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
         "  This tab refreshes every 5s. Use ↑/↓ + Enter or the letter shortcut.",
         Style::default().fg(Color::Gray),
     )));
+
+    // Auto-scroll to keep selected monitor action visible
+    if !app.detail_focused {
+        let action_line = (monitor_actions_start_line + app.monitor_selected) as u16;
+        let panel_h = area.height.saturating_sub(2);
+        if action_line < app.detail_scroll {
+            app.detail_scroll = action_line.saturating_sub(1);
+        } else if action_line >= app.detail_scroll + panel_h {
+            app.detail_scroll = action_line.saturating_sub(panel_h.saturating_sub(2));
+        }
+    }
 
     let title = if app.detail_fullscreen {
         " Monitor  [FULLSCREEN — Tab/Tab-Tab to exit] ".to_string()
@@ -1027,9 +1039,26 @@ fn short_num(n: u64) -> String {
     }
 }
 
-fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     let providers = omega_core::providers::ProvidersConfig::load();
-    let lines = render_settings_detail(app, &providers);
+    let (lines, selected_field_line) = render_settings_detail(app, &providers);
+
+    // Auto-scroll to keep the selected field visible
+    if app.detail_focused {
+        let panel_height = if app.detail_fullscreen {
+            area.height.saturating_sub(2) // borders
+        } else {
+            // 75% of area (detail panel) minus borders
+            (area.width as f32 * 0.75) as u16; // dummy, real height is area.height
+            area.height.saturating_sub(2)
+        };
+        let field_line = selected_field_line as u16;
+        if field_line < app.detail_scroll {
+            app.detail_scroll = field_line.saturating_sub(1);
+        } else if field_line >= app.detail_scroll + panel_height {
+            app.detail_scroll = field_line.saturating_sub(panel_height.saturating_sub(2));
+        }
+    }
 
     // Fullscreen detail mode: skip the left list, detail takes 100% width
     if app.detail_fullscreen {
@@ -1120,13 +1149,15 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, split[1]);
 }
 
+/// Returns (lines, selected_field_line) — the line index where the selected field starts.
 fn render_settings_detail(
     app: &App,
     providers: &omega_core::providers::ProvidersConfig,
-) -> Vec<Line<'static>> {
+) -> (Vec<Line<'static>>, usize) {
     use crate::app::{fields_for_section, SettingsField};
     let fields = fields_for_section(app.selected_settings_section(), providers, &app.config);
     let mut lines: Vec<Line> = vec![Line::from("")];
+    let mut selected_line: usize = 0;
 
     let detail_active = app.detail_focused;
 
@@ -1146,6 +1177,7 @@ fn render_settings_detail(
 
     for (i, field) in fields.iter().enumerate() {
         let is_selected = detail_active && i == app.settings_field_selected;
+        if is_selected { selected_line = lines.len(); }
         let prefix = if is_selected { "  ▶ " } else { "    " };
         match field {
             SettingsField::Action { label, command, .. } => {
@@ -1249,7 +1281,7 @@ fn render_settings_detail(
         "  Config files: ~/.omega/config.toml  ~/.omega/providers.toml",
         Style::default().fg(Color::Gray),
     )));
-    return lines;
+    return (lines, selected_line);
     #[allow(unreachable_code)]
     {
     let mut lines: Vec<Line> = vec![Line::from("")];
@@ -1431,7 +1463,7 @@ fn render_settings_detail(
         Style::default().fg(Color::Gray),
     )));
 
-    lines
+    (lines, 0)
     }
 }
 
@@ -1482,13 +1514,24 @@ fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent
     ]));
 }
 
-fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
-    let lines = match app.selected_info_section() {
+fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
+    let (lines, scroll_target) = match app.selected_info_section() {
         InfoSection::AisbAgents => render_info_aisb_agents(app),
-        InfoSection::Oracle => render_info_oracle(),
-        InfoSection::Workers => render_info_workers(),
-        InfoSection::Rules => render_info_rules(),
+        InfoSection::Oracle => { let l = render_info_oracle(); (l, 0) }
+        InfoSection::Workers => { let l = render_info_workers(); (l, 0) }
+        InfoSection::Rules => { let l = render_info_rules(); (l, 0) }
     };
+
+    // Auto-scroll to keep selected item visible (agents list, etc.)
+    if app.detail_focused && scroll_target > 0 {
+        let panel_h = area.height.saturating_sub(2);
+        let target = scroll_target as u16;
+        if target < app.detail_scroll {
+            app.detail_scroll = target.saturating_sub(1);
+        } else if target >= app.detail_scroll + panel_h {
+            app.detail_scroll = target.saturating_sub(panel_h.saturating_sub(2));
+        }
+    }
 
     // Fullscreen detail
     if app.detail_fullscreen {
@@ -1575,7 +1618,8 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, split[1]);
 }
 
-fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
+/// Returns (lines, selected_agent_line) for auto-scroll.
+fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     use omega_core::aisb_agents::AisbAgent;
     let agents = AisbAgent::all();
     let selected_def = agents[app.info_agent_selected].definition();
@@ -1593,10 +1637,12 @@ fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
     ];
 
+    let mut selected_agent_line: usize = 4;
     // Compact list
     for (i, agent) in agents.iter().enumerate() {
         let def = agent.definition();
         let selected = i == app.info_agent_selected;
+        if selected { selected_agent_line = lines.len(); }
         let prefix = if selected { "▶ " } else { "  " };
         let name_style = if selected {
             Style::default()
@@ -1642,7 +1688,7 @@ fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
     for r in selected_def.responsibilities {
         lines.push(Line::from(format!("    • {}", r)));
     }
-    lines
+    (lines, selected_agent_line)
 }
 
 fn render_info_oracle() -> Vec<Line<'static>> {
@@ -1875,7 +1921,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(paragraph, area);
 }
 
-fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     // Input mode: show a prompt line (no stats)
     if !matches!(app.input_mode, InputMode::Normal) {
         let (prompt, value) = match &app.input_mode {
