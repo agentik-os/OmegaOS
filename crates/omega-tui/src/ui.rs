@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, SessionEntry, SessionFocus, Tab};
+use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -346,7 +346,7 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(list, area);
 }
 
-fn draw_monitor(frame: &mut Frame, _app: &App, area: Rect) {
+fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     use omega_core::monitor;
 
     let snap = monitor::UsageSnapshot::read().ok().flatten();
@@ -496,26 +496,34 @@ fn draw_monitor(frame: &mut Frame, _app: &App, area: Rect) {
 
     lines.push(Line::from(""));
 
-    // ── Actions ─────────────────────────────────────────────────────────────
+    // ── Actions (arrow-navigable + letter shortcuts) ───────────────────────
     lines.push(Line::from(Span::styled(
-        "  ── Actions ──",
+        "  ── Actions  (↑/↓ navigate, Enter to run, or press letter) ──",
         Style::default().fg(Color::Yellow),
     )));
-    lines.push(Line::from(vec![
-        Span::styled("    [L]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  Login / re-auth Claude       (opens a session running 'claude /login')"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    [T]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  Set up Omega Telegram bot    (creates ~/.omega/telegram.toml)"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    [B]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        Span::raw("  Refresh billing now          (runs ~/.aisb/lib/usage-monitor.sh in background)"),
-    ]));
+    for (i, action) in MonitorAction::all().iter().enumerate() {
+        let selected = i == app.monitor_selected;
+        let prefix = if selected { "  ▶ " } else { "    " };
+        let label_style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("[{}] ", action.shortcut()),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(action.label(), label_style),
+        ]));
+    }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  This tab refreshes every 5s. Press any action key to act.",
+        "  This tab refreshes every 5s. Use ↑/↓ + Enter or the letter shortcut.",
         Style::default().fg(Color::DarkGray),
     )));
 

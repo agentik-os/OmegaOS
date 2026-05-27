@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, SessionFocus, Tab};
+use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionFocus, Tab};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 pub enum Action {
@@ -25,6 +25,8 @@ pub enum Action {
     RefreshBilling,
     /// Open the Telegram bot setup flow.
     TelegramSetup,
+    /// Disconnect the currently active Omega Telegram bot.
+    TelegramDisconnect,
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -39,22 +41,13 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     match mode {
         InputMode::Normal => handle_key_normal(app, key),
 
-        // Direct-agent flow: step 1 — type name, agent already chosen
+        // Direct-agent flow: type name → create + chat focus (NO prompt step)
         InputMode::NewNamedSession(agent_name) => {
             handle_key_input(app, key, move |app, name| {
                 let agent = omega_core::agents::Agent::from_name(&agent_name)
                     .unwrap_or(omega_core::agents::Agent::Shell);
-                // Terminal/Shell: skip prompt step, create immediately
-                if matches!(agent, omega_core::agents::Agent::Shell) {
-                    app.input_mode = InputMode::Normal;
-                    return Action::CreateSessionWithAgent { name, agent, prompt: None };
-                }
-                app.input_buffer = String::new();
-                app.input_mode = InputMode::NewSessionPromptDirect(name, agent_name.clone());
-                app.status_message = Some(
-                    "Optional initial prompt (Enter to launch, Esc to skip)".to_string(),
-                );
-                Action::None
+                app.input_mode = InputMode::Normal;
+                Action::CreateSessionWithAgent { name, agent, prompt: None }
             })
         }
 
@@ -251,7 +244,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
-                Tab::Monitor | Tab::Settings | Tab::Help => {}
+                Tab::Monitor => app.select_monitor_next(),
+                Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -260,7 +254,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
-                Tab::Monitor | Tab::Settings | Tab::Help => {}
+                Tab::Monitor => app.select_monitor_prev(),
+                Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -275,12 +270,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
-            Tab::Monitor | Tab::Settings | Tab::Help => Action::None,
+            Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
+            Tab::Settings | Tab::Help => Action::None,
         },
 
-        // Monitor tab actions
+        // Monitor tab letter shortcuts
         KeyCode::Char('L') if app.tab == Tab::Monitor => Action::LoginClaude,
         KeyCode::Char('T') if app.tab == Tab::Monitor => Action::TelegramSetup,
+        KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
 
         // Shortcut keys (work in any tab) — direct agent launchers
@@ -377,6 +374,15 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
     }
 }
 
+fn execute_monitor_action(action: MonitorAction) -> Action {
+    match action {
+        MonitorAction::Login => Action::LoginClaude,
+        MonitorAction::TelegramSetup => Action::TelegramSetup,
+        MonitorAction::TelegramDisconnect => Action::TelegramDisconnect,
+        MonitorAction::RefreshBilling => Action::RefreshBilling,
+    }
+}
+
 /// Chat-input mode — typing flows into the selected session's pane via SDK.
 fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     match key.code {
@@ -425,31 +431,19 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
-    // Per-agent direct launchers: auto-generate name, optionally ask for prompt
+    // Per-agent direct launchers — ALL go straight to session creation with
+    // chat focus. No "initial prompt" step. The user talks via the chat input
+    // box once the session is up.
     if let Some(agent) = action.agent() {
-        // Auto-naming enabled by default — generate session name from agent + count
         if app.config.auto_naming {
-            // For Terminal: launch immediately with auto-name, no prompt step
-            if matches!(agent, omega_core::agents::Agent::Shell) {
-                return Action::CreateSessionAutoName { agent, prompt: None };
-            }
-            // For AI agents: skip name input, go straight to optional prompt
-            app.input_buffer = String::new();
-            app.input_mode = InputMode::NewSessionPromptDirect(
-                String::new(), // empty name → auto-generate
-                agent.name().to_string(),
-            );
-            app.status_message = Some(format!(
-                "Optional initial prompt for new {} (Enter to launch, Esc to skip — name auto-generated)",
-                agent.display_name()
-            ));
-            return Action::None;
+            // Fire-and-attach: agent + auto-name + no prompt, then chat focus
+            return Action::CreateSessionAutoName { agent, prompt: None };
         }
-        // Auto-naming disabled → ask for name
+        // Auto-naming disabled → only ask for name (still no prompt step)
         app.input_buffer = String::new();
         app.input_mode = InputMode::NewNamedSession(agent.name().to_string());
         app.status_message = Some(format!(
-            "Session name for new {} session (Enter to continue, Esc to cancel)",
+            "Session name for new {} (Enter to launch, Esc to cancel)",
             agent.display_name()
         ));
         return Action::None;

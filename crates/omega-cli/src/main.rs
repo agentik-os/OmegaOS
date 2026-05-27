@@ -552,8 +552,22 @@ async fn run_tui_loop(
                 }
                 Action::TelegramSetup => {
                     app.status_message = Some(
-                        "Run: omega telegram setup <BOT_TOKEN> <CHAT_ID>  (see Help tab)".to_string(),
+                        "From shell: omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id 12345]".to_string(),
                     );
+                }
+                Action::TelegramDisconnect => {
+                    match omega_core::monitor::OmegaTelegramConfig::disconnect() {
+                        Ok(true) => {
+                            app.status_message = Some("✓ Telegram bot disconnected".to_string());
+                        }
+                        Ok(false) => {
+                            app.status_message =
+                                Some("Nothing to disconnect — no Telegram config present".to_string());
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Disconnect failed: {}", e));
+                        }
+                    }
                 }
                 Action::SendToSession { session, text } => {
                     let mgr = SessionManager::connect().await?;
@@ -775,12 +789,21 @@ fn cmd_projects() -> Result<()> {
 
 #[derive(clap::Subcommand)]
 enum TelegramAction {
-    /// Save bot token + chat id to ~/.omega/telegram.toml
+    /// Save bot token + chat id (+ optional sender allow-list) to ~/.omega/telegram.toml
     Setup {
         bot_token: String,
         chat_id: i64,
+        /// Optional Telegram sender user_ids allowed to talk to the bot.
+        /// When set, every message MUST come from one of these users; others
+        /// are silently dropped. Recommended for shared chats.
+        #[arg(long, value_delimiter = ',')]
+        user_id: Vec<i64>,
+        /// Which rmux session the bot relays messages to (default: aisb-master)
         #[arg(long, default_value = "aisb-master")]
         relay_session: String,
+        /// Human-readable label for this profile (shown in the Monitor tab).
+        #[arg(long, default_value = "")]
+        label: String,
     },
     /// Show current telegram config
     Status,
@@ -788,6 +811,8 @@ enum TelegramAction {
     Enable,
     /// Disable the configured bot
     Disable,
+    /// Remove the Telegram config (~/.omega/telegram.toml) — bot can be re-configured afterwards
+    Disconnect,
     /// Run the bot in foreground (polls Telegram, relays messages to AISB Master)
     Run,
 }
@@ -795,17 +820,28 @@ enum TelegramAction {
 async fn cmd_telegram(action: TelegramAction) -> Result<()> {
     use omega_core::monitor::OmegaTelegramConfig;
     match action {
-        TelegramAction::Setup { bot_token, chat_id, relay_session } => {
+        TelegramAction::Setup { bot_token, chat_id, user_id, relay_session, label } => {
             let cfg = OmegaTelegramConfig {
                 bot_token,
                 chat_id,
+                allow_user_ids: user_id,
                 relay_session,
+                label,
                 enabled: true,
             };
             cfg.write()?;
             println!("✓ Telegram config saved to ~/.omega/telegram.toml");
+            if !cfg.label.is_empty() {
+                println!("  Label:         {}", cfg.label);
+            }
             println!("  Relay session: {}", cfg.relay_session);
             println!("  Chat ID:       {}", cfg.chat_id);
+            if cfg.allow_user_ids.is_empty() {
+                println!("  Sender filter: only chat_id={} accepted", cfg.chat_id);
+                println!("  ⚠ For shared chats, restrict further with --user-id");
+            } else {
+                println!("  Sender filter: only user_ids {:?} accepted", cfg.allow_user_ids);
+            }
             println!("\nRun the bot with:  omega telegram run");
             Ok(())
         }
@@ -813,14 +849,29 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             match OmegaTelegramConfig::read() {
                 Some(cfg) => {
                     println!("Configured: yes");
+                    if !cfg.label.is_empty() {
+                        println!("  Label:         {}", cfg.label);
+                    }
                     println!("  Enabled:       {}", cfg.enabled);
                     println!("  Chat ID:       {}", cfg.chat_id);
                     println!("  Relay session: {}", cfg.relay_session);
+                    if cfg.allow_user_ids.is_empty() {
+                        println!("  Sender filter: chat_id only (any sender in chat)");
+                    } else {
+                        println!("  Sender filter: user_ids {:?}", cfg.allow_user_ids);
+                    }
                 }
                 None => {
                     println!("Not configured.");
-                    println!("Run: omega telegram setup <BOT_TOKEN> <CHAT_ID>");
+                    println!("Run: omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id 1,2,3]");
                 }
+            }
+            Ok(())
+        }
+        TelegramAction::Disconnect => {
+            match OmegaTelegramConfig::disconnect()? {
+                true => println!("✓ Telegram bot disconnected (~/.omega/telegram.toml removed)"),
+                false => println!("(nothing to disconnect — no config present)"),
             }
             Ok(())
         }

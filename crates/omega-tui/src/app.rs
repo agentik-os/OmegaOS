@@ -118,11 +118,47 @@ pub enum SessionFocus {
     Chat,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorAction {
+    Login,
+    TelegramSetup,
+    TelegramDisconnect,
+    RefreshBilling,
+}
+
+impl MonitorAction {
+    pub fn all() -> &'static [MonitorAction] {
+        &[
+            MonitorAction::Login,
+            MonitorAction::TelegramSetup,
+            MonitorAction::TelegramDisconnect,
+            MonitorAction::RefreshBilling,
+        ]
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            MonitorAction::Login => "Login / re-auth Claude   (opens session with `claude /login`)",
+            MonitorAction::TelegramSetup => "Set up Omega Telegram bot   (omega telegram setup …)",
+            MonitorAction::TelegramDisconnect => "Disconnect Telegram bot   (removes ~/.omega/telegram.toml)",
+            MonitorAction::RefreshBilling => "Refresh billing now   (re-runs usage-monitor.sh)",
+        }
+    }
+    pub fn shortcut(&self) -> &'static str {
+        match self {
+            MonitorAction::Login => "L",
+            MonitorAction::TelegramSetup => "T",
+            MonitorAction::TelegramDisconnect => "D",
+            MonitorAction::RefreshBilling => "B",
+        }
+    }
+}
+
 pub struct App {
     pub tab: Tab,
     pub sessions: Vec<SessionEntry>,
     pub selected: usize,
     pub menu_selected: usize,
+    pub monitor_selected: usize,
     pub agent_picker_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -157,6 +193,7 @@ impl App {
             sessions: Vec::new(),
             selected: 0,
             menu_selected: 0,
+            monitor_selected: 0,
             agent_picker_index: 0,
             should_quit: false,
             status_message: None,
@@ -259,6 +296,24 @@ impl App {
 
     pub fn selected_menu_action(&self) -> MenuAction {
         MenuAction::all()[self.menu_selected]
+    }
+
+    pub fn select_monitor_next(&mut self) {
+        let count = MonitorAction::all().len();
+        self.monitor_selected = (self.monitor_selected + 1) % count;
+    }
+
+    pub fn select_monitor_prev(&mut self) {
+        let count = MonitorAction::all().len();
+        self.monitor_selected = if self.monitor_selected == 0 {
+            count - 1
+        } else {
+            self.monitor_selected - 1
+        };
+    }
+
+    pub fn selected_monitor_action(&self) -> MonitorAction {
+        MonitorAction::all()[self.monitor_selected]
     }
 
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {

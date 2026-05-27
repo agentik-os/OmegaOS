@@ -229,10 +229,20 @@ pub fn login_command_hint() -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OmegaTelegramConfig {
     pub bot_token: String,
+    /// The ONLY chat_id allowed to talk to the bot. Messages from any other
+    /// chat are silently dropped.
     pub chat_id: i64,
+    /// Optional allow-list of Telegram user IDs (sender). When empty, only
+    /// the chat_id check applies. When non-empty, the message author MUST
+    /// match one of these IDs OR the chat_id check is bypassed.
+    #[serde(default)]
+    pub allow_user_ids: Vec<i64>,
     /// Session to relay messages to (default: aisb-master)
     #[serde(default = "default_relay_session")]
     pub relay_session: String,
+    /// Optional human label so the user can identify which profile is active.
+    #[serde(default)]
+    pub label: String,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -270,6 +280,32 @@ impl OmegaTelegramConfig {
 
     pub fn exists() -> bool {
         Self::path().exists()
+    }
+
+    /// Remove the active config file. Returns Ok(true) if a file was removed.
+    pub fn disconnect() -> Result<bool> {
+        let path = Self::path();
+        if !path.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_file(&path)
+            .with_context(|| format!("removing {}", path.display()))?;
+        Ok(true)
+    }
+
+    /// True if a Telegram user_id is allowed to interact with this bot.
+    /// chat_id MUST match. If allow_user_ids is set, sender_id MUST also match.
+    pub fn is_authorized(&self, chat_id: i64, sender_id: Option<i64>) -> bool {
+        if chat_id != self.chat_id {
+            return false;
+        }
+        if self.allow_user_ids.is_empty() {
+            return true;
+        }
+        match sender_id {
+            Some(id) => self.allow_user_ids.contains(&id),
+            None => false,
+        }
     }
 }
 

@@ -36,11 +36,20 @@ struct Message {
     #[serde(default)]
     text: Option<String>,
     chat: Chat,
+    #[serde(default)]
+    from: Option<User>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Chat {
     id: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct User {
+    id: i64,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,12 +124,25 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
             let Some(msg) = upd.message else { continue };
             let Some(text) = msg.text.as_deref() else { continue };
 
-            // Only accept messages from the configured chat
-            if msg.chat.id != cfg.chat_id {
+            // SECURITY: chat_id whitelist + optional sender_id allow-list.
+            // Reject everything that doesn't match — no exception.
+            let sender_id = msg.from.as_ref().map(|u| u.id);
+            if !cfg.is_authorized(msg.chat.id, sender_id) {
+                tracing::warn!(
+                    chat_id = msg.chat.id,
+                    sender_id = ?sender_id,
+                    sender_username = ?msg.from.as_ref().and_then(|u| u.username.as_deref()),
+                    "Rejected unauthorized Telegram message"
+                );
                 continue;
             }
 
-            tracing::info!(text = %text, "Received Telegram message");
+            tracing::info!(
+                text = %text,
+                chat_id = msg.chat.id,
+                sender_id = ?sender_id,
+                "Received Telegram message"
+            );
 
             // Handle Omega-specific commands
             if text.starts_with('/') {
