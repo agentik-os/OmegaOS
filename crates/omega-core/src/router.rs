@@ -560,7 +560,7 @@ mod tests {
     #[test]
     fn enhanced_prompt_includes_audit_skills() {
         let router = SmartRouter::new(test_registry());
-        let result = router.route_dm("audit UX et code sur Causio");
+        let result = router.route_dm("fais un audit UX et code audit sur Causio");
         let prompt = result.enhanced_prompt.unwrap();
         assert!(prompt.contains("/uiuxaudit"));
         assert!(prompt.contains("/codeaudit"));

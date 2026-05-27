@@ -410,11 +410,11 @@ mod tests {
     fn format_audit_scores_display() {
         let scores = vec![
             ("Code", 336.0_f32, 420.0_f32),
-            ("Debug", 180.0, 360.0),
+            ("Debug", 100.0, 360.0),
         ];
         let output = format_audit_scores(&scores);
-        assert!(output.contains("🟢"));
-        assert!(output.contains("🔴"));
+        assert!(output.contains("🟢")); // 336/420 = 80%
+        assert!(output.contains("🔴")); // 100/360 = 27.8%
         assert!(output.contains("Code"));
     }
 

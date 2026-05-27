@@ -4,19 +4,13 @@
 //! Oracles are on-demand project managers: they decompose, delegate, monitor, and verify.
 //! They NEVER edit code directly — all code changes go through workers.
 
-use crate::config::OmegaConfig;
-use crate::dispatch::{Dispatcher, WorkerContext};
-use crate::done::{DoneSignal, DoneStatus};
-use crate::inbox::{EventType, Inbox};
-use crate::mission::{Mission, MissionId, Plan, PlanStrategy, Task, WorkerResult};
-use crate::routing::Complexity;
-use crate::session::SessionManager;
-use anyhow::{bail, Result};
+use crate::done::DoneStatus;
+use crate::mission::{Mission, MissionId, WorkerResult};
+use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 // ---------------------------------------------------------------------------
 // Oracle State Machine
@@ -713,25 +707,25 @@ impl WorkerStallDetector {
             return true;
         }
 
+        // Check the last non-empty line, trimming trailing whitespace
         let last_line = trimmed.lines().last().unwrap_or("");
-        let last_trimmed = last_line.trim();
+        let last_trimmed = last_line.trim_end();
 
         // Claude Code prompt indicators
-        if last_trimmed.ends_with('❯') || last_trimmed.ends_with("❯ ") {
+        if last_trimmed.ends_with('❯') {
             return true;
         }
 
-        // Standard shell prompt patterns
-        let prompt_patterns = ["$ ", "% ", "> ", "# "];
-        for pat in &prompt_patterns {
-            if last_trimmed.ends_with(pat) {
-                return true;
-            }
+        // Standard shell prompt patterns (with or without trailing space)
+        if last_trimmed.ends_with('$')
+            || last_trimmed.ends_with('%')
+            || last_trimmed.ends_with('#')
+        {
+            return true;
         }
 
-        // Bare prompt chars at line end
-        if last_trimmed == "$" || last_trimmed == "%" || last_trimmed == ">" || last_trimmed == "❯"
-        {
+        // Prompt ending with "> " or bare ">"
+        if last_trimmed.ends_with('>') {
             return true;
         }
 

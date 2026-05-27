@@ -12,8 +12,6 @@ use chrono::Utc;
 use std::time::Duration;
 
 const STALL_THRESHOLD_SECS: i64 = 900; // 15 minutes without progress = stalled (file-based)
-const ORACLE_GRACE_SECS: i64 = 300; // 5 min grace before closing done oracles
-const DEAD_SESSION_AGE_SECS: i64 = 3600; // 1h orphaned session = dead
 
 #[derive(Debug)]
 pub struct PatrolReport {
@@ -263,7 +261,7 @@ impl Patrol {
     /// Patrol oracle sessions: check for done oracles, update registry, handle close.
     async fn patrol_oracles(
         &self,
-        mgr: &SessionManager,
+        _mgr: &SessionManager,
         sessions: &[crate::session::OmegaSession],
         report: &mut PatrolReport,
     ) -> Result<()> {

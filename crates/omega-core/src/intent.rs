@@ -263,9 +263,13 @@ fn detect_audit_names(lower: &str) -> Vec<String> {
         (&["retention", "retentionaudit", "feature opportunities", "make it sticky"], "retentionaudit"),
     ];
 
-    // "full audit" → all 17
+    // "full audit" → all 17 Quality Arsenal audits (refontaudit is a separate tool, not included)
     if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
-        return table.iter().map(|(_, name)| name.to_string()).collect();
+        return table
+            .iter()
+            .filter(|(_, name)| *name != "refontaudit")
+            .map(|(_, name)| name.to_string())
+            .collect();
     }
 
     let mut found = Vec::new();

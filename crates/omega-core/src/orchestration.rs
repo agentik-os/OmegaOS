@@ -455,7 +455,7 @@ impl Orchestrator {
             evidence: "No adversarial worker spawned in this pass".to_string(),
         }];
 
-        let mut gate = GateResult::evaluate(rubric, grades, consensus, adversarial);
+        let mut gate = GateResult::evaluate(rubric, grades, consensus, adversarial, true, true, true);
         gate.oracle = format!("mission-{}", rubric.created_at.timestamp());
         gate
     }
