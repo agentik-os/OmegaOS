@@ -130,7 +130,7 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(area);
 
     let list_focused = app.session_focus == SessionFocus::List;
