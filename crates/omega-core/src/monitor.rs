@@ -293,19 +293,25 @@ impl OmegaTelegramConfig {
         Ok(true)
     }
 
-    /// True if a Telegram user_id is allowed to interact with this bot.
-    /// chat_id MUST match. If allow_user_ids is set, sender_id MUST also match.
+    /// True if a Telegram message is allowed to interact with this bot.
+    ///
+    /// Security model (2-level, either path grants access):
+    ///   1. sender_id is in allow_user_ids → authorized (works for DMs and groups)
+    ///   2. chat_id matches config AND allow_user_ids is empty → authorized (group-only legacy mode)
+    ///
+    /// For DMs: chat_id == sender's user_id (not the bot's ID), so the user_id
+    /// check is the primary gate. The chat_id field in config is mainly for
+    /// restricting to a specific group chat when allow_user_ids is empty.
     pub fn is_authorized(&self, chat_id: i64, sender_id: Option<i64>) -> bool {
-        if chat_id != self.chat_id {
-            return false;
+        if let Some(uid) = sender_id {
+            if !self.allow_user_ids.is_empty() && self.allow_user_ids.contains(&uid) {
+                return true;
+            }
         }
-        if self.allow_user_ids.is_empty() {
+        if chat_id == self.chat_id && self.allow_user_ids.is_empty() {
             return true;
         }
-        match sender_id {
-            Some(id) => self.allow_user_ids.contains(&id),
-            None => false,
-        }
+        false
     }
 }
 

@@ -79,9 +79,18 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
     }
 
+    // For DMs, chat_id == user_id. The config may have the bot's own ID
+    // (token prefix). Use the first allowed user as the initial reply target.
+    let mut reply_chat_id = if !cfg.allow_user_ids.is_empty() {
+        cfg.allow_user_ids[0]
+    } else {
+        cfg.chat_id
+    };
+
     let _ = send_telegram(
         &client,
-        &cfg,
+        &cfg.bot_token,
+        reply_chat_id,
         "◆ Omega Telegram bridge online. Type a message and I'll relay it to AISB Master.",
     )
     .await;
@@ -144,10 +153,13 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                 "Received Telegram message"
             );
 
+            // Update reply target from the actual incoming chat (handles DMs correctly)
+            reply_chat_id = msg.chat.id;
+
             // Handle Omega-specific commands
             if text.starts_with('/') {
                 if let Some(reply) = handle_command(text, &mgr, &cfg).await {
-                    let _ = send_telegram(&client, &cfg, &reply).await;
+                    let _ = send_telegram(&client, &cfg.bot_token, reply_chat_id, &reply).await;
                     continue;
                 }
             }
@@ -156,7 +168,8 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
             if let Err(e) = mgr.send_text(&cfg.relay_session, text).await {
                 let _ = send_telegram(
                     &client,
-                    &cfg,
+                    &cfg.bot_token,
+                    reply_chat_id,
                     &format!("✗ Could not relay to {}: {}", cfg.relay_session, e),
                 )
                 .await;
@@ -174,7 +187,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                     } else {
                         delta
                     };
-                    let _ = send_telegram(&client, &cfg, &trimmed).await;
+                    let _ = send_telegram(&client, &cfg.bot_token, reply_chat_id, &trimmed).await;
                 }
             }
         }
@@ -268,12 +281,13 @@ async fn handle_command(
 
 async fn send_telegram(
     client: &reqwest::Client,
-    cfg: &OmegaTelegramConfig,
+    bot_token: &str,
+    chat_id: i64,
     text: &str,
 ) -> Result<()> {
-    let url = format!("{}/bot{}/sendMessage", API_BASE, cfg.bot_token);
+    let url = format!("{}/bot{}/sendMessage", API_BASE, bot_token);
     let body = SendMessageReq {
-        chat_id: cfg.chat_id,
+        chat_id,
         text,
     };
     client
