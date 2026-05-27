@@ -1958,8 +1958,13 @@ async fn cmd_pdf(
 }
 
 fn find_pdfgen_dir(exe_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf> {
-    // 1. ~/.omega/pdfgen (installed location — preferred)
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    // 1. ~/.omega/skills/pdfgen (canonical installed location)
+    let skills_dir = home.join(".omega/skills/pdfgen");
+    if skills_dir.join("bin/pdfgen.ts").exists() {
+        return Ok(skills_dir);
+    }
+    // 2. ~/.omega/pdfgen (legacy installed location)
     let user_dir = home.join(".omega/pdfgen");
     if user_dir.join("bin/pdfgen.ts").exists() {
         return Ok(user_dir);
@@ -2094,21 +2099,60 @@ fn cmd_sync() -> Result<()> {
         cmd_rules(RulesAction::Export)?;
     }
 
-    // Copy OMEGA.md to ~/.omega/ if not present
+    // Copy OMEGA.md to ~/.omega/
     let omega_md_src = std::path::Path::new("OMEGA.md");
     let omega_md_dst = omega_dir.join("OMEGA.md");
-    if omega_md_src.exists() && !omega_md_dst.exists() {
+    if omega_md_src.exists() {
         std::fs::copy(omega_md_src, &omega_md_dst)?;
         println!("✓ OMEGA.md → {}", omega_md_dst.display());
+    }
+
+    // Copy agents from repo if available
+    let agents_src = std::path::Path::new("agents");
+    if agents_src.exists() {
+        let agents_dst = omega_dir.join("agents");
+        std::fs::create_dir_all(agents_dst.join("aisb"))?;
+        for entry in std::fs::read_dir(agents_src).into_iter().flatten() {
+            let entry = entry?;
+            let dst = agents_dst.join(entry.file_name());
+            if entry.file_type()?.is_dir() {
+                // aisb/ subdirectory
+                for sub in std::fs::read_dir(entry.path()).into_iter().flatten() {
+                    let sub = sub?;
+                    if sub.file_name().to_string_lossy().ends_with(".md") {
+                        std::fs::copy(sub.path(), agents_dst.join("aisb").join(sub.file_name()))?;
+                    }
+                }
+            } else if entry.file_name().to_string_lossy().ends_with(".md") {
+                std::fs::copy(entry.path(), &dst)?;
+            }
+        }
+        println!("✓ Agents synced to {}", agents_dst.display());
+    }
+
+    // Copy skills from repo if available (pdfgen etc.)
+    let skills_src = std::path::Path::new("tools/pdfgen");
+    let skills_dst = omega_dir.join("skills/pdfgen");
+    if skills_src.exists() && !skills_dst.join("bin/pdfgen.ts").exists() {
+        std::fs::create_dir_all(&skills_dst)?;
+        let status = std::process::Command::new("rsync")
+            .args(["-a", "--exclude=node_modules", "--exclude=.next", "--exclude=output"])
+            .arg(format!("{}/", skills_src.display()))
+            .arg(format!("{}/", skills_dst.display()))
+            .status();
+        if let Ok(s) = status {
+            if s.success() {
+                println!("✓ PDF generator synced to {}", skills_dst.display());
+            }
+        }
     }
 
     // ── Claude Code integration ──
     let claude_dir = home.join(".claude");
     if claude_dir.exists() {
+        // Rules: symlink each omega rule with omega- prefix
         let claude_rules = claude_dir.join("rules");
         std::fs::create_dir_all(&claude_rules)?;
-
-        // Symlink each omega rule into Claude's rules/ with omega- prefix
         for entry in std::fs::read_dir(&rules_dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -2118,10 +2162,28 @@ fn cmd_sync() -> Result<()> {
             if !link.exists() {
                 #[cfg(unix)]
                 std::os::unix::fs::symlink(entry.path(), &link)?;
-                println!("  ✓ Claude: {}", link.display());
+                println!("  ✓ Claude rule: {}", name_str);
             }
         }
-        println!("✓ Claude Code rules synced");
+
+        // Skills: symlink each omega skill directory
+        let skills_dir = omega_dir.join("skills");
+        let claude_skills = claude_dir.join("skills");
+        std::fs::create_dir_all(&claude_skills)?;
+        if skills_dir.exists() {
+            for entry in std::fs::read_dir(&skills_dir)? {
+                let entry = entry?;
+                if !entry.file_type()?.is_dir() { continue; }
+                let name = entry.file_name();
+                let link = claude_skills.join(&name);
+                if !link.exists() {
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(entry.path(), &link)?;
+                    println!("  ✓ Claude skill: {}", name.to_string_lossy());
+                }
+            }
+        }
+        println!("✓ Claude Code synced (rules + skills)");
     }
 
     // ── Gemini CLI integration ──
