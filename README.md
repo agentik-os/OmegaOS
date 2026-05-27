@@ -101,33 +101,70 @@ automatically runs `omega sync` to create symlinks:
 
 ## Architecture
 
+### 4-Level Agent Hierarchy
+
 ```
-Level 1 — Human Interface (CLI / TUI / Telegram)
-    ↓ intent
-Level 2 — AISB Orchestrator (optional, persistent daemon)
-    ↓ dispatch
-Level 3 — Oracle (1 per project, strategic planning)
-    ↓ decompose + delegate
-Level 4 — Workers (ephemeral, parallel, file-lock scoped)
-    ↓ execute → verify → done.json signal
+┌─────────────────────────────────────────────────────────────────┐
+│  Level 1 — Human Interface                                      │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐              │
+│  │ TUI (6   │  │ CLI (25+ │  │ Telegram Bridge  │              │
+│  │  tabs)   │  │  cmds)   │  │ (phone → AISB)   │              │
+│  └────┬─────┘  └────┬─────┘  └────────┬─────────┘              │
+│       └──────────────┴────────────────┘                         │
+│                      ↓ intent                                    │
+├─────────────────────────────────────────────────────────────────┤
+│  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │  13 Matrix Agents:                                        │   │
+│  │  Oracle · Morpheus · Seraph · Keymaker · Smith · Niobe   │   │
+│  │  Architect · Merovingian · Neo · Zion · Link · Construct │   │
+│  │  Pythia                                                   │   │
+│  └──────────────────────┬───────────────────────────────────┘   │
+│                         ↓ dispatch                               │
+├─────────────────────────────────────────────────────────────────┤
+│  Level 3 — Oracle (1 per project)                                │
+│  Classify → Plan (Keymaker) → Dispatch workers → Gate (Seraph)  │
+│                         ↓ decompose + delegate                   │
+├─────────────────────────────────────────────────────────────────┤
+│  Level 4 — Workers (ephemeral, parallel, file-lock scoped)      │
+│  Execute → Verify → done.json → Oracle acks → session close     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ### Session Roles
 
 | Role | Icon | Pattern | Purpose |
 |------|------|---------|---------|
-| Oracle | ◆ | `oracle-{Project}` | Strategic — analyzes mission, spawns workers |
-| Worker | ● | `{Project}-worker-{task}` | Tactical — executes one task, signals done |
-| Home | ⌂ | `Home`, `c-*` | Interactive human sessions |
-| System | ⚙ | `AISB-*`, `earthbit-*` | Infrastructure daemons |
+| AISB Master | ★ | `aisb-master` | Always-on brain — 13 agents, auto-restart, Telegram relay |
+| Oracle | ◆ | `oracle-{Project}` | Strategic — classifies, plans, dispatches workers |
+| Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed files, signals done |
+| Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions (any agent) |
+| System | ⚙ | `omega-telegram-bridge` | Infrastructure daemons |
 
 ### Quality Gate Chain
 
 ```
-Worker → done.json → Oracle acks → oracle.done.json → AISB reports → session close
+Worker completes → done.json
+    → Oracle verifies (R-19 rubric)
+    → Seraph audits (R-21 multi-grader, R-30 Popper falsification)
+    → Oracle ships (R-14 deploy returns 200)
+    → AISB reports via Telegram
 ```
 
-Each level must acknowledge the level below before a session can be safely closed.
+### Centralized Config Flow
+
+```
+~/.omega/                       ← Single source of truth
+├── OMEGA.md                    ← Loaded by ALL agents
+├── rules/ (15 rules)
+├── agents/ (19 prompts)
+└── skills/ (pdfgen, ...)
+        │
+        ├── ~/.claude/rules/omega-*.md    (symlinks)
+        ├── ~/.gemini/GEMINI.md           (@import)
+        ├── ~/.codex/AGENTS.md            (symlink)
+        └── Pi/Hermes/GLM                 (--append-system-prompt-file)
+```
 
 ## TUI Session Manager
 
