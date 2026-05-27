@@ -48,10 +48,56 @@ omega scope worker-B src/auth.rs src/api.rs          # Check scope conflicts
 omega patrol --once                                  # Run health check once
 omega patrol --interval 60                           # Run patrol daemon
 
+# Configuration & rules
+omega rules list                # Show all 15 operational rules
+omega rules export              # Export rules to ~/.omega/rules/*.md
+omega sync                      # Sync config to all LLMs (Claude, Gemini, Codex)
+omega config set claude.model opus  # Set provider config
+omega config show               # Show all provider settings
+
+# Telegram bridge (talk to AISB Master from your phone)
+omega telegram setup <TOKEN> <CHAT_ID> --user-id <UID>
+omega telegram run              # Start the bridge (auto-starts on setup)
+
+# PDF reports
+omega pdf --template=whitepaper --demo --out=report.pdf
+omega pdf --template=audit --data=audit.json --send  # Generate + Telegram
+
+# Agents & tools
+omega install hermes            # Install an agent CLI (+ auto-sync)
+omega install pi                # Each install auto-wires to ~/.omega/
+omega agents                    # List all supported agents + availability
+omega projects                  # Auto-discover projects
+
 # History & config
 omega log oracle-MyProject      # View JSONL session history
 omega init                      # Initialize OmegaOS configuration
 ```
+
+## Centralized Config (`~/.omega/`)
+
+All LLM agents share a single source of truth:
+
+```
+~/.omega/
+├── OMEGA.md            # Universal system prompt (loaded by every LLM)
+├── rules/              # 15 operational rules as editable .md files
+├── agents/             # AISB Master + 13 Matrix agent prompts
+├── skills/pdfgen/      # PDF report generator (4 templates)
+├── config.toml         # General settings
+├── providers.toml      # Per-LLM settings (model, API key, etc.)
+└── telegram.toml       # Telegram bridge config (gitignored)
+```
+
+When you install an LLM (via `omega install` or the TUI Settings), OmegaOS
+automatically runs `omega sync` to create symlinks:
+
+| LLM | Integration |
+|-----|-------------|
+| Claude | `~/.claude/rules/omega-*.md` → symlinks to `~/.omega/rules/` |
+| Gemini | `~/.gemini/GEMINI.md` → imports `~/.omega/OMEGA.md` |
+| Codex | `~/.codex/AGENTS.md` → symlink to `~/.omega/OMEGA.md` |
+| Pi/Hermes/GLM | System prompt injected via `--append-system-prompt-file` |
 
 ## Architecture
 
