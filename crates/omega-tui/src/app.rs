@@ -45,10 +45,10 @@ impl MenuAction {
 
     pub fn label(&self) -> &'static str {
         match self {
-            MenuAction::NewSession => "New session",
-            MenuAction::DispatchOracle => "Dispatch oracle",
-            MenuAction::Refresh => "Refresh sessions",
-            MenuAction::ToggleProtection => "Toggle protection",
+            MenuAction::NewSession => "New session  →  name + agent picker (claude/codex/pi/...)",
+            MenuAction::DispatchOracle => "Dispatch oracle  →  project + mission",
+            MenuAction::Refresh => "Refresh sessions list",
+            MenuAction::ToggleProtection => "Toggle protection on selected",
             MenuAction::KillSelected => "Kill selected session",
             MenuAction::Help => "Show help",
             MenuAction::Quit => "Quit OmegaOS",

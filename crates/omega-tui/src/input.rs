@@ -183,7 +183,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('n') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewSession;
-            app.status_message = Some("Session name (Enter to confirm, Esc to cancel)".to_string());
+            app.status_message = Some(
+                "Step 1/3: type session name then Enter → step 2: pick agent → step 3: prompt"
+                    .to_string(),
+            );
             Action::None
         }
 
@@ -248,7 +251,10 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
         MenuAction::NewSession => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewSession;
-            app.status_message = Some("Session name (Enter to confirm)".to_string());
+            app.status_message = Some(
+                "Step 1/3: type session name then Enter → step 2: pick agent → step 3: prompt"
+                    .to_string(),
+            );
             Action::None
         }
         MenuAction::DispatchOracle => {
