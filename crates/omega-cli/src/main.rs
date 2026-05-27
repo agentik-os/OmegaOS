@@ -75,6 +75,23 @@ enum Commands {
         mission: String,
     },
 
+    /// Run a full orchestrated mission end-to-end (classify → plan → dispatch → monitor → gate)
+    Orchestrate {
+        /// Project name
+        project: String,
+        /// Mission description
+        mission: String,
+        /// Working directory (default: current dir)
+        #[arg(short, long)]
+        dir: Option<String>,
+        /// Max wait time for workers (seconds)
+        #[arg(long, default_value = "3600")]
+        timeout: u64,
+        /// Skip the quality gate
+        #[arg(long)]
+        no_gate: bool,
+    },
+
     /// Spawn a worker under the current oracle
     SpawnWorker {
         /// Task name (used in session name)
@@ -218,6 +235,9 @@ async fn main() -> Result<()> {
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
         Some(Commands::Kill { name }) => cmd_kill(&name).await,
         Some(Commands::Dispatch { project, mission }) => cmd_dispatch(&project, &mission).await,
+        Some(Commands::Orchestrate { project, mission, dir, timeout, no_gate }) => {
+            cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await
+        }
         Some(Commands::SpawnWorker { task, prompt, dir, project, files }) => {
             cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files).await
         }
@@ -713,6 +733,64 @@ async fn cmd_kill(name: &str) -> Result<()> {
     mgr.kill_session(name).await?;
     let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
     println!("Killed session: {}", name);
+    Ok(())
+}
+
+async fn cmd_orchestrate(
+    project: &str,
+    mission: &str,
+    dir: Option<&str>,
+    timeout_secs: u64,
+    no_gate: bool,
+) -> Result<()> {
+    use omega_core::mission::Mission;
+    use omega_core::orchestration::{Orchestrator, OrchestratorOptions};
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    let config = OmegaConfig::load().unwrap_or_default();
+    let opts = OrchestratorOptions {
+        worker_timeout: Duration::from_secs(timeout_secs),
+        poll_interval: Duration::from_secs(5),
+        enforce_gate: !no_gate,
+        auto_ack: true,
+    };
+
+    let orchestrator = Orchestrator::new(config, opts).await?;
+    let working_dir = match dir {
+        Some(d) => PathBuf::from(d),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+
+    let mission_obj = Mission::new(project, mission, working_dir);
+    println!("◆ Mission {} dispatched", mission_obj.id.0);
+    println!("  Project: {}", mission_obj.project);
+    println!("  Text:    {}", mission_obj.text);
+    println!();
+
+    let outcome = orchestrator.execute(mission_obj).await?;
+
+    println!("─── Outcome ───");
+    println!("{}", outcome.summary);
+    println!();
+
+    match outcome.status {
+        omega_core::mission::OutcomeStatus::Success => {
+            println!("✓ Mission completed successfully");
+        }
+        omega_core::mission::OutcomeStatus::PartialSuccess => {
+            println!("⚠ Mission partially completed");
+        }
+        omega_core::mission::OutcomeStatus::Failed => {
+            println!("✗ Mission failed");
+            std::process::exit(1);
+        }
+        omega_core::mission::OutcomeStatus::Aborted => {
+            println!("⊘ Mission aborted");
+            std::process::exit(2);
+        }
+    }
+
     Ok(())
 }
 
