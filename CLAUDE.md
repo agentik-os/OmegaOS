@@ -34,7 +34,7 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 ## Key Patterns
 
-### From tmux-claude (UX)
+### Inspired by tmux-claude UX (re-implemented in Rust against the rmux SDK — no tmux runtime dependency)
 - Option+Z session manager menu (fzf-based, grouped, progress bars)
 - Oracle/worker tree hierarchy display
 - Team spawn + layout (N agents in split panes)

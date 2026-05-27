@@ -118,7 +118,7 @@ RECOMMENDATION:
 | Owns | Responsibility | Script | Cron |
 |---|---|---|---|
 | **Oracle watchdog** | Detect oracle stuck/idle/dead, escalate via inbox | `~/.aisb/lib/oracle-watchdog.sh` | every 2 min |
-| **Worker stall detection** | Scan worker tmux panes for spinner verbs not changing 15 cycles | `~/.aisb/lib/worker-stall-detector.sh` | every 3 min |
+| **Worker stall detection** | Scan worker rmux panes for spinner verbs not changing 15 cycles | `~/.aisb/lib/worker-stall-detector.sh` | every 3 min |
 | **Progress verification** | Read progress.json, escalate if `todos_completed` stalled 5 cycles | `~/.aisb/lib/oracle-progress-verifier.sh` | every 2 min |
 | **Stale agent autoclean** | Kill agents idle > N min, mail ORACLE, allow re-route | `aisb-nerve agent autoclean` | every 5 min |
 
@@ -128,7 +128,7 @@ RECOMMENDATION:
 |---|---|---|
 | `worker_stalled` | 15 cycles without spinner change | oracle-inbox |
 | `oracle_idle_no_finish` | 5 cycles no progress + todos < 100% | oracle-inbox + Telegram alert |
-| `worker_died` | tmux session gone but no done.json | oracle-inbox |
+| `worker_died` | rmux session gone but no done.json | oracle-inbox |
 | `health_critical` | >50% workers stalled OR oracle dead | broadcast @all |
 
 ### Anti-pattern guard (R-37 alignment)

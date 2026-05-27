@@ -936,7 +936,8 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Normal mode: tmux-claude inspired status bar with stats
+    // Normal mode: status bar with live system stats (UX inspired by tmux-claude,
+    // re-implemented against the rmux SDK)
     let stats = omega_core::sysinfo::SystemStats::read();
 
     let cpu = format!("CPU {:.2}", stats.cpu_load);

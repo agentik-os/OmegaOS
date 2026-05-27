@@ -270,6 +270,7 @@ impl App {
                     .map(|s| s.to_string())
             })
             .or_else(|| std::env::var("RMUX_SESSION").ok())
+            // Legacy fallback for users coming from a tmux setup
             .or_else(|| std::env::var("TMUX_SESSION").ok());
 
         Self {

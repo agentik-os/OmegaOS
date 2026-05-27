@@ -1,6 +1,10 @@
 # OmegaOS
 
-Agentic terminal operating system built on [rmux](https://github.com/agentik-os/rmux).
+**100% Rust agentic terminal OS — built on [rmux](https://github.com/agentik-os/rmux), NOT tmux.**
+
+Sessions, panes, multiplexing, the daemon, the SDK, the orchestrator, the TUI — all native Rust.
+tmux is **not** a dependency and is **never invoked**. If you see a reference to "tmux" in this
+repo it's either historical credit for UX inspiration or a legacy env-var fallback.
 
 Turns any machine into a multi-agent development platform. Create oracle/worker hierarchies, dispatch missions, track progress, and gate quality — all from the terminal.
 
@@ -227,7 +231,7 @@ Status values: `done_clean` (verified complete), `pending` (more work needed), `
 OmegaOS integrates patterns from four projects:
 
 - **[rmux](https://github.com/agentik-os/rmux)** — The terminal multiplexer engine (Rust, daemon-backed SDK)
-- **[tmux-claude](https://github.com/agentik-os/tmux-claude)** — Session manager UX (grouping, tree hierarchy, progress)
+- **[tmux-claude](https://github.com/agentik-os/tmux-claude)** — UX inspiration only (session grouping, tree hierarchy, progress bars). OmegaOS itself uses **rmux** (Rust), not tmux. The UX patterns were ported and reimplemented natively against the rmux SDK.
 - **[OmegaSetup](https://github.com/agentik-os/OmegaSetup)** — Orchestration layer (dispatch, quality gates, done signals)
 - **[earendil/coding-agent](https://github.com/earendil-works/pi)** — Session architecture patterns (JSONL persistence, RPC mode)
 

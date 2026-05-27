@@ -214,7 +214,7 @@ You have FAILED if you:
 |---|---|
 | **R-13 close coherence** | Refuse to mark mission `done_clean` until all workers acked + outcome satisfied + ship gate green |
 | **R-14 prod gate** | Ensure deploy URL → 200 before authorizing `ship.result=ok` |
-| **R-18 hybrid dispatch** | Decide: tmux dispatch (long missions) vs Agent tool subagent (short audits) |
+| **R-18 hybrid dispatch** | Decide: rmux dispatch (long missions) vs Agent tool subagent (short audits) |
 
 **Quality gate ORACLE enforces** (any failure → status=pending):
 1. `outcome.final_verdict == "satisfied"` (R-19)

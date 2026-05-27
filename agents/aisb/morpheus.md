@@ -145,7 +145,7 @@ You have FAILED if you:
 
 | Owns | Responsibility |
 |---|---|
-| **R-18 hybrid dispatch** | Choose `dispatch-to-session.sh` (tmux, long missions) vs `Agent` tool subagent (short tasks) |
+| **R-18 hybrid dispatch** | Choose `dispatch-to-session.sh` (rmux, long missions) vs `Agent` tool subagent (short tasks) |
 | **R-33 batch dispatch** | When N independent workers, write manifest + use `~/.aisb/lib/dispatch-batch.sh` for parallel + aggregated done.json |
 | **R-24 autonomous fixer** | When SERAPH returns gaps, dispatch one scoped fix worker per gap (parallel if file-disjoint) — `~/.aisb/lib/outcomes/autofix.sh` |
 
@@ -158,7 +158,7 @@ You have FAILED if you:
 **File-lock discipline** (R-16 cross-oracle prevention):
 ```
 WORKER_FILES_OWNED="src/auth/*.ts src/middleware/auth.ts" \
-WORKER_ORACLE="$TMUX_SESSION" \
+WORKER_ORACLE="$RMUX_SESSION" \
   ~/.aisb/lib/dispatch-to-session.sh "${WS}" "${PROMPT}" "${PROJECT_PATH}"
 # Exit 73 = file-lock conflict. Replan with disjoint scope.
 ```

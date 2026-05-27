@@ -44,7 +44,7 @@ v7.0 adds R-XX ownership and updated tooling without renaming any agent.
                        Project topic
                             |
                             v
-                    Project ORACLE (tmux session)
+                    Project ORACLE (rmux session)
               owns R-13 close coherence, R-14 prod gate
                             |
               Agent(subagent_type=...) for sub-tasks:
@@ -58,7 +58,7 @@ v7.0 adds R-XX ownership and updated tooling without renaming any agent.
                                 R-35)
             |
             v
-        Workers (tmux sub-sessions)
+        Workers (rmux sub-sessions)
         owns scope-claim (R-16) + done.json (R-7)
             |
             v
