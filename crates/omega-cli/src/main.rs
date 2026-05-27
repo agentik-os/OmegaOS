@@ -77,6 +77,31 @@ enum Commands {
         action: TelegramAction,
     },
 
+    /// Generate a PDF report (whitepaper, audit, marketing, doc)
+    Pdf {
+        /// Template: whitepaper, audit, marketing, doc
+        #[arg(long, default_value = "whitepaper")]
+        template: String,
+        /// Path to data JSON file (omit for demo)
+        #[arg(long)]
+        data: Option<String>,
+        /// Render a demo PDF with sample data
+        #[arg(long)]
+        demo: bool,
+        /// Theme: omegaos (default), agentik, dafnck, one-life
+        #[arg(long, default_value = "agentik")]
+        theme: String,
+        /// Output PDF path
+        #[arg(long, default_value = "/tmp/omega-report.pdf")]
+        out: String,
+        /// Send the PDF to Telegram after generation
+        #[arg(long)]
+        send: bool,
+        /// Caption for the Telegram message
+        #[arg(long)]
+        caption: Option<String>,
+    },
+
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
     InstallBindings,
 
@@ -264,6 +289,9 @@ async fn main() -> Result<()> {
         Some(Commands::Config { action }) => cmd_config(action),
         Some(Commands::Monitor) => cmd_monitor(),
         Some(Commands::Telegram { action }) => cmd_telegram(action).await,
+        Some(Commands::Pdf { template, data, demo, theme, out, send, caption }) => {
+            cmd_pdf(&template, data.as_deref(), demo, &theme, &out, send, caption.as_deref()).await
+        }
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -1818,6 +1846,159 @@ fn cmd_completions(shell: &str) -> Result<()> {
 
     let mut cmd = Cli::command();
     generate(shell, &mut cmd, "omega", &mut std::io::stdout());
+    Ok(())
+}
+
+async fn cmd_pdf(
+    template: &str,
+    data: Option<&str>,
+    demo: bool,
+    theme: &str,
+    out: &str,
+    send_telegram: bool,
+    caption: Option<&str>,
+) -> Result<()> {
+    // Resolve the pdfgen directory — bundled with OmegaOS
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let pdfgen_dir = find_pdfgen_dir(exe_dir.as_deref())?;
+
+    // Auto-install deps on first use
+    let nm = pdfgen_dir.join("node_modules");
+    if !nm.exists() {
+        println!("Installing PDF generator dependencies (first time)…");
+        let status = std::process::Command::new("npm")
+            .args(["install", "--silent"])
+            .current_dir(&pdfgen_dir)
+            .status()
+            .context("npm install for pdfgen failed")?;
+        if !status.success() {
+            anyhow::bail!("npm install failed in {}", pdfgen_dir.display());
+        }
+    }
+
+    // Build the pdfgen CLI args
+    let mut args = vec![
+        "tsx".to_string(),
+        "bin/pdfgen.ts".to_string(),
+        format!("--template={}", template),
+        format!("--theme={}", theme),
+        format!("--out={}", out),
+    ];
+    if demo {
+        args.push("--demo".to_string());
+    }
+    if let Some(d) = data {
+        args.push(format!("--data={}", d));
+    }
+
+    println!("Generating PDF → {}", out);
+    let status = std::process::Command::new("npx")
+        .args(&args)
+        .current_dir(&pdfgen_dir)
+        .status()
+        .context("pdfgen execution failed")?;
+
+    if !status.success() {
+        anyhow::bail!("PDF generation failed");
+    }
+
+    let pdf_path = std::path::Path::new(out);
+    if !pdf_path.exists() {
+        anyhow::bail!("PDF not found at {}", out);
+    }
+
+    let size = std::fs::metadata(pdf_path)?.len();
+    println!("✓ PDF generated: {} ({:.1} KB)", out, size as f64 / 1024.0);
+
+    // Send via Telegram if requested
+    if send_telegram {
+        send_pdf_telegram(out, caption).await?;
+    }
+
+    Ok(())
+}
+
+fn find_pdfgen_dir(exe_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf> {
+    // 1. Check relative to the OmegaOS repo (dev mode)
+    let candidates = [
+        std::path::PathBuf::from("tools/pdfgen"),
+        std::path::PathBuf::from("/home/hacker/VibeCoding/work/OmegaOS/tools/pdfgen"),
+    ];
+    for c in &candidates {
+        if c.join("bin/pdfgen.ts").exists() {
+            return Ok(c.clone());
+        }
+    }
+    // 2. Check relative to binary
+    if let Some(dir) = exe_dir {
+        let rel = dir.join("../tools/pdfgen");
+        if rel.join("bin/pdfgen.ts").exists() {
+            return Ok(rel);
+        }
+    }
+    // 3. Check ~/.omega/pdfgen (installed location)
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let user_dir = home.join(".omega/pdfgen");
+    if user_dir.join("bin/pdfgen.ts").exists() {
+        return Ok(user_dir);
+    }
+    anyhow::bail!(
+        "PDF generator not found. Expected at tools/pdfgen/ or ~/.omega/pdfgen/.\n\
+         Run `omega init` to set up, or copy the pdfgen/ directory manually."
+    )
+}
+
+async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> {
+    use omega_core::monitor::OmegaTelegramConfig;
+
+    let cfg = OmegaTelegramConfig::read()
+        .ok_or_else(|| anyhow::anyhow!("Telegram not configured. Run: omega telegram setup …"))?;
+
+    let chat_id = if !cfg.allow_user_ids.is_empty() {
+        cfg.allow_user_ids[0]
+    } else {
+        cfg.chat_id
+    };
+
+    let url = format!(
+        "https://api.telegram.org/bot{}/sendDocument",
+        cfg.bot_token
+    );
+
+    let file_bytes = tokio::fs::read(pdf_path).await.context("reading PDF")?;
+    let filename = std::path::Path::new(pdf_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+
+    let part = reqwest::multipart::Part::bytes(file_bytes)
+        .file_name(filename)
+        .mime_str("application/pdf")?;
+
+    let mut form = reqwest::multipart::Form::new()
+        .text("chat_id", chat_id.to_string())
+        .part("document", part);
+
+    if let Some(cap) = caption {
+        form = form.text("caption", cap.to_string())
+            .text("parse_mode", "HTML".to_string());
+    }
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+
+    let resp = client.post(&url).multipart(form).send().await.context("sendDocument")?;
+    if resp.status().is_success() {
+        println!("✓ PDF sent via Telegram");
+    } else {
+        let body = resp.text().await.unwrap_or_default();
+        anyhow::bail!("Telegram sendDocument failed: {}", body);
+    }
+
     Ok(())
 }
 

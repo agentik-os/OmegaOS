@@ -10,3 +10,6 @@ telegram.toml
 *.env
 *.env.*
 .env.local
+tools/pdfgen/node_modules/
+tools/pdfgen/.next/
+tools/pdfgen/output/
