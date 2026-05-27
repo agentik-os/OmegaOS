@@ -354,33 +354,53 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Scroll the preview pane (works on both focuses)
+        // Scroll: depends on the active tab + focus
         KeyCode::PageDown => {
-            app.scroll_preview_down(10);
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+                app.scroll_detail_down(10);
+            } else {
+                app.scroll_preview_down(10);
+            }
             Action::None
         }
         KeyCode::PageUp => {
-            app.scroll_preview_up(10);
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+                app.scroll_detail_up(10);
+            } else {
+                app.scroll_preview_up(10);
+            }
             Action::None
         }
         KeyCode::Home => {
-            app.scroll_preview_home();
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+                app.detail_scroll = 0;
+            } else {
+                app.scroll_preview_home();
+            }
             Action::None
         }
         KeyCode::End => {
-            app.scroll_preview_end();
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
+                app.detail_scroll = u16::MAX / 2;
+            } else {
+                app.scroll_preview_end();
+            }
             Action::None
         }
 
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
+            // In 2-col tabs with detail focused: ↓ scrolls the detail
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) && app.detail_focused {
+                app.scroll_detail_down(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
                 Tab::Monitor => app.select_monitor_next(),
                 Tab::Settings => app.select_settings_next(),
                 Tab::Info => {
-                    // Inside Info: ↓ navigates the active sub-section
                     if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                         app.select_info_agent_next();
                     } else {
@@ -393,6 +413,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::Up | KeyCode::Char('k') => {
+            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) && app.detail_focused {
+                app.scroll_detail_up(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),

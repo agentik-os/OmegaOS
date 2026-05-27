@@ -417,7 +417,8 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Actions — ↑/↓ navigate, Enter to execute "),
+            .title(" Actions — ↑/↓ navigate, Enter runs the highlighted action ")
+            .border_style(Style::default().fg(Color::Cyan)),
     );
 
     frame.render_widget(list, area);
@@ -676,11 +677,26 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Monitor "),
-    );
+    let title = if app.detail_fullscreen {
+        " Monitor  [FULLSCREEN — Tab/Tab-Tab to exit] ".to_string()
+    } else if app.detail_focused {
+        " Monitor  [↑/↓ scroll, Tab back to actions] ".to_string()
+    } else {
+        " Monitor  [↑/↓ select action, Enter to run, Tab to scroll] ".to_string()
+    };
+    let border = if app.detail_focused || app.detail_fullscreen {
+        Color::Yellow
+    } else {
+        Color::Cyan
+    };
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(border)),
+        );
     frame.render_widget(paragraph, area);
 }
 
@@ -765,23 +781,51 @@ fn short_num(n: u64) -> String {
 }
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
+    let providers = omega_core::providers::ProvidersConfig::load();
+    let lines = render_settings_detail(app, &providers);
+
+    // Fullscreen detail mode: skip the left list, detail takes 100% width
+    if app.detail_fullscreen {
+        let title = format!(
+            " {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
+            app.selected_settings_section().label()
+        );
+        let paragraph = Paragraph::new(lines)
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let split = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(area);
+
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { Color::Cyan } else { Color::DarkGray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::DarkGray };
 
     // ── Left: section list ──────────────────────────────────────────────────
     let items: Vec<ListItem> = SettingsSection::all()
         .iter()
         .enumerate()
         .map(|(i, section)| {
-            let selected = i == app.settings_selected;
-            let prefix = if selected { "▶ " } else { "  " };
+            let selected = i == app.settings_selected && list_focused;
+            let prefix = if i == app.settings_selected { "▶ " } else { "  " };
             let style = if selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
+            } else if i == app.settings_selected {
+                // Selected but not focused — dim highlight
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -792,24 +836,36 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    let list_title = if list_focused {
+        " Settings — ↑/↓ select, Tab → focus detail "
+    } else {
+        " Settings — Tab to focus list "
+    };
+
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Settings — ↑/↓ to select ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .title(list_title)
+            .border_style(Style::default().fg(list_border)),
     );
     frame.render_widget(list, split[0]);
 
-    // ── Right: details panel for the selected section ──────────────────────
-    let providers = omega_core::providers::ProvidersConfig::load();
-    let lines = render_settings_detail(app, &providers);
+    // ── Right: details panel ────────────────────────────────────────────────
+    let detail_title = if app.detail_focused {
+        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
+            app.selected_settings_section().label())
+    } else {
+        format!(" {} ", app.selected_settings_section().label())
+    };
 
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" {} ", app.selected_settings_section().label()))
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
     frame.render_widget(paragraph, split[1]);
 }
 
@@ -1047,23 +1103,53 @@ fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent
 }
 
 fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
+    let lines = match app.selected_info_section() {
+        InfoSection::AisbAgents => render_info_aisb_agents(app),
+        InfoSection::Oracle => render_info_oracle(),
+        InfoSection::Workers => render_info_workers(),
+        InfoSection::Rules => render_info_rules(),
+    };
+
+    // Fullscreen detail
+    if app.detail_fullscreen {
+        let title = format!(
+            " {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
+            app.selected_info_section().label()
+        );
+        let paragraph = Paragraph::new(lines)
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
     let split = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(area);
 
-    // Left: sub-section list
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { Color::Cyan } else { Color::DarkGray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::DarkGray };
+
     let items: Vec<ListItem> = InfoSection::all()
         .iter()
         .enumerate()
         .map(|(i, sec)| {
-            let selected = i == app.info_section_selected;
-            let prefix = if selected { "▶ " } else { "  " };
+            let selected = i == app.info_section_selected && list_focused;
+            let prefix = if i == app.info_section_selected { "▶ " } else { "  " };
             let style = if selected {
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
+            } else if i == app.info_section_selected {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -1074,29 +1160,34 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
+    let list_title = if list_focused {
+        " Info — ↑/↓ select, Tab → focus detail "
+    } else {
+        " Info — Tab to focus list "
+    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Info — ↑/↓ to select ")
-            .border_style(Style::default().fg(Color::Cyan)),
+            .title(list_title)
+            .border_style(Style::default().fg(list_border)),
     );
     frame.render_widget(list, split[0]);
 
-    // Right: detail of the selected sub-section
-    let lines = match app.selected_info_section() {
-        InfoSection::AisbAgents => render_info_aisb_agents(app),
-        InfoSection::Oracle => render_info_oracle(),
-        InfoSection::Workers => render_info_workers(),
-        InfoSection::Rules => render_info_rules(),
+    let detail_title = if app.detail_focused {
+        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
+            app.selected_info_section().label())
+    } else {
+        format!(" {} ", app.selected_info_section().label())
     };
 
-    let title = format!(" {} ", app.selected_info_section().label());
-    let paragraph = Paragraph::new(lines).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .border_style(Style::default().fg(Color::DarkGray)),
-    );
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
     frame.render_widget(paragraph, split[1]);
 }
 
@@ -1323,6 +1414,13 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "  Tabs:",
         "    ← / →              Switch tabs (Sessions | Menu | Monitor | Settings | Help)",
         "    Shift+Tab          Same as ←",
+        "",
+        "  Tab is per-tab:  each menu has its own Tab semantics.",
+        "    Sessions     Tab toggles list↔chat. Tab-Tab → chat FULLSCREEN.",
+        "    Settings     Tab toggles list↔detail. Tab-Tab → detail FULLSCREEN.",
+        "    Info         Tab toggles list↔detail. Tab-Tab → detail FULLSCREEN.",
+        "    Monitor      Tab focuses scrollable detail. Tab-Tab → FULLSCREEN.",
+        "    Menu/Help    Tab moves to the next top-level tab.",
         "",
         "  Sessions tab:",
         "    ↑ / ↓ or j/k       Navigate sessions",

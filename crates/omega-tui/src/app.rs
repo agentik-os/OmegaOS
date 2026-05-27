@@ -309,6 +309,8 @@ pub struct App {
     pub detail_focused: bool,
     /// Detail panel fullscreen (Tab-Tab on a 2-column tab).
     pub detail_fullscreen: bool,
+    /// Scroll position for the detail panel in Settings/Info/Monitor.
+    pub detail_scroll: u16,
     pub chat_input: String,
     pub current_session: Option<String>,
 }
@@ -350,6 +352,7 @@ impl App {
             last_tab_press: None,
             detail_focused: false,
             detail_fullscreen: false,
+            detail_scroll: 0,
             chat_input: String::new(),
             current_session,
         }
@@ -439,6 +442,14 @@ impl App {
     pub fn reset_2col_focus(&mut self) {
         self.detail_focused = false;
         self.detail_fullscreen = false;
+        self.detail_scroll = 0;
+    }
+
+    pub fn scroll_detail_down(&mut self, lines: u16) {
+        self.detail_scroll = self.detail_scroll.saturating_add(lines);
+    }
+    pub fn scroll_detail_up(&mut self, lines: u16) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(lines);
     }
 
     pub fn scroll_preview_down(&mut self, lines: u16) {
