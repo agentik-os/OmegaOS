@@ -8,7 +8,35 @@ pub enum Tab {
     Menu,
     Monitor,
     Settings,
+    Info,
     Help,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InfoSection {
+    AisbAgents,
+    Oracle,
+    Workers,
+    Rules,
+}
+
+impl InfoSection {
+    pub fn all() -> &'static [InfoSection] {
+        &[
+            InfoSection::AisbAgents,
+            InfoSection::Oracle,
+            InfoSection::Workers,
+            InfoSection::Rules,
+        ]
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            InfoSection::AisbAgents => "AISB Agents (13)",
+            InfoSection::Oracle => "Oracle — routing & coordination",
+            InfoSection::Workers => "Workers — dispatch & lifecycle",
+            InfoSection::Rules => "Rules — system invariants",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,6 +280,9 @@ pub struct App {
     pub menu_selected: usize,
     pub monitor_selected: usize,
     pub settings_selected: usize,
+    pub info_section_selected: usize,
+    /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
+    pub info_agent_selected: usize,
     pub agent_picker_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -292,6 +323,8 @@ impl App {
             menu_selected: 0,
             monitor_selected: 0,
             settings_selected: 0,
+            info_section_selected: 0,
+            info_agent_selected: 0,
             agent_picker_index: 0,
             should_quit: false,
             status_message: None,
@@ -600,7 +633,8 @@ impl App {
             Tab::Sessions => Tab::Menu,
             Tab::Menu => Tab::Monitor,
             Tab::Monitor => Tab::Settings,
-            Tab::Settings => Tab::Help,
+            Tab::Settings => Tab::Info,
+            Tab::Info => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
     }
@@ -611,7 +645,44 @@ impl App {
             Tab::Menu => Tab::Sessions,
             Tab::Monitor => Tab::Menu,
             Tab::Settings => Tab::Monitor,
-            Tab::Help => Tab::Settings,
+            Tab::Info => Tab::Settings,
+            Tab::Help => Tab::Info,
+        };
+    }
+
+    pub fn select_info_next(&mut self) {
+        let n = InfoSection::all().len()
+            + omega_core::aisb_agents::AisbAgent::all().len(); // virtually navigates sub-entries when in AisbAgents
+        let _ = n;
+        let count = InfoSection::all().len();
+        self.info_section_selected = (self.info_section_selected + 1) % count;
+        self.info_agent_selected = 0;
+    }
+
+    pub fn select_info_prev(&mut self) {
+        let count = InfoSection::all().len();
+        self.info_section_selected = if self.info_section_selected == 0 {
+            count - 1
+        } else {
+            self.info_section_selected - 1
+        };
+        self.info_agent_selected = 0;
+    }
+
+    pub fn selected_info_section(&self) -> InfoSection {
+        InfoSection::all()[self.info_section_selected]
+    }
+
+    pub fn select_info_agent_next(&mut self) {
+        let count = omega_core::aisb_agents::AisbAgent::all().len();
+        self.info_agent_selected = (self.info_agent_selected + 1) % count;
+    }
+    pub fn select_info_agent_prev(&mut self) {
+        let count = omega_core::aisb_agents::AisbAgent::all().len();
+        self.info_agent_selected = if self.info_agent_selected == 0 {
+            count - 1
+        } else {
+            self.info_agent_selected - 1
         };
     }
 

@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
+use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -25,6 +25,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Menu => draw_menu(frame, app, chunks[1]),
         Tab::Monitor => draw_monitor(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
+        Tab::Info => draw_info(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, chunks[1]),
     }
 
@@ -105,13 +106,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Monitor", "Settings", "Help"];
+    let titles = vec!["Sessions", "Menu", "Monitor", "Settings", "Info", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
         Tab::Monitor => 2,
         Tab::Settings => 3,
-        Tab::Help => 4,
+        Tab::Info => 4,
+        Tab::Help => 5,
     };
 
     let tabs = Tabs::new(titles)
@@ -469,10 +471,18 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
 
     lines.push(Line::from(""));
 
-    // ── AISB Bot status ─────────────────────────────────────────────────────
+    // ── AISB Telegram Bot (legacy, Python, on the VPS) ──────────────────────
     lines.push(Line::from(Span::styled(
-        "  ── AISB Telegram Bot ──",
+        "  ── AISB Telegram Bot (legacy Python bot, separate from OmegaOS) ──",
         Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    The original AISB bot running on this VPS — not part of OmegaOS.",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "    We just READ its usage cache (/tmp/aisb-usage.json) for the billing view.",
+        Style::default().fg(Color::DarkGray),
     )));
     let (bot_icon, bot_color, bot_text) = if bot_status.bot_alive {
         ("●", Color::Green, "running")
@@ -516,11 +526,32 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
 
     lines.push(Line::from(""));
 
-    // ── Omega Telegram Bot ──────────────────────────────────────────────────
+    // ── Omega Telegram Bot (Rust, this system) ──────────────────────────────
     lines.push(Line::from(Span::styled(
-        "  ── Omega Telegram Bot ──",
+        "  ── Omega Telegram Bot (Rust — talk to AISB Master from anywhere) ──",
         Style::default().fg(Color::Yellow),
     )));
+    lines.push(Line::from(Span::styled(
+        "    What this is:",
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        "      Omega's OWN Telegram bot (no Python, no AISB-Python dependency).",
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(Span::styled(
+        "      Once configured, any text you send via Telegram is relayed to the",
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(Span::styled(
+        "      AISB Master session (aisb-master) — the AI Super Brain.",
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(Span::styled(
+        "      → you talk to all 13 Matrix agents through one chat, from your phone.",
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(""));
     if let Some(cfg) = tg_config {
         let state = if cfg.enabled { "enabled" } else { "configured (disabled)" };
         let color = if cfg.enabled { Color::Green } else { Color::Yellow };
@@ -528,15 +559,58 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
             Span::raw("    Status:         "),
             Span::styled(state.to_string(), Style::default().fg(color)),
         ]));
+        if !cfg.label.is_empty() {
+            lines.push(Line::from(format!("    Label:          {}", cfg.label)));
+        }
         lines.push(Line::from(format!(
-            "    Relay session:  {}",
+            "    Relay session:  {}    (where messages go)",
             cfg.relay_session
         )));
         lines.push(Line::from(format!("    Chat ID:        {}", cfg.chat_id)));
+        let sender = if cfg.allow_user_ids.is_empty() {
+            "chat_id only (any user in this chat)".to_string()
+        } else {
+            format!("user_ids {:?}", cfg.allow_user_ids)
+        };
+        lines.push(Line::from(format!("    Sender filter:  {}", sender)));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "    Run the bot:    omega telegram run",
+            Style::default().fg(Color::Yellow),
+        )));
     } else {
         lines.push(Line::from(Span::styled(
-            "    (not configured — run: omega telegram setup)",
+            "    Status:         (not configured)",
             Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "    Setup:",
+            Style::default().fg(Color::Cyan),
+        )));
+        lines.push(Line::from(Span::styled(
+            "      1. Create a bot via @BotFather on Telegram → save the BOT_TOKEN",
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(Span::styled(
+            "      2. Get your CHAT_ID (e.g. send a msg to @userinfobot)",
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(Span::styled(
+            "      3. Run:",
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(Span::styled(
+            "         omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(Span::styled(
+            "      4. Start the bot:",
+            Style::default().fg(Color::White),
+        )));
+        lines.push(Line::from(Span::styled(
+            "         omega telegram run",
+            Style::default().fg(Color::Yellow),
         )));
     }
 
@@ -877,6 +951,275 @@ fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent
         Span::styled(format!("{:30}", "CLI availability"), Style::default().fg(Color::Cyan)),
         Span::styled(format!("{} {}", icon, label), Style::default().fg(color)),
     ]));
+}
+
+fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
+
+    // Left: sub-section list
+    let items: Vec<ListItem> = InfoSection::all()
+        .iter()
+        .enumerate()
+        .map(|(i, sec)| {
+            let selected = i == app.info_section_selected;
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(sec.label(), style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Info — ↑/↓ to select ")
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, split[0]);
+
+    // Right: detail of the selected sub-section
+    let lines = match app.selected_info_section() {
+        InfoSection::AisbAgents => render_info_aisb_agents(app),
+        InfoSection::Oracle => render_info_oracle(),
+        InfoSection::Workers => render_info_workers(),
+        InfoSection::Rules => render_info_rules(),
+    };
+
+    let title = format!(" {} ", app.selected_info_section().label());
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::DarkGray)),
+    );
+    frame.render_widget(paragraph, split[1]);
+}
+
+fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
+    use omega_core::aisb_agents::AisbAgent;
+    let agents = AisbAgent::all();
+    let selected_def = agents[app.info_agent_selected].definition();
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  AISB = AI Super Brain — 13 Matrix agents the Master delegates to.",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "  ↑/↓ navigate the agent list below.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+    ];
+
+    // Compact list
+    for (i, agent) in agents.iter().enumerate() {
+        let def = agent.definition();
+        let selected = i == app.info_agent_selected;
+        let prefix = if selected { "▶ " } else { "  " };
+        let name_style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{:13}", def.name), name_style),
+            Span::styled(
+                format!(" {} ", def.model.name()),
+                Style::default().fg(Color::Magenta),
+            ),
+            Span::raw(format!("· {}", def.role)),
+        ]));
+    }
+
+    // Detail card for the selected agent
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  ── {} ──", selected_def.name),
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("  \"{}\"", selected_def.tagline),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(format!("  Role:    {}", selected_def.role)));
+    lines.push(Line::from(format!("  Model:   {}", selected_def.model.name())));
+    lines.push(Line::from(format!(
+        "  Tools:   {}",
+        selected_def.tools.join(", ")
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Responsibilities:",
+        Style::default().fg(Color::Yellow),
+    )));
+    for r in selected_def.responsibilities {
+        lines.push(Line::from(format!("    • {}", r)));
+    }
+    lines
+}
+
+fn render_info_oracle() -> Vec<Line<'static>> {
+    vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ORACLE — the brain of every dispatched mission",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("  An Oracle is spawned by `omega dispatch <Project> \"<mission>\"`."),
+        Line::from("  Its job is to:"),
+        Line::from("    1. CLASSIFY the mission's complexity (SIMPLE / MEDIUM / COMPLEX / EPIC)"),
+        Line::from("    2. PLAN — if COMPLEX or EPIC, KEYMAKER decomposes into a DAG"),
+        Line::from("    3. DISPATCH workers via rmux sessions (1 per task)"),
+        Line::from("    4. MONITOR — wait for each worker's done.json"),
+        Line::from("    5. VERIFY — run the quality gate (rubric + multi-grader + adversarial)"),
+        Line::from("    6. REPORT — write its own done.json with the outcome summary"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Naming",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from("    Sessions: oracle-<Project>     (1st)"),
+        Line::from("              oracle-<Project>-2   (parallel oracle)"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Rules enforced",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from("    R-19 — Rubric before execution"),
+        Line::from("    R-21 — Multi-grader consensus ≥ 2/3"),
+        Line::from("    R-28 — Token budget enforced (default 500K)"),
+        Line::from("    L3   — Workers must decide, not wait"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ORACLES NEVER write code — they decide who does, then verify.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ]
+}
+
+fn render_info_workers() -> Vec<Line<'static>> {
+    vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  WORKERS — ephemeral execution sessions",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("  A worker is one rmux session running an agent (usually Claude) with"),
+        Line::from("  a specific task prompt. Workers are short-lived: spawned by an Oracle,"),
+        Line::from("  they execute one task, signal done, and the patrol cleans up."),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Naming",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from("    <Project>-worker-<task>    e.g. Causio-worker-auth"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Lifecycle",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from("    1. Oracle spawns:  omega spawn-worker auth \"<prompt>\" --project Causio"),
+        Line::from("    2. Scope-claim:    files_owned locked in ~/.omega/state/scope-*.json"),
+        Line::from("    3. Worker runs:    Claude (or other agent) executes the task"),
+        Line::from("    4. Worker reports: omega done <session> done_clean \"<summary>\""),
+        Line::from("    5. Patrol acks:    omega patrol --once releases the scope claim"),
+        Line::from("    6. Quality gate:   Oracle's rubric is graded against the result"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Rules enforced",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from("    L3           — autonomy: decide, never wait"),
+        Line::from("    SCOPE-CLAIM  — no two workers may edit the same file"),
+        Line::from("    R-18         — long-running missions go here, short go to Agent tool"),
+        Line::from(""),
+        Line::from("  Workers can run in PARALLEL when their file scopes are disjoint."),
+        Line::from("  When they overlap, the dispatcher serializes them automatically."),
+    ]
+}
+
+fn render_info_rules() -> Vec<Line<'static>> {
+    use omega_core::rules::{all_rules, RuleCategory};
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  System invariants — every rule has a reason, a date, and who it binds.",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    let categories = [
+        RuleCategory::Universal,
+        RuleCategory::QualityGate,
+        RuleCategory::Orchestration,
+        RuleCategory::Reporting,
+        RuleCategory::Safety,
+    ];
+
+    for cat in &categories {
+        let rules: Vec<_> = all_rules().into_iter().filter(|r| r.category == *cat).collect();
+        if rules.is_empty() {
+            continue;
+        }
+        lines.push(Line::from(Span::styled(
+            format!("  ── {} ──", cat.label()),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+        for r in rules {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:14}", r.id),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(r.title.to_string()),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", r.description),
+                Style::default().fg(Color::White),
+            )));
+            let applies = if r.applies_to.is_empty() {
+                "all agents".to_string()
+            } else {
+                r.applies_to
+                    .iter()
+                    .map(|a| a.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            lines.push(Line::from(Span::styled(
+                format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    Why: {}", r.reason),
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(""));
+        }
+    }
+    lines
 }
 
 fn draw_help(frame: &mut Frame, area: Rect) {

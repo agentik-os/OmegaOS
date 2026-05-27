@@ -266,6 +266,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_next(),
                 Tab::Monitor => app.select_monitor_next(),
                 Tab::Settings => app.select_settings_next(),
+                Tab::Info => {
+                    // Inside Info: ↓ navigates the active sub-section
+                    if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                        app.select_info_agent_next();
+                    } else {
+                        app.select_info_next();
+                    }
+                }
                 Tab::Help => {}
             }
             Action::None
@@ -277,8 +285,27 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Monitor => app.select_monitor_prev(),
                 Tab::Settings => app.select_settings_prev(),
+                Tab::Info => {
+                    if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                        app.select_info_agent_prev();
+                    } else {
+                        app.select_info_prev();
+                    }
+                }
                 Tab::Help => {}
             }
+            Action::None
+        }
+
+        // Left/Right inside Info navigates between sub-sections (independent of agent sub-cursor)
+        // We use a separate explicit handler via PgUp/PgDn — but since arrow keys are taken
+        // for tabs, users can use Home/End or [/] to jump between sub-sections:
+        KeyCode::Char('[') if app.tab == Tab::Info => {
+            app.select_info_prev();
+            Action::None
+        }
+        KeyCode::Char(']') if app.tab == Tab::Info => {
+            app.select_info_next();
             Action::None
         }
 
@@ -293,7 +320,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
             Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
-            Tab::Settings | Tab::Help => Action::None,
+            Tab::Settings | Tab::Info | Tab::Help => Action::None,
         },
 
         // Monitor tab letter shortcuts

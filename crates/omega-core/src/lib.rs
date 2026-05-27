@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod aisb;
+pub mod aisb_agents;
 pub mod config;
 pub mod dispatch;
 pub mod mission;
@@ -14,6 +15,7 @@ pub mod progress;
 pub mod projects;
 pub mod providers;
 pub mod routing;
+pub mod rules;
 pub mod rpc;
 pub mod scope;
 pub mod session;
