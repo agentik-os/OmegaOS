@@ -49,6 +49,15 @@ enum Commands {
     /// Auto-discover projects on this machine (walks $HOME)
     Projects,
 
+    /// Run the official installer for an agent (pi, hermes, codex, gemini, glm, claude)
+    Install {
+        /// Name of the agent to install
+        agent: String,
+        /// Don't actually run the installer — just print the command
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Attach to the Master AISB session (auto-spawns if missing)
     #[command(alias = "aisb")]
     Master,
@@ -250,6 +259,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::Projects) => cmd_projects(),
+        Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
         Some(Commands::Config { action }) => cmd_config(action),
         Some(Commands::Monitor) => cmd_monitor(),
@@ -778,6 +788,62 @@ bind-key z display-popup -E -w 100% -h 100% "omega menu"
     Ok(())
 }
 
+fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
+    let agent = omega_core::agents::Agent::from_name(agent_name)
+        .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}", agent_name))?;
+
+    let cmd = agent.install_command().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} has no install command (already bundled or no public installer)",
+            agent.display_name()
+        )
+    })?;
+
+    if agent.is_available() && !dry_run {
+        println!("✓ {} is already installed.", agent.display_name());
+        println!("  Re-run with `--dry-run` to see the install command anyway.");
+        return Ok(());
+    }
+
+    println!("Installing {} via:", agent.display_name());
+    println!("  $ {}", cmd);
+
+    if dry_run {
+        println!("\n(dry-run — nothing executed)");
+        return Ok(());
+    }
+
+    if let Some(homepage) = agent.homepage() {
+        println!("\nProject homepage: {}", homepage);
+    }
+    println!();
+
+    // Execute the install command in a shell so curl pipes work.
+    let status = std::process::Command::new("bash")
+        .args(["-c", cmd])
+        .status()
+        .context("running installer")?;
+
+    if !status.success() {
+        anyhow::bail!(
+            "Installer exited with status {:?}",
+            status.code().unwrap_or(-1)
+        );
+    }
+
+    // Verify
+    if agent.is_available() {
+        println!("\n✓ {} is now installed and on PATH.", agent.display_name());
+    } else {
+        println!(
+            "\n⚠ Installer reported success but `{}` is not on PATH yet.",
+            agent.name()
+        );
+        println!("  You may need to restart your shell or add the binary directory to PATH.");
+    }
+    Ok(())
+}
+
 fn cmd_projects() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
     let projects = omega_core::projects::discover(&home);
@@ -978,6 +1044,8 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("pi", "extension") => cfg.pi.extension.clone(),
         ("glm", "model") => cfg.glm.model.clone(),
         ("glm", "api_key") => cfg.glm.api_key.clone(),
+        ("hermes", "model") => cfg.hermes.model.clone(),
+        ("hermes", "api_key") => cfg.hermes.api_key.clone(),
         _ => anyhow::bail!("Unknown key: {}", key),
     };
     Ok(s)
@@ -1008,6 +1076,8 @@ fn set_config_value(
         ("pi", "extension") => cfg.pi.extension = value.to_string(),
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
+        ("hermes", "model") => cfg.hermes.model = value.to_string(),
+        ("hermes", "api_key") => cfg.hermes.api_key = value.to_string(),
         _ => anyhow::bail!("Unknown key: {}", key),
     }
     Ok(())

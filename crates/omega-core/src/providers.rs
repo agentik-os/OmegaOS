@@ -19,6 +19,8 @@ pub struct ProvidersConfig {
     #[serde(default)]
     pub pi: PiConfig,
     #[serde(default)]
+    pub hermes: HermesConfig,
+    #[serde(default)]
     pub glm: GlmConfig,
 }
 
@@ -76,6 +78,14 @@ pub struct GlmConfig {
     pub api_key: String,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HermesConfig {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+}
+
 impl ProvidersConfig {
     fn path() -> PathBuf {
         dirs::home_dir()
@@ -123,6 +133,9 @@ impl ProvidersConfig {
         }
         if !self.glm.api_key.is_empty() {
             out.push(("GLM_API_KEY".to_string(), self.glm.api_key.clone()));
+        }
+        if !self.hermes.api_key.is_empty() {
+            out.push(("HERMES_API_KEY".to_string(), self.hermes.api_key.clone()));
         }
         out
     }

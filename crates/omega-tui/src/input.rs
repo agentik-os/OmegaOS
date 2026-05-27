@@ -482,6 +482,21 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
     // chat focus. No "initial prompt" step. The user talks via the chat input
     // box once the session is up.
     if let Some(agent) = action.agent() {
+        // Guard: block launch if the agent CLI is not installed.
+        // Shell is always available, so it short-circuits.
+        if !matches!(agent, omega_core::agents::Agent::Shell) && !agent.is_available() {
+            let install_hint = agent
+                .install_command()
+                .map(|c| format!(" — install: {}", c))
+                .unwrap_or_default();
+            app.status_message = Some(format!(
+                "{} not installed. Open Settings → Install agents{}",
+                agent.display_name(),
+                install_hint
+            ));
+            return Action::None;
+        }
+
         if app.config.auto_naming {
             // Fire-and-attach: agent + auto-name + no prompt, then chat focus
             return Action::CreateSessionAutoName { agent, prompt: None };

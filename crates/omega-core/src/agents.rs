@@ -18,6 +18,7 @@ pub enum Agent {
     Codex,
     Gemini,
     Pi,
+    Hermes,
     Glm,
     Shell,
 }
@@ -29,6 +30,7 @@ impl Agent {
             Agent::Codex,
             Agent::Gemini,
             Agent::Pi,
+            Agent::Hermes,
             Agent::Glm,
             Agent::Shell,
         ]
@@ -40,6 +42,7 @@ impl Agent {
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
             Agent::Pi => "pi",
+            Agent::Hermes => "hermes",
             Agent::Glm => "glm",
             Agent::Shell => "shell",
         }
@@ -50,7 +53,8 @@ impl Agent {
             Agent::Claude => "Claude Code (Anthropic)",
             Agent::Codex => "Codex (OpenAI)",
             Agent::Gemini => "Gemini (Google)",
-            Agent::Pi => "Pi (earendil coding-agent)",
+            Agent::Pi => "Pi (earendil-works)",
+            Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
             Agent::Shell => "Plain shell",
         }
@@ -62,9 +66,41 @@ impl Agent {
             "codex" => Some(Agent::Codex),
             "gemini" => Some(Agent::Gemini),
             "pi" => Some(Agent::Pi),
+            "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
             "shell" | "bash" | "" => Some(Agent::Shell),
             _ => None,
+        }
+    }
+
+    /// Official one-line installer command for this agent, or None if it
+    /// comes pre-installed / not installable via a script.
+    pub fn install_command(&self) -> Option<&'static str> {
+        match self {
+            Agent::Pi => Some("curl -fsSL https://pi.dev/install.sh | sh"),
+            Agent::Hermes => Some(
+                "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && hermes setup",
+            ),
+            Agent::Glm => Some("npm install -g @z-ai/glm-cli"),
+            // Claude/Codex/Gemini: users install via their own channels
+            // (claude.ai/code, npm i -g @openai/codex, npm i -g @google/gemini-cli)
+            Agent::Claude => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+            Agent::Codex => Some("npm install -g @openai/codex"),
+            Agent::Gemini => Some("npm install -g @google/gemini-cli"),
+            Agent::Shell => None,
+        }
+    }
+
+    /// URL of the project homepage (shown in Settings).
+    pub fn homepage(&self) -> Option<&'static str> {
+        match self {
+            Agent::Claude => Some("https://claude.ai/code"),
+            Agent::Codex => Some("https://github.com/openai/codex"),
+            Agent::Gemini => Some("https://github.com/google-gemini/gemini-cli"),
+            Agent::Pi => Some("https://pi.dev/"),
+            Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
+            Agent::Glm => Some("https://www.z.ai/"),
+            Agent::Shell => None,
         }
     }
 
@@ -118,7 +154,9 @@ impl Agent {
                 }
             }
             Agent::Pi => {
-                let pi_bin = format!("{}/.npm-global/bin/pi", home);
+                // Try $PATH first (pi.dev installs to ~/.local/bin or similar),
+                // fall back to ~/.npm-global/bin/pi for the older npm install.
+                let pi_bin = "pi";
                 let pi_args = "--provider openrouter --model anthropic/claude-sonnet-4.6";
                 match initial_prompt {
                     Some(p) => format!(
@@ -131,6 +169,16 @@ impl Agent {
                         ))
                     ),
                     None => format!("{} {}", pi_bin, pi_args),
+                }
+            }
+            Agent::Hermes => {
+                // Hermes is invoked from $PATH after `curl … | bash && hermes setup`.
+                match initial_prompt {
+                    Some(p) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("hermes {}; exec bash", shell_quote(p)))
+                    ),
+                    None => "bash -c \"hermes; exec bash\"".to_string(),
                 }
             }
             Agent::Glm => {
@@ -166,8 +214,11 @@ impl Agent {
                     || std::path::Path::new(&format!("{}/.npm-global/bin/gemini", home)).exists()
             }
             Agent::Pi => {
-                std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
+                has_cmd("pi")
+                    || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
+                    || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
             }
+            Agent::Hermes => has_cmd("hermes"),
             Agent::Glm => has_cmd("glm"),
             Agent::Shell => true,
         }

@@ -665,6 +665,73 @@ fn render_settings_detail(
     let section = app.selected_settings_section();
 
     match section {
+        SettingsSection::Install => {
+            lines.push(Line::from(Span::styled(
+                "  Install or re-install CLI agents — required before launching their sessions.",
+                Style::default().fg(Color::Yellow),
+            )));
+            lines.push(Line::from(""));
+            for agent in omega_core::agents::Agent::all() {
+                if matches!(agent, omega_core::agents::Agent::Shell) {
+                    continue; // shell is always available
+                }
+                let (status_icon, status_color, status_text) = if agent.is_available() {
+                    ("✓", Color::Green, "installed")
+                } else {
+                    ("✗", Color::Red, "not installed")
+                };
+                lines.push(Line::from(vec![
+                    Span::raw("  "),
+                    Span::styled(format!("{:8}", agent.name()), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::raw(format!("{:32} ", agent.display_name())),
+                    Span::styled(format!("{} {}", status_icon, status_text), Style::default().fg(status_color)),
+                ]));
+                if let Some(home) = agent.homepage() {
+                    lines.push(Line::from(vec![
+                        Span::raw("    home: "),
+                        Span::styled(home.to_string(), Style::default().fg(Color::Blue)),
+                    ]));
+                }
+                if let Some(install) = agent.install_command() {
+                    lines.push(Line::from(vec![
+                        Span::raw("    install: "),
+                        Span::styled(install.to_string(), Style::default().fg(Color::Yellow)),
+                    ]));
+                }
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from(Span::styled(
+                "  Run the installer from a shell, or use:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "    omega install <agent>    (e.g. omega install hermes)",
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        SettingsSection::Hermes => {
+            let c = &providers.hermes;
+            lines.push(kv("Model", default_or(&c.model, "(default)")));
+            lines.push(kv("API key", &mask_key(&c.api_key)));
+            availability(&mut lines, omega_core::agents::Agent::Hermes);
+            lines.push(Line::from(""));
+            if !omega_core::agents::Agent::Hermes.is_available() {
+                lines.push(Line::from(Span::styled(
+                    "  Install with:",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                if let Some(cmd) = omega_core::agents::Agent::Hermes.install_command() {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {}", cmd),
+                        Style::default().fg(Color::Yellow),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    "  Or:  omega install hermes",
+                    Style::default().fg(Color::Yellow),
+                )));
+            }
+        }
         SettingsSection::General => {
             lines.push(kv("Default AISB agent", &cfg.aisb_agent));
             lines.push(kv("Default model", &cfg.default_model));
