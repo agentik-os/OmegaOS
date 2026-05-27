@@ -110,6 +110,13 @@ pub struct SessionEntry {
     pub tree_prefix: String,
 }
 
+/// Which side of the Sessions tab has keyboard focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionFocus {
+    List,
+    Chat,
+}
+
 pub struct App {
     pub tab: Tab,
     pub sessions: Vec<SessionEntry>,
@@ -122,6 +129,9 @@ pub struct App {
     pub input_buffer: String,
     pub config: OmegaConfig,
     pub preview_content: String,
+    pub preview_scroll: u16,
+    pub session_focus: SessionFocus,
+    pub chat_input: String,
     pub current_session: Option<String>,
 }
 
@@ -150,8 +160,36 @@ impl App {
             input_buffer: String::new(),
             config,
             preview_content: String::new(),
+            preview_scroll: 0,
+            session_focus: SessionFocus::List,
+            chat_input: String::new(),
             current_session,
         }
+    }
+
+    pub fn toggle_session_focus(&mut self) {
+        self.session_focus = match self.session_focus {
+            SessionFocus::List => SessionFocus::Chat,
+            SessionFocus::Chat => SessionFocus::List,
+        };
+        self.chat_input.clear();
+    }
+
+    pub fn scroll_preview_down(&mut self, lines: u16) {
+        self.preview_scroll = self.preview_scroll.saturating_add(lines);
+    }
+
+    pub fn scroll_preview_up(&mut self, lines: u16) {
+        self.preview_scroll = self.preview_scroll.saturating_sub(lines);
+    }
+
+    pub fn scroll_preview_home(&mut self) {
+        self.preview_scroll = 0;
+    }
+
+    pub fn scroll_preview_end(&mut self) {
+        // Set a large value — the renderer clamps it
+        self.preview_scroll = u16::MAX / 2;
     }
 
     pub fn agent_picker_next(&mut self) {
@@ -212,9 +250,8 @@ impl App {
         let mgr = omega_core::session::SessionManager::connect().await?;
         match mgr.capture_pane(&name).await {
             Ok(content) => {
-                let lines: Vec<&str> = content.lines().collect();
-                let start = lines.len().saturating_sub(40);
-                self.preview_content = lines[start..].join("\n");
+                // Keep the full visible buffer so the user can scroll
+                self.preview_content = content;
             }
             Err(_) => {
                 self.preview_content = String::from("(session has no pane content)");

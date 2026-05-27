@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, Tab};
+use crate::app::{App, InputMode, MenuAction, SessionFocus, Tab};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
 pub enum Action {
@@ -18,6 +18,8 @@ pub enum Action {
         prompt: Option<String>,
     },
     DispatchOracle(String, String),
+    /// Send chat input to the currently selected session's pane.
+    SendToSession { session: String, text: String },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -180,6 +182,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
+    // When in Sessions tab + Chat focus, route keys to chat input first
+    if app.tab == Tab::Sessions && app.session_focus == SessionFocus::Chat {
+        return handle_key_chat(app, key);
+    }
+
     match key.code {
         // Quit
         KeyCode::Char('q') => {
@@ -187,8 +194,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::Quit
         }
 
-        // Tab switching: ←/→ AND Tab/Shift+Tab
-        KeyCode::Left | KeyCode::BackTab => {
+        // Tab switching: ←/→ for tabs, Tab inside Sessions toggles focus list↔chat
+        KeyCode::Left => {
             app.prev_tab();
             Action::None
         }
@@ -196,12 +203,41 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.next_tab();
             Action::None
         }
+        KeyCode::BackTab => {
+            app.prev_tab();
+            Action::None
+        }
         KeyCode::Tab => {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.prev_tab();
+            } else if app.tab == Tab::Sessions {
+                // Toggle focus list↔chat inside the Sessions tab
+                app.toggle_session_focus();
+                app.status_message = Some(match app.session_focus {
+                    SessionFocus::List => "Focus: session list (Tab to chat)".to_string(),
+                    SessionFocus::Chat => "Focus: chat — type & Enter to send (Tab to list, Esc to leave)".to_string(),
+                });
             } else {
                 app.next_tab();
             }
+            Action::None
+        }
+
+        // Scroll the preview pane (works on both focuses)
+        KeyCode::PageDown => {
+            app.scroll_preview_down(10);
+            Action::None
+        }
+        KeyCode::PageUp => {
+            app.scroll_preview_up(10);
+            Action::None
+        }
+        KeyCode::Home => {
+            app.scroll_preview_home();
+            Action::None
+        }
+        KeyCode::End => {
+            app.scroll_preview_end();
             Action::None
         }
 
@@ -327,6 +363,53 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
+        _ => Action::None,
+    }
+}
+
+/// Chat-input mode — typing flows into the selected session's pane via SDK.
+fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
+    match key.code {
+        // Tab returns focus to the list
+        KeyCode::Tab | KeyCode::Esc => {
+            app.session_focus = SessionFocus::List;
+            app.chat_input.clear();
+            app.status_message = Some("Focus: session list".to_string());
+            Action::None
+        }
+        // Submit: send buffer + Enter to the rmux pane
+        KeyCode::Enter => {
+            if let Some(entry) = app.selected_session() {
+                let session = entry.session.name.clone();
+                let text = std::mem::take(&mut app.chat_input);
+                Action::SendToSession { session, text }
+            } else {
+                Action::None
+            }
+        }
+        KeyCode::Backspace => {
+            app.chat_input.pop();
+            Action::None
+        }
+        // Scroll preview while in chat
+        KeyCode::PageDown => {
+            app.scroll_preview_down(10);
+            Action::None
+        }
+        KeyCode::PageUp => {
+            app.scroll_preview_up(10);
+            Action::None
+        }
+        KeyCode::Char(c) => {
+            // Ctrl+C inside chat → back to list (don't quit, that's surprising)
+            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
+                app.session_focus = SessionFocus::List;
+                app.chat_input.clear();
+                return Action::None;
+            }
+            app.chat_input.push(c);
+            Action::None
+        }
         _ => Action::None,
     }
 }

@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, SessionEntry, Tab};
+use crate::app::{App, InputMode, MenuAction, SessionEntry, SessionFocus, Tab};
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -128,31 +128,53 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
+    let list_focused = app.session_focus == SessionFocus::List;
+    let chat_focused = app.session_focus == SessionFocus::Chat;
+
+    // ── Left: session list ──────────────────────────────────────────────────
     let items: Vec<ListItem> = app
         .sessions
         .iter()
         .enumerate()
-        .map(|(i, entry)| render_session_item(entry, i == app.selected))
+        .map(|(i, entry)| render_session_item(entry, i == app.selected && list_focused))
         .collect();
+
+    let list_border_style = if list_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
 
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Sessions ({}) ", app.sessions.len())),
+                .title(format!(" Sessions ({}) ", app.sessions.len()))
+                .border_style(list_border_style),
         )
         .highlight_style(Style::default().bg(Color::DarkGray));
 
     frame.render_widget(list, split[0]);
 
-    // Live preview pane (right side)
+    // ── Right: preview + (when focused) a chat input box ────────────────────
     let preview_title = match app.selected_session() {
-        Some(e) => format!(" Preview: {} ", e.session.name),
+        Some(e) => format!(" {} ", e.session.name),
         None => " Preview ".to_string(),
     };
+
+    let preview_border_style = if chat_focused {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let total_lines = app.preview_content.lines().count() as u16;
+    let viewport_height = split[1].height.saturating_sub(2); // borders
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+    let scroll = app.preview_scroll.min(max_scroll);
 
     let preview_lines: Vec<Line> = if app.preview_content.is_empty() {
         vec![Line::from(Span::styled(
@@ -166,15 +188,57 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
             .collect()
     };
 
-    let preview = Paragraph::new(preview_lines)
-        .block(
+    let scroll_indicator = if max_scroll > 0 {
+        format!(" [{}/{}] ", scroll, max_scroll)
+    } else {
+        String::new()
+    };
+
+    if chat_focused {
+        // Split right column vertically: preview on top, chat input at bottom
+        let right_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3)])
+            .split(split[1]);
+
+        let preview = Paragraph::new(preview_lines)
+            .scroll((scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("{}{}", preview_title, scroll_indicator))
+                    .border_style(preview_border_style),
+            );
+        frame.render_widget(preview, right_split[0]);
+
+        // Chat input box
+        let target = app
+            .selected_session()
+            .map(|e| e.session.name.clone())
+            .unwrap_or_default();
+        let input_line = Line::from(vec![
+            Span::styled("▶ ", Style::default().fg(Color::Yellow)),
+            Span::raw(app.chat_input.clone()),
+            Span::styled("█", Style::default().fg(Color::Yellow)),
+        ]);
+        let chat = Paragraph::new(input_line).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(preview_title)
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .title(format!(" → {} (Enter send, Tab/Esc back) ", target))
+                .border_style(Style::default().fg(Color::Yellow)),
         );
-
-    frame.render_widget(preview, split[1]);
+        frame.render_widget(chat, right_split[1]);
+    } else {
+        let preview = Paragraph::new(preview_lines)
+            .scroll((scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!("{}{}", preview_title, scroll_indicator))
+                    .border_style(preview_border_style),
+            );
+        frame.render_widget(preview, split[1]);
+    }
 }
 
 fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {
@@ -394,53 +458,113 @@ fn draw_help(frame: &mut Frame, area: Rect) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let (prompt, value) = match &app.input_mode {
-        InputMode::Normal => {
-            let msg = app
-                .status_message
-                .as_deref()
-                .unwrap_or("←/→ tabs  ↑/↓ nav  Enter attach/select  d=dispatch  x=kill  .=protect  r=refresh  q=quit");
-            let status = Paragraph::new(Line::from(vec![
-                Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan)),
-                Span::raw(" "),
-                Span::raw(msg.to_string()),
-            ]));
-            frame.render_widget(status, area);
-            return;
+    // Input mode: show a prompt line (no stats)
+    if !matches!(app.input_mode, InputMode::Normal) {
+        let (prompt, value) = match &app.input_mode {
+            InputMode::Normal => unreachable!(),
+            InputMode::NewSession => ("New session name", app.input_buffer.clone()),
+            InputMode::NewNamedSession(agent) => (
+                "Session name",
+                format!("[{}] {}", agent, app.input_buffer),
+            ),
+            InputMode::NewSessionPromptDirect(name, agent) => (
+                "Initial prompt (optional, Esc to skip)",
+                format!("[{}/{}] {}", name, agent, app.input_buffer),
+            ),
+            InputMode::NewSessionAgent(name) => (
+                "Choose agent",
+                format!("[{}] (overlay open — ↑/↓)", name),
+            ),
+            InputMode::NewSessionPrompt(name, agent) => (
+                "Initial prompt (optional)",
+                format!("[{}/{}] {}", name, agent, app.input_buffer),
+            ),
+            InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),
+            InputMode::DispatchMission(p) => (
+                "Dispatch — mission",
+                format!("[{}] {}", p, app.input_buffer),
+            ),
+        };
+
+        let status = Paragraph::new(Line::from(vec![
+            Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                format!(" {}: ", prompt),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(value),
+            Span::styled("█", Style::default().fg(Color::Yellow)),
+        ]));
+        frame.render_widget(status, area);
+        return;
+    }
+
+    // Normal mode: tmux-claude inspired status bar with stats
+    let stats = omega_core::sysinfo::SystemStats::read();
+
+    let cpu = format!("CPU {:.2}", stats.cpu_load);
+    let ram = format!("RAM {}%", stats.ram_pct);
+    let disk = format!("DSK {}%", stats.disk_used_pct);
+    let n_sessions = format!("{} sess", app.sessions.len());
+
+    let now = chrono::Local::now();
+    let time_str = now.format("%H:%M").to_string();
+
+    let session_info = app
+        .selected_session()
+        .map(|e| {
+            let icon = match e.session.role {
+                omega_core::session::SessionRole::Oracle => "◆",
+                omega_core::session::SessionRole::Worker => "●",
+                omega_core::session::SessionRole::Home => "⌂",
+                omega_core::session::SessionRole::System => "⚙",
+            };
+            format!("{} {}", icon, e.session.name)
+        })
+        .unwrap_or_else(|| "—".to_string());
+
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(60)])
+        .split(area);
+
+    // Left side: Ω badge + selected session
+    let left = Paragraph::new(Line::from(vec![
+        Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" "),
+        Span::styled(session_info, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled(
+            app.status_message.as_deref().unwrap_or(""),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ]));
+    frame.render_widget(left, split[0]);
+
+    // Right side: system stats
+    let stat_color = |pct: u8| -> Color {
+        match pct {
+            0..=60 => Color::Green,
+            61..=85 => Color::Yellow,
+            _ => Color::Red,
         }
-        InputMode::NewSession => ("New session name", app.input_buffer.clone()),
-        InputMode::NewNamedSession(agent) => (
-            "Session name",
-            format!("[{}] {}", agent, app.input_buffer),
-        ),
-        InputMode::NewSessionPromptDirect(name, agent) => (
-            "Initial prompt (optional, Esc to skip)",
-            format!("[{}/{}] {}", name, agent, app.input_buffer),
-        ),
-        InputMode::NewSessionAgent(name) => (
-            "Choose agent",
-            format!("[{}] (overlay open — ↑/↓)", name),
-        ),
-        InputMode::NewSessionPrompt(name, agent) => (
-            "Initial prompt (optional)",
-            format!("[{}/{}] {}", name, agent, app.input_buffer),
-        ),
-        InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),
-        InputMode::DispatchMission(p) => (
-            "Dispatch — mission",
-            format!("[{}] {}", p, app.input_buffer),
-        ),
     };
 
-    let status = Paragraph::new(Line::from(vec![
-        Span::styled(" ▶ ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+    let right = Paragraph::new(Line::from(vec![
+        Span::styled(cpu, Style::default().fg(stat_color(((stats.cpu_load * 25.0) as u8).min(99)))),
+        Span::raw("  "),
+        Span::styled(ram, Style::default().fg(stat_color(stats.ram_pct))),
+        Span::raw("  "),
+        Span::styled(disk, Style::default().fg(stat_color(stats.disk_used_pct))),
+        Span::raw("  "),
+        Span::styled(n_sessions, Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
         Span::styled(
-            format!(" {}: ", prompt),
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            time_str,
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         ),
-        Span::raw(value),
-        Span::styled("█", Style::default().fg(Color::Yellow)),
-    ]));
-
-    frame.render_widget(status, area);
+        Span::raw(" "),
+    ]))
+    .alignment(ratatui::layout::Alignment::Right);
+    frame.render_widget(right, split[1]);
 }

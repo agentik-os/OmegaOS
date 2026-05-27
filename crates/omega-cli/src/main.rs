@@ -44,6 +44,9 @@ enum Commands {
     /// List supported agents and their availability
     Agents,
 
+    /// Auto-discover projects on this machine (walks $HOME)
+    Projects,
+
     /// Attach to the Master AISB session (auto-spawns if missing)
     #[command(alias = "aisb")]
     Master,
@@ -229,6 +232,7 @@ async fn main() -> Result<()> {
             cmd_new(&name, dir.as_deref(), cmd.as_deref(), agent.as_deref(), prompt.as_deref(), files).await
         }
         Some(Commands::Agents) => cmd_agents(),
+        Some(Commands::Projects) => cmd_projects(),
         Some(Commands::Master) => cmd_master().await,
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
@@ -487,6 +491,19 @@ async fn run_tui_loop(
                     let _ = app.refresh_preview().await;
                     app.status_message = Some("Refreshed".to_string());
                 }
+                Action::SendToSession { session, text } => {
+                    let mgr = SessionManager::connect().await?;
+                    if !text.is_empty() {
+                        if let Err(e) = mgr.send_text(&session, &text).await {
+                            app.status_message = Some(format!("Send failed: {}", e));
+                        } else {
+                            app.status_message = Some(format!("Sent to {}", session));
+                            // Auto-scroll to bottom so the new line is visible
+                            app.scroll_preview_end();
+                            let _ = app.refresh_preview().await;
+                        }
+                    }
+                }
                 Action::None => {}
             }
 
@@ -549,34 +566,56 @@ async fn cmd_new(
 }
 
 async fn cmd_install_bindings() -> Result<()> {
-    // Apply Option+Z and Option+/ bindings to the running rmux daemon directly
-    // via `rmux bind-key`. Works without restarting the daemon.
-    let bindings: Vec<(&str, &str, &str)> = vec![
-        ("M-z", "display-popup -E -w 100% -h 100% \"omega menu\"", "Open OmegaOS menu (Option+Z)"),
-        ("M-/", "display-popup -E -w 100% -h 100% \"omega menu\"", "Open OmegaOS menu (Option+/)"),
+    // Multiple bindings — fallbacks for terminals that don't pass Alt as Meta:
+    //   M-z / M-/         classic Alt+Z and Alt+/
+    //   Ctrl+Space        easy chord for terminals that swallow Alt
+    //   C-b o / C-b z     prefix variants (Ctrl-B then o or z)
+    //   C-Space           one more no-prefix fallback
+    let popup_cmd = "display-popup -E -w 100% -h 100% \"omega menu\"";
+
+    // Root-table bindings (no prefix required)
+    let root_bindings: Vec<(&str, &str)> = vec![
+        ("M-z", "Open OmegaOS menu (Option+Z)"),
+        ("M-/", "Open OmegaOS menu (Option+/)"),
+        ("C-Space", "Open OmegaOS menu (Ctrl+Space — most reliable)"),
     ];
 
-    let mut installed = 0;
+    // Prefix-table bindings (Ctrl-B then key)
+    let prefix_bindings: Vec<(&str, &str)> = vec![
+        ("o", "Open OmegaOS menu (prefix + o)"),
+        ("z", "Open OmegaOS menu (prefix + z)"),
+    ];
+
+    let mut installed = 0usize;
     let mut failed = Vec::new();
 
-    for (key, cmd, desc) in &bindings {
+    for (key, desc) in &root_bindings {
         let result = std::process::Command::new("rmux")
             .args(["bind-key", "-n", key])
-            .arg(cmd)
+            .arg(popup_cmd)
             .output();
-
         match result {
-            Ok(output) if output.status.success() => {
+            Ok(o) if o.status.success() => {
                 println!("✓ {} → {}", key, desc);
                 installed += 1;
             }
-            Ok(output) => {
-                let err = String::from_utf8_lossy(&output.stderr);
-                failed.push(format!("{}: {}", key, err.trim()));
+            Ok(o) => failed.push(format!("{}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => failed.push(format!("{}: {}", key, e)),
+        }
+    }
+
+    for (key, desc) in &prefix_bindings {
+        let result = std::process::Command::new("rmux")
+            .args(["bind-key", key])
+            .arg(popup_cmd)
+            .output();
+        match result {
+            Ok(o) if o.status.success() => {
+                println!("✓ C-b {} → {}", key, desc);
+                installed += 1;
             }
-            Err(e) => {
-                failed.push(format!("{}: {}", key, e));
-            }
+            Ok(o) => failed.push(format!("C-b {}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => failed.push(format!("C-b {}: {}", key, e)),
         }
     }
 
@@ -588,22 +627,85 @@ async fn cmd_install_bindings() -> Result<()> {
         }
     }
 
-    // Also ensure the persistent config is in place for daemon restarts
+    // Always write the persistent config (overwrite to keep in sync with this binary)
     let omega_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".omega");
+    std::fs::create_dir_all(&omega_dir)?;
     let conf_path = omega_dir.join("rmux.conf.omega");
-    if !conf_path.exists() {
-        std::fs::create_dir_all(&omega_dir)?;
-        let content = r#"# OmegaOS rmux bindings — Option+Z / Option+/ open the session menu
+    let content = r#"# OmegaOS rmux bindings — multiple fallbacks for opening the session menu.
+#
+# Source from your ~/.rmux.conf with:
+#   source-file ~/.omega/rmux.conf.omega
+#
+# Root-table (no prefix):
 bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
 bind-key -n M-/ display-popup -E -w 100% -h 100% "omega menu"
+bind-key -n C-Space display-popup -E -w 100% -h 100% "omega menu"
+
+# Prefix-table (C-b first, then key):
 bind-key o display-popup -E -w 100% -h 100% "omega menu"
+bind-key z display-popup -E -w 100% -h 100% "omega menu"
 "#;
-        std::fs::write(&conf_path, content)?;
-        println!("✓ Persistent config written to {}", conf_path.display());
+    std::fs::write(&conf_path, content)?;
+    println!("✓ Persistent config written to {}", conf_path.display());
+
+    // Also patch the user's ~/.rmux.conf to source this file if not already done.
+    if let Some(home) = dirs::home_dir() {
+        let rmux_conf = home.join(".rmux.conf");
+        let source_line = format!("source-file {}", conf_path.display());
+        let existing = std::fs::read_to_string(&rmux_conf).unwrap_or_default();
+        if !existing.contains("rmux.conf.omega") {
+            let mut content = existing;
+            if !content.ends_with('\n') && !content.is_empty() {
+                content.push('\n');
+            }
+            content.push_str("\n# OmegaOS bindings\n");
+            content.push_str(&source_line);
+            content.push('\n');
+            std::fs::write(&rmux_conf, content)?;
+            println!("✓ Added source-file to {}", rmux_conf.display());
+        } else {
+            println!("✓ ~/.rmux.conf already sources OmegaOS bindings");
+        }
     }
 
+    println!();
+    println!("Try one of these to open the menu:");
+    println!("  • Option+Z  (or Alt+Z)");
+    println!("  • Option+/  (or Alt+/)");
+    println!("  • Ctrl+Space");
+    println!("  • Ctrl+B then o  (or z)");
+
+    Ok(())
+}
+
+fn cmd_projects() -> Result<()> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
+    let projects = omega_core::projects::discover(&home);
+
+    if projects.is_empty() {
+        println!("No projects discovered under {}", home.display());
+        println!("Tip: OmegaOS looks for directories named Projects, Code, Dev, Work, Repos, etc.");
+        println!("containing at least 2 git repos or files like package.json / Cargo.toml.");
+        return Ok(());
+    }
+
+    println!("Discovered {} project(s):\n", projects.len());
+
+    let mut current = String::new();
+    for p in &projects {
+        if p.container != current {
+            println!("─── {} ───", p.container);
+            current = p.container.clone();
+        }
+        let stack = if p.stack.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", p.stack.join(", "))
+        };
+        println!("  {} {}{}", p.name, p.path.display(), stack);
+    }
     Ok(())
 }
 

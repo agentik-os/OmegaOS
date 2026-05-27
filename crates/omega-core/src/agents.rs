@@ -1,5 +1,17 @@
 use serde::{Deserialize, Serialize};
 
+/// Options for launching an agent — used by the Master AISB and other
+/// callers that need to inject a hidden system prompt or continue an
+/// existing conversation.
+#[derive(Debug, Clone, Default)]
+pub struct LaunchOptions {
+    /// Path to a markdown file injected via `--append-system-prompt-file`.
+    /// The contents are hidden from the chat (not shown as a user message).
+    pub system_prompt_file: Option<String>,
+    /// Resume the most recent conversation in the agent's CWD (Claude `--continue`).
+    pub resume_conversation: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Agent {
     Claude,
@@ -59,20 +71,28 @@ impl Agent {
     /// Returns the shell command to launch this agent.
     /// `initial_prompt` is the first message sent to the agent (if it supports it).
     pub fn launch_command(&self, initial_prompt: Option<&str>) -> String {
+        self.launch_command_with(initial_prompt, LaunchOptions::default())
+    }
+
+    /// Returns the shell command with options (system prompt file, continue, etc.).
+    pub fn launch_command_with(&self, initial_prompt: Option<&str>, opts: LaunchOptions) -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/home/hacker".to_string());
 
         match self {
             Agent::Claude => {
-                // Interactive Claude with permissions bypass + prompt as first message
+                let mut args = String::from("claude --dangerously-skip-permissions");
+                if let Some(ref sys_file) = opts.system_prompt_file {
+                    args.push_str(&format!(" --append-system-prompt-file {}", shell_quote(sys_file)));
+                }
+                if opts.resume_conversation {
+                    args.push_str(" --continue");
+                }
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!(
-                            "claude --dangerously-skip-permissions {}; exec bash",
-                            shell_quote(p)
-                        ))
+                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(p)))
                     ),
-                    None => "claude --dangerously-skip-permissions".to_string(),
+                    None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }
             }
             Agent::Codex => match initial_prompt {
