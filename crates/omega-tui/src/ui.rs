@@ -72,6 +72,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
             let hint = format!("Mission for project '{}' (Enter to dispatch, Esc to cancel)", p);
             draw_simple_input_modal_owned(frame, app, &title, &hint, false);
         }
+        InputMode::EditSettingsField { ref config_key, masked } => {
+            let title = format!("Edit setting: {}", config_key);
+            let hint = "Type new value, Enter to save, Esc to cancel".to_string();
+            draw_simple_input_modal_owned(frame, app, &title, &hint, masked);
+        }
         _ => {}
     }
 }
@@ -1054,6 +1059,134 @@ fn render_settings_detail(
     app: &App,
     providers: &omega_core::providers::ProvidersConfig,
 ) -> Vec<Line<'static>> {
+    use crate::app::{fields_for_section, SettingsField};
+    let fields = fields_for_section(app.selected_settings_section(), providers, &app.config);
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
+    let detail_active = app.detail_focused;
+
+    // Top hint
+    if detail_active {
+        lines.push(Line::from(Span::styled(
+            "  ↑/↓ navigate · Enter activates · Tab → back to list",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Tab → focus this panel to interact (Install/Uninstall/Edit)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    lines.push(Line::from(""));
+
+    for (i, field) in fields.iter().enumerate() {
+        let is_selected = detail_active && i == app.settings_field_selected;
+        let prefix = if is_selected { "  ▶ " } else { "    " };
+        match field {
+            SettingsField::Action { label, command, .. } => {
+                let label_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(prefix.to_string()),
+                    Span::styled(label.clone(), label_style),
+                ]));
+                if is_selected {
+                    let cmd_preview = if command.len() > 100 {
+                        format!("{}…", &command[..100])
+                    } else {
+                        command.clone()
+                    };
+                    lines.push(Line::from(Span::styled(
+                        format!("      → Enter runs:  {}", cmd_preview),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+            SettingsField::EditText {
+                label,
+                current_value,
+                masked,
+                ..
+            } => {
+                let display = if current_value.is_empty() {
+                    "(not set)".to_string()
+                } else if *masked {
+                    mask_key(current_value)
+                } else {
+                    current_value.clone()
+                };
+                let label_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(prefix.to_string()),
+                    Span::styled(format!("{:38}", label), label_style),
+                    Span::styled(display, Style::default().fg(Color::Cyan)),
+                ]));
+                if is_selected {
+                    lines.push(Line::from(Span::styled(
+                        "      → Enter to edit (opens input modal)",
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+            SettingsField::Toggle { label, current, .. } => {
+                let badge = if *current { "✓ on" } else { "○ off" };
+                let badge_color = if *current { Color::Green } else { Color::Red };
+                let label_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(prefix.to_string()),
+                    Span::styled(format!("{:38}", label), label_style),
+                    Span::styled(badge.to_string(), Style::default().fg(badge_color).add_modifier(Modifier::BOLD)),
+                ]));
+                if is_selected {
+                    lines.push(Line::from(Span::styled(
+                        "      → Enter to toggle",
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+            SettingsField::Info(text) => {
+                if text.is_empty() {
+                    lines.push(Line::from(""));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        format!("    {}", text),
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Config files: ~/.omega/config.toml  ~/.omega/providers.toml",
+        Style::default().fg(Color::DarkGray),
+    )));
+    return lines;
+    #[allow(unreachable_code)]
+    {
     let mut lines: Vec<Line> = vec![Line::from("")];
 
     let cfg = &app.config;
@@ -1234,6 +1367,7 @@ fn render_settings_detail(
     )));
 
     lines
+    }
 }
 
 fn kv(key: &str, value: &str) -> Line<'static> {
@@ -1714,6 +1848,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             InputMode::TelegramSetupUserId(_, chat) => (
                 "Telegram setup 3/3 — user_id (Esc to skip)",
                 format!("[chat={}] {}", chat, app.input_buffer),
+            ),
+            InputMode::EditSettingsField { config_key, masked } => (
+                "Edit setting",
+                if *masked {
+                    format!("[{}] {}", config_key, mask_inline(&app.input_buffer))
+                } else {
+                    format!("[{}] {}", config_key, app.input_buffer)
+                },
             ),
         };
 

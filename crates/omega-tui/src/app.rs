@@ -58,6 +58,12 @@ pub enum InputMode {
     TelegramSetupChatId(String),
     /// Step 3: optional user id allow-list (carries token + chat_id)
     TelegramSetupUserId(String, String),
+
+    /// Editing a settings text field — holds (config_key, masked).
+    EditSettingsField {
+        config_key: String,
+        masked: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +203,333 @@ pub enum SessionFocus {
     ChatFullscreen,
 }
 
+/// Interactive items within a Settings sub-section.
+#[derive(Debug, Clone)]
+pub enum SettingsField {
+    /// Run a shell command (typically install/uninstall).
+    /// `confirm_first`: if true, the field shows the command and Enter runs it
+    /// without further prompting; if false, fires immediately.
+    Action {
+        label: String,
+        command: String,
+        confirm_first: bool,
+    },
+    /// Open a text input modal that updates a config key on confirm.
+    EditText {
+        label: String,
+        config_key: String,
+        current_value: String,
+        masked: bool,
+    },
+    /// Toggle a boolean config key.
+    Toggle {
+        label: String,
+        config_key: String,
+        current: bool,
+    },
+    /// Show informational text only (homepage link, status, etc.).
+    Info(String),
+}
+
+impl SettingsField {
+    pub fn is_actionable(&self) -> bool {
+        !matches!(self, SettingsField::Info(_))
+    }
+    pub fn label(&self) -> &str {
+        match self {
+            SettingsField::Action { label, .. } => label,
+            SettingsField::EditText { label, .. } => label,
+            SettingsField::Toggle { label, .. } => label,
+            SettingsField::Info(s) => s,
+        }
+    }
+}
+
+/// Build the field list for a settings section.
+pub fn fields_for_section(
+    section: SettingsSection,
+    providers: &omega_core::providers::ProvidersConfig,
+    config: &OmegaConfig,
+) -> Vec<SettingsField> {
+    use omega_core::agents::Agent;
+    let mut out = Vec::new();
+    let agent_for_section = |s: SettingsSection| -> Option<Agent> {
+        match s {
+            SettingsSection::Claude => Some(Agent::Claude),
+            SettingsSection::Codex => Some(Agent::Codex),
+            SettingsSection::Gemini => Some(Agent::Gemini),
+            SettingsSection::Pi => Some(Agent::Pi),
+            SettingsSection::Hermes => Some(Agent::Hermes),
+            SettingsSection::Glm => Some(Agent::Glm),
+            _ => None,
+        }
+    };
+
+    match section {
+        SettingsSection::General => {
+            out.push(SettingsField::Info(format!(
+                "Default AISB agent: {}",
+                config.aisb_agent
+            )));
+            out.push(SettingsField::Info(format!("Default model: {}", config.default_model)));
+            out.push(SettingsField::Toggle {
+                label: "Auto-spawn Master on launch".to_string(),
+                config_key: "general.auto_spawn_master".to_string(),
+                current: config.auto_spawn_master,
+            });
+            out.push(SettingsField::Toggle {
+                label: "Auto-naming sessions".to_string(),
+                config_key: "general.auto_naming".to_string(),
+                current: config.auto_naming,
+            });
+        }
+        SettingsSection::Install => {
+            // Per-agent install / uninstall buttons
+            for agent in Agent::all() {
+                if matches!(agent, Agent::Shell) {
+                    continue;
+                }
+                let installed = agent.is_available();
+                let badge = if installed { "✓" } else { "✗" };
+                let agent_name = agent.name();
+                out.push(SettingsField::Info(format!(
+                    "{}  {:8}  {}",
+                    badge,
+                    agent_name,
+                    agent.display_name()
+                )));
+                if let Some(cmd) = agent.install_command() {
+                    out.push(SettingsField::Action {
+                        label: format!(
+                            "    [{}] {}",
+                            if installed { "Re-install" } else { "Install" },
+                            agent_name
+                        ),
+                        command: cmd.to_string(),
+                        confirm_first: true,
+                    });
+                }
+                if installed {
+                    if let Some(cmd) = agent.uninstall_command() {
+                        out.push(SettingsField::Action {
+                            label: format!("    [Uninstall] {}", agent_name),
+                            command: cmd.to_string(),
+                            confirm_first: true,
+                        });
+                    }
+                }
+                out.push(SettingsField::Info(String::new())); // spacer
+            }
+        }
+        SettingsSection::Claude => {
+            let c = &providers.claude;
+            out.push(SettingsField::EditText {
+                label: "Model (e.g. opus, sonnet, haiku)".to_string(),
+                config_key: "claude.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Effort (low/medium/high/max)".to_string(),
+                config_key: "claude.effort".to_string(),
+                current_value: c.effort.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Anthropic API key".to_string(),
+                config_key: "claude.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::Toggle {
+                label: "Dangerously skip permissions".to_string(),
+                config_key: "claude.dangerously_skip_permissions".to_string(),
+                current: c.dangerously_skip_permissions,
+            });
+            out.extend(install_actions_for(Agent::Claude));
+        }
+        SettingsSection::Codex => {
+            let c = &providers.codex;
+            out.push(SettingsField::EditText {
+                label: "Model".to_string(),
+                config_key: "codex.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "OpenAI API key".to_string(),
+                config_key: "codex.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.push(SettingsField::EditText {
+                label: "Base URL".to_string(),
+                config_key: "codex.base_url".to_string(),
+                current_value: c.base_url.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::Codex));
+        }
+        SettingsSection::Gemini => {
+            let c = &providers.gemini;
+            out.push(SettingsField::EditText {
+                label: "Model".to_string(),
+                config_key: "gemini.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Google API key".to_string(),
+                config_key: "gemini.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.extend(install_actions_for(Agent::Gemini));
+        }
+        SettingsSection::Pi => {
+            let c = &providers.pi;
+            out.push(SettingsField::EditText {
+                label: "Provider (openrouter / anthropic / openai)".to_string(),
+                config_key: "pi.provider".to_string(),
+                current_value: c.provider.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Model (e.g. anthropic/claude-sonnet-4.6)".to_string(),
+                config_key: "pi.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Extension path (.ts file)".to_string(),
+                config_key: "pi.extension".to_string(),
+                current_value: c.extension.clone(),
+                masked: false,
+            });
+            out.extend(install_actions_for(Agent::Pi));
+        }
+        SettingsSection::Hermes => {
+            let c = &providers.hermes;
+            out.push(SettingsField::EditText {
+                label: "Model".to_string(),
+                config_key: "hermes.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "Hermes API key".to_string(),
+                config_key: "hermes.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.extend(install_actions_for(Agent::Hermes));
+        }
+        SettingsSection::Glm => {
+            let c = &providers.glm;
+            out.push(SettingsField::EditText {
+                label: "Model".to_string(),
+                config_key: "glm.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "GLM API key".to_string(),
+                config_key: "glm.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.extend(install_actions_for(Agent::Glm));
+        }
+        SettingsSection::Aisb => {
+            out.push(SettingsField::Info(format!(
+                "Master session name: {}",
+                omega_core::aisb::MASTER_SESSION_NAME
+            )));
+            out.push(SettingsField::Info(format!(
+                "Current AISB agent: {}",
+                config.aisb_agent
+            )));
+            out.push(SettingsField::Action {
+                label: "[Re-spawn Master AISB now]".to_string(),
+                command: "omega master".to_string(),
+                confirm_first: true,
+            });
+            out.push(SettingsField::Action {
+                label: "[Kill Master AISB]".to_string(),
+                command: format!("omega kill {}", omega_core::aisb::MASTER_SESSION_NAME),
+                confirm_first: true,
+            });
+        }
+        SettingsSection::Telegram => {
+            match omega_core::monitor::OmegaTelegramConfig::read() {
+                Some(cfg) => {
+                    out.push(SettingsField::Info(format!("Enabled: {}", cfg.enabled)));
+                    out.push(SettingsField::Info(format!("Chat ID: {}", cfg.chat_id)));
+                    out.push(SettingsField::Info(format!("Relay: {}", cfg.relay_session)));
+                    out.push(SettingsField::Action {
+                        label: "[Disconnect Telegram bot]".to_string(),
+                        command: "omega telegram disconnect".to_string(),
+                        confirm_first: true,
+                    });
+                    out.push(SettingsField::Action {
+                        label: "[Run Telegram bot (foreground)]".to_string(),
+                        command: "omega telegram run".to_string(),
+                        confirm_first: true,
+                    });
+                }
+                None => {
+                    out.push(SettingsField::Info(
+                        "Not configured. Use the Setup action below or the Monitor tab [T].".to_string(),
+                    ));
+                    out.push(SettingsField::Action {
+                        label: "[Set up Telegram bot] (opens wizard)".to_string(),
+                        command: "__INTERNAL_TELEGRAM_SETUP__".to_string(),
+                        confirm_first: false,
+                    });
+                }
+            }
+        }
+    }
+
+    // Common: every provider section gets an "Open homepage" info line
+    if let Some(agent) = agent_for_section(section) {
+        if let Some(home) = agent.homepage() {
+            out.push(SettingsField::Info(format!("Homepage: {}", home)));
+        }
+    }
+
+    out
+}
+
+fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
+    let mut out = Vec::new();
+    let installed = agent.is_available();
+    let badge = if installed { "✓ installed" } else { "✗ not installed" };
+    out.push(SettingsField::Info(String::new()));
+    out.push(SettingsField::Info(format!("Status: {}", badge)));
+    if let Some(cmd) = agent.install_command() {
+        out.push(SettingsField::Action {
+            label: format!(
+                "[{}] {}",
+                if installed { "Re-install" } else { "Install" },
+                agent.display_name()
+            ),
+            command: cmd.to_string(),
+            confirm_first: true,
+        });
+    }
+    if installed {
+        if let Some(cmd) = agent.uninstall_command() {
+            out.push(SettingsField::Action {
+                label: format!("[Uninstall] {}", agent.display_name()),
+                command: cmd.to_string(),
+                confirm_first: true,
+            });
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     General,
@@ -287,6 +620,8 @@ pub struct App {
     pub menu_selected: usize,
     pub monitor_selected: usize,
     pub settings_selected: usize,
+    /// Cursor within the focused Settings section's interactive field list.
+    pub settings_field_selected: usize,
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
@@ -337,6 +672,7 @@ impl App {
             menu_selected: 0,
             monitor_selected: 0,
             settings_selected: 0,
+            settings_field_selected: 0,
             info_section_selected: 0,
             info_agent_selected: 0,
             agent_picker_index: 0,
@@ -532,6 +868,7 @@ impl App {
     pub fn select_settings_next(&mut self) {
         let count = SettingsSection::all().len();
         self.settings_selected = (self.settings_selected + 1) % count;
+        self.settings_field_selected = 0;
     }
 
     pub fn select_settings_prev(&mut self) {
@@ -541,10 +878,25 @@ impl App {
         } else {
             self.settings_selected - 1
         };
+        self.settings_field_selected = 0;
     }
 
     pub fn selected_settings_section(&self) -> SettingsSection {
         SettingsSection::all()[self.settings_selected]
+    }
+
+    /// Reset field cursor when section changes
+    pub fn reset_settings_field(&mut self) {
+        self.settings_field_selected = 0;
+    }
+
+    pub fn select_settings_field_next(&mut self, max: usize) {
+        if max == 0 { return; }
+        self.settings_field_selected = (self.settings_field_selected + 1) % max;
+    }
+    pub fn select_settings_field_prev(&mut self, max: usize) {
+        if max == 0 { return; }
+        self.settings_field_selected = if self.settings_field_selected == 0 { max - 1 } else { self.settings_field_selected - 1 };
     }
 
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {

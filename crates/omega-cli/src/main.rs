@@ -365,6 +365,43 @@ async fn run_menu() -> Result<()> {
 /// After creating a session, switch to the Sessions tab, select the new
 /// session, enter chat focus, and refresh the live preview — so the user
 /// is immediately ready to talk to it.
+fn shell_escape_for_bash(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Toggle a boolean config field in either OmegaConfig or ProvidersConfig.
+fn toggle_bool_config(key: &str) -> Result<()> {
+    match key {
+        "general.auto_spawn_master" => {
+            let mut c = OmegaConfig::load().unwrap_or_default();
+            c.auto_spawn_master = !c.auto_spawn_master;
+            save_omega_config(&c)?;
+        }
+        "general.auto_naming" => {
+            let mut c = OmegaConfig::load().unwrap_or_default();
+            c.auto_naming = !c.auto_naming;
+            save_omega_config(&c)?;
+        }
+        "claude.dangerously_skip_permissions" => {
+            let mut p = omega_core::providers::ProvidersConfig::load();
+            p.claude.dangerously_skip_permissions = !p.claude.dangerously_skip_permissions;
+            p.save()?;
+        }
+        _ => anyhow::bail!("Unknown toggle key: {}", key),
+    }
+    Ok(())
+}
+
+fn save_omega_config(c: &OmegaConfig) -> Result<()> {
+    let path = OmegaConfig::config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let content = toml::to_string_pretty(c)?;
+    std::fs::write(&path, content)?;
+    Ok(())
+}
+
 async fn auto_focus_chat(app: &mut omega_tui::app::App, session_name: &str) {
     use omega_tui::app::Tab;
 
@@ -602,6 +639,59 @@ async fn run_tui_loop(
                         Err(e) => {
                             app.status_message = Some(format!("Telegram setup failed: {}", e));
                         }
+                    }
+                }
+                Action::RunShellCommand { label, command } => {
+                    // Spawn a fresh rmux session that runs the command — user can
+                    // watch the output and the session stays alive.
+                    let mgr = SessionManager::connect().await?;
+                    let safe = label
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '-')
+                        .take(20)
+                        .collect::<String>();
+                    let ts = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    let name = format!("install-{}-{:06x}", safe, ts & 0xffffff);
+                    let cmd = format!("bash -c {}", shell_escape_for_bash(&format!("{}; echo; echo '─── done ───'; exec bash", command)));
+                    match mgr.create_session(&name, None, Some(&cmd)).await {
+                        Ok(_) => {
+                            app.status_message = Some(format!("Running '{}' in session '{}' — switching", label, name));
+                            auto_focus_chat(app, &name).await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Could not spawn session: {}", e));
+                        }
+                    }
+                }
+                Action::EditSettingsField { config_key, current, masked } => {
+                    app.input_buffer = current;
+                    app.input_mode = omega_tui::app::InputMode::EditSettingsField {
+                        config_key: config_key.clone(),
+                        masked,
+                    };
+                    app.status_message =
+                        Some(format!("Editing {} — Enter to save, Esc to cancel", config_key));
+                }
+                Action::ToggleSettingsBool { config_key } => {
+                    if let Err(e) = toggle_bool_config(&config_key) {
+                        app.status_message = Some(format!("Toggle failed: {}", e));
+                    } else {
+                        app.status_message = Some(format!("Toggled {}", config_key));
+                        // Reload the app's config so the change is reflected
+                        app.config = OmegaConfig::load().unwrap_or_default();
+                    }
+                }
+                Action::CommitSettingsEdit { config_key, value } => {
+                    let mut providers = omega_core::providers::ProvidersConfig::load();
+                    if let Err(e) = set_config_value(&mut providers, &config_key, &value) {
+                        app.status_message = Some(format!("Save failed: {}", e));
+                    } else if let Err(e) = providers.save() {
+                        app.status_message = Some(format!("Save failed: {}", e));
+                    } else {
+                        app.status_message = Some(format!("✓ {} updated", config_key));
                     }
                 }
                 Action::RenameSession { old, new } => {

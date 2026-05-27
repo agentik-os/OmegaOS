@@ -91,6 +91,21 @@ impl Agent {
         }
     }
 
+    /// Best-effort uninstall command for an agent. Documents how to
+    /// remove the binary from the user's PATH. Not all agents have a
+    /// turnkey uninstaller, so this is informational + best-effort.
+    pub fn uninstall_command(&self) -> Option<&'static str> {
+        match self {
+            Agent::Claude => Some("rm -f $(which claude) && rm -rf ~/.claude"),
+            Agent::Codex => Some("npm uninstall -g @openai/codex"),
+            Agent::Gemini => Some("npm uninstall -g @google/gemini-cli"),
+            Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
+            Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
+            Agent::Glm => Some("npm uninstall -g @z-ai/glm-cli"),
+            Agent::Shell => None,
+        }
+    }
+
     /// URL of the project homepage (shown in Settings).
     pub fn homepage(&self) -> Option<&'static str> {
         match self {

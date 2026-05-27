@@ -35,6 +35,18 @@ pub enum Action {
         chat_id: i64,
         user_ids: Vec<i64>,
     },
+    /// Run a shell command (Settings Install/Uninstall actions).
+    RunShellCommand { label: String, command: String },
+    /// Begin editing a settings text field (opens input modal pre-filled).
+    EditSettingsField {
+        config_key: String,
+        current: String,
+        masked: bool,
+    },
+    /// Toggle a boolean settings field.
+    ToggleSettingsBool { config_key: String },
+    /// Commit an edited settings text field (saves to providers.toml).
+    CommitSettingsEdit { config_key: String, value: String },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -254,6 +266,17 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 Action::None
             })
         }
+        InputMode::EditSettingsField { config_key, .. } => {
+            let cfg_key = config_key.clone();
+            handle_key_input(app, key, move |app, value| {
+                app.input_mode = InputMode::Normal;
+                Action::CommitSettingsEdit {
+                    config_key: cfg_key,
+                    value,
+                }
+            })
+        }
+
         InputMode::TelegramSetupUserId(token, chat_id_str) => {
             let token = token.clone();
             let chat_id: i64 = chat_id_str.parse().unwrap_or(0);
@@ -341,12 +364,24 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             } else if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
+                // When entering detail on Settings, snap cursor to first actionable
+                if app.tab == Tab::Settings && app.detail_focused {
+                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let fields = crate::app::fields_for_section(
+                        app.selected_settings_section(),
+                        &providers,
+                        &app.config,
+                    );
+                    if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
+                        app.settings_field_selected = first;
+                    }
+                }
                 app.status_message = Some(if app.detail_fullscreen {
                     "Focus: detail FULLSCREEN (Tab → list, Tab-Tab → exit)".to_string()
                 } else if app.detail_focused {
-                    "Focus: detail panel (↑/↓ scroll, Tab → list, Tab-Tab → fullscreen)".to_string()
+                    "Focus: detail (↑/↓ navigate, Enter activate, Tab → list)".to_string()
                 } else {
-                    "Focus: section list (Tab → detail, Tab-Tab → detail fullscreen)".to_string()
+                    "Focus: section list (Tab → detail, Tab-Tab → fullscreen)".to_string()
                 });
             } else {
                 app.next_tab();
@@ -390,8 +425,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
-            // In 2-col tabs with detail focused: ↓ scrolls the detail
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) && app.detail_focused {
+            // Settings tab + detail focused: navigate ACTIONABLE fields
+            if app.tab == Tab::Settings && app.detail_focused {
+                let providers = omega_core::providers::ProvidersConfig::load();
+                let fields = crate::app::fields_for_section(
+                    app.selected_settings_section(),
+                    &providers,
+                    &app.config,
+                );
+                advance_to_next_actionable(app, &fields, true);
+                return Action::None;
+            }
+            if matches!(app.tab, Tab::Info | Tab::Monitor) && app.detail_focused {
                 app.scroll_detail_down(1);
                 return Action::None;
             }
@@ -413,7 +458,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::Up | KeyCode::Char('k') => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor) && app.detail_focused {
+            if app.tab == Tab::Settings && app.detail_focused {
+                let providers = omega_core::providers::ProvidersConfig::load();
+                let fields = crate::app::fields_for_section(
+                    app.selected_settings_section(),
+                    &providers,
+                    &app.config,
+                );
+                advance_to_next_actionable(app, &fields, false);
+                return Action::None;
+            }
+            if matches!(app.tab, Tab::Info | Tab::Monitor) && app.detail_focused {
                 app.scroll_detail_up(1);
                 return Action::None;
             }
@@ -457,7 +512,38 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
             Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
-            Tab::Settings | Tab::Info | Tab::Help => Action::None,
+            Tab::Settings => {
+                // If detail focused, activate the selected field; else no-op
+                if !app.detail_focused {
+                    Action::None
+                } else {
+                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let fields = crate::app::fields_for_section(
+                        app.selected_settings_section(),
+                        &providers,
+                        &app.config,
+                    );
+                    let idx = app.settings_field_selected.min(fields.len().saturating_sub(1));
+                    match fields.into_iter().nth(idx) {
+                        Some(crate::app::SettingsField::Action { label, command, .. }) => {
+                            // Special: trigger Telegram wizard inline
+                            if command == "__INTERNAL_TELEGRAM_SETUP__" {
+                                Action::TelegramSetup
+                            } else {
+                                Action::RunShellCommand { label, command }
+                            }
+                        }
+                        Some(crate::app::SettingsField::EditText { config_key, current_value, masked, .. }) => {
+                            Action::EditSettingsField { config_key, current: current_value, masked }
+                        }
+                        Some(crate::app::SettingsField::Toggle { config_key, .. }) => {
+                            Action::ToggleSettingsBool { config_key }
+                        }
+                        _ => Action::None,
+                    }
+                }
+            }
+            Tab::Info | Tab::Help => Action::None,
         },
 
         // Monitor tab letter shortcuts
@@ -573,6 +659,39 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         _ => Action::None,
     }
+}
+
+/// Move the settings field cursor to the next/previous actionable field,
+/// skipping Info (non-interactable) entries.
+fn advance_to_next_actionable(app: &mut App, fields: &[crate::app::SettingsField], forward: bool) {
+    let n = fields.len();
+    if n == 0 {
+        return;
+    }
+    let actionable: Vec<usize> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| if f.is_actionable() { Some(i) } else { None })
+        .collect();
+    if actionable.is_empty() {
+        return;
+    }
+    let current = app.settings_field_selected;
+    let target = if forward {
+        actionable
+            .iter()
+            .copied()
+            .find(|i| *i > current)
+            .unwrap_or(actionable[0])
+    } else {
+        actionable
+            .iter()
+            .copied()
+            .rev()
+            .find(|i| *i < current)
+            .unwrap_or(*actionable.last().unwrap())
+    };
+    app.settings_field_selected = target;
 }
 
 fn execute_monitor_action(action: MonitorAction) -> Action {
