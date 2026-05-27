@@ -99,8 +99,27 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
     let mut offset: i64 = 0;
     let mut last_capture = String::new();
+    let mut last_healthcheck = std::time::Instant::now();
 
     loop {
+        // Periodic healthcheck: ensure AISB Master is alive every 60s
+        if last_healthcheck.elapsed() > Duration::from_secs(60) {
+            last_healthcheck = std::time::Instant::now();
+            let sessions = mgr.list_sessions().await.unwrap_or_default();
+            if !sessions.iter().any(|s| s.name == cfg.relay_session) {
+                tracing::info!("AISB Master not found — restarting with --continue");
+                let cwd = std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let _ = omega_core::aisb::ensure_master(
+                    &mgr,
+                    omega_core::agents::Agent::Claude,
+                    &cwd,
+                )
+                .await;
+            }
+        }
         let url = format!(
             "{}/bot{}/getUpdates?timeout=25&offset={}",
             API_BASE, cfg.bot_token, offset
@@ -162,19 +181,60 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                 }
             }
 
-            // Relay to the configured session
-            if let Err(e) = mgr.send_text(&cfg.relay_session, text).await {
+            // Relay to the configured session — auto-restart Master if dead
+            if let Err(_) = mgr.send_text(&cfg.relay_session, text).await {
+                // Session likely crashed — try to revive it
                 let _ = send_html(
                     &client,
                     &cfg.bot_token,
                     reply_chat_id,
-                    &format!(
-                        "🔴 <b>Relay failed</b>\n<code>{}</code>",
-                        escape_html(&e.to_string())
-                    ),
+                    "🔄 <i>AISB Master redémarrage — reprise de la conversation…</i>",
                 )
                 .await;
-                continue;
+
+                let cwd = std::env::current_dir()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                match omega_core::aisb::ensure_master(
+                    &mgr,
+                    omega_core::agents::Agent::Claude,
+                    &cwd,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        // Give Claude a moment to boot
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        // Retry the send
+                        if let Err(e2) = mgr.send_text(&cfg.relay_session, text).await {
+                            let _ = send_html(
+                                &client,
+                                &cfg.bot_token,
+                                reply_chat_id,
+                                &format!(
+                                    "🔴 <b>Relay failed after restart</b>\n<code>{}</code>",
+                                    escape_html(&e2.to_string())
+                                ),
+                            )
+                            .await;
+                            continue;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = send_html(
+                            &client,
+                            &cfg.bot_token,
+                            reply_chat_id,
+                            &format!(
+                                "🔴 <b>Could not restart AISB Master</b>\n<code>{}</code>",
+                                escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                        continue;
+                    }
+                }
             }
 
             // Send a quick "thinking" indicator
