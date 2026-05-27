@@ -31,10 +31,191 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     draw_status_bar(frame, app, chunks[2]);
 
-    // Render agent picker overlay if in that input mode
+    // Overlay modals — drawn LAST so they paint on top of everything
     if let InputMode::NewSessionAgent(ref name) = app.input_mode {
         draw_agent_picker(frame, app, name);
     }
+    match app.input_mode {
+        InputMode::TelegramSetupToken
+        | InputMode::TelegramSetupChatId(_)
+        | InputMode::TelegramSetupUserId(_, _) => {
+            draw_telegram_setup_modal(frame, app);
+        }
+        InputMode::RenameSession(_) => draw_simple_input_modal(
+            frame,
+            app,
+            "Rename session",
+            "New session name (Enter to confirm, Esc to cancel)",
+            false,
+        ),
+        InputMode::NewSession => draw_simple_input_modal(
+            frame,
+            app,
+            "New session",
+            "Session name (Enter to confirm, Esc to cancel)",
+            false,
+        ),
+        InputMode::NewNamedSession(ref agent) => {
+            let title = format!("New {} session", agent);
+            let hint = format!("Session name (Enter to launch, Esc to cancel)");
+            draw_simple_input_modal_owned(frame, app, &title, &hint, false);
+        }
+        InputMode::DispatchProject => draw_simple_input_modal(
+            frame,
+            app,
+            "Dispatch oracle — step 1/2",
+            "Project name (Enter to continue, Esc to cancel)",
+            false,
+        ),
+        InputMode::DispatchMission(ref p) => {
+            let title = format!("Dispatch oracle — step 2/2");
+            let hint = format!("Mission for project '{}' (Enter to dispatch, Esc to cancel)", p);
+            draw_simple_input_modal_owned(frame, app, &title, &hint, false);
+        }
+        _ => {}
+    }
+}
+
+/// Centered overlay modal for the 3-step Telegram setup wizard.
+fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
+    let (step_num, step_label, hint, masked, value) = match &app.input_mode {
+        InputMode::TelegramSetupToken => (
+            1,
+            "BOT_TOKEN",
+            "Paste the bot token from @BotFather. Bracketed paste handles long tokens — no need to type.",
+            true,
+            app.input_buffer.clone(),
+        ),
+        InputMode::TelegramSetupChatId(_) => (
+            2,
+            "CHAT_ID",
+            "Numeric chat id. Get yours by sending /start to @userinfobot on Telegram.",
+            false,
+            app.input_buffer.clone(),
+        ),
+        InputMode::TelegramSetupUserId(_, chat) => (
+            3,
+            "ALLOWED user_ids (optional)",
+            &*Box::leak(format!(
+                "Comma-separated user_ids allowed to talk to the bot (chat_id={}). Esc to skip.",
+                chat
+            ).into_boxed_str()),
+            false,
+            app.input_buffer.clone(),
+        ),
+        _ => return,
+    };
+
+    let area = centered_rect(70, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let display = if masked { mask_inline(&value) } else { value };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled(
+                "  Telegram Setup ",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("· Step {}/3", step_num),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", hint),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                format!("{}: ", step_label),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("    ▶ ", Style::default().fg(Color::Yellow)),
+            Span::styled(display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("█", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(""),
+        Line::from(Span::styled(
+            "    [Enter] confirm     [Esc] cancel     [Backspace] erase",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "    The whole flow is inline — no shell required.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Telegram Setup ")
+        .border_style(Style::default().fg(Color::Yellow));
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
+}
+
+/// Centered overlay modal for a single-line text input (rename, new session, etc.).
+fn draw_simple_input_modal(frame: &mut Frame, app: &App, title: &str, hint: &str, masked: bool) {
+    draw_simple_input_modal_owned(frame, app, title, hint, masked);
+}
+
+fn draw_simple_input_modal_owned(
+    frame: &mut Frame,
+    app: &App,
+    title: &str,
+    hint: &str,
+    masked: bool,
+) {
+    let area = centered_rect(60, 30, frame.area());
+    frame.render_widget(Clear, area);
+
+    let display = if masked {
+        mask_inline(&app.input_buffer)
+    } else {
+        app.input_buffer.clone()
+    };
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", title),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {}", hint),
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("    ▶ ", Style::default().fg(Color::Yellow)),
+            Span::styled(display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("█", Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "    [Enter] confirm     [Esc] cancel     [Backspace] erase",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", title))
+        .border_style(Style::default().fg(Color::Yellow));
+    let paragraph = Paragraph::new(lines).block(block);
+    frame.render_widget(paragraph, area);
 }
 
 fn draw_agent_picker(frame: &mut Frame, app: &App, session_name: &str) {
