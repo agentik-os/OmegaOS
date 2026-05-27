@@ -128,13 +128,32 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(area);
-
     let list_focused = app.session_focus == SessionFocus::List;
-    let chat_focused = app.session_focus == SessionFocus::Chat;
+    let chat_focused = matches!(
+        app.session_focus,
+        SessionFocus::Chat | SessionFocus::ChatFullscreen
+    );
+    let fullscreen = app.session_focus == SessionFocus::ChatFullscreen;
+
+    // Fullscreen: chat takes the entire area, no session list rendered
+    let split = if fullscreen {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(0), Constraint::Percentage(100)])
+            .split(area)
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+            .split(area)
+    };
+
+    // Skip rendering the left list in fullscreen mode
+    if fullscreen {
+        draw_sessions_right(frame, app, split[1], chat_focused);
+        return;
+    }
+    let _ = list_focused;
 
     // ── Left: session list with project headers ─────────────────────────────
     let mut entry_idx: usize = 0;
@@ -175,9 +194,19 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(list, split[0]);
 
-    // ── Right: preview + (when focused) a chat input box ────────────────────
+    draw_sessions_right(frame, app, split[1], chat_focused);
+}
+
+/// Render the right column of the Sessions tab (preview + optional chat input).
+/// Used both in split layout and chat-fullscreen mode.
+fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: bool) {
+    let fullscreen = app.session_focus == SessionFocus::ChatFullscreen;
+
     let preview_title = match app.selected_session() {
-        Some(e) => format!(" {} ", e.session.name),
+        Some(e) => {
+            let suffix = if fullscreen { "  [FULLSCREEN — Tab-Tab to exit]" } else { "" };
+            format!(" {}{} ", e.session.name, suffix)
+        }
         None => " Preview ".to_string(),
     };
 
@@ -188,7 +217,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     let total_lines = app.preview_content.lines().count() as u16;
-    let viewport_height = split[1].height.saturating_sub(2); // borders
+    let viewport_height = area.height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(viewport_height);
     let scroll = app.preview_scroll.min(max_scroll);
 
@@ -211,11 +240,10 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     };
 
     if chat_focused {
-        // Split right column vertically: preview on top, chat input at bottom
         let right_split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(0), Constraint::Length(3)])
-            .split(split[1]);
+            .split(area);
 
         let preview = Paragraph::new(preview_lines)
             .scroll((scroll, 0))
@@ -227,11 +255,15 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
             );
         frame.render_widget(preview, right_split[0]);
 
-        // Chat input box
         let target = app
             .selected_session()
             .map(|e| e.session.name.clone())
             .unwrap_or_default();
+        let hint = if fullscreen {
+            " (Enter send, Tab-Tab to exit fullscreen, Esc back to list) "
+        } else {
+            " (Enter send, Tab-Tab fullscreen, Tab/Esc back) "
+        };
         let input_line = Line::from(vec![
             Span::styled("▶ ", Style::default().fg(Color::Yellow)),
             Span::raw(app.chat_input.clone()),
@@ -240,7 +272,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
         let chat = Paragraph::new(input_line).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" → {} (Enter send, Tab/Esc back) ", target))
+                .title(format!(" → {}{}", target, hint))
                 .border_style(Style::default().fg(Color::Yellow)),
         );
         frame.render_widget(chat, right_split[1]);
@@ -253,7 +285,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
                     .title(format!("{}{}", preview_title, scroll_indicator))
                     .border_style(preview_border_style),
             );
-        frame.render_widget(preview, split[1]);
+        frame.render_widget(preview, area);
     }
 }
 
@@ -785,44 +817,61 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "",
         "  OmegaOS — Agentic Terminal Operating System",
         "",
-        "  Navigation:",
-        "    ← / →              Switch tabs (Sessions ↔ Menu ↔ Help)",
-        "    ↑ / ↓ or j/k       Navigate items in current tab",
-        "    Enter              Attach session  OR  execute menu action",
-        "    Esc                Back to Sessions tab (or quit if there)",
-        "    q                  Quit",
+        "  Tabs:",
+        "    ← / →              Switch tabs (Sessions | Menu | Monitor | Settings | Help)",
+        "    Shift+Tab          Same as ←",
         "",
-        "  Menu — direct agent launchers (each Enter creates a new session):",
+        "  Sessions tab:",
+        "    ↑ / ↓ or j/k       Navigate sessions",
+        "    Enter              Attach to selected session (rmux switch-client)",
+        "    Tab                Focus the chat pane (talk to selected session)",
+        "    Tab-Tab (rapide)   Toggle chat FULLSCREEN (hides list)",
+        "    Esc (in chat)      Back to session list",
+        "    r / R              Rename selected session",
+        "    x / X              Kill selected session (skipped if locked)",
+        "    .                  Toggle lock/protection",
+        "    F5                 Refresh session list + preview",
+        "    PageUp / PageDown  Scroll the preview pane",
+        "    Home / End         Jump to top / bottom of preview (tail-follow on at End)",
+        "",
+        "  Menu tab — direct agent launchers:",
         "    [c] New Claude     [C] New Codex      [g] New Gemini",
         "    [p] New Pi         [G] New GLM        [t] New Terminal",
         "    [d] Dispatch oracle (project + mission)",
-        "    [r] Refresh        [.] Toggle protect [x] Kill selected",
+        "    [.] Toggle lock    [x] Kill selected",
         "",
-        "  Session Actions:",
-        "    n                  New session (prompts for name)",
-        "    d                  Dispatch oracle (prompts for project + mission)",
-        "    x                  Kill selected session",
-        "    .                  Toggle protection",
-        "    r                  Refresh session list",
-        "    ?                  Show this help",
+        "  Monitor tab — billing / accounts / Telegram:",
+        "    ↑ / ↓ + Enter      Run the highlighted action",
+        "    [L] Login Claude   (opens session with `claude /login`)",
+        "    [T] Telegram setup [D] Telegram disconnect",
+        "    [B] Refresh billing now",
         "",
-        "  Input Mode:",
-        "    Type to fill, Enter to submit, Esc to cancel",
-        "    Backspace to delete",
+        "  Settings tab — provider configuration:",
+        "    ↑ / ↓              Browse sections (General / Claude / Codex / ... / Telegram)",
+        "    Per-provider:      model, API key (masked), CLI availability ✓/✗",
+        "    Edit via CLI:      omega config set claude.model opus",
+        "                       omega config set codex.api_key sk-…",
+        "",
+        "  Global keys (everywhere):",
+        "    Option+Z, Option+/, Ctrl+Space",
+        "      → Pop the OmegaOS menu from ANY rmux session (install with",
+        "        `omega install-bindings`).",
+        "    q                  Quit OmegaOS TUI",
+        "",
+        "  CLI cheatsheet (outside the TUI):",
+        "    omega                       Launch TUI",
+        "    omega master / omega aisb   Attach the AISB Master",
+        "    omega list                  List all sessions",
+        "    omega monitor               Billing / accounts / bot status",
+        "    omega orchestrate <P> <M>   Full mission pipeline",
+        "    omega telegram setup …      Bot setup with --user-id allow-list",
+        "    omega config set …          Provider config (propagates to sessions)",
+        "    omega projects              Auto-discover projects under $HOME",
+        "    omega install-bindings      Install Option+Z global bindings",
         "",
         "  Status Icons:",
-        "    ◆  Oracle           ●  Worker",
-        "    ⌂  Home             ⚙  System",
-        "",
-        "  CLI (outside TUI):",
-        "    omega list                       Show all sessions",
-        "    omega new <name> [--cmd claude]  Create session",
-        "    omega dispatch <project> <msg>   Dispatch oracle",
-        "    omega attach <name>              Attach to session",
-        "    omega send <name> <text>         Send text to pane",
-        "    omega capture <name>             Show pane content",
-        "    omega kill <name>                Kill session",
-        "    omega --help                     All commands",
+        "    ★  Master AISB      ◆  Oracle      ●  Worker      ⌂  Home      ⚙  System",
+        "    §  Locked / protected (immune to `x` kill)",
         "",
     ];
 

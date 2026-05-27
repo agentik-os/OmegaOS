@@ -193,8 +193,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
-    // When in Sessions tab + Chat focus, route keys to chat input first
-    if app.tab == Tab::Sessions && app.session_focus == SessionFocus::Chat {
+    // When in Sessions tab and chat-focused (split or fullscreen), route keys
+    // to the chat input handler first.
+    if app.tab == Tab::Sessions
+        && matches!(
+            app.session_focus,
+            SessionFocus::Chat | SessionFocus::ChatFullscreen
+        )
+    {
         return handle_key_chat(app, key);
     }
 
@@ -222,11 +228,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.prev_tab();
             } else if app.tab == Tab::Sessions {
-                // Toggle focus list↔chat inside the Sessions tab
-                app.toggle_session_focus();
+                // Tab in Sessions: cycle List → Chat → (double-tap) Fullscreen → List
+                app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
-                    SessionFocus::List => "Focus: session list (Tab to chat)".to_string(),
-                    SessionFocus::Chat => "Focus: chat — type & Enter to send (Tab to list, Esc to leave)".to_string(),
+                    SessionFocus::List => "Focus: session list (Tab → chat, Tab-Tab → fullscreen)".to_string(),
+                    SessionFocus::Chat => "Focus: chat (Tab to list, Tab-Tab → fullscreen, Enter to send)".to_string(),
+                    SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab → back to list)".to_string(),
                 });
             } else {
                 app.next_tab();
@@ -416,8 +423,18 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
 /// Chat-input mode — typing flows into the selected session's pane via SDK.
 fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     match key.code {
-        // Tab returns focus to the list
-        KeyCode::Tab | KeyCode::Esc => {
+        // Tab cycles focus (single = toggle, double = fullscreen)
+        KeyCode::Tab => {
+            app.handle_tab_in_sessions();
+            app.status_message = Some(match app.session_focus {
+                SessionFocus::List => "Focus: session list".to_string(),
+                SessionFocus::Chat => "Focus: chat (Tab-Tab to fullscreen)".to_string(),
+                SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab to exit)".to_string(),
+            });
+            Action::None
+        }
+        // Esc always returns to list
+        KeyCode::Esc => {
             app.session_focus = SessionFocus::List;
             app.chat_input.clear();
             app.status_message = Some("Focus: session list".to_string());

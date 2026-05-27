@@ -149,8 +149,12 @@ fn section_for(session: &OmegaSession) -> String {
 /// Which side of the Sessions tab has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFocus {
+    /// Default: left list focused, right shows preview only
     List,
+    /// Tab pressed once: split layout (list + chat input)
     Chat,
+    /// Tab pressed twice quickly: chat takes the full width
+    ChatFullscreen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,6 +253,8 @@ pub struct App {
     /// unless the user manually scrolls up.
     pub preview_follow_tail: bool,
     pub session_focus: SessionFocus,
+    /// Tracks the last Tab press for double-tap detection.
+    pub last_tab_press: Option<std::time::Instant>,
     pub chat_input: String,
     pub current_session: Option<String>,
 }
@@ -284,6 +290,7 @@ impl App {
             preview_scroll: 0,
             preview_follow_tail: true,
             session_focus: SessionFocus::List,
+            last_tab_press: None,
             chat_input: String::new(),
             current_session,
         }
@@ -307,16 +314,39 @@ impl App {
         self.chat_input.clear();
     }
 
-    pub fn toggle_session_focus(&mut self) {
-        self.session_focus = match self.session_focus {
-            SessionFocus::List => SessionFocus::Chat,
-            SessionFocus::Chat => SessionFocus::List,
+    /// Handle a Tab press in the Sessions tab. Detects double-tap (within
+    /// 400ms) for chat fullscreen mode.
+    pub fn handle_tab_in_sessions(&mut self) {
+        const DOUBLE_TAP_MS: u128 = 400;
+        let now = std::time::Instant::now();
+        let is_double = self
+            .last_tab_press
+            .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
+            .unwrap_or(false);
+        self.last_tab_press = Some(now);
+
+        self.session_focus = match (self.session_focus, is_double) {
+            // Single tap: cycle List → Chat → List
+            (SessionFocus::List, false) => SessionFocus::Chat,
+            (SessionFocus::Chat, false) => SessionFocus::List,
+            (SessionFocus::ChatFullscreen, false) => SessionFocus::List,
+            // Double tap from Chat: expand to fullscreen
+            (SessionFocus::Chat, true) => SessionFocus::ChatFullscreen,
+            // Double tap from Fullscreen: back to List
+            (SessionFocus::ChatFullscreen, true) => SessionFocus::List,
+            // Double tap from List: go straight to fullscreen
+            (SessionFocus::List, true) => SessionFocus::ChatFullscreen,
         };
-        // When entering chat, start at the latest content (tail follow on)
-        if self.session_focus == SessionFocus::Chat {
+        // When entering any chat focus, tail follow on
+        if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;
         }
         self.chat_input.clear();
+    }
+
+    /// Legacy alias kept for older call sites.
+    pub fn toggle_session_focus(&mut self) {
+        self.handle_tab_in_sessions();
     }
 
     pub fn scroll_preview_down(&mut self, lines: u16) {
