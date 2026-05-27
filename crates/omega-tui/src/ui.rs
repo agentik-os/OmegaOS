@@ -151,12 +151,12 @@ fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(Span::styled(
             "    [Enter] confirm     [Esc] cancel     [Backspace] erase",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
         Line::from(""),
         Line::from(Span::styled(
             "    The whole flow is inline — no shell required.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
     ];
 
@@ -211,7 +211,7 @@ fn draw_simple_input_modal_owned(
         Line::from(""),
         Line::from(Span::styled(
             "    [Enter] confirm     [Esc] cancel     [Backspace] erase",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
     ];
 
@@ -306,20 +306,14 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" OmegaOS ")
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .title(" OmegaOS "),
         )
         .select(selected)
-        // All tabs share the same default style (bright white) so none stands
-        // out unless it's the active one.
-        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .divider(Span::styled("│", Style::default().fg(Color::DarkGray)));
+        // All tabs use the same color when inactive; active tab is cyan+bold.
+        // No background fill — keeps the toolbar visually clean and avoids
+        // any single tab looking "different" beyond just being highlighted.
+        .style(Style::default().fg(Color::Gray))
+        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
 
     frame.render_widget(tabs, area);
 }
@@ -362,7 +356,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
                 Span::styled(
                     format!("  {} ", label),
                     Style::default()
-                        .fg(Color::DarkGray)
+                        .fg(Color::Gray)
                         .add_modifier(Modifier::BOLD),
                 ),
             ])),
@@ -377,7 +371,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
     let list_border_style = if list_focused {
         Style::default().fg(Color::Cyan)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Gray)
     };
 
     let list = List::new(items)
@@ -387,7 +381,7 @@ fn draw_sessions(frame: &mut Frame, app: &App, area: Rect) {
                 .title(format!(" Sessions ({}) ", app.sessions.len()))
                 .border_style(list_border_style),
         )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+        .highlight_style(Style::default().bg(Color::Gray));
 
     frame.render_widget(list, split[0]);
 
@@ -410,7 +404,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: b
     let preview_border_style = if chat_focused {
         Style::default().fg(Color::Yellow)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(Color::Gray)
     };
 
     let total_lines = app.preview_content.lines().count() as u16;
@@ -421,7 +415,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &App, area: Rect, chat_focused: b
     let preview_lines: Vec<Line> = if app.preview_content.is_empty() {
         vec![Line::from(Span::styled(
             "(select a session to preview)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ))]
     } else {
         app.preview_content
@@ -581,33 +575,56 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
     ListItem::new(line)
 }
 
+fn menu_group(action: &MenuAction) -> &'static str {
+    match action {
+        MenuAction::NewClaude
+        | MenuAction::NewCodex
+        | MenuAction::NewGemini
+        | MenuAction::NewPi
+        | MenuAction::NewHermes
+        | MenuAction::NewGlm => "New agent sessions",
+        MenuAction::NewTerminal => "Terminal",
+        MenuAction::DispatchOracle => "Orchestration",
+        MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => "Session actions",
+        MenuAction::Quit => "Quit",
+    }
+}
+
 fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = MenuAction::all()
-        .iter()
-        .enumerate()
-        .map(|(i, action)| {
-            let selected = i == app.menu_selected;
-            let prefix = if selected { "▶ " } else { "  " };
-            let label_style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                Span::styled(
-                    format!("[{}] ", action.shortcut()),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(action.label(), label_style),
-            ]))
-        })
-        .collect();
+    // Build items with section headers so the menu reads as grouped sections.
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut last_group: Option<&'static str> = None;
+    for (i, action) in MenuAction::all().iter().enumerate() {
+        let group = menu_group(action);
+        if last_group != Some(group) {
+            if last_group.is_some() {
+                items.push(ListItem::new(Line::from("")));
+            }
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("  ─── {} ───", group),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ))));
+            last_group = Some(group);
+        }
+        let selected = i == app.menu_selected;
+        let prefix = if selected { "▶ " } else { "  " };
+        let label_style = if selected {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        items.push(ListItem::new(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("[{}] ", action.shortcut()),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(action.label(), label_style),
+        ])));
+    }
 
     let list = List::new(items).block(
         Block::default()
@@ -678,7 +695,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
                 Span::raw(format!(" {:5.1}%  ", pct)),
                 Span::styled(
                     format!("{} / {} tok", short_num(tokens), short_num(budget)),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ),
             ]));
         }
@@ -690,7 +707,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         lines.push(Line::from(Span::styled(
             "    (no /tmp/aisb-usage.json — usage-monitor cron not running)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
     }
 
@@ -703,11 +720,11 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     )));
     lines.push(Line::from(Span::styled(
         "    The original AISB bot running on this VPS — not part of OmegaOS.",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(Span::styled(
         "    We just READ its usage cache (/tmp/aisb-usage.json) for the billing view.",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
     let (bot_icon, bot_color, bot_text) = if bot_status.bot_alive {
         ("●", Color::Green, "running")
@@ -735,7 +752,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     if accounts.is_empty() {
         lines.push(Line::from(Span::styled(
             "    (no saved accounts)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
     } else {
         for acc in &accounts {
@@ -806,7 +823,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         lines.push(Line::from(Span::styled(
             "    Status:         (not configured)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -869,7 +886,7 @@ fn draw_monitor(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  This tab refreshes every 5s. Use ↑/↓ + Enter or the letter shortcut.",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
 
     let title = if app.detail_fullscreen {
@@ -1003,8 +1020,8 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let list_focused = !app.detail_focused;
-    let list_border = if list_focused { Color::Cyan } else { Color::DarkGray };
-    let detail_border = if app.detail_focused { Color::Yellow } else { Color::DarkGray };
+    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
 
     // ── Left: section list ──────────────────────────────────────────────────
     let items: Vec<ListItem> = SettingsSection::all()
@@ -1083,7 +1100,7 @@ fn render_settings_detail(
     } else {
         lines.push(Line::from(Span::styled(
             "  Tab → focus this panel to interact (Install/Uninstall/Edit)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
     }
     lines.push(Line::from(""));
@@ -1191,7 +1208,7 @@ fn render_settings_detail(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Config files: ~/.omega/config.toml  ~/.omega/providers.toml",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
     return lines;
     #[allow(unreachable_code)]
@@ -1239,7 +1256,7 @@ fn render_settings_detail(
             }
             lines.push(Line::from(Span::styled(
                 "  Run the installer from a shell, or use:",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
             lines.push(Line::from(Span::styled(
                 "    omega install <agent>    (e.g. omega install hermes)",
@@ -1255,7 +1272,7 @@ fn render_settings_detail(
             if !omega_core::agents::Agent::Hermes.is_available() {
                 lines.push(Line::from(Span::styled(
                     "  Install with:",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 )));
                 if let Some(cmd) = omega_core::agents::Agent::Hermes.install_command() {
                     lines.push(Line::from(Span::styled(
@@ -1318,11 +1335,11 @@ fn render_settings_detail(
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "  System prompt: agents/aisb-master.md (compiled into binary)",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
             lines.push(Line::from(Span::styled(
                 "  Materialised at: ~/.omega/aisb-master.system.md",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
         }
         SettingsSection::Telegram => {
@@ -1344,7 +1361,7 @@ fn render_settings_detail(
                 None => {
                     lines.push(Line::from(Span::styled(
                         "  Not configured.",
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::Gray),
                     )));
                     lines.push(Line::from(""));
                     lines.push(Line::from("  Set up with:"));
@@ -1360,7 +1377,7 @@ fn render_settings_detail(
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  Edit settings via CLI (changes apply to all sessions):",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(Span::styled(
         "    omega config set <provider>.<key> <value>      (e.g. claude.model opus)",
@@ -1372,7 +1389,7 @@ fn render_settings_detail(
     )));
     lines.push(Line::from(Span::styled(
         "    ~/.omega/providers.toml  ~/.omega/config.toml",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
 
     lines
@@ -1458,8 +1475,8 @@ fn draw_info(frame: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     let list_focused = !app.detail_focused;
-    let list_border = if list_focused { Color::Cyan } else { Color::DarkGray };
-    let detail_border = if app.detail_focused { Color::Yellow } else { Color::DarkGray };
+    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
 
     let items: Vec<ListItem> = InfoSection::all()
         .iter()
@@ -1528,7 +1545,7 @@ fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(Span::styled(
             "  ↑/↓ navigate the agent list below.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
         Line::from(""),
     ];
@@ -1565,7 +1582,7 @@ fn render_info_aisb_agents(app: &App) -> Vec<Line<'static>> {
     )));
     lines.push(Line::from(Span::styled(
         format!("  \"{}\"", selected_def.tagline),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(format!("  Role:    {}", selected_def.role)));
@@ -1620,7 +1637,7 @@ fn render_info_oracle() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  ORACLES NEVER write code — they decide who does, then verify.",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
     ]
 }
@@ -1718,11 +1735,11 @@ fn render_info_rules() -> Vec<Line<'static>> {
             };
             lines.push(Line::from(Span::styled(
                 format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
             lines.push(Line::from(Span::styled(
                 format!("    Why: {}", r.reason),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             )));
             lines.push(Line::from(""));
         }

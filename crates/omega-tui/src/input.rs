@@ -507,20 +507,44 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Enter: context-aware
+        // Enter: context-aware. Crucially: Enter in 2-col tabs behaves like
+        // Tab — focuses the right panel — instead of taking the user away
+        // from Omega.
         KeyCode::Enter => match app.tab {
             Tab::Sessions => {
-                if let Some(entry) = app.selected_session() {
-                    Action::AttachSession(entry.session.name.clone())
-                } else {
-                    Action::None
+                // Enter focuses the chat on the selected session (same as Tab),
+                // user stays inside Omega. To "fullscreen the chat" use Tab-Tab.
+                // If user is ALREADY in chat focus, Enter still sends the message.
+                if app.selected_session().is_some() {
+                    if matches!(app.session_focus, SessionFocus::List) {
+                        app.session_focus = SessionFocus::Chat;
+                        app.preview_follow_tail = true;
+                        app.chat_input.clear();
+                        app.status_message =
+                            Some("Focus: chat — type & Enter to send (Tab to list, Tab-Tab → fullscreen)".to_string());
+                    }
                 }
+                Action::None
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
             Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
             Tab::Settings => {
-                // If detail focused, activate the selected field; else no-op
+                // Enter on the section list → focus the right detail panel
+                // (same as Tab). Once focused, Enter activates the selected field.
                 if !app.detail_focused {
+                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let fields = crate::app::fields_for_section(
+                        app.selected_settings_section(),
+                        &providers,
+                        &app.config,
+                    );
+                    app.detail_focused = true;
+                    if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
+                        app.settings_field_selected = first;
+                    }
+                    app.status_message = Some(
+                        "Focus: detail (↑/↓ navigate fields, Enter activate, Tab → list, Tab-Tab → fullscreen)".to_string(),
+                    );
                     Action::None
                 } else {
                     let providers = omega_core::providers::ProvidersConfig::load();
@@ -549,7 +573,19 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     }
                 }
             }
-            Tab::Info | Tab::Help => Action::None,
+            Tab::Info => {
+                // Enter on Info section list → focus the right detail panel
+                // (same as Tab). Lets users browse Oracle/Workers/Rules content.
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: detail (↑/↓ scroll or navigate agents, Tab → list, Tab-Tab → fullscreen)".to_string(),
+                    );
+                }
+                Action::None
+            }
+            Tab::Help => Action::None,
         },
 
         // Monitor tab letter shortcuts
