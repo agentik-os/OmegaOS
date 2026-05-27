@@ -380,6 +380,7 @@ async fn send_telegram_confirmation(bot_token: &str, chat_id: i64, text: &str) {
     let body = serde_json::json!({
         "chat_id": chat_id,
         "text": text,
+        "parse_mode": "HTML",
     });
     let _ = client.post(&url).json(&body).send().await;
 }
@@ -648,15 +649,17 @@ async fn run_tui_loop(
                             // 1) Send a confirmation message via Telegram API so
                             //    the user can see the bot works.
                             let confirm = format!(
-                                "✓ Omega Telegram bot configured.\n\
-                                 Chat: {}\nFilter: {}\n\nFrom now on, every message \
-                                 you send here is relayed to AISB Master (the 13-agent brain). \
-                                 Reply with /help to see commands.",
+                                "🟢 <b>Ω OmegaOS</b> — Telegram setup complete\n\
+                                 ━━━━━━━━━━\n\n\
+                                 <b>Chat:</b> <code>{}</code>\n\
+                                 <b>Filter:</b> {}\n\n\
+                                 <i>Messages are relayed to AISB Master.\n\
+                                 Type /help for commands.</i>",
                                 chat_id,
                                 if user_ids.is_empty() {
                                     "chat_id only".to_string()
                                 } else {
-                                    format!("user_ids {:?}", user_ids)
+                                    format!("<code>{:?}</code>", user_ids)
                                 }
                             );
                             send_telegram_confirmation(&bot_token, chat_id, &confirm).await;

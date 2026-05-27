@@ -3,3 +3,10 @@ Cargo.lock
 *.swp
 *.swo
 .DS_Store
+
+# User config — contains secrets (bot tokens, API keys)
+.omega/
+telegram.toml
+*.env
+*.env.*
+.env.local
