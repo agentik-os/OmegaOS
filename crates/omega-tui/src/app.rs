@@ -12,6 +12,10 @@ pub enum Tab {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
+    // Direct-agent flow: agent already chosen via menu
+    NewNamedSession(String),               // agent_name — typing session name
+    NewSessionPromptDirect(String, String), // (session_name, agent_name) — optional prompt
+    // Legacy "n" key flow: 3-step picker
     NewSession,
     NewSessionAgent(String),
     NewSessionPrompt(String, String),
@@ -21,49 +25,77 @@ pub enum InputMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
-    NewSession,
+    NewClaude,
+    NewCodex,
+    NewGemini,
+    NewPi,
+    NewGlm,
+    NewTerminal,
     DispatchOracle,
     Refresh,
     ToggleProtection,
     KillSelected,
-    Help,
     Quit,
 }
 
 impl MenuAction {
     pub fn all() -> &'static [MenuAction] {
         &[
-            MenuAction::NewSession,
+            MenuAction::NewClaude,
+            MenuAction::NewCodex,
+            MenuAction::NewGemini,
+            MenuAction::NewPi,
+            MenuAction::NewGlm,
+            MenuAction::NewTerminal,
             MenuAction::DispatchOracle,
             MenuAction::Refresh,
             MenuAction::ToggleProtection,
             MenuAction::KillSelected,
-            MenuAction::Help,
             MenuAction::Quit,
         ]
     }
 
     pub fn label(&self) -> &'static str {
         match self {
-            MenuAction::NewSession => "New session  →  name + agent picker (claude/codex/pi/...)",
+            MenuAction::NewClaude => "New Claude session",
+            MenuAction::NewCodex => "New Codex session",
+            MenuAction::NewGemini => "New Gemini session",
+            MenuAction::NewPi => "New Pi session (earendil)",
+            MenuAction::NewGlm => "New GLM session",
+            MenuAction::NewTerminal => "New Terminal (plain shell)",
             MenuAction::DispatchOracle => "Dispatch oracle  →  project + mission",
             MenuAction::Refresh => "Refresh sessions list",
             MenuAction::ToggleProtection => "Toggle protection on selected",
             MenuAction::KillSelected => "Kill selected session",
-            MenuAction::Help => "Show help",
             MenuAction::Quit => "Quit OmegaOS",
         }
     }
 
     pub fn shortcut(&self) -> &'static str {
         match self {
-            MenuAction::NewSession => "n",
+            MenuAction::NewClaude => "c",
+            MenuAction::NewCodex => "C",
+            MenuAction::NewGemini => "g",
+            MenuAction::NewPi => "p",
+            MenuAction::NewGlm => "G",
+            MenuAction::NewTerminal => "t",
             MenuAction::DispatchOracle => "d",
             MenuAction::Refresh => "r",
             MenuAction::ToggleProtection => ".",
             MenuAction::KillSelected => "x",
-            MenuAction::Help => "?",
             MenuAction::Quit => "q",
+        }
+    }
+
+    pub fn agent(&self) -> Option<omega_core::agents::Agent> {
+        match self {
+            MenuAction::NewClaude => Some(omega_core::agents::Agent::Claude),
+            MenuAction::NewCodex => Some(omega_core::agents::Agent::Codex),
+            MenuAction::NewGemini => Some(omega_core::agents::Agent::Gemini),
+            MenuAction::NewPi => Some(omega_core::agents::Agent::Pi),
+            MenuAction::NewGlm => Some(omega_core::agents::Agent::Glm),
+            MenuAction::NewTerminal => Some(omega_core::agents::Agent::Shell),
+            _ => None,
         }
     }
 }

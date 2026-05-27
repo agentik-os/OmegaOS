@@ -272,9 +272,15 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         "  Navigation:",
         "    ← / →              Switch tabs (Sessions ↔ Menu ↔ Help)",
         "    ↑ / ↓ or j/k       Navigate items in current tab",
-        "    Enter              Attach session / execute menu action",
-        "    q                  Quit",
+        "    Enter              Attach session  OR  execute menu action",
         "    Esc                Back to Sessions tab (or quit if there)",
+        "    q                  Quit",
+        "",
+        "  Menu — direct agent launchers (each Enter creates a new session):",
+        "    [c] New Claude     [C] New Codex      [g] New Gemini",
+        "    [p] New Pi         [G] New GLM        [t] New Terminal",
+        "    [d] Dispatch oracle (project + mission)",
+        "    [r] Refresh        [.] Toggle protect [x] Kill selected",
         "",
         "  Session Actions:",
         "    n                  New session (prompts for name)",
@@ -325,7 +331,7 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             let msg = app
                 .status_message
                 .as_deref()
-                .unwrap_or("n=new  d=dispatch  Enter=attach  x=kill  .=protect  r=refresh  Tab=tabs  q=quit");
+                .unwrap_or("←/→ tabs  ↑/↓ nav  Enter attach/select  d=dispatch  x=kill  .=protect  r=refresh  q=quit");
             let status = Paragraph::new(Line::from(vec![
                 Span::styled(" Ω ", Style::default().fg(Color::Black).bg(Color::Cyan)),
                 Span::raw(" "),
@@ -335,6 +341,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             return;
         }
         InputMode::NewSession => ("New session name", app.input_buffer.clone()),
+        InputMode::NewNamedSession(agent) => (
+            "Session name",
+            format!("[{}] {}", agent, app.input_buffer),
+        ),
+        InputMode::NewSessionPromptDirect(name, agent) => (
+            "Initial prompt (optional, Esc to skip)",
+            format!("[{}/{}] {}", name, agent, app.input_buffer),
+        ),
         InputMode::NewSessionAgent(name) => (
             "Choose agent",
             format!("[{}] (overlay open — ↑/↓)", name),

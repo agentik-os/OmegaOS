@@ -28,6 +28,52 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     match mode {
         InputMode::Normal => handle_key_normal(app, key),
 
+        // Direct-agent flow: step 1 — type name, agent already chosen
+        InputMode::NewNamedSession(agent_name) => {
+            handle_key_input(app, key, move |app, name| {
+                let agent = omega_core::agents::Agent::from_name(&agent_name)
+                    .unwrap_or(omega_core::agents::Agent::Shell);
+                // Terminal/Shell: skip prompt step, create immediately
+                if matches!(agent, omega_core::agents::Agent::Shell) {
+                    app.input_mode = InputMode::Normal;
+                    return Action::CreateSessionWithAgent { name, agent, prompt: None };
+                }
+                app.input_buffer = String::new();
+                app.input_mode = InputMode::NewSessionPromptDirect(name, agent_name.clone());
+                app.status_message = Some(
+                    "Optional initial prompt (Enter to launch, Esc to skip)".to_string(),
+                );
+                Action::None
+            })
+        }
+
+        // Direct-agent flow: step 2 — optional prompt
+        InputMode::NewSessionPromptDirect(name, agent_name) => {
+            let agent = omega_core::agents::Agent::from_name(&agent_name)
+                .unwrap_or(omega_core::agents::Agent::Shell);
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateSessionWithAgent { name, agent, prompt: None }
+                }
+                KeyCode::Enter => {
+                    let value = std::mem::take(&mut app.input_buffer);
+                    let prompt = if value.trim().is_empty() { None } else { Some(value) };
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateSessionWithAgent { name, agent, prompt }
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    Action::None
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
+
         // Step 1: enter session name → move to agent picker
         InputMode::NewSession => handle_key_input(app, key, |app, value| {
             app.agent_picker_index = 0;
@@ -179,14 +225,41 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Tab::Help => Action::None,
         },
 
-        // Shortcut keys (work in any tab)
-        KeyCode::Char('n') => {
+        // Shortcut keys (work in any tab) — direct agent launchers
+        KeyCode::Char('c') => {
             app.input_buffer = String::new();
-            app.input_mode = InputMode::NewSession;
-            app.status_message = Some(
-                "Step 1/3: type session name then Enter → step 2: pick agent → step 3: prompt"
-                    .to_string(),
-            );
+            app.input_mode = InputMode::NewNamedSession("claude".to_string());
+            app.status_message = Some("Session name for new Claude (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('C') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("codex".to_string());
+            app.status_message = Some("Session name for new Codex (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('g') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("gemini".to_string());
+            app.status_message = Some("Session name for new Gemini (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('p') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("pi".to_string());
+            app.status_message = Some("Session name for new Pi (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('G') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("glm".to_string());
+            app.status_message = Some("Session name for new GLM (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
+        KeyCode::Char('t') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("shell".to_string());
+            app.status_message = Some("Session name for new Terminal (Enter, Esc to cancel)".to_string());
             Action::None
         }
 
@@ -226,7 +299,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        KeyCode::Char('?') | KeyCode::F(1) => {
+        KeyCode::F(1) => {
             app.tab = Tab::Help;
             Action::None
         }
@@ -247,16 +320,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
+    // Per-agent direct launchers: prompt for session name, agent pre-selected
+    if let Some(agent) = action.agent() {
+        app.input_buffer = String::new();
+        app.input_mode = InputMode::NewNamedSession(agent.name().to_string());
+        app.status_message = Some(format!(
+            "Session name for new {} session (Enter to continue, Esc to cancel)",
+            agent.display_name()
+        ));
+        return Action::None;
+    }
+
     match action {
-        MenuAction::NewSession => {
-            app.input_buffer = String::new();
-            app.input_mode = InputMode::NewSession;
-            app.status_message = Some(
-                "Step 1/3: type session name then Enter → step 2: pick agent → step 3: prompt"
-                    .to_string(),
-            );
-            Action::None
-        }
         MenuAction::DispatchOracle => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::DispatchProject;
@@ -288,14 +363,12 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
                 Action::None
             }
         }
-        MenuAction::Help => {
-            app.tab = Tab::Help;
-            Action::None
-        }
         MenuAction::Quit => {
             app.should_quit = true;
             Action::Quit
         }
+        // Per-agent variants handled above
+        _ => Action::None,
     }
 }
 
