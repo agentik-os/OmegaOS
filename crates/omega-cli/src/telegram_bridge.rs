@@ -1,20 +1,28 @@
-//! Minimal Rust Telegram bridge — no Python dependency.
+//! Full Telegram bot engine for OmegaOS.
 //!
-//! Long-polls Telegram getUpdates → relays the user's text into the
-//! configured rmux session (default: aisb-master) via the rmux SDK.
-//! Periodically captures the pane and posts deltas back to the chat.
+//! Implements the complete handler chain:
+//! - Text messages → classify → route to oracle/AISB
+//! - Callback queries → inline keyboard actions (stop workers, close oracle)
+//! - Reply routing → message_id→project map for auto-dispatch
+//! - Report pipeline → oracle result.md → format → send → track
+//! - Voice, documents, photos → acknowledge with typed handlers
 //!
-//! Message style mirrors the AISB Python bot: HTML parse_mode,
-//! blockquotes for AISB voice, <code> for terminal output, emojis for
-//! status.
+//! HTML parse_mode throughout, using omega_core::formatting for rich output.
 
 use anyhow::{Context, Result};
+use omega_core::formatting;
 use omega_core::monitor::OmegaTelegramConfig;
 use omega_core::session::SessionManager;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 const API_BASE: &str = "https://api.telegram.org";
+const TELEGRAM_MAX_MSG_LEN: usize = 4096;
+
+// ── Telegram API types ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct GetUpdatesResp {
@@ -28,6 +36,8 @@ struct Update {
     update_id: i64,
     #[serde(default)]
     message: Option<Message>,
+    #[serde(default)]
+    callback_query: Option<CallbackQuery>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,11 +48,25 @@ struct Message {
     chat: Chat,
     #[serde(default)]
     from: Option<User>,
+    #[serde(default)]
+    reply_to_message: Option<Box<Message>>,
+    #[serde(default)]
+    voice: Option<Voice>,
+    #[serde(default)]
+    document: Option<Document>,
+    #[serde(default)]
+    photo: Option<Vec<PhotoSize>>,
+    #[serde(default)]
+    caption: Option<String>,
+    #[serde(default)]
+    message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Chat {
     id: i64,
+    #[serde(default, rename = "type")]
+    chat_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,84 +74,965 @@ struct User {
     id: i64,
     #[serde(default)]
     username: Option<String>,
+    #[serde(default)]
+    first_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Voice {
+    file_id: String,
+    duration: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Document {
+    file_id: String,
+    #[serde(default)]
+    file_name: Option<String>,
+    #[serde(default)]
+    mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PhotoSize {
+    file_id: String,
+    width: i64,
+    height: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CallbackQuery {
+    id: String,
+    #[serde(default)]
+    from: Option<User>,
+    #[serde(default)]
+    message: Option<Box<Message>>,
+    #[serde(default)]
+    data: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SendMessageResp {
+    ok: bool,
+    #[serde(default)]
+    result: Option<SentMessage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SentMessage {
+    message_id: i64,
+}
+
+// ── Inline Keyboard types ──
+
+#[derive(Debug, Clone, Serialize)]
+struct InlineKeyboardMarkup {
+    inline_keyboard: Vec<Vec<InlineKeyboardButton>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SendMessageReq<'a> {
-    chat_id: i64,
-    text: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parse_mode: Option<&'a str>,
+struct InlineKeyboardButton {
+    text: String,
+    callback_data: String,
 }
 
+// ── Reply Router ──
+
+#[derive(Debug, Clone)]
+struct ReplyRouter {
+    message_to_project: HashMap<i64, String>,
+}
+
+impl ReplyRouter {
+    fn new() -> Self {
+        Self {
+            message_to_project: HashMap::new(),
+        }
+    }
+
+    fn track(&mut self, message_id: i64, project: &str) {
+        self.message_to_project
+            .insert(message_id, project.to_string());
+        // Evict old entries to prevent unbounded growth
+        if self.message_to_project.len() > 500 {
+            let oldest: Vec<i64> = self
+                .message_to_project
+                .keys()
+                .copied()
+                .take(100)
+                .collect();
+            for key in oldest {
+                self.message_to_project.remove(&key);
+            }
+        }
+    }
+
+    fn resolve(&self, reply_to_message_id: i64) -> Option<&str> {
+        self.message_to_project
+            .get(&reply_to_message_id)
+            .map(|s| s.as_str())
+    }
+}
+
+// ── Report Pipeline ──
+
+struct ReportPipeline;
+
+impl ReportPipeline {
+    /// Check for oracle result files and return any new reports.
+    fn check_for_reports() -> Vec<OracleReport> {
+        let mut reports = Vec::new();
+        let pattern = "/tmp/aisb-oracle-result-*.md";
+
+        let entries = match glob_files(pattern) {
+            Ok(e) => e,
+            Err(_) => return reports,
+        };
+
+        for path in entries {
+            match Self::parse_report(&path) {
+                Ok(report) => {
+                    reports.push(report);
+                    // Remove the signal file after reading
+                    let _ = std::fs::remove_file(&path);
+                }
+                Err(e) => {
+                    tracing::warn!(path = %path.display(), error = %e, "failed to parse oracle report");
+                }
+            }
+        }
+
+        reports
+    }
+
+    fn parse_report(path: &std::path::Path) -> Result<OracleReport> {
+        let content = std::fs::read_to_string(path)?;
+        let mut project = String::new();
+        let mut status = String::new();
+        let mut build = String::new();
+        let mut body = String::new();
+        let mut in_body = false;
+
+        for line in content.lines() {
+            if line.starts_with("PROJECT:") {
+                project = line.trim_start_matches("PROJECT:").trim().to_string();
+            } else if line.starts_with("STATUS:") {
+                status = line.trim_start_matches("STATUS:").trim().to_string();
+            } else if line.starts_with("BUILD:") {
+                build = line.trim_start_matches("BUILD:").trim().to_string();
+            } else if line.starts_with("## ") || in_body {
+                in_body = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+
+        if project.is_empty() {
+            // Try to extract from filename: aisb-oracle-result-{project}.md
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Some(p) = name.strip_prefix("aisb-oracle-result-") {
+                    project = p.to_string();
+                }
+            }
+        }
+
+        Ok(OracleReport {
+            project,
+            status,
+            build,
+            body,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct OracleReport {
+    project: String,
+    status: String,
+    build: String,
+    body: String,
+}
+
+impl OracleReport {
+    fn to_telegram_html(&self) -> String {
+        let status_icon = match self.status.to_uppercase().as_str() {
+            "DONE" => "✅",
+            "FAILED" => "🔴",
+            _ => "📋",
+        };
+        let build_icon = match self.build.to_uppercase().as_str() {
+            "PASS" => "🟢",
+            "FAIL" => "🔴",
+            _ => "⚪",
+        };
+
+        let mut out = format!(
+            "{} <b>Oracle Report — {}</b>\n━━━━━━━━━━\n",
+            status_icon,
+            formatting::escape_html(&self.project)
+        );
+
+        if !self.build.is_empty() {
+            out.push_str(&format!(
+                "{} Build: <code>{}</code>\n\n",
+                build_icon,
+                formatting::escape_html(&self.build)
+            ));
+        }
+
+        out.push_str(&formatting::markdown_to_telegram_html(&self.body));
+        out
+    }
+
+    fn inline_keyboard(&self) -> InlineKeyboardMarkup {
+        let project = &self.project;
+        InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![
+                    InlineKeyboardButton {
+                        text: "🛑 Stop Workers".to_string(),
+                        callback_data: format!("stop_workers:{}", project),
+                    },
+                    InlineKeyboardButton {
+                        text: "🔒 Close Oracle".to_string(),
+                        callback_data: format!("close_oracle:{}", project),
+                    },
+                ],
+                vec![
+                    InlineKeyboardButton {
+                        text: "📋 Full Report".to_string(),
+                        callback_data: format!("full_report:{}", project),
+                    },
+                    InlineKeyboardButton {
+                        text: "🔄 Continue".to_string(),
+                        callback_data: format!("continue:{}", project),
+                    },
+                ],
+            ],
+        }
+    }
+}
+
+// ── Glob helper ──
+
+fn glob_files(pattern: &str) -> Result<Vec<std::path::PathBuf>> {
+    let dir = std::path::Path::new("/tmp");
+    let prefix = "aisb-oracle-result-";
+    let suffix = ".md";
+
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with(prefix) && name_str.ends_with(suffix) {
+                paths.push(entry.path());
+            }
+        }
+    }
+    let _ = pattern; // used for documentation clarity
+    Ok(paths)
+}
+
+// ── Bot Engine ──
+
+pub struct TelegramBotEngine {
+    client: reqwest::Client,
+    cfg: OmegaTelegramConfig,
+    mgr: SessionManager,
+    reply_router: Arc<Mutex<ReplyRouter>>,
+    reply_chat_id: i64,
+}
+
+impl TelegramBotEngine {
+    pub async fn new(cfg: OmegaTelegramConfig) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?;
+
+        let mgr = SessionManager::connect().await?;
+
+        let reply_chat_id = if !cfg.allow_user_ids.is_empty() {
+            cfg.allow_user_ids[0]
+        } else {
+            cfg.chat_id
+        };
+
+        Ok(Self {
+            client,
+            cfg,
+            mgr,
+            reply_router: Arc::new(Mutex::new(ReplyRouter::new())),
+            reply_chat_id,
+        })
+    }
+
+    async fn ensure_master(&self) {
+        if self.cfg.relay_session == omega_core::aisb::MASTER_SESSION_NAME {
+            let agent = omega_core::agents::Agent::Claude;
+            let cwd = std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let _ = omega_core::aisb::ensure_master(&self.mgr, agent, &cwd).await;
+        }
+    }
+
+    /// Handle a text message through the full handler chain.
+    async fn handle_text(&self, msg: &Message, text: &str) -> Result<()> {
+        let chat_id = msg.chat.id;
+
+        // 1. Check for reply-based routing
+        if let Some(reply_msg) = &msg.reply_to_message {
+            let router = self.reply_router.lock().await;
+            if let Some(project) = router.resolve(reply_msg.message_id) {
+                let oracle_session = format!("oracle-{}", project);
+                tracing::info!(project = %project, "reply-routed to oracle");
+                let _ = self.mgr.send_text(&oracle_session, text).await;
+                let _ = self
+                    .send_html(chat_id, &format!("⚡ → <code>{}</code>", formatting::escape_html(&oracle_session)))
+                    .await;
+                return Ok(());
+            }
+        }
+
+        // 2. Handle commands
+        if text.starts_with('/') {
+            if let Some(reply) = self.handle_command(text).await {
+                let _ = self.send_html(chat_id, &reply).await;
+                return Ok(());
+            }
+        }
+
+        // 3. Relay to AISB Master
+        if let Err(_) = self.mgr.send_text(&self.cfg.relay_session, text).await {
+            let _ = self
+                .send_html(
+                    chat_id,
+                    "🔄 <i>AISB Master redémarrage — reprise de la conversation…</i>",
+                )
+                .await;
+
+            let cwd = std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+
+            match omega_core::aisb::ensure_master(
+                &self.mgr,
+                omega_core::agents::Agent::Claude,
+                &cwd,
+            )
+            .await
+            {
+                Ok(_) => {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    if let Err(e) = self.mgr.send_text(&self.cfg.relay_session, text).await {
+                        let _ = self
+                            .send_html(
+                                chat_id,
+                                &format!(
+                                    "🔴 <b>Relay failed after restart</b>\n<code>{}</code>",
+                                    formatting::escape_html(&e.to_string())
+                                ),
+                            )
+                            .await;
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "🔴 <b>Could not restart AISB Master</b>\n<code>{}</code>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+
+        // 4. Show typing and wait for response
+        let _ = self.send_chat_action(chat_id, "typing").await;
+        let before = self
+            .mgr
+            .capture_pane(&self.cfg.relay_session)
+            .await
+            .unwrap_or_default();
+
+        let mut response_text = String::new();
+        for tick in 0..30 {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+
+            if tick % 3 == 2 {
+                let _ = self.send_chat_action(chat_id, "typing").await;
+            }
+
+            let after = self
+                .mgr
+                .capture_pane(&self.cfg.relay_session)
+                .await
+                .unwrap_or_default();
+            if after == before {
+                continue;
+            }
+
+            let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
+            let is_idle = last_lines
+                .iter()
+                .any(|l| l.trim().starts_with("❯") && l.trim().len() <= 2);
+
+            if is_idle || tick >= 25 {
+                response_text = extract_response(&before, &after);
+                break;
+            }
+        }
+
+        let cleaned = clean_terminal_output(&response_text);
+        if !cleaned.is_empty() {
+            let formatted = format_agent_response(&cleaned);
+            let chunks = formatting::split_message(&formatted, TELEGRAM_MAX_MSG_LEN);
+            for chunk in chunks {
+                let _ = self.send_html(chat_id, &chunk).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Handle voice messages.
+    async fn handle_voice(&self, msg: &Message, voice: &Voice) -> Result<()> {
+        tracing::info!(
+            file_id = %voice.file_id,
+            duration = voice.duration,
+            "received voice message"
+        );
+        let _ = self
+            .send_html(
+                msg.chat.id,
+                &format!(
+                    "🎤 <i>Voice message received ({}s) — transcription not yet available in OmegaOS.\n\
+                     Send as text for now.</i>",
+                    voice.duration
+                ),
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Handle document uploads.
+    async fn handle_document(&self, msg: &Message, doc: &Document) -> Result<()> {
+        let name = doc.file_name.as_deref().unwrap_or("unknown");
+        let mime = doc.mime_type.as_deref().unwrap_or("application/octet-stream");
+        tracing::info!(file_id = %doc.file_id, name = %name, mime = %mime, "received document");
+        let _ = self
+            .send_html(
+                msg.chat.id,
+                &format!(
+                    "📄 <i>Document received: <code>{}</code> ({})\n\
+                     Document processing not yet available — describe what you need in text.</i>",
+                    formatting::escape_html(name),
+                    formatting::escape_html(mime)
+                ),
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Handle photo messages.
+    async fn handle_photo(&self, msg: &Message, photos: &[PhotoSize]) -> Result<()> {
+        let largest = photos.iter().max_by_key(|p| p.width * p.height);
+        if let Some(photo) = largest {
+            tracing::info!(
+                file_id = %photo.file_id,
+                size = format!("{}x{}", photo.width, photo.height),
+                "received photo"
+            );
+        }
+        let caption_note = msg
+            .caption
+            .as_deref()
+            .map(|c| format!("\nCaption: <i>{}</i>", formatting::escape_html(c)))
+            .unwrap_or_default();
+        let _ = self
+            .send_html(
+                msg.chat.id,
+                &format!(
+                    "📷 <i>Photo received.{}\n\
+                     Image analysis not yet available — describe what you need in text.</i>",
+                    caption_note
+                ),
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Handle callback queries from inline keyboards.
+    async fn handle_callback(&self, cb: &CallbackQuery) -> Result<()> {
+        let data = cb.data.as_deref().unwrap_or("");
+        let chat_id = cb
+            .message
+            .as_ref()
+            .map(|m| m.chat.id)
+            .unwrap_or(self.reply_chat_id);
+
+        tracing::info!(data = %data, "callback query received");
+
+        let (action, project) = data.split_once(':').unwrap_or((data, ""));
+
+        let reply = match action {
+            "stop_workers" => {
+                if project.is_empty() {
+                    "⚠️ No project specified".to_string()
+                } else {
+                    self.stop_project_workers(project).await
+                }
+            }
+            "close_oracle" => {
+                if project.is_empty() {
+                    "⚠️ No project specified".to_string()
+                } else {
+                    self.close_oracle(project).await
+                }
+            }
+            "full_report" => {
+                if project.is_empty() {
+                    "⚠️ No project specified".to_string()
+                } else {
+                    self.get_full_report(project).await
+                }
+            }
+            "continue" => {
+                if project.is_empty() {
+                    "⚠️ No project specified".to_string()
+                } else {
+                    let oracle_session = format!("oracle-{}", project);
+                    let _ = self.mgr.send_text(&oracle_session, "continue").await;
+                    format!("🔄 Continuing oracle for <b>{}</b>", formatting::escape_html(project))
+                }
+            }
+            _ => format!("❓ Unknown action: <code>{}</code>", formatting::escape_html(action)),
+        };
+
+        let _ = self.send_html(chat_id, &reply).await;
+        let _ = self.answer_callback_query(&cb.id, "").await;
+
+        Ok(())
+    }
+
+    async fn stop_project_workers(&self, project: &str) -> String {
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let prefix = format!("{}-", project);
+        let mut killed = 0;
+
+        for sess in &sessions {
+            if sess.name.starts_with(&prefix)
+                && sess.role == omega_core::session::SessionRole::Worker
+            {
+                if let Ok(_) = self.mgr.kill_session(&sess.name).await {
+                    killed += 1;
+                }
+            }
+        }
+
+        format!(
+            "🛑 Stopped <b>{}</b> worker(s) for <b>{}</b>",
+            killed,
+            formatting::escape_html(project)
+        )
+    }
+
+    async fn close_oracle(&self, project: &str) -> String {
+        let oracle_session = format!("oracle-{}", project);
+        match self.mgr.kill_session(&oracle_session).await {
+            Ok(_) => format!(
+                "🔒 Oracle <code>{}</code> closed",
+                formatting::escape_html(&oracle_session)
+            ),
+            Err(e) => format!(
+                "⚠️ Could not close oracle: <code>{}</code>",
+                formatting::escape_html(&e.to_string())
+            ),
+        }
+    }
+
+    async fn get_full_report(&self, project: &str) -> String {
+        let oracle_session = format!("oracle-{}", project);
+        match self.mgr.capture_pane(&oracle_session).await {
+            Ok(content) => {
+                let tail: Vec<&str> = content.lines().rev().take(40).collect();
+                let output: Vec<&str> = tail.into_iter().rev().collect();
+                let cleaned = clean_terminal_output(&output.join("\n"));
+                format!(
+                    "📋 <b>Full Report — {}</b>\n━━━━━━━━━━\n<pre>{}</pre>",
+                    formatting::escape_html(project),
+                    formatting::escape_html(&cleaned)
+                )
+            }
+            Err(_) => format!(
+                "⚠️ Oracle <code>{}</code> not found",
+                formatting::escape_html(&oracle_session)
+            ),
+        }
+    }
+
+    /// Handle slash commands.
+    async fn handle_command(&self, text: &str) -> Option<String> {
+        let mut parts = text.splitn(2, ' ');
+        let cmd = parts.next()?;
+        // Strip @botname suffix from commands
+        let cmd = cmd.split('@').next().unwrap_or(cmd);
+        let rest = parts.next().unwrap_or("");
+
+        match cmd {
+            "/start" | "/help" => Some(
+                "🟢 <b>Ω OmegaOS Bot Engine</b>\n\
+                 ━━━━━━━━━━\n\n\
+                 <b>Commands:</b>\n\
+                 /help — this message\n\
+                 /list — show all rmux sessions\n\
+                 /status <code>[session]</code> — capture last 20 lines\n\
+                 /billing — current Claude usage\n\
+                 /skills — list available skills\n\
+                 /audits — show Quality Arsenal status\n\
+                 /aisb <code>text</code> — send to AISB Master\n\
+                 /relay <code>session text</code> — send to specific session\n\
+                 /kill <code>session</code> — kill a session\n\n\
+                 <i>Reply to any report to auto-route to that project.\n\
+                 Any other message goes to AISB Master.</i>"
+                    .to_string(),
+            ),
+
+            "/list" => {
+                let sessions = self.mgr.list_sessions().await.ok()?;
+                let mut lines = vec!["📋 <b>Sessions</b>\n━━━━━━━━━━".to_string()];
+                for sess in sessions {
+                    let icon = match sess.role {
+                        omega_core::session::SessionRole::Oracle => "🔮",
+                        omega_core::session::SessionRole::Worker => "⚙️",
+                        omega_core::session::SessionRole::Home => "🏠",
+                        omega_core::session::SessionRole::System => "🧠",
+                    };
+                    lines.push(format!(
+                        "{} <code>{}</code>",
+                        icon,
+                        formatting::escape_html(&sess.name)
+                    ));
+                }
+                if lines.len() == 1 {
+                    lines.push("  <i>No active sessions</i>".to_string());
+                }
+                Some(lines.join("\n"))
+            }
+
+            "/billing" => {
+                let snap = omega_core::monitor::UsageSnapshot::read().ok().flatten()?;
+                Some(format!(
+                    "💰 <b>Billing</b>\n━━━━━━━━━━\n\
+                     <b>5h:</b>    <code>{:.1}%</code>\n\
+                     <b>Week:</b>  <code>{:.1}%</code>\n\
+                     <b>Account:</b> {} ({})",
+                    snap.precise_5h(),
+                    snap.precise_week(),
+                    formatting::escape_html(&snap.active_account),
+                    formatting::escape_html(&snap.email),
+                ))
+            }
+
+            "/status" => {
+                let session = if rest.is_empty() {
+                    &self.cfg.relay_session
+                } else {
+                    rest.trim()
+                };
+                let content = self.mgr.capture_pane(session).await.ok()?;
+                let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                let output: Vec<&str> = tail.into_iter().rev().collect();
+                let cleaned = clean_terminal_output(&output.join("\n"));
+                Some(format!(
+                    "📺 <b>{}</b>\n<pre>{}</pre>",
+                    formatting::escape_html(session),
+                    formatting::escape_html(&cleaned)
+                ))
+            }
+
+            "/skills" => {
+                let registry = omega_core::skill_registry::SkillRegistry::discover_default();
+                match registry {
+                    Ok(mut reg) => {
+                        reg.register_audits();
+                        let skills = reg.list();
+                        let mut lines = vec![format!(
+                            "🔧 <b>Skills</b> ({})\n━━━━━━━━━━",
+                            skills.len()
+                        )];
+                        let mut by_cat: HashMap<&str, Vec<&omega_core::skill_registry::Skill>> =
+                            HashMap::new();
+                        for skill in &skills {
+                            by_cat
+                                .entry(skill.category.label())
+                                .or_default()
+                                .push(skill);
+                        }
+                        let mut cats: Vec<_> = by_cat.keys().copied().collect();
+                        cats.sort();
+                        for cat in cats {
+                            lines.push(format!("\n<b>{}</b>", formatting::escape_html(cat)));
+                            for skill in &by_cat[cat] {
+                                lines.push(format!(
+                                    "  <code>{}</code> — {}",
+                                    formatting::escape_html(&skill.name),
+                                    formatting::escape_html(&skill.description)
+                                ));
+                            }
+                        }
+                        Some(lines.join("\n"))
+                    }
+                    Err(_) => Some("⚠️ <i>Could not load skill registry</i>".to_string()),
+                }
+            }
+
+            "/audits" => {
+                let audits = omega_core::audit::all_audits();
+                let mut lines = vec![format!(
+                    "🛡️ <b>Quality Arsenal</b> ({} audits)\n━━━━━━━━━━",
+                    audits.len()
+                )];
+                for audit in &audits {
+                    let ro = if audit.read_only { " 📖" } else { "" };
+                    lines.push(format!(
+                        "  <code>/{}</code> — {} ({} phases, /{}){ro}",
+                        audit.id, audit.description, audit.phases, audit.max_score
+                    ));
+                }
+                Some(lines.join("\n"))
+            }
+
+            "/aisb" => {
+                if rest.is_empty() {
+                    return Some("Usage: /aisb <code>your message</code>".to_string());
+                }
+                let _ = self.mgr.send_text(&self.cfg.relay_session, rest).await;
+                Some(format!(
+                    "⚡ → <code>{}</code>",
+                    formatting::escape_html(&self.cfg.relay_session)
+                ))
+            }
+
+            "/relay" => {
+                let mut rp = rest.splitn(2, ' ');
+                let session = rp.next()?;
+                let payload = rp.next().unwrap_or("");
+                if payload.is_empty() {
+                    return Some("Usage: /relay <code>session text</code>".to_string());
+                }
+                let _ = self.mgr.send_text(session, payload).await;
+                Some(format!(
+                    "⚡ → <code>{}</code>",
+                    formatting::escape_html(session)
+                ))
+            }
+
+            "/kill" => {
+                if rest.is_empty() {
+                    return Some("Usage: /kill <code>session</code>".to_string());
+                }
+                let session = rest.trim();
+                match self.mgr.kill_session(session).await {
+                    Ok(_) => Some(format!(
+                        "🛑 Killed <code>{}</code>",
+                        formatting::escape_html(session)
+                    )),
+                    Err(e) => Some(format!(
+                        "⚠️ Could not kill <code>{}</code>: {}",
+                        formatting::escape_html(session),
+                        formatting::escape_html(&e.to_string())
+                    )),
+                }
+            }
+
+            _ => None,
+        }
+    }
+
+    // ── Telegram API methods ──
+
+    async fn send_html(&self, chat_id: i64, text: &str) -> Result<Option<i64>> {
+        let chunks = formatting::split_message(text, TELEGRAM_MAX_MSG_LEN);
+        let mut last_msg_id = None;
+
+        for chunk in chunks {
+            let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+            let body = serde_json::json!({
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+            });
+
+            match self.client.post(&url).json(&body).send().await {
+                Ok(resp) => {
+                    if let Ok(parsed) = resp.json::<SendMessageResp>().await {
+                        if let Some(msg) = parsed.result {
+                            last_msg_id = Some(msg.message_id);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "sendMessage failed");
+                }
+            }
+        }
+
+        Ok(last_msg_id)
+    }
+
+    async fn send_html_with_keyboard(
+        &self,
+        chat_id: i64,
+        text: &str,
+        keyboard: &InlineKeyboardMarkup,
+    ) -> Result<Option<i64>> {
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": keyboard,
+        });
+
+        match self.client.post(&url).json(&body).send().await {
+            Ok(resp) => {
+                if let Ok(parsed) = resp.json::<SendMessageResp>().await {
+                    Ok(parsed.result.map(|m| m.message_id))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "sendMessage with keyboard failed");
+                Ok(None)
+            }
+        }
+    }
+
+    async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<()> {
+        let url = format!("{}/bot{}/sendChatAction", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "action": action,
+        });
+        let _ = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .context("sendChatAction")?;
+        Ok(())
+    }
+
+    async fn answer_callback_query(&self, callback_id: &str, text: &str) -> Result<()> {
+        let url = format!(
+            "{}/bot{}/answerCallbackQuery",
+            API_BASE, self.cfg.bot_token
+        );
+        let mut body = serde_json::json!({
+            "callback_query_id": callback_id,
+        });
+        if !text.is_empty() {
+            body["text"] = serde_json::Value::String(text.to_string());
+        }
+        let _ = self.client.post(&url).json(&body).send().await?;
+        Ok(())
+    }
+
+    /// Process pending oracle reports and deliver them.
+    async fn deliver_reports(&self) {
+        let reports = ReportPipeline::check_for_reports();
+        for report in reports {
+            let html = report.to_telegram_html();
+            let keyboard = report.inline_keyboard();
+
+            match self
+                .send_html_with_keyboard(self.reply_chat_id, &html, &keyboard)
+                .await
+            {
+                Ok(Some(msg_id)) => {
+                    let mut router = self.reply_router.lock().await;
+                    router.track(msg_id, &report.project);
+                    tracing::info!(
+                        project = %report.project,
+                        msg_id = msg_id,
+                        "delivered oracle report"
+                    );
+                }
+                Ok(None) => {
+                    tracing::warn!(project = %report.project, "report sent but no message_id");
+                }
+                Err(e) => {
+                    tracing::error!(project = %report.project, error = %e, "failed to deliver report");
+                }
+            }
+        }
+    }
+}
+
+// ── Main entry point ──
+
 pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
-    println!("◆ Omega Telegram bridge starting");
+    println!("◆ Omega Telegram bot engine starting");
     println!("  Relay session: {}", cfg.relay_session);
     println!("  Chat ID:       {}", cfg.chat_id);
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?;
+    let engine = TelegramBotEngine::new(cfg.clone()).await?;
+    engine.ensure_master().await;
 
-    let mgr = SessionManager::connect().await?;
-
-    if cfg.relay_session == omega_core::aisb::MASTER_SESSION_NAME {
-        let agent = omega_core::agents::Agent::Claude;
-        let cwd = std::env::current_dir()?
-            .to_str()
-            .unwrap_or("/home")
-            .to_string();
-        let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
-    }
-
-    // For DMs, chat_id == user_id. Config may have the bot's own ID.
-    let mut reply_chat_id = if !cfg.allow_user_ids.is_empty() {
-        cfg.allow_user_ids[0]
-    } else {
-        cfg.chat_id
-    };
-
-    let _ = send_html(
-        &client,
-        &cfg.bot_token,
-        reply_chat_id,
-        "🟢 <b>Ω OmegaOS Bridge</b> — online\n\n\
-         <i>Messages are relayed to AISB Master.\n\
-         Type normally to chat, or use /help for commands.</i>",
-    )
-    .await;
+    let _ = engine
+        .send_html(
+            engine.reply_chat_id,
+            "🟢 <b>Ω OmegaOS Bot Engine</b> — online\n\n\
+             <i>Full handler chain active: text, voice, docs, photos, callbacks.\n\
+             Reply to any report to auto-route. /help for commands.</i>",
+        )
+        .await;
 
     let mut offset: i64 = 0;
-    let mut last_capture = String::new();
     let mut last_healthcheck = std::time::Instant::now();
+    let mut last_report_check = std::time::Instant::now();
 
     loop {
-        // Periodic healthcheck: ensure AISB Master is alive every 60s
+        // Periodic healthcheck every 60s
         if last_healthcheck.elapsed() > Duration::from_secs(60) {
             last_healthcheck = std::time::Instant::now();
-            let sessions = mgr.list_sessions().await.unwrap_or_default();
-            if !sessions.iter().any(|s| s.name == cfg.relay_session) {
-                tracing::info!("AISB Master not found — restarting with --continue");
-                let cwd = std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let _ = omega_core::aisb::ensure_master(
-                    &mgr,
-                    omega_core::agents::Agent::Claude,
-                    &cwd,
-                )
-                .await;
+            let sessions = engine.mgr.list_sessions().await.unwrap_or_default();
+            if !sessions
+                .iter()
+                .any(|s| s.name == engine.cfg.relay_session)
+            {
+                tracing::info!("AISB Master not found — restarting");
+                engine.ensure_master().await;
             }
         }
+
+        // Check for oracle reports every 3s
+        if last_report_check.elapsed() > Duration::from_secs(3) {
+            last_report_check = std::time::Instant::now();
+            engine.deliver_reports().await;
+        }
+
+        // Long-poll for updates
         let url = format!(
-            "{}/bot{}/getUpdates?timeout=25&offset={}",
+            "{}/bot{}/getUpdates?timeout=25&offset={}&allowed_updates=[\"message\",\"callback_query\"]",
             API_BASE, cfg.bot_token, offset
         );
-        let resp = match client.get(&url).send().await {
+
+        let resp = match engine.client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "getUpdates request failed");
+                tracing::warn!(error = %e, "getUpdates failed");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
@@ -150,142 +1055,58 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
         for upd in updates.result {
             offset = upd.update_id + 1;
+
+            // Handle callback queries (inline keyboard presses)
+            if let Some(cb) = upd.callback_query {
+                let sender_id = cb.from.as_ref().map(|u| u.id);
+                let chat_id = cb
+                    .message
+                    .as_ref()
+                    .map(|m| m.chat.id)
+                    .unwrap_or(engine.reply_chat_id);
+                if cfg.is_authorized(chat_id, sender_id) {
+                    let _ = engine.handle_callback(&cb).await;
+                }
+                continue;
+            }
+
+            // Handle messages
             let Some(msg) = upd.message else { continue };
-            let Some(text) = msg.text.as_deref() else { continue };
 
             let sender_id = msg.from.as_ref().map(|u| u.id);
             if !cfg.is_authorized(msg.chat.id, sender_id) {
                 tracing::warn!(
                     chat_id = msg.chat.id,
                     sender_id = ?sender_id,
-                    sender_username = ?msg.from.as_ref().and_then(|u| u.username.as_deref()),
-                    "Rejected unauthorized Telegram message"
+                    "rejected unauthorized message"
                 );
                 continue;
             }
 
-            tracing::info!(
-                text = %text,
-                chat_id = msg.chat.id,
-                sender_id = ?sender_id,
-                "Received Telegram message"
-            );
-
-            reply_chat_id = msg.chat.id;
-
-            // Handle Omega-specific commands
-            if text.starts_with('/') {
-                if let Some(reply) = handle_command(text, &mgr, &cfg).await {
-                    let _ = send_html(&client, &cfg.bot_token, reply_chat_id, &reply).await;
-                    continue;
+            // Route by message type
+            if let Some(text) = msg.text.as_deref() {
+                tracing::info!(text = %text, chat_id = msg.chat.id, "text message");
+                let _ = engine.handle_text(&msg, text).await;
+            } else if let Some(voice) = &msg.voice {
+                let _ = engine.handle_voice(&msg, voice).await;
+            } else if let Some(doc) = &msg.document {
+                let _ = engine.handle_document(&msg, doc).await;
+            } else if let Some(photos) = &msg.photo {
+                if !photos.is_empty() {
+                    let _ = engine.handle_photo(&msg, photos).await;
                 }
-            }
-
-            // Relay to the configured session — auto-restart Master if dead
-            if let Err(_) = mgr.send_text(&cfg.relay_session, text).await {
-                // Session likely crashed — try to revive it
-                let _ = send_html(
-                    &client,
-                    &cfg.bot_token,
-                    reply_chat_id,
-                    "🔄 <i>AISB Master redémarrage — reprise de la conversation…</i>",
-                )
-                .await;
-
-                let cwd = std::env::current_dir()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                match omega_core::aisb::ensure_master(
-                    &mgr,
-                    omega_core::agents::Agent::Claude,
-                    &cwd,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        // Give Claude a moment to boot
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                        // Retry the send
-                        if let Err(e2) = mgr.send_text(&cfg.relay_session, text).await {
-                            let _ = send_html(
-                                &client,
-                                &cfg.bot_token,
-                                reply_chat_id,
-                                &format!(
-                                    "🔴 <b>Relay failed after restart</b>\n<code>{}</code>",
-                                    escape_html(&e2.to_string())
-                                ),
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
-                    Err(e) => {
-                        let _ = send_html(
-                            &client,
-                            &cfg.bot_token,
-                            reply_chat_id,
-                            &format!(
-                                "🔴 <b>Could not restart AISB Master</b>\n<code>{}</code>",
-                                escape_html(&e.to_string())
-                            ),
-                        )
-                        .await;
-                        continue;
-                    }
-                }
-            }
-
-            // Show "typing..." in Telegram while agent processes
-            let _ = send_chat_action(&client, &cfg.bot_token, reply_chat_id, "typing").await;
-
-            // Snapshot pane BEFORE the agent responds
-            let before = mgr.capture_pane(&cfg.relay_session).await.unwrap_or_default();
-
-            // Poll until agent finishes (idle prompt appears) or timeout
-            let mut response_text = String::new();
-            for tick in 0..30 {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-
-                // Keep typing indicator alive (expires after 5s)
-                if tick % 3 == 2 {
-                    let _ = send_chat_action(&client, &cfg.bot_token, reply_chat_id, "typing").await;
-                }
-
-                let after = mgr.capture_pane(&cfg.relay_session).await.unwrap_or_default();
-                if after == before { continue; } // nothing changed yet
-
-                // Check if agent is done: idle prompt at the bottom
-                let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
-                let is_idle = last_lines.iter().any(|l| {
-                    let t = l.trim();
-                    t.starts_with("❯") && t.len() <= 2 // bare prompt = idle
-                });
-
-                if is_idle || tick >= 25 {
-                    // Extract the response: new lines between before and after
-                    response_text = extract_response(&before, &after);
-                    break;
-                }
-            }
-
-            let cleaned = clean_terminal_output(&response_text);
-            if !cleaned.is_empty() {
-                let formatted = format_agent_response(&cleaned);
-                let _ = send_html(&client, &cfg.bot_token, reply_chat_id, &formatted).await;
             }
         }
     }
 }
 
-/// Remove ANSI escape codes and terminal artifacts from pane capture.
+// ── Terminal output helpers (preserved from original) ──
+
 fn clean_terminal_output(text: &str) -> String {
     let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap_or_else(|_| {
         regex::Regex::new(r"$^").unwrap()
     });
     let stripped = ansi_re.replace_all(text, "");
-    // Strip entire <system-reminder>...</system-reminder> blocks
     let no_reminders = regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>")
         .map(|re| re.replace_all(&stripped, "").to_string())
         .unwrap_or_else(|_| stripped.to_string());
@@ -293,29 +1114,26 @@ fn clean_terminal_output(text: &str) -> String {
         .lines()
         .map(|l| l.trim_end())
         .filter(|l| {
-            if l.is_empty() { return false; }
+            if l.is_empty() {
+                return false;
+            }
             let t = l.trim();
-            // Claude prompt / status chrome
             if t.starts_with("❯") { return false; }
             if t.starts_with("⎿") { return false; }
-            if t.starts_with("●") { return false; }
             if t.starts_with("·") { return false; }
             if t.starts_with("✻") { return false; }
-            // Claude activity indicators
             if t.contains("Cultivating") { return false; }
             if t.contains("Brewing") || t.contains("Brewed") { return false; }
             if t.contains("Crunched") || t.contains("Crunching") { return false; }
             if t.contains("Pontificating") { return false; }
             if t.contains("Thinking") && t.len() < 30 { return false; }
             if t.contains("skills available") { return false; }
-            // Terminal chrome
             if t.contains("bypass permissions") { return false; }
             if t.contains("shift+tab to cycle") { return false; }
             if t.contains("← for agents") { return false; }
             if t.contains("esc to interrupt") { return false; }
             if t.contains("Press up to edit") { return false; }
             if t.chars().all(|c| c == '─' || c == '━' || c == ' ') { return false; }
-            // Claude-mem / system-reminder / observation metadata — internal agent context
             if t.contains("system-reminder") { return false; }
             if t.contains("claude-mem") { return false; }
             if t.contains("observation") && t.contains("token") { return false; }
@@ -336,13 +1154,13 @@ fn clean_terminal_output(text: &str) -> String {
     lines.join("\n").trim().to_string()
 }
 
-/// Format the agent's response for Telegram with HTML.
-/// No prefix — the user knows they're talking to the agent.
 fn format_agent_response(text: &str) -> String {
-    let escaped = escape_html(text);
+    let escaped = formatting::escape_html(text);
     let code_lines = escaped
         .lines()
-        .filter(|l| l.starts_with("  ") || l.starts_with("\t") || l.contains("fn ") || l.contains("{}"))
+        .filter(|l| {
+            l.starts_with("  ") || l.starts_with("\t") || l.contains("fn ") || l.contains("{}")
+        })
         .count();
     let total_lines = escaped.lines().count().max(1);
 
@@ -353,216 +1171,63 @@ fn format_agent_response(text: &str) -> String {
     }
 }
 
-/// Escape HTML special chars for Telegram.
-fn escape_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn compute_delta(prev: &str, current: &str) -> String {
-    if prev.is_empty() {
-        return current
-            .lines()
-            .rev()
-            .take(15)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect::<Vec<_>>()
-            .join("\n");
-    }
-    let prev_lines: Vec<&str> = prev.lines().collect();
-    let cur_lines: Vec<&str> = current.lines().collect();
-
-    // Find the longest common suffix
-    let common_tail_len = prev_lines
-        .iter()
-        .rev()
-        .zip(cur_lines.iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let new_start = if common_tail_len >= cur_lines.len() {
-        return String::new();
-    } else {
-        cur_lines.len() - common_tail_len
-    };
-
-    // Find the first line that differs from the beginning
-    let prefix_match = prev_lines
-        .iter()
-        .zip(cur_lines.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let start = prefix_match.min(new_start);
-
-    cur_lines[start..]
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-async fn handle_command(
-    text: &str,
-    mgr: &SessionManager,
-    cfg: &OmegaTelegramConfig,
-) -> Option<String> {
-    let mut parts = text.splitn(2, ' ');
-    let cmd = parts.next()?;
-    let rest = parts.next().unwrap_or("");
-    match cmd {
-        "/start" | "/help" => Some(
-            "🟢 <b>Ω OmegaOS Telegram Bridge</b>\n\
-             ━━━━━━━━━━\n\n\
-             <b>Commands:</b>\n\
-             /help — this message\n\
-             /list — show all rmux sessions\n\
-             /status <code>[session]</code> — capture last 20 lines\n\
-             /billing — current Claude usage\n\
-             /aisb <code>text</code> — send to AISB Master\n\
-             /relay <code>session text</code> — send to a specific session\n\n\
-             <i>Any other message is relayed directly to AISB Master.</i>"
-                .to_string(),
-        ),
-        "/list" => {
-            let sessions = mgr.list_sessions().await.ok()?;
-            let mut lines = vec!["📋 <b>Sessions</b>\n━━━━━━━━━━".to_string()];
-            for sess in sessions {
-                let icon = match sess.role {
-                    omega_core::session::SessionRole::Oracle => "🔮",
-                    omega_core::session::SessionRole::Worker => "⚙️",
-                    omega_core::session::SessionRole::Home => "🏠",
-                    omega_core::session::SessionRole::System => "🧠",
-                };
-                lines.push(format!(
-                    "{} <code>{}</code>",
-                    icon,
-                    escape_html(&sess.name)
-                ));
-            }
-            Some(lines.join("\n"))
-        }
-        "/billing" => {
-            let snap = omega_core::monitor::UsageSnapshot::read()
-                .ok()
-                .flatten()?;
-            Some(format!(
-                "💰 <b>Billing</b>\n━━━━━━━━━━\n\
-                 <b>5h:</b>    <code>{:.1}%</code>\n\
-                 <b>Week:</b>  <code>{:.1}%</code>\n\
-                 <b>Account:</b> {} ({})",
-                snap.precise_5h(),
-                snap.precise_week(),
-                escape_html(&snap.active_account),
-                escape_html(&snap.email),
-            ))
-        }
-        "/status" => {
-            let session = if rest.is_empty() {
-                &cfg.relay_session
-            } else {
-                rest
-            };
-            let content = mgr.capture_pane(session).await.ok()?;
-            let tail: Vec<&str> = content.lines().rev().take(20).collect();
-            let output = tail
-                .into_iter()
-                .rev()
-                .collect::<Vec<_>>()
-                .join("\n");
-            let cleaned = clean_terminal_output(&output);
-            Some(format!(
-                "📺 <b>{}</b>\n<pre>{}</pre>",
-                escape_html(session),
-                escape_html(&cleaned)
-            ))
-        }
-        "/aisb" => {
-            if rest.is_empty() {
-                return Some("Usage: /aisb <code>your message</code>".to_string());
-            }
-            let _ = mgr.send_text(&cfg.relay_session, rest).await;
-            Some(format!(
-                "⚡ → <code>{}</code>",
-                escape_html(&cfg.relay_session)
-            ))
-        }
-        "/relay" => {
-            let mut rp = rest.splitn(2, ' ');
-            let session = rp.next()?;
-            let payload = rp.next().unwrap_or("");
-            if payload.is_empty() {
-                return Some(
-                    "Usage: /relay <code>session text</code>".to_string(),
-                );
-            }
-            let _ = mgr.send_text(session, payload).await;
-            Some(format!("⚡ → <code>{}</code>", escape_html(session)))
-        }
-        _ => None,
-    }
-}
-
-/// Extract the agent's actual response from before/after pane snapshots.
 fn extract_response(before: &str, after: &str) -> String {
     let before_lines: Vec<&str> = before.lines().collect();
     let after_lines: Vec<&str> = after.lines().collect();
 
-    // Find the first line in `after` that differs from `before`
     let common_prefix = before_lines
         .iter()
         .zip(after_lines.iter())
         .take_while(|(a, b)| a == b)
         .count();
 
-    // Take new content, skip from common prefix to end
     if common_prefix >= after_lines.len() {
         return String::new();
     }
 
-    after_lines[common_prefix..]
-        .iter()
-        .copied()
-        .collect::<Vec<_>>()
-        .join("\n")
-}
+    let new_lines = &after_lines[common_prefix..];
+    let mut response_lines: Vec<String> = Vec::new();
+    let mut in_response = false;
 
-async fn send_chat_action(
-    client: &reqwest::Client,
-    bot_token: &str,
-    chat_id: i64,
-    action: &str,
-) -> Result<()> {
-    let url = format!("{}/bot{}/sendChatAction", API_BASE, bot_token);
-    let body = serde_json::json!({
-        "chat_id": chat_id,
-        "action": action,
-    });
-    client.post(&url).json(&body).send().await.context("sendChatAction")?;
-    Ok(())
-}
+    for line in new_lines {
+        let t = line.trim();
+        if t.is_empty() {
+            continue;
+        }
 
-async fn send_html(
-    client: &reqwest::Client,
-    bot_token: &str,
-    chat_id: i64,
-    text: &str,
-) -> Result<()> {
-    let url = format!("{}/bot{}/sendMessage", API_BASE, bot_token);
-    let body = SendMessageReq {
-        chat_id,
-        text,
-        parse_mode: Some("HTML"),
-    };
-    client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .context("sendMessage")?;
-    Ok(())
+        if t.starts_with("●") {
+            in_response = true;
+            let text = t.trim_start_matches("●").trim();
+            if !text.is_empty() {
+                response_lines.push(text.to_string());
+            }
+            continue;
+        }
+
+        if t.starts_with("❯")
+            || t.starts_with("✻")
+            || t.starts_with("⎿")
+            || t.starts_with("·")
+            || t.contains("bypass permissions")
+            || t.contains("esc to interrupt")
+            || t.contains("shift+tab")
+            || t.starts_with("───")
+            || t.starts_with("━━━")
+            || t.contains("Churned")
+            || t.contains("Brewed")
+            || t.contains("Cultivating")
+            || t.contains("Crunched")
+        {
+            if in_response {
+                in_response = false;
+            }
+            continue;
+        }
+
+        if in_response {
+            response_lines.push(t.to_string());
+        }
+    }
+
+    response_lines.join("\n")
 }

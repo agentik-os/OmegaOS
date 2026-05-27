@@ -70,6 +70,35 @@ impl DoneSignal {
             DoneStatus::DoneClean | DoneStatus::Failed
         )
     }
+
+    /// Read all done signals in state directory.
+    pub fn read_all(state_dir: &Path) -> Vec<Self> {
+        let mut results = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(state_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("worker-") && name.ends_with(".done.json") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            if let Ok(signal) = serde_json::from_str::<Self>(&content) {
+                                results.push(signal);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+
+    /// Clean up done signal file after processing.
+    pub fn remove(state_dir: &Path, session: &str) -> Result<()> {
+        let path = state_dir.join(format!("worker-{}.done.json", session));
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
 }
 
 /// A structured record for when a worker is blocked but still executing a fallback.
@@ -123,5 +152,108 @@ impl WorkerBlocked {
             std::fs::remove_file(&path)?;
         }
         Ok(())
+    }
+
+    /// Read all blocked signals in state directory.
+    pub fn read_all(state_dir: &Path) -> Vec<Self> {
+        let mut results = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(state_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("worker-blocked-") && name.ends_with(".json") {
+                        if let Ok(content) = std::fs::read_to_string(&path) {
+                            if let Ok(blocked) = serde_json::from_str::<Self>(&content) {
+                                results.push(blocked);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        results
+    }
+}
+
+/// Oracle-level done signal — written when an oracle completes its mission.
+/// Mirrors the VPS oracle-*.done.json schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleDoneSignal {
+    pub oracle: String,
+    pub project: String,
+    pub status: DoneStatus,
+    pub mission: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: DateTime<Utc>,
+    pub duration_secs: u64,
+    pub summary: String,
+    pub ship: Option<OracleShipResult>,
+    #[serde(default)]
+    pub pending_actions: Vec<String>,
+    #[serde(default)]
+    pub lifecycle: OracleLifecycle,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OracleShipResult {
+    pub requested: bool,
+    pub result: String,
+    pub commit: Option<String>,
+    pub push_url: Option<String>,
+    pub deploy_url: Option<String>,
+    pub deploy_status: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OracleLifecycle {
+    Persistent,
+    Ephemeral,
+}
+
+impl Default for OracleLifecycle {
+    fn default() -> Self {
+        Self::Ephemeral
+    }
+}
+
+impl OracleDoneSignal {
+    pub fn new(oracle: &str, project: &str, status: DoneStatus, mission: &str) -> Self {
+        let now = Utc::now();
+        Self {
+            oracle: oracle.to_string(),
+            project: project.to_string(),
+            status,
+            mission: mission.to_string(),
+            started_at: now,
+            finished_at: now,
+            duration_secs: 0,
+            summary: String::new(),
+            ship: None,
+            pending_actions: Vec::new(),
+            lifecycle: OracleLifecycle::Ephemeral,
+        }
+    }
+
+    pub fn write(&self, state_dir: &Path) -> Result<()> {
+        let path = state_dir.join(format!("oracle-{}.done.json", self.oracle));
+        let tmp = state_dir.join(format!(".oracle-{}.done.json.tmp", self.oracle));
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&tmp, &content)?;
+        std::fs::rename(&tmp, &path)?;
+        Ok(())
+    }
+
+    pub fn read(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
+        let path = state_dir.join(format!("oracle-{}.done.json", oracle));
+        if !path.exists() {
+            return Ok(None);
+        }
+        let content = std::fs::read_to_string(&path)?;
+        Ok(Some(serde_json::from_str(&content)?))
+    }
+
+    pub fn is_closeable(&self) -> bool {
+        self.status == DoneStatus::DoneClean && self.pending_actions.is_empty()
     }
 }

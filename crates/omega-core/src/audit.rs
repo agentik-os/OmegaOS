@@ -437,6 +437,84 @@ impl AuditReport {
     pub fn all_pass(&self, threshold: f32) -> bool {
         self.audits.iter().all(|a| a.normalized_score >= threshold)
     }
+
+    /// Format the report as Telegram-ready HTML using the formatting engine.
+    pub fn to_telegram_html(&self) -> String {
+        use crate::formatting;
+
+        let verdict_icon = match self.overall_verdict {
+            AuditVerdict::Pass => "✅",
+            AuditVerdict::NeedsWork => "🟡",
+            AuditVerdict::Fail => "🔴",
+            AuditVerdict::Aborted => "⚫",
+        };
+
+        let mut out = format!(
+            "{} <b>Quality Report — {}</b>\n\
+             <b>Overall:</b> <code>{:.0}/100</code>\n\
+             ━━━━━━━━━━\n",
+            verdict_icon,
+            formatting::escape_html(&self.mission_id),
+            self.overall_score,
+        );
+
+        let scores: Vec<(&str, f32, f32)> = self
+            .audits
+            .iter()
+            .map(|a| {
+                let name = find_audit(&a.audit_id)
+                    .map(|s| s.name)
+                    .unwrap_or("Unknown");
+                (name, a.raw_score, a.max_score as f32)
+            })
+            .collect();
+
+        out.push_str(&formatting::format_audit_scores(&scores));
+        out
+    }
+}
+
+impl AuditSkill {
+    /// Generate a dispatch prompt for invoking this audit in a worker session.
+    /// The first line is always the skill slash command.
+    pub fn dispatch_prompt(&self, scope: &AuditScope) -> String {
+        let mut prompt = format!("/{}", self.id);
+
+        if let Some(url) = &scope.url {
+            prompt.push_str(&format!(" --url={}", url));
+        }
+        if !scope.files.is_empty() {
+            prompt.push_str(&format!(" --files={}", scope.files.join(",")));
+        }
+        if let Some(desc) = &scope.description {
+            prompt.push_str(&format!(" --scope=\"{}\"", desc));
+        }
+
+        prompt.push_str("\n\ndo not expand beyond this scope");
+        prompt
+    }
+}
+
+/// Scoping parameters for a targeted audit.
+#[derive(Debug, Clone, Default)]
+pub struct AuditScope {
+    pub url: Option<String>,
+    pub files: Vec<String>,
+    pub description: Option<String>,
+}
+
+/// Build a list of dispatch prompts for all audits selected for a mission.
+pub fn build_dispatch_prompts(mission_text: &str, scope: &AuditScope) -> Vec<(String, String)> {
+    let selected_ids = select_audits(mission_text, &scope.files.iter().map(|s| s.clone()).collect::<Vec<_>>());
+    selected_ids
+        .into_iter()
+        .filter_map(|id| {
+            find_audit(id).map(|audit| {
+                let prompt = audit.dispatch_prompt(scope);
+                (id.to_string(), prompt)
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -548,5 +626,57 @@ mod tests {
         let skill = find_audit("codeaudit").unwrap();
         let score = skill.normalized_score(210.0);
         assert!((score - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn audit_report_telegram_html() {
+        let results = vec![
+            AuditResult::new("codeaudit", 336.0, 420),
+            AuditResult::new("secaudit", 200.0, 400),
+        ];
+        let report = AuditReport::from_results("m-test", results);
+        let html = report.to_telegram_html();
+        assert!(html.contains("Quality Report"));
+        assert!(html.contains("m-test"));
+    }
+
+    #[test]
+    fn dispatch_prompt_with_scope() {
+        let audit = find_audit("codeaudit").unwrap();
+        let scope = AuditScope {
+            url: Some("https://app.example.com/dashboard".to_string()),
+            files: vec!["src/auth.rs".to_string()],
+            description: Some("auth module only".to_string()),
+        };
+        let prompt = audit.dispatch_prompt(&scope);
+        assert!(prompt.starts_with("/codeaudit"));
+        assert!(prompt.contains("--url="));
+        assert!(prompt.contains("--files="));
+        assert!(prompt.contains("--scope="));
+        assert!(prompt.contains("do not expand beyond this scope"));
+    }
+
+    #[test]
+    fn dispatch_prompt_minimal_scope() {
+        let audit = find_audit("debugaudit").unwrap();
+        let scope = AuditScope::default();
+        let prompt = audit.dispatch_prompt(&scope);
+        assert!(prompt.starts_with("/debugaudit"));
+        assert!(!prompt.contains("--url="));
+        assert!(!prompt.contains("--files="));
+    }
+
+    #[test]
+    fn build_dispatch_prompts_security() {
+        let scope = AuditScope {
+            url: Some("https://app.example.com".to_string()),
+            ..Default::default()
+        };
+        let prompts = build_dispatch_prompts("fix auth flow security", &scope);
+        assert!(prompts.iter().any(|(id, _)| id == "secaudit"));
+        assert!(prompts.iter().any(|(id, _)| id == "apiaudit"));
+        for (_, prompt) in &prompts {
+            assert!(prompt.contains("--url="));
+        }
     }
 }

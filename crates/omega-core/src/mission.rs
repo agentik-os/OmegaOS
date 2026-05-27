@@ -163,6 +163,16 @@ pub struct Outcome {
     pub summary: String,
 }
 
+impl Outcome {
+    pub fn is_success(&self) -> bool {
+        matches!(self.status, OutcomeStatus::Success)
+    }
+
+    pub fn duration_secs(&self) -> u64 {
+        (self.finished_at - self.started_at).num_seconds().max(0) as u64
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutcomeStatus {
@@ -180,4 +190,66 @@ pub struct WorkerResult {
     pub summary: String,
     pub commit: Option<String>,
     pub duration_secs: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Mission Tracker — persists active missions for AISB visibility
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionTracker {
+    pub active: Vec<ActiveMission>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveMission {
+    pub id: MissionId,
+    pub project: String,
+    pub oracle: String,
+    pub text: String,
+    pub complexity: Complexity,
+    pub started_at: DateTime<Utc>,
+    pub god_mode: bool,
+    pub ship: bool,
+}
+
+impl MissionTracker {
+    pub fn load(state_dir: &std::path::Path) -> Self {
+        let path = state_dir.join("missions.json");
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(tracker) = serde_json::from_str::<Self>(&content) {
+                    return tracker;
+                }
+            }
+        }
+        Self {
+            active: Vec::new(),
+        }
+    }
+
+    pub fn save(&self, state_dir: &std::path::Path) -> anyhow::Result<()> {
+        std::fs::create_dir_all(state_dir)?;
+        let path = state_dir.join("missions.json");
+        let content = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, content)?;
+        Ok(())
+    }
+
+    pub fn track(&mut self, mission: ActiveMission) {
+        self.active.retain(|m| m.id != mission.id);
+        self.active.push(mission);
+    }
+
+    pub fn complete(&mut self, mission_id: &MissionId) {
+        self.active.retain(|m| m.id != *mission_id);
+    }
+
+    pub fn find_by_oracle(&self, oracle: &str) -> Option<&ActiveMission> {
+        self.active.iter().find(|m| m.oracle == oracle)
+    }
+
+    pub fn find_by_project(&self, project: &str) -> Vec<&ActiveMission> {
+        self.active.iter().filter(|m| m.project == project).collect()
+    }
 }

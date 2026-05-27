@@ -1858,7 +1858,7 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
 async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
-    let patrol = omega_core::patrol::Patrol::new(config);
+    let mut patrol = omega_core::patrol::Patrol::new(config);
 
     if once {
         let report = patrol.run_once().await?;
