@@ -144,8 +144,18 @@ impl SessionManager {
         agent_command: &str,
         prompt: Option<&str>,
     ) -> Result<Session> {
+        // Interactive mode: agent stays alive, prompt is the first message.
+        // Wrap in bash -c "<agent> '<prompt>'; exec bash" so the session
+        // survives even if the agent process exits — user gets a shell back.
         let cmd = match prompt {
-            Some(p) => format!("{} -p {}", agent_command, shell_escape(p)),
+            Some(p) => format!(
+                "bash -c {}",
+                shell_escape(&format!(
+                    "{} {}; exec bash",
+                    agent_command,
+                    shell_escape(p)
+                ))
+            ),
             None => agent_command.to_string(),
         };
 

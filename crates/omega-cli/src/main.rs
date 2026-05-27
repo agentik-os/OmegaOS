@@ -68,6 +68,9 @@ enum Commands {
         /// Working directory
         #[arg(short, long)]
         dir: Option<String>,
+        /// Project name (worker will be <Project>-worker-<task>)
+        #[arg(short, long)]
+        project: Option<String>,
         /// Files owned by this worker (scope-claim)
         #[arg(long, value_delimiter = ',')]
         files: Option<Vec<String>>,
@@ -196,8 +199,8 @@ async fn main() -> Result<()> {
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
         Some(Commands::Kill { name }) => cmd_kill(&name).await,
         Some(Commands::Dispatch { project, mission }) => cmd_dispatch(&project, &mission).await,
-        Some(Commands::SpawnWorker { task, prompt, dir, files }) => {
-            cmd_spawn_worker(&task, &prompt, dir.as_deref(), files).await
+        Some(Commands::SpawnWorker { task, prompt, dir, project, files }) => {
+            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files).await
         }
         Some(Commands::Team { project, count, dir, members }) => {
             cmd_team(&project, count, dir.as_deref(), &members).await
@@ -512,14 +515,31 @@ async fn cmd_spawn_worker(
     task: &str,
     prompt: &str,
     dir: Option<&str>,
+    project: Option<&str>,
     files: Option<Vec<String>>,
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
 
+    // Auto-detect project from current rmux session name if we're inside an oracle
+    let project_name = match project {
+        Some(p) => Some(p.to_string()),
+        None => std::env::var("RMUX")
+            .ok()
+            .and_then(|v| v.split(',').next().map(|s| s.to_string()))
+            .and_then(|sess| sess.strip_prefix("oracle-").map(|p| {
+                p.trim_end_matches(char::is_numeric)
+                    .trim_end_matches('-')
+                    .to_string()
+            })),
+    };
+
     let work_dir = dir.unwrap_or(".");
-    let worker_name = format!("worker-{}", task);
+    let worker_name = match &project_name {
+        Some(p) => format!("{}-worker-{}", p, task),
+        None => format!("worker-{}", task),
+    };
 
     if let Some(ref files) = files {
         omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
@@ -528,6 +548,9 @@ async fn cmd_spawn_worker(
     mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(prompt))
         .await?;
     println!("● Worker spawned: {}", worker_name);
+    if let Some(p) = &project_name {
+        println!("  Under project: {}", p);
+    }
     if let Some(ref files) = files {
         println!("  Scope claimed: {}", files.join(", "));
     }
