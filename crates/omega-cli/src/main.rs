@@ -789,6 +789,10 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::ForceRedraw => {
+                    terminal.clear()?;
+                    app.status_message = Some("Redrawn (Ctrl+L)".to_string());
+                }
                 Action::None => {}
             }
 

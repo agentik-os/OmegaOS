@@ -47,6 +47,8 @@ pub enum Action {
     ToggleSettingsBool { config_key: String },
     /// Commit an edited settings text field (saves to providers.toml).
     CommitSettingsEdit { config_key: String, value: String },
+    /// Ctrl+L — force a full terminal clear + redraw.
+    ForceRedraw,
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -395,6 +397,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
     }
 
     match key.code {
+        // Ctrl+L — force full terminal redraw (fixes corrupted view)
+        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Action::ForceRedraw
+        }
+
         // Quit
         KeyCode::Char('q') => {
             app.should_quit = true;

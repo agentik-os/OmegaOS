@@ -222,7 +222,11 @@ fn clean_terminal_output(text: &str) -> String {
         regex::Regex::new(r"$^").unwrap()
     });
     let stripped = ansi_re.replace_all(text, "");
-    let lines: Vec<&str> = stripped
+    // Strip entire <system-reminder>...</system-reminder> blocks
+    let no_reminders = regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>")
+        .map(|re| re.replace_all(&stripped, "").to_string())
+        .unwrap_or_else(|_| stripped.to_string());
+    let lines: Vec<&str> = no_reminders
         .lines()
         .map(|l| l.trim_end())
         .filter(|l| {
@@ -248,6 +252,21 @@ fn clean_terminal_output(text: &str) -> String {
             if t.contains("esc to interrupt") { return false; }
             if t.contains("Press up to edit") { return false; }
             if t.chars().all(|c| c == '─' || c == '━' || c == ' ') { return false; }
+            // Claude-mem / system-reminder / observation metadata — internal agent context
+            if t.contains("system-reminder") { return false; }
+            if t.contains("claude-mem") { return false; }
+            if t.contains("observation") && t.contains("token") { return false; }
+            if t.contains("get_observations") { return false; }
+            if t.contains("mem-search") { return false; }
+            if t.contains("smart_outline") { return false; }
+            if t.contains("memory_search") { return false; }
+            if t.contains("observation_") { return false; }
+            if t.starts_with("S1") && t.contains("AISB") { return false; }
+            if t.starts_with("#") && t.contains("obs") { return false; }
+            if t.contains("savings") && t.contains("tokens") { return false; }
+            if t.contains("Need details on a past") { return false; }
+            if t.contains("supplementary context") { return false; }
+            if t.contains("prior observations") { return false; }
             true
         })
         .collect();
