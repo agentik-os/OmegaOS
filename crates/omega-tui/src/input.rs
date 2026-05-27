@@ -18,8 +18,13 @@ pub enum Action {
         prompt: Option<String>,
     },
     DispatchOracle(String, String),
-    /// Send chat input to the currently selected session's pane.
     SendToSession { session: String, text: String },
+    /// Open Claude /login in a fresh session for OAuth re-auth.
+    LoginClaude,
+    /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
+    RefreshBilling,
+    /// Open the Telegram bot setup flow.
+    TelegramSetup,
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -246,7 +251,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
-                Tab::Settings | Tab::Help => {}
+                Tab::Monitor | Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -255,7 +260,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
-                Tab::Settings | Tab::Help => {}
+                Tab::Monitor | Tab::Settings | Tab::Help => {}
             }
             Action::None
         }
@@ -270,8 +275,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
-            Tab::Settings | Tab::Help => Action::None,
+            Tab::Monitor | Tab::Settings | Tab::Help => Action::None,
         },
+
+        // Monitor tab actions
+        KeyCode::Char('L') if app.tab == Tab::Monitor => Action::LoginClaude,
+        KeyCode::Char('T') if app.tab == Tab::Monitor => Action::TelegramSetup,
+        KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
 
         // Shortcut keys (work in any tab) — direct agent launchers
         KeyCode::Char('c') => {

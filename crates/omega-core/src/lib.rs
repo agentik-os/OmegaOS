@@ -3,6 +3,7 @@ pub mod aisb;
 pub mod config;
 pub mod dispatch;
 pub mod mission;
+pub mod monitor;
 pub mod naming;
 pub mod orchestration;
 pub mod done;

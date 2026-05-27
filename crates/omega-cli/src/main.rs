@@ -4,6 +4,8 @@ use omega_core::config::OmegaConfig;
 use omega_core::done::{DoneSignal, DoneStatus};
 use omega_core::session::SessionManager;
 
+mod telegram_bridge;
+
 #[derive(Parser)]
 #[command(
     name = "omega",
@@ -50,6 +52,15 @@ enum Commands {
     /// Attach to the Master AISB session (auto-spawns if missing)
     #[command(alias = "aisb")]
     Master,
+
+    /// Show billing / accounts / bot status (one-shot, also visible in TUI Monitor tab)
+    Monitor,
+
+    /// Manage the Omega Telegram bot bridge (setup/run/enable/disable)
+    Telegram {
+        #[command(subcommand)]
+        action: TelegramAction,
+    },
 
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
     InstallBindings,
@@ -234,6 +245,8 @@ async fn main() -> Result<()> {
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::Projects) => cmd_projects(),
         Some(Commands::Master) => cmd_master().await,
+        Some(Commands::Monitor) => cmd_monitor(),
+        Some(Commands::Telegram { action }) => cmd_telegram(action).await,
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -505,6 +518,43 @@ async fn run_tui_loop(
                     let _ = app.refresh_preview().await;
                     app.status_message = Some("Refreshed".to_string());
                 }
+                Action::LoginClaude => {
+                    // Spawn a fresh rmux session that runs `claude /login`
+                    let mgr = SessionManager::connect().await?;
+                    let name = match omega_core::naming::auto_name(omega_core::agents::Agent::Claude, &mgr).await {
+                        Ok(n) => format!("login-{}", &n[n.len().saturating_sub(2)..]),
+                        Err(_) => "claude-login".to_string(),
+                    };
+                    let cmd = "bash -c 'claude /login; exec bash'";
+                    if let Err(e) = mgr.create_session(&name, None, Some(cmd)).await {
+                        app.status_message = Some(format!("Login spawn failed: {}", e));
+                    } else {
+                        app.status_message = Some(format!("Login session '{}' opened — switch to it to enter code", name));
+                        let _ = app.refresh().await;
+                    }
+                }
+                Action::RefreshBilling => {
+                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+                    let script = home.join(".aisb/lib/usage-monitor.sh");
+                    if script.exists() {
+                        let _ = std::process::Command::new("bash")
+                            .arg(&script)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn();
+                        app.status_message = Some("Billing refresh kicked off in background".to_string());
+                    } else {
+                        app.status_message = Some(
+                            "Script not found: ~/.aisb/lib/usage-monitor.sh (AISB must be installed)".to_string(),
+                        );
+                    }
+                }
+                Action::TelegramSetup => {
+                    app.status_message = Some(
+                        "Run: omega telegram setup <BOT_TOKEN> <CHAT_ID>  (see Help tab)".to_string(),
+                    );
+                }
                 Action::SendToSession { session, text } => {
                     let mgr = SessionManager::connect().await?;
                     if !text.is_empty() {
@@ -719,6 +769,120 @@ fn cmd_projects() -> Result<()> {
             format!("  [{}]", p.stack.join(", "))
         };
         println!("  {} {}{}", p.name, p.path.display(), stack);
+    }
+    Ok(())
+}
+
+#[derive(clap::Subcommand)]
+enum TelegramAction {
+    /// Save bot token + chat id to ~/.omega/telegram.toml
+    Setup {
+        bot_token: String,
+        chat_id: i64,
+        #[arg(long, default_value = "aisb-master")]
+        relay_session: String,
+    },
+    /// Show current telegram config
+    Status,
+    /// Enable the configured bot
+    Enable,
+    /// Disable the configured bot
+    Disable,
+    /// Run the bot in foreground (polls Telegram, relays messages to AISB Master)
+    Run,
+}
+
+async fn cmd_telegram(action: TelegramAction) -> Result<()> {
+    use omega_core::monitor::OmegaTelegramConfig;
+    match action {
+        TelegramAction::Setup { bot_token, chat_id, relay_session } => {
+            let cfg = OmegaTelegramConfig {
+                bot_token,
+                chat_id,
+                relay_session,
+                enabled: true,
+            };
+            cfg.write()?;
+            println!("✓ Telegram config saved to ~/.omega/telegram.toml");
+            println!("  Relay session: {}", cfg.relay_session);
+            println!("  Chat ID:       {}", cfg.chat_id);
+            println!("\nRun the bot with:  omega telegram run");
+            Ok(())
+        }
+        TelegramAction::Status => {
+            match OmegaTelegramConfig::read() {
+                Some(cfg) => {
+                    println!("Configured: yes");
+                    println!("  Enabled:       {}", cfg.enabled);
+                    println!("  Chat ID:       {}", cfg.chat_id);
+                    println!("  Relay session: {}", cfg.relay_session);
+                }
+                None => {
+                    println!("Not configured.");
+                    println!("Run: omega telegram setup <BOT_TOKEN> <CHAT_ID>");
+                }
+            }
+            Ok(())
+        }
+        TelegramAction::Enable => {
+            if let Some(mut cfg) = OmegaTelegramConfig::read() {
+                cfg.enabled = true;
+                cfg.write()?;
+                println!("✓ Telegram bot enabled");
+            } else {
+                anyhow::bail!("Not configured. Run: omega telegram setup …");
+            }
+            Ok(())
+        }
+        TelegramAction::Disable => {
+            if let Some(mut cfg) = OmegaTelegramConfig::read() {
+                cfg.enabled = false;
+                cfg.write()?;
+                println!("✓ Telegram bot disabled");
+            } else {
+                anyhow::bail!("Not configured.");
+            }
+            Ok(())
+        }
+        TelegramAction::Run => {
+            let cfg = OmegaTelegramConfig::read()
+                .ok_or_else(|| anyhow::anyhow!("Not configured. Run: omega telegram setup …"))?;
+            if !cfg.enabled {
+                anyhow::bail!("Bot is disabled. Run: omega telegram enable");
+            }
+            telegram_bridge::run(cfg).await
+        }
+    }
+}
+
+fn cmd_monitor() -> Result<()> {
+    use omega_core::monitor;
+    let snap = monitor::UsageSnapshot::read()?.unwrap_or_default();
+    let accounts = monitor::list_accounts();
+    let bot = monitor::aisb_bot_status();
+    let tg = monitor::OmegaTelegramConfig::read();
+
+    println!("─── Billing ───");
+    println!("  5h session:  {:.1}%  ({}/{})", snap.precise_5h(),
+        snap.tokens_5h, snap.budget_5h);
+    println!("  Week:        {:.1}%  ({}/{})", snap.precise_week(),
+        snap.tokens_7d, snap.budget_week);
+    println!("  Account:     {} ({})", snap.active_account, snap.email);
+    println!();
+    println!("─── AISB Bot ───");
+    println!("  Running:     {}", bot.bot_alive);
+    println!("  Cache:       {:?}", bot.cache_status);
+    println!();
+    println!("─── Accounts ({}) ───", accounts.len());
+    for acc in &accounts {
+        let marker = if acc.is_active { "▶" } else { " " };
+        println!("  {} {}  {}", marker, acc.label, acc.email.as_deref().unwrap_or(""));
+    }
+    println!();
+    println!("─── Omega Telegram ───");
+    match tg {
+        Some(c) => println!("  Configured: yes (enabled={}, relay={})", c.enabled, c.relay_session),
+        None => println!("  Not configured. Run: omega telegram setup <TOKEN> <CHAT_ID>"),
     }
     Ok(())
 }

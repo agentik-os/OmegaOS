@@ -6,6 +6,7 @@ use omega_core::session::{OmegaSession, SessionManager, SessionRole};
 pub enum Tab {
     Sessions,
     Menu,
+    Monitor,
     Settings,
     Help,
 }
@@ -388,7 +389,8 @@ impl App {
     pub fn next_tab(&mut self) {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
-            Tab::Menu => Tab::Settings,
+            Tab::Menu => Tab::Monitor,
+            Tab::Monitor => Tab::Settings,
             Tab::Settings => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
@@ -398,7 +400,8 @@ impl App {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
-            Tab::Settings => Tab::Menu,
+            Tab::Monitor => Tab::Menu,
+            Tab::Settings => Tab::Monitor,
             Tab::Help => Tab::Settings,
         };
     }

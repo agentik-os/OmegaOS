@@ -23,6 +23,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.tab {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
+        Tab::Monitor => draw_monitor(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, chunks[1]),
     }
@@ -104,12 +105,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Settings", "Help"];
+    let titles = vec!["Sessions", "Menu", "Monitor", "Settings", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
-        Tab::Settings => 2,
-        Tab::Help => 3,
+        Tab::Monitor => 2,
+        Tab::Settings => 3,
+        Tab::Help => 4,
     };
 
     let tabs = Tabs::new(titles)
@@ -342,6 +344,212 @@ fn draw_menu(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     frame.render_widget(list, area);
+}
+
+fn draw_monitor(frame: &mut Frame, _app: &App, area: Rect) {
+    use omega_core::monitor;
+
+    let snap = monitor::UsageSnapshot::read().ok().flatten();
+    let cache_age = monitor::UsageSnapshot::cache_age_secs();
+    let bot_status = monitor::aisb_bot_status();
+    let accounts = monitor::list_accounts();
+    let tg_config = monitor::OmegaTelegramConfig::read();
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  AISB Monitor — Claude Code billing, accounts, bots",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
+
+    // ── Billing ─────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "  ── Billing (live) ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    if let Some(snap) = &snap {
+        let cache_label = match cache_age {
+            Some(s) if s < 60 => format!("{}s ago", s),
+            Some(s) if s < 3600 => format!("{}m ago", s / 60),
+            Some(s) => format!("{}h ago", s / 3600),
+            None => "?".to_string(),
+        };
+        lines.push(Line::from(format!(
+            "    Account:        {}  ({})",
+            if !snap.active_account.is_empty() {
+                snap.active_account.as_str()
+            } else {
+                "—"
+            },
+            if !snap.email.is_empty() { snap.email.as_str() } else { "—" }
+        )));
+        lines.push(Line::from(format!(
+            "    Source:         {}    Cache: {}",
+            snap.source, cache_label
+        )));
+        lines.push(Line::from(""));
+
+        // Progress bars
+        for (label, pct, tokens, budget) in [
+            ("5h session", snap.precise_5h(), snap.tokens_5h, snap.budget_5h),
+            ("Week",       snap.precise_week(), snap.tokens_7d, snap.budget_week),
+        ] {
+            lines.push(Line::from(vec![
+                Span::raw(format!("    {:11} ", label)),
+                Span::styled(
+                    render_bar(pct, 30),
+                    Style::default().fg(pct_color(pct)),
+                ),
+                Span::raw(format!(" {:5.1}%  ", pct)),
+                Span::styled(
+                    format!("{} / {} tok", short_num(tokens), short_num(budget)),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "    Sonnet:         {}%        Extra: {}%",
+            snap.sonnet_pct, snap.extra_pct
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "    (no /tmp/aisb-usage.json — usage-monitor cron not running)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── AISB Bot status ─────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "  ── AISB Telegram Bot ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    let (bot_icon, bot_color, bot_text) = if bot_status.bot_alive {
+        ("●", Color::Green, "running")
+    } else {
+        ("○", Color::Red, "not detected")
+    };
+    lines.push(Line::from(vec![
+        Span::raw("    Process status: "),
+        Span::styled(format!("{} {}", bot_icon, bot_text), Style::default().fg(bot_color)),
+    ]));
+    let cache_text = match bot_status.cache_status {
+        monitor::CacheStatus::Fresh(s) => format!("fresh ({}s ago)", s),
+        monitor::CacheStatus::Stale(s) => format!("stale ({}s ago)", s),
+        monitor::CacheStatus::Missing => "missing".to_string(),
+    };
+    lines.push(Line::from(format!("    Usage cache:    {}", cache_text)));
+
+    lines.push(Line::from(""));
+
+    // ── Accounts ────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "  ── Claude Accounts (~/.claude/accounts) ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    if accounts.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "    (no saved accounts)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for acc in &accounts {
+            let marker = if acc.is_active { "▶" } else { " " };
+            let color = if acc.is_active { Color::Green } else { Color::White };
+            lines.push(Line::from(vec![
+                Span::styled(format!("    {} ", marker), Style::default().fg(Color::Cyan)),
+                Span::styled(acc.label.clone(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
+                Span::raw(format!("   {}", acc.email.as_deref().unwrap_or(""))),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Omega Telegram Bot ──────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "  ── Omega Telegram Bot ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    if let Some(cfg) = tg_config {
+        let state = if cfg.enabled { "enabled" } else { "configured (disabled)" };
+        let color = if cfg.enabled { Color::Green } else { Color::Yellow };
+        lines.push(Line::from(vec![
+            Span::raw("    Status:         "),
+            Span::styled(state.to_string(), Style::default().fg(color)),
+        ]));
+        lines.push(Line::from(format!(
+            "    Relay session:  {}",
+            cfg.relay_session
+        )));
+        lines.push(Line::from(format!("    Chat ID:        {}", cfg.chat_id)));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "    (not configured — run: omega telegram setup)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+
+    lines.push(Line::from(""));
+
+    // ── Actions ─────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        "  ── Actions ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("    [L]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  Login / re-auth Claude       (opens a session running 'claude /login')"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    [T]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  Set up Omega Telegram bot    (creates ~/.omega/telegram.toml)"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    [B]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  Refresh billing now          (runs ~/.aisb/lib/usage-monitor.sh in background)"),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  This tab refreshes every 5s. Press any action key to act.",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    let paragraph = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Monitor "),
+    );
+    frame.render_widget(paragraph, area);
+}
+
+fn render_bar(pct: f32, width: usize) -> String {
+    let filled = ((pct / 100.0) * width as f32).round() as usize;
+    let filled = filled.min(width);
+    let empty = width.saturating_sub(filled);
+    format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+}
+
+fn pct_color(pct: f32) -> Color {
+    if pct < 50.0 { Color::Green }
+    else if pct < 80.0 { Color::Yellow }
+    else { Color::Red }
+}
+
+fn short_num(n: u64) -> String {
+    if n >= 1_000_000_000 {
+        format!("{:.1}G", n as f64 / 1_000_000_000.0)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
