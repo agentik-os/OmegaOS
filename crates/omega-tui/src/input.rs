@@ -436,7 +436,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 advance_to_next_actionable(app, &fields, true);
                 return Action::None;
             }
-            if matches!(app.tab, Tab::Info | Tab::Monitor) && app.detail_focused {
+            // Info tab: when detail focused on AISB Agents → navigate agents,
+            // else scroll detail. When list focused → navigate sub-sections.
+            if app.tab == Tab::Info && app.detail_focused {
+                if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                    app.select_info_agent_next();
+                } else {
+                    app.scroll_detail_down(1);
+                }
+                return Action::None;
+            }
+            if app.tab == Tab::Monitor && app.detail_focused {
                 app.scroll_detail_down(1);
                 return Action::None;
             }
@@ -445,13 +455,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_next(),
                 Tab::Monitor => app.select_monitor_next(),
                 Tab::Settings => app.select_settings_next(),
-                Tab::Info => {
-                    if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
-                        app.select_info_agent_next();
-                    } else {
-                        app.select_info_next();
-                    }
-                }
+                Tab::Info => app.select_info_next(), // list focus → switch sub-section
                 Tab::Help => {}
             }
             Action::None
@@ -468,7 +472,15 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 advance_to_next_actionable(app, &fields, false);
                 return Action::None;
             }
-            if matches!(app.tab, Tab::Info | Tab::Monitor) && app.detail_focused {
+            if app.tab == Tab::Info && app.detail_focused {
+                if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                    app.select_info_agent_prev();
+                } else {
+                    app.scroll_detail_up(1);
+                }
+                return Action::None;
+            }
+            if app.tab == Tab::Monitor && app.detail_focused {
                 app.scroll_detail_up(1);
                 return Action::None;
             }
@@ -477,13 +489,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Monitor => app.select_monitor_prev(),
                 Tab::Settings => app.select_settings_prev(),
-                Tab::Info => {
-                    if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
-                        app.select_info_agent_prev();
-                    } else {
-                        app.select_info_prev();
-                    }
-                }
+                Tab::Info => app.select_info_prev(),
                 Tab::Help => {}
             }
             Action::None

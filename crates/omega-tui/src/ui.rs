@@ -306,11 +306,20 @@ fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" OmegaOS "),
+                .title(" OmegaOS ")
+                .border_style(Style::default().fg(Color::DarkGray)),
         )
         .select(selected)
-        .style(Style::default().fg(Color::Gray))
-        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        // All tabs share the same default style (bright white) so none stands
+        // out unless it's the active one.
+        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .divider(Span::styled("│", Style::default().fg(Color::DarkGray)));
 
     frame.render_widget(tabs, area);
 }

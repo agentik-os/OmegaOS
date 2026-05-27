@@ -365,6 +365,25 @@ async fn run_menu() -> Result<()> {
 /// After creating a session, switch to the Sessions tab, select the new
 /// session, enter chat focus, and refresh the live preview — so the user
 /// is immediately ready to talk to it.
+/// Best-effort: post a confirmation message to the configured chat via
+/// the Telegram HTTP API. Errors are swallowed (we still tell the user
+/// the bot is configured even if the network call failed).
+async fn send_telegram_confirmation(bot_token: &str, chat_id: i64, text: &str) {
+    let url = format!("https://api.telegram.org/bot{}/sendMessage", bot_token);
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let body = serde_json::json!({
+        "chat_id": chat_id,
+        "text": text,
+    });
+    let _ = client.post(&url).json(&body).send().await;
+}
+
 fn shell_escape_for_bash(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -617,24 +636,53 @@ async fn run_tui_loop(
                 }
                 Action::TelegramSetupCommit { bot_token, chat_id, user_ids } => {
                     let cfg = omega_core::monitor::OmegaTelegramConfig {
-                        bot_token,
+                        bot_token: bot_token.clone(),
                         chat_id,
-                        allow_user_ids: user_ids,
+                        allow_user_ids: user_ids.clone(),
                         relay_session: omega_core::aisb::MASTER_SESSION_NAME.to_string(),
                         label: String::new(),
                         enabled: true,
                     };
                     match cfg.write() {
                         Ok(()) => {
-                            let filter = if cfg.allow_user_ids.is_empty() {
-                                "chat_id only".to_string()
-                            } else {
-                                format!("user_ids {:?}", cfg.allow_user_ids)
-                            };
-                            app.status_message = Some(format!(
-                                "✓ Telegram configured (chat={}, filter={}). Run `omega telegram run` to start.",
-                                cfg.chat_id, filter
-                            ));
+                            // 1) Send a confirmation message via Telegram API so
+                            //    the user can see the bot works.
+                            let confirm = format!(
+                                "✓ Omega Telegram bot configured.\n\
+                                 Chat: {}\nFilter: {}\n\nFrom now on, every message \
+                                 you send here is relayed to AISB Master (the 13-agent brain). \
+                                 Reply with /help to see commands.",
+                                chat_id,
+                                if user_ids.is_empty() {
+                                    "chat_id only".to_string()
+                                } else {
+                                    format!("user_ids {:?}", user_ids)
+                                }
+                            );
+                            send_telegram_confirmation(&bot_token, chat_id, &confirm).await;
+
+                            // 2) Auto-spawn `omega telegram run` in a background
+                            //    rmux session so the bridge actually starts.
+                            let mgr = SessionManager::connect().await?;
+                            let bridge_session = "omega-telegram-bridge";
+                            // Kill any old bridge first (idempotent)
+                            let _ = mgr.kill_session(bridge_session).await;
+                            let cmd = "bash -c 'omega telegram run 2>&1 | tee /tmp/omega-telegram.log; exec bash'";
+                            match mgr.create_session(bridge_session, None, Some(cmd)).await {
+                                Ok(_) => {
+                                    app.status_message = Some(format!(
+                                        "✓ Telegram setup done — bridge running in session `{}` (also got a Telegram confirmation)",
+                                        bridge_session
+                                    ));
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(format!(
+                                        "✓ Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.",
+                                        e
+                                    ));
+                                }
+                            }
+                            let _ = app.refresh().await;
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Telegram setup failed: {}", e));
