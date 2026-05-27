@@ -77,14 +77,21 @@ impl Agent {
     /// comes pre-installed / not installable via a script.
     pub fn install_command(&self) -> Option<&'static str> {
         match self {
-            Agent::Pi => Some("curl -fsSL https://pi.dev/install.sh | sh"),
+            // Interactive installers: download to temp, then run from a path so
+            // stdin stays attached to the user's TTY (curl|sh would feed the
+            // script via pipe, breaking any stty/raw-mode prompts inside).
+            Agent::Pi => Some(
+                "T=$(mktemp) && curl -fsSL https://pi.dev/install.sh -o \"$T\" && sh \"$T\"; rm -f \"$T\"",
+            ),
             Agent::Hermes => Some(
-                "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash && hermes setup",
+                "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
             ),
             Agent::Glm => Some("npm install -g @z-ai/glm-cli"),
             // Claude/Codex/Gemini: users install via their own channels
             // (claude.ai/code, npm i -g @openai/codex, npm i -g @google/gemini-cli)
-            Agent::Claude => Some("curl -fsSL https://claude.ai/install.sh | bash"),
+            Agent::Claude => Some(
+                "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
+            ),
             Agent::Codex => Some("npm install -g @openai/codex"),
             Agent::Gemini => Some("npm install -g @google/gemini-cli"),
             Agent::Shell => None,
