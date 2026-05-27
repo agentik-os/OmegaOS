@@ -226,35 +226,70 @@ Detects: orphaned sessions, done workers awaiting acknowledgment, stale scope cl
 ```
 OmegaOS/
 ├── crates/
-│   ├── omega-core/     # Core library
-│   │   ├── session.rs      # rmux SDK integration, session roles
-│   │   ├── dispatch.rs     # Oracle/worker dispatch
-│   │   ├── scope.rs        # File-lock scope claims
-│   │   ├── team.rs         # Multi-agent team spawning
-│   │   ├── patrol.rs       # Session health watchdog
-│   │   ├── session_log.rs  # JSONL session persistence
-│   │   ├── gate.rs         # Rubric-based quality gates
-│   │   ├── done.rs         # Done signal protocol
-│   │   ├── progress.rs     # Progress tracking
-│   │   └── config.rs       # Configuration management
-│   ├── omega-tui/      # ratatui session manager with project grouping
-│   └── omega-cli/      # `omega` binary with 18 subcommands
-├── scripts/
-│   ├── dispatch-to-oracle.sh   # Create oracle session
-│   ├── dispatch-to-session.sh  # Create worker session
-│   ├── worker-mark-done.sh     # Signal task completion
-│   └── close-gate.sh           # 3-tier quality gate checks
-├── config/
-│   └── default.toml            # Default configuration
-└── install.sh                  # One-command installer
+│   ├── omega-core/          # Core library (Rust)
+│   │   ├── session.rs           # rmux SDK integration, session roles
+│   │   ├── agents.rs            # Agent registry (Claude/Codex/Gemini/Pi/Hermes/GLM)
+│   │   ├── aisb.rs              # AISB Master (auto-spawn, --continue)
+│   │   ├── aisb_agents.rs       # 13 Matrix agents (typed, with prompts)
+│   │   ├── rules.rs             # 15 operational rules registry
+│   │   ├── monitor.rs           # Billing, Telegram config, bot status
+│   │   ├── providers.rs         # Per-LLM config (model, API key)
+│   │   ├── dispatch.rs          # Oracle/worker dispatch
+│   │   ├── scope.rs             # File-lock scope claims
+│   │   ├── team.rs              # Multi-agent team spawning
+│   │   └── gate.rs              # Rubric-based quality gates
+│   ├── omega-tui/           # TUI session manager (ratatui)
+│   │   ├── ui.rs                # 6 tabs: Sessions/Menu/Monitor/Settings/Info/Help
+│   │   ├── input.rs             # Keyboard + mouse + paste handling
+│   │   └── app.rs               # App state, fields, navigation
+│   └── omega-cli/           # `omega` binary (25+ subcommands)
+│       ├── main.rs              # CLI entry point + all command handlers
+│       └── telegram_bridge.rs   # Rust Telegram bot (long-poll, relay, typing)
+├── agents/                  # Agent system prompts
+│   ├── aisb-master.md           # Master AISB brain
+│   ├── oracle.md / worker.md / team-lead.md
+│   └── aisb/                    # 13 Matrix agents
+├── rules/                   # 15 operational rules (.md files)
+├── tools/pdfgen/            # PDF report generator (Next.js + Playwright)
+├── config/default.toml      # Default configuration
+├── OMEGA.md                 # Universal agent instructions
+└── install.sh               # One-command installer (6 phases)
 ```
+
+## Supported Agents
+
+OmegaOS orchestrates multiple AI coding agents. Install any of them from the TUI (Settings → Install) or CLI:
+
+| Agent | Provider | Install | Description |
+|-------|----------|---------|-------------|
+| [Claude Code](https://claude.ai/code) | Anthropic | `omega install claude` | Primary agent — Opus/Sonnet models, tool use, multi-file editing |
+| [Codex](https://github.com/openai/codex) | OpenAI | `omega install codex` | GPT-4 powered coding agent |
+| [Gemini CLI](https://github.com/google-gemini/gemini-cli) | Google | `omega install gemini` | Gemini 2.5 Pro/Flash models |
+| [Pi](https://github.com/earendil-works/pi) | earendil-works | `omega install pi` | Lightweight agent, OpenRouter multi-model |
+| [Hermes](https://hermes-agent.nousresearch.com/) | Nous Research | `omega install hermes` | Multi-agent coordinator |
+| [GLM](https://www.z.ai/) | Z.AI / Zhipu | `omega install glm` | GLM-4 models |
+| Shell | — | built-in | Plain terminal (no AI) |
+
+Every install automatically runs `omega sync` — the new agent reads from `~/.omega/` (same rules, same prompts, same skills).
+
+## Integrated Tools
+
+| Tool | Description |
+|------|-------------|
+| **PDF Generator** | 4 templates (whitepaper, audit, marketing, doc) with Playwright rendering. `omega pdf --template=whitepaper --send` generates + sends to Telegram. |
+| **Telegram Bridge** | Persistent bot that relays messages to AISB Master. Typing indicator, auto-restart on crash, HTML formatted responses. |
+| **AISB Master** | Always-on AI brain (13 Matrix agents). Auto-spawns on launch, resumes conversation with `--continue`. |
 
 ## Tech Stack
 
-- **rmux** — Rust terminal multiplexer with typed SDK, daemon architecture, Playwright-style `wait_for_text`
-- **ratatui** — Terminal UI framework for the session manager
-- **clap** — CLI argument parsing
-- **tokio** — Async runtime for rmux SDK operations
+| Component | Technology | Role |
+|-----------|-----------|------|
+| [rmux](https://github.com/agentik-os/rmux) | Rust | Terminal multiplexer — daemon, SDK, PTY, sessions, panes |
+| [ratatui](https://github.com/ratatui/ratatui) | Rust | TUI framework — 6-tab session manager |
+| [tokio](https://tokio.rs) | Rust | Async runtime for rmux SDK operations |
+| [clap](https://github.com/clap-rs/clap) | Rust | CLI argument parsing + completions |
+| [reqwest](https://github.com/seanmonstar/reqwest) | Rust | Telegram Bot API + PDF delivery |
+| [Next.js](https://nextjs.org) + [Playwright](https://playwright.dev) | TypeScript | PDF report rendering engine |
 
 ## Done Signal Protocol
 
@@ -272,34 +307,42 @@ Workers signal completion by writing `~/.omega/state/worker-{session}.done.json`
 
 Status values: `done_clean` (verified complete), `pending` (more work needed), `failed` (blocked).
 
-## Origins
+## Origins & Credits
 
-OmegaOS integrates patterns from four projects:
+OmegaOS integrates patterns from four projects, all reimplemented in Rust:
 
-- **[rmux](https://github.com/agentik-os/rmux)** — The terminal multiplexer engine (Rust, daemon-backed SDK)
-- **[tmux-claude](https://github.com/agentik-os/tmux-claude)** — UX inspiration only (session grouping, tree hierarchy, progress bars). OmegaOS itself uses **rmux** (Rust), not tmux. The UX patterns were ported and reimplemented natively against the rmux SDK.
-- **[OmegaSetup](https://github.com/agentik-os/OmegaSetup)** — Orchestration layer (dispatch, quality gates, done signals)
-- **[earendil/coding-agent](https://github.com/earendil-works/pi)** — Session architecture patterns (JSONL persistence, RPC mode)
+| Project | What we took | Link |
+|---------|-------------|------|
+| **rmux** | Terminal multiplexer engine (daemon, SDK, PTY) — our runtime | [agentik-os/rmux](https://github.com/agentik-os/rmux) |
+| **tmux-claude** | UX patterns only (session grouping, tree hierarchy, progress bars) — reimplemented against rmux SDK, no tmux dependency | [agentik-os/tmux-claude](https://github.com/agentik-os/tmux-claude) |
+| **OmegaSetup** | Orchestration layer (dispatch, quality gates, done signals, AISB agents) | [agentik-os/OmegaSetup](https://github.com/agentik-os/OmegaSetup) |
+| **Pi (coding-agent)** | Session architecture patterns (JSONL persistence, RPC mode) | [earendil-works/pi](https://github.com/earendil-works/pi) |
 
-## Telegram Bot (Optional)
+## Telegram Bridge (Optional)
 
-Remote dispatch via Telegram:
+Talk to AISB Master from your phone — pure Rust, no Python dependency.
 
 ```bash
-cd bot/
-pip install -r requirements.txt
-export OMEGA_BOT_TOKEN="your-bot-token-from-@BotFather"
-export OMEGA_CHAT_ID="your-chat-id"
-python main.py
+# 1. Create a bot via @BotFather on Telegram
+# 2. Get your user ID via @userinfobot
+# 3. Setup:
+omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>
+# Bridge auto-starts after setup
+
+# Manual control:
+omega telegram run       # Start bridge
+omega telegram status    # Check config
+omega telegram disable   # Pause without deleting config
+omega telegram enable    # Resume
 ```
 
-Then in Telegram:
-- `/dispatch MyProject Fix the login bug` → dispatches an oracle
-- `/list` → shows active sessions
-- `/status oracle-MyProject` → captures session output
-- `/patrol` → runs health check
-
-Done signals are automatically posted back to the chat as workers complete.
+**Features:**
+- Messages relayed to AISB Master, responses sent back (HTML formatted)
+- Typing indicator while agent thinks
+- Auto-restart: if AISB Master crashes, bridge revives it with `--continue` (same conversation)
+- Healthcheck every 60s — Master always alive
+- Security: `allow_user_ids` filter — only you can control the bot
+- Commands: `/help`, `/list`, `/status [session]`, `/billing`, `/relay <session> <text>`
 
 ## Shell Completions
 
