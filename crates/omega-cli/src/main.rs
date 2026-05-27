@@ -335,7 +335,11 @@ async fn run_menu() -> Result<()> {
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
+        crossterm::event::EnableMouseCapture,
+        // Bracketed paste — long pastes arrive as a single Event::Paste
+        // instead of fragmenting into per-character Key events (which would
+        // hit Enter on embedded \n and submit prematurely).
+        crossterm::event::EnableBracketedPaste,
     )?;
     let backend = ratatui::prelude::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
@@ -346,7 +350,8 @@ async fn run_menu() -> Result<()> {
     crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste,
     )?;
     terminal.show_cursor()?;
 

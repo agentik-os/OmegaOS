@@ -697,47 +697,51 @@ fn pct_color(pct: f32) -> Color {
     else { Color::Red }
 }
 
-/// Wrap a string into visual lines, soft-wrapping on word boundaries when
-/// possible (falls back to hard cuts mid-word for long tokens).
+/// Wrap a string into visual lines. Honours embedded `\n` as hard breaks
+/// (paste with newlines stays multi-line). Within each logical line we
+/// soft-wrap on word boundaries; long tokens are hard-cut.
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 || text.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    let mut current = String::new();
-
-    for word in text.split_whitespace() {
-        // Hard-cut long words
-        if word.chars().count() > width {
-            if !current.is_empty() {
-                out.push(std::mem::take(&mut current));
-            }
-            let mut buf = String::new();
-            for c in word.chars() {
-                if buf.chars().count() + 1 > width {
-                    out.push(std::mem::take(&mut buf));
-                }
-                buf.push(c);
-            }
-            current = buf;
+    for logical in text.split('\n') {
+        if logical.is_empty() {
+            out.push(String::new());
             continue;
         }
-        let needed = if current.is_empty() {
-            word.chars().count()
-        } else {
-            current.chars().count() + 1 + word.chars().count()
-        };
-        if needed > width {
-            out.push(std::mem::take(&mut current));
-            current.push_str(word);
-        } else {
-            if !current.is_empty() {
-                current.push(' ');
+        let mut current = String::new();
+        for word in logical.split(' ').filter(|w| !w.is_empty()) {
+            if word.chars().count() > width {
+                if !current.is_empty() {
+                    out.push(std::mem::take(&mut current));
+                }
+                let mut buf = String::new();
+                for c in word.chars() {
+                    if buf.chars().count() + 1 > width {
+                        out.push(std::mem::take(&mut buf));
+                    }
+                    buf.push(c);
+                }
+                current = buf;
+                continue;
             }
-            current.push_str(word);
+            let needed = if current.is_empty() {
+                word.chars().count()
+            } else {
+                current.chars().count() + 1 + word.chars().count()
+            };
+            if needed > width {
+                out.push(std::mem::take(&mut current));
+                current.push_str(word);
+            } else {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+            }
         }
-    }
-    if !current.is_empty() {
+        // Always emit a row per logical line (even empty/space-only ones)
         out.push(current);
     }
     out

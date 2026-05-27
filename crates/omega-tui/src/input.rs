@@ -40,8 +40,36 @@ pub enum Action {
 pub fn handle_event(app: &mut App, event: Event) -> Action {
     match event {
         Event::Key(key) => handle_key(app, key),
+        // Bracketed paste — arrives as one big string. Route to the active
+        // text input (chat or modal) without firing any submit triggers.
+        Event::Paste(text) => handle_paste(app, text),
         _ => Action::None,
     }
+}
+
+fn handle_paste(app: &mut App, text: String) -> Action {
+    // Strip nothing — preserve user's text exactly. \n inside the paste
+    // is appended as a literal newline (the input box will wrap/grow).
+    match app.input_mode {
+        InputMode::Normal => {
+            // Sessions tab + chat-focused → append to chat input buffer
+            if app.tab == Tab::Sessions
+                && matches!(
+                    app.session_focus,
+                    SessionFocus::Chat | SessionFocus::ChatFullscreen
+                )
+            {
+                app.chat_input.push_str(&text);
+                app.status_message = Some(format!("Pasted {} chars", text.len()));
+            }
+        }
+        // Any active input modal: append to its buffer
+        _ => {
+            app.input_buffer.push_str(&text);
+            app.status_message = Some(format!("Pasted {} chars", text.len()));
+        }
+    }
+    Action::None
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
