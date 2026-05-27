@@ -130,6 +130,9 @@ pub struct App {
     pub config: OmegaConfig,
     pub preview_content: String,
     pub preview_scroll: u16,
+    /// Auto-follow tail — preview stays glued to the bottom (latest content)
+    /// unless the user manually scrolls up.
+    pub preview_follow_tail: bool,
     pub session_focus: SessionFocus,
     pub chat_input: String,
     pub current_session: Option<String>,
@@ -161,10 +164,29 @@ impl App {
             config,
             preview_content: String::new(),
             preview_scroll: 0,
+            preview_follow_tail: true,
             session_focus: SessionFocus::List,
             chat_input: String::new(),
             current_session,
         }
+    }
+
+    /// Select a session by name (used after creating a session to auto-focus it).
+    pub fn select_by_name(&mut self, name: &str) -> bool {
+        for (i, entry) in self.sessions.iter().enumerate() {
+            if entry.session.name == name {
+                self.selected = i;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Enter chat focus on the currently selected session.
+    pub fn enter_chat_focus(&mut self) {
+        self.session_focus = SessionFocus::Chat;
+        self.preview_follow_tail = true;
+        self.chat_input.clear();
     }
 
     pub fn toggle_session_focus(&mut self) {
@@ -172,24 +194,34 @@ impl App {
             SessionFocus::List => SessionFocus::Chat,
             SessionFocus::Chat => SessionFocus::List,
         };
+        // When entering chat, start at the latest content (tail follow on)
+        if self.session_focus == SessionFocus::Chat {
+            self.preview_follow_tail = true;
+        }
         self.chat_input.clear();
     }
 
     pub fn scroll_preview_down(&mut self, lines: u16) {
         self.preview_scroll = self.preview_scroll.saturating_add(lines);
+        // Scrolling down by hand re-engages follow if we're at the bottom
+        // (renderer will clamp). Otherwise we stay where the user wants.
+        self.preview_follow_tail = false;
     }
 
     pub fn scroll_preview_up(&mut self, lines: u16) {
         self.preview_scroll = self.preview_scroll.saturating_sub(lines);
+        // User scrolled up → break follow, they want to read history
+        self.preview_follow_tail = false;
     }
 
     pub fn scroll_preview_home(&mut self) {
         self.preview_scroll = 0;
+        self.preview_follow_tail = false;
     }
 
     pub fn scroll_preview_end(&mut self) {
-        // Set a large value — the renderer clamps it
         self.preview_scroll = u16::MAX / 2;
+        self.preview_follow_tail = true;
     }
 
     pub fn agent_picker_next(&mut self) {
@@ -256,6 +288,10 @@ impl App {
             Err(_) => {
                 self.preview_content = String::from("(session has no pane content)");
             }
+        }
+        // Keep glued to the bottom when in follow mode (tail -f behavior)
+        if self.preview_follow_tail {
+            self.preview_scroll = u16::MAX / 2;
         }
         Ok(())
     }

@@ -327,6 +327,25 @@ async fn run_menu() -> Result<()> {
     Ok(())
 }
 
+/// After creating a session, switch to the Sessions tab, select the new
+/// session, enter chat focus, and refresh the live preview — so the user
+/// is immediately ready to talk to it.
+async fn auto_focus_chat(app: &mut omega_tui::app::App, session_name: &str) {
+    use omega_tui::app::Tab;
+
+    // Sessions can take a moment to register in rmux — retry refresh a few times
+    for _ in 0..10 {
+        let _ = app.refresh().await;
+        if app.select_by_name(session_name) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+    app.tab = Tab::Sessions;
+    app.enter_chat_focus();
+    let _ = app.refresh_preview().await;
+}
+
 async fn run_tui_loop(
     terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
     app: &mut omega_tui::app::App,
@@ -425,12 +444,9 @@ async fn run_tui_loop(
                         .await
                     {
                         Ok(_) => {
-                            app.status_message = Some(format!(
-                                "Created {} with {}",
-                                name,
-                                agent.name()
-                            ));
-                            let _ = app.refresh().await;
+                            app.status_message =
+                                Some(format!("Created {} with {} — opening chat…", name, agent.name()));
+                            auto_focus_chat(app, &name).await;
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Create failed: {}", e));
@@ -446,11 +462,9 @@ async fn run_tui_loop(
                                 .await
                             {
                                 Ok(_) => {
-                                    app.status_message = Some(format!(
-                                        "Created {} (auto-named)",
-                                        name
-                                    ));
-                                    let _ = app.refresh().await;
+                                    app.status_message =
+                                        Some(format!("Created {} ({}) — opening chat…", name, agent.name()));
+                                    auto_focus_chat(app, &name).await;
                                 }
                                 Err(e) => {
                                     app.status_message = Some(format!("Create failed: {}", e));
