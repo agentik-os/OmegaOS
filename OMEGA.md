@@ -48,6 +48,22 @@ All operational rules are in `~/.omega/rules/`. Key rules:
 - `omega dispatch` — Send missions to oracles
 - `omega orchestrate` — Full mission pipeline
 
+## Quality Arsenal (17 Forensic Audits)
+
+OmegaOS ships with 17 Gestalt-Popper forensic audits covering code, UX, flows, security,
+performance, accessibility, SEO, data, API, copy, DX, motion, automation, logic, and retention.
+
+Oracles auto-trigger relevant audits at end of mission based on what changed.
+
+```bash
+omega audit list                    # Show all 17 audits
+omega audit run codeaudit --dir .   # Run a specific audit
+omega audit select "fix auth"       # Auto-select audits for a task
+```
+
+All audits share: Gestalt clarity gate, Popper falsification, hinge point 10x, auto-fix, re-audit.
+Scores normalize to /100 for cross-audit comparison. Threshold for PASS: 70/100.
+
 ## Config
 
 - `~/.omega/config.toml` — General settings

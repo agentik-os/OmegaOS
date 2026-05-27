@@ -146,6 +146,17 @@ else
     info "PDF generator source not found — skipping (can be added later)"
 fi
 
+# Install audit skills (Quality Arsenal)
+AUDITS_SRC="$OMEGA_SRC/skills/audits"
+AUDITS_DST="$OMEGA_DIR/skills/audits"
+if [[ -d "$AUDITS_SRC" ]]; then
+    mkdir -p "$AUDITS_DST"
+    cp -r "$AUDITS_SRC"/* "$AUDITS_DST/"
+    ok "Quality Arsenal installed: 17 audit skills → $AUDITS_DST/"
+else
+    info "Audit skills not found — skipping"
+fi
+
 # Install OMEGA.md master system prompt
 if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
     cp "$OMEGA_SRC/OMEGA.md" "$OMEGA_DIR/OMEGA.md"
@@ -265,6 +276,10 @@ echo "    omega install codex     # Codex from OpenAI"
 echo "    omega install gemini    # Gemini from Google"
 echo "    omega install glm       # GLM from Z.AI"
 echo "    omega install --help"
+echo ""
+echo "  Quality Arsenal (17 forensic audits):"
+echo "    omega audit list              # Show all 17 Quality Arsenal audits"
+echo "    omega audit select \"fix auth\"  # See which audits apply"
 echo ""
 echo "  Optional Telegram bridge (talk to AISB from your phone):"
 echo "    omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>"

@@ -19,6 +19,17 @@ default_model = "opus"
 # category = "Work"
 # icon = "🚀"
 
+# Quality Arsenal (17 forensic audits)
+[audits]
+# Which audits to auto-run at end of mission (empty = auto-select based on mission)
+auto_audits = []
+# Minimum score threshold for audit PASS (0-100)
+pass_threshold = 70
+# Enable end-of-mission audit hook
+end_of_mission_hook = true
+# Maximum concurrent audit workers
+max_parallel = 4
+
 # Optional Telegram integration
 # [telegram]
 # bot_token = "YOUR_BOT_TOKEN"

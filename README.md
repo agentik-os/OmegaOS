@@ -84,6 +84,7 @@ All LLM agents share a single source of truth:
 ├── rules/              # 15 operational rules as editable .md files
 ├── agents/             # AISB Master + 13 Matrix agent prompts
 ├── skills/pdfgen/      # PDF report generator (4 templates)
+├── skills/audits/      # 17 Quality Arsenal audit manifests
 ├── config.toml         # General settings
 ├── providers.toml      # Per-LLM settings (model, API key, etc.)
 └── telegram.toml       # Telegram bridge config (gitignored)
@@ -140,6 +141,47 @@ automatically runs `omega sync` to create symlinks:
 | Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed files, signals done |
 | Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions (any agent) |
 | System | ⚙ | `omega-telegram-bridge` | Infrastructure daemons |
+
+### Quality Arsenal (17 Forensic Audits)
+
+OmegaOS includes 17 Gestalt-Popper forensic audits. Oracles auto-select relevant audits at end of mission.
+
+| Audit | Domain | Phases | Score | What it answers |
+|-------|--------|--------|-------|-----------------|
+| `/codeaudit` | Code | 23 | /420 | Is the code SOLID? |
+| `/flowaudit` | Flows | 25 | /400 | Does the experience WORK? |
+| `/uiuxaudit` | Design | 23 | /420 | Is the interface BEAUTIFUL? |
+| `/debugaudit` | Runtime | 23 | /360 | What is BROKEN right now? |
+| `/featureaudit` | Features | 19 | /320 | Is the product COMPLETE? |
+| `/perfaudit` | Performance | 23 | /360 | Is it FAST enough? |
+| `/secaudit` | Security | 25 | /400 | Is it SECURE? |
+| `/a11yaudit` | Accessibility | 21 | /320 | Is it ACCESSIBLE? |
+| `/seoaudit` | SEO | 25 | /400 | Is it DISCOVERABLE? |
+| `/dataaudit` | Data | 21 | /320 | Is the data INTACT? |
+| `/apiaudit` | API | 23 | /360 | Is the API SOLID? |
+| `/copyaudit` | Copy | 19 | /280 | Is the copy CLEAR? |
+| `/dxaudit` | DX | 21 | /320 | Is the DX SMOOTH? |
+| `/motionaudit` | Motion | 23 | /360 | Is the motion PURPOSEFUL? |
+| `/automationaudit` | Automation | 22 | /330 | Is automation RELIABLE? |
+| `/logicaudit` | Logic | 20 | /360 | Is the logic OPTIMAL? |
+| `/retentionaudit` | Retention | 20 | /400 | What FEATURES are missing? |
+
+All audits share: Gestalt clarity gate, Popper falsification, auto-fix, re-audit, normalized /100 scoring.
+
+```bash
+omega audit list                    # Show all 17 audits
+omega audit run codeaudit --dir .   # Run a specific audit
+omega audit select "fix auth"       # Auto-select audits for a task
+```
+
+Configure per-project in `~/.omega/config.toml`:
+
+```toml
+[audits]
+pass_threshold = 70        # Minimum /100 for PASS
+end_of_mission_hook = true # Auto-run at end of mission
+max_parallel = 4           # Max concurrent audit workers
+```
 
 ### Quality Gate Chain
 
@@ -287,6 +329,7 @@ OmegaOS/
 │   ├── oracle.md / worker.md / team-lead.md
 │   └── aisb/                    # 13 Matrix agents
 ├── rules/                   # 15 operational rules (.md files)
+├── skills/audits/           # 17 Quality Arsenal audit manifests + registry
 ├── tools/pdfgen/            # PDF report generator (Next.js + Playwright)
 ├── config/default.toml      # Default configuration
 ├── OMEGA.md                 # Universal agent instructions
