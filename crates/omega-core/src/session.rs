@@ -1,3 +1,4 @@
+use crate::agents::Agent;
 use anyhow::{Context, Result};
 use rmux_sdk::{
     EnsureSession, EnsureSessionPolicy, Pane, ProcessSpec, Rmux, Session, SessionName,
@@ -144,23 +145,22 @@ impl SessionManager {
         agent_command: &str,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        // Interactive mode: agent stays alive, prompt is the first message.
-        // Wrap in bash -c "<agent> '<prompt>'; exec bash" so the session
-        // survives even if the agent process exits — user gets a shell back.
-        let cmd = match prompt {
-            Some(p) => format!(
-                "bash -c {}",
-                shell_escape(&format!(
-                    "{} {}; exec bash",
-                    agent_command,
-                    shell_escape(p)
-                ))
-            ),
-            None => agent_command.to_string(),
-        };
-
+        // Resolve the agent type from its name (defaults to Claude for backwards-compat)
+        let agent = Agent::from_name(agent_command).unwrap_or(Agent::Claude);
+        let cmd = agent.launch_command(prompt);
         self.create_session(name, Some(working_dir), Some(&cmd))
             .await
+    }
+
+    pub async fn create_session_with_agent(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        prompt: Option<&str>,
+    ) -> Result<Session> {
+        let cmd = agent.launch_command(prompt);
+        self.create_session(name, working_dir, Some(&cmd)).await
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<OmegaSession>> {

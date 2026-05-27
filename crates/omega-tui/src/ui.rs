@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
     Frame,
 };
 
@@ -27,6 +27,79 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 
     draw_status_bar(frame, app, chunks[2]);
+
+    // Render agent picker overlay if in that input mode
+    if let InputMode::NewSessionAgent(ref name) = app.input_mode {
+        draw_agent_picker(frame, app, name);
+    }
+}
+
+fn draw_agent_picker(frame: &mut Frame, app: &App, session_name: &str) {
+    let area = centered_rect(50, 70, frame.area());
+
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = omega_core::agents::Agent::all()
+        .iter()
+        .enumerate()
+        .map(|(i, agent)| {
+            let selected = i == app.agent_picker_index;
+            let prefix = if selected { "▶ " } else { "  " };
+            let availability = if agent.is_available() {
+                Span::styled(" ✓ ", Style::default().fg(Color::Green))
+            } else {
+                Span::styled(" ✗ ", Style::default().fg(Color::Red))
+            };
+            let label_style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                availability,
+                Span::styled(
+                    format!(" {:8}  ", agent.name()),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(agent.display_name(), label_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Choose agent for [{}] — ↑/↓, Enter, Esc ", session_name))
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+
+    frame.render_widget(list, area);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
 }
 
 fn draw_tabs(frame: &mut Frame, app: &App, area: Rect) {
@@ -262,6 +335,14 @@ fn draw_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             return;
         }
         InputMode::NewSession => ("New session name", app.input_buffer.clone()),
+        InputMode::NewSessionAgent(name) => (
+            "Choose agent",
+            format!("[{}] (overlay open — ↑/↓)", name),
+        ),
+        InputMode::NewSessionPrompt(name, agent) => (
+            "Initial prompt (optional)",
+            format!("[{}/{}] {}", name, agent, app.input_buffer),
+        ),
         InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),
         InputMode::DispatchMission(p) => (
             "Dispatch — mission",

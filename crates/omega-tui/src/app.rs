@@ -13,6 +13,8 @@ pub enum Tab {
 pub enum InputMode {
     Normal,
     NewSession,
+    NewSessionAgent(String),
+    NewSessionPrompt(String, String),
     DispatchProject,
     DispatchMission(String),
 }
@@ -80,6 +82,7 @@ pub struct App {
     pub sessions: Vec<SessionEntry>,
     pub selected: usize,
     pub menu_selected: usize,
+    pub agent_picker_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub input_mode: InputMode,
@@ -107,6 +110,7 @@ impl App {
             sessions: Vec::new(),
             selected: 0,
             menu_selected: 0,
+            agent_picker_index: 0,
             should_quit: false,
             status_message: None,
             input_mode: InputMode::Normal,
@@ -115,6 +119,24 @@ impl App {
             preview_content: String::new(),
             current_session,
         }
+    }
+
+    pub fn agent_picker_next(&mut self) {
+        let count = omega_core::agents::Agent::all().len();
+        self.agent_picker_index = (self.agent_picker_index + 1) % count;
+    }
+
+    pub fn agent_picker_prev(&mut self) {
+        let count = omega_core::agents::Agent::all().len();
+        self.agent_picker_index = if self.agent_picker_index == 0 {
+            count - 1
+        } else {
+            self.agent_picker_index - 1
+        };
+    }
+
+    pub fn selected_agent(&self) -> omega_core::agents::Agent {
+        omega_core::agents::Agent::all()[self.agent_picker_index]
     }
 
     pub fn select_menu_next(&mut self) {

@@ -8,6 +8,11 @@ pub enum Action {
     KillSession(String),
     Refresh,
     CreateSession(String),
+    CreateSessionWithAgent {
+        name: String,
+        agent: omega_core::agents::Agent,
+        prompt: Option<String>,
+    },
     DispatchOracle(String, String),
 }
 
@@ -19,12 +24,85 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
-    match app.input_mode {
+    let mode = app.input_mode.clone();
+    match mode {
         InputMode::Normal => handle_key_normal(app, key),
+
+        // Step 1: enter session name → move to agent picker
         InputMode::NewSession => handle_key_input(app, key, |app, value| {
-            app.input_mode = InputMode::Normal;
-            Action::CreateSession(value)
+            app.agent_picker_index = 0;
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewSessionAgent(value);
+            app.status_message = Some(
+                "↑/↓ choose agent, Enter to confirm, Esc to skip prompt".to_string(),
+            );
+            Action::None
         }),
+
+        // Step 2: pick agent via arrows
+        InputMode::NewSessionAgent(name) => match key.code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                app.status_message = Some("Cancelled".to_string());
+                Action::None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.agent_picker_next();
+                Action::None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.agent_picker_prev();
+                Action::None
+            }
+            KeyCode::Enter => {
+                let agent = app.selected_agent();
+                // Shell agent has no prompt → submit immediately
+                if matches!(agent, omega_core::agents::Agent::Shell) {
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateSessionWithAgent { name, agent, prompt: None }
+                } else {
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::NewSessionPrompt(name, agent.name().to_string());
+                    app.status_message = Some(
+                        "Optional initial prompt (Enter to launch, Esc to skip)".to_string(),
+                    );
+                    Action::None
+                }
+            }
+            _ => Action::None,
+        },
+
+        // Step 3: optional prompt for the agent
+        InputMode::NewSessionPrompt(name, agent_name) => {
+            let agent = omega_core::agents::Agent::from_name(&agent_name)
+                .unwrap_or(omega_core::agents::Agent::Shell);
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateSessionWithAgent {
+                        name,
+                        agent,
+                        prompt: None,
+                    }
+                }
+                KeyCode::Enter => {
+                    let value = std::mem::take(&mut app.input_buffer);
+                    let prompt = if value.trim().is_empty() { None } else { Some(value) };
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateSessionWithAgent { name, agent, prompt }
+                }
+                KeyCode::Backspace => {
+                    app.input_buffer.pop();
+                    Action::None
+                }
+                KeyCode::Char(c) => {
+                    app.input_buffer.push(c);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
+
         InputMode::DispatchProject => handle_key_input(app, key, |app, value| {
             app.input_buffer = String::new();
             app.input_mode = InputMode::DispatchMission(value);

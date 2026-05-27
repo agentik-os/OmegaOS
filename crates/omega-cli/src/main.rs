@@ -27,13 +27,25 @@ enum Commands {
         /// Working directory
         #[arg(short, long)]
         dir: Option<String>,
-        /// Command to run (default: shell)
+        /// Command to run (default: shell). Overrides --agent.
         #[arg(short, long)]
         cmd: Option<String>,
+        /// Agent to launch: claude, codex, gemini, pi, glm, shell
+        #[arg(short, long)]
+        agent: Option<String>,
+        /// Initial prompt for the agent
+        #[arg(short, long)]
+        prompt: Option<String>,
         /// Files owned by this session (scope-claim)
         #[arg(long, value_delimiter = ',')]
         files: Option<Vec<String>>,
     },
+
+    /// List supported agents and their availability
+    Agents,
+
+    /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
+    InstallBindings,
 
     /// List all sessions
     #[command(alias = "ls")]
@@ -192,9 +204,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Menu) | None => run_menu().await,
-        Some(Commands::New { name, dir, cmd, files }) => {
-            cmd_new(&name, dir.as_deref(), cmd.as_deref(), files).await
+        Some(Commands::New { name, dir, cmd, agent, prompt, files }) => {
+            cmd_new(&name, dir.as_deref(), cmd.as_deref(), agent.as_deref(), prompt.as_deref(), files).await
         }
+        Some(Commands::Agents) => cmd_agents(),
+        Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
         Some(Commands::Kill { name }) => cmd_kill(&name).await,
@@ -351,6 +365,25 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::CreateSessionWithAgent { name, agent, prompt } => {
+                    let mgr = SessionManager::connect().await?;
+                    match mgr
+                        .create_session_with_agent(&name, None, agent, prompt.as_deref())
+                        .await
+                    {
+                        Ok(_) => {
+                            app.status_message = Some(format!(
+                                "Created {} with {}",
+                                name,
+                                agent.name()
+                            ));
+                            let _ = app.refresh().await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Create failed: {}", e));
+                        }
+                    }
+                }
                 Action::DispatchOracle(project, mission) => {
                     let cfg = OmegaConfig::load().unwrap_or_default();
                     let mgr = SessionManager::connect().await?;
@@ -402,7 +435,14 @@ async fn run_tui_loop(
     Ok(())
 }
 
-async fn cmd_new(name: &str, dir: Option<&str>, cmd: Option<&str>, files: Option<Vec<String>>) -> Result<()> {
+async fn cmd_new(
+    name: &str,
+    dir: Option<&str>,
+    cmd: Option<&str>,
+    agent: Option<&str>,
+    prompt: Option<&str>,
+    files: Option<Vec<String>>,
+) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
 
@@ -411,11 +451,105 @@ async fn cmd_new(name: &str, dir: Option<&str>, cmd: Option<&str>, files: Option
     }
 
     let mgr = SessionManager::connect().await?;
-    let _session = mgr.create_session(name, dir, cmd).await?;
+
+    // Priority: explicit --cmd overrides --agent
+    if let Some(explicit_cmd) = cmd {
+        let _session = mgr.create_session(name, dir, Some(explicit_cmd)).await?;
+    } else if let Some(agent_name) = agent {
+        let agent_enum = omega_core::agents::Agent::from_name(agent_name)
+            .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}. Run `omega agents` to list options.", agent_name))?;
+        if !agent_enum.is_available() {
+            eprintln!("Warning: {} not detected on this system. Session will be created anyway.", agent_enum.display_name());
+        }
+        let _session = mgr.create_session_with_agent(name, dir, agent_enum, prompt).await?;
+        println!("Agent: {}", agent_enum.display_name());
+    } else {
+        let _session = mgr.create_session(name, dir, None).await?;
+    }
+
     println!("Created session: {}", name);
     if let Some(ref files) = files {
         println!("  Scope claimed: {}", files.join(", "));
     }
+    Ok(())
+}
+
+async fn cmd_install_bindings() -> Result<()> {
+    // Apply Option+Z and Option+/ bindings to the running rmux daemon directly
+    // via `rmux bind-key`. Works without restarting the daemon.
+    let bindings: Vec<(&str, &str, &str)> = vec![
+        ("M-z", "display-popup -E -w 100% -h 100% \"omega menu\"", "Open OmegaOS menu (Option+Z)"),
+        ("M-/", "display-popup -E -w 100% -h 100% \"omega menu\"", "Open OmegaOS menu (Option+/)"),
+    ];
+
+    let mut installed = 0;
+    let mut failed = Vec::new();
+
+    for (key, cmd, desc) in &bindings {
+        let result = std::process::Command::new("rmux")
+            .args(["bind-key", "-n", key])
+            .arg(cmd)
+            .output();
+
+        match result {
+            Ok(output) if output.status.success() => {
+                println!("✓ {} → {}", key, desc);
+                installed += 1;
+            }
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr);
+                failed.push(format!("{}: {}", key, err.trim()));
+            }
+            Err(e) => {
+                failed.push(format!("{}: {}", key, e));
+            }
+        }
+    }
+
+    println!("\n{} binding(s) installed live", installed);
+    if !failed.is_empty() {
+        eprintln!("Failed:");
+        for f in &failed {
+            eprintln!("  - {}", f);
+        }
+    }
+
+    // Also ensure the persistent config is in place for daemon restarts
+    let omega_dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join(".omega");
+    let conf_path = omega_dir.join("rmux.conf.omega");
+    if !conf_path.exists() {
+        std::fs::create_dir_all(&omega_dir)?;
+        let content = r#"# OmegaOS rmux bindings — Option+Z / Option+/ open the session menu
+bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
+bind-key -n M-/ display-popup -E -w 100% -h 100% "omega menu"
+bind-key o display-popup -E -w 100% -h 100% "omega menu"
+"#;
+        std::fs::write(&conf_path, content)?;
+        println!("✓ Persistent config written to {}", conf_path.display());
+    }
+
+    Ok(())
+}
+
+fn cmd_agents() -> Result<()> {
+    println!("Available agents:\n");
+    for agent in omega_core::agents::Agent::all() {
+        let status = if agent.is_available() { "✓" } else { "✗" };
+        let color = if agent.is_available() { "\x1b[32m" } else { "\x1b[31m" };
+        println!(
+            "  {}{}\x1b[0m  {:8}  {}",
+            color,
+            status,
+            agent.name(),
+            agent.display_name()
+        );
+    }
+    println!("\nUsage:");
+    println!("  omega new my-session --agent claude");
+    println!("  omega new researcher --agent pi --prompt \"Investigate X\"");
+    println!("  omega new dev --agent codex --dir ~/my-project");
     Ok(())
 }
 
