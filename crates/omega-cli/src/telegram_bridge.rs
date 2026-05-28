@@ -456,7 +456,16 @@ impl TelegramBotEngine {
 
         let relay_target = target.clone().unwrap_or_else(|| self.cfg.relay_session.clone());
 
-        // 3. Relay to the target session (default: AISB Master)
+        // 3a. Capture `before` BEFORE sending — otherwise we'd capture
+        // after Claude has already replied (or is mid-reply) and the
+        // bullet-count diff would show no change → polling sends nothing.
+        let before = self
+            .mgr
+            .capture_pane(&relay_target)
+            .await
+            .unwrap_or_default();
+
+        // 3b. Relay to the target session (default: AISB Master)
         if let Err(_) = self.mgr.send_text(&relay_target, text).await {
             let _ = self
                 .send_html(
@@ -507,13 +516,8 @@ impl TelegramBotEngine {
             }
         }
 
-        // 4. Show typing and wait for response
+        // 4. Show typing and wait for response (`before` was captured before send)
         let _ = self.send_chat_action(chat_id, "typing").await;
-        let before = self
-            .mgr
-            .capture_pane(&relay_target)
-            .await
-            .unwrap_or_default();
 
         // Fast-response polling: 300ms ticks (vs 2s before).
         // Strategy: as soon as we detect a ● marker (agent response) followed
@@ -542,6 +546,9 @@ impl TelegramBotEngine {
             }
 
             let current = extract_response(&before, &after);
+            if !current.is_empty() {
+                tracing::debug!(tick, len = current.len(), "extract_response found content");
+            }
 
             // If we have a response and it hasn't changed for 2 ticks → ship it
             if !current.is_empty() && current == last_response {
@@ -555,11 +562,14 @@ impl TelegramBotEngine {
                 last_response = current;
             }
 
-            // Final fallback: idle prompt detection
+            // Final fallback: idle prompt detection (bare ❯ prompt)
             let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
             let is_idle = last_lines
                 .iter()
-                .any(|l| l.trim().starts_with("") && l.trim().len() <= 2);
+                .any(|l| {
+                    let t = l.trim();
+                    t.starts_with('❯') && t.len() <= 3
+                });
             if is_idle && !last_response.is_empty() {
                 response_text = last_response.clone();
                 break;
@@ -1047,7 +1057,14 @@ impl TelegramBotEngine {
 
     /// `/sessions` or `/relay` — interactive menu listing active rmux sessions.
     async fn send_sessions_menu(&self, chat_id: i64) {
-        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let all_sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        // Hide infra daemons — they're not for the user to interact with.
+        let hidden_prefixes = ["omega-telegram-bridge", "aisb-reauth"];
+        let sessions: Vec<_> = all_sessions
+            .into_iter()
+            .filter(|s| !hidden_prefixes.iter().any(|p| s.name.starts_with(p)))
+            .collect();
+
         let mut text = String::from("<b>Active Sessions</b>\n");
         let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
 
@@ -1703,7 +1720,12 @@ impl TelegramBotEngine {
 
     /// One-shot back-online card sent on bridge (re)start.
     async fn send_back_online_card(&self) {
-        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let all_sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let hidden = ["omega-telegram-bridge", "aisb-reauth"];
+        let sessions: Vec<_> = all_sessions
+            .into_iter()
+            .filter(|s| !hidden.iter().any(|p| s.name.starts_with(p)))
+            .collect();
         let mut session_lines = Vec::new();
         for sess in sessions.iter().take(8) {
             let icon = match sess.role {
@@ -2301,30 +2323,30 @@ fn extract_response(before: &str, after: &str) -> String {
     }
     let lines = after_lines;
 
-    // Collect continuation lines (until stop marker)
+    // Collect continuation lines (until stop marker).
+    // Empty-string starts_with checks (which always matched) were the
+    // accidental-strip side-effect of the emoji cleanup pass — removed.
     for line in lines.iter().skip(start + 1) {
         let t = line.trim();
         if t.is_empty() { continue; }
 
-        if t.starts_with("")
-            || t.starts_with("")
-            || t.starts_with("")
-            || t.starts_with("·")
-            || t.starts_with("●")
-            || t.contains("bypass permissions")
+        // Stop markers — line starts with Claude's chrome characters
+        // OR contains a known status phrase.
+        let first_char = t.chars().next();
+        let is_chrome_prefix = matches!(first_char, Some('❯' | '✻' | '⎿' | '·' | '●'));
+        let is_separator = t.starts_with("───") || t.starts_with("━━━");
+        let is_status = t.contains("bypass permissions")
             || t.contains("esc to interrupt")
             || t.contains("shift+tab")
-            || t.starts_with("───")
-            || t.starts_with("")
             || t.contains("Churned")
             || t.contains("Brewed")
             || t.contains("Cultivating")
             || t.contains("Crunched")
             || t.contains("Pontificating")
-        {
+            || t.contains("Cogitated");
+        if is_chrome_prefix || is_separator || is_status {
             break;
         }
-
         response_lines.push(t.to_string());
     }
 
