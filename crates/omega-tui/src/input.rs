@@ -939,14 +939,19 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     // --- TUI-local (never forwarded) ---
 
-    // Tab = cycle focus (Chat ↔ Fullscreen ↔ List)
-    if key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT) {
-        app.handle_tab_in_sessions();
-        app.status_message = Some(match app.session_focus {
-            SessionFocus::List => "Focus: session list".to_string(),
-            SessionFocus::Chat => "Focus: preview interactive — keys forward to session (Tab → fullscreen, Tab-Tab → list)".to_string(),
-            SessionFocus::ChatFullscreen => "Focus: preview FULLSCREEN — keys forward to session (Tab → list)".to_string(),
-        });
+    // Tab behavior (user request):
+    //   Tab        → FORWARD to Claude session so the user can cycle
+    //                Claude modes (the "shift+tab to cycle" hint in
+    //                Claude's UI lets us cycle effort / plan-mode / etc.)
+    //   Shift+Tab  → return to the session list (back out of chat focus)
+    if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
+        app.session_focus = SessionFocus::List;
+        app.status_message = Some("Focus: session list (Tab/Enter → chat)".to_string());
+        return Action::None;
+    }
+    if key.code == KeyCode::BackTab {
+        app.session_focus = SessionFocus::List;
+        app.status_message = Some("Focus: session list (Tab/Enter → chat)".to_string());
         return Action::None;
     }
 
@@ -980,6 +985,10 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
+        // Tab → forwarded to Claude session (user cycles Claude modes
+        // via Tab; Shift+Tab is handled earlier as return-to-list).
+        KeyCode::Tab => Action::ForwardKeyToSession { session, key: "Tab" },
+
         // Word-delete (readline conventions):
         //   Ctrl+W            → kill word back   (universal)
         //   Shift+Backspace   → kill word back   (tmux convention, what the user wants)
@@ -1016,6 +1025,21 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             Action::ForwardKeyToSession { session, key: key_str }
         }
         KeyCode::Char(c) => {
+            // Option+< / Option+> (readline beginning/end of buffer):
+            //   M-<  → readline beginning-of-buffer
+            //   M->  → readline end-of-buffer
+            // User-friendly text navigation in Claude's input box.
+            if alt {
+                match c {
+                    '<' | ',' if shift || c == '<' => {
+                        return Action::ForwardKeyToSession { session, key: "M-<" };
+                    }
+                    '>' | '.' if shift || c == '>' => {
+                        return Action::ForwardKeyToSession { session, key: "M->" };
+                    }
+                    _ => {}
+                }
+            }
             // Ctrl+<letter> → rmux "C-<letter>" so Ctrl+C interrupts the agent
             if ctrl {
                 let lower = c.to_ascii_lowercase();

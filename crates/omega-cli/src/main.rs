@@ -531,14 +531,35 @@ async fn run_tui_loop(
     let mut last_preview_refresh = std::time::Instant::now();
     let mut last_refresh = std::time::Instant::now();
 
+    // Async status sink — keystroke forwarding now happens in detached
+    // tokio tasks so the event loop doesn't block on the rmux RPC (was
+    // 5-15ms per keystroke, perceived as input lag in chat-focus mode).
+    // Failures from those tasks land here and are drained into
+    // `app.status_message` at the start of each tick so the UI still
+    // surfaces forwarder errors.
+    let async_status: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
+
     loop {
+        // Drain any error reported by a backgrounded keystroke forwarder.
+        if let Ok(mut guard) = async_status.lock() {
+            if let Some(msg) = guard.take() {
+                app.status_message = Some(msg);
+            }
+        }
+
         terminal.draw(|f| draw(f, app))?; // app is &mut, allows auto-scroll
 
         // Decoupled preview refresh — runs whether or not the user is
         // typing. Hot-path Forward* actions no longer await capture,
         // they just forward + return; this loop tick picks up the
         // visual change on the next 80ms boundary.
-        if last_preview_refresh.elapsed() >= preview_refresh_interval {
+        //
+        // Burst-typing guard: if there's already a pending input event,
+        // skip the capture this tick. Preview catches up on the very
+        // next tick (~16ms), and the user keeps a zero-lag echo loop.
+        let event_pending = crossterm::event::poll(std::time::Duration::ZERO)?;
+        if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
         }
@@ -913,39 +934,71 @@ async fn run_tui_loop(
                     }
                 }
                 Action::ForwardCharToSession { session, ch } => {
+                    // HOT PATH (~1 call per keystroke in chat focus).
+                    //
+                    // The forwarder used to await the rmux RPC inline,
+                    // which blocked the event loop for 5-15ms per char
+                    // and produced visible input lag during fast typing.
+                    // We now fire-and-forget on tokio::spawn: the loop
+                    // returns to read the next keystroke immediately
+                    // while the daemon RPC completes in the background.
+                    // scroll_preview_end stays synchronous so the preview
+                    // tail catches up the moment the daemon echoes.
                     let mgr = SessionManager::connect_cached().await?;
-                    // Space char: route as the rmux "Space" key token. Some
-                    // pane/SDK paths render a bare " " in literal mode as the
-                    // word "space" — using the named key avoids that quirk
-                    // entirely and is what tmux/rmux callers conventionally do.
-                    let result = if ch == ' ' {
-                        mgr.send_key(&session, "Space").await
+                    let status_sink = async_status.clone();
+                    if ch == ' ' {
+                        // Space char: route as the rmux "Space" key token.
+                        // Bare " " literal sometimes renders as the word
+                        // "space" in pane echo; named key avoids that.
+                        tokio::spawn(async move {
+                            if let Err(e) = mgr.send_key(&session, "Space").await {
+                                if let Ok(mut g) = status_sink.lock() {
+                                    *g = Some(format!("Forward failed: {}", e));
+                                }
+                            }
+                        });
                     } else {
                         let mut buf = [0u8; 4];
-                        let s = ch.encode_utf8(&mut buf);
-                        mgr.send_text_raw(&session, s).await
-                    };
-                    if let Err(e) = result {
-                        app.status_message = Some(format!("Forward failed: {}", e));
-                    } else {
-                        app.scroll_preview_end();
+                        let s = ch.encode_utf8(&mut buf).to_string();
+                        tokio::spawn(async move {
+                            if let Err(e) = mgr.send_text_raw(&session, &s).await {
+                                if let Ok(mut g) = status_sink.lock() {
+                                    *g = Some(format!("Forward failed: {}", e));
+                                }
+                            }
+                        });
                     }
+                    app.scroll_preview_end();
                 }
                 Action::ForwardKeyToSession { session, key } => {
+                    // HOT PATH: arrow keys / Enter / BackSpace / Escape
+                    // in chat focus. Same non-blocking spawn pattern as
+                    // ForwardCharToSession.
                     let mgr = SessionManager::connect_cached().await?;
-                    if let Err(e) = mgr.send_key(&session, key).await {
-                        app.status_message = Some(format!("Forward {} failed: {}", key, e));
-                    } else {
-                        app.scroll_preview_end();
-                    }
+                    let status_sink = async_status.clone();
+                    let key_owned = key.to_string();
+                    tokio::spawn(async move {
+                        if let Err(e) = mgr.send_key(&session, &key_owned).await {
+                            if let Ok(mut g) = status_sink.lock() {
+                                *g = Some(format!("Forward {} failed: {}", key_owned, e));
+                            }
+                        }
+                    });
+                    app.scroll_preview_end();
                 }
                 Action::SendTextRawToSession { session, text } => {
+                    // Paste / multi-char send — also non-blocking so a
+                    // large paste doesn't freeze the input loop.
                     let mgr = SessionManager::connect_cached().await?;
-                    if let Err(e) = mgr.send_text_raw(&session, &text).await {
-                        app.status_message = Some(format!("Paste failed: {}", e));
-                    } else {
-                        app.scroll_preview_end();
-                    }
+                    let status_sink = async_status.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = mgr.send_text_raw(&session, &text).await {
+                            if let Ok(mut g) = status_sink.lock() {
+                                *g = Some(format!("Paste failed: {}", e));
+                            }
+                        }
+                    });
+                    app.scroll_preview_end();
                 }
                 Action::ForceRedraw => {
                     terminal.clear()?;

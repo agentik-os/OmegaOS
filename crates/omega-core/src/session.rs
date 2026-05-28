@@ -302,6 +302,8 @@ impl SessionManager {
         if !status.success() {
             anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
         }
+        // Old name is no longer addressable — drop its cached pane.
+        self.invalidate_pane(old_name).await;
         Ok(())
     }
 
@@ -464,4 +466,16 @@ fn role_order(role: &SessionRole) -> u8 {
 
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Cached `Pane` handles can outlive the underlying daemon-side pane when a
+/// session is killed-and-recreated under the same name (rename-then-recreate,
+/// crash-restart, etc.). The hot-path send/capture methods rely on this
+/// predicate to recognise such errors, drop the stale handle, and retry once.
+fn is_pane_stale(err: &rmux_sdk::RmuxError) -> bool {
+    matches!(
+        err,
+        rmux_sdk::RmuxError::PaneNotFound { .. }
+            | rmux_sdk::RmuxError::OwnedSessionLeaseLost { .. }
+    )
 }
