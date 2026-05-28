@@ -521,18 +521,38 @@ impl TelegramBotEngine {
                 .send_html_reply(chat_id, &placeholder, Some(user_msg_id))
                 .await?
                 .unwrap_or(0);
+            let started_for_progress = std::time::Instant::now();
 
-            // Typing ticker — fire-and-forget; aborts when this scope ends.
+            // Typing+progress ticker — fire-and-forget; aborts when this
+            // scope ends. Every 3s it (a) refreshes the "typing" bubble
+            // and (b) edits the placeholder with an updated progress bar
+            // showing elapsed time (Pack PROGRESS).
             let ticker = {
                 let client = self.client.clone();
                 let token = self.cfg.bot_token.clone();
                 let cid = chat_id;
+                let agent_label_owned = agent_label.to_string();
+                let pid = placeholder_id;
                 tokio::spawn(async move {
                     loop {
+                        // 1. Typing bubble
                         let url = format!("{}/bot{}/sendChatAction", API_BASE, token);
                         let body = serde_json::json!({"chat_id": cid, "action": "typing"});
                         let _ = client.post(&url).json(&body).send().await;
-                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                        // 2. Live progress edit (only if we own a placeholder)
+                        if pid != 0 {
+                            let elapsed = started_for_progress.elapsed().as_secs_f32();
+                            let text = formatting::thinking_progress(&agent_label_owned, elapsed);
+                            let edit_url = format!("{}/bot{}/editMessageText", API_BASE, token);
+                            let edit_body = serde_json::json!({
+                                "chat_id": cid,
+                                "message_id": pid,
+                                "text": text,
+                                "parse_mode": "HTML",
+                            });
+                            let _ = client.post(&edit_url).json(&edit_body).send().await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     }
                 })
             };
@@ -563,18 +583,15 @@ impl TelegramBotEngine {
             ticker.abort();
             let duration = started.elapsed().as_secs_f32();
 
-            // Format + deliver.
+            // Format + deliver. The user's original message is quoted
+            // at the top of the bot's response (Pack QUOTE) so the chat
+            // stays self-documenting when the user scrolls back.
             match result {
                 Ok(body) if !body.is_empty() => {
-                    // Pack FILES: large bodies become attachments.
                     let file_target = formatting::suggest_file_delivery(&body);
-
-                    // Pack STRUCTURE + SPOILERS: smart wrap with mention,
-                    // expandable sections, secret masking.
                     let wrapped = formatting::smart_wrap_response(
                         agent_label,
                         if file_target.is_some() {
-                            // Show only a short summary inline when shipping a file
                             "_Output too large — attached as file._"
                         } else {
                             &body
@@ -583,6 +600,8 @@ impl TelegramBotEngine {
                         &model_label,
                         user_id,
                         user_name.as_deref(),
+                        Some(text),
+                        formatting::ResponseTier::Ok,
                     );
 
                     let chunks = formatting::split_message(&wrapped, TELEGRAM_MAX_MSG_LEN);
@@ -598,8 +617,6 @@ impl TelegramBotEngine {
                     for tail in chunks.iter().skip(1) {
                         let _ = self.send_html(chat_id, tail).await;
                     }
-
-                    // Ship the file attachment if applicable
                     if let Some((filename, mime)) = file_target {
                         let _ = self
                             .send_document_bytes(chat_id, &filename, mime, body.as_bytes())
@@ -609,11 +626,13 @@ impl TelegramBotEngine {
                 Ok(_) => {
                     let empty = formatting::smart_wrap_response(
                         agent_label,
-                        "_Empty response._",
+                        "The model returned an empty response. Try rephrasing or ping me with more context.",
                         duration,
                         &model_label,
                         user_id,
                         user_name.as_deref(),
+                        Some(text),
+                        formatting::ResponseTier::Empty,
                     );
                     if placeholder_id != 0 {
                         let _ = self.edit_message_html(chat_id, placeholder_id, &empty).await;
@@ -632,6 +651,8 @@ impl TelegramBotEngine {
                         &model_label,
                         user_id,
                         user_name.as_deref(),
+                        Some(text),
+                        formatting::ResponseTier::Error,
                     );
                     if placeholder_id != 0 {
                         let _ = self.edit_message_html(chat_id, placeholder_id, &err_html).await;

@@ -416,10 +416,26 @@ pub fn suggest_file_delivery(body_md: &str) -> Option<(String, &'static str)> {
     Some((format!("aisb-{}.{}", ts, ext), mime))
 }
 
+/// Tier of a response — drives the visual styling (icon + header tone).
+/// Telegram has no CSS color, but blockquotes / bold / emoji combos
+/// produce distinct enough cues per client theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseTier {
+    /// Normal answer (default style).
+    Ok,
+    /// Empty model response — visual red prefix.
+    Empty,
+    /// LLM/runtime error — visual red prefix + error icon.
+    Error,
+}
+
 /// Full smart-wrap response: applies STRUCTURE (mention by id + expandable
-/// sections) and SPOILERS (secret masking) packs, then returns the final
-/// HTML. Caller decides separately whether to also offer file delivery
-/// via `suggest_file_delivery`.
+/// sections, user-question quoted at top) and SPOILERS (secret masking),
+/// plus tiered styling for Empty/Error states.
+///
+/// `user_message` — when Some, the user's original question is shown as a
+/// <blockquote> at the top of the bot response (renders with a colored
+/// left bar in Telegram clients — the "yellow quote" effect).
 pub fn smart_wrap_response(
     agent: &str,
     body_md: &str,
@@ -427,22 +443,68 @@ pub fn smart_wrap_response(
     model: &str,
     user_id: Option<i64>,
     user_name: Option<&str>,
+    user_message: Option<&str>,
+    tier: ResponseTier,
 ) -> String {
     // Header — mention the user by tg://user?id= if known
+    let agent_label = match tier {
+        ResponseTier::Ok => format!("<b>{}</b>", escape_html(agent)),
+        ResponseTier::Empty => format!("🔴 <b>{}</b> · Empty response", escape_html(agent)),
+        ResponseTier::Error => format!("🔴 <b>{}</b> · Error", escape_html(agent)),
+    };
     let header = match (user_id, user_name) {
         (Some(uid), Some(name)) => format!(
-            "Ω  <a href=\"tg://user?id={}\">{}</a> · <b>{}</b>",
+            "Ω  <a href=\"tg://user?id={}\">{}</a> · {}",
             uid,
             escape_html(name),
-            escape_html(agent),
+            agent_label,
         ),
-        _ => format!("Ω  <b>{}</b>", escape_html(agent)),
+        _ => format!("Ω  {}", agent_label),
     };
     let divider = "─".repeat(20);
+
+    // User's original question rendered as a blockquote (the "yellow"
+    // visual cue requested). Truncate if very long to keep responses
+    // compact; the user always sees the FULL message in chat anyway
+    // via the reply-to link.
+    let quoted_question: String = if let Some(q) = user_message {
+        let q = q.trim();
+        if q.is_empty() {
+            String::new()
+        } else {
+            let preview: String = q.chars().take(280).collect();
+            let suffix = if q.chars().count() > 280 { " …" } else { "" };
+            format!("<blockquote>{}{}</blockquote>\n", escape_html(&preview), suffix)
+        }
+    } else {
+        String::new()
+    };
+
     let body_html = smart_markdown_to_html(body_md);
     let body_html = mask_secrets(&body_html);
     let footer = format!("<i>⌁ {:.1}s · {}</i>", duration_s, escape_html(model));
-    format!("{}\n{}\n\n{}\n\n{}", header, divider, body_html, footer)
+    format!(
+        "{}\n{}\n\n{}{}\n\n{}",
+        header, divider, quoted_question, body_html, footer
+    )
+}
+
+/// "Thinking…" placeholder with elapsed-time progress bar, edited in
+/// place every few seconds (Pack PROGRESS — inspired by AISB VPS).
+///
+/// `elapsed_s` is the seconds since the user message landed; the bar
+/// grows over an assumed-20s window (clamped). Caller is expected to
+/// edit this message every 2-3s while the LLM call is in flight.
+pub fn thinking_progress(agent: &str, elapsed_s: f32) -> String {
+    let agent_esc = escape_html(agent);
+    let divider = "─".repeat(20);
+    // Indeterminate-but-visible bar: 0..20s ramps to 90%, then stays.
+    let pct = (elapsed_s / 20.0).clamp(0.0, 0.9);
+    let bar = progress_bar(pct, 20);
+    format!(
+        "Ω  <b>{}</b>\n{}\n\n<i>⌁ Thinking — {:.1}s</i>\n{}",
+        agent_esc, divider, elapsed_s, bar
+    )
 }
 
 /// Format a blockquote card with title and body (AISB report style).
