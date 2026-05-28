@@ -577,16 +577,21 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         String::new()
     };
 
-    // No buffer-based chat-input. Keystrokes are forwarded LIVE to the rmux
-    // session when chat_focused (see input.rs::handle_key_chat). The title
-    // signals interactive mode so the user knows their keys are routed.
-    let title = if chat_focused {
-        format!(
-            "{}{}  [INTERACTIVE — keys → session  ·  Tab cycle  ·  Alt+↑↓ scroll]",
-            preview_title, scroll_indicator
-        )
-    } else {
-        format!("{}{}  [Enter = type into session]", preview_title, scroll_indicator)
+    // Right side of the title: the previewed session's model + cumulative
+    // token consumption (e.g. "opus-4.8 · 45.4M tok"), refreshed off the hot
+    // path in main.rs. Replaces the old static key-hint text. Falls back to a
+    // tiny interactive marker only when there's no meta yet (non-Claude
+    // session, or first 3s before the first scan).
+    let meta_suffix = app
+        .selected_session()
+        .and_then(|e| app.session_meta.get(&e.session.name))
+        .map(|(model, tokens)| {
+            format!("  ⟨ {} · {} tok ⟩", model, omega_core::claude_meta::fmt_tokens(*tokens))
+        });
+    let title = match meta_suffix {
+        Some(meta) => format!("{}{}{}", preview_title, scroll_indicator, meta),
+        None if chat_focused => format!("{}{}  [keys → session]", preview_title, scroll_indicator),
+        None => format!("{}{}", preview_title, scroll_indicator),
     };
     let preview = Paragraph::new(preview_lines)
         .scroll((scroll, 0))

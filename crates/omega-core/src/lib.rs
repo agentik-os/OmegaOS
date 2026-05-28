@@ -2,6 +2,7 @@ pub mod account;
 pub mod agents;
 pub mod aisb;
 pub mod amplify;
+pub mod claude_meta;
 pub mod aisb_agents;
 pub mod audit;
 pub mod bootstrap;

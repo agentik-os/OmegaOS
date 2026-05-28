@@ -639,6 +639,10 @@ pub struct App {
     /// agent's content on the right.
     pub preview_inner_width: u16,
     pub preview_inner_height: u16,
+    /// Per-session Claude model + cumulative token count, shown on the right
+    /// of the preview title. Keyed by session name; refreshed off the hot
+    /// path (main.rs, throttled). `(short_model, tokens)`.
+    pub session_meta: std::collections::HashMap<String, (String, u64)>,
     /// REAL cursor position from the pane snapshot (row, col, visible),
     /// zero-based within the visible pane. Used to paint the caret exactly
     /// where the agent's input cursor is, instead of guessing the last
@@ -727,6 +731,7 @@ impl App {
             preview_styled: None,
             preview_inner_width: 0,
             preview_inner_height: 0,
+            session_meta: std::collections::HashMap::new(),
             preview_cursor: None,
             preview_scroll: 0,
             preview_max_scroll: 0,

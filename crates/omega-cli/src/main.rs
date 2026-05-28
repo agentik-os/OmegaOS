@@ -590,6 +590,13 @@ async fn run_tui_loop(
     // Track the last pane resize we issued so we only resize on change
     // (session switch OR terminal resize), not every tick.
     let mut last_resized: Option<(String, u16, u16)> = None;
+    // Throttle for the per-session model/token meta scan (transcript parse).
+    let mut last_meta_refresh =
+        std::time::Instant::now() - std::time::Duration::from_secs(10);
+    // Per-session transcript mtime, so we re-scan the (possibly tens-of-MB)
+    // JSONL only when it actually changed.
+    let mut meta_mtimes: std::collections::HashMap<String, std::time::SystemTime> =
+        std::collections::HashMap::new();
 
     loop {
         // Drain any error reported by a backgrounded keystroke forwarder.
@@ -627,6 +634,32 @@ async fn run_tui_loop(
                     }
                 }
             }
+        }
+
+        // Refresh the previewed session's model + token meta (shown on the
+        // right of the preview title). Throttled to 3s and run via
+        // spawn_blocking — it scans the Claude transcript JSONL, which must
+        // never touch the UI hot path. Only the selected session with a known
+        // working_dir is scanned.
+        if app.tab == omega_tui::app::Tab::Sessions
+            && last_meta_refresh.elapsed() >= std::time::Duration::from_secs(3)
+        {
+            let sel = app.selected_session().map(|e| e.session.name.clone());
+            if let Some(name) = sel {
+                let n = name.clone();
+                let prev = meta_mtimes.get(&name).copied();
+                let res = tokio::task::spawn_blocking(move || {
+                    omega_core::claude_meta::read_meta_for_session_if_changed(&n, prev)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some((m, mtime)) = res {
+                    app.session_meta.insert(name.clone(), (m.model, m.tokens));
+                    meta_mtimes.insert(name, mtime);
+                }
+            }
+            last_meta_refresh = std::time::Instant::now();
         }
 
         // Decoupled preview refresh — runs whether or not the user is
