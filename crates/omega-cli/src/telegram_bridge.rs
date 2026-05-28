@@ -2690,8 +2690,20 @@ impl TelegramBotEngine {
         cfg.setup_at = chrono::Utc::now().to_rfc3339();
         let registry = omega_core::project_manager::ProjectRegistry::load();
         let mut created = 0usize;
+        let mut recreated = 0usize;
         for project in &registry.projects {
-            if cfg.topic_for(&project.name).is_some() {
+            if let Some(existing) = cfg.topic_for(&project.name) {
+                // The user may have DELETED the topic in Telegram. The stored
+                // mapping alone is not proof it still exists — verify, and
+                // recreate if it's gone (the reported bug: deleted topics were
+                // never re-created on a re-run).
+                if self.topic_exists(group_id, existing, &project.name).await {
+                    continue;
+                }
+                if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
+                    cfg.set_topic(&project.name, topic_id);
+                    recreated += 1;
+                }
                 continue;
             }
             if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
@@ -2702,10 +2714,11 @@ impl TelegramBotEngine {
         let _ = cfg.save();
 
         let body = format!(
-            "Group <b>{}</b> registered.\nProjects mapped to topics: {}\nNew topics created this run: {}\n\nOracle reports for each project will land in its topic.",
+            "Group <b>{}</b> registered.\nProjects mapped to topics: {}\nNew topics this run: {}\nRecreated (were deleted): {}\n\nOracle reports for each project will land in its topic.",
             formatting::escape_html(&group_name),
             cfg.topics.len(),
-            created
+            created,
+            recreated
         );
         let _ = self.send_html(chat_id, &body).await;
     }
@@ -2728,7 +2741,14 @@ impl TelegramBotEngine {
         let registry = omega_core::project_manager::ProjectRegistry::load();
         let mut created = 0usize;
         for project in &registry.projects {
-            if cfg.topic_for(&project.name).is_some() {
+            if let Some(existing) = cfg.topic_for(&project.name) {
+                if self.topic_exists(group_id, existing, &project.name).await {
+                    continue;
+                }
+                if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
+                    cfg.set_topic(&project.name, topic_id);
+                    created += 1;
+                }
                 continue;
             }
             if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
@@ -2766,6 +2786,46 @@ impl TelegramBotEngine {
             created = created,
             "auto-setup of project group complete"
         );
+    }
+
+    /// Probe whether a forum topic still exists. Telegram exposes no read
+    /// endpoint for topics, so we use `editForumTopic` (set the name to the
+    /// SAME value) as a harmless probe and read the error string:
+    ///   • ok:true                       → exists (edit applied)
+    ///   • "TOPIC_NOT_MODIFIED"          → exists (no-op edit, EMPIRICALLY the
+    ///                                      common reply for a live topic)
+    ///   • "TOPIC_ID_INVALID" / not found → DELETED → recreate
+    /// Only an explicit invalid/not-found error counts as deleted. Anything
+    /// else (incl. network/parse hiccups, rate limits, unknown errors) is
+    /// treated as "alive" so a transient failure never spawns duplicates.
+    async fn topic_exists(&self, group_id: i64, thread_id: i64, name: &str) -> bool {
+        let url = format!("{}/bot{}/editForumTopic", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": group_id,
+            "message_thread_id": thread_id,
+            "name": name,
+        });
+        let json = match self.client.post(&url).json(&body).send().await {
+            Ok(resp) => match resp.json::<serde_json::Value>().await {
+                Ok(j) => j,
+                Err(_) => return true,
+            },
+            Err(_) => return true,
+        };
+        if json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return true;
+        }
+        let desc = json
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_uppercase();
+        let deleted = desc.contains("TOPIC_ID_INVALID")
+            || desc.contains("THREAD NOT FOUND")
+            || desc.contains("THREAD_NOT_FOUND")
+            || desc.contains("MESSAGE THREAD NOT FOUND")
+            || desc.contains("TOPIC_DELETED");
+        !deleted
     }
 
     /// createForumTopic — returns the new topic's message_thread_id, or

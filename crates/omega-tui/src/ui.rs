@@ -440,7 +440,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     let from_tail = app.preview_scroll.min(max_scroll);
     let scroll = max_scroll.saturating_sub(from_tail);
 
-    let preview_lines: Vec<Line> = if app.preview_content.is_empty() {
+    let mut preview_lines: Vec<Line> = if app.preview_content.is_empty() {
         vec![Line::from(Span::styled(
             "(select a session to preview)",
             Style::default().fg(Color::Gray),
@@ -527,6 +527,25 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
             .collect()
     };
 
+    // Bottom-anchor the live terminal mirror. A real terminal keeps the
+    // prompt pinned to the bottom while history scrolls up off the top. When
+    // the pane content is shorter than the panel (a freshly-started Claude
+    // session), pad the TOP so the input line sits at the bottom instead of
+    // leaving the lower half of the panel blank.
+    let mut bottom_pad: u16 = 0;
+    if app.preview_styled.is_some() && max_scroll == 0 {
+        let len = preview_lines.len() as u16;
+        if len < viewport_height {
+            bottom_pad = viewport_height - len;
+            let mut padded: Vec<Line> = Vec::with_capacity(viewport_height as usize);
+            for _ in 0..bottom_pad {
+                padded.push(Line::from(String::new()));
+            }
+            padded.append(&mut preview_lines);
+            preview_lines = padded;
+        }
+    }
+
     let scroll_indicator = if max_scroll > 0 {
         format!(" [{}/{}] ", scroll, max_scroll)
     } else {
@@ -584,8 +603,9 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         };
 
         // Map the snapshot row to a viewport row using the same from-top
-        // `scroll` offset the Paragraph uses.
-        let viewport_row = cur_row.saturating_sub(scroll);
+        // `scroll` offset the Paragraph uses, plus the bottom-anchor padding
+        // we prepended so the caret tracks the content down to the bottom.
+        let viewport_row = (cur_row + bottom_pad).saturating_sub(scroll);
         if viewport_row < inner_h {
             let cursor_x = area.x + 1 + cur_col.min(inner_w.saturating_sub(1));
             let cursor_y = area.y + 1 + viewport_row;
