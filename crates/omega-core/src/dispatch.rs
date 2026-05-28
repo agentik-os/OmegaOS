@@ -326,6 +326,11 @@ impl Dispatcher {
     ) -> Result<String> {
         let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
         let mut prompt = ctx.format_prompt(&worker_name);
+        // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
+        let preamble = crate::rules::brief_preamble();
+        if !preamble.is_empty() {
+            prompt = format!("{}\n\n---\n\n{}", preamble, prompt);
+        }
         // Inject Worker-scoped rules (single source of truth).
         let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
         if !rules.is_empty() {
@@ -396,6 +401,11 @@ impl Dispatcher {
              If failed: `omega done {} failed \"<what went wrong>\"`",
             prompt, worker_name, worker_name, worker_name
         );
+        // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
+        let preamble = crate::rules::brief_preamble();
+        if !preamble.is_empty() {
+            worker_prompt = format!("{}\n\n---\n\n{}", preamble, worker_prompt);
+        }
         // Inject Worker-scoped rules (single source of truth).
         let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
         if !rules.is_empty() {

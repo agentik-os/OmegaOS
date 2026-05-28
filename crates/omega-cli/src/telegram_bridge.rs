@@ -3206,6 +3206,11 @@ fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<S
         .replace("{{PROJECT}}", project)
         .replace("{{WORKDIR}}", workdir)
         .replace("{{SESSION}}", session);
+    // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
+    let preamble = omega_core::rules::brief_preamble();
+    if !preamble.is_empty() {
+        rendered = format!("{}\n\n---\n\n{}", preamble, rendered);
+    }
     // Inject the Oracle-scoped rules (single source of truth — rules.rs).
     let rules = omega_core::rules::rules_prompt_block(omega_core::rules::RuleScope::Oracle);
     if !rules.is_empty() {

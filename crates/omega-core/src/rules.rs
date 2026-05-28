@@ -288,6 +288,20 @@ pub fn rules_for_scope(scope: RuleScope) -> Vec<Rule> {
         .collect()
 }
 
+/// Read the hardened brief preamble (`~/.omega/agents/_brief-preamble.md`,
+/// falling back to the repo copy at `agents/_brief-preamble.md`). This
+/// is the single highest-leverage safety surface per the Opus 4.8 card
+/// — it gets prepended to every Oracle and Worker brief. Empty string
+/// if neither file exists (degrades gracefully).
+pub fn brief_preamble() -> String {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let installed = home.join(".omega/agents/_brief-preamble.md");
+    let repo = std::path::PathBuf::from("agents/_brief-preamble.md");
+    std::fs::read_to_string(&installed)
+        .or_else(|_| std::fs::read_to_string(&repo))
+        .unwrap_or_default()
+}
+
 /// Render the scoped rules as a compact markdown block for prompt
 /// injection. Each rule: "- [ID] Title: description".
 pub fn rules_prompt_block(scope: RuleScope) -> String {
