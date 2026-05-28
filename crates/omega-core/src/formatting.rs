@@ -463,29 +463,25 @@ pub fn smart_wrap_response(
     };
     let divider = "─".repeat(20);
 
-    // User's original question rendered as a blockquote (the "yellow"
-    // visual cue requested). Truncate if very long to keep responses
-    // compact; the user always sees the FULL message in chat anyway
-    // via the reply-to link.
-    let quoted_question: String = if let Some(q) = user_message {
-        let q = q.trim();
-        if q.is_empty() {
-            String::new()
-        } else {
-            let preview: String = q.chars().take(280).collect();
-            let suffix = if q.chars().count() > 280 { " …" } else { "" };
-            format!("<blockquote>{}{}</blockquote>\n", escape_html(&preview), suffix)
-        }
-    } else {
-        String::new()
-    };
+    // The agent's RESPONSE body wraps in a single <blockquote> so it
+    // renders with the colored left bar (the "yellow" visual cue).
+    // The user's question is NOT echoed here — Telegram's native
+    // reply-to header already shows it above the message.
+    //
+    // Inside the blockquote, all the smart-md → HTML still works:
+    // inner <blockquote expandable> sections, <code>, <b>, etc.
+    // Telegram nests blockquotes correctly.
+    //
+    // user_message is kept in the signature for future use (e.g.,
+    // include in error context) but no longer rendered.
+    let _ = user_message;
 
     let body_html = smart_markdown_to_html(body_md);
     let body_html = mask_secrets(&body_html);
     let footer = format!("<i>⌁ {:.1}s · {}</i>", duration_s, escape_html(model));
     format!(
-        "{}\n{}\n\n{}{}\n\n{}",
-        header, divider, quoted_question, body_html, footer
+        "{}\n{}\n\n<blockquote>{}</blockquote>\n\n{}",
+        header, divider, body_html, footer
     )
 }
 
