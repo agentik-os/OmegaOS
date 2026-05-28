@@ -349,6 +349,9 @@ pub struct TelegramBotEngine {
     /// When set, the next plain-text message is relayed to THIS session
     /// instead of the default relay_session (set by tapping a session button).
     targeted_session: Arc<Mutex<Option<String>>>,
+    /// Persistent claude subprocess for instant master-chat responses.
+    /// Lazy-spawned on first message; respawns on crash.
+    claude_stream: Arc<crate::claude_stream::ClaudeStreamHandle>,
 }
 
 impl TelegramBotEngine {
@@ -365,6 +368,7 @@ impl TelegramBotEngine {
             cfg.chat_id
         };
 
+        let bridge_cfg_dir = dirs::home_dir().map(|h| h.join(".omega/claude-bridge-config"));
         Ok(Self {
             client,
             cfg,
@@ -372,6 +376,7 @@ impl TelegramBotEngine {
             reply_router: Arc::new(Mutex::new(ReplyRouter::new())),
             reply_chat_id,
             targeted_session: Arc::new(Mutex::new(None)),
+            claude_stream: Arc::new(crate::claude_stream::ClaudeStreamHandle::new(bridge_cfg_dir)),
         })
     }
 
@@ -462,10 +467,36 @@ impl TelegramBotEngine {
         let is_master_chat = relay_target == omega_core::aisb::MASTER_SESSION_NAME;
 
         if is_master_chat {
-            // Simple, fast path: dispatch to the selected provider's CLI.
-            // Default: claude. User can switch via /model command.
-            let _ = self.send_chat_action(chat_id, "typing").await;
+            // Default master chat: use persistent claude subprocess via
+            // stream-json. First call pays startup (~3s), all subsequent
+            // calls reuse the same subprocess (~LLM inference time only).
             let (provider, model) = read_active_provider_model();
+            let _ = self.send_chat_action(chat_id, "typing").await;
+
+            if provider == "claude" || provider.is_empty() {
+                match self.claude_stream.ask(text).await {
+                    Ok(response) if !response.is_empty() => {
+                        let chunks = formatting::split_message(&response, TELEGRAM_MAX_MSG_LEN);
+                        for chunk in chunks {
+                            let _ = self.send_text_plain(chat_id, &chunk).await;
+                        }
+                    }
+                    Ok(_) => {
+                        let _ = self.send_html(chat_id, "<i>Empty response.</i>").await;
+                    }
+                    Err(e) => {
+                        let _ = self
+                            .send_html(
+                                chat_id,
+                                &format!("<i>Claude error: <code>{}</code></i>", formatting::escape_html(&e.to_string())),
+                            )
+                            .await;
+                    }
+                }
+                return Ok(());
+            }
+
+            // Non-claude providers: fall back to one-shot CLI call.
             let output = tokio::task::spawn_blocking({
                 let prompt = text.to_string();
                 let provider = provider.clone();
@@ -484,16 +515,15 @@ impl TelegramBotEngine {
                         let _ = self.send_text_plain(chat_id, &chunk).await;
                     }
                 } else {
-                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-                    let _ = self
-                        .send_html(
-                            chat_id,
-                            &format!("<i>No response. stderr:</i>\n<code>{}</code>", formatting::escape_html(&stderr)),
-                        )
-                        .await;
+                    let _ = self.send_html(chat_id, "<i>Empty response from CLI.</i>").await;
                 }
             } else {
-                let _ = self.send_html(chat_id, "<i>Failed to run claude --print</i>").await;
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!("<i>Failed to run {} CLI</i>", formatting::escape_html(&provider)),
+                    )
+                    .await;
             }
             return Ok(());
         }
@@ -902,22 +932,109 @@ impl TelegramBotEngine {
         }
     }
 
+    /// Spawn a new oracle session for a project.
+    async fn spawn_project_oracle(&self, chat_id: i64, project: &str, oracle_name: &str) {
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let entry = registry.projects.iter().find(|p| p.name == project);
+        let Some(entry) = entry else {
+            self.send_html(
+                chat_id,
+                &format!("<i>Project <code>{}</code> not in registry.</i>", formatting::escape_html(project)),
+            ).await.ok();
+            return;
+        };
+        let cwd = entry.path.display().to_string();
+        let cmd = "claude --dangerously-skip-permissions";
+        match self.mgr.create_session(oracle_name, Some(&cwd), Some(cmd)).await {
+            Ok(_) => {
+                *self.targeted_session.lock().await = Some(oracle_name.to_string());
+                self.send_html(
+                    chat_id,
+                    &format!(
+                        "Spawned <code>{}</code> in <code>{}</code>.\nNext message goes there. /cancel to clear.",
+                        formatting::escape_html(oracle_name),
+                        formatting::escape_html(&cwd),
+                    ),
+                ).await.ok();
+            }
+            Err(e) => {
+                self.send_html(
+                    chat_id,
+                    &format!("<i>Spawn failed: <code>{}</code></i>", formatting::escape_html(&e.to_string())),
+                ).await.ok();
+            }
+        }
+    }
+
     /// Handle `proj:*` callbacks (open / new / scan).
     async fn handle_project_callback(&self, chat_id: i64, rest: &str) {
         let (sub, arg) = rest.split_once(':').unwrap_or((rest, ""));
         match sub {
             "open" => {
-                // Target the project's oracle session for the next message
-                let oracle = format!("oracle-{}", arg);
-                *self.targeted_session.lock().await = Some(oracle.clone());
+                // Smart oracle routing:
+                // - 0 oracles exist for this project → spawn oracle-{project}-1
+                // - 1+ oracles exist → ask user: continue existing N or spawn new
+                let project = arg;
+                let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+                let prefix = format!("oracle-{}-", project);
+                let mut existing: Vec<String> = sessions
+                    .iter()
+                    .filter(|s| s.name.starts_with(&prefix))
+                    .map(|s| s.name.clone())
+                    .collect();
+                existing.sort();
+
+                if existing.is_empty() {
+                    // No oracle yet → spawn oracle-{project}-1
+                    let oracle_name = format!("oracle-{}-1", project);
+                    self.spawn_project_oracle(chat_id, project, &oracle_name).await;
+                } else {
+                    // Show buttons: each existing oracle + "new oracle" option
+                    let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+                    for name in &existing {
+                        keyboard.push(vec![InlineKeyboardButton {
+                            text: format!("Continue {}", name),
+                            callback_data: format!("proj:talkto:{}", name),
+                        }]);
+                    }
+                    let next_idx = existing.len() + 1;
+                    let new_oracle = format!("oracle-{}-{}", project, next_idx);
+                    keyboard.push(vec![InlineKeyboardButton {
+                        text: format!("+ Spawn new ({})", new_oracle),
+                        callback_data: format!("proj:spawn:{}|{}", project, new_oracle),
+                    }]);
+                    let payload = serde_json::json!({
+                        "chat_id": chat_id,
+                        "text": format!(
+                            "<b>{}</b> — {} oracle(s) running\n\n<i>Continue one of them or spawn a new one:</i>",
+                            formatting::escape_html(project),
+                            existing.len()
+                        ),
+                        "parse_mode": "HTML",
+                        "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+                    });
+                    let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+                    self.client.post(&url).json(&payload).send().await.ok();
+                }
+            }
+            "talkto" => {
+                // User chose to continue an existing oracle
+                *self.targeted_session.lock().await = Some(arg.to_string());
                 self.send_html(
                     chat_id,
                     &format!(
-                        "Targeting <b>{}</b>.\nSend your next message and it goes to <code>{}</code>.",
-                        formatting::escape_html(arg),
-                        formatting::escape_html(&oracle)
+                        "Targeting <code>{}</code>.\nNext message goes there. /cancel to clear.",
+                        formatting::escape_html(arg)
                     ),
                 ).await.ok();
+            }
+            "spawn" => {
+                // arg = "project|oracle_name"
+                let (project, oracle_name) = arg.split_once('|').unwrap_or((arg, ""));
+                if oracle_name.is_empty() {
+                    return;
+                }
+                self.spawn_project_oracle(chat_id, project, oracle_name).await;
             }
             "new" => {
                 // Show location buttons for new project

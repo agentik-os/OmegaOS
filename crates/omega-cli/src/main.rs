@@ -4,6 +4,7 @@ use omega_core::config::OmegaConfig;
 use omega_core::done::{DoneSignal, DoneStatus};
 use omega_core::session::SessionManager;
 
+mod claude_stream;
 mod telegram_bridge;
 
 #[derive(Parser)]
