@@ -106,5 +106,12 @@
   "preamble_version": "1.0",
   "finished_at": "2026-05-28T16:42:00Z",
   "confirmation_run_at": "2026-05-28T16:49:00Z",
-  "confirmation_delta": "All 5 falsifiable tests re-run. Identical results — feature still absent, build still clean. Score unchanged: 12/100."
+  "confirmation_delta": "All 5 falsifiable tests re-run. Identical results — feature still absent, build still clean. Score unchanged: 12/100.",
+  "third_run_at": "2026-05-28T17:04:00Z",
+  "third_run_delta": "Post-mission-2-3 re-verification. Core findings unchanged (feature still absent, patrol.rs:193 gap unfixed). NEW: commit 219e57d landed since prior run, fixing all 3 prior codeaudit issues: (1) Box::leak in ui.rs draw_telegram_setup_modal — grep confirms 0 matches now; (2) scroll_preview_up first-press no-op — was_following guard confirmed at app.rs:887-889; (3) dead statement in draw_settings — not present at ui.rs:1340-1355. cargo check still 0 errors. Auto-done gap in patrol.rs:193 remains the only outstanding work item.",
+  "prior_codeaudit_fixes_now_verified": [
+    {"issue": "Box::leak ~100B/frame in telegram modal", "commit": "219e57d", "status": "FIXED"},
+    {"issue": "scroll_preview_up first-press no-op (preview_max_scroll=0 clamp)", "commit": "219e57d", "status": "FIXED"},
+    {"issue": "Dead statement in draw_settings (computed value discarded)", "commit": "219e57d", "status": "FIXED"}
+  ]
 }

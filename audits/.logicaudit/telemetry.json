@@ -1,0 +1,14 @@
+{
+  "audit": "logicaudit",
+  "version": "1.0",
+  "preamble_version": "1.0",
+  "model": "claude-opus-4-7",
+  "hinge_logic": "single ordered keystroke forwarder (FIFO) + bounded drain loop",
+  "optimizations_applied": 1,
+  "optimizations_recommended": 1,
+  "issues_documented": 5,
+  "files_modified": 1,
+  "build": "pass",
+  "clippy_hot_path": "clean",
+  "estimated_speedup": "F2 (if applied after verify) ~2x fewer transport RPCs on prose typing; F1 cleanup 0 runtime impact"
+}

@@ -589,84 +589,35 @@ impl TelegramBotEngine {
                 None => text.to_string(),
             };
 
-            // ─── PANE RELAY (unified conversation) ────────────────────
-            // The Telegram chat is the EXACT same Claude instance as the
-            // rmux aisb-master session. Attaching to the rmux session
-            // shows what the bridge is seeing in real time, and the
-            // bridge sees what you typed locally too. Single JSONL on
-            // disk → no diverging context.
+            // ─── OWN CLAUDE SDK (the bot's own brain) ─────────────────
+            // The bot owns a persistent `claude --print --output-format
+            // stream-json` subprocess (claude_stream.rs) running from $HOME
+            // with --dangerously-skip-permissions and the AISB Master
+            // system prompt. It has FULL VPS access (Bash/Read/Write/etc.)
+            // and responds DIRECTLY to Telegram — no pane scraping, no
+            // fragile extraction. This is the old VPS Omega model
+            // (ClaudeSDKClient) reimplemented over the CLI stream.
             //
-            // Trade-off vs the old claude_stream subprocess: +1-2s per
-            // message (pane polling) but unified UX.
-            let result: std::result::Result<String, String> = {
-                let relay_target = omega_core::aisb::MASTER_SESSION_NAME;
-                let before = self
-                    .mgr
-                    .capture_pane(relay_target)
+            // We also MIRROR the exchange into the rmux aisb-master pane
+            // (display-only) so the user can WATCH the conversation live
+            // in the TUI. The mirror is best-effort and never blocks the
+            // Telegram response.
+            let result: std::result::Result<String, String> = if provider == "claude"
+                || provider.is_empty()
+            {
+                self.claude_stream.ask(&final_prompt).await.map_err(|e| e.to_string())
+            } else {
+                // Non-Claude providers (Gemini/Codex/GLM/Pi) still use the
+                // one-shot CLI path.
+                let prompt = final_prompt.clone();
+                let p = provider.clone();
+                let m = model.clone();
+                tokio::task::spawn_blocking(move || run_llm_oneshot(&p, &m, &prompt))
                     .await
-                    .unwrap_or_default();
-                // Bracketed paste — required when final_prompt contains
-                // newlines (the <reply_context> block does). Without it,
-                // Claude's TUI submits on every \n and the LLM only sees
-                // the last fragment.
-                let send_result = if final_prompt.contains('\n') {
-                    self.mgr.send_paste_then_submit(relay_target, &final_prompt).await
-                } else {
-                    self.mgr.send_text(relay_target, &final_prompt).await
-                };
-                match send_result {
-                    Err(e) => Err(e.to_string()),
-                    Ok(()) => {
-                        let mut last_response = String::new();
-                        let mut stable_count = 0usize;
-                        let mut out: std::result::Result<String, String> =
-                            Err("LLM timeout (60s polling)".to_string());
-                        let max_ticks = 200u32; // 200 × 300ms = 60s
-                        for _tick in 0..max_ticks {
-                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                            let after = self
-                                .mgr
-                                .capture_pane(relay_target)
-                                .await
-                                .unwrap_or_default();
-                            if after == before {
-                                continue;
-                            }
-                            let current = extract_response(&before, &after);
-                            if current.is_empty() {
-                                continue;
-                            }
-                            if current == last_response {
-                                stable_count += 1;
-                                if stable_count >= 2 {
-                                    out = Ok(current);
-                                    break;
-                                }
-                            } else {
-                                stable_count = 0;
-                                last_response = current;
-                            }
-                            // Idle-prompt fallback: bare ❯ at bottom → done
-                            let is_idle = after.lines().rev().take(5).any(|l| {
-                                let t = l.trim();
-                                t.starts_with('❯') && t.len() <= 3
-                            });
-                            if is_idle && !last_response.is_empty() {
-                                out = Ok(last_response.clone());
-                                break;
-                            }
-                        }
-                        // Timeout but we caught a partial — ship it.
-                        if out.is_err() && !last_response.is_empty() {
-                            out = Ok(last_response);
-                        }
-                        out.map(|s| clean_terminal_output(&s))
-                    }
-                }
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
             };
-            // provider/model intentionally still read above for the footer
-            // tag; the actual call no longer routes through claude_stream.
-            let _ = &provider;
 
             ticker.abort();
             let duration = started.elapsed().as_secs_f32();
@@ -688,6 +639,11 @@ impl TelegramBotEngine {
                         traj.push(TurnRole::Gpt, body.clone());
                         omega_core::trajectory::append_silent(&traj);
                     }
+                    // MIRROR into the rmux aisb-master pane so the user can
+                    // watch the Telegram conversation live in the TUI. The
+                    // SDK subprocess owns the real conversation; this pane
+                    // is a read-only echo. Best-effort, never blocks.
+                    self.mirror_to_master_pane(text, &body).await;
                     let file_target = formatting::suggest_file_delivery(&body);
                     let wrapped = formatting::smart_wrap_response(
                         agent_label,
@@ -2533,27 +2489,59 @@ impl TelegramBotEngine {
     /// "Thinking…" placeholder pattern: send placeholder → run LLM →
     /// edit placeholder with the formatted answer (single message
     /// morphs from thinking → answer, no chat clutter).
+    /// Mirror a Telegram exchange into the live conversation log that the
+    /// rmux aisb-master session tails. The bot's SDK subprocess owns the
+    /// real conversation; this log is a read-only stream so the user can
+    /// WATCH the Telegram chat live by attaching to aisb-master in the TUI.
+    /// Best-effort, fire-and-forget — never blocks the Telegram response.
+    async fn mirror_to_master_pane(&self, user_msg: &str, response: &str) {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let log = home.join(".omega/state/aisb-conversation.log");
+        if let Some(parent) = log.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let ts = chrono::Local::now().format("%H:%M:%S");
+        let entry = format!(
+            "\n\x1b[90m──────── {} ────────\x1b[0m\n\x1b[36m▶ You:\x1b[0m {}\n\x1b[33m◆ AISB:\x1b[0m {}\n",
+            ts, user_msg.trim(), response.trim()
+        );
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            let _ = f.write_all(entry.as_bytes());
+        }
+    }
+
     /// Kill the AISB Master session and respawn it FRESH (no --continue).
     /// Also resets the curator-triggered flags so the new session starts
     /// with a clean self-improvement slate. Invoked by the /clean command.
     async fn clean_master(&self) -> Result<()> {
         let master = omega_core::aisb::MASTER_SESSION_NAME;
-        // Kill (ignore error if already dead)
+
+        // 1. Reset the BRAIN — drop the persistent Claude SDK subprocess so
+        //    the next message starts a brand-new conversation (clean slate).
+        self.claude_stream.reset().await;
+
+        // 2. Truncate the conversation log so the viewer starts fresh too.
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+        let log = home.join(".omega/state/aisb-conversation.log");
+        let _ = std::fs::write(
+            &log,
+            "  Ω  AISB Master — fresh conversation (cleaned)\n\
+             ─────────────────────────────────────────────────\n",
+        );
+
+        // 3. Kill + respawn the viewer session (tail -F picks up the
+        //    truncated log automatically, but respawn guarantees a clean
+        //    pane even if the old viewer was detached).
         let _ = self.mgr.kill_session(master).await;
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        // Respawn fresh. ensure_master only creates if absent — since we
-        // just killed it, this creates a brand-new session.
-        let home = dirs::home_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/home/hacker".to_string());
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let home_str = home.to_string_lossy().to_string();
         omega_core::aisb::ensure_master(
             &self.mgr,
             omega_core::agents::Agent::Claude,
-            &home,
+            &home_str,
         )
         .await?;
-        // Give Claude a moment to boot before the next message arrives.
-        tokio::time::sleep(Duration::from_secs(3)).await;
         Ok(())
     }
 

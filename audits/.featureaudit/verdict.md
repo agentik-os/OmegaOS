@@ -75,3 +75,21 @@ if !has_done
 ```
 
 **Step 4 — `close-gate.sh:427`**: accept `"patrol"` as valid `written_by`.
+
+---
+
+## Third-Run Update (2026-05-28T17:04:00Z)
+
+**Core finding unchanged:** auto-done feature absent, score 12/100.
+
+**New since second run:** commit `219e57d fix(tui): Box::leak in modal, scroll first-press no-op, dead statement` has landed, resolving all 3 prior codeaudit issues:
+
+| Prior finding | Status |
+|---------------|--------|
+| Box::leak ~100B/frame in `draw_telegram_setup_modal` | ✅ FIXED (`grep Box::leak ui.rs` → 0 matches) |
+| `scroll_preview_up` first-press no-op | ✅ FIXED (`was_following` guard at app.rs:887-889) |
+| Dead statement in `draw_settings` | ✅ FIXED (not present at ui.rs:1340-1355) |
+
+`cargo check -p omega-tui -p omega-core` still exits 0 (7 pre-existing warnings, no regressions).
+
+**Only remaining work:** patrol.rs:193 auto-done gap (see Minimal Fix above).

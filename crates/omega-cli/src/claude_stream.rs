@@ -115,6 +115,13 @@ impl ClaudeStreamHandle {
         }
     }
 
+    /// Drop the current subprocess so the next `ask` spawns a brand-new
+    /// Claude SDK session (fresh conversation). Used by /clean.
+    pub async fn reset(&self) {
+        let mut guard = self.inner.lock().await;
+        *guard = None;
+    }
+
     /// Ask claude. Lazy-spawns on first call. On subprocess crash, respawns.
     pub async fn ask(&self, prompt: &str) -> Result<String> {
         let mut guard = self.inner.lock().await;

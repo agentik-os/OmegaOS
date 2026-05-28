@@ -36,23 +36,47 @@ pub async fn ensure_master(
     agent: Agent,
     working_dir: &str,
 ) -> Result<bool> {
+    let _ = agent; // master is a viewer now, not an agent session
     let sessions = mgr.list_sessions().await?;
     if sessions.iter().any(|s| s.name == MASTER_SESSION_NAME) {
         return Ok(false);
     }
 
-    let prompt_file = ensure_prompt_file()?;
-    let opts = LaunchOptions {
-        system_prompt_file: Some(prompt_file.to_string_lossy().to_string()),
-        resume_conversation: true,
-        ..LaunchOptions::default()
-    };
-    let cmd = agent.launch_command_with(None, opts);
+    // NEW MODEL (2026-05-28): the Telegram bot owns its OWN persistent
+    // Claude SDK subprocess (claude_stream.rs) with full VPS access — that
+    // is the brain. The aisb-master rmux session is now a LIVE VIEWER that
+    // tails the conversation log the bridge writes, so the user can WATCH
+    // the Telegram chat stream in the TUI. It is no longer an interactive
+    // Claude (that caused the "talks in the pane but not Telegram" split).
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let log = home.join(".omega/state/aisb-conversation.log");
+    if let Some(parent) = log.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if !log.exists() {
+        let _ = std::fs::write(
+            &log,
+            "  Ω  AISB Master — live Telegram conversation viewer\n\
+             ─────────────────────────────────────────────────\n\
+             Talk to AISB from Telegram. Exchanges stream here.\n",
+        );
+    }
+    let log_str = log.to_string_lossy();
+    // `tail -F` follows across truncation (/clean rewrites the log).
+    let cmd = format!(
+        "clear; printf '\\033[1;36m  Ω  AISB Master — live Telegram conversation\\033[0m\\n'; exec tail -n 200 -F {}",
+        shell_quote(&log_str)
+    );
 
     mgr.create_session(MASTER_SESSION_NAME, Some(working_dir), Some(&cmd))
         .await?;
 
     Ok(true)
+}
+
+/// Minimal shell-quote for the log path (single-quote wrap).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Returns true if a given session name is the Master AISB.
