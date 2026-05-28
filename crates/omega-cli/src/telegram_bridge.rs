@@ -346,6 +346,9 @@ pub struct TelegramBotEngine {
     mgr: SessionManager,
     reply_router: Arc<Mutex<ReplyRouter>>,
     reply_chat_id: i64,
+    /// When set, the next plain-text message is relayed to THIS session
+    /// instead of the default relay_session (set by tapping a session button).
+    targeted_session: Arc<Mutex<Option<String>>>,
 }
 
 impl TelegramBotEngine {
@@ -368,6 +371,7 @@ impl TelegramBotEngine {
             mgr,
             reply_router: Arc::new(Mutex::new(ReplyRouter::new())),
             reply_chat_id,
+            targeted_session: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -411,6 +415,13 @@ impl TelegramBotEngine {
             }
         }
 
+        // /cancel clears any targeted session.
+        if text.trim() == "/cancel" {
+            *self.targeted_session.lock().await = None;
+            let _ = self.send_html(chat_id, "Cleared target. Messages now go to AISB Master.").await;
+            return Ok(());
+        }
+
         // 3. Handle commands with inline keyboards (return early if handled).
         if text.starts_with('/') {
             if self.try_handle_keyboard_command(chat_id, text).await {
@@ -423,8 +434,30 @@ impl TelegramBotEngine {
             }
         }
 
-        // 3. Relay to AISB Master
-        if let Err(_) = self.mgr.send_text(&self.cfg.relay_session, text).await {
+        // Resolve the relay target: a tapped session/project overrides the default.
+        // Special case: "__newproject__:<location>" means create a project with
+        // this message as the name.
+        let target = {
+            let mut guard = self.targeted_session.lock().await;
+            let t = guard.clone();
+            // One-shot: clear after consuming (except for oracle/session targets
+            // which the user may want to keep — but simplest is one-shot)
+            *guard = None;
+            t
+        };
+
+        if let Some(t) = &target {
+            if let Some(location) = t.strip_prefix("__newproject__:") {
+                // The message text is the project name
+                self.handle_newproject(chat_id, &format!("/newproject {} {}", text.trim(), location)).await;
+                return Ok(());
+            }
+        }
+
+        let relay_target = target.clone().unwrap_or_else(|| self.cfg.relay_session.clone());
+
+        // 3. Relay to the target session (default: AISB Master)
+        if let Err(_) = self.mgr.send_text(&relay_target, text).await {
             let _ = self
                 .send_html(
                     chat_id,
@@ -446,7 +479,7 @@ impl TelegramBotEngine {
             {
                 Ok(_) => {
                     tokio::time::sleep(Duration::from_secs(5)).await;
-                    if let Err(e) = self.mgr.send_text(&self.cfg.relay_session, text).await {
+                    if let Err(e) = self.mgr.send_text(&relay_target, text).await {
                         let _ = self
                             .send_html(
                                 chat_id,
@@ -478,7 +511,7 @@ impl TelegramBotEngine {
         let _ = self.send_chat_action(chat_id, "typing").await;
         let before = self
             .mgr
-            .capture_pane(&self.cfg.relay_session)
+            .capture_pane(&relay_target)
             .await
             .unwrap_or_default();
 
@@ -500,7 +533,7 @@ impl TelegramBotEngine {
 
             let after = self
                 .mgr
-                .capture_pane(&self.cfg.relay_session)
+                .capture_pane(&relay_target)
                 .await
                 .unwrap_or_default();
 
@@ -628,9 +661,30 @@ impl TelegramBotEngine {
 
         tracing::info!(data = %data, "callback query received");
 
-        // Account/billing callbacks have their own routing.
+        // Account/billing callbacks
         if let Some(rest) = data.strip_prefix("acc:") {
             self.handle_account_callback(chat_id, rest).await;
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            return Ok(());
+        }
+
+        // Project menu callbacks
+        if let Some(rest) = data.strip_prefix("proj:") {
+            self.handle_project_callback(chat_id, rest).await;
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            return Ok(());
+        }
+
+        // Session targeting callbacks
+        if let Some(rest) = data.strip_prefix("sess:") {
+            self.handle_session_callback(chat_id, rest).await;
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            return Ok(());
+        }
+
+        // Model selection callbacks
+        if let Some(rest) = data.strip_prefix("model:") {
+            self.handle_model_callback(chat_id, rest).await;
             let _ = self.answer_callback_query(&cb.id, "").await;
             return Ok(());
         }
@@ -796,6 +850,166 @@ impl TelegramBotEngine {
                     .await;
             }
         }
+    }
+
+    /// Handle `proj:*` callbacks (open / new / scan).
+    async fn handle_project_callback(&self, chat_id: i64, rest: &str) {
+        let (sub, arg) = rest.split_once(':').unwrap_or((rest, ""));
+        match sub {
+            "open" => {
+                // Target the project's oracle session for the next message
+                let oracle = format!("oracle-{}", arg);
+                *self.targeted_session.lock().await = Some(oracle.clone());
+                self.send_html(
+                    chat_id,
+                    &format!(
+                        "Targeting <b>{}</b>.\nSend your next message and it goes to <code>{}</code>.",
+                        formatting::escape_html(arg),
+                        formatting::escape_html(&oracle)
+                    ),
+                ).await.ok();
+            }
+            "new" => {
+                // Show location buttons for new project
+                let keyboard = vec![
+                    vec![InlineKeyboardButton { text: "work/".to_string(), callback_data: "proj:newin:work".to_string() }],
+                    vec![InlineKeyboardButton { text: "clients/".to_string(), callback_data: "proj:newin:clients".to_string() }],
+                ];
+                let payload = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": "<b>New Project</b>\nWhere should it live?\n\n<i>After choosing, send the project name as your next message.</i>",
+                    "parse_mode": "HTML",
+                    "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+                });
+                let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+                self.client.post(&url).json(&payload).send().await.ok();
+            }
+            "newin" => {
+                // Remember the location, await the project name
+                *self.targeted_session.lock().await = Some(format!("__newproject__:{}", arg));
+                self.send_html(
+                    chat_id,
+                    &format!("Location: <code>{}/</code>\nSend the project name now.", formatting::escape_html(arg)),
+                ).await.ok();
+            }
+            "scan" => {
+                self.scan_and_propose_projects(chat_id).await;
+            }
+            "add" => {
+                // Add a scanned project to the registry
+                self.add_scanned_project(chat_id, arg).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Scan VibeCoding dirs for git projects not yet in the registry.
+    async fn scan_and_propose_projects(&self, chat_id: i64) {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let known: std::collections::HashSet<String> =
+            registry.projects.iter().map(|p| p.path.display().to_string()).collect();
+
+        let mut found: Vec<(String, String)> = Vec::new(); // (name, path)
+        for sub in ["VibeCoding/work", "VibeCoding/clients"] {
+            let base = home.join(sub);
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.is_dir() && p.join(".git").exists() {
+                        let path_str = p.display().to_string();
+                        if !known.contains(&path_str) {
+                            let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            found.push((name, path_str));
+                        }
+                    }
+                }
+            }
+        }
+
+        if found.is_empty() {
+            self.send_html(chat_id, "<b>Scan complete</b>\nNo new git projects found (all are already registered).").await.ok();
+            return;
+        }
+
+        let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        for (name, _path) in found.iter().take(20) {
+            keyboard.push(vec![InlineKeyboardButton {
+                text: format!("+ {}", name),
+                callback_data: format!("proj:add:{}", name),
+            }]);
+        }
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "text": format!("<b>Scan complete</b>\nFound {} unregistered project(s). Tap to add:", found.len()),
+            "parse_mode": "HTML",
+            "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+        });
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        self.client.post(&url).json(&payload).send().await.ok();
+    }
+
+    /// Register a scanned project into the registry.
+    async fn add_scanned_project(&self, chat_id: i64, name: &str) {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        // Find it in work or clients
+        for sub in ["VibeCoding/work", "VibeCoding/clients"] {
+            let p = home.join(sub).join(name);
+            if p.is_dir() {
+                match omega_core::project_manager::add_existing_project(&p) {
+                    Ok(_) => {
+                        self.send_html(
+                            chat_id,
+                            &format!("Added <b>{}</b> to the registry.\nUse /projects to see it.", formatting::escape_html(name)),
+                        ).await.ok();
+                    }
+                    Err(e) => {
+                        self.send_html(chat_id, &format!("Failed to add: <code>{}</code>", formatting::escape_html(&e.to_string()))).await.ok();
+                    }
+                }
+                return;
+            }
+        }
+        self.send_html(chat_id, &format!("Project <code>{}</code> not found on disk.", formatting::escape_html(name))).await.ok();
+    }
+
+    /// Handle `sess:*` callbacks (target a session for the next message).
+    async fn handle_session_callback(&self, chat_id: i64, rest: &str) {
+        if let Some(session) = rest.strip_prefix("target:") {
+            *self.targeted_session.lock().await = Some(session.to_string());
+            self.send_html(
+                chat_id,
+                &format!(
+                    "Targeting <code>{}</code>.\nYour next message will be sent there. Send <code>/cancel</code> to clear.",
+                    formatting::escape_html(session)
+                ),
+            ).await.ok();
+        }
+    }
+
+    /// Handle `model:*` callbacks (switch provider/model).
+    async fn handle_model_callback(&self, chat_id: i64, rest: &str) {
+        // rest = "provider" or "provider:model"
+        let (provider, model) = rest.split_once(':').unwrap_or((rest, ""));
+        // Persist active selection to ~/.omega/state/telegram-active-model.json
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let state_path = home.join(".omega/state/telegram-active-model.json");
+        if let Some(parent) = state_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let selection = serde_json::json!({
+            "active_provider": provider,
+            "active_model": model,
+        });
+        let _ = std::fs::write(&state_path, serde_json::to_string_pretty(&selection).unwrap_or_default());
+        self.send_html(
+            chat_id,
+            &format!(
+                "Active model set: <b>{}</b>{}",
+                formatting::escape_html(provider),
+                if model.is_empty() { String::new() } else { format!(" / <code>{}</code>", formatting::escape_html(model)) }
+            ),
+        ).await.ok();
     }
 
     /// `/projects` — interactive menu listing existing projects + actions.
@@ -1475,8 +1689,7 @@ impl TelegramBotEngine {
                 {"command": "account",  "description": "Account / billing / login (with buttons)"},
                 {"command": "model",    "description": "Switch AI provider and model"},
                 {"command": "projects", "description": "List projects + new / add existing"},
-                {"command": "sessions", "description": "Active sessions (tap to target)"},
-                {"command": "status",   "description": "Capture last 20 lines of a session"}
+                {"command": "sessions", "description": "Active sessions (tap to target)"}
             ]
         });
 

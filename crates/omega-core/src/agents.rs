@@ -17,8 +17,6 @@ pub enum Agent {
     Claude,
     Codex,
     Gemini,
-    Pi,
-    Hermes,
     Glm,
     Shell,
 }
@@ -29,8 +27,6 @@ impl Agent {
             Agent::Claude,
             Agent::Codex,
             Agent::Gemini,
-            Agent::Pi,
-            Agent::Hermes,
             Agent::Glm,
             Agent::Shell,
         ]
@@ -41,8 +37,6 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Gemini => "gemini",
-            Agent::Pi => "pi",
-            Agent::Hermes => "hermes",
             Agent::Glm => "glm",
             Agent::Shell => "shell",
         }
@@ -53,8 +47,6 @@ impl Agent {
             Agent::Claude => "Claude Code (Anthropic)",
             Agent::Codex => "Codex (OpenAI)",
             Agent::Gemini => "Gemini (Google)",
-            Agent::Pi => "Pi (earendil-works)",
-            Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
             Agent::Shell => "Plain shell",
         }
@@ -65,8 +57,6 @@ impl Agent {
             "claude" => Some(Agent::Claude),
             "codex" => Some(Agent::Codex),
             "gemini" => Some(Agent::Gemini),
-            "pi" => Some(Agent::Pi),
-            "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
             "shell" | "bash" | "" => Some(Agent::Shell),
             _ => None,
@@ -77,18 +67,10 @@ impl Agent {
     /// comes pre-installed / not installable via a script.
     pub fn install_command(&self) -> Option<&'static str> {
         match self {
-            // Interactive installers: download to temp, then run from a path so
+            Agent::Glm => Some("npm install -g @z-ai/glm-cli"),
+            // Interactive installer: download to temp, then run from a path so
             // stdin stays attached to the user's TTY (curl|sh would feed the
             // script via pipe, breaking any stty/raw-mode prompts inside).
-            Agent::Pi => Some(
-                "T=$(mktemp) && curl -fsSL https://pi.dev/install.sh -o \"$T\" && sh \"$T\"; rm -f \"$T\"",
-            ),
-            Agent::Hermes => Some(
-                "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
-            ),
-            Agent::Glm => Some("npm install -g @z-ai/glm-cli"),
-            // Claude/Codex/Gemini: users install via their own channels
-            // (claude.ai/code, npm i -g @openai/codex, npm i -g @google/gemini-cli)
             Agent::Claude => Some(
                 "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
             ),
@@ -106,8 +88,6 @@ impl Agent {
             Agent::Claude => Some("rm -f $(which claude) && rm -rf ~/.claude"),
             Agent::Codex => Some("npm uninstall -g @openai/codex"),
             Agent::Gemini => Some("npm uninstall -g @google/gemini-cli"),
-            Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
-            Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
             Agent::Glm => Some("npm uninstall -g @z-ai/glm-cli"),
             Agent::Shell => None,
         }
@@ -119,8 +99,6 @@ impl Agent {
             Agent::Claude => Some("https://claude.ai/code"),
             Agent::Codex => Some("https://github.com/openai/codex"),
             Agent::Gemini => Some("https://github.com/google-gemini/gemini-cli"),
-            Agent::Pi => Some("https://pi.dev/"),
-            Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
             Agent::Glm => Some("https://www.z.ai/"),
             Agent::Shell => None,
         }
@@ -175,34 +153,6 @@ impl Agent {
                     None => gemini_bin,
                 }
             }
-            Agent::Pi => {
-                // Try $PATH first (pi.dev installs to ~/.local/bin or similar),
-                // fall back to ~/.npm-global/bin/pi for the older npm install.
-                let pi_bin = "pi";
-                let pi_args = "--provider openrouter --model anthropic/claude-sonnet-4.6";
-                match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!(
-                            "{} {} {}; exec bash",
-                            pi_bin,
-                            pi_args,
-                            shell_quote(p)
-                        ))
-                    ),
-                    None => format!("{} {}", pi_bin, pi_args),
-                }
-            }
-            Agent::Hermes => {
-                // Hermes is invoked from $PATH after `curl … | bash && hermes setup`.
-                match initial_prompt {
-                    Some(p) => format!(
-                        "bash -c {}",
-                        shell_quote(&format!("hermes {}; exec bash", shell_quote(p)))
-                    ),
-                    None => "bash -c \"hermes; exec bash\"".to_string(),
-                }
-            }
             Agent::Glm => {
                 // GLM via z-ai cli — falls back to a helpful message if not installed
                 match initial_prompt {
@@ -235,12 +185,6 @@ impl Agent {
                 has_cmd("gemini")
                     || std::path::Path::new(&format!("{}/.npm-global/bin/gemini", home)).exists()
             }
-            Agent::Pi => {
-                has_cmd("pi")
-                    || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
-                    || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
-            }
-            Agent::Hermes => has_cmd("hermes"),
             Agent::Glm => has_cmd("glm"),
             Agent::Shell => true,
         }
