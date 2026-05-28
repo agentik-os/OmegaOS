@@ -258,18 +258,18 @@ struct OracleReport {
 impl OracleReport {
     fn to_telegram_html(&self) -> String {
         let status_icon = match self.status.to_uppercase().as_str() {
-            "DONE" => "✅",
-            "FAILED" => "🔴",
-            _ => "📋",
+            "DONE" => "[DONE]",
+            "FAILED" => "[FAILED]",
+            _ => "[REPORT]",
         };
         let build_icon = match self.build.to_uppercase().as_str() {
-            "PASS" => "🟢",
-            "FAIL" => "🔴",
-            _ => "⚪",
+            "PASS" => "PASS",
+            "FAIL" => "FAIL",
+            _ => "-",
         };
 
         let mut out = format!(
-            "{} <b>Oracle Report — {}</b>\n━━━━━━━━━━\n",
+            "{} <b>Oracle Report — {}</b>\n\n",
             status_icon,
             formatting::escape_html(&self.project)
         );
@@ -292,21 +292,21 @@ impl OracleReport {
             inline_keyboard: vec![
                 vec![
                     InlineKeyboardButton {
-                        text: "🛑 Stop Workers".to_string(),
+                        text: " Stop Workers".to_string(),
                         callback_data: format!("stop_workers:{}", project),
                     },
                     InlineKeyboardButton {
-                        text: "🔒 Close Oracle".to_string(),
+                        text: " Close Oracle".to_string(),
                         callback_data: format!("close_oracle:{}", project),
                     },
                 ],
                 vec![
                     InlineKeyboardButton {
-                        text: "📋 Full Report".to_string(),
+                        text: " Full Report".to_string(),
                         callback_data: format!("full_report:{}", project),
                     },
                     InlineKeyboardButton {
-                        text: "🔄 Continue".to_string(),
+                        text: " Continue".to_string(),
                         callback_data: format!("continue:{}", project),
                     },
                 ],
@@ -392,7 +392,7 @@ impl TelegramBotEngine {
                 tracing::info!(project = %project, "reply-routed to oracle");
                 let _ = self.mgr.send_text(&oracle_session, text).await;
                 let _ = self
-                    .send_html(chat_id, &format!("⚡ → <code>{}</code>", formatting::escape_html(&oracle_session)))
+                    .send_html(chat_id, &format!(" → <code>{}</code>", formatting::escape_html(&oracle_session)))
                     .await;
                 return Ok(());
             }
@@ -426,7 +426,7 @@ impl TelegramBotEngine {
             let _ = self
                 .send_html(
                     chat_id,
-                    "🔄 <i>AISB Master redémarrage — reprise de la conversation…</i>",
+                    " <i>AISB Master redémarrage — reprise de la conversation…</i>",
                 )
                 .await;
 
@@ -449,7 +449,7 @@ impl TelegramBotEngine {
                             .send_html(
                                 chat_id,
                                 &format!(
-                                    "🔴 <b>Relay failed after restart</b>\n<code>{}</code>",
+                                    "<b>Relay failed after restart</b>\n<code>{}</code>",
                                     formatting::escape_html(&e.to_string())
                                 ),
                             )
@@ -462,7 +462,7 @@ impl TelegramBotEngine {
                         .send_html(
                             chat_id,
                             &format!(
-                                "🔴 <b>Could not restart AISB Master</b>\n<code>{}</code>",
+                                "<b>Could not restart AISB Master</b>\n<code>{}</code>",
                                 formatting::escape_html(&e.to_string())
                             ),
                         )
@@ -524,7 +524,7 @@ impl TelegramBotEngine {
             let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
             let is_idle = last_lines
                 .iter()
-                .any(|l| l.trim().starts_with("❯") && l.trim().len() <= 2);
+                .any(|l| l.trim().starts_with("") && l.trim().len() <= 2);
             if is_idle && !last_response.is_empty() {
                 response_text = last_response.clone();
                 break;
@@ -559,7 +559,7 @@ impl TelegramBotEngine {
             .send_html(
                 msg.chat.id,
                 &format!(
-                    "🎤 <i>Voice message received ({}s) — transcription not yet available in OmegaOS.\n\
+                    " <i>Voice message received ({}s) — transcription not yet available in OmegaOS.\n\
                      Send as text for now.</i>",
                     voice.duration
                 ),
@@ -577,7 +577,7 @@ impl TelegramBotEngine {
             .send_html(
                 msg.chat.id,
                 &format!(
-                    "📄 <i>Document received: <code>{}</code> ({})\n\
+                    " <i>Document received: <code>{}</code> ({})\n\
                      Document processing not yet available — describe what you need in text.</i>",
                     formatting::escape_html(name),
                     formatting::escape_html(mime)
@@ -606,7 +606,7 @@ impl TelegramBotEngine {
             .send_html(
                 msg.chat.id,
                 &format!(
-                    "📷 <i>Photo received.{}\n\
+                    " <i>Photo received.{}\n\
                      Image analysis not yet available — describe what you need in text.</i>",
                     caption_note
                 ),
@@ -638,35 +638,35 @@ impl TelegramBotEngine {
         let reply = match action {
             "stop_workers" => {
                 if project.is_empty() {
-                    "⚠️ No project specified".to_string()
+                    " No project specified".to_string()
                 } else {
                     self.stop_project_workers(project).await
                 }
             }
             "close_oracle" => {
                 if project.is_empty() {
-                    "⚠️ No project specified".to_string()
+                    " No project specified".to_string()
                 } else {
                     self.close_oracle(project).await
                 }
             }
             "full_report" => {
                 if project.is_empty() {
-                    "⚠️ No project specified".to_string()
+                    " No project specified".to_string()
                 } else {
                     self.get_full_report(project).await
                 }
             }
             "continue" => {
                 if project.is_empty() {
-                    "⚠️ No project specified".to_string()
+                    " No project specified".to_string()
                 } else {
                     let oracle_session = format!("oracle-{}", project);
                     let _ = self.mgr.send_text(&oracle_session, "continue").await;
-                    format!("🔄 Continuing oracle for <b>{}</b>", formatting::escape_html(project))
+                    format!(" Continuing oracle for <b>{}</b>", formatting::escape_html(project))
                 }
             }
-            _ => format!("❓ Unknown action: <code>{}</code>", formatting::escape_html(action)),
+            _ => format!(" Unknown action: <code>{}</code>", formatting::escape_html(action)),
         };
 
         let _ = self.send_html(chat_id, &reply).await;
@@ -788,7 +788,7 @@ impl TelegramBotEngine {
             "logout_confirm" => self.send_logout_confirmation(chat_id).await,
             "cancel" => {
                 let _ = self
-                    .send_html(chat_id, "✖ <i>Cancelled.</i>")
+                    .send_html(chat_id, " <i>Cancelled.</i>")
                     .await;
             }
             "logout" => match account::logout() {
@@ -796,7 +796,7 @@ impl TelegramBotEngine {
                     let _ = self
                         .send_html(
                             chat_id,
-                            "🚪 <b>Logged out</b>\n<i>Credentials backed up to \
+                            "<b>Logged out</b>\n<i>Credentials backed up to \
                              <code>.credentials.json.previous</code>. Use /login \
                              to re-authenticate.</i>",
                         )
@@ -807,7 +807,7 @@ impl TelegramBotEngine {
                         .send_html(
                             chat_id,
                             &format!(
-                                "❌ <b>Logout failed</b>\n<code>{}</code>",
+                                " <b>Logout failed</b>\n<code>{}</code>",
                                 formatting::escape_html(&e.to_string())
                             ),
                         )
@@ -817,7 +817,7 @@ impl TelegramBotEngine {
             "switch" => {
                 if arg.is_empty() {
                     let _ = self
-                        .send_html(chat_id, "⚠️ <i>No account name supplied.</i>")
+                        .send_html(chat_id, " <i>No account name supplied.</i>")
                         .await;
                     return;
                 }
@@ -827,7 +827,7 @@ impl TelegramBotEngine {
                         .send_html(
                             chat_id,
                             &format!(
-                                "✅ <b>Switched</b> → <code>{}</code>\n\
+                                "<b>Switched</b> → <code>{}</code>\n\
                                  <b>Email:</b> <code>{}</code>\n\
                                  <b>Expires:</b> <code>{} min</code>",
                                 formatting::escape_html(&result.label),
@@ -841,7 +841,7 @@ impl TelegramBotEngine {
                         .send_html(
                             chat_id,
                             &format!(
-                                "⚠️ <b>Refresh failed</b> for <code>{}</code>\n\
+                                " <b>Refresh failed</b> for <code>{}</code>\n\
                                  <i>Need a full OAuth reauth — starting now…</i>",
                                 formatting::escape_html(&result.label),
                             ),
@@ -854,7 +854,7 @@ impl TelegramBotEngine {
                         .send_html(
                             chat_id,
                             &format!(
-                                "❌ <b>Switch failed</b>\n<code>{}</code>",
+                                " <b>Switch failed</b>\n<code>{}</code>",
                                 formatting::escape_html(result.error.as_deref().unwrap_or("unknown"))
                             ),
                         )
@@ -866,7 +866,7 @@ impl TelegramBotEngine {
                     .send_html(
                         chat_id,
                         &format!(
-                            "❓ Unknown account action: <code>{}</code>",
+                            " Unknown account action: <code>{}</code>",
                             formatting::escape_html(sub)
                         ),
                     )
@@ -883,11 +883,11 @@ impl TelegramBotEngine {
         let billing = account::get_billing();
 
         let status_icon = if current.valid && !current.warning {
-            "✅"
+            ""
         } else if current.warning {
-            "⚠️"
+            ""
         } else {
-            "❌"
+            ""
         };
         let status_line = if current.valid {
             format!("{} min remaining", current.expires_min)
@@ -902,7 +902,7 @@ impl TelegramBotEngine {
             .unwrap_or("?");
 
         let mut html = format!(
-            "🔐 <b>Account</b>\n━━━━━━━━━━\n\
+            "<b>Account</b>\n\n\
              <b>Email:</b>   <code>{}</code>\n\
              <b>Profile:</b> <code>{}</code>\n\
              <b>Token:</b>   {} {}\n\
@@ -918,7 +918,7 @@ impl TelegramBotEngine {
 
         if let Some(b) = &billing {
             html.push_str(&format!(
-                "\n\n💰 <b>Usage</b>\n\
+                "\n\n<b>Usage</b>\n\
                  <b>5h:</b>   <code>{:.1}%</code>\n\
                  <b>Week:</b> <code>{:.1}%</code>",
                 b.precise_5h(),
@@ -941,11 +941,11 @@ impl TelegramBotEngine {
 
         let mut rows: Vec<Vec<InlineKeyboardButton>> = vec![vec![
             InlineKeyboardButton {
-                text: "🔐 Login".to_string(),
+                text: "Login".to_string(),
                 callback_data: "acc:login".to_string(),
             },
             InlineKeyboardButton {
-                text: "📊 Billing".to_string(),
+                text: "Billing".to_string(),
                 callback_data: "acc:billing".to_string(),
             },
         ]];
@@ -962,7 +962,7 @@ impl TelegramBotEngine {
         }
 
         rows.push(vec![InlineKeyboardButton {
-            text: "🚪 Logout".to_string(),
+            text: "Logout".to_string(),
             callback_data: "acc:logout_confirm".to_string(),
         }]);
 
@@ -981,7 +981,7 @@ impl TelegramBotEngine {
             .or(current.name.as_deref())
             .unwrap_or("?");
         let html = format!(
-            "🚪 <b>Confirm logout</b>\n━━━━━━━━━━\n\
+            "<b>Confirm logout</b>\n\n\
              <b>Account:</b> <code>{}</code>\n<b>Email:</b>   <code>{}</code>\n\n\
              <i>Logging out backs up <code>.credentials.json.previous</code> \
              and removes the live credentials. New sessions will need /login.</i>",
@@ -991,11 +991,11 @@ impl TelegramBotEngine {
         let keyboard = InlineKeyboardMarkup {
             inline_keyboard: vec![vec![
                 InlineKeyboardButton {
-                    text: "✅ Confirm logout".to_string(),
+                    text: "Confirm logout".to_string(),
                     callback_data: "acc:logout".to_string(),
                 },
                 InlineKeyboardButton {
-                    text: "✖ Cancel".to_string(),
+                    text: " Cancel".to_string(),
                     callback_data: "acc:cancel".to_string(),
                 },
             ]],
@@ -1008,13 +1008,13 @@ impl TelegramBotEngine {
             let _ = self
                 .send_html(
                     chat_id,
-                    "⚠️ <i>No billing snapshot available (<code>/tmp/aisb-usage.json</code> missing).</i>",
+                    " <i>No billing snapshot available (<code>/tmp/aisb-usage.json</code> missing).</i>",
                 )
                 .await;
             return;
         };
         let html = format!(
-            "💰 <b>Billing</b>\n━━━━━━━━━━\n\
+            "<b>Billing</b>\n\n\
              <b>5h:</b>    <code>{:.1}%</code>\n\
              <b>Week:</b>  <code>{:.1}%</code>\n\
              <b>Account:</b> <code>{}</code>\n\
@@ -1031,7 +1031,7 @@ impl TelegramBotEngine {
                     callback_data: "acc:billing".to_string(),
                 },
                 InlineKeyboardButton {
-                    text: "🔐 Account".to_string(),
+                    text: "Account".to_string(),
                     callback_data: "acc:show".to_string(),
                 },
             ]],
@@ -1045,14 +1045,14 @@ impl TelegramBotEngine {
         let _ = self
             .send_html(
                 chat_id,
-                "🔄 <i>Spawning reauth session… this takes ~15s.</i>",
+                " <i>Spawning reauth session… this takes ~15s.</i>",
             )
             .await;
 
         match oauth::request_reauth(&self.mgr, reason, None).await {
             Ok(Some(req)) => {
                 let html = format!(
-                    "🔐 <b>Auth Required</b>\n━━━━━━━━━━\n\
+                    "<b>Auth Required</b>\n\n\
                      <b>Reason:</b> {}\n\n\
                      1. <a href=\"{}\">Open this URL</a> and authorize\n\
                      2. Copy the code from the callback page\n\
@@ -1067,7 +1067,7 @@ impl TelegramBotEngine {
                 let _ = self
                     .send_html(
                         chat_id,
-                        "⏳ <i>A reauth is already pending or just attempted. \
+                        " <i>A reauth is already pending or just attempted. \
                          Wait 30s or check the <code>aisb-reauth</code> session.</i>",
                     )
                     .await;
@@ -1077,7 +1077,7 @@ impl TelegramBotEngine {
                     .send_html(
                         chat_id,
                         &format!(
-                            "❌ <b>Login failed</b>\n<code>{}</code>",
+                            " <b>Login failed</b>\n<code>{}</code>",
                             formatting::escape_html(&e.to_string())
                         ),
                     )
@@ -1089,13 +1089,13 @@ impl TelegramBotEngine {
     /// Process a pasted OAuth code by handing it off to the reauth session.
     async fn handle_oauth_code(&self, chat_id: i64, code: &str) {
         let _ = self
-            .send_html(chat_id, "⏳ <i>Exchanging code for fresh credentials…</i>")
+            .send_html(chat_id, " <i>Exchanging code for fresh credentials…</i>")
             .await;
 
         match oauth::handle_code(&self.mgr, code).await {
             Ok(res) if res.success => {
                 let html = format!(
-                    "✅ <b>Authenticated</b>\n━━━━━━━━━━\n\
+                    "<b>Authenticated</b>\n\n\
                      <b>Email:</b>   <code>{}</code>\n\
                      <b>Expires:</b> <code>{} min</code>\n\n\
                      <i>Credentials updated. Active sessions pick up the new \
@@ -1119,7 +1119,7 @@ impl TelegramBotEngine {
                     .send_html(
                         chat_id,
                         &format!(
-                            "❌ <b>Auth failed</b>\n\n\
+                            " <b>Auth failed</b>\n\n\
                              Credentials did not update. Last pane:\n<pre>{}</pre>",
                             formatting::escape_html(&tail)
                         ),
@@ -1131,7 +1131,7 @@ impl TelegramBotEngine {
                     .send_html(
                         chat_id,
                         &format!(
-                            "❌ <b>Code paste error</b>\n<code>{}</code>",
+                            " <b>Code paste error</b>\n<code>{}</code>",
                             formatting::escape_html(&e.to_string())
                         ),
                     )
@@ -1168,10 +1168,10 @@ impl TelegramBotEngine {
         let mut session_lines = Vec::new();
         for sess in sessions.iter().take(8) {
             let icon = match sess.role {
-                omega_core::session::SessionRole::Oracle => "🔮",
-                omega_core::session::SessionRole::Worker => "⚙️",
-                omega_core::session::SessionRole::Home => "🏠",
-                omega_core::session::SessionRole::System => "🧠",
+                omega_core::session::SessionRole::Oracle => "",
+                omega_core::session::SessionRole::Worker => "",
+                omega_core::session::SessionRole::Home => "",
+                omega_core::session::SessionRole::System => "",
             };
             session_lines.push(format!(
                 "  {} <code>{}</code>",
@@ -1186,18 +1186,18 @@ impl TelegramBotEngine {
         let billing = account::get_billing();
         let billing_block = if let Some(b) = &billing {
             format!(
-                "\n\n💰 <b>Billing:</b>\n  5h: <code>{:.1}%</code>  ·  Week: <code>{:.1}%</code>\n  Account: <code>{}</code>",
+                "\n\n<b>Billing:</b>\n  5h: <code>{:.1}%</code>  ·  Week: <code>{:.1}%</code>\n  Account: <code>{}</code>",
                 b.precise_5h(),
                 b.precise_week(),
                 formatting::escape_html(&b.active_account),
             )
         } else {
-            "\n\n💰 <b>Billing:</b> <i>cache missing</i>".to_string()
+            "\n\n<b>Billing:</b> <i>cache missing</i>".to_string()
         };
 
         let html = format!(
-            "🟢 <b>Ω OmegaOS — Back Online</b>\n━━━━━━━━━━\n\
-             📊 <b>Active Sessions:</b>\n{}{}\n\n\
+            "<b>OmegaOS — Back Online</b>\n\n\
+             <b>Active Sessions:</b>\n{}{}\n\n\
              <i>Type /help for commands. Reply to oracle reports to route \
              messages back to that project. Paste an OAuth code anytime — \
              auto-detected.</i>",
@@ -1224,7 +1224,7 @@ impl TelegramBotEngine {
         }
 
         format!(
-            "🛑 Stopped <b>{}</b> worker(s) for <b>{}</b>",
+            " Stopped <b>{}</b> worker(s) for <b>{}</b>",
             killed,
             formatting::escape_html(project)
         )
@@ -1234,11 +1234,11 @@ impl TelegramBotEngine {
         let oracle_session = format!("oracle-{}", project);
         match self.mgr.kill_session(&oracle_session).await {
             Ok(_) => format!(
-                "🔒 Oracle <code>{}</code> closed",
+                " Oracle <code>{}</code> closed",
                 formatting::escape_html(&oracle_session)
             ),
             Err(e) => format!(
-                "⚠️ Could not close oracle: <code>{}</code>",
+                " Could not close oracle: <code>{}</code>",
                 formatting::escape_html(&e.to_string())
             ),
         }
@@ -1252,13 +1252,13 @@ impl TelegramBotEngine {
                 let output: Vec<&str> = tail.into_iter().rev().collect();
                 let cleaned = clean_terminal_output(&output.join("\n"));
                 format!(
-                    "📋 <b>Full Report — {}</b>\n━━━━━━━━━━\n<pre>{}</pre>",
+                    " <b>Full Report — {}</b>\n\n<pre>{}</pre>",
                     formatting::escape_html(project),
                     formatting::escape_html(&cleaned)
                 )
             }
             Err(_) => format!(
-                "⚠️ Oracle <code>{}</code> not found",
+                " Oracle <code>{}</code> not found",
                 formatting::escape_html(&oracle_session)
             ),
         }
@@ -1274,8 +1274,8 @@ impl TelegramBotEngine {
 
         match cmd {
             "/start" | "/help" => Some(
-                "🟢 <b>Ω OmegaOS Bot Engine</b>\n\
-                 ━━━━━━━━━━\n\n\
+                "<b>OmegaOS Bot Engine</b>\n\
+                 \n\n\
                  <b>Core:</b>\n\
                  /help — this message\n\
                  /list — show all rmux sessions\n\
@@ -1299,13 +1299,13 @@ impl TelegramBotEngine {
 
             "/list" => {
                 let sessions = self.mgr.list_sessions().await.ok()?;
-                let mut lines = vec!["📋 <b>Sessions</b>\n━━━━━━━━━━".to_string()];
+                let mut lines = vec![" <b>Sessions</b>\n".to_string()];
                 for sess in sessions {
                     let icon = match sess.role {
-                        omega_core::session::SessionRole::Oracle => "🔮",
-                        omega_core::session::SessionRole::Worker => "⚙️",
-                        omega_core::session::SessionRole::Home => "🏠",
-                        omega_core::session::SessionRole::System => "🧠",
+                        omega_core::session::SessionRole::Oracle => "",
+                        omega_core::session::SessionRole::Worker => "",
+                        omega_core::session::SessionRole::Home => "",
+                        omega_core::session::SessionRole::System => "",
                     };
                     lines.push(format!(
                         "{} <code>{}</code>",
@@ -1330,7 +1330,7 @@ impl TelegramBotEngine {
                 let output: Vec<&str> = tail.into_iter().rev().collect();
                 let cleaned = clean_terminal_output(&output.join("\n"));
                 Some(format!(
-                    "📺 <b>{}</b>\n<pre>{}</pre>",
+                    " <b>{}</b>\n<pre>{}</pre>",
                     formatting::escape_html(session),
                     formatting::escape_html(&cleaned)
                 ))
@@ -1343,7 +1343,7 @@ impl TelegramBotEngine {
                         reg.register_audits();
                         let skills = reg.list();
                         let mut lines = vec![format!(
-                            "🔧 <b>Skills</b> ({})\n━━━━━━━━━━",
+                            " <b>Skills</b> ({})\n",
                             skills.len()
                         )];
                         let mut by_cat: HashMap<&str, Vec<&omega_core::skill_registry::Skill>> =
@@ -1368,18 +1368,18 @@ impl TelegramBotEngine {
                         }
                         Some(lines.join("\n"))
                     }
-                    Err(_) => Some("⚠️ <i>Could not load skill registry</i>".to_string()),
+                    Err(_) => Some(" <i>Could not load skill registry</i>".to_string()),
                 }
             }
 
             "/audits" => {
                 let audits = omega_core::audit::all_audits();
                 let mut lines = vec![format!(
-                    "🛡️ <b>Quality Arsenal</b> ({} audits)\n━━━━━━━━━━",
+                    " <b>Quality Arsenal</b> ({} audits)\n",
                     audits.len()
                 )];
                 for audit in &audits {
-                    let ro = if audit.read_only { " 📖" } else { "" };
+                    let ro = if audit.read_only { " " } else { "" };
                     lines.push(format!(
                         "  <code>/{}</code> — {} ({} phases, /{}){ro}",
                         audit.id, audit.description, audit.phases, audit.max_score
@@ -1394,7 +1394,7 @@ impl TelegramBotEngine {
                 }
                 let _ = self.mgr.send_text(&self.cfg.relay_session, rest).await;
                 Some(format!(
-                    "⚡ → <code>{}</code>",
+                    " → <code>{}</code>",
                     formatting::escape_html(&self.cfg.relay_session)
                 ))
             }
@@ -1408,7 +1408,7 @@ impl TelegramBotEngine {
                 }
                 let _ = self.mgr.send_text(session, payload).await;
                 Some(format!(
-                    "⚡ → <code>{}</code>",
+                    " → <code>{}</code>",
                     formatting::escape_html(session)
                 ))
             }
@@ -1420,11 +1420,11 @@ impl TelegramBotEngine {
                 let session = rest.trim();
                 match self.mgr.kill_session(session).await {
                     Ok(_) => Some(format!(
-                        "🛑 Killed <code>{}</code>",
+                        " Killed <code>{}</code>",
                         formatting::escape_html(session)
                     )),
                     Err(e) => Some(format!(
-                        "⚠️ Could not kill <code>{}</code>: {}",
+                        " Could not kill <code>{}</code>: {}",
                         formatting::escape_html(session),
                         formatting::escape_html(&e.to_string())
                     )),
@@ -1688,10 +1688,10 @@ fn clean_terminal_output(text: &str) -> String {
                 return false;
             }
             let t = l.trim();
-            if t.starts_with("❯") { return false; }
-            if t.starts_with("⎿") { return false; }
+            if t.starts_with("") { return false; }
+            if t.starts_with("") { return false; }
             if t.starts_with("·") { return false; }
-            if t.starts_with("✻") { return false; }
+            if t.starts_with("") { return false; }
             if t.contains("Cultivating") { return false; }
             if t.contains("Brewing") || t.contains("Brewed") { return false; }
             if t.contains("Crunched") || t.contains("Crunching") { return false; }
@@ -1703,7 +1703,7 @@ fn clean_terminal_output(text: &str) -> String {
             if t.contains("← for agents") { return false; }
             if t.contains("esc to interrupt") { return false; }
             if t.contains("Press up to edit") { return false; }
-            if t.chars().all(|c| c == '─' || c == '━' || c == ' ') { return false; }
+            if t.chars().all(|c| c == '─' || c == ' ') { return false; }
             if t.contains("system-reminder") { return false; }
             if t.contains("claude-mem") { return false; }
             if t.contains("observation") && t.contains("token") { return false; }
@@ -1769,16 +1769,16 @@ fn extract_response(_before: &str, after: &str) -> String {
         let t = line.trim();
         if t.is_empty() { continue; }
 
-        if t.starts_with("❯")
-            || t.starts_with("✻")
-            || t.starts_with("⎿")
+        if t.starts_with("")
+            || t.starts_with("")
+            || t.starts_with("")
             || t.starts_with("·")
             || t.starts_with("●")
             || t.contains("bypass permissions")
             || t.contains("esc to interrupt")
             || t.contains("shift+tab")
             || t.starts_with("───")
-            || t.starts_with("━━━")
+            || t.starts_with("")
             || t.contains("Churned")
             || t.contains("Brewed")
             || t.contains("Cultivating")
