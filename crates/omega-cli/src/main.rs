@@ -517,11 +517,31 @@ async fn run_tui_loop(
     use omega_tui::input::{handle_event, Action};
     use omega_tui::ui::draw;
 
-    let tick_rate = std::time::Duration::from_millis(250);
+    // Frame rate: 60 FPS draw target (16ms tick). The previous 250ms
+    // budget left the panel feeling 4 FPS — agent output dripped in
+    // chunks instead of streaming naturally like a tmux attach.
+    let tick_rate = std::time::Duration::from_millis(16);
+
+    // Preview capture: independent cadence (~12 FPS). capture_pane is
+    // the only rmux daemon RPC we make per loop, so we throttle it
+    // separately from the draw frame rate. 80ms is enough for the
+    // human eye to perceive the pane as "live" without spamming the
+    // daemon socket at 60Hz.
+    let preview_refresh_interval = std::time::Duration::from_millis(80);
+    let mut last_preview_refresh = std::time::Instant::now();
     let mut last_refresh = std::time::Instant::now();
 
     loop {
         terminal.draw(|f| draw(f, app))?; // app is &mut, allows auto-scroll
+
+        // Decoupled preview refresh — runs whether or not the user is
+        // typing. Hot-path Forward* actions no longer await capture,
+        // they just forward + return; this loop tick picks up the
+        // visual change on the next 80ms boundary.
+        if last_preview_refresh.elapsed() >= preview_refresh_interval {
+            let _ = app.refresh_preview().await;
+            last_preview_refresh = std::time::Instant::now();
+        }
 
         if crossterm::event::poll(tick_rate)? {
             let evt = crossterm::event::read()?;
@@ -879,15 +899,16 @@ async fn run_tui_loop(
                     app.detail_scroll = 0;
                 }
                 Action::SendToSession { session, text } => {
+                    // Hot path: fire-and-forget the send, scroll to tail.
+                    // The 80ms preview ticker at the top of the loop picks
+                    // up the visible result. No await on capture_pane here.
                     let mgr = SessionManager::connect_cached().await?;
                     if !text.is_empty() {
                         if let Err(e) = mgr.send_text(&session, &text).await {
                             app.status_message = Some(format!("Send failed: {}", e));
                         } else {
                             app.status_message = Some(format!("Sent to {}", session));
-                            // Auto-scroll to bottom so the new line is visible
                             app.scroll_preview_end();
-                            let _ = app.refresh_preview().await;
                         }
                     }
                 }
@@ -908,7 +929,6 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Forward failed: {}", e));
                     } else {
                         app.scroll_preview_end();
-                        let _ = app.refresh_preview().await;
                     }
                 }
                 Action::ForwardKeyToSession { session, key } => {
@@ -917,7 +937,6 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Forward {} failed: {}", key, e));
                     } else {
                         app.scroll_preview_end();
-                        let _ = app.refresh_preview().await;
                     }
                 }
                 Action::SendTextRawToSession { session, text } => {
@@ -926,7 +945,6 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Paste failed: {}", e));
                     } else {
                         app.scroll_preview_end();
-                        let _ = app.refresh_preview().await;
                     }
                 }
                 Action::ForceRedraw => {
