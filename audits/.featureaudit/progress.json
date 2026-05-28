@@ -1,0 +1,16 @@
+{
+  "audit": "featureaudit",
+  "scope": "auto-done: worker idle + 100% todos, claude exited without invoking worker-mark-done.sh",
+  "run_type": "post-mission-v2",
+  "score": 12,
+  "confidence": "high",
+  "feature_addressed": false,
+  "issues_total": 4,
+  "issues_applied": 0,
+  "issues_pending": 4,
+  "build_clean": true,
+  "last_run": "2026-05-28T16:49:00Z",
+  "confirmation_run": true,
+  "confirmation_delta": "no changes — all 4 issues confirmed still pending after TUI mission",
+  "next_action": "Implement auto-done: patrol.rs branch + oracle_lifecycle.rs pub fn + done.rs written_by + close-gate.sh"
+}

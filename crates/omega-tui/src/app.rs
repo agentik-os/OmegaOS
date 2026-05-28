@@ -80,6 +80,7 @@ pub enum MenuAction {
     Refresh,
     ToggleProtection,
     KillSelected,
+    Restart,
     Quit,
 }
 
@@ -97,6 +98,7 @@ impl MenuAction {
             MenuAction::Refresh,
             MenuAction::ToggleProtection,
             MenuAction::KillSelected,
+            MenuAction::Restart,
             MenuAction::Quit,
         ]
     }
@@ -114,6 +116,7 @@ impl MenuAction {
             MenuAction::Refresh => "Refresh sessions list",
             MenuAction::ToggleProtection => "Toggle protection on selected",
             MenuAction::KillSelected => "Kill selected session",
+            MenuAction::Restart => "Restart OmegaOS (reload binary)",
             MenuAction::Quit => "Quit OmegaOS",
         }
     }
@@ -131,6 +134,7 @@ impl MenuAction {
             MenuAction::Refresh => "F5",
             MenuAction::ToggleProtection => ".",
             MenuAction::KillSelected => "x",
+            MenuAction::Restart => "R",
             MenuAction::Quit => "q",
         }
     }
@@ -628,6 +632,13 @@ pub struct App {
     pub input_buffer: String,
     pub config: OmegaConfig,
     pub preview_content: String,
+    /// Actual rendered inner size of the preview panel (text area, minus
+    /// borders), written by the renderer each frame. main.rs reads this to
+    /// resize the rmux pane to the EXACT panel width — computing from a
+    /// terminal-width percentage was off by a few cols and clipped the
+    /// agent's content on the right.
+    pub preview_inner_width: u16,
+    pub preview_inner_height: u16,
     /// REAL cursor position from the pane snapshot (row, col, visible),
     /// zero-based within the visible pane. Used to paint the caret exactly
     /// where the agent's input cursor is, instead of guessing the last
@@ -700,6 +711,8 @@ impl App {
             input_buffer: String::new(),
             config,
             preview_content: String::new(),
+            preview_inner_width: 0,
+            preview_inner_height: 0,
             preview_cursor: None,
             preview_scroll: 0,
             preview_max_scroll: 0,

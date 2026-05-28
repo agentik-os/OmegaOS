@@ -48,6 +48,9 @@ pub enum Action {
     CommitSettingsEdit { config_key: String, value: String },
     /// Ctrl+L — force a full terminal clear + redraw.
     ForceRedraw,
+    /// Menu → Restart OmegaOS: tear down the terminal and re-exec the
+    /// `omega menu` binary in place (picks up a freshly-built binary).
+    Restart,
     /// Projects tab: open the selected project in a terminal — attach to its
     /// Oracle session if one is alive, otherwise spawn a shell in its dir.
     OpenProject { name: String, path: String, oracle_session: Option<String> },
@@ -182,9 +185,10 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
 
 fn handle_paste(app: &mut App, text: String) -> Action {
     // Sessions tab + chat-focused → forward the paste DIRECTLY to the rmux
-    // session as literal text (no chat_input buffer). One send_text_raw
-    // call covers the whole paste; the SDK sends UTF-8 bytes literally so
-    // multi-line and special chars survive.
+    // session (no chat_input buffer). Dispatched as ForwardMsg::Paste →
+    // send_paste_raw, which wraps the block in bracketed-paste markers and
+    // sends NO trailing Enter, so embedded newlines don't submit each line
+    // as a separate command and multi-line / special chars survive intact.
     if app.input_mode == InputMode::Normal
         && app.tab == Tab::Sessions
         && matches!(
@@ -1008,19 +1012,20 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     // --- TUI-local (never forwarded) ---
 
-    // Tab behavior (user request):
-    //   Tab        → FORWARD to Claude session so the user can cycle
-    //                Claude modes (the "shift+tab to cycle" hint in
-    //                Claude's UI lets us cycle effort / plan-mode / etc.)
-    //   Shift+Tab  → return to the session list (back out of chat focus)
-    if key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT) {
-        app.session_focus = SessionFocus::List;
-        app.status_message = Some("Focus: session list (Tab/Enter → chat)".to_string());
-        return Action::None;
+    // Tab behavior (corrected per user):
+    //   Shift+Tab  → FORWARD to Claude — Claude Code uses Shift+Tab to
+    //                cycle modes (plan mode, bypass, accept-edits, …).
+    //   Tab        → return to the session list (back out of chat focus).
+    // crossterm delivers Shift+Tab as KeyCode::BackTab (and on some
+    // terminals as Tab+SHIFT) — handle both, forward the rmux "BTab".
+    if key.code == KeyCode::BackTab
+        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+    {
+        return Action::ForwardKeyToSession { session, key: "BTab" };
     }
-    if key.code == KeyCode::BackTab {
+    if key.code == KeyCode::Tab {
         app.session_focus = SessionFocus::List;
-        app.status_message = Some("Focus: session list (Tab/Enter → chat)".to_string());
+        app.status_message = Some("Focus: session list (Enter → chat, Shift+Tab → Claude modes)".to_string());
         return Action::None;
     }
 
@@ -1054,9 +1059,8 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
-        // Tab → forwarded to Claude session (user cycles Claude modes
-        // via Tab; Shift+Tab is handled earlier as return-to-list).
-        KeyCode::Tab => Action::ForwardKeyToSession { session, key: "Tab" },
+        // (Tab + Shift+Tab handled earlier: Tab=back to list,
+        //  Shift+Tab=forward BTab to Claude for mode cycling.)
 
         // Word-delete (readline conventions):
         //   Ctrl+W            → kill word back   (universal)
@@ -1197,6 +1201,7 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
                 Action::None
             }
         }
+        MenuAction::Restart => Action::Restart,
         MenuAction::Quit => {
             app.should_quit = true;
             Action::Quit

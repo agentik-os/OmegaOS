@@ -423,6 +423,12 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         Style::default().fg(Color::Gray)
     };
 
+    // Record the REAL text-area dimensions so main.rs can resize the rmux
+    // pane to exactly this width (avoids the right-edge clipping that a
+    // terminal-percentage estimate produced).
+    app.preview_inner_width = area.width.saturating_sub(2);
+    app.preview_inner_height = area.height.saturating_sub(2);
+
     let total_lines = app.preview_content.lines().count() as u16;
     let viewport_height = area.height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(viewport_height);
@@ -607,7 +613,7 @@ fn menu_group(action: &MenuAction) -> &'static str {
         MenuAction::NewTerminal => "Terminal",
         MenuAction::DispatchOracle => "Orchestration",
         MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => "Session actions",
-        MenuAction::Quit => "Quit",
+        MenuAction::Restart | MenuAction::Quit => "OmegaOS",
     }
 }
 

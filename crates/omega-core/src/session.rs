@@ -272,8 +272,9 @@ impl SessionManager {
         }
         // Miss — resolve and cache. We deliberately drop the lock across
         // the get_session await to avoid serialising callers; under
-        // contention the worst case is N callers each doing one RPC and
-        // the last writer winning, all equivalent panes for the same name.
+        // contention the worst case is N callers each doing one RPC, the
+        // first to re-lock winning the cache slot (or_insert_with), and
+        // every caller returning its own equivalent pane for the same name.
         let session = self.get_session(session_name).await?;
         let pane = session.pane(0, 0);
         let mut cache = self.pane_cache.lock().await;
@@ -570,10 +571,6 @@ fn role_order(role: &SessionRole) -> u8 {
         SessionRole::Home => 2,
         SessionRole::System => 3,
     }
-}
-
-fn shell_escape(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Cached `Pane` handles can outlive the underlying daemon-side pane when a

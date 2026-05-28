@@ -626,14 +626,13 @@ async fn run_tui_loop(
             ) {
                 if let Some(entry) = app.selected_session() {
                     let name = entry.session.name.clone();
-                    if let Ok(sz) = terminal.size() {
-                        // Preview is 75% width in split, 100% in fullscreen.
-                        // Minus borders (2 cols, 2 rows) and tab bar (~3 rows).
-                        let fullscreen = app.session_focus
-                            == omega_tui::app::SessionFocus::ChatFullscreen;
-                        let pct = if fullscreen { 100 } else { 75 };
-                        let cols = ((sz.width as u32 * pct / 100) as u16).saturating_sub(2).max(40);
-                        let rows = sz.height.saturating_sub(5).max(10);
+                    // Use the EXACT rendered preview text-area dimensions
+                    // (written by ui.rs each frame). Resizing to a terminal-
+                    // percentage estimate was a few cols too wide, so Claude
+                    // rendered past the visible edge and looked "cut off".
+                    let cols = app.preview_inner_width.max(40);
+                    let rows = app.preview_inner_height.max(10);
+                    if cols > 40 {
                         let want = (name.clone(), cols, rows);
                         if last_resized.as_ref() != Some(&want) {
                             if let Ok(m) = SessionManager::connect_cached().await {
@@ -673,6 +672,27 @@ async fn run_tui_loop(
             let status_before = app.status_message.clone();
             match handle_event(app, evt) {
                 Action::Quit => break,
+                Action::Restart => {
+                    // Tear down the terminal cleanly, then re-exec the
+                    // current binary so a freshly-built `omega` is picked up
+                    // in place (same PID on Unix via exec).
+                    crossterm::terminal::disable_raw_mode().ok();
+                    crossterm::execute!(
+                        terminal.backend_mut(),
+                        crossterm::terminal::LeaveAlternateScreen,
+                        crossterm::event::DisableMouseCapture,
+                        crossterm::event::DisableBracketedPaste,
+                    )
+                    .ok();
+                    terminal.show_cursor().ok();
+                    let exe = std::env::current_exe()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("omega"));
+                    use std::os::unix::process::CommandExt;
+                    let err = std::process::Command::new(exe).arg("menu").exec();
+                    // exec only returns on failure
+                    eprintln!("restart failed: {}", err);
+                    break;
+                }
                 Action::AttachSession(name) => {
                     let inside_rmux = std::env::var("RMUX").is_ok();
 

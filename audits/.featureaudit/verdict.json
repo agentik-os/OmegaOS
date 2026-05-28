@@ -104,5 +104,7 @@
   ],
   "confidence_basis": "All 5 falsifiable tests were run with verbatim command outputs. Tests 1-4 falsified the feature's existence in the 6 scoped files and in the feature-relevant files (patrol.rs, oracle_lifecycle.rs, done.rs). Test 5 confirms the build is clean after forced recompile (initial stale-cache E0063 was a false alarm — touched app.rs and recompiled to confirm). Confidence is HIGH (upgraded from medium in prior run) because: (1) all tests were run and cited, (2) detect_idle_prompt visibility was confirmed directly by grep (not inferred from reading), (3) the stale-cache false positive was diagnosed and resolved. The only remaining gap is --user-need and --hinge were not passed as CLI flags — proxied from --scope and prior verdict.json respectively, which is acceptable for a --post-mission continuation audit.",
   "preamble_version": "1.0",
-  "finished_at": "2026-05-28T16:42:00Z"
+  "finished_at": "2026-05-28T16:42:00Z",
+  "confirmation_run_at": "2026-05-28T16:49:00Z",
+  "confirmation_delta": "All 5 falsifiable tests re-run. Identical results — feature still absent, build still clean. Score unchanged: 12/100."
 }
