@@ -113,6 +113,44 @@ pub struct AccountProfile {
     pub is_active: bool,
 }
 
+/// The currently connected Claude account: email + subscription plan.
+/// Read live from `claude auth status --json`. Returns None if not logged
+/// in or the CLI isn't available.
+#[derive(Debug, Clone)]
+pub struct ConnectedAccount {
+    pub email: String,
+    /// e.g. "max", "pro", "free", "team".
+    pub plan: String,
+    pub auth_method: String,
+}
+
+pub fn connected_account() -> Option<ConnectedAccount> {
+    let out = std::process::Command::new("claude")
+        .args(["auth", "status"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    if !json.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return None;
+    }
+    Some(ConnectedAccount {
+        email: json.get("email").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        plan: json
+            .get("subscriptionType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+        auth_method: json
+            .get("authMethod")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
+    })
+}
+
 /// Discover all Claude account profiles + identify the active one.
 pub fn list_accounts() -> Vec<AccountProfile> {
     let home = match dirs::home_dir() {

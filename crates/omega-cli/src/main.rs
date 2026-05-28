@@ -247,6 +247,12 @@ enum Commands {
         check: bool,
     },
 
+    /// Interactive AISB Master chat REPL (runs inside the aisb-master
+    /// pane). Each line you type is injected into the running bot exactly
+    /// as if it had arrived from Telegram — same brain, same response,
+    /// which also lands in your Telegram chat.
+    AisbChat,
+
     /// Check quality gate for an oracle
     Gate {
         /// Oracle session name
@@ -364,6 +370,7 @@ async fn main() -> Result<()> {
             cmd_ship(&project, &message, unfreeze).await
         }
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
+        Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::Usage { check }) => {
             let _ = check; // single mode for now: always a one-shot check
             match usage::check_and_alert().await {
@@ -2181,6 +2188,91 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     }
 
     pipeline.write_result(project, &result)?;
+    Ok(())
+}
+
+/// Interactive AISB Master chat REPL. Runs in the aisb-master pane.
+/// Each typed line is appended to the local inbox the running Telegram
+/// bridge watches; the bridge processes it as a synthetic Telegram
+/// message (same brain), so the response lands in Telegram AND in the
+/// conversation log we tail here. Turn-based: type → wait for response →
+/// type again.
+async fn cmd_aisb_chat() -> Result<()> {
+    use std::io::{BufRead, Write};
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let log = home.join(".omega/state/aisb-conversation.log");
+    let inbox = home.join(".omega/state/aisb-local-inbox.jsonl");
+    if let Some(p) = inbox.parent() {
+        let _ = std::fs::create_dir_all(p);
+    }
+
+    // Header + replay the existing conversation.
+    print!("\x1b[2J\x1b[H"); // clear
+    println!("\x1b[1;36m  Ω  AISB Master — chat (local input → Telegram)\x1b[0m");
+    println!("  Type a message; it goes to AISB exactly like a Telegram message.");
+    println!("  The reply appears here AND in your Telegram chat. Ctrl-D to exit.\n");
+    if let Ok(existing) = std::fs::read_to_string(&log) {
+        let tail: Vec<&str> = existing.lines().rev().take(40).collect();
+        for line in tail.into_iter().rev() {
+            println!("{}", line);
+        }
+    }
+
+    let stdin = std::io::stdin();
+    loop {
+        print!("\n\x1b[1;36mYou ▶ \x1b[0m");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        let n = stdin.lock().read_line(&mut line)?;
+        if n == 0 {
+            println!("\n(bye)");
+            break; // EOF (Ctrl-D)
+        }
+        let msg = line.trim();
+        if msg.is_empty() {
+            continue;
+        }
+        if msg == "/quit" || msg == "/exit" {
+            break;
+        }
+
+        // Record current log size, then inject the message into the inbox.
+        let before_len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+        let entry = serde_json::json!({
+            "text": msg,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        });
+        {
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&inbox)?;
+            writeln!(f, "{}", entry)?;
+        }
+
+        // Wait (up to 90s) for the bridge to append the AISB response to
+        // the conversation log, then print the delta.
+        print!("\x1b[90m  … thinking …\x1b[0m");
+        let _ = std::io::stdout().flush();
+        let mut shown = false;
+        for _ in 0..180 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            let now_len = std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0);
+            if now_len > before_len {
+                // Print the new tail (the bridge wrote the You:/AISB: block).
+                if let Ok(content) = std::fs::read_to_string(&log) {
+                    let delta = &content[before_len.min(content.len() as u64) as usize..];
+                    print!("\r\x1b[K{}", delta); // clear "thinking" line
+                    let _ = std::io::stdout().flush();
+                }
+                shown = true;
+                break;
+            }
+        }
+        if !shown {
+            println!("\r\x1b[K\x1b[33m  (no response within 90s — check the bridge)\x1b[0m");
+        }
+    }
     Ok(())
 }
 

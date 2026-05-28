@@ -61,12 +61,11 @@ pub async fn ensure_master(
              Talk to AISB from Telegram. Exchanges stream here.\n",
         );
     }
-    let log_str = log.to_string_lossy();
-    // `tail -F` follows across truncation (/clean rewrites the log).
-    let cmd = format!(
-        "clear; printf '\\033[1;36m  Ω  AISB Master — live Telegram conversation\\033[0m\\n'; exec tail -n 200 -F {}",
-        shell_quote(&log_str)
-    );
+    let _ = log; // ensured to exist above; the REPL replays + tails it
+    // The master pane runs the interactive chat REPL: you type, it goes
+    // to the bot exactly like a Telegram message, the reply shows here +
+    // in Telegram. `exec bash` keeps the pane alive if the REPL exits.
+    let cmd = "exec omega aisb-chat".to_string();
 
     mgr.create_session(MASTER_SESSION_NAME, Some(working_dir), Some(&cmd))
         .await?;

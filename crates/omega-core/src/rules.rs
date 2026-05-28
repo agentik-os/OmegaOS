@@ -216,6 +216,15 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "Cold-start speed + single-binary distribution matter for an OS-grade tool. Bun gives ~25ms startup + native TS so scripting stays fast.",
         },
         Rule {
+            id: "MASTER-CHANNEL-ONLY",
+            title: "AISB Master never works — it only dispatches to named oracles",
+            category: RuleCategory::Orchestration,
+            description: "The Telegram/AISB Master is a discussion channel, not a worker. It is forbidden from editing files, running builds, audits, fixes, or any artifact-producing work. ALL work is dispatched to a correctly-named Oracle (project work → oracle-<Project>-<n>; internal VPS/OmegaOS work → oracle-OmegaOS-<n>). Master only clarifies intent, classifies, dispatches, and relays reports.",
+            applies_to: &[AisbAgent::Oracle],
+            added_at: "2026-05-28",
+            reason: "The bot kept doing work inline instead of dispatching, blurring the channel/worker boundary and bypassing the oracle pipeline + quality gates.",
+        },
+        Rule {
             id: "PROMPT-COMPLETENESS",
             title: "Every prompt = task list + final completeness check",
             category: RuleCategory::QualityGate,
@@ -242,7 +251,7 @@ impl Rule {
             // The three Laws apply to everyone.
             "L1" | "L2" | "L3" => return vec![Master, Global, Oracle, Worker],
             // Master-only orchestration behaviors.
-            "AISB-AUTOSPAWN" | "AUTO-NAMING" => return vec![Master],
+            "AISB-AUTOSPAWN" | "AUTO-NAMING" | "MASTER-CHANNEL-ONLY" => return vec![Master],
             // Oracle-only dispatch/coordination rules.
             "SCOPE-CLAIM" | "R-18" | "R-19" => return vec![Oracle],
             // Quality gates the executor + planner both honor.

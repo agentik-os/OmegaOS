@@ -702,6 +702,27 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::from(""),
     ];
 
+    // ── Connected account (live from `claude auth status`) ──────────────────
+    if let Some(acc) = monitor::connected_account() {
+        lines.push(Line::from(Span::styled(
+            "  ── Connected account ──",
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.push(Line::from(vec![
+            Span::raw("    Email:          "),
+            Span::styled(acc.email.clone(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw("    Plan:           "),
+            Span::styled(
+                format!("Claude {}", acc.plan.to_uppercase()),
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("   ({})", acc.auth_method)),
+        ]));
+        lines.push(Line::from(""));
+    }
+
     // ── Billing ─────────────────────────────────────────────────────────────
     lines.push(Line::from(Span::styled(
         "  ── Billing (live) ──",
