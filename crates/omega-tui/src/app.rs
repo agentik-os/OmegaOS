@@ -644,6 +644,11 @@ pub struct App {
     /// where the agent's input cursor is, instead of guessing the last
     /// non-empty line. None when no session is previewed.
     pub preview_cursor: Option<(u16, u16, bool)>,
+    /// Styled preview rows (fg/bg/bold per span) from the pane snapshot.
+    /// Renders Claude's colored UI — crucially the `/` command-menu
+    /// selection highlight that plain text drops. None when browsing
+    /// scrollback (plain-text path).
+    pub preview_styled: Option<Vec<omega_core::session::PreviewLine>>,
     /// Scroll position measured as LINES UP FROM THE TAIL (0 = newest line).
     /// Bottom-anchored so the view stays stable when the capture buffer grows
     /// (visible-only → full scrollback history): "3 lines up from the tail"
@@ -719,6 +724,7 @@ impl App {
             input_buffer: String::new(),
             config,
             preview_content: String::new(),
+            preview_styled: None,
             preview_inner_width: 0,
             preview_inner_height: 0,
             preview_cursor: None,
@@ -1036,20 +1042,32 @@ impl App {
         // scrollback capture, so there is real content above the screen to
         // scroll into instead of an empty void.
         if self.preview_follow_tail {
-            // Tail path: capture text + REAL cursor position together.
-            match mgr.capture_pane_with_cursor(&name).await {
-                Ok((content, row, col, visible)) => {
-                    self.preview_content = content;
+            // Tail path: capture STYLED rows + text + REAL cursor together.
+            // Styled rows carry the `/` selector highlight + Claude's
+            // colored UI; plain text is kept as a fallback + for scroll math.
+            match mgr.capture_pane_styled(&name).await {
+                Ok((styled, row, col, visible)) => {
+                    // Flatten styled rows to plain text for scroll/cursor math.
+                    self.preview_content = styled
+                        .iter()
+                        .map(|line| {
+                            line.iter().map(|s| s.text.as_str()).collect::<String>()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.preview_styled = Some(styled);
                     self.preview_cursor = Some((row, col, visible));
                 }
                 Err(_) => {
                     self.preview_content = String::from("(session has no pane content)");
+                    self.preview_styled = None;
                     self.preview_cursor = None;
                 }
             }
         } else {
-            // History-browsing path: cursor is meaningless when scrolled
-            // back, so we don't paint it.
+            // History-browsing path: plain text (scrollback has no styling),
+            // cursor meaningless when scrolled back.
+            self.preview_styled = None;
             match mgr.capture_pane_history(&name, 1000).await {
                 Ok(content) => {
                     self.preview_content = content;

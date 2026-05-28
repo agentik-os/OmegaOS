@@ -445,6 +445,31 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
             "(select a session to preview)",
             Style::default().fg(Color::Gray),
         ))]
+    } else if let Some(styled) = &app.preview_styled {
+        // Styled path: build colored spans from the pane snapshot so the
+        // `/` command-menu selection highlight + Claude's colored UI show.
+        styled
+            .iter()
+            .map(|row| {
+                let spans: Vec<Span> = row
+                    .iter()
+                    .map(|sp| {
+                        let mut style = Style::default();
+                        if let Some((r, g, b)) = sp.fg {
+                            style = style.fg(Color::Rgb(r, g, b));
+                        }
+                        if let Some((r, g, b)) = sp.bg {
+                            style = style.bg(Color::Rgb(r, g, b));
+                        }
+                        if sp.bold {
+                            style = style.add_modifier(Modifier::BOLD);
+                        }
+                        Span::styled(sp.text.clone(), style)
+                    })
+                    .collect();
+                Line::from(spans)
+            })
+            .collect()
     } else {
         app.preview_content
             .lines()

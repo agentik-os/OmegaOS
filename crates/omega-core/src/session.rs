@@ -453,6 +453,33 @@ impl SessionManager {
         Ok((snapshot.visible_text(), c.row, c.col, c.visible))
     }
 
+    /// Capture the pane WITH per-cell styling (fg/bg/bold/reverse), so the
+    /// TUI preview can render Claude's colored UI — most importantly the
+    /// `/` command-menu selection highlight, which `visible_text()` drops
+    /// entirely (the user "can't see what they're selecting"). Also makes
+    /// diffs, syntax highlighting, and status colors visible.
+    ///
+    /// Returns (styled_rows, cursor_row, cursor_col, cursor_visible).
+    /// Adjacent same-style cells are merged into spans for cheap rendering.
+    pub async fn capture_pane_styled(
+        &self,
+        session_name: &str,
+    ) -> Result<(Vec<PreviewLine>, u16, u16, bool)> {
+        let pane = self.pane_for(session_name).await?;
+        let snapshot = match pane.snapshot().await {
+            Ok(s) => s,
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.snapshot().await?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let c = snapshot.cursor;
+        let rows = styled_rows_from_snapshot(&snapshot);
+        Ok((rows, c.row, c.col, c.visible))
+    }
+
     /// Capture the pane INCLUDING scrollback history (last `history_lines`
     /// lines, counted up from the live tail). `snapshot().visible_text()`
     /// only renders the current visible screen — so the TUI preview can't
@@ -570,6 +597,122 @@ impl SessionManager {
     pub fn rmux(&self) -> &Rmux {
         &self.rmux
     }
+}
+
+/// One styled run of text within a preview row. Colors are RGB (already
+/// resolved from the ANSI/indexed palette) so the TUI doesn't need the
+/// rmux color enum. `None` = terminal default.
+#[derive(Debug, Clone)]
+pub struct PreviewSpan {
+    pub text: String,
+    pub fg: Option<(u8, u8, u8)>,
+    pub bg: Option<(u8, u8, u8)>,
+    pub bold: bool,
+}
+
+/// A styled preview row = a sequence of spans.
+pub type PreviewLine = Vec<PreviewSpan>;
+
+/// Convert a pane snapshot into styled rows, merging adjacent same-style
+/// cells into spans. Honors REVERSE by swapping fg/bg (that's how the
+/// `/` selector + many TUI highlights are drawn).
+fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLine> {
+    let cols = snapshot.cols;
+    let rows = snapshot.rows;
+    let mut out: Vec<PreviewLine> = Vec::with_capacity(rows as usize);
+    for r in 0..rows {
+        let mut line: PreviewLine = Vec::new();
+        let mut cur_text = String::new();
+        let mut cur_fg: Option<(u8, u8, u8)> = None;
+        let mut cur_bg: Option<(u8, u8, u8)> = None;
+        let mut cur_bold = false;
+        let mut started = false;
+        for col in 0..cols {
+            let Some(cell) = snapshot.cell(r, col) else { continue };
+            if cell.glyph.is_padding() { continue; }
+            let ch = cell.glyph.text.clone();
+            let attr_bits = cell.attributes.bits;
+            let reverse = attr_bits & rmux_sdk::PaneAttributes::REVERSE.bits != 0;
+            let bold = attr_bits & rmux_sdk::PaneAttributes::BOLD.bits != 0;
+            let mut fg = pane_color_to_rgb(&cell.foreground);
+            let mut bg = pane_color_to_rgb(&cell.background);
+            if reverse {
+                std::mem::swap(&mut fg, &mut bg);
+                // ensure a visible swap even when one side was default
+                if fg.is_none() { fg = Some((0, 0, 0)); }
+                if bg.is_none() { bg = Some((200, 200, 200)); }
+            }
+            let glyph = if ch.is_empty() { " ".to_string() } else { ch };
+            if started && fg == cur_fg && bg == cur_bg && bold == cur_bold {
+                cur_text.push_str(&glyph);
+            } else {
+                if started {
+                    line.push(PreviewSpan { text: std::mem::take(&mut cur_text), fg: cur_fg, bg: cur_bg, bold: cur_bold });
+                }
+                cur_fg = fg;
+                cur_bg = bg;
+                cur_bold = bold;
+                cur_text = glyph;
+                started = true;
+            }
+        }
+        if started && !cur_text.is_empty() {
+            line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold });
+        }
+        // Trim trailing all-blank spans to keep lines tight.
+        while line.last().map_or(false, |s| s.text.trim().is_empty() && s.bg.is_none()) {
+            line.pop();
+        }
+        out.push(line);
+    }
+    // Drop trailing blank rows.
+    while out.last().map_or(false, |l| l.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+/// Resolve a rmux PaneColor into an RGB triple (None = terminal default).
+fn pane_color_to_rgb(c: &rmux_sdk::PaneColor) -> Option<(u8, u8, u8)> {
+    use rmux_sdk::PaneColor;
+    match c {
+        PaneColor::Default | PaneColor::None | PaneColor::Terminal => None,
+        PaneColor::Rgb { red, green, blue } => Some((*red, *green, *blue)),
+        PaneColor::Ansi { index } => Some(ansi16_rgb(*index)),
+        PaneColor::BrightAnsi { index } => Some(ansi16_rgb(index.wrapping_add(8))),
+        PaneColor::Indexed { index } => Some(xterm256_rgb(*index)),
+        _ => None,
+    }
+}
+
+/// Standard 16-color ANSI palette → RGB.
+fn ansi16_rgb(i: u8) -> (u8, u8, u8) {
+    match i & 0x0f {
+        0 => (0, 0, 0),        1 => (205, 49, 49),   2 => (13, 188, 121),
+        3 => (229, 229, 16),   4 => (36, 114, 200),  5 => (188, 63, 188),
+        6 => (17, 168, 205),   7 => (229, 229, 229),
+        8 => (102, 102, 102),  9 => (241, 76, 76),   10 => (35, 209, 139),
+        11 => (245, 245, 67),  12 => (59, 142, 234),  13 => (214, 112, 214),
+        14 => (41, 184, 219),  _ => (255, 255, 255),
+    }
+}
+
+/// xterm 256-color index → RGB (16-231 color cube, 232-255 grayscale).
+fn xterm256_rgb(i: u8) -> (u8, u8, u8) {
+    if i < 16 {
+        return ansi16_rgb(i);
+    }
+    if i >= 232 {
+        let v = 8 + (i as u16 - 232) * 10;
+        let v = v.min(255) as u8;
+        return (v, v, v);
+    }
+    let i = i as u16 - 16;
+    let r = i / 36;
+    let g = (i % 36) / 6;
+    let b = i % 6;
+    let step = |n: u16| -> u8 { if n == 0 { 0 } else { (55 + n * 40).min(255) as u8 } };
+    (step(r), step(g), step(b))
 }
 
 fn section_order(role: &SessionRole) -> u8 {
