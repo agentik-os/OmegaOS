@@ -1441,15 +1441,14 @@ impl TelegramBotEngine {
             .or(current.name.as_deref())
             .unwrap_or("?");
 
+        let _ = label; // profile label dropped from the card — not useful
         let mut html = format!(
             "<b>Account</b>\n\n\
              <b>Email:</b>   <code>{}</code>\n\
-             <b>Profile:</b> <code>{}</code>\n\
              <b>Token:</b>   {} {}\n\
              <b>Tier:</b>    <code>{}</code>\n\
              <b>Plan:</b>    <code>{}</code>",
             formatting::escape_html(&current.email),
-            formatting::escape_html(label),
             status_icon,
             formatting::escape_html(&status_line),
             formatting::escape_html(&current.tier),
