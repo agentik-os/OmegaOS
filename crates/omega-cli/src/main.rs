@@ -579,10 +579,32 @@ async fn run_tui_loop(
                 Action::KillSession(name) => {
                     let mgr = SessionManager::connect().await?;
                     let cfg = OmegaConfig::load().unwrap_or_default();
+                    let is_master = omega_core::aisb::is_master(&name);
                     match mgr.kill_session(&name).await {
                         Ok(()) => {
                             let _ = omega_core::scope::ScopeClaim::release(&cfg.state_dir, &name);
-                            app.status_message = Some(format!("Killed {}", name));
+                            // Master auto-respawns: killing it just re-spawns
+                            // a fresh process. The Telegram bridge is unaffected
+                            // (its persistent claude_stream subprocess handles
+                            // chat independently of the rmux session).
+                            if is_master {
+                                if let Some(agent) = omega_core::agents::Agent::from_name(&cfg.aisb_agent) {
+                                    let cwd = std::env::current_dir()
+                                        .ok()
+                                        .and_then(|p| p.to_str().map(String::from))
+                                        .unwrap_or_else(|| "/home".to_string());
+                                    match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
+                                        Ok(_) => app.status_message = Some(
+                                            format!("Killed {} → auto-respawned", name)
+                                        ),
+                                        Err(e) => app.status_message = Some(
+                                            format!("Killed {} but respawn failed: {}", name, e)
+                                        ),
+                                    }
+                                }
+                            } else {
+                                app.status_message = Some(format!("Killed {}", name));
+                            }
                             let _ = app.refresh().await;
                         }
                         Err(e) => {

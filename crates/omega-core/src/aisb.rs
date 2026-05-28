@@ -45,6 +45,7 @@ pub async fn ensure_master(
     let opts = LaunchOptions {
         system_prompt_file: Some(prompt_file.to_string_lossy().to_string()),
         resume_conversation: true,
+        ..LaunchOptions::default()
     };
     let cmd = agent.launch_command_with(None, opts);
 

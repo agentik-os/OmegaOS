@@ -163,6 +163,22 @@ impl SessionManager {
         self.create_session(name, working_dir, Some(&cmd)).await
     }
 
+    /// Spawn an agent session with full LaunchOptions — for Claude this
+    /// enables /goal injection, --effort, --max-turns, --max-budget-usd.
+    /// Other providers ignore the Claude-only fields.
+    pub async fn create_agent_session_with_opts(
+        &self,
+        name: &str,
+        working_dir: &str,
+        agent: Agent,
+        prompt: Option<&str>,
+        opts: crate::agents::LaunchOptions,
+    ) -> Result<Session> {
+        let cmd = agent.launch_command_with(prompt, opts);
+        self.create_session(name, Some(working_dir), Some(&cmd))
+            .await
+    }
+
     pub async fn list_sessions(&self) -> Result<Vec<OmegaSession>> {
         let session_names = self.rmux.list_sessions().await?;
         let mut sessions: Vec<OmegaSession> = session_names

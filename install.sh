@@ -231,6 +231,28 @@ if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
     ok "OMEGA.md installed (universal agent instructions)"
 fi
 
+# Install reference docs (architecture, integration plans, install guide).
+# Ship the whole docs/ tree to ~/.omega/docs/ so users can `omega docs`
+# (and so Claude sessions launched in $HOME can read them).
+if [[ -d "$OMEGA_SRC/docs" ]]; then
+    mkdir -p "$OMEGA_DIR/docs"
+    cp -r "$OMEGA_SRC/docs/"* "$OMEGA_DIR/docs/" 2>/dev/null || true
+    ok "Reference docs installed → $OMEGA_DIR/docs/ ($(ls "$OMEGA_DIR/docs/"*.md 2>/dev/null | wc -l) markdown files)"
+fi
+
+# Ship OmegaOS-specific Claude Code slash commands (.claude/commands/omega-*.md)
+# These become available in EVERY Claude session globally as /omega-status,
+# /omega-dispatch, etc. (Claude Code v2.1+ auto-discovers user-scope commands).
+CLAUDE_CMD_DST="$HOME/.claude/commands"
+if [[ -d "$OMEGA_SRC/.claude/commands" ]]; then
+    mkdir -p "$CLAUDE_CMD_DST"
+    cp -f "$OMEGA_SRC/.claude/commands/"omega-*.md "$CLAUDE_CMD_DST/" 2>/dev/null || true
+    SHIPPED=$(ls "$CLAUDE_CMD_DST/"omega-*.md 2>/dev/null | wc -l)
+    if [[ "$SHIPPED" -gt 0 ]]; then
+        ok "OmegaOS slash commands installed ($SHIPPED commands in $CLAUDE_CMD_DST/)"
+    fi
+fi
+
 # Export operational rules to ~/.omega/rules/
 # Two passes:
 #   1. Copy the canonical .md files from the repo (covers disk-only rules)

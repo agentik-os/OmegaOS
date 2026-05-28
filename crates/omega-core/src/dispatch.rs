@@ -199,14 +199,62 @@ impl Dispatcher {
         // Append complexity hint
         prompt.push_str(&format!("\n## Complexity: {:?}\n", decision.complexity));
 
-        self.session_mgr
-            .create_agent_session(
-                &oracle_name,
-                &work_dir,
-                &self.config.agent_command,
-                Some(&prompt),
-            )
-            .await?;
+        // Claude-only smart spawn (2026-w20 features): /goal + --effort +
+        // budget caps. Gemini/Codex/GLM/Pi/Hermes fall back to the bare
+        // launcher with the same prompt.
+        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
+            .unwrap_or(crate::agents::Agent::Claude);
+        if matches!(agent, crate::agents::Agent::Claude) {
+            let mut opts = crate::agents::LaunchOptions::default();
+            // Effort scaling per complexity classification
+            opts.effort = Some(match decision.complexity {
+                routing::Complexity::Simple => "low".to_string(),
+                routing::Complexity::Medium => "medium".to_string(),
+                routing::Complexity::Complex => "high".to_string(),
+                routing::Complexity::Epic => "max".to_string(),
+            });
+            // Budget caps (rule R-28). Conservative defaults; can be
+            // overridden in config later.
+            opts.max_budget_usd = Some(match decision.complexity {
+                routing::Complexity::Simple => 2.0,
+                routing::Complexity::Medium => 8.0,
+                routing::Complexity::Complex => 25.0,
+                routing::Complexity::Epic => 80.0,
+            });
+            opts.max_turns = Some(match decision.complexity {
+                routing::Complexity::Simple => 15,
+                routing::Complexity::Medium => 50,
+                routing::Complexity::Complex => 150,
+                routing::Complexity::Epic => 400,
+            });
+            opts.session_name = Some(oracle_name.clone());
+            // /goal — auto-derived success criteria. The oracle loops
+            // until its own .done.json is written with status=done_clean
+            // OR the build is green, depending on mission type.
+            opts.goal_condition = Some(format!(
+                "mission complete for project {} — .done.json written with status=done_clean and either no code changes OR `cd {} && npm run build` (or the project's build script) exits zero",
+                project, work_dir
+            ));
+
+            self.session_mgr
+                .create_agent_session_with_opts(
+                    &oracle_name,
+                    &work_dir,
+                    agent,
+                    Some(&prompt),
+                    opts,
+                )
+                .await?;
+        } else {
+            self.session_mgr
+                .create_agent_session(
+                    &oracle_name,
+                    &work_dir,
+                    &self.config.agent_command,
+                    Some(&prompt),
+                )
+                .await?;
+        }
 
         // Register in oracle registry
         registry.register(OracleRegistryEntry {

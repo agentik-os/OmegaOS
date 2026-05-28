@@ -10,6 +10,30 @@ pub struct LaunchOptions {
     pub system_prompt_file: Option<String>,
     /// Resume the most recent conversation in the agent's CWD (Claude `--continue`).
     pub resume_conversation: bool,
+
+    // ── Claude-only smart features (2026-w20+) ────────────────────────
+    // Other providers (Gemini, Codex, GLM, Pi, Hermes) ignore these
+    // fields silently because their CLIs don't have equivalents. We
+    // pass them only when Agent::Claude.
+
+    /// `/goal` condition (v2.1.139+) — Claude auto-loops until this
+    /// is met. Injected as the first slash command in the initial
+    /// prompt. Example: "all tests in tests/auth pass and lint is clean".
+    pub goal_condition: Option<String>,
+
+    /// `--effort low|medium|high|xhigh|max` — model reasoning depth.
+    /// We map: SIMPLE→low, MEDIUM→medium, COMPLEX→high, EPIC→max.
+    pub effort: Option<String>,
+
+    /// `--max-turns N` — hard cap on conversation turns. Bounds
+    /// runaway oracles (rule R-28 cost tracking).
+    pub max_turns: Option<u32>,
+
+    /// `--max-budget-usd N` — hard cap on token spend.
+    pub max_budget_usd: Option<f32>,
+
+    /// `--name <name>` — deterministic session label for resume.
+    pub session_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,10 +164,33 @@ impl Agent {
                 if opts.resume_conversation {
                     args.push_str(" --continue");
                 }
-                match initial_prompt {
+                // Claude-only smart flags (2026-w20+). Silently ignored
+                // by older Claude Code installs.
+                if let Some(ref e) = opts.effort {
+                    args.push_str(&format!(" --effort {}", shell_quote(e)));
+                }
+                if let Some(t) = opts.max_turns {
+                    args.push_str(&format!(" --max-turns {}", t));
+                }
+                if let Some(b) = opts.max_budget_usd {
+                    args.push_str(&format!(" --max-budget-usd {}", b));
+                }
+                if let Some(ref n) = opts.session_name {
+                    args.push_str(&format!(" --name {}", shell_quote(n)));
+                }
+                // /goal is a slash command, not a flag — prepend to the
+                // initial prompt so Claude registers it as the first
+                // turn's instruction (per docs: works in interactive + -p).
+                let final_prompt: Option<String> = match (&opts.goal_condition, initial_prompt) {
+                    (Some(goal), Some(p)) => Some(format!("/goal {}\n\n{}", goal, p)),
+                    (Some(goal), None) => Some(format!("/goal {}", goal)),
+                    (None, Some(p)) => Some(p.to_string()),
+                    (None, None) => None,
+                };
+                match final_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(p)))
+                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(&p)))
                     ),
                     None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }

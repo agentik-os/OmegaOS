@@ -993,7 +993,11 @@ impl App {
                 session: master.clone(),
                 progress: None,
                 is_current: false,
-                is_protected: true,
+                // Master is NOT protected anymore — killing it triggers an
+                // auto-respawn (see KillSession handler + bridge ensure_master
+                // path). The user can press 'x' freely; the daemon comes back
+                // on the next Telegram message OR on the next TUI refresh.
+                is_protected: false,
                 tree_prefix: "★ ".to_string(),
             };
             self.sessions.push(entry);

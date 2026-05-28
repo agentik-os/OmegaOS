@@ -395,7 +395,8 @@ impl TelegramBotEngine {
     async fn handle_text(&self, msg: &Message, text: &str) -> Result<()> {
         let chat_id = msg.chat.id;
 
-        // 1. Check for reply-based routing
+        // 1. Check for reply-based routing — if the replied message is one
+        // we tracked as belonging to a project oracle, route there directly.
         if let Some(reply_msg) = &msg.reply_to_message {
             let router = self.reply_router.lock().await;
             if let Some(project) = router.resolve(reply_msg.message_id) {
@@ -408,6 +409,32 @@ impl TelegramBotEngine {
                 return Ok(());
             }
         }
+
+        // 1b. Reply context (Pack CONTEXT — full thread awareness):
+        // If the user is replying to ANY other message (bot output, prior
+        // user message, channel post), capture its text and pass it as
+        // context to AISB Master. The LLM sees the full thread, not just
+        // the bare reply.
+        let reply_context: Option<String> = msg.reply_to_message.as_ref().and_then(|r| {
+            // Prefer text, fall back to caption (photo/document)
+            r.text.clone().or_else(|| r.caption.clone()).map(|body| {
+                let author = r
+                    .from
+                    .as_ref()
+                    .and_then(|u| u.first_name.clone().or_else(|| u.username.clone()))
+                    .unwrap_or_else(|| "(unknown)".to_string());
+                let ts = ""; // Telegram includes msg.date; we skip it here for brevity
+                format!(
+                    "<reply_context>\n\
+                     The user is REPLYING to this earlier message.\n\
+                     Author: {}\n{}\
+                     Message content:\n---\n{}\n---\n\
+                     </reply_context>\n\n\
+                     User's new message:\n",
+                    author, ts, body
+                )
+            })
+        });
 
         // 2. OAuth code paste — only triggers if a reauth is pending.
         // Code pattern: 20+ chars of [A-Za-z0-9_-], optionally followed by #state.
@@ -512,11 +539,18 @@ impl TelegramBotEngine {
 
             let started = std::time::Instant::now();
 
+            // Combine reply context (if any) + new user text into a single
+            // prompt so the LLM sees the full thread, not just the bare reply.
+            let final_prompt: String = match &reply_context {
+                Some(ctx) => format!("{}{}", ctx, text),
+                None => text.to_string(),
+            };
+
             // Run the LLM call.
             let result: std::result::Result<String, String> = if provider == "claude" || provider.is_empty() {
-                self.claude_stream.ask(text).await.map_err(|e| e.to_string())
+                self.claude_stream.ask(&final_prompt).await.map_err(|e| e.to_string())
             } else {
-                let prompt = text.to_string();
+                let prompt = final_prompt.clone();
                 let p = provider.clone();
                 let m = model.clone();
                 tokio::task::spawn_blocking(move || run_llm_oneshot(&p, &m, &prompt))
