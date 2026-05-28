@@ -582,7 +582,16 @@ impl TelegramBotEngine {
                     .capture_pane(relay_target)
                     .await
                     .unwrap_or_default();
-                match self.mgr.send_text(relay_target, &final_prompt).await {
+                // Bracketed paste — required when final_prompt contains
+                // newlines (the <reply_context> block does). Without it,
+                // Claude's TUI submits on every \n and the LLM only sees
+                // the last fragment.
+                let send_result = if final_prompt.contains('\n') {
+                    self.mgr.send_paste_then_submit(relay_target, &final_prompt).await
+                } else {
+                    self.mgr.send_text(relay_target, &final_prompt).await
+                };
+                match send_result {
                     Err(e) => Err(e.to_string()),
                     Ok(()) => {
                         let mut last_response = String::new();

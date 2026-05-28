@@ -11,6 +11,7 @@ rmux-proto.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
 anyhow.workspace = true
 chrono.workspace = true
 tracing.workspace = true

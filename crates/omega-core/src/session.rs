@@ -5,7 +5,9 @@ use rmux_sdk::{
     SplitDirection, TerminalSizeSpec,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,7 +100,21 @@ impl OmegaSession {
 
 #[derive(Clone)]
 pub struct SessionManager {
-    rmux: std::sync::Arc<Rmux>,
+    rmux: Arc<Rmux>,
+    /// Process-wide Pane handle cache keyed by session name.
+    ///
+    /// Each keystroke in the TUI chat-focused right panel ultimately calls
+    /// `send_text` / `send_text_raw` / `send_key`. Without this cache, every
+    /// call resolves the active pane by issuing a fresh `rmux.session(name)`
+    /// RPC to the daemon (5–15ms over the local Unix socket). At 60 FPS
+    /// typing that's ~120ms of stacked blocking per second — visible as
+    /// "typing feels laggy in Hermux".
+    ///
+    /// The cache stores cloned `Pane` handles (Pane is `#[derive(Clone)]` —
+    /// just an Arc<endpoint> + Arc<transport>) so hot-path lookups become a
+    /// single mutex acquisition + HashMap get, with zero daemon RPCs. The
+    /// cache is invalidated on `kill_session` and on send errors.
+    pane_cache: Arc<tokio::sync::Mutex<HashMap<String, Pane>>>,
 }
 
 // Process-wide singleton — reused across every Action handler in the TUI
@@ -115,7 +131,10 @@ impl SessionManager {
             .connect_or_start()
             .await
             .context("Failed to connect to rmux daemon")?;
-        Ok(Self { rmux: std::sync::Arc::new(rmux) })
+        Ok(Self {
+            rmux: Arc::new(rmux),
+            pane_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+        })
     }
 
     /// Process-wide cached SessionManager. First call connects, every
@@ -227,7 +246,47 @@ impl SessionManager {
     pub async fn kill_session(&self, name: &str) -> Result<()> {
         let session = self.get_session(name).await?;
         session.kill().await?;
+        // The pane handle we held is now dangling — drop it so any future
+        // send_text/send_key for the same name re-resolves cleanly.
+        self.invalidate_pane(name).await;
         Ok(())
+    }
+
+    /// Cached lookup of the active pane for `session_name`.
+    ///
+    /// On a cache hit this is a single mutex acquisition (microseconds).
+    /// On a miss it issues one `rmux.session(name)` RPC, stores the result,
+    /// and returns the new Pane. The Pane handle itself is cheap to clone
+    /// (Arc-wrapped endpoint), so we hand back a clone and keep one in the
+    /// cache for the next caller.
+    ///
+    /// Use this in any hot path where the same session is touched repeatedly
+    /// (TUI keystroke forwarding, preview capture). For one-shot operations
+    /// `get_active_pane` is still fine but offers no win.
+    pub async fn pane_for(&self, session_name: &str) -> Result<Pane> {
+        {
+            let cache = self.pane_cache.lock().await;
+            if let Some(pane) = cache.get(session_name) {
+                return Ok(pane.clone());
+            }
+        }
+        // Miss — resolve and cache. We deliberately drop the lock across
+        // the get_session await to avoid serialising callers; under
+        // contention the worst case is N callers each doing one RPC and
+        // the last writer winning, all equivalent panes for the same name.
+        let session = self.get_session(session_name).await?;
+        let pane = session.pane(0, 0);
+        let mut cache = self.pane_cache.lock().await;
+        cache
+            .entry(session_name.to_string())
+            .or_insert_with(|| pane.clone());
+        Ok(pane)
+    }
+
+    /// Drop the cached Pane for a session — call after kill/recreate or
+    /// after a send error that suggests the daemon-side pane is gone.
+    pub async fn invalidate_pane(&self, session_name: &str) {
+        self.pane_cache.lock().await.remove(session_name);
     }
 
     /// Rename a session via the rmux CLI (the SDK doesn't expose rename yet).
@@ -252,32 +311,103 @@ impl SessionManager {
     }
 
     pub async fn send_text(&self, session_name: &str, text: &str) -> Result<()> {
-        let pane = self.get_active_pane(session_name).await?;
-        pane.send_text(text).await?;
+        // Two hot RPCs (send_text + send_key Enter). Use the cached pane and
+        // a single retry on stale-cache errors so a kill+recreate of the
+        // same name self-heals on the next send.
+        let pane = self.pane_for(session_name).await?;
+        match pane.send_text(text).await {
+            Ok(()) => {}
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.send_text(text).await?;
+                pane.send_key("Enter").await?;
+                return Ok(());
+            }
+            Err(e) => return Err(e.into()),
+        }
         pane.send_key("Enter").await?;
         Ok(())
     }
 
     /// Raw text send — no auto-Enter. Used by the TUI interactive preview
     /// to forward single chars without injecting a newline the user did not type.
+    ///
+    /// HOT PATH: invoked per keystroke when the right panel is chat-focused.
+    /// Uses the cached pane lookup so the only daemon RPC is the actual
+    /// send_text; on a stale-pane error we invalidate + retry once.
     pub async fn send_text_raw(&self, session_name: &str, text: &str) -> Result<()> {
-        let pane = self.get_active_pane(session_name).await?;
-        pane.send_text(text).await?;
-        Ok(())
+        let pane = self.pane_for(session_name).await?;
+        match pane.send_text(text).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.send_text(text).await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Send a named key event (e.g. "Enter", "BackSpace", "Up", "Escape").
     /// Mirrors the rmux key naming.
+    ///
+    /// HOT PATH: invoked per arrow/enter/space in chat-focused mode. Same
+    /// cached-pane + single-retry strategy as `send_text_raw`.
     pub async fn send_key(&self, session_name: &str, key: &str) -> Result<()> {
-        let pane = self.get_active_pane(session_name).await?;
-        pane.send_key(key).await?;
+        let pane = self.pane_for(session_name).await?;
+        match pane.send_key(key).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.send_key(key).await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Multi-line aware send: wraps `text` in bracketed-paste escape
+    /// sequences (`\e[200~ ... \e[201~`) so that an interactive TUI
+    /// (e.g. Claude Code) buffers the whole block as one paste rather
+    /// than submitting on every embedded newline. After the closing
+    /// marker, sends Enter to submit the buffered input.
+    ///
+    /// Use this whenever the prompt may contain `\n` AND you want a
+    /// single coherent user turn (e.g., reply-context + new message).
+    pub async fn send_paste_then_submit(
+        &self,
+        session_name: &str,
+        text: &str,
+    ) -> Result<()> {
+        let pane = self.pane_for(session_name).await?;
+        // Bracketed paste opener
+        pane.send_text("\u{1b}[200~").await?;
+        pane.send_text(text).await?;
+        // Closer
+        pane.send_text("\u{1b}[201~").await?;
+        // Submit
+        pane.send_key("Enter").await?;
         Ok(())
     }
 
+    /// HOT PATH (~12 FPS during chat focus): the right-panel preview tick
+    /// uses this on every refresh. Cached pane → one daemon RPC per tick
+    /// (the snapshot itself), not three.
     pub async fn capture_pane(&self, session_name: &str) -> Result<String> {
-        let pane = self.get_active_pane(session_name).await?;
-        let snapshot = pane.snapshot().await?;
-        Ok(snapshot.visible_text())
+        let pane = self.pane_for(session_name).await?;
+        match pane.snapshot().await {
+            Ok(snapshot) => Ok(snapshot.visible_text()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                let snapshot = pane.snapshot().await?;
+                Ok(snapshot.visible_text())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub async fn wait_for_text(

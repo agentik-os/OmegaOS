@@ -472,13 +472,65 @@ pub fn smart_wrap_response(
     // header already shows it above the message.
     let _ = user_message;
 
-    let body_html = smart_markdown_to_html(body_md);
+    // Scrub internal fences (memory_context, reasoning_scratchpad, etc.)
+    // BEFORE markdown conversion so they don't leak into Telegram HTML.
+    let scrubbed = scrub_internal_context(body_md);
+    let body_html = smart_markdown_to_html(&scrubbed);
     let body_html = mask_secrets(&body_html);
     let footer = format!("<i>⌁ {:.1}s · {}</i>", duration_s, escape_html(model));
     format!(
         "{}\n{}\n\n<blockquote>{}</blockquote>\n\n{}",
         header, divider, body_html, footer
     )
+}
+
+/// Strip OmegaOS / Hermes-style internal fences from a model response
+/// before it leaves the system (Telegram, file delivery, etc.).
+///
+/// Models trained to use reasoning scratchpads or memory contexts often
+/// leak those XML-ish fences into their final answer when not told
+/// otherwise. The scrubber removes them so the end user sees only the
+/// human-facing prose.
+///
+/// Fenced regions removed (case-insensitive open tag, greedy):
+///   <memory_context>...</memory_context>
+///   <reasoning_scratchpad>...</reasoning_scratchpad>
+///   <thinking>...</thinking>
+///   <scratchpad>...</scratchpad>
+///   <inner_monologue>...</inner_monologue>
+///   <reply_context>...</reply_context>   (we add this ourselves; safe to strip)
+pub fn scrub_internal_context(text: &str) -> String {
+    let fences = [
+        ("memory_context", "memory_context"),
+        ("reasoning_scratchpad", "reasoning_scratchpad"),
+        ("thinking", "thinking"),
+        ("scratchpad", "scratchpad"),
+        ("inner_monologue", "inner_monologue"),
+        ("reply_context", "reply_context"),
+    ];
+    let mut out = text.to_string();
+    for (open, close) in fences {
+        let open_pat = format!("<{}>", open);
+        let close_pat = format!("</{}>", close);
+        loop {
+            let lower = out.to_lowercase();
+            let Some(start) = lower.find(&open_pat) else { break };
+            let Some(rel_end) = lower[start + open_pat.len()..].find(&close_pat) else {
+                // Unclosed fence — drop everything from the opener to EOF
+                // rather than leak partial scratchpad.
+                out.truncate(start);
+                out = out.trim_end().to_string();
+                break;
+            };
+            let end = start + open_pat.len() + rel_end + close_pat.len();
+            out.replace_range(start..end, "");
+        }
+    }
+    // Collapse 3+ newlines that the strip might have left behind.
+    while out.contains("\n\n\n") {
+        out = out.replace("\n\n\n", "\n\n");
+    }
+    out.trim().to_string()
 }
 
 /// "Thinking…" placeholder with elapsed-time progress bar, edited in
