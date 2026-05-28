@@ -1552,17 +1552,23 @@ impl TelegramBotEngine {
                 .await;
             return;
         };
+        // Email is not in usage.json — pull it from `claude auth status`.
+        let email = if !snap.email.is_empty() && snap.email != "?" {
+            snap.email.clone()
+        } else {
+            account::email_from_claude_auth_status()
+        };
         let html = format!(
             "<b>Billing</b>\n\n\
              <b>5h:</b>    <code>{:.1}%</code>\n\
              <b>Week:</b>  <code>{:.1}%</code>\n\
-             <b>Account:</b> <code>{}</code>\n\
              <b>Email:</b>   <code>{}</code>",
             snap.precise_5h(),
             snap.precise_week(),
-            formatting::escape_html(&snap.active_account),
-            formatting::escape_html(&snap.email),
+            formatting::escape_html(&email),
         );
+        // Suppress the "agentikos" internal account label — useless to user
+        let _ = &snap.active_account;
         let keyboard = InlineKeyboardMarkup {
             inline_keyboard: vec![vec![
                 InlineKeyboardButton {
