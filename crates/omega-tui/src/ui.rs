@@ -448,26 +448,76 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     } else if let Some(styled) = &app.preview_styled {
         // Styled path: build colored spans from the pane snapshot so the
         // `/` command-menu selection highlight + Claude's colored UI show.
+        //
+        // Claude marks the SELECTED menu row with one subtle cue only: the
+        // text turns its accent blue (ANSI 94 → rgb 59,142,234) while every
+        // sibling stays gray (229,229,229). Empirically (examples/dump_styled)
+        // that hue shift is too faint in the mirror — the user "can't tell
+        // which one is selected". Since this is a mirror (not the real Claude
+        // TTY) we are free to make it unmistakable: any row whose leading
+        // visible span is the accent blue gets a full-width highlight bar
+        // (▶ marker + blue background + bold).
+        const ACCENT: (u8, u8, u8) = (59, 142, 234);
+        let inner_w = area.width.saturating_sub(2) as usize;
         styled
             .iter()
             .map(|row| {
-                let spans: Vec<Span> = row
+                let is_selected = row
                     .iter()
-                    .map(|sp| {
-                        let mut style = Style::default();
-                        if let Some((r, g, b)) = sp.fg {
-                            style = style.fg(Color::Rgb(r, g, b));
-                        }
-                        if let Some((r, g, b)) = sp.bg {
-                            style = style.bg(Color::Rgb(r, g, b));
-                        }
-                        if sp.bold {
-                            style = style.add_modifier(Modifier::BOLD);
-                        }
-                        Span::styled(sp.text.clone(), style)
-                    })
-                    .collect();
-                Line::from(spans)
+                    .find(|s| !s.text.trim().is_empty())
+                    .map_or(false, |s| s.fg == Some(ACCENT));
+
+                if is_selected {
+                    // Highlight bar: ▶ marker, blue fill, bold bright text.
+                    let bar_bg = Color::Rgb(28, 52, 92);
+                    let mut spans: Vec<Span> = Vec::with_capacity(row.len() + 2);
+                    let mut width = 0usize;
+                    spans.push(Span::styled(
+                        "▶ ",
+                        Style::default()
+                            .fg(Color::Rgb(120, 180, 255))
+                            .bg(bar_bg)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    width += 2;
+                    for sp in row {
+                        let fg = match sp.fg {
+                            Some(ACCENT) | None => Color::Rgb(150, 200, 255),
+                            Some((r, g, b)) => Color::Rgb(r, g, b),
+                        };
+                        width += sp.text.chars().count();
+                        spans.push(Span::styled(
+                            sp.text.clone(),
+                            Style::default().fg(fg).bg(bar_bg).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    // Pad to full inner width so the bar spans the whole row.
+                    if width < inner_w {
+                        spans.push(Span::styled(
+                            " ".repeat(inner_w - width),
+                            Style::default().bg(bar_bg),
+                        ));
+                    }
+                    Line::from(spans)
+                } else {
+                    let spans: Vec<Span> = row
+                        .iter()
+                        .map(|sp| {
+                            let mut style = Style::default();
+                            if let Some((r, g, b)) = sp.fg {
+                                style = style.fg(Color::Rgb(r, g, b));
+                            }
+                            if let Some((r, g, b)) = sp.bg {
+                                style = style.bg(Color::Rgb(r, g, b));
+                            }
+                            if sp.bold {
+                                style = style.add_modifier(Modifier::BOLD);
+                            }
+                            Span::styled(sp.text.clone(), style)
+                        })
+                        .collect();
+                    Line::from(spans)
+                }
             })
             .collect()
     } else {
