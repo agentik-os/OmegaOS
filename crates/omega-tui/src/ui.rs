@@ -26,8 +26,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Monitor => draw_monitor(frame, app, chunks[1]),
         Tab::Projects => draw_projects(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
-        Tab::Info => draw_info(frame, app, chunks[1]),
-        Tab::Help => draw_help(frame, chunks[1]),
+        Tab::Agentic => draw_info(frame, app, chunks[1]),
+        Tab::Help => draw_help(frame, app, chunks[1]),
     }
 
     draw_status_bar(frame, app, chunks[2]);
@@ -300,7 +300,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         Tab::Monitor => 2,
         Tab::Projects => 3,
         Tab::Settings => 4,
-        Tab::Info => 5,
+        Tab::Agentic => 5,
         Tab::Help => 6,
     };
 
@@ -1068,7 +1068,7 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
             .map(|(i, project)| {
                 let selected = i == app.projects_selected && list_focused;
                 let prefix = if i == app.projects_selected { "▶ " } else { "  " };
-                let icon = project.icon.as_deref().unwrap_or("📁");
+                let icon = project.icon.as_deref().unwrap_or("▣");
                 let style = if selected {
                     Style::default()
                         .fg(Color::Black)
@@ -1089,7 +1089,7 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let list_title = if list_focused {
-        format!(" Projects ({}) — ↑/↓ select, Tab → detail ", registry.projects.len())
+        format!(" ▶ FOCUSED Projects ({}) — ↑/↓ select, Tab → detail ", registry.projects.len())
     } else {
         format!(" Projects ({}) — Tab to focus list ", registry.projects.len())
     };
@@ -1147,7 +1147,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         ];
     };
 
-    let icon = project.icon.as_deref().unwrap_or("📁");
+    let icon = project.icon.as_deref().unwrap_or("▣");
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
@@ -1303,7 +1303,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
-        "    [d] Dispatch oracle    [p] Run planner    [Enter] Open in terminal",
+        "    [d] Dispatch oracle    [p] Run planner    [Enter on detail] Open in terminal",
         Style::default().fg(Color::Cyan),
     )));
 
@@ -1311,7 +1311,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
 }
 
 fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
-    let providers = omega_core::providers::ProvidersConfig::load();
+    let providers = app.providers();
     let (lines, selected_field_line) = render_settings_detail(app, &providers);
 
     // Auto-scroll to keep the selected field visible
@@ -1384,7 +1384,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list_title = if list_focused {
-        " Settings — ↑/↓ select, Tab → focus detail "
+        " ▶ FOCUSED Settings — ↑/↓ select, Tab → focus detail "
     } else {
         " Settings — Tab to focus list "
     };
@@ -1512,8 +1512,8 @@ fn render_settings_detail(
                 }
             }
             SettingsField::Toggle { label, current, .. } => {
-                let badge = if *current { "✓ on" } else { "○ off" };
-                let badge_color = if *current { Color::Green } else { Color::Red };
+                let badge = if *current { "● on" } else { "○ off" };
+                let badge_color = if *current { Color::Green } else { Color::Gray };
                 let label_style = if is_selected {
                     Style::default()
                         .fg(Color::Black)
@@ -1672,7 +1672,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list_title = if list_focused {
-        " Agentic — ↑/↓ select, Tab → focus detail "
+        " ▶ FOCUSED Agentic — ↑/↓ select, Tab → focus detail "
     } else {
         " Agentic — Tab to focus list "
     };
@@ -1924,7 +1924,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
     lines
 }
 
-fn draw_help(frame: &mut Frame, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let cy = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let yl = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
     let wh = Style::default().fg(Color::White);
@@ -1947,6 +1947,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
             Span::styled("  Ω  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled("OmegaOS", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Span::styled("  —  Agentic Terminal Operating System", gr),
+            Span::styled(concat!("   v", env!("CARGO_PKG_VERSION")), cy),
         ]),
         Line::from(""),
 
@@ -2001,7 +2002,7 @@ fn draw_help(frame: &mut Frame, area: Rect) {
 
     lines.extend([
         key("d", "Dispatch oracle → project + mission"),
-        key("r", "Refresh sessions"),
+        key("F5", "Refresh sessions (r/R = Rename, everywhere)"),
         Line::from(""),
 
         section("Monitor"),
@@ -2015,6 +2016,28 @@ fn draw_help(frame: &mut Frame, area: Rect) {
         key("↑ / ↓", "Browse sections"),
         key("Enter / Tab", "Focus detail panel → edit fields"),
         key("Enter (on field)", "Activate (install/edit/toggle)"),
+        Line::from(""),
+
+        section("Projects"),
+        key("↑ / ↓", "Browse projects"),
+        key("Enter", "Focus detail; Enter again → open in terminal"),
+        key("d", "Dispatch oracle to selected project"),
+        key("p", "Run planner for selected project"),
+        Line::from(""),
+
+        section("Agentic"),
+        key("↑ / ↓", "Navigate sub-sections (or AISB agents in detail)"),
+        key("[  /  ]", "Previous / next sub-section"),
+        Line::from(""),
+
+        section("Chat (Sessions, when chat-focused)"),
+        key("Tab", "Forward to Claude (cycle modes)"),
+        key("Shift+Tab", "Return to session list"),
+        key("Alt+↑ / Alt+↓", "Scroll preview"),
+        key("Ctrl+W / Alt+Bksp", "Delete word backwards"),
+        key("Shift+Del / Alt+Del", "Delete word forwards"),
+        key("Opt+< / Opt+>", "Jump to start / end of input (M-< / M->)"),
+        key("Mouse scroll", "Scroll the panel under the cursor"),
         Line::from(""),
 
         section("Integrated Tools"),
@@ -2075,11 +2098,11 @@ fn draw_help(frame: &mut Frame, area: Rect) {
     ]);
 
     let paragraph = Paragraph::new(lines)
-        .scroll((0, 0))
+        .scroll((app.detail_scroll, 0))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Help — OmegaOS ")
+                .title(" Help — OmegaOS  (↑/↓ scroll) ")
                 .border_style(Style::default().fg(Color::Cyan)),
         );
 

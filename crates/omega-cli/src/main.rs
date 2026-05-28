@@ -656,6 +656,7 @@ async fn run_tui_loop(
             let selected_before = app.selected;
             let tab_before = app.tab;
             let detail_focused_before = app.detail_focused;
+            let status_before = app.status_message.clone();
             match handle_event(app, evt) {
                 Action::Quit => break,
                 Action::AttachSession(name) => {
@@ -818,6 +819,9 @@ async fn run_tui_loop(
                 Action::Refresh => {
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
+                    if app.tab == omega_tui::app::Tab::Projects {
+                        app.refresh_projects();
+                    }
                     app.status_message = Some("Refreshed".to_string());
                 }
                 Action::LoginClaude => {
@@ -960,9 +964,11 @@ async fn run_tui_loop(
                     if let Err(e) = toggle_bool_config(&config_key) {
                         app.status_message = Some(format!("Toggle failed: {}", e));
                     } else {
-                        app.status_message = Some(format!("Toggled {}", config_key));
+                        app.status_message = Some(format!("Toggled {} — saved ✓", config_key));
                         // Reload the app's config so the change is reflected
                         app.config = OmegaConfig::load().unwrap_or_default();
+                        // Bust the providers cache so Settings re-reads fresh.
+                        app.invalidate_providers();
                     }
                 }
                 Action::CommitSettingsEdit { config_key, value } => {
@@ -972,7 +978,11 @@ async fn run_tui_loop(
                     } else if let Err(e) = providers.save() {
                         app.status_message = Some(format!("Save failed: {}", e));
                     } else {
-                        app.status_message = Some(format!("✓ {} updated", config_key));
+                        app.status_message =
+                            Some(format!("Saved {} to providers.toml ✓", config_key));
+                        // Bust the cache so the Settings panel reflects the
+                        // value just typed (not the stale in-memory copy).
+                        app.invalidate_providers();
                     }
                 }
                 Action::RenameSession { old, new } => {
@@ -1005,20 +1015,6 @@ async fn run_tui_loop(
                     // reconnect or pick another section.
                     app.detail_focused = false;
                     app.detail_scroll = 0;
-                }
-                Action::SendToSession { session, text } => {
-                    // Hot path: fire-and-forget the send, scroll to tail.
-                    // The 80ms preview ticker at the top of the loop picks
-                    // up the visible result. No await on capture_pane here.
-                    let mgr = SessionManager::connect_cached().await?;
-                    if !text.is_empty() {
-                        if let Err(e) = mgr.send_text(&session, &text).await {
-                            app.status_message = Some(format!("Send failed: {}", e));
-                        } else {
-                            app.status_message = Some(format!("Sent to {}", session));
-                            app.scroll_preview_end();
-                        }
-                    }
                 }
                 Action::ForwardCharToSession { session, ch } => {
                     // HOT PATH (~1 call per keystroke in chat focus).
@@ -1091,6 +1087,72 @@ async fn run_tui_loop(
                     terminal.clear()?;
                     app.status_message = Some("Redrawn (Ctrl+L)".to_string());
                 }
+                Action::OpenProject { name, path, oracle_session } => {
+                    let mgr = SessionManager::connect().await?;
+                    // Attach to the project's Oracle session if it is alive.
+                    let alive = if let Some(ref oracle) = oracle_session {
+                        mgr.list_sessions()
+                            .await
+                            .map(|ss| ss.iter().any(|s| &s.name == oracle))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                    if let (true, Some(oracle)) = (alive, oracle_session.clone()) {
+                        app.status_message = Some(format!("Attaching to oracle {}", oracle));
+                        auto_focus_chat(app, &oracle).await;
+                    } else {
+                        // No live oracle → open a shell in the project dir.
+                        let safe = name
+                            .chars()
+                            .filter(|c| c.is_alphanumeric() || *c == '-')
+                            .take(24)
+                            .collect::<String>();
+                        let session = format!("{}-shell", safe);
+                        let cmd = format!(
+                            "bash -c {}",
+                            shell_escape_for_bash(&format!("cd {} 2>/dev/null; exec bash", path))
+                        );
+                        match mgr.create_session(&session, Some(&path), Some(&cmd)).await {
+                            Ok(_) => {
+                                app.status_message =
+                                    Some(format!("Opened shell in {} ({})", name, session));
+                                auto_focus_chat(app, &session).await;
+                            }
+                            Err(e) => {
+                                app.status_message =
+                                    Some(format!("Could not open {}: {}", name, e));
+                            }
+                        }
+                    }
+                }
+                Action::RunPlannerForProject { name, path } => {
+                    let mgr = SessionManager::connect().await?;
+                    let safe = name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '-')
+                        .take(24)
+                        .collect::<String>();
+                    let session = format!("{}-planner", safe);
+                    let cmd = format!(
+                        "bash -c {}",
+                        shell_escape_for_bash(&format!(
+                            "cd {} 2>/dev/null; omega planner; echo; echo '─── planner done ───'; exec bash",
+                            path
+                        ))
+                    );
+                    match mgr.create_session(&session, Some(&path), Some(&cmd)).await {
+                        Ok(_) => {
+                            app.status_message =
+                                Some(format!("Running planner for {} ({})", name, session));
+                            auto_focus_chat(app, &session).await;
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Planner spawn failed for {}: {}", name, e));
+                        }
+                    }
+                }
                 Action::None => {}
             }
 
@@ -1098,6 +1160,29 @@ async fn run_tui_loop(
             // never stay corrupted after resize or navigation
             if app.tab != tab_before || app.detail_focused != detail_focused_before {
                 terminal.clear()?;
+            }
+
+            // Entering the Projects tab → reload the registry so projects added
+            // via `omega project add` in another shell show up without restart.
+            if app.tab == omega_tui::app::Tab::Projects && tab_before != omega_tui::app::Tab::Projects {
+                app.refresh_projects();
+            }
+
+            // On tab switch, seed the status bar with a per-tab hint so a new
+            // user lands with guidance instead of an empty bar. Skip if the
+            // action handler already set a meaningful message this iteration
+            // (e.g. a dispatch/login that also switched to the Sessions tab).
+            if app.tab != tab_before && app.status_message == status_before {
+                use omega_tui::app::Tab;
+                app.status_message = Some(match app.tab {
+                    Tab::Sessions => "↑/↓ select · Enter/Tab chat · c/C/g new agent · x kill · . lock · F5 refresh".to_string(),
+                    Tab::Menu => "↑/↓ select · Enter run · or press the shortcut key shown".to_string(),
+                    Tab::Monitor => "↑/↓ select · Enter run · L login · T telegram · B billing".to_string(),
+                    Tab::Projects => "↑/↓ select · Enter focus detail · d dispatch · p planner".to_string(),
+                    Tab::Settings => "↑/↓ section · Enter/Tab edit fields · Enter activate".to_string(),
+                    Tab::Agentic => "↑/↓ or [ ] sub-sections · Tab focus detail".to_string(),
+                    Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
+                });
             }
 
             if app.selected != selected_before || app.tab != tab_before {
