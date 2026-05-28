@@ -898,6 +898,15 @@ async fn run_tui_loop(
                         let _ = app.refresh_preview().await;
                     }
                 }
+                Action::SendTextRawToSession { session, text } => {
+                    let mgr = SessionManager::connect().await?;
+                    if let Err(e) = mgr.send_text_raw(&session, &text).await {
+                        app.status_message = Some(format!("Paste failed: {}", e));
+                    } else {
+                        app.scroll_preview_end();
+                        let _ = app.refresh_preview().await;
+                    }
+                }
                 Action::ForceRedraw => {
                     terminal.clear()?;
                     app.status_message = Some("Redrawn (Ctrl+L)".to_string());

@@ -54,6 +54,10 @@ pub enum Action {
     /// all route through this so plan-mode / OAuth / choice menus work.
     ForwardCharToSession { session: String, ch: char },
     ForwardKeyToSession { session: String, key: &'static str },
+    /// Multi-char paste forwarded as a single literal write to the session
+    /// (used by handle_paste so the entire bracketed-paste block lands as
+    /// one PTY write rather than N individual keystrokes).
+    SendTextRawToSession { session: String, text: String },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -173,27 +177,27 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
 }
 
 fn handle_paste(app: &mut App, text: String) -> Action {
-    // Strip nothing — preserve user's text exactly. \n inside the paste
-    // is appended as a literal newline (the input box will wrap/grow).
-    match app.input_mode {
-        InputMode::Normal => {
-            // Sessions tab + chat-focused → append to chat input buffer
-            if app.tab == Tab::Sessions
-                && matches!(
-                    app.session_focus,
-                    SessionFocus::Chat | SessionFocus::ChatFullscreen
-                )
-            {
-                app.chat_input.push_str(&text);
-                app.status_message = Some(format!("Pasted {} chars", text.len()));
-            }
-        }
-        // Any active input modal: append to its buffer
-        _ => {
-            app.input_buffer.push_str(&text);
-            app.status_message = Some(format!("Pasted {} chars", text.len()));
+    // Sessions tab + chat-focused → forward the paste DIRECTLY to the rmux
+    // session as literal text (no chat_input buffer). One send_text_raw
+    // call covers the whole paste; the SDK sends UTF-8 bytes literally so
+    // multi-line and special chars survive.
+    if app.input_mode == InputMode::Normal
+        && app.tab == Tab::Sessions
+        && matches!(
+            app.session_focus,
+            SessionFocus::Chat | SessionFocus::ChatFullscreen
+        )
+    {
+        if let Some(entry) = app.selected_session() {
+            let session = entry.session.name.clone();
+            app.status_message = Some(format!("Pasted {} chars → {}", text.len(), session));
+            return Action::SendTextRawToSession { session, text };
         }
     }
+
+    // Active input modal: keep buffer semantics
+    app.input_buffer.push_str(&text);
+    app.status_message = Some(format!("Pasted {} chars", text.len()));
     Action::None
 }
 
@@ -965,19 +969,55 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     }
 
     // --- Forwarded to rmux session ---
+    // Important: rmux key names come from rmux-core/src/keys/string_table.rs.
+    // The backspace key is "BSpace" (NOT "BackSpace"); forward-delete is
+    // "Delete" or "DC". Using the wrong name makes rmux send the literal text
+    // instead of the key event — that was the original "BackSpace appears in
+    // the agent's input" bug.
+
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match key.code {
+        // Word-delete (readline conventions):
+        //   Ctrl+W            → kill word back   (universal)
+        //   Shift+Backspace   → kill word back   (tmux convention, what the user wants)
+        //   Alt+Backspace     → kill word back   (macOS / readline)
+        //   Ctrl+Backspace    → kill word back   (Windows convention)
+        KeyCode::Backspace if shift || alt || ctrl => {
+            Action::ForwardKeyToSession { session, key: "C-w" }
+        }
+        KeyCode::Backspace => {
+            Action::ForwardKeyToSession { session, key: "BSpace" }
+        }
+        // Forward-delete word:
+        //   Shift+Delete or Alt+Delete → kill word forward (M-d in readline)
+        KeyCode::Delete if shift || alt => {
+            Action::ForwardKeyToSession { session, key: "M-d" }
+        }
+        KeyCode::Delete => Action::ForwardKeyToSession { session, key: "Delete" },
         KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
-        KeyCode::Backspace => Action::ForwardKeyToSession { session, key: "BackSpace" },
         KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
         KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
+        KeyCode::Left if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-b" },
+        KeyCode::Right if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-f" },
         KeyCode::Left => Action::ForwardKeyToSession { session, key: "Left" },
         KeyCode::Right => Action::ForwardKeyToSession { session, key: "Right" },
-        KeyCode::Delete => Action::ForwardKeyToSession { session, key: "Delete" },
+        KeyCode::Insert => Action::ForwardKeyToSession { session, key: "IC" },
+        KeyCode::F(n) if (1..=12).contains(&n) => {
+            let key_str: &'static str = match n {
+                1 => "F1", 2 => "F2", 3 => "F3", 4 => "F4",
+                5 => "F5", 6 => "F6", 7 => "F7", 8 => "F8",
+                9 => "F9", 10 => "F10", 11 => "F11", 12 => "F12",
+                _ => return Action::None,
+            };
+            Action::ForwardKeyToSession { session, key: key_str }
+        }
         KeyCode::Char(c) => {
             // Ctrl+<letter> → rmux "C-<letter>" so Ctrl+C interrupts the agent
-            if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if ctrl {
                 let lower = c.to_ascii_lowercase();
                 let key_str: &'static str = match lower {
                     'a' => "C-a", 'b' => "C-b", 'c' => "C-c", 'd' => "C-d",
