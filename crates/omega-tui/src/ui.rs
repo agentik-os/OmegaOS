@@ -480,31 +480,48 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     // Positioned at the typing point: end of the last non-empty visible
     // line of the pane capture.
     if chat_focused {
-        let inner_w = area.width.saturating_sub(2) as usize;
+        let inner_w = area.width.saturating_sub(2);
         let inner_h = area.height.saturating_sub(2);
-        let all_lines: Vec<&str> = app.preview_content.lines().collect();
-        let (last_idx, last_line) = all_lines
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, l)| !l.trim().is_empty())
-            .map(|(i, l)| (i as u16, *l))
-            .unwrap_or((0, ""));
-        let viewport_row = last_idx.saturating_sub(scroll);
+
+        // Prefer the REAL cursor (row, col) reported by the pane snapshot.
+        // That's exactly where the agent's input caret is. Fall back to the
+        // last-non-empty-line heuristic only if the snapshot didn't carry a
+        // cursor (e.g. history-browsing mode).
+        let (cur_row, cur_col) = match app.preview_cursor {
+            Some((row, col, _visible)) => (row, col),
+            None => {
+                let all_lines: Vec<&str> = app.preview_content.lines().collect();
+                let (idx, line) = all_lines
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, l)| !l.trim().is_empty())
+                    .map(|(i, l)| (i as u16, *l))
+                    .unwrap_or((0, ""));
+                (idx, line.chars().count() as u16)
+            }
+        };
+
+        // Map the snapshot row to a viewport row using the same from-top
+        // `scroll` offset the Paragraph uses.
+        let viewport_row = cur_row.saturating_sub(scroll);
         if viewport_row < inner_h {
-            let col_chars = (last_line.chars().count().min(inner_w.saturating_sub(1))) as u16;
-            let cursor_x = area.x + 1 + col_chars;
+            let cursor_x = area.x + 1 + cur_col.min(inner_w.saturating_sub(1));
             let cursor_y = area.y + 1 + viewport_row;
-            // Layer 1: paint a block glyph into the buffer cell.
-            let buf = frame.buffer_mut();
             if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+                // Layer 1: painted glyph (always visible).
+                let buf = frame.buffer_mut();
                 if let Some(cell) = buf.cell_mut((cursor_x, cursor_y)) {
                     cell.set_symbol("▏");
-                    cell.set_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK));
+                    cell.set_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::RAPID_BLINK),
+                    );
                 }
+                // Layer 2: OS-native caret.
+                frame.set_cursor_position((cursor_x, cursor_y));
             }
-            // Layer 2: OS-native caret.
-            frame.set_cursor_position((cursor_x, cursor_y));
         }
     }
     let _ = fullscreen;

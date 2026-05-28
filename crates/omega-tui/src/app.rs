@@ -628,6 +628,11 @@ pub struct App {
     pub input_buffer: String,
     pub config: OmegaConfig,
     pub preview_content: String,
+    /// REAL cursor position from the pane snapshot (row, col, visible),
+    /// zero-based within the visible pane. Used to paint the caret exactly
+    /// where the agent's input cursor is, instead of guessing the last
+    /// non-empty line. None when no session is previewed.
+    pub preview_cursor: Option<(u16, u16, bool)>,
     /// Scroll position measured as LINES UP FROM THE TAIL (0 = newest line).
     /// Bottom-anchored so the view stays stable when the capture buffer grows
     /// (visible-only → full scrollback history): "3 lines up from the tail"
@@ -695,6 +700,7 @@ impl App {
             input_buffer: String::new(),
             config,
             preview_content: String::new(),
+            preview_cursor: None,
             preview_scroll: 0,
             preview_max_scroll: 0,
             preview_follow_tail: true,
@@ -997,17 +1003,30 @@ impl App {
         // user is browsing history (follow_tail == false) do we pay for a full
         // scrollback capture, so there is real content above the screen to
         // scroll into instead of an empty void.
-        let captured = if self.preview_follow_tail {
-            mgr.capture_pane(&name).await
-        } else {
-            mgr.capture_pane_history(&name, 1000).await
-        };
-        match captured {
-            Ok(content) => {
-                self.preview_content = content;
+        if self.preview_follow_tail {
+            // Tail path: capture text + REAL cursor position together.
+            match mgr.capture_pane_with_cursor(&name).await {
+                Ok((content, row, col, visible)) => {
+                    self.preview_content = content;
+                    self.preview_cursor = Some((row, col, visible));
+                }
+                Err(_) => {
+                    self.preview_content = String::from("(session has no pane content)");
+                    self.preview_cursor = None;
+                }
             }
-            Err(_) => {
-                self.preview_content = String::from("(session has no pane content)");
+        } else {
+            // History-browsing path: cursor is meaningless when scrolled
+            // back, so we don't paint it.
+            match mgr.capture_pane_history(&name, 1000).await {
+                Ok(content) => {
+                    self.preview_content = content;
+                    self.preview_cursor = None;
+                }
+                Err(_) => {
+                    self.preview_content = String::from("(session has no pane content)");
+                    self.preview_cursor = None;
+                }
             }
         }
         Ok(())

@@ -1,2 +1,3 @@
 AUDIT STARTED: 2026-05-28T15:52:38+00:00
 Scope: perf(tui): instant typing — Pane cache + non-blocking keystroke I/O + bounded drain loop
+RE-AUDIT (post-fix): 2026-05-28T16:13:20+00:00

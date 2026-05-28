@@ -430,6 +430,28 @@ impl SessionManager {
         }
     }
 
+    /// Capture pane text AND the REAL cursor position from the pane
+    /// snapshot. The TUI uses (row, col) to paint the caret exactly where
+    /// the agent's input cursor is — not a guessed "last non-empty line".
+    /// Returns (visible_text, cursor_row, cursor_col, cursor_visible).
+    pub async fn capture_pane_with_cursor(
+        &self,
+        session_name: &str,
+    ) -> Result<(String, u16, u16, bool)> {
+        let pane = self.pane_for(session_name).await?;
+        let snapshot = match pane.snapshot().await {
+            Ok(s) => s,
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.snapshot().await?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let c = snapshot.cursor;
+        Ok((snapshot.visible_text(), c.row, c.col, c.visible))
+    }
+
     /// Capture the pane INCLUDING scrollback history (last `history_lines`
     /// lines, counted up from the live tail). `snapshot().visible_text()`
     /// only renders the current visible screen — so the TUI preview can't
