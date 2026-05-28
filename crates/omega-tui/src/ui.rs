@@ -84,28 +84,28 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 /// Centered overlay modal for the 3-step Telegram setup wizard.
 fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
-    let (step_num, step_label, hint, masked, value) = match &app.input_mode {
+    let (step_num, step_label, hint, masked, value): (u8, &str, String, bool, String) = match &app.input_mode {
         InputMode::TelegramSetupToken => (
             1,
             "BOT_TOKEN",
-            "Paste the bot token from @BotFather. Bracketed paste handles long tokens — no need to type.",
+            "Paste the bot token from @BotFather. Bracketed paste handles long tokens — no need to type.".to_string(),
             true,
             app.input_buffer.clone(),
         ),
         InputMode::TelegramSetupChatId(_) => (
             2,
             "CHAT_ID",
-            "Numeric chat id. Get yours by sending /start to @userinfobot on Telegram.",
+            "Numeric chat id. Get yours by sending /start to @userinfobot on Telegram.".to_string(),
             false,
             app.input_buffer.clone(),
         ),
         InputMode::TelegramSetupUserId(_, chat) => (
             3,
             "ALLOWED user_ids (optional)",
-            &*Box::leak(format!(
+            format!(
                 "Comma-separated user_ids allowed to talk to the bot (chat_id={}). Esc to skip.",
                 chat
-            ).into_boxed_str()),
+            ),
             false,
             app.input_buffer.clone(),
         ),
@@ -1345,13 +1345,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Auto-scroll to keep the selected field visible
     if app.detail_focused {
-        let panel_height = if app.detail_fullscreen {
-            area.height.saturating_sub(2) // borders
-        } else {
-            // 75% of area (detail panel) minus borders
-            (area.width as f32 * 0.75) as u16; // dummy, real height is area.height
-            area.height.saturating_sub(2)
-        };
+        let panel_height = area.height.saturating_sub(2);
         let field_line = selected_field_line as u16;
         if field_line < app.detail_scroll {
             app.detail_scroll = field_line.saturating_sub(1);

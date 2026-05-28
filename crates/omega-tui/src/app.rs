@@ -880,14 +880,20 @@ impl App {
     }
 
     pub fn scroll_preview_up(&mut self, lines: u16) {
-        // Clamp against the real content height (set by the renderer) so we
-        // stop at the top of history instead of scrolling into the void.
-        self.preview_scroll = self
-            .preview_scroll
-            .saturating_add(lines)
-            .min(self.preview_max_scroll);
-        // User scrolled up → break follow, they want to read history.
+        // When leaving tail mode, preview_max_scroll is 0 (content == viewport).
+        // Skip the clamp on this first transition so the scroll position actually
+        // advances; the next renderer tick loads full history and sets a real
+        // preview_max_scroll that subsequent presses clamp against.
+        let was_following = self.preview_follow_tail;
         self.preview_follow_tail = false;
+        if was_following && self.preview_max_scroll == 0 {
+            self.preview_scroll = lines;
+        } else {
+            self.preview_scroll = self
+                .preview_scroll
+                .saturating_add(lines)
+                .min(self.preview_max_scroll);
+        }
     }
 
     pub fn scroll_preview_home(&mut self) {
