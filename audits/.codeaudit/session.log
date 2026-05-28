@@ -2,3 +2,7 @@ AUDIT STARTED: 2026-05-28T15:52:38+00:00
 Scope: perf(tui): instant typing — Pane cache + non-blocking keystroke I/O + bounded drain loop
 RE-AUDIT (post-fix): 2026-05-28T16:13:20+00:00
 AUDIT COMPLETE: 2026-05-28T16:55:46+00:00 | ticket=hermux-perf | score=95 grade=A confidence=high | 2 comment fixes applied
+RE-AUDIT STARTED: 2026-05-28T17:11:50+00:00
+RE-AUDIT COMPLETE: 2026-05-28T17:11:50+00:00 | ticket=post-mission-tui-2-3-reaudit | score=95 grade=A confidence=high | 3 ui.rs fixes verified, auto-done gap confirmed in patrol.rs:193
+RE-AUDIT STARTED: 2026-05-28T17:14:00+00:00
+RE-AUDIT COMPLETE: 2026-05-28T17:14:00+00:00 | ticket=auto-done-post-mission-2 | score=97 grade=A confidence=high | OBS-001 fixed (send_paste_raw stale-pane retry), preview_needs_history enhancement verified, auto-done still absent from all 6 TUI files

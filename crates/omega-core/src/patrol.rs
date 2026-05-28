@@ -12,6 +12,7 @@ use chrono::Utc;
 use std::time::Duration;
 
 const STALL_THRESHOLD_SECS: i64 = 900; // 15 minutes without progress = stalled (file-based)
+const AUTO_DONE_IDLE_SECS: i64 = 120; // 2 minutes idle after 100% todos = patrol auto-done
 
 #[derive(Debug)]
 pub struct PatrolReport {
@@ -211,6 +212,71 @@ impl Patrol {
                                     report.actions_taken.push(format!(
                                         "Stall detected (progress): {} (idle {}s)",
                                         session.name, idle_secs
+                                    ));
+                                }
+                            }
+                        }
+                    }
+
+                    // Auto-done: worker completed all todos but exited without calling
+                    // worker-mark-done.sh. After AUTO_DONE_IDLE_SECS of inactivity, patrol
+                    // writes DoneSignal::done_clean on the worker's behalf.
+                    if !has_done
+                        && progress.todos_total > 0
+                        && progress.todos_completed >= progress.todos_total
+                        && !report.done_workers.contains(&session.name)
+                    {
+                        if let Some(last_update) = progress.last_updated {
+                            let idle_secs = (Utc::now() - last_update).num_seconds();
+                            if idle_secs > AUTO_DONE_IDLE_SECS {
+                                let mut signal = DoneSignal::new(
+                                    &session.name,
+                                    DoneStatus::DoneClean,
+                                    "auto-done: all todos completed, worker exited without worker-mark-done.sh",
+                                );
+                                signal.todos_total = progress.todos_total;
+                                signal.todos_completed = progress.todos_completed;
+                                if let Ok(()) = signal.write(&self.config.state_dir) {
+                                    report.done_workers.push(session.name.clone());
+                                    let _ = ScopeClaim::release(
+                                        &self.config.state_dir,
+                                        &session.name,
+                                    );
+                                    self.stall_detector.forget(&session.name);
+                                    if let Some(oracle) =
+                                        self.find_parent_oracle(&session.name, &oracle_sessions)
+                                    {
+                                        let inbox = Inbox::for_oracle(
+                                            &self.config.state_dir,
+                                            &oracle.name,
+                                        );
+                                        let _ = inbox.push(&InboxEvent::worker_done(
+                                            &session.name,
+                                            "done_clean",
+                                        ));
+                                        if let Ok(Some(mut oracle_state)) = OracleState::read(
+                                            &self.config.state_dir,
+                                            &oracle.name,
+                                        ) {
+                                            oracle_state.update_worker_status(
+                                                &session.name,
+                                                WorkerEntryStatus::DoneClean,
+                                            );
+                                            let _ = oracle_state.write(&self.config.state_dir);
+                                        }
+                                    }
+                                    tracing::info!(
+                                        worker = %session.name,
+                                        todos = progress.todos_completed,
+                                        idle_secs,
+                                        "Patrol auto-done: worker closed"
+                                    );
+                                    report.actions_taken.push(format!(
+                                        "Auto-done {} ({}/{} todos, idle {}s)",
+                                        session.name,
+                                        progress.todos_completed,
+                                        progress.todos_total,
+                                        idle_secs,
                                     ));
                                 }
                             }
