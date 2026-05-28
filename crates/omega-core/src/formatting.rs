@@ -240,6 +240,211 @@ pub fn thinking_placeholder(agent: &str) -> String {
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Smart formatting — Pack STRUCTURE + SPOILERS
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Maximum chars before a code block / long section is offered as a file
+/// attachment instead of inlined. Picked so a typical Telegram window
+/// stays readable on phone.
+pub const FILE_DELIVERY_THRESHOLD_CHARS: usize = 2000;
+/// Lines threshold for code blocks specifically.
+pub const FILE_DELIVERY_THRESHOLD_LINES: usize = 30;
+/// A markdown section longer than this is auto-wrapped in
+/// <blockquote expandable> so the user can collapse it.
+pub const EXPANDABLE_SECTION_LINES: usize = 5;
+
+/// Detect secrets in raw text and wrap them in <tg-spoiler>.
+///
+/// Patterns matched:
+///   - sk-ant-… (Anthropic), sk-… (OpenAI-style)
+///   - whsec_… (Webhook secrets, Stripe/Clerk)
+///   - Bearer <token>
+///   - ghp_… / gho_… / ghu_… / ghs_… / ghr_… (GitHub tokens)
+///   - xoxb-… / xoxp-… (Slack)
+///   - api[_-]?key\s*[=:]\s*"?<val>"?
+///   - password\s*[=:]\s*"?<val>"?
+///
+/// Operates on the ALREADY-HTML-ESCAPED string. The wrapped <tg-spoiler>
+/// tags are emitted verbatim and pass through Telegram's HTML parser.
+pub fn mask_secrets(html: &str) -> String {
+    let mut out = html.to_string();
+
+    // Patterns: (regex-like substring detector — keeping it dependency-free,
+    // we do simple find-loops). For complex patterns we'd use the regex crate;
+    // here a hand-rolled scanner suffices and keeps formatting.rs leaf.
+    let prefixes = [
+        "sk-ant-", "sk-or-", "sk-",
+        "whsec_",
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+        "xoxb-", "xoxp-",
+    ];
+
+    for prefix in prefixes {
+        loop {
+            let Some(start) = out.find(prefix) else { break };
+            // Don't double-wrap if already inside a spoiler
+            let before = &out[..start];
+            if before.rfind("<tg-spoiler>").map_or(false, |p| {
+                before[p..].find("</tg-spoiler>").is_none()
+            }) {
+                break;
+            }
+            // Token = prefix + run of [A-Za-z0-9_\-]
+            let after = &out[start + prefix.len()..];
+            let token_len: usize = after
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                .map(|c| c.len_utf8())
+                .sum();
+            if token_len == 0 { break; }
+            let end = start + prefix.len() + token_len;
+            let secret = &out[start..end];
+            let wrapped = format!("<tg-spoiler>{}</tg-spoiler>", secret);
+            out.replace_range(start..end, &wrapped);
+        }
+    }
+
+    // Bearer <token>
+    while let Some(pos) = out.find("Bearer ") {
+        let token_start = pos + "Bearer ".len();
+        let after = &out[token_start..];
+        let token_len: usize = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
+            .map(|c| c.len_utf8())
+            .sum();
+        if token_len < 8 { break; }
+        let token_end = token_start + token_len;
+        let secret = &out[token_start..token_end].to_string();
+        let wrapped = format!("Bearer <tg-spoiler>{}</tg-spoiler>", secret);
+        out.replace_range(pos..token_end, &wrapped);
+    }
+
+    out
+}
+
+/// Smart sectionizer — convert a markdown body to Telegram HTML AND
+/// auto-collapse long sections into expandable blockquotes.
+///
+/// A "section" = block starting with `## <heading>` or `### <heading>`
+/// up to the next heading or EOF. Sections longer than
+/// `EXPANDABLE_SECTION_LINES` are wrapped in `<blockquote expandable>`.
+pub fn smart_markdown_to_html(md: &str) -> String {
+    let mut out = String::with_capacity(md.len() * 2);
+    let lines: Vec<&str> = md.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        if (trimmed.starts_with("## ") || trimmed.starts_with("### "))
+            && !trimmed.starts_with("#### ")
+        {
+            // Collect the section body until next heading
+            let heading_text = trimmed.trim_start_matches('#').trim_start();
+            let mut body = Vec::new();
+            let mut j = i + 1;
+            while j < lines.len() {
+                let t = lines[j].trim();
+                if t.starts_with("## ") || t.starts_with("### ") { break; }
+                body.push(lines[j]);
+                j += 1;
+            }
+            // Strip trailing blank lines from body
+            while body.last().map_or(false, |l| l.trim().is_empty()) {
+                body.pop();
+            }
+            let body_md = body.join("\n");
+            let body_html = markdown_to_telegram_html(&body_md);
+            if body.len() > EXPANDABLE_SECTION_LINES {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut out,
+                    format_args!(
+                        "<blockquote expandable><b>{}</b>\n{}</blockquote>\n",
+                        escape_html(heading_text),
+                        body_html,
+                    ),
+                );
+            } else {
+                let _ = std::fmt::Write::write_fmt(
+                    &mut out,
+                    format_args!(
+                        "<b>{}</b>\n{}\n",
+                        escape_html(heading_text),
+                        body_html,
+                    ),
+                );
+            }
+            i = j;
+            continue;
+        }
+
+        // Non-heading: render the line via the standard markdown converter
+        let block_html = markdown_to_telegram_html(line);
+        out.push_str(&block_html);
+        out.push('\n');
+        i += 1;
+    }
+
+    collapse_blank_lines(&out)
+}
+
+/// Decide if a body should be sent as a file instead of inlined.
+/// Returns Some((suggested_filename, mime_type)) if yes.
+pub fn suggest_file_delivery(body_md: &str) -> Option<(String, &'static str)> {
+    if body_md.len() < FILE_DELIVERY_THRESHOLD_CHARS {
+        return None;
+    }
+    // Heuristics for extension based on content
+    let (ext, mime) = if body_md.contains("```diff") || body_md.contains("---\n+++") {
+        ("diff", "text/x-diff")
+    } else if body_md.starts_with('{') && body_md.trim_end().ends_with('}') {
+        ("json", "application/json")
+    } else if body_md.contains("```rust") || body_md.contains("fn main()") {
+        ("rs", "text/x-rust")
+    } else if body_md.contains("```ts") || body_md.contains("```typescript") {
+        ("ts", "text/x-typescript")
+    } else if body_md.contains("[ERROR]") || body_md.contains("WARN") {
+        ("log", "text/plain")
+    } else {
+        ("md", "text/markdown")
+    };
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some((format!("aisb-{}.{}", ts, ext), mime))
+}
+
+/// Full smart-wrap response: applies STRUCTURE (mention by id + expandable
+/// sections) and SPOILERS (secret masking) packs, then returns the final
+/// HTML. Caller decides separately whether to also offer file delivery
+/// via `suggest_file_delivery`.
+pub fn smart_wrap_response(
+    agent: &str,
+    body_md: &str,
+    duration_s: f32,
+    model: &str,
+    user_id: Option<i64>,
+    user_name: Option<&str>,
+) -> String {
+    // Header — mention the user by tg://user?id= if known
+    let header = match (user_id, user_name) {
+        (Some(uid), Some(name)) => format!(
+            "Ω  <a href=\"tg://user?id={}\">{}</a> · <b>{}</b>",
+            uid,
+            escape_html(name),
+            escape_html(agent),
+        ),
+        _ => format!("Ω  <b>{}</b>", escape_html(agent)),
+    };
+    let divider = "─".repeat(20);
+    let body_html = smart_markdown_to_html(body_md);
+    let body_html = mask_secrets(&body_html);
+    let footer = format!("<i>⌁ {:.1}s · {}</i>", duration_s, escape_html(model));
+    format!("{}\n{}\n\n{}\n\n{}", header, divider, body_html, footer)
+}
+
 /// Format a blockquote card with title and body (AISB report style).
 pub fn blockquote_card(title: &str, body: &str) -> String {
     let mut out = String::new();

@@ -467,20 +467,33 @@ impl TelegramBotEngine {
         let is_master_chat = relay_target == omega_core::aisb::MASTER_SESSION_NAME;
 
         if is_master_chat {
-            // ── Minimal Engineer template flow ────────────────────────────
-            // 1. Send a "Thinking…" placeholder, remember its message_id
-            // 2. Spawn a typing-action ticker (every 4s) until the LLM returns
-            // 3. Edit the placeholder with the formatted answer (single
-            //    message morphs from thinking → answer)
-            // 4. If the answer is too long for one Telegram message,
-            //    edit the placeholder with the head and send the tail as
-            //    follow-ups.
+            // ── Minimal Engineer + Smart packs flow ────────────────────────
+            // 1. React 👀 on user's message (instant ack)
+            // 2. Send a "Thinking…" placeholder THREADED as reply_to user msg
+            // 3. Typing-action ticker every 4s
+            // 4. Edit placeholder with smart_wrap (expandable sections +
+            //    mention by id + secret spoilers)
+            // 5. If body too large → sendDocument with the tail
             let (provider, model) = read_active_provider_model();
             let agent_label = "AISB Master";
             let model_label = if model.is_empty() { provider.clone() } else { model.clone() };
 
+            // Extract user identity for the mention pack
+            let user_id = msg.from.as_ref().map(|u| u.id);
+            let user_name = msg
+                .from
+                .as_ref()
+                .and_then(|u| u.first_name.clone().or_else(|| u.username.clone()));
+            let user_msg_id = msg.message_id;
+
+            // Pack CONTEXT: thread the reply, react 👀 to ack receipt
+            let _ = self.set_message_reaction(chat_id, user_msg_id, "👀").await;
+
             let placeholder = formatting::thinking_placeholder(agent_label);
-            let placeholder_id = self.send_html(chat_id, &placeholder).await?.unwrap_or(0);
+            let placeholder_id = self
+                .send_html_reply(chat_id, &placeholder, Some(user_msg_id))
+                .await?
+                .unwrap_or(0);
 
             // Typing ticker — fire-and-forget; aborts when this scope ends.
             let ticker = {
@@ -519,34 +532,79 @@ impl TelegramBotEngine {
             // Format + deliver.
             match result {
                 Ok(body) if !body.is_empty() => {
-                    let wrapped = formatting::wrap_response(agent_label, &body, duration, &model_label);
+                    // Pack FILES: large bodies become attachments.
+                    let file_target = formatting::suggest_file_delivery(&body);
+
+                    // Pack STRUCTURE + SPOILERS: smart wrap with mention,
+                    // expandable sections, secret masking.
+                    let wrapped = formatting::smart_wrap_response(
+                        agent_label,
+                        if file_target.is_some() {
+                            // Show only a short summary inline when shipping a file
+                            "_Output too large — attached as file._"
+                        } else {
+                            &body
+                        },
+                        duration,
+                        &model_label,
+                        user_id,
+                        user_name.as_deref(),
+                    );
+
                     let chunks = formatting::split_message(&wrapped, TELEGRAM_MAX_MSG_LEN);
                     if let Some(first) = chunks.first() {
                         if placeholder_id != 0 {
                             let _ = self.edit_message_html(chat_id, placeholder_id, first).await;
                         } else {
-                            let _ = self.send_html(chat_id, first).await;
+                            let _ = self
+                                .send_html_reply(chat_id, first, Some(user_msg_id))
+                                .await;
                         }
                     }
                     for tail in chunks.iter().skip(1) {
                         let _ = self.send_html(chat_id, tail).await;
                     }
+
+                    // Ship the file attachment if applicable
+                    if let Some((filename, mime)) = file_target {
+                        let _ = self
+                            .send_document_bytes(chat_id, &filename, mime, body.as_bytes())
+                            .await;
+                    }
                 }
                 Ok(_) => {
-                    let empty = formatting::wrap_response(agent_label, "_Empty response._", duration, &model_label);
+                    let empty = formatting::smart_wrap_response(
+                        agent_label,
+                        "_Empty response._",
+                        duration,
+                        &model_label,
+                        user_id,
+                        user_name.as_deref(),
+                    );
                     if placeholder_id != 0 {
                         let _ = self.edit_message_html(chat_id, placeholder_id, &empty).await;
                     } else {
-                        let _ = self.send_html(chat_id, &empty).await;
+                        let _ = self
+                            .send_html_reply(chat_id, &empty, Some(user_msg_id))
+                            .await;
                     }
                 }
                 Err(e) => {
                     let body = format!("`{} error`\n{}", provider, e);
-                    let err_html = formatting::wrap_response(agent_label, &body, duration, &model_label);
+                    let err_html = formatting::smart_wrap_response(
+                        agent_label,
+                        &body,
+                        duration,
+                        &model_label,
+                        user_id,
+                        user_name.as_deref(),
+                    );
                     if placeholder_id != 0 {
                         let _ = self.edit_message_html(chat_id, placeholder_id, &err_html).await;
                     } else {
-                        let _ = self.send_html(chat_id, &err_html).await;
+                        let _ = self
+                            .send_html_reply(chat_id, &err_html, Some(user_msg_id))
+                            .await;
                     }
                 }
             }
@@ -2231,6 +2289,88 @@ impl TelegramBotEngine {
                 Ok(None)
             }
         }
+    }
+
+    /// Send an HTML message threaded as a reply to `reply_to`. The bot's
+    /// answer renders with a "↪ user's message" header in Telegram so the
+    /// conversation stays visually anchored (Pack CONTEXT).
+    async fn send_html_reply(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_to: Option<i64>,
+    ) -> Result<Option<i64>> {
+        let chunks = formatting::split_message(text, TELEGRAM_MAX_MSG_LEN);
+        let mut last_msg_id = None;
+        for (idx, chunk) in chunks.iter().enumerate() {
+            let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+            let mut body = serde_json::json!({
+                "chat_id": chat_id,
+                "text": chunk,
+                "parse_mode": "HTML",
+            });
+            if idx == 0 {
+                if let Some(rid) = reply_to {
+                    body["reply_parameters"] = serde_json::json!({
+                        "message_id": rid,
+                        "allow_sending_without_reply": true,
+                    });
+                }
+            }
+            if let Ok(resp) = self.client.post(&url).json(&body).send().await {
+                if let Ok(parsed) = resp.json::<SendMessageResp>().await {
+                    if let Some(m) = parsed.result {
+                        last_msg_id = Some(m.message_id);
+                    }
+                }
+            }
+        }
+        Ok(last_msg_id)
+    }
+
+    /// Set a reaction emoji on a user message (Pack INTERACTION).
+    /// Used as an instant ack — bot replies with 👀 right when receiving,
+    /// so the user knows the message landed even before the placeholder
+    /// shows.
+    async fn set_message_reaction(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        emoji: &str,
+    ) -> Result<()> {
+        let url = format!("{}/bot{}/setMessageReaction", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{ "type": "emoji", "emoji": emoji }],
+            "is_big": false,
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+        Ok(())
+    }
+
+    /// Send a byte payload as a document (Pack FILES). Used when an
+    /// agent response is too large to inline (>2KB or many lines).
+    /// `filename` ends up as the Telegram caption + download name.
+    async fn send_document_bytes(
+        &self,
+        chat_id: i64,
+        filename: &str,
+        mime: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let url = format!("{}/bot{}/sendDocument", API_BASE, self.cfg.bot_token);
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str(mime)
+            .unwrap_or_else(|_| {
+                reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(filename.to_string())
+            });
+        let form = reqwest::multipart::Form::new()
+            .text("chat_id", chat_id.to_string())
+            .part("document", part);
+        let _ = self.client.post(&url).multipart(form).send().await;
+        Ok(())
     }
 
     /// Edit a previously-sent HTML message in place. Used by the
