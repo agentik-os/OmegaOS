@@ -377,17 +377,38 @@ impl SessionManager {
     /// it, Claude renders to its spawn-time 200-col width and the preview
     /// shows a clipped slice, making the agent UI look "phone-width".
     pub async fn resize_pane(&self, session_name: &str, cols: u16, rows: u16) -> Result<()> {
-        let pane = self.pane_for(session_name).await?;
-        match pane.resize(TerminalSizeSpec::new(cols, rows)).await {
-            Ok(()) => Ok(()),
-            Err(e) if is_pane_stale(&e) => {
-                self.invalidate_pane(session_name).await;
-                let pane = self.pane_for(session_name).await?;
-                pane.resize(TerminalSizeSpec::new(cols, rows)).await?;
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
+        // IMPORTANT (verified empirically): a pane is bounded by its WINDOW.
+        // The SDK `pane.resize()` is CLAMPED to the current window size, so it
+        // cannot grow the content past the window — calling it to widen a
+        // session is a silent no-op. That was the real "Claude isn't
+        // responsive to the panel width" bug: every resize call did nothing.
+        // Growing the content requires resizing the WINDOW. The SDK exposes no
+        // public window-resize, so we shell out to the proven
+        // `rmux resize-window`, which sets the absolute size and makes the
+        // inner app redraw via SIGWINCH (confirmed live: 200→120→150→100).
+        //
+        // Cheap in practice: callers guard this behind (session, cols, rows)
+        // change-detection, so it fires only when the geometry actually
+        // changes, not every frame.
+        let out = tokio::process::Command::new("rmux")
+            .args([
+                "resize-window",
+                "-t",
+                session_name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "rmux resize-window failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
+        Ok(())
     }
 
     /// Multi-line aware send: wraps `text` in bracketed-paste escape
