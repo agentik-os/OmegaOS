@@ -20,19 +20,37 @@ pub struct PersistentClaude {
 }
 
 impl PersistentClaude {
-    /// Spawn the persistent claude subprocess.
+    /// Spawn the persistent claude subprocess as the AISB Master:
+    /// - cwd = $HOME (full system access, not scoped to any project)
+    /// - --append-system-prompt-file loads the AISB Master prompt
+    ///   (router/dispatcher identity — NEVER does the work itself)
     pub async fn spawn(config_dir: Option<PathBuf>) -> Result<Self> {
         let mut cmd = Command::new("claude");
         if let Some(dir) = config_dir {
             cmd.env("CLAUDE_CONFIG_DIR", dir);
         }
-        cmd.args([
+
+        // AISB Master runs from $HOME — full system access, all projects in scope.
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+        cmd.current_dir(&home);
+
+        // Inject the AISB Master system prompt so the model knows it's the
+        // dispatcher, not a project agent.
+        let aisb_prompt = home.join(".omega/agents/aisb-master.md");
+        let mut args: Vec<&str> = vec![
             "--print",
             "--output-format=stream-json",
             "--input-format=stream-json",
             "--dangerously-skip-permissions",
             "--verbose",
-        ]);
+        ];
+        let prompt_arg;
+        if aisb_prompt.exists() {
+            prompt_arg = aisb_prompt.to_string_lossy().to_string();
+            args.push("--append-system-prompt-file");
+            args.push(&prompt_arg);
+        }
+        cmd.args(&args);
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::null());
