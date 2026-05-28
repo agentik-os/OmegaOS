@@ -5,6 +5,13 @@
 # This adds the Option+Z (Alt+Z) keybinding to launch the OmegaOS
 # session manager as a popup over any rmux session.
 
+# Keep the FULL conversation scrollback for agent sessions. The rmux default
+# (2000 lines) silently discards the top of long chats; OmegaOS lets you
+# scroll all the way back, so retain a large history. Set here so it persists
+# across daemon restarts (the omega binary also sets it at startup as a
+# fallback for daemons that began before this config was sourced).
+set-option -g history-limit 100000
+
 # Option+Z / Alt+Z → OmegaOS session manager popup (full-screen)
 bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
 
