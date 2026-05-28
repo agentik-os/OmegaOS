@@ -225,10 +225,30 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         "pasting OAuth code into reauth session"
     );
 
-    // Send the code + Enter (the SessionManager appends Enter automatically).
-    mgr.send_text(REAUTH_SESSION, code)
+    // Verify Claude is actually waiting for the code (VPS pattern).
+    let pre_capture = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
+    let waiting_for_code = pre_capture.contains("Paste code here")
+        || pre_capture.contains("Paste your code");
+    if !waiting_for_code {
+        tracing::warn!(
+            "Claude does not appear to be waiting for code. Last 300 chars: {}",
+            &pre_capture.chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
+        );
+    }
+
+    // CRITICAL: paste code WITHOUT Enter, sleep 1s, then send Enter separately.
+    // VPS Python pattern: load-buffer + paste-buffer + sleep 1 + send-keys Enter.
+    // Without this gap, Claude /login input field rejects the paste.
+    let pane = mgr.get_active_pane(REAUTH_SESSION)
         .await
-        .context("send_text(code) failed")?;
+        .context("get reauth pane failed")?;
+    pane.send_text(code)
+        .await
+        .context("paste code failed")?;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    pane.send_key("Enter")
+        .await
+        .context("send Enter failed")?;
 
     // Poll credentials.json for mtime change — up to 20s.
     let mut updated = false;
