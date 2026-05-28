@@ -1,3 +1,4 @@
+pub mod account;
 pub mod agents;
 pub mod aisb;
 pub mod aisb_agents;
@@ -14,6 +15,7 @@ pub mod metrics;
 pub mod mission;
 pub mod monitor;
 pub mod naming;
+pub mod oauth;
 pub mod oracle_lifecycle;
 pub mod orchestration;
 pub mod patrol;

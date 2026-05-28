@@ -146,6 +146,19 @@ else
     info "PDF generator source not found — skipping (can be added later)"
 fi
 
+# Install OAuth helper (fallback for non-interactive token refresh)
+OAUTH_SRC="$OMEGA_SRC/docs/reference/oauth/claude-oauth.sh"
+OAUTH_DST_DIR="$OMEGA_DIR/bin"
+OAUTH_DST="$OAUTH_DST_DIR/claude-oauth.sh"
+mkdir -p "$OAUTH_DST_DIR"
+if [[ -f "$OAUTH_SRC" ]]; then
+    cp "$OAUTH_SRC" "$OAUTH_DST"
+    chmod +x "$OAUTH_DST"
+    ok "OAuth helper installed: $OAUTH_DST"
+else
+    info "OAuth helper script not found — skipping (login via Telegram /login still works)"
+fi
+
 # Install audit skills (Quality Arsenal)
 AUDITS_SRC="$OMEGA_SRC/skills/audits"
 AUDITS_DST="$OMEGA_DIR/skills/audits"

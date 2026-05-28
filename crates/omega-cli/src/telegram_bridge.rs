@@ -10,8 +10,10 @@
 //! HTML parse_mode throughout, using omega_core::formatting for rich output.
 
 use anyhow::{Context, Result};
+use omega_core::account::{self, CurrentAccount};
 use omega_core::formatting;
 use omega_core::monitor::OmegaTelegramConfig;
+use omega_core::oauth;
 use omega_core::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -396,8 +398,23 @@ impl TelegramBotEngine {
             }
         }
 
-        // 2. Handle commands
+        // 2. OAuth code paste — only triggers if a reauth is pending.
+        // Code pattern: 20+ chars of [A-Za-z0-9_-], optionally followed by #state.
+        let trimmed = text.trim();
+        if oauth::looks_like_oauth_code(trimmed) {
+            let state = oauth::PendingReauth::load();
+            if state.pending && !state.is_stale() {
+                self.handle_oauth_code(chat_id, trimmed).await;
+                return Ok(());
+            }
+        }
+
+        // 3. Handle commands with inline keyboards (return early if handled).
         if text.starts_with('/') {
+            if self.try_handle_keyboard_command(chat_id, text).await {
+                return Ok(());
+            }
+            // Plain text commands return a string we send normally.
             if let Some(reply) = self.handle_command(text).await {
                 let _ = self.send_html(chat_id, &reply).await;
                 return Ok(());
@@ -609,6 +626,13 @@ impl TelegramBotEngine {
 
         tracing::info!(data = %data, "callback query received");
 
+        // Account/billing callbacks have their own routing.
+        if let Some(rest) = data.strip_prefix("acc:") {
+            self.handle_account_callback(chat_id, rest).await;
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            return Ok(());
+        }
+
         let (action, project) = data.split_once(':').unwrap_or((data, ""));
 
         let reply = match action {
@@ -649,6 +673,446 @@ impl TelegramBotEngine {
         let _ = self.answer_callback_query(&cb.id, "").await;
 
         Ok(())
+    }
+
+    /// Handle keyboard commands that send their own message with inline buttons.
+    /// Returns true if the command was handled (caller should NOT fall through
+    /// to `handle_command`).
+    async fn try_handle_keyboard_command(&self, chat_id: i64, text: &str) -> bool {
+        let cmd = text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .split('@')
+            .next()
+            .unwrap_or("");
+        match cmd {
+            "/account" => {
+                self.send_account_card(chat_id).await;
+                true
+            }
+            "/login" => {
+                self.start_login_flow(chat_id, "User-initiated /login").await;
+                true
+            }
+            "/logout" => {
+                self.send_logout_confirmation(chat_id).await;
+                true
+            }
+            "/billing" => {
+                self.send_billing_card(chat_id).await;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Dispatch `acc:*` callback subactions.
+    async fn handle_account_callback(&self, chat_id: i64, rest: &str) {
+        let (sub, arg) = rest.split_once(':').unwrap_or((rest, ""));
+        match sub {
+            "show" => self.send_account_card(chat_id).await,
+            "billing" => self.send_billing_card(chat_id).await,
+            "login" => self.start_login_flow(chat_id, "User-initiated reauth").await,
+            "logout_confirm" => self.send_logout_confirmation(chat_id).await,
+            "cancel" => {
+                let _ = self
+                    .send_html(chat_id, "✖ <i>Cancelled.</i>")
+                    .await;
+            }
+            "logout" => match account::logout() {
+                Ok(_) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            "🚪 <b>Logged out</b>\n<i>Credentials backed up to \
+                             <code>.credentials.json.previous</code>. Use /login \
+                             to re-authenticate.</i>",
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "❌ <b>Logout failed</b>\n<code>{}</code>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                }
+            },
+            "switch" => {
+                if arg.is_empty() {
+                    let _ = self
+                        .send_html(chat_id, "⚠️ <i>No account name supplied.</i>")
+                        .await;
+                    return;
+                }
+                let result = account::switch_account(arg);
+                if result.ok {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "✅ <b>Switched</b> → <code>{}</code>\n\
+                                 <b>Email:</b> <code>{}</code>\n\
+                                 <b>Expires:</b> <code>{} min</code>",
+                                formatting::escape_html(&result.label),
+                                formatting::escape_html(&result.email),
+                                result.expires_min,
+                            ),
+                        )
+                        .await;
+                } else if result.method == "needs_reauth" {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "⚠️ <b>Refresh failed</b> for <code>{}</code>\n\
+                                 <i>Need a full OAuth reauth — starting now…</i>",
+                                formatting::escape_html(&result.label),
+                            ),
+                        )
+                        .await;
+                    self.start_login_flow(chat_id, &format!("Switch to {}", result.label))
+                        .await;
+                } else {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "❌ <b>Switch failed</b>\n<code>{}</code>",
+                                formatting::escape_html(result.error.as_deref().unwrap_or("unknown"))
+                            ),
+                        )
+                        .await;
+                }
+            }
+            _ => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "❓ Unknown account action: <code>{}</code>",
+                            formatting::escape_html(sub)
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Render the account card with [Login | Switch | Billing | Logout] inline
+    /// buttons.
+    async fn send_account_card(&self, chat_id: i64) {
+        let current = CurrentAccount::read();
+        let accounts = account::list_accounts();
+        let billing = account::get_billing();
+
+        let status_icon = if current.valid && !current.warning {
+            "✅"
+        } else if current.warning {
+            "⚠️"
+        } else {
+            "❌"
+        };
+        let status_line = if current.valid {
+            format!("{} min remaining", current.expires_min)
+        } else {
+            "expired".to_string()
+        };
+
+        let label = current
+            .label
+            .as_deref()
+            .or(current.name.as_deref())
+            .unwrap_or("?");
+
+        let mut html = format!(
+            "🔐 <b>Account</b>\n━━━━━━━━━━\n\
+             <b>Email:</b>   <code>{}</code>\n\
+             <b>Profile:</b> <code>{}</code>\n\
+             <b>Token:</b>   {} {}\n\
+             <b>Tier:</b>    <code>{}</code>\n\
+             <b>Plan:</b>    <code>{}</code>",
+            formatting::escape_html(&current.email),
+            formatting::escape_html(label),
+            status_icon,
+            formatting::escape_html(&status_line),
+            formatting::escape_html(&current.tier),
+            formatting::escape_html(&current.subscription),
+        );
+
+        if let Some(b) = &billing {
+            html.push_str(&format!(
+                "\n\n💰 <b>Usage</b>\n\
+                 <b>5h:</b>   <code>{:.1}%</code>\n\
+                 <b>Week:</b> <code>{:.1}%</code>",
+                b.precise_5h(),
+                b.precise_week(),
+            ));
+        }
+
+        if !accounts.is_empty() {
+            html.push_str("\n\n<b>Saved profiles:</b>\n");
+            for a in &accounts {
+                let marker = if a.is_active { "● " } else { "  " };
+                html.push_str(&format!(
+                    "{}<code>{}</code> — {}\n",
+                    marker,
+                    formatting::escape_html(&a.name),
+                    formatting::escape_html(&a.email),
+                ));
+            }
+        }
+
+        let mut rows: Vec<Vec<InlineKeyboardButton>> = vec![vec![
+            InlineKeyboardButton {
+                text: "🔐 Login".to_string(),
+                callback_data: "acc:login".to_string(),
+            },
+            InlineKeyboardButton {
+                text: "📊 Billing".to_string(),
+                callback_data: "acc:billing".to_string(),
+            },
+        ]];
+
+        // Add a switch row per saved profile (up to 4).
+        for a in accounts.iter().take(4) {
+            if a.is_active {
+                continue;
+            }
+            rows.push(vec![InlineKeyboardButton {
+                text: format!("↻ Switch → {}", a.label),
+                callback_data: format!("acc:switch:{}", a.name),
+            }]);
+        }
+
+        rows.push(vec![InlineKeyboardButton {
+            text: "🚪 Logout".to_string(),
+            callback_data: "acc:logout_confirm".to_string(),
+        }]);
+
+        let keyboard = InlineKeyboardMarkup {
+            inline_keyboard: rows,
+        };
+
+        let _ = self.send_html_with_keyboard(chat_id, &html, &keyboard).await;
+    }
+
+    async fn send_logout_confirmation(&self, chat_id: i64) {
+        let current = CurrentAccount::read();
+        let label = current
+            .label
+            .as_deref()
+            .or(current.name.as_deref())
+            .unwrap_or("?");
+        let html = format!(
+            "🚪 <b>Confirm logout</b>\n━━━━━━━━━━\n\
+             <b>Account:</b> <code>{}</code>\n<b>Email:</b>   <code>{}</code>\n\n\
+             <i>Logging out backs up <code>.credentials.json.previous</code> \
+             and removes the live credentials. New sessions will need /login.</i>",
+            formatting::escape_html(label),
+            formatting::escape_html(&current.email),
+        );
+        let keyboard = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton {
+                    text: "✅ Confirm logout".to_string(),
+                    callback_data: "acc:logout".to_string(),
+                },
+                InlineKeyboardButton {
+                    text: "✖ Cancel".to_string(),
+                    callback_data: "acc:cancel".to_string(),
+                },
+            ]],
+        };
+        let _ = self.send_html_with_keyboard(chat_id, &html, &keyboard).await;
+    }
+
+    async fn send_billing_card(&self, chat_id: i64) {
+        let Some(snap) = account::get_billing() else {
+            let _ = self
+                .send_html(
+                    chat_id,
+                    "⚠️ <i>No billing snapshot available (<code>/tmp/aisb-usage.json</code> missing).</i>",
+                )
+                .await;
+            return;
+        };
+        let html = format!(
+            "💰 <b>Billing</b>\n━━━━━━━━━━\n\
+             <b>5h:</b>    <code>{:.1}%</code>\n\
+             <b>Week:</b>  <code>{:.1}%</code>\n\
+             <b>Account:</b> <code>{}</code>\n\
+             <b>Email:</b>   <code>{}</code>",
+            snap.precise_5h(),
+            snap.precise_week(),
+            formatting::escape_html(&snap.active_account),
+            formatting::escape_html(&snap.email),
+        );
+        let keyboard = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton {
+                    text: "↻ Refresh".to_string(),
+                    callback_data: "acc:billing".to_string(),
+                },
+                InlineKeyboardButton {
+                    text: "🔐 Account".to_string(),
+                    callback_data: "acc:show".to_string(),
+                },
+            ]],
+        };
+        let _ = self.send_html_with_keyboard(chat_id, &html, &keyboard).await;
+    }
+
+    /// Start the OAuth reauth flow: spawn the rmux session, capture the URL,
+    /// send it to the user.
+    async fn start_login_flow(&self, chat_id: i64, reason: &str) {
+        let _ = self
+            .send_html(
+                chat_id,
+                "🔄 <i>Spawning reauth session… this takes ~15s.</i>",
+            )
+            .await;
+
+        match oauth::request_reauth(&self.mgr, reason, None).await {
+            Ok(Some(req)) => {
+                let html = format!(
+                    "🔐 <b>Auth Required</b>\n━━━━━━━━━━\n\
+                     <b>Reason:</b> {}\n\n\
+                     1. <a href=\"{}\">Open this URL</a> and authorize\n\
+                     2. Copy the code from the callback page\n\
+                     3. Paste it back here — auto-detected\n\n\
+                     <i>The reauth session is waiting in <code>aisb-reauth</code>.</i>",
+                    formatting::escape_html(reason),
+                    req.auth_url,
+                );
+                let _ = self.send_html(chat_id, &html).await;
+            }
+            Ok(None) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        "⏳ <i>A reauth is already pending or just attempted. \
+                         Wait 30s or check the <code>aisb-reauth</code> session.</i>",
+                    )
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "❌ <b>Login failed</b>\n<code>{}</code>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// Process a pasted OAuth code by handing it off to the reauth session.
+    async fn handle_oauth_code(&self, chat_id: i64, code: &str) {
+        let _ = self
+            .send_html(chat_id, "⏳ <i>Exchanging code for fresh credentials…</i>")
+            .await;
+
+        match oauth::handle_code(&self.mgr, code).await {
+            Ok(res) if res.success => {
+                let html = format!(
+                    "✅ <b>Authenticated</b>\n━━━━━━━━━━\n\
+                     <b>Email:</b>   <code>{}</code>\n\
+                     <b>Expires:</b> <code>{} min</code>\n\n\
+                     <i>Credentials updated. Active sessions pick up the new \
+                     token on their next API call.</i>",
+                    formatting::escape_html(&res.email),
+                    res.expires_min,
+                );
+                let _ = self.send_html(chat_id, &html).await;
+            }
+            Ok(res) => {
+                let tail = res
+                    .pane_tail
+                    .chars()
+                    .rev()
+                    .take(400)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>();
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "❌ <b>Auth failed</b>\n\n\
+                             Credentials did not update. Last pane:\n<pre>{}</pre>",
+                            formatting::escape_html(&tail)
+                        ),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "❌ <b>Code paste error</b>\n<code>{}</code>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// One-shot back-online card sent on bridge (re)start.
+    async fn send_back_online_card(&self) {
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let mut session_lines = Vec::new();
+        for sess in sessions.iter().take(8) {
+            let icon = match sess.role {
+                omega_core::session::SessionRole::Oracle => "🔮",
+                omega_core::session::SessionRole::Worker => "⚙️",
+                omega_core::session::SessionRole::Home => "🏠",
+                omega_core::session::SessionRole::System => "🧠",
+            };
+            session_lines.push(format!(
+                "  {} <code>{}</code>",
+                icon,
+                formatting::escape_html(&sess.name)
+            ));
+        }
+        if session_lines.is_empty() {
+            session_lines.push("  <i>No active sessions</i>".to_string());
+        }
+
+        let billing = account::get_billing();
+        let billing_block = if let Some(b) = &billing {
+            format!(
+                "\n\n💰 <b>Billing:</b>\n  5h: <code>{:.1}%</code>  ·  Week: <code>{:.1}%</code>\n  Account: <code>{}</code>",
+                b.precise_5h(),
+                b.precise_week(),
+                formatting::escape_html(&b.active_account),
+            )
+        } else {
+            "\n\n💰 <b>Billing:</b> <i>cache missing</i>".to_string()
+        };
+
+        let html = format!(
+            "🟢 <b>Ω OmegaOS — Back Online</b>\n━━━━━━━━━━\n\
+             📊 <b>Active Sessions:</b>\n{}{}\n\n\
+             <i>Type /help for commands. Reply to oracle reports to route \
+             messages back to that project. Paste an OAuth code anytime — \
+             auto-detected.</i>",
+            session_lines.join("\n"),
+            billing_block,
+        );
+
+        let _ = self.send_html(self.reply_chat_id, &html).await;
     }
 
     async fn stop_project_workers(&self, project: &str) -> String {
@@ -719,18 +1183,24 @@ impl TelegramBotEngine {
             "/start" | "/help" => Some(
                 "🟢 <b>Ω OmegaOS Bot Engine</b>\n\
                  ━━━━━━━━━━\n\n\
-                 <b>Commands:</b>\n\
+                 <b>Core:</b>\n\
                  /help — this message\n\
                  /list — show all rmux sessions\n\
                  /status <code>[session]</code> — capture last 20 lines\n\
-                 /billing — current Claude usage\n\
-                 /skills — list available skills\n\
-                 /audits — show Quality Arsenal status\n\
                  /aisb <code>text</code> — send to AISB Master\n\
                  /relay <code>session text</code> — send to specific session\n\
                  /kill <code>session</code> — kill a session\n\n\
+                 <b>Account &amp; Billing:</b>\n\
+                 /account — account card + login/switch/billing\n\
+                 /login — start OAuth reauth flow\n\
+                 /logout — clear active credentials\n\
+                 /billing — current Claude usage\n\n\
+                 <b>Skills &amp; Audits:</b>\n\
+                 /skills — list available skills\n\
+                 /audits — show Quality Arsenal status\n\n\
                  <i>Reply to any report to auto-route to that project.\n\
-                 Any other message goes to AISB Master.</i>"
+                 Any other message goes to AISB Master.\n\
+                 Paste an OAuth code directly — auto-detected.</i>"
                     .to_string(),
             ),
 
@@ -754,20 +1224,6 @@ impl TelegramBotEngine {
                     lines.push("  <i>No active sessions</i>".to_string());
                 }
                 Some(lines.join("\n"))
-            }
-
-            "/billing" => {
-                let snap = omega_core::monitor::UsageSnapshot::read().ok().flatten()?;
-                Some(format!(
-                    "💰 <b>Billing</b>\n━━━━━━━━━━\n\
-                     <b>5h:</b>    <code>{:.1}%</code>\n\
-                     <b>Week:</b>  <code>{:.1}%</code>\n\
-                     <b>Account:</b> {} ({})",
-                    snap.precise_5h(),
-                    snap.precise_week(),
-                    formatting::escape_html(&snap.active_account),
-                    formatting::escape_html(&snap.email),
-                ))
             }
 
             "/status" => {
@@ -1017,15 +1473,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
     let engine = TelegramBotEngine::new(cfg.clone()).await?;
     engine.ensure_master().await;
-
-    let _ = engine
-        .send_html(
-            engine.reply_chat_id,
-            "🟢 <b>Ω OmegaOS Bot Engine</b> — online\n\n\
-             <i>Full handler chain active: text, voice, docs, photos, callbacks.\n\
-             Reply to any report to auto-route. /help for commands.</i>",
-        )
-        .await;
+    engine.send_back_online_card().await;
 
     let mut offset: i64 = 0;
     let mut last_healthcheck = std::time::Instant::now();
