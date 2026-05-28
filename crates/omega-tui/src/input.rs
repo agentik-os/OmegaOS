@@ -902,7 +902,15 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             app.chat_input.pop();
             Action::None
         }
-        // Scroll preview while in chat
+        // Scroll preview (chat history) — arrows + j/k + page keys all work
+        KeyCode::Up => {
+            app.scroll_preview_up(1);
+            Action::None
+        }
+        KeyCode::Down => {
+            app.scroll_preview_down(1);
+            Action::None
+        }
         KeyCode::PageDown => {
             app.scroll_preview_down(10);
             Action::None
@@ -911,11 +919,28 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             app.scroll_preview_up(10);
             Action::None
         }
+        KeyCode::Home => {
+            app.scroll_preview_home();
+            Action::None
+        }
+        KeyCode::End => {
+            app.scroll_preview_end();
+            Action::None
+        }
         KeyCode::Char(c) => {
             // Ctrl+C inside chat → back to list (don't quit, that's surprising)
             if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
                 app.session_focus = SessionFocus::List;
                 app.chat_input.clear();
+                return Action::None;
+            }
+            // Ctrl+U scrolls up half-page (vim-style), Ctrl+D scrolls down
+            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
+                app.scroll_preview_up(15);
+                return Action::None;
+            }
+            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'd' {
+                app.scroll_preview_down(15);
                 return Action::None;
             }
             app.chat_input.push(c);
