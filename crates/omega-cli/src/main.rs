@@ -540,6 +540,10 @@ async fn run_tui_loop(
     let async_status: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
 
+    // Track the last pane resize we issued so we only resize on change
+    // (session switch OR terminal resize), not every tick.
+    let mut last_resized: Option<(String, u16, u16)> = None;
+
     loop {
         // Drain any error reported by a backgrounded keystroke forwarder.
         if let Ok(mut guard) = async_status.lock() {
@@ -562,6 +566,35 @@ async fn run_tui_loop(
         if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
+
+            // Auto-resize the previewed session's pane to fill the preview
+            // panel width. Without this, Claude renders at its spawn-time
+            // 200-col width and the preview shows a clipped "phone-width"
+            // slice. We resize only when (session, w, h) changes.
+            if matches!(
+                app.session_focus,
+                omega_tui::app::SessionFocus::Chat | omega_tui::app::SessionFocus::ChatFullscreen
+            ) {
+                if let Some(entry) = app.selected_session() {
+                    let name = entry.session.name.clone();
+                    if let Ok(sz) = terminal.size() {
+                        // Preview is 75% width in split, 100% in fullscreen.
+                        // Minus borders (2 cols, 2 rows) and tab bar (~3 rows).
+                        let fullscreen = app.session_focus
+                            == omega_tui::app::SessionFocus::ChatFullscreen;
+                        let pct = if fullscreen { 100 } else { 75 };
+                        let cols = ((sz.width as u32 * pct / 100) as u16).saturating_sub(2).max(40);
+                        let rows = sz.height.saturating_sub(5).max(10);
+                        let want = (name.clone(), cols, rows);
+                        if last_resized.as_ref() != Some(&want) {
+                            if let Ok(m) = SessionManager::connect_cached().await {
+                                let _ = m.resize_pane(&name, cols, rows).await;
+                            }
+                            last_resized = Some(want);
+                        }
+                    }
+                }
+            }
         }
 
         // Drain *all* events queued for this tick before redrawing. The

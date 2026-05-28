@@ -277,6 +277,23 @@ info "Syncing to LLM config directories..."
 "$INSTALL_DIR/omega" sync 2>/dev/null || true
 ok "LLM configs synced (Claude, Gemini, Codex)"
 
+# Schedule the self-improvement patrol (curator auto-trigger + trajectory
+# pruning). Idempotent — only adds the cron line if it's not already there.
+# The patrol watches ~/.omega/state/oracle-*.done.json and dispatches a
+# curator worker the first time each mission finishes.
+mkdir -p "$OMEGA_DIR/logs"
+PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega-patrol.log 2>&1   # OMEGA self-improvement patrol + curator"
+if command -v crontab >/dev/null 2>&1; then
+    if crontab -l 2>/dev/null | grep -q "omega patrol"; then
+        ok "Self-improvement patrol already scheduled"
+    else
+        ( crontab -l 2>/dev/null; echo "$PATROL_CRON" ) | crontab -
+        ok "Self-improvement patrol scheduled (every minute → curator auto-trigger)"
+    fi
+else
+    info "crontab not available — run 'omega patrol' manually or via your scheduler"
+fi
+
 # Install OPTIONAL rmux keybinding config — user has to opt-in via:
 #   omega install-bindings
 mkdir -p "$OMEGA_DIR"

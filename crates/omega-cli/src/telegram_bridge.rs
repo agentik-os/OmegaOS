@@ -454,6 +454,29 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
+        // /clean — kill + respawn the AISB Master session FRESH (no
+        // --continue → brand new conversation, clean slate). Lets the user
+        // reset the master at any time from Telegram.
+        if text.trim() == "/clean" {
+            let placeholder = formatting::thinking_placeholder("AISB Master");
+            let pid = self.send_html(chat_id, &placeholder).await?.unwrap_or(0);
+            let result = self.clean_master().await;
+            let body = match result {
+                Ok(_) => "AISB Master cleaned and restarted fresh. New conversation, clean slate. Ping me with the mission.",
+                Err(_) => "AISB Master kill succeeded but respawn had an issue — it will auto-respawn on the next message.",
+            };
+            let card = formatting::smart_wrap_response(
+                "AISB Master", body, 0.0, "system", None, None, None,
+                formatting::ResponseTier::Ok,
+            );
+            if pid != 0 {
+                let _ = self.edit_message_html(chat_id, pid, &card).await;
+            } else {
+                let _ = self.send_html(chat_id, &card).await;
+            }
+            return Ok(());
+        }
+
         // 3. Handle commands with inline keyboards (return early if handled).
         if text.starts_with('/') {
             if self.try_handle_keyboard_command(chat_id, text).await {
@@ -2082,7 +2105,8 @@ impl TelegramBotEngine {
                 {"command": "account",  "description": "Account / billing / login (with buttons)"},
                 {"command": "model",    "description": "Switch AI provider and model"},
                 {"command": "projects", "description": "List projects + new / add existing"},
-                {"command": "sessions", "description": "Active sessions (tap to target)"}
+                {"command": "sessions", "description": "Active sessions (tap to target)"},
+                {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"}
             ]
         });
 
@@ -2509,6 +2533,30 @@ impl TelegramBotEngine {
     /// "Thinking…" placeholder pattern: send placeholder → run LLM →
     /// edit placeholder with the formatted answer (single message
     /// morphs from thinking → answer, no chat clutter).
+    /// Kill the AISB Master session and respawn it FRESH (no --continue).
+    /// Also resets the curator-triggered flags so the new session starts
+    /// with a clean self-improvement slate. Invoked by the /clean command.
+    async fn clean_master(&self) -> Result<()> {
+        let master = omega_core::aisb::MASTER_SESSION_NAME;
+        // Kill (ignore error if already dead)
+        let _ = self.mgr.kill_session(master).await;
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        // Respawn fresh. ensure_master only creates if absent — since we
+        // just killed it, this creates a brand-new session.
+        let home = dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "/home/hacker".to_string());
+        omega_core::aisb::ensure_master(
+            &self.mgr,
+            omega_core::agents::Agent::Claude,
+            &home,
+        )
+        .await?;
+        // Give Claude a moment to boot before the next message arrives.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        Ok(())
+    }
+
     async fn edit_message_html(&self, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
         let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
         let body = serde_json::json!({

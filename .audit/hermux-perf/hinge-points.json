@@ -1,0 +1,71 @@
+{
+  "ref": "HEAD~1",
+  "ticket": "hermux-perf",
+  "files_analyzed": 5,
+  "files_list": [
+    "crates/omega-cli/src/main.rs",
+    "crates/omega-cli/src/telegram_bridge.rs",
+    "crates/omega-core/src/patrol.rs",
+    "crates/omega-tui/src/app.rs",
+    "crates/omega-tui/src/ui.rs"
+  ],
+  "hinges_count": 7,
+  "hinges": [
+    {
+      "file": "crates/omega-cli/src/main.rs",
+      "line_start": 578,
+      "line_end": 578,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+        while {"
+    },
+    {
+      "file": "crates/omega-cli/src/main.rs",
+      "line_start": 1040,
+      "line_end": 1040,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+            if drain_start.elapsed() > drain_budget {"
+    },
+    {
+      "file": "crates/omega-core/src/patrol.rs",
+      "line_start": 321,
+      "line_end": 321,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+        if flag.exists() {"
+    },
+    {
+      "file": "crates/omega-core/src/patrol.rs",
+      "line_start": 322,
+      "line_end": 322,
+      "kind": "new_early_return",
+      "why": "Early return changes function exit logic",
+      "evidence_first_line": "+            return Ok(());"
+    },
+    {
+      "file": "crates/omega-tui/src/app.rs",
+      "line_start": 1040,
+      "line_end": 1048,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+        for entry in self.sessions.iter_mut() {"
+    },
+    {
+      "file": "crates/omega-tui/src/ui.rs",
+      "line_start": 474,
+      "line_end": 474,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+    if chat_focused {"
+    },
+    {
+      "file": "crates/omega-tui/src/ui.rs",
+      "line_start": 488,
+      "line_end": 488,
+      "kind": "new_branch",
+      "why": "New control-flow branch \u2014 boundary conditions live here",
+      "evidence_first_line": "+        if viewport_row < inner_h {"
+    }
+  ]
+}

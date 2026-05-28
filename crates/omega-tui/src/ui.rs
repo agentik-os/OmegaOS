@@ -467,15 +467,15 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         );
     frame.render_widget(preview, area);
 
-    // Visible terminal cursor when chat is focused — sits at the
-    // typing position (end of the last non-empty visible line). This
-    // is the OS-native cursor (blinking caret), not a fake block char,
-    // so it's the same affordance the user expects from any terminal.
+    // Visible cursor when chat is focused. Two layers (belt + suspenders):
+    //   1. A painted yellow block glyph in the buffer — always visible
+    //      regardless of terminal cursor settings.
+    //   2. The OS-native blinking caret via set_cursor_position.
+    // Positioned at the typing point: end of the last non-empty visible
+    // line of the pane capture.
     if chat_focused {
-        let inner_w = area.width.saturating_sub(2) as usize; // -2 for borders
-        let inner_h = area.height.saturating_sub(2);          // -2 for borders
-        // Find the last non-empty line in the unscrolled buffer, then
-        // map it to viewport coords.
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let inner_h = area.height.saturating_sub(2);
         let all_lines: Vec<&str> = app.preview_content.lines().collect();
         let (last_idx, last_line) = all_lines
             .iter()
@@ -486,10 +486,18 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
             .unwrap_or((0, ""));
         let viewport_row = last_idx.saturating_sub(scroll);
         if viewport_row < inner_h {
-            // Column = visual width of the last line, clamped to inner_w
-            let col_chars = last_line.chars().count().min(inner_w) as u16;
+            let col_chars = (last_line.chars().count().min(inner_w.saturating_sub(1))) as u16;
             let cursor_x = area.x + 1 + col_chars;
             let cursor_y = area.y + 1 + viewport_row;
+            // Layer 1: paint a block glyph into the buffer cell.
+            let buf = frame.buffer_mut();
+            if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
+                if let Some(cell) = buf.cell_mut((cursor_x, cursor_y)) {
+                    cell.set_symbol("▏");
+                    cell.set_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::RAPID_BLINK));
+                }
+            }
+            // Layer 2: OS-native caret.
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     }

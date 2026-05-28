@@ -43,6 +43,13 @@ impl Patrol {
     }
 
     pub async fn run_once(&mut self) -> Result<PatrolReport> {
+        // Heartbeat — proves the patrol actually fired. Lets the user (and
+        // `omega doctor`) verify the self-improvement loop is alive rather
+        // than silently dead (the failure mode of the old Smith agent).
+        let hb = self.config.state_dir.join("patrol-heartbeat.txt");
+        let _ = std::fs::create_dir_all(&self.config.state_dir);
+        let _ = std::fs::write(&hb, Utc::now().to_rfc3339());
+
         let mgr = SessionManager::connect().await?;
         let sessions = mgr.list_sessions().await?;
 

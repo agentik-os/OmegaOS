@@ -1,0 +1,60 @@
+{
+  "audits": [
+    "codeaudit",
+    "debugaudit",
+    "logicaudit",
+    "perfaudit",
+    "secaudit"
+  ],
+  "count": 5,
+  "mode": "fix",
+  "project_type": "backend",
+  "rationale": {
+    "codeaudit": [
+      "baseline (always)"
+    ],
+    "debugaudit": [
+      "baseline (always)"
+    ],
+    "logicaudit": [
+      "baseline (always)"
+    ],
+    "perfaudit": [
+      "mission keyword match: \\boptim"
+    ],
+    "secaudit": [
+      "padding to MIN_AUDITS=5 floor"
+    ]
+  },
+  "min_audits_floor": 5,
+  "schema_version": "v2",
+  "required_args_per_audit": [
+    "--user-need=<verbatim user quote>",
+    "--hinge=<file:line-range from hinge-analyzer.sh>",
+    "--ticket=<TICKET_ID>",
+    "--files=<modified files>"
+  ],
+  "expected_output_schema": {
+    "score": "integer 100",
+    "confidence": "high (medium/low triggers re-audit)",
+    "skill_used": "exact audit name",
+    "user_need_match": {
+      "quote": "verbatim user quote",
+      "addressed": "boolean",
+      "evidence": "paragraph with file:line refs"
+    },
+    "falsifiable_tests": "\u22653 entries with name/hypothesis/command/expected/actual/passed",
+    "hinge_findings": "covers every hinge from hinge-analyzer.sh",
+    "issues_found_and_fixed": "exhaustive list",
+    "confidence_basis": "explanation paragraph"
+  },
+  "next_steps": [
+    "1. Oracle runs ~/.aisb/lib/hinge-analyzer.sh --project-path=<path> --ticket=<id> > hinge.json",
+    "2. Oracle dispatches one worker per audit in 'audits' list, with all required args",
+    "3. Each worker writes <audit>.json with v2 schema",
+    "4. Oracle runs ~/.aisb/lib/adversarial-pass.sh after all audits pass at 100/high",
+    "5. linear-ticket-gate.sh validates the full chain"
+  ],
+  "selector": "keyword",
+  "ticket": "hermux-perf"
+}

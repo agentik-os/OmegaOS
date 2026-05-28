@@ -371,6 +371,24 @@ impl SessionManager {
         }
     }
 
+    /// Resize a session's active pane to (cols, rows). The TUI calls this
+    /// to match the rmux pane to the preview panel's real width — without
+    /// it, Claude renders to its spawn-time 200-col width and the preview
+    /// shows a clipped slice, making the agent UI look "phone-width".
+    pub async fn resize_pane(&self, session_name: &str, cols: u16, rows: u16) -> Result<()> {
+        let pane = self.pane_for(session_name).await?;
+        match pane.resize(TerminalSizeSpec::new(cols, rows)).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.resize(TerminalSizeSpec::new(cols, rows)).await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Multi-line aware send: wraps `text` in bracketed-paste escape
     /// sequences (`\e[200~ ... \e[201~`) so that an interactive TUI
     /// (e.g. Claude Code) buffers the whole block as one paste rather
