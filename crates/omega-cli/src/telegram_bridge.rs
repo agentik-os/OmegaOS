@@ -690,27 +690,22 @@ impl TelegramBotEngine {
             .unwrap_or("");
         match cmd {
             "/account" => {
+                // Centralized: account card has buttons for login/logout/billing/switch
                 self.handle_account_command(chat_id, text).await;
-                true
-            }
-            "/login" => {
-                self.start_login_flow(chat_id, "User-initiated /login").await;
-                true
-            }
-            "/logout" => {
-                self.send_logout_confirmation(chat_id).await;
-                true
-            }
-            "/billing" => {
-                self.send_billing_card(chat_id).await;
                 true
             }
             "/model" => {
                 self.handle_model_command(chat_id, text).await;
                 true
             }
-            "/newproject" => {
-                self.handle_newproject(chat_id, text).await;
+            "/projects" | "/project" | "/newproject" => {
+                // Unified project menu with buttons: list / new / add existing / scan
+                self.send_projects_menu(chat_id).await;
+                true
+            }
+            "/relay" | "/sessions" => {
+                // Show active sessions as buttons; user clicks one to target it
+                self.send_sessions_menu(chat_id).await;
                 true
             }
             _ => false,
@@ -801,6 +796,73 @@ impl TelegramBotEngine {
                     .await;
             }
         }
+    }
+
+    /// `/projects` — interactive menu listing existing projects + actions.
+    async fn send_projects_menu(&self, chat_id: i64) {
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let mut text = String::from("<b>Projects</b>\n");
+
+        let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        if registry.projects.is_empty() {
+            text.push_str("\n<i>No projects registered yet.</i>\n");
+        } else {
+            text.push_str(&format!("\n<i>{} project(s) registered:</i>\n", registry.projects.len()));
+            for p in registry.projects.iter().take(20) {
+                keyboard.push(vec![InlineKeyboardButton {
+                    text: format!("{} {}", p.icon.as_deref().unwrap_or("·"), p.name),
+                    callback_data: format!("proj:open:{}", p.name),
+                }]);
+            }
+        }
+        // Action row
+        keyboard.push(vec![
+            InlineKeyboardButton { text: "+ New project".to_string(), callback_data: "proj:new".to_string() },
+            InlineKeyboardButton { text: "Scan & add existing".to_string(), callback_data: "proj:scan".to_string() },
+        ]);
+
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+        });
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let _ = self.client.post(&url).json(&payload).send().await;
+    }
+
+    /// `/sessions` or `/relay` — interactive menu listing active rmux sessions.
+    async fn send_sessions_menu(&self, chat_id: i64) {
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let mut text = String::from("<b>Active Sessions</b>\n");
+        let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+
+        if sessions.is_empty() {
+            text.push_str("\n<i>No active sessions.</i>");
+        } else {
+            text.push_str(&format!("\n<i>{} session(s) — tap one to send a message:</i>\n", sessions.len()));
+            for s in sessions.iter().take(20) {
+                let label = match s.role {
+                    omega_core::session::SessionRole::Oracle => format!("[oracle] {}", s.name),
+                    omega_core::session::SessionRole::Worker => format!("[worker] {}", s.name),
+                    omega_core::session::SessionRole::Home => format!("[home] {}", s.name),
+                    omega_core::session::SessionRole::System => format!("[system] {}", s.name),
+                };
+                keyboard.push(vec![InlineKeyboardButton {
+                    text: label,
+                    callback_data: format!("sess:target:{}", s.name),
+                }]);
+            }
+        }
+
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+        });
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let _ = self.client.post(&url).json(&payload).send().await;
     }
 
     /// `/account` — bare form: show legacy Claude card (kept for compat).
@@ -1409,17 +1471,12 @@ impl TelegramBotEngine {
     async fn register_bot_commands(&self) {
         let commands = serde_json::json!({
             "commands": [
-                {"command": "help",       "description": "Show all available commands"},
-                {"command": "list",       "description": "List active rmux sessions"},
-                {"command": "status",     "description": "Capture last 20 lines of a session"},
-                {"command": "billing",    "description": "Show Claude usage (5h / week)"},
-                {"command": "account",    "description": "Account card / multi-provider: /account [provider] [name]"},
-                {"command": "model",      "description": "Show or switch active provider+model"},
-                {"command": "login",      "description": "Re-authenticate with Claude OAuth"},
-                {"command": "logout",     "description": "Clear current credentials"},
-                {"command": "aisb",       "description": "Send a message to AISB Master"},
-                {"command": "relay",      "description": "Send to a specific session: /relay <name> <text>"},
-                {"command": "newproject", "description": "Create a new project: /newproject <name> <work|clients>"}
+                {"command": "help",     "description": "Show available commands"},
+                {"command": "account",  "description": "Account / billing / login (with buttons)"},
+                {"command": "model",    "description": "Switch AI provider and model"},
+                {"command": "projects", "description": "List projects + new / add existing"},
+                {"command": "sessions", "description": "Active sessions (tap to target)"},
+                {"command": "status",   "description": "Capture last 20 lines of a session"}
             ]
         });
 
@@ -1658,30 +1715,8 @@ impl TelegramBotEngine {
                 Some(lines.join("\n"))
             }
 
-            "/aisb" => {
-                if rest.is_empty() {
-                    return Some("Usage: /aisb <code>your message</code>".to_string());
-                }
-                let _ = self.mgr.send_text(&self.cfg.relay_session, rest).await;
-                Some(format!(
-                    " → <code>{}</code>",
-                    formatting::escape_html(&self.cfg.relay_session)
-                ))
-            }
-
-            "/relay" => {
-                let mut rp = rest.splitn(2, ' ');
-                let session = rp.next()?;
-                let payload = rp.next().unwrap_or("");
-                if payload.is_empty() {
-                    return Some("Usage: /relay <code>session text</code>".to_string());
-                }
-                let _ = self.mgr.send_text(session, payload).await;
-                Some(format!(
-                    " → <code>{}</code>",
-                    formatting::escape_html(session)
-                ))
-            }
+            // /aisb removed — plain text already routes to master.
+            // /relay handled via interactive button menu (see handle_account_command path).
 
             "/kill" => {
                 if rest.is_empty() {
