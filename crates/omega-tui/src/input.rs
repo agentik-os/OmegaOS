@@ -18,7 +18,6 @@ pub enum Action {
         prompt: Option<String>,
     },
     DispatchOracle(String, String),
-    SendToSession { session: String, text: String },
     /// Open Claude /login in a fresh session for OAuth re-auth.
     LoginClaude,
     /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
@@ -49,6 +48,11 @@ pub enum Action {
     CommitSettingsEdit { config_key: String, value: String },
     /// Ctrl+L — force a full terminal clear + redraw.
     ForceRedraw,
+    /// Projects tab: open the selected project in a terminal — attach to its
+    /// Oracle session if one is alive, otherwise spawn a shell in its dir.
+    OpenProject { name: String, path: String, oracle_session: Option<String> },
+    /// Projects tab: dispatch `omega planner` for the selected project.
+    RunPlannerForProject { name: String, path: String },
     /// Real-time keystroke forwarding to a rmux session (preview interactive
     /// mode). One key per Action — printable chars, special keys, Ctrl-combos
     /// all route through this so plan-mode / OAuth / choice menus work.
@@ -159,7 +163,7 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 }
             }
         }
-        Tab::Info => {
+        Tab::Agentic => {
             if app.detail_focused {
                 if down { app.scroll_detail_down(lines); }
                 else { app.scroll_detail_up(lines); }
@@ -483,14 +487,15 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "Focus: chat (Tab to list, Tab-Tab → fullscreen, Enter to send)".to_string(),
                     SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab → back to list)".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
+            } else if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on Settings, snap cursor to first actionable
                 if app.tab == Tab::Settings && app.detail_focused {
-                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let section = app.selected_settings_section();
+                    let providers = app.providers();
                     let fields = crate::app::fields_for_section(
-                        app.selected_settings_section(),
+                        section,
                         &providers,
                         &app.config,
                     );
@@ -513,7 +518,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Scroll: depends on the active tab + focus
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(10);
@@ -521,7 +526,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(10);
@@ -529,7 +534,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.detail_scroll = 0;
             } else {
                 app.scroll_preview_home();
@@ -537,7 +542,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Info | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.detail_scroll = u16::MAX / 2;
             } else {
                 app.scroll_preview_end();
@@ -561,9 +566,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Down | KeyCode::Char('j') => {
             // Settings tab + detail focused: navigate ACTIONABLE fields
             if app.tab == Tab::Settings && app.detail_focused {
-                let providers = omega_core::providers::ProvidersConfig::load();
+                let section = app.selected_settings_section();
+                let providers = app.providers();
                 let fields = crate::app::fields_for_section(
-                    app.selected_settings_section(),
+                    section,
                     &providers,
                     &app.config,
                 );
@@ -572,7 +578,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
             // Info tab: when detail focused on AISB Agents → navigate agents,
             // else scroll detail. When list focused → navigate sub-sections.
-            if app.tab == Tab::Info && app.detail_focused {
+            if app.tab == Tab::Agentic && app.detail_focused {
                 if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_next();
                 } else {
@@ -594,24 +600,25 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Monitor => app.select_monitor_next(),
                 Tab::Projects => app.select_project_next(),
                 Tab::Settings => app.select_settings_next(),
-                Tab::Info => app.select_info_next(),
-                Tab::Help => {}
+                Tab::Agentic => app.select_info_next(),
+                Tab::Help => app.scroll_detail_down(1),
             }
             Action::None
         }
 
         KeyCode::Up | KeyCode::Char('k') => {
             if app.tab == Tab::Settings && app.detail_focused {
-                let providers = omega_core::providers::ProvidersConfig::load();
+                let section = app.selected_settings_section();
+                let providers = app.providers();
                 let fields = crate::app::fields_for_section(
-                    app.selected_settings_section(),
+                    section,
                     &providers,
                     &app.config,
                 );
                 advance_to_next_actionable(app, &fields, false);
                 return Action::None;
             }
-            if app.tab == Tab::Info && app.detail_focused {
+            if app.tab == Tab::Agentic && app.detail_focused {
                 if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_prev();
                 } else {
@@ -633,8 +640,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Monitor => app.select_monitor_prev(),
                 Tab::Projects => app.select_project_prev(),
                 Tab::Settings => app.select_settings_prev(),
-                Tab::Info => app.select_info_prev(),
-                Tab::Help => {}
+                Tab::Agentic => app.select_info_prev(),
+                Tab::Help => app.scroll_detail_up(1),
             }
             Action::None
         }
@@ -642,11 +649,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Left/Right inside Info navigates between sub-sections (independent of agent sub-cursor)
         // We use a separate explicit handler via PgUp/PgDn — but since arrow keys are taken
         // for tabs, users can use Home/End or [/] to jump between sub-sections:
-        KeyCode::Char('[') if app.tab == Tab::Info => {
+        KeyCode::Char('[') if app.tab == Tab::Agentic => {
             app.select_info_prev();
             Action::None
         }
-        KeyCode::Char(']') if app.tab == Tab::Info => {
+        KeyCode::Char(']') if app.tab == Tab::Agentic => {
             app.select_info_next();
             Action::None
         }
@@ -678,9 +685,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // Enter on the section list → focus the right detail panel
                 // (same as Tab). Once focused, Enter activates the selected field.
                 if !app.detail_focused {
-                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let section = app.selected_settings_section();
+                    let providers = app.providers();
                     let fields = crate::app::fields_for_section(
-                        app.selected_settings_section(),
+                        section,
                         &providers,
                         &app.config,
                     );
@@ -693,26 +701,40 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     );
                     Action::None
                 } else {
-                    let providers = omega_core::providers::ProvidersConfig::load();
+                    let section = app.selected_settings_section();
+                    let providers = app.providers();
                     let fields = crate::app::fields_for_section(
-                        app.selected_settings_section(),
+                        section,
                         &providers,
                         &app.config,
                     );
                     let idx = app.settings_field_selected.min(fields.len().saturating_sub(1));
                     match fields.into_iter().nth(idx) {
-                        Some(crate::app::SettingsField::Action { label, command, .. }) => {
+                        Some(crate::app::SettingsField::Action { label, command, confirm_first }) => {
                             // Special: trigger Telegram wizard inline
                             if command == "__INTERNAL_TELEGRAM_SETUP__" {
+                                app.settings_confirm_pending = None;
                                 Action::TelegramSetup
+                            } else if confirm_first && app.settings_confirm_pending != Some(idx) {
+                                // First Enter on a destructive action → arm it,
+                                // require a second Enter on the same field.
+                                app.settings_confirm_pending = Some(idx);
+                                app.status_message = Some(format!(
+                                    "Press Enter again to confirm: {}",
+                                    label.trim()
+                                ));
+                                Action::None
                             } else {
+                                app.settings_confirm_pending = None;
                                 Action::RunShellCommand { label, command }
                             }
                         }
                         Some(crate::app::SettingsField::EditText { config_key, current_value, masked, .. }) => {
+                            app.settings_confirm_pending = None;
                             Action::EditSettingsField { config_key, current: current_value, masked }
                         }
                         Some(crate::app::SettingsField::Toggle { config_key, .. }) => {
+                            app.settings_confirm_pending = None;
                             Action::ToggleSettingsBool { config_key }
                         }
                         _ => Action::None,
@@ -724,12 +746,25 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     app.detail_focused = true;
                     app.detail_scroll = 0;
                     app.status_message = Some(
-                        "Focus: project detail (↑/↓ scroll, Tab → list, Tab-Tab → fullscreen)".to_string(),
+                        "Focus: project detail (↑/↓ scroll, Enter → open in terminal, Tab → list)".to_string(),
                     );
+                    Action::None
+                } else {
+                    // Detail focused → Enter opens the project in a terminal.
+                    match app.selected_project() {
+                        Some(p) => Action::OpenProject {
+                            name: p.name.clone(),
+                            path: p.path.to_string_lossy().to_string(),
+                            oracle_session: p.oracle_session.clone(),
+                        },
+                        None => {
+                            app.status_message = Some("No project selected".to_string());
+                            Action::None
+                        }
+                    }
                 }
-                Action::None
             }
-            Tab::Info => {
+            Tab::Agentic => {
                 // Enter on Info section list → focus the right detail panel
                 // (same as Tab). Lets users browse Oracle/Workers/Rules content.
                 if !app.detail_focused {
@@ -769,6 +804,20 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.status_message = Some("Session name for new Gemini (Enter, Esc to cancel)".to_string());
             Action::None
         }
+        // Projects tab: 'p' runs the planner for the selected project
+        // (the global 'p' = new Pi session applies on every other tab).
+        KeyCode::Char('p') if app.tab == Tab::Projects => {
+            match app.selected_project() {
+                Some(p) => Action::RunPlannerForProject {
+                    name: p.name.clone(),
+                    path: p.path.to_string_lossy().to_string(),
+                },
+                None => {
+                    app.status_message = Some("No project selected".to_string());
+                    Action::None
+                }
+            }
+        }
         KeyCode::Char('p') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("pi".to_string());
@@ -788,6 +837,24 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Projects tab: 'd' pre-fills the dispatch with the selected project,
+        // skipping the project-name step → straight to mission entry.
+        KeyCode::Char('d') if app.tab == Tab::Projects => {
+            match app.selected_project().map(|p| p.name.clone()) {
+                Some(name) => {
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::DispatchMission(name.clone());
+                    app.status_message =
+                        Some(format!("Dispatch to {} — type the mission (Enter to send)", name));
+                }
+                None => {
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::DispatchProject;
+                    app.status_message = Some("Project name (Enter to continue)".to_string());
+                }
+            }
+            Action::None
+        }
         KeyCode::Char('d') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::DispatchProject;
@@ -841,6 +908,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         KeyCode::F(1) => {
             app.tab = Tab::Help;
+            app.detail_scroll = 0;
             Action::None
         }
 
@@ -861,7 +929,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             } else if app.tab == Tab::Sessions {
                 if matches!(app.session_focus, SessionFocus::Chat | SessionFocus::ChatFullscreen) {
                     app.session_focus = SessionFocus::List;
-                    app.chat_input.clear();
                     app.status_message = Some("Focus: session list".to_string());
                     Action::None
                 } else {
@@ -893,6 +960,8 @@ fn advance_to_next_actionable(app: &mut App, fields: &[crate::app::SettingsField
     if actionable.is_empty() {
         return;
     }
+    // Moving the field cursor cancels any pending destructive confirmation.
+    app.settings_confirm_pending = None;
     let current = app.settings_field_selected;
     let target = if forward {
         actionable

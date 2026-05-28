@@ -9,7 +9,7 @@ pub enum Tab {
     Monitor,
     Projects,
     Settings,
-    Info,
+    Agentic,
     Help,
 }
 
@@ -128,7 +128,7 @@ impl MenuAction {
             MenuAction::NewGlm => "G",
             MenuAction::NewTerminal => "t",
             MenuAction::DispatchOracle => "d",
-            MenuAction::Refresh => "r",
+            MenuAction::Refresh => "F5",
             MenuAction::ToggleProtection => ".",
             MenuAction::KillSelected => "x",
             MenuAction::Quit => "q",
@@ -615,6 +615,9 @@ pub struct App {
     pub settings_selected: usize,
     /// Cursor within the focused Settings section's interactive field list.
     pub settings_field_selected: usize,
+    /// Field index awaiting a second Enter to confirm a destructive Action
+    /// (the `confirm_first` flag). Cleared on navigation or section change.
+    pub settings_confirm_pending: Option<usize>,
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
@@ -639,12 +642,15 @@ pub struct App {
     pub detail_fullscreen: bool,
     /// Scroll position for the detail panel in Settings/Info/Monitor.
     pub detail_scroll: u16,
-    pub chat_input: String,
     pub current_session: Option<String>,
     /// Projects tab — selected project index.
     pub projects_selected: usize,
     /// Cached project registry for the Projects tab.
     pub project_registry: omega_core::project_manager::ProjectRegistry,
+    /// Lazily-loaded providers config. Settings reads this on every keystroke,
+    /// so we cache it here and only reload from disk after an edit/toggle
+    /// commit (see `invalidate_providers`). Avoids per-keystroke disk I/O.
+    providers_cache: Option<omega_core::providers::ProvidersConfig>,
 }
 
 impl App {
@@ -670,6 +676,7 @@ impl App {
             monitor_selected: 0,
             settings_selected: 0,
             settings_field_selected: 0,
+            settings_confirm_pending: None,
             info_section_selected: 0,
             info_agent_selected: 0,
             agent_picker_index: 0,
@@ -686,11 +693,29 @@ impl App {
             detail_focused: false,
             detail_fullscreen: false,
             detail_scroll: 0,
-            chat_input: String::new(),
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
+            providers_cache: None,
         }
+    }
+
+    /// Cached providers config, cloned out for the caller. The disk read +
+    /// TOML parse (the expensive part) happens once; subsequent calls clone
+    /// the in-memory struct, which is cheap relative to per-keystroke I/O.
+    /// A clone (not a borrow) sidesteps the simultaneous `&app.config` borrow
+    /// that `fields_for_section` needs.
+    pub fn providers(&mut self) -> omega_core::providers::ProvidersConfig {
+        if self.providers_cache.is_none() {
+            self.providers_cache = Some(omega_core::providers::ProvidersConfig::load());
+        }
+        self.providers_cache.as_ref().unwrap().clone()
+    }
+
+    /// Drop the cached providers so the next `providers()` re-reads from disk.
+    /// Call after any commit/toggle that mutates `~/.omega/providers.toml`.
+    pub fn invalidate_providers(&mut self) {
+        self.providers_cache = None;
     }
 
     pub fn refresh_projects(&mut self) {
@@ -739,7 +764,6 @@ impl App {
     pub fn enter_chat_focus(&mut self) {
         self.session_focus = SessionFocus::Chat;
         self.preview_follow_tail = true;
-        self.chat_input.clear();
     }
 
     /// Handle a Tab press in the Sessions tab. Detects double-tap (within
@@ -769,12 +793,6 @@ impl App {
         if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;
         }
-        self.chat_input.clear();
-    }
-
-    /// Legacy alias kept for older call sites.
-    pub fn toggle_session_focus(&mut self) {
-        self.handle_tab_in_sessions();
     }
 
     /// Tab in a 2-column tab (Settings / Info): single = toggle list↔detail,
@@ -899,6 +917,7 @@ impl App {
         let count = SettingsSection::all().len();
         self.settings_selected = (self.settings_selected + 1) % count;
         self.settings_field_selected = 0;
+        self.settings_confirm_pending = None;
     }
 
     pub fn select_settings_prev(&mut self) {
@@ -909,6 +928,7 @@ impl App {
             self.settings_selected - 1
         };
         self.settings_field_selected = 0;
+        self.settings_confirm_pending = None;
     }
 
     pub fn selected_settings_section(&self) -> SettingsSection {
@@ -976,7 +996,9 @@ impl App {
             .map(|e| e.session.name.clone())
             .collect();
 
-        let mgr = SessionManager::connect().await?;
+        // Cached daemon socket — refresh runs every ~2s, so a fresh connect()
+        // each time is wasteful. Matches refresh_preview()'s connect_cached().
+        let mgr = SessionManager::connect_cached().await?;
         let raw_sessions = mgr.list_sessions().await?;
 
         // Hide infrastructure daemons (Telegram bridge, reauth helper).
@@ -1113,8 +1135,8 @@ impl App {
             Tab::Menu => Tab::Monitor,
             Tab::Monitor => Tab::Projects,
             Tab::Projects => Tab::Settings,
-            Tab::Settings => Tab::Info,
-            Tab::Info => Tab::Help,
+            Tab::Settings => Tab::Agentic,
+            Tab::Agentic => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
     }
@@ -1126,15 +1148,12 @@ impl App {
             Tab::Monitor => Tab::Menu,
             Tab::Projects => Tab::Monitor,
             Tab::Settings => Tab::Projects,
-            Tab::Info => Tab::Settings,
-            Tab::Help => Tab::Info,
+            Tab::Agentic => Tab::Settings,
+            Tab::Help => Tab::Agentic,
         };
     }
 
     pub fn select_info_next(&mut self) {
-        let n = InfoSection::all().len()
-            + omega_core::aisb_agents::AisbAgent::all().len(); // virtually navigates sub-entries when in AisbAgents
-        let _ = n;
         let count = InfoSection::all().len();
         self.info_section_selected = (self.info_section_selected + 1) % count;
         self.info_agent_selected = 0;
