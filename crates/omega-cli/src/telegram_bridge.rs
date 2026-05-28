@@ -1011,6 +1011,15 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
+        // Group setup confirm button (sent in-group by /setupgroup).
+        if let Some(id_str) = data.strip_prefix("setupgroup:") {
+            let _ = self.answer_callback_query(&cb.id, "Setting up…").await;
+            if let Ok(group_id) = id_str.parse::<i64>() {
+                self.run_group_setup(group_id, chat_id).await;
+            }
+            return Ok(());
+        }
+
         let (action, project) = data.split_once(':').unwrap_or((data, ""));
 
         let reply = match action {
@@ -2564,16 +2573,45 @@ impl TelegramBotEngine {
     /// and re-runnable (overwrites the stored config).
     async fn handle_setup_group(&self, chat_id: i64, arg: &str) {
         use omega_core::telegram_group::TelegramGroupConfig;
+        // In a group the command often arrives as `/setupgroup@BotName` — the
+        // strip_prefix leaves a leading "@token". Drop it so it doesn't get
+        // mis-parsed as a group_id.
+        let arg = arg.trim();
+        let arg = arg.strip_prefix('@').map_or(arg, |rest| {
+            rest.split_whitespace().skip(1).next().unwrap_or("")
+        });
+        // Invoked INSIDE a group/supergroup with no explicit id → the chat we
+        // are in IS the target group. Offer a one-tap confirm button. This is
+        // the robust path: it never depends on catching the fragile
+        // my_chat_member promotion event (which is lost if the bot was
+        // promoted before this build was running).
+        if arg.is_empty() && chat_id < 0 {
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![InlineKeyboardButton {
+                    text: "✅ Set up this group for Omega".to_string(),
+                    callback_data: format!("setupgroup:{}", chat_id),
+                }]],
+            };
+            let payload = serde_json::json!({
+                "chat_id": chat_id,
+                "text": "<b>Set up this group for Omega?</b>\nI'll create one Topic per project and route each Oracle's reports to its Topic.\nTap to confirm 👇",
+                "parse_mode": "HTML",
+                "reply_markup": kb,
+            });
+            let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+            let _ = self.client.post(&url).json(&payload).send().await;
+            return;
+        }
         if arg.is_empty() {
-            // Show current state
+            // DM with no arg → show current state / instructions.
             let body = match TelegramGroupConfig::load() {
                 Some(cfg) => format!(
-                    "Group: <code>{}</code>\nTopics: {}\nSet up at: {}",
+                    "Group: <code>{}</code>\nTopics: {}\nSet up at: {}\n\n<i>To (re)configure: send <code>/setupgroup</code> INSIDE the supergroup and tap the confirm button.</i>",
                     cfg.group_id,
                     cfg.topics.len(),
                     cfg.setup_at
                 ),
-                None => "No group configured yet. Send <code>/setupgroup &lt;group_id&gt;</code> (negative integer, e.g. -1001234567890). The bot must be admin in that group and Topics must be enabled.".to_string(),
+                None => "No group configured yet.\n\n<b>Easiest setup:</b> send <code>/setupgroup</code> <i>inside</i> the supergroup (bot must be admin, Topics enabled) and tap the confirm button.\n\nOr from here: <code>/setupgroup &lt;group_id&gt;</code> (negative integer, e.g. -1001234567890).".to_string(),
             };
             let _ = self.send_html(chat_id, &body).await;
             return;
@@ -2587,7 +2625,16 @@ impl TelegramBotEngine {
                 .await;
             return;
         };
+        self.run_group_setup(group_id, chat_id).await;
+    }
 
+    /// Verify the bot can reach the group, check Topics are enabled, create
+    /// one forum topic per registered project, persist the mapping, and
+    /// confirm to `reply_chat_id`. Shared by `/setupgroup <id>` (DM), the
+    /// in-group confirm button, and the my_chat_member auto-detect path.
+    async fn run_group_setup(&self, group_id: i64, reply_chat_id: i64) {
+        use omega_core::telegram_group::TelegramGroupConfig;
+        let chat_id = reply_chat_id;
         // Verify the bot can see the group
         let url = format!("{}/bot{}/getChat", API_BASE, self.cfg.bot_token);
         let resp = self

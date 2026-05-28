@@ -122,20 +122,39 @@ impl ClaudeStreamHandle {
         *guard = None;
     }
 
-    /// Ask claude. Lazy-spawns on first call. On subprocess crash, respawns.
+    /// Ask claude. Lazy-spawns on first call. SELF-HEALING: if the persistent
+    /// subprocess has died since the last turn (idle timeout, OOM, a bridge
+    /// redeploy that orphaned it, etc.), the first write hits a broken pipe.
+    /// We must NOT surface that to the user — instead drop the corpse, respawn
+    /// a fresh subprocess, and retry the SAME prompt once. Only a second
+    /// consecutive failure (i.e. claude genuinely can't start) is returned.
     pub async fn ask(&self, prompt: &str) -> Result<String> {
         let mut guard = self.inner.lock().await;
-        if guard.is_none() {
-            *guard = Some(PersistentClaude::spawn(self.config_dir.clone()).await?);
-        }
-        let claude = guard.as_mut().unwrap();
-        match claude.ask(prompt).await {
-            Ok(response) => Ok(response),
-            Err(e) => {
-                // Subprocess died — drop it so the next call respawns.
-                *guard = None;
-                Err(e)
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..2 {
+            if guard.is_none() {
+                match PersistentClaude::spawn(self.config_dir.clone()).await {
+                    Ok(c) => *guard = Some(c),
+                    Err(e) => {
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+            }
+            let claude = guard.as_mut().unwrap();
+            match claude.ask(prompt).await {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    // Dead pipe / closed stdout — drop the corpse so the next
+                    // loop iteration respawns fresh and retries the prompt.
+                    *guard = None;
+                    last_err = Some(e);
+                    if attempt == 0 {
+                        tracing::warn!("claude brain subprocess died — respawning and retrying");
+                    }
+                }
             }
         }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("claude brain unavailable")))
     }
 }
