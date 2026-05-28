@@ -463,11 +463,19 @@ impl TelegramBotEngine {
             .await
             .unwrap_or_default();
 
+        // Fast-response polling: 300ms ticks (vs 2s before).
+        // Strategy: as soon as we detect a ● marker (agent response) followed
+        // by 2 consecutive stable captures (response complete), send it.
         let mut response_text = String::new();
-        for tick in 0..30 {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+        let mut last_response = String::new();
+        let mut stable_count = 0;
+        let max_ticks = 200; // 200 × 300ms = 60s max
 
-            if tick % 3 == 2 {
+        for tick in 0..max_ticks {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            // Refresh typing indicator every ~4s (expires at 5s)
+            if tick % 13 == 12 {
                 let _ = self.send_chat_action(chat_id, "typing").await;
             }
 
@@ -476,19 +484,39 @@ impl TelegramBotEngine {
                 .capture_pane(&self.cfg.relay_session)
                 .await
                 .unwrap_or_default();
+
             if after == before {
                 continue;
             }
 
+            let current = extract_response(&before, &after);
+
+            // If we have a response and it hasn't changed for 2 ticks → ship it
+            if !current.is_empty() && current == last_response {
+                stable_count += 1;
+                if stable_count >= 2 {
+                    response_text = current;
+                    break;
+                }
+            } else {
+                stable_count = 0;
+                last_response = current;
+            }
+
+            // Final fallback: idle prompt detection
             let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
             let is_idle = last_lines
                 .iter()
                 .any(|l| l.trim().starts_with("❯") && l.trim().len() <= 2);
-
-            if is_idle || tick >= 25 {
-                response_text = extract_response(&before, &after);
+            if is_idle && !last_response.is_empty() {
+                response_text = last_response.clone();
                 break;
             }
+        }
+
+        // If timeout reached but we have a partial response, send it anyway
+        if response_text.is_empty() && !last_response.is_empty() {
+            response_text = last_response;
         }
 
         let cleaned = clean_terminal_output(&response_text);
@@ -1171,43 +1199,39 @@ fn format_agent_response(text: &str) -> String {
     }
 }
 
-fn extract_response(before: &str, after: &str) -> String {
-    let before_lines: Vec<&str> = before.lines().collect();
-    let after_lines: Vec<&str> = after.lines().collect();
+fn extract_response(_before: &str, after: &str) -> String {
+    // Strategy: find the LAST ● block (most recent agent response).
+    // Don't diff line-by-line — pane scrolls break that approach.
+    // The last ● is always the response to the user's most recent message.
+    let lines: Vec<&str> = after.lines().collect();
 
-    let common_prefix = before_lines
+    let last_bullet_idx = lines
         .iter()
-        .zip(after_lines.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
+        .enumerate()
+        .rev()
+        .find(|(_, l)| l.trim().starts_with("●"))
+        .map(|(i, _)| i);
 
-    if common_prefix >= after_lines.len() {
+    let Some(start) = last_bullet_idx else {
         return String::new();
+    };
+
+    let mut response_lines: Vec<String> = Vec::new();
+    let first = lines[start].trim().trim_start_matches("●").trim();
+    if !first.is_empty() {
+        response_lines.push(first.to_string());
     }
 
-    let new_lines = &after_lines[common_prefix..];
-    let mut response_lines: Vec<String> = Vec::new();
-    let mut in_response = false;
-
-    for line in new_lines {
+    // Collect continuation lines (until stop marker)
+    for line in lines.iter().skip(start + 1) {
         let t = line.trim();
-        if t.is_empty() {
-            continue;
-        }
-
-        if t.starts_with("●") {
-            in_response = true;
-            let text = t.trim_start_matches("●").trim();
-            if !text.is_empty() {
-                response_lines.push(text.to_string());
-            }
-            continue;
-        }
+        if t.is_empty() { continue; }
 
         if t.starts_with("❯")
             || t.starts_with("✻")
             || t.starts_with("⎿")
             || t.starts_with("·")
+            || t.starts_with("●")
             || t.contains("bypass permissions")
             || t.contains("esc to interrupt")
             || t.contains("shift+tab")
@@ -1217,16 +1241,12 @@ fn extract_response(before: &str, after: &str) -> String {
             || t.contains("Brewed")
             || t.contains("Cultivating")
             || t.contains("Crunched")
+            || t.contains("Pontificating")
         {
-            if in_response {
-                in_response = false;
-            }
-            continue;
+            break;
         }
 
-        if in_response {
-            response_lines.push(t.to_string());
-        }
+        response_lines.push(t.to_string());
     }
 
     response_lines.join("\n")

@@ -293,7 +293,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Monitor", "Projects", "Settings", "Info", "Help"];
+    let titles = vec!["Sessions", "Menu", "Monitor", "Projects", "Settings", "Agentic", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
@@ -1873,9 +1873,9 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let list_title = if list_focused {
-        " Info — ↑/↓ select, Tab → focus detail "
+        " Agentic — ↑/↓ select, Tab → focus detail "
     } else {
-        " Info — Tab to focus list "
+        " Agentic — Tab to focus list "
     };
     let list = List::new(items)
         .block(
