@@ -463,6 +463,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::ForceRedraw
         }
+        // Ctrl+R — hot-reload OmegaOS in place (re-exec the updated binary).
+        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Action::Restart
+        }
 
         // Quit
         KeyCode::Char('q') => {
@@ -525,12 +529,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Scroll: depends on the active tab + focus
+        // Scroll: depends on the active tab + focus. PageUp/PageDown super-
+        // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
             if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_down(10);
             } else {
-                app.scroll_preview_down(10);
+                app.scroll_preview_down(app.preview_inner_height.max(10));
             }
             Action::None
         }
@@ -538,7 +543,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 app.scroll_detail_up(10);
             } else {
-                app.scroll_preview_up(10);
+                app.scroll_preview_up(app.preview_inner_height.max(10));
             }
             Action::None
         }
@@ -1017,6 +1022,29 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     // --- TUI-local (never forwarded) ---
 
+    // Ctrl+R — hot-reload OmegaOS in place (re-exec the binary). Intercepted
+    // even in chat focus so it always works, at the cost of Claude's own
+    // Ctrl+R (reverse-search) inside the mirror — the user asked for ^R reload.
+    if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::Restart;
+    }
+
+    // Super-scroll: PageUp/PageDown jump a FULL page (viewport height) so a
+    // Termius up/down swipe rips through history fast. Home/End below jump to
+    // the absolute top/bottom of the full scrollback.
+    let page = app.preview_inner_height.max(10);
+    match key.code {
+        KeyCode::PageUp => {
+            app.scroll_preview_up(page);
+            return Action::None;
+        }
+        KeyCode::PageDown => {
+            app.scroll_preview_down(page);
+            return Action::None;
+        }
+        _ => {}
+    }
+
     // Tab behavior (corrected per user):
     //   Shift+Tab  → FORWARD to Claude — Claude Code uses Shift+Tab to
     //                cycle modes (plan mode, bypass, accept-edits, …).
@@ -1043,10 +1071,9 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         }
     }
 
-    // Page / Home / End = TUI scroll
+    // Home / End = jump to the very top / bottom of the full scrollback.
+    // (PageUp/PageDown super-scroll handled above.)
     match key.code {
-        KeyCode::PageUp => { app.scroll_preview_up(10); return Action::None; }
-        KeyCode::PageDown => { app.scroll_preview_down(10); return Action::None; }
         KeyCode::Home => { app.scroll_preview_home(); return Action::None; }
         KeyCode::End => { app.scroll_preview_end(); return Action::None; }
         _ => {}

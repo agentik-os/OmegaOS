@@ -435,6 +435,14 @@ async fn run_menu() -> Result<()> {
 
     let _ = app.refresh_preview().await;
 
+    // Raise rmux's scrollback retention so agent conversations keep their full
+    // history (default is 2000 lines → the top of long chats was lost). Global
+    // = applies to all sessions spawned from here on. Best-effort.
+    let _ = tokio::process::Command::new("rmux")
+        .args(["set-option", "-g", "history-limit", "100000"])
+        .output()
+        .await;
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(

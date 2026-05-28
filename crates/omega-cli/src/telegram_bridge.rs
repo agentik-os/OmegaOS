@@ -3276,6 +3276,14 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     println!("  Relay session: {}", cfg.relay_session);
     println!("  Chat ID:       {}", cfg.chat_id);
 
+    // Keep full scrollback for the oracles this bridge spawns (default 2000
+    // lines lost the top of long chats). Global rmux daemon option, set once
+    // at startup so any session spawned later retains 100k lines. Best-effort.
+    let _ = tokio::process::Command::new("rmux")
+        .args(["set-option", "-g", "history-limit", "100000"])
+        .output()
+        .await;
+
     let engine = std::sync::Arc::new(TelegramBotEngine::new(cfg.clone()).await?);
     engine.ensure_master().await;
     engine.register_bot_commands().await;

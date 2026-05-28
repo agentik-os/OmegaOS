@@ -1073,7 +1073,10 @@ impl App {
             // History-browsing path: plain text (scrollback has no styling),
             // cursor meaningless when scrolled back.
             self.preview_styled = None;
-            match mgr.capture_pane_history(&name, 1000).await {
+            // Capture the FULL retained scrollback (not a 1000-line slice) so
+            // the user can scroll all the way to the very top of the
+            // conversation. rmux clamps to whatever history-limit retains.
+            match mgr.capture_pane_history(&name, 100_000).await {
                 Ok(content) => {
                     self.preview_content = content;
                     self.preview_cursor = None;
