@@ -2768,10 +2768,16 @@ fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<S
     let template = candidates
         .iter()
         .find_map(|p| std::fs::read_to_string(p).ok())?;
-    let rendered = template
+    let mut rendered = template
         .replace("{{PROJECT}}", project)
         .replace("{{WORKDIR}}", workdir)
         .replace("{{SESSION}}", session);
+    // Inject the Oracle-scoped rules (single source of truth — rules.rs).
+    let rules = omega_core::rules::rules_prompt_block(omega_core::rules::RuleScope::Oracle);
+    if !rules.is_empty() {
+        rendered.push_str("\n\n");
+        rendered.push_str(&rules);
+    }
     let dir = home.join(".omega/state/oracle-prompts");
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{}.md", session));

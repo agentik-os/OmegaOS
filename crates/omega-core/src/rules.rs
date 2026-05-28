@@ -22,6 +22,22 @@ pub enum RuleCategory {
     Safety,
 }
 
+/// Which agent LEVEL a rule is injected into. This is the single source
+/// of truth for "which rules go into which agent's prompt" — the prompt
+/// builder calls `rules_for_scope(scope)` when assembling a Master /
+/// Oracle / Worker prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleScope {
+    /// AISB Master — the global dispatcher chat brain.
+    Master,
+    /// Every agent everywhere (global system invariants).
+    Global,
+    /// Oracle — strategic per-project planner/dispatcher.
+    Oracle,
+    /// Worker — ephemeral task executor.
+    Worker,
+}
+
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub id: &'static str,
@@ -213,6 +229,74 @@ pub fn all_rules() -> Vec<Rule> {
 
 pub fn rules_by_category(cat: RuleCategory) -> Vec<Rule> {
     all_rules().into_iter().filter(|r| r.category == cat).collect()
+}
+
+impl Rule {
+    /// Which agent levels this rule is injected into. Per-id overrides
+    /// first, then a category-based fallback. This is the single source
+    /// of truth consumed by the prompt builder (`rules_for_scope`).
+    pub fn scopes(&self) -> Vec<RuleScope> {
+        use RuleScope::*;
+        // Explicit per-rule overrides (the ones with a clear home).
+        match self.id {
+            // The three Laws apply to everyone.
+            "L1" | "L2" | "L3" => return vec![Master, Global, Oracle, Worker],
+            // Master-only orchestration behaviors.
+            "AISB-AUTOSPAWN" | "AUTO-NAMING" => return vec![Master],
+            // Oracle-only dispatch/coordination rules.
+            "SCOPE-CLAIM" | "R-18" | "R-19" => return vec![Oracle],
+            // Quality gates the executor + planner both honor.
+            "R-14" | "R-21" | "R-22" | "R-30" | "R-35" | "R-28" => {
+                return vec![Oracle, Worker]
+            }
+            // Code-quality rules a worker editing files must follow.
+            "RUST-BUN-DEFAULT" | "FILE-SIZE-LIMIT" | "SIMPLICITY-COMPLETE" => {
+                return vec![Oracle, Worker]
+            }
+            // Completeness discipline for the planning levels.
+            "PROMPT-COMPLETENESS" => return vec![Master, Oracle],
+            _ => {}
+        }
+        // Category fallback for anything not explicitly mapped.
+        match self.category {
+            RuleCategory::Universal | RuleCategory::Safety => {
+                vec![Master, Global, Oracle, Worker]
+            }
+            RuleCategory::QualityGate => vec![Oracle, Worker],
+            RuleCategory::Orchestration => vec![Master, Oracle],
+            RuleCategory::Reporting => vec![Oracle],
+        }
+    }
+}
+
+/// All rules that should be injected into a given agent level's prompt.
+/// The prompt builder calls this when assembling Master/Oracle/Worker
+/// system prompts — single source of truth, no duplication.
+pub fn rules_for_scope(scope: RuleScope) -> Vec<Rule> {
+    all_rules()
+        .into_iter()
+        .filter(|r| r.scopes().contains(&scope))
+        .collect()
+}
+
+/// Render the scoped rules as a compact markdown block for prompt
+/// injection. Each rule: "- [ID] Title: description".
+pub fn rules_prompt_block(scope: RuleScope) -> String {
+    let rules = rules_for_scope(scope);
+    if rules.is_empty() {
+        return String::new();
+    }
+    let level = match scope {
+        RuleScope::Master => "AISB Master",
+        RuleScope::Global => "all agents",
+        RuleScope::Oracle => "Oracle",
+        RuleScope::Worker => "Worker",
+    };
+    let mut out = format!("## Active rules ({})\n", level);
+    for r in rules {
+        out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
+    }
+    out
 }
 
 pub fn rules_for_agent(agent: AisbAgent) -> Vec<Rule> {
