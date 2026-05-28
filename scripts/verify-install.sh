@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# verify-install.sh — INSTALL PARITY gate (CLAUDE.md Law 0).
+#
+# Run after ANY OmegaOS improvement. Fails if a fresh
+# `git clone … && ./install.sh` would NOT reproduce the current system, or if
+# a secret leaked into the repo. Binary changes ship automatically because
+# install.sh builds from source; this guards the things that DON'T:
+# new assets, uncommitted work, unpushed commits, and secrets.
+#
+# Usage:  ./scripts/verify-install.sh
+# Exit 0 = install is complete and safe. Non-zero = fix before declaring done.
+
+set -u
+cd "$(dirname "$0")/.." || exit 2
+fail=0
+ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
+bad()  { printf '  \033[31m✗ %s\033[0m\n' "$1"; fail=1; }
+
+echo "═══ OmegaOS install-parity check ═══"
+
+# 1. install.sh builds the binary from source (so all Rust features ship).
+if grep -q "cargo build --release" install.sh && grep -q "target/release/omega" install.sh; then
+  ok "binary built from source (all Rust features ship automatically)"
+else
+  bad "install.sh does NOT build omega from source"
+fi
+
+# 2. Agent prompts (oracle.md v2 etc.) are installed.
+if grep -q "agents/\*.md" install.sh; then ok "agents/*.md installed"; else bad "agents/*.md not copied by install.sh"; fi
+
+# 3. Slash commands installed.
+if grep -q "omega-\*.md" install.sh; then ok "omega-* slash commands installed"; else bad "omega-* commands not copied"; fi
+
+# 4. Full-scrollback retention persisted in the sourced rmux config.
+if grep -q "history-limit" config/rmux.conf.omega 2>/dev/null; then ok "rmux history-limit persisted"; else bad "history-limit missing from rmux.conf.omega"; fi
+
+# 5. Self-improvement crons scheduled.
+if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
+
+# 6. NO SECRETS tracked. Telegram-token pattern + hardcoded bot_token + .omega ignored.
+if git grep -nIE "[0-9]{9,10}:[A-Za-z0-9_-]{30,}" -- . >/dev/null 2>&1; then
+  bad "possible token committed to the repo!"
+else
+  ok "no telegram-token pattern in tracked files"
+fi
+if grep -qE "^\.omega/|^\.omega$" .gitignore 2>/dev/null; then ok ".omega/ (secrets) gitignored"; else bad ".omega/ not gitignored"; fi
+
+# 7. Working tree clean → a fresh clone is complete.
+if [ -z "$(git status --porcelain)" ]; then ok "working tree clean (fresh clone = complete)"; else bad "uncommitted changes — a fresh install would NOT get them"; fi
+
+# 8. Local branch in sync with origin (latest pushed).
+git fetch -q origin 2>/dev/null || true
+if [ -n "$(git rev-parse @ 2>/dev/null)" ] && [ "$(git rev-parse @ 2>/dev/null)" = "$(git rev-parse @{u} 2>/dev/null)" ]; then
+  ok "local in sync with origin (latest pushed)"
+else
+  bad "local commits not pushed to origin"
+fi
+
+echo "═══════════════════════════════════"
+if [ "$fail" -eq 0 ]; then
+  printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'
+else
+  printf '\033[31mINSTALL PARITY FAILED — fix the above before declaring done (Law 0).\033[0m\n'
+fi
+exit "$fail"

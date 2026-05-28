@@ -54,6 +54,20 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 ## Development Rules
 
+- **LAW 0 — INSTALL PARITY (NON-NEGOTIABLE): every improvement to OmegaOS MUST
+  keep `install.sh` complete. A feature is NOT done until a fresh
+  `git clone … && ./install.sh` reproduces it.** Before declaring any change
+  done:
+  1. New asset (agent/command/config/template/cron/dir)? → add the copy/setup
+     step to `install.sh` (binary changes ship automatically — `install.sh`
+     builds from source).
+  2. Run `./scripts/verify-install.sh` — it must pass (binary-from-source,
+     agents, commands, configs, crons, **no secrets tracked**, git clean,
+     remote in sync).
+  3. `git add -A && commit && push` — GitHub always holds the latest, and the
+     installer always installs the latest. NEVER leave an improvement that a
+     fresh install wouldn't get.
+  Secrets (tokens, creds) live in `~/.omega/` only — gitignored, NEVER in the repo.
 - Law 1: Code lies. Only runtime tells the truth.
 - Law 2: Researcher, not sycophant. Challenge flawed premises.
 - Every feature must be verified with live runtime evidence before merge.
