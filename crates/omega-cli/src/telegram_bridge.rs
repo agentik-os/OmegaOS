@@ -471,6 +471,14 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
+        // /setupgroup <id>  — register a Telegram supergroup as the project
+        // hub. Auto-creates a forum topic per known project, persists the
+        // mapping in ~/.omega/telegram-group.toml. Re-runnable.
+        if let Some(rest) = text.trim().strip_prefix("/setupgroup") {
+            self.handle_setup_group(chat_id, rest.trim()).await;
+            return Ok(());
+        }
+
         // /clean — kill + respawn the AISB Master session FRESH (no
         // --continue → brand new conversation, clean slate). Lets the user
         // reset the master at any time from Telegram.
@@ -2093,7 +2101,8 @@ impl TelegramBotEngine {
                 {"command": "model",    "description": "Switch AI provider and model"},
                 {"command": "projects", "description": "List projects + new / add existing"},
                 {"command": "sessions", "description": "Active sessions (tap to target)"},
-                {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"}
+                {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"},
+                {"command": "setupgroup","description": "Register a supergroup as the project hub (+ create per-project topics)"}
             ]
         });
 
@@ -2525,6 +2534,186 @@ impl TelegramBotEngine {
     /// real conversation; this log is a read-only stream so the user can
     /// WATCH the Telegram chat live by attaching to aisb-master in the TUI.
     /// Best-effort, fire-and-forget — never blocks the Telegram response.
+    // ── L4: Telegram group + forum topics ──────────────────────────────
+
+    /// Handle `/setupgroup <id>` — register a supergroup, verify the bot
+    /// has access, auto-create one topic per registered project. Idempotent
+    /// and re-runnable (overwrites the stored config).
+    async fn handle_setup_group(&self, chat_id: i64, arg: &str) {
+        use omega_core::telegram_group::TelegramGroupConfig;
+        if arg.is_empty() {
+            // Show current state
+            let body = match TelegramGroupConfig::load() {
+                Some(cfg) => format!(
+                    "Group: <code>{}</code>\nTopics: {}\nSet up at: {}",
+                    cfg.group_id,
+                    cfg.topics.len(),
+                    cfg.setup_at
+                ),
+                None => "No group configured yet. Send <code>/setupgroup &lt;group_id&gt;</code> (negative integer, e.g. -1001234567890). The bot must be admin in that group and Topics must be enabled.".to_string(),
+            };
+            let _ = self.send_html(chat_id, &body).await;
+            return;
+        }
+        let Ok(group_id) = arg.parse::<i64>() else {
+            let _ = self
+                .send_html(
+                    chat_id,
+                    "<i>Bad group_id. Expected a negative integer like -1001234567890.</i>",
+                )
+                .await;
+            return;
+        };
+
+        // Verify the bot can see the group
+        let url = format!("{}/bot{}/getChat", API_BASE, self.cfg.bot_token);
+        let resp = self
+            .client
+            .get(&url)
+            .query(&[("chat_id", group_id.to_string())])
+            .send()
+            .await;
+        let group_name = match resp {
+            Ok(r) => {
+                let json: serde_json::Value =
+                    r.json().await.unwrap_or(serde_json::Value::Null);
+                if !json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<i>Bot can't reach <code>{}</code>. Make sure it's added to the group and is admin.</i>",
+                                group_id
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                let res = json.get("result").unwrap_or(&serde_json::Value::Null);
+                let is_forum = res.get("is_forum").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !is_forum {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            "<i>This group does NOT have Topics enabled. In Telegram → group settings → enable Topics, then re-run /setupgroup.</i>",
+                        )
+                        .await;
+                    return;
+                }
+                res.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string()
+            }
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!("<i>getChat failed: <code>{}</code></i>", formatting::escape_html(&e.to_string())),
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        // Persist + auto-create topics for known projects (best-effort).
+        let mut cfg = TelegramGroupConfig::load().unwrap_or_default();
+        cfg.group_id = group_id;
+        cfg.group_name = group_name.clone();
+        cfg.setup_at = chrono::Utc::now().to_rfc3339();
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let mut created = 0usize;
+        for project in &registry.projects {
+            if cfg.topic_for(&project.name).is_some() {
+                continue;
+            }
+            if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
+                cfg.set_topic(&project.name, topic_id);
+                created += 1;
+            }
+        }
+        let _ = cfg.save();
+
+        let body = format!(
+            "Group <b>{}</b> registered.\nProjects mapped to topics: {}\nNew topics created this run: {}\n\nOracle reports for each project will land in its topic.",
+            formatting::escape_html(&group_name),
+            cfg.topics.len(),
+            created
+        );
+        let _ = self.send_html(chat_id, &body).await;
+    }
+
+    /// createForumTopic — returns the new topic's message_thread_id, or
+    /// None on failure.
+    async fn create_forum_topic(&self, group_id: i64, name: &str) -> Option<i64> {
+        let url = format!("{}/bot{}/createForumTopic", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": group_id,
+            "name": name,
+        });
+        let resp = self.client.post(&url).json(&body).send().await.ok()?;
+        let json: serde_json::Value = resp.json().await.ok()?;
+        if !json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            tracing::warn!(?json, project = %name, "createForumTopic failed");
+            return None;
+        }
+        json.get("result")
+            .and_then(|r| r.get("message_thread_id"))
+            .and_then(|v| v.as_i64())
+    }
+
+    /// Ensure a topic exists for `project`. If we have a group registered
+    /// but no topic for the project yet, create one and persist. Returns
+    /// the topic id on success.
+    async fn ensure_topic_for_project(&self, project: &str) -> Option<i64> {
+        use omega_core::telegram_group::TelegramGroupConfig;
+        let mut cfg = TelegramGroupConfig::load()?;
+        if let Some(t) = cfg.topic_for(project) {
+            return Some(t);
+        }
+        let topic = self.create_forum_topic(cfg.group_id, project).await?;
+        cfg.set_topic(project, topic);
+        let _ = cfg.save();
+        Some(topic)
+    }
+
+    /// Send an HTML message into a specific forum topic.
+    async fn send_html_to_topic(&self, group_id: i64, topic_id: i64, text: &str) -> Result<()> {
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": group_id,
+            "message_thread_id": topic_id,
+            "text": text,
+            "parse_mode": "HTML",
+        });
+        let _ = self.client.post(&url).json(&body).send().await?;
+        Ok(())
+    }
+
+    /// Send a document into a specific forum topic (oracle PDF reports).
+    async fn send_document_to_topic(
+        &self,
+        group_id: i64,
+        topic_id: i64,
+        filename: &str,
+        mime: &str,
+        bytes: &[u8],
+        caption: &str,
+    ) -> Result<()> {
+        let url = format!("{}/bot{}/sendDocument", API_BASE, self.cfg.bot_token);
+        let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+            .file_name(filename.to_string())
+            .mime_str(mime)
+            .unwrap_or_else(|_| {
+                reqwest::multipart::Part::bytes(bytes.to_vec()).file_name(filename.to_string())
+            });
+        let form = reqwest::multipart::Form::new()
+            .text("chat_id", group_id.to_string())
+            .text("message_thread_id", topic_id.to_string())
+            .text("caption", caption.to_string())
+            .text("parse_mode", "HTML")
+            .part("document", part);
+        let _ = self.client.post(&url).multipart(form).send().await?;
+        Ok(())
+    }
+
     async fn mirror_to_master_pane(&self, user_msg: &str, response: &str) {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
         let log = home.join(".omega/state/aisb-conversation.log");
@@ -2626,33 +2815,119 @@ impl TelegramBotEngine {
 
     /// Process pending oracle reports and deliver them.
     async fn deliver_reports(&self) {
+        use omega_core::telegram_group::TelegramGroupConfig;
         let reports = ReportPipeline::check_for_reports();
+        let group_cfg = TelegramGroupConfig::load();
         for report in reports {
             let html = report.to_telegram_html();
             let keyboard = report.inline_keyboard();
 
-            match self
-                .send_html_with_keyboard(self.reply_chat_id, &html, &keyboard)
-                .await
-            {
-                Ok(Some(msg_id)) => {
-                    let mut router = self.reply_router.lock().await;
-                    router.track(msg_id, &report.project);
-                    tracing::info!(
-                        project = %report.project,
-                        msg_id = msg_id,
-                        "delivered oracle report"
-                    );
-                }
-                Ok(None) => {
-                    tracing::warn!(project = %report.project, "report sent but no message_id");
-                }
-                Err(e) => {
-                    tracing::error!(project = %report.project, error = %e, "failed to deliver report");
+            // Route by project to a topic when the supergroup is set up
+            // AND a topic exists (or can be created) for this project.
+            // Otherwise fall back to the owner's DM.
+            let topic_target: Option<(i64, i64)> = if let Some(ref cfg) = group_cfg {
+                let topic = match cfg.topic_for(&report.project) {
+                    Some(t) => Some(t),
+                    None => self.ensure_topic_for_project(&report.project).await,
+                };
+                topic.map(|t| (cfg.group_id, t))
+            } else {
+                None
+            };
+
+            // 1. Text report into the topic (or DM).
+            let sent_to_topic = if let Some((gid, tid)) = topic_target {
+                self.send_html_to_topic(gid, tid, &html).await.is_ok()
+            } else {
+                false
+            };
+            if !sent_to_topic {
+                match self
+                    .send_html_with_keyboard(self.reply_chat_id, &html, &keyboard)
+                    .await
+                {
+                    Ok(Some(msg_id)) => {
+                        let mut router = self.reply_router.lock().await;
+                        router.track(msg_id, &report.project);
+                    }
+                    Ok(None) => {
+                        tracing::warn!(project = %report.project, "report sent but no message_id");
+                    }
+                    Err(e) => {
+                        tracing::error!(project = %report.project, error = %e, "failed to deliver report");
+                    }
                 }
             }
+
+            // 2. PDF artifact (rendered via pdfgen tool) into the topic
+            //    when group + topic exist. Best-effort, never blocks.
+            if let Some((gid, tid)) = topic_target {
+                if let Some((pdf_bytes, filename)) = render_report_pdf(&report).await {
+                    let caption = format!(
+                        "<b>Oracle report — {}</b>",
+                        formatting::escape_html(&report.project)
+                    );
+                    let _ = self
+                        .send_document_to_topic(gid, tid, &filename, "application/pdf", &pdf_bytes, &caption)
+                        .await;
+                }
+            }
+            tracing::info!(
+                project = %report.project,
+                topic = ?topic_target.map(|(_, t)| t),
+                "delivered oracle report"
+            );
         }
     }
+}
+
+/// Render an oracle report into a PDF via the global `pdfgen` tool
+/// (template=doc, theme=agentik). Returns (bytes, filename) on success,
+/// None if pdfgen isn't installed or rendering fails.
+async fn render_report_pdf(report: &OracleReport) -> Option<(Vec<u8>, String)> {
+    let body_md = format!(
+        "# Oracle report — {project}\n\n\
+         **Status:** {status}    **Build:** {build}\n\n\
+         {body}\n",
+        project = report.project,
+        status = report.status,
+        build = report.build,
+        body = report.body,
+    );
+    let data = serde_json::json!({
+        "template": "doc",
+        "theme": "agentik",
+        "eyebrow": "ORACLE REPORT",
+        "title": format!("Oracle report — {}", report.project),
+        "subtitle": format!("Status: {}", report.status),
+        "author": "OmegaOS",
+        "date": chrono::Local::now().format("%B %Y").to_string(),
+        "docId": format!("ORC-{}", chrono::Utc::now().format("%Y%m%d-%H%M")),
+        "brand": "OmegaOS",
+        "body": body_md,
+    });
+    let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let data_path = format!("/tmp/oracle-report-{}-{}.json", report.project, ts);
+    std::fs::write(&data_path, data.to_string()).ok()?;
+    let pdf_path = format!("/tmp/oracle-report-{}-{}.pdf", report.project, ts);
+    let status = tokio::process::Command::new("pdfgen")
+        .args([
+            "--template=doc",
+            "--theme=agentik",
+            &format!("--data={}", data_path),
+            &format!("--out={}", pdf_path),
+        ])
+        .status()
+        .await
+        .ok()?;
+    if !status.success() {
+        return None;
+    }
+    let bytes = std::fs::read(&pdf_path).ok()?;
+    let filename = format!("oracle-{}-{}.pdf", report.project, ts);
+    let _ = std::fs::remove_file(&data_path);
+    let _ = std::fs::remove_file(&pdf_path);
+    Some((bytes, filename))
 }
 
 // ── Main entry point ──

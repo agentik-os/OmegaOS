@@ -11,6 +11,7 @@ pub mod dispatch;
 pub mod done;
 pub mod failover;
 pub mod skill_packs;
+pub mod telegram_group;
 pub mod trajectory;
 pub mod formatting;
 pub mod gate;
