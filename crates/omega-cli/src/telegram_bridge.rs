@@ -456,9 +456,50 @@ impl TelegramBotEngine {
 
         let relay_target = target.clone().unwrap_or_else(|| self.cfg.relay_session.clone());
 
-        // 3a. Capture `before` BEFORE sending — otherwise we'd capture
-        // after Claude has already replied (or is mid-reply) and the
-        // bullet-count diff would show no change → polling sends nothing.
+        // If targeting a specific rmux session (oracle/worker), use pane relay.
+        // Otherwise (default = AISB Master chat), use direct `claude --print`
+        // which is dramatically faster (streams stdout, no pane polling).
+        let is_master_chat = relay_target == omega_core::aisb::MASTER_SESSION_NAME;
+
+        if is_master_chat {
+            // Simple, fast path: call claude --print, send stdout to Telegram.
+            let _ = self.send_chat_action(chat_id, "typing").await;
+            let output = tokio::task::spawn_blocking({
+                let prompt = text.to_string();
+                move || {
+                    std::process::Command::new("claude")
+                        .args(["--print", "--dangerously-skip-permissions"])
+                        .arg(&prompt)
+                        .output()
+                }
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+
+            if let Some(out) = output {
+                let response = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !response.is_empty() {
+                    let chunks = formatting::split_message(&response, TELEGRAM_MAX_MSG_LEN);
+                    for chunk in chunks {
+                        let _ = self.send_text_plain(chat_id, &chunk).await;
+                    }
+                } else {
+                    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!("<i>No response. stderr:</i>\n<code>{}</code>", formatting::escape_html(&stderr)),
+                        )
+                        .await;
+                }
+            } else {
+                let _ = self.send_html(chat_id, "<i>Failed to run claude --print</i>").await;
+            }
+            return Ok(());
+        }
+
+        // Targeted session path — keep pane-based relay for now.
         let before = self
             .mgr
             .capture_pane(&relay_target)
@@ -1980,6 +2021,18 @@ impl TelegramBotEngine {
     }
 
     // ── Telegram API methods ──
+
+    /// Send plain text (no parse_mode) — for raw agent output that may
+    /// contain unescaped < > & characters.
+    async fn send_text_plain(&self, chat_id: i64, text: &str) -> Result<()> {
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": text,
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+        Ok(())
+    }
 
     async fn send_html(&self, chat_id: i64, text: &str) -> Result<Option<i64>> {
         let chunks = formatting::split_message(text, TELEGRAM_MAX_MSG_LEN);
