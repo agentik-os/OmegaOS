@@ -717,22 +717,22 @@ impl TelegramBotEngine {
         if parts.len() < 2 {
             let _ = self.send_html(
                 chat_id,
-                "🛠️ <b>New Project</b>\n━━━━━━━━━━\n\
-                 Usage: <code>/newproject &lt;name&gt; &lt;work|clients&gt; [emoji]</code>\n\n\
-                 <b>Example:</b>\n  <code>/newproject MyApp work 🚀</code>\n\
-                 <code>/newproject ClientX clients 💼</code>",
+                "<b>New Project</b>\n\
+                 Usage: <code>/newproject &lt;name&gt; &lt;work|clients&gt;</code>\n\n\
+                 <b>Example:</b>\n  <code>/newproject MyApp work</code>\n\
+                 <code>/newproject ClientX clients</code>",
             ).await;
             return;
         }
         let name = parts[0];
         let location = parts[1].to_lowercase();
-        let icon = parts.get(2).copied().unwrap_or("📦");
+        let icon = parts.get(2).copied().unwrap_or("");
 
         if location != "work" && location != "clients" {
             let _ = self.send_html(
                 chat_id,
                 &format!(
-                    "🔴 Location must be <code>work</code> or <code>clients</code>, got <code>{}</code>",
+                    "Location must be <code>work</code> or <code>clients</code>, got <code>{}</code>",
                     formatting::escape_html(&location)
                 ),
             ).await;
@@ -744,22 +744,22 @@ impl TelegramBotEngine {
         if let Err(e) = std::fs::create_dir_all(&base) {
             let _ = self.send_html(
                 chat_id,
-                &format!("🔴 Could not create base dir: <code>{}</code>", formatting::escape_html(&e.to_string()))
+                &format!("Could not create base dir: <code>{}</code>", formatting::escape_html(&e.to_string()))
             ).await;
             return;
         }
-        let result = omega_core::project_manager::create_project(name, &base, Some(icon));
+        let icon_opt = if icon.is_empty() { None } else { Some(icon) };
+        let result = omega_core::project_manager::create_project(name, &base, icon_opt);
         match result {
             Ok(project) => {
                 let _ = self.send_html(
                     chat_id,
                     &format!(
-                        "🟢 <b>Project Created</b>\n━━━━━━━━━━\n\
-                         <b>Name:</b> {} {}\n\
+                        "<b>Project Created</b>\n\
+                         <b>Name:</b> {}\n\
                          <b>Path:</b> <code>{}</code>\n\
                          <b>Oracle:</b> <code>oracle-{}</code>\n\n\
                          <i>Next: send a message to start working on this project.</i>",
-                        icon,
                         formatting::escape_html(&project.name),
                         formatting::escape_html(&project.path.display().to_string()),
                         formatting::escape_html(&project.name),
@@ -770,7 +770,7 @@ impl TelegramBotEngine {
                 let _ = self.send_html(
                     chat_id,
                     &format!(
-                        "🔴 <b>Project creation failed</b>\n<code>{}</code>",
+                        "<b>Project creation failed</b>\n<code>{}</code>",
                         formatting::escape_html(&e.to_string())
                     ),
                 ).await;
