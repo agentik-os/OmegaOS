@@ -496,29 +496,45 @@ impl SessionManager {
     /// Distinct from `send_paste_then_submit` (which auto-submits) — used for
     /// forwarding a *user* paste into the interactive preview.
     pub async fn send_paste_raw(&self, session_name: &str, text: &str) -> Result<()> {
-        let pane = self.pane_for(session_name).await?;
-        pane.send_text("\u{1b}[200~").await?;
-        // Chunk the body so a very large paste isn't sent as one oversized
-        // PTY write. Markers are sent once; only the body is split, so the
-        // block stays atomic from the target app's perspective.
-        const CHUNK: usize = 4096;
-        if text.len() <= CHUNK {
-            pane.send_text(text).await?;
-        } else {
-            let mut start = 0;
-            let bytes = text.as_bytes();
-            while start < bytes.len() {
-                // Advance to a char boundary at/under the chunk limit.
-                let mut end = (start + CHUNK).min(bytes.len());
-                while end < bytes.len() && !text.is_char_boundary(end) {
-                    end -= 1;
+        // Whole bracketed-paste block (markers + chunked body) as one unit, so
+        // the stale-pane retry replays the ENTIRE paste atomically — never a
+        // half-sent block. Mirrors the single-retry strategy of send_text_raw.
+        async fn paste_block(pane: &Pane, text: &str) -> std::result::Result<(), rmux_sdk::RmuxError> {
+            pane.send_text("\u{1b}[200~").await?;
+            // Chunk the body so a very large paste isn't sent as one oversized
+            // PTY write. Markers are sent once; only the body is split, so the
+            // block stays atomic from the target app's perspective.
+            const CHUNK: usize = 4096;
+            if text.len() <= CHUNK {
+                pane.send_text(text).await?;
+            } else {
+                let mut start = 0;
+                let bytes = text.as_bytes();
+                while start < bytes.len() {
+                    // Advance to a char boundary at/under the chunk limit.
+                    let mut end = (start + CHUNK).min(bytes.len());
+                    while end < bytes.len() && !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    pane.send_text(&text[start..end]).await?;
+                    start = end;
                 }
-                pane.send_text(&text[start..end]).await?;
-                start = end;
             }
+            pane.send_text("\u{1b}[201~").await?;
+            Ok(())
         }
-        pane.send_text("\u{1b}[201~").await?;
-        Ok(())
+
+        let pane = self.pane_for(session_name).await?;
+        match paste_block(&pane, text).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                paste_block(&pane, text).await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     pub async fn wait_for_text(

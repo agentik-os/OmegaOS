@@ -657,6 +657,14 @@ pub struct App {
     /// Auto-follow tail — preview stays glued to the bottom (latest content)
     /// unless the user manually scrolls up. Mirrors `preview_scroll == 0`.
     pub preview_follow_tail: bool,
+    /// Set true on the tail→history TRANSITION (first scroll-up out of tail
+    /// mode). Signals the event loop to load full scrollback IMMEDIATELY —
+    /// before the next draw — so the renderer computes a real `preview_max_scroll`
+    /// on the SAME frame the user first scrolled. Without it, the first press
+    /// sees the short visible buffer (max_scroll == 0) and the view can't move
+    /// until the next cadence tick, requiring a wasted double-press. The loop
+    /// clears it after consuming.
+    pub preview_needs_history: bool,
     pub session_focus: SessionFocus,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
@@ -717,6 +725,7 @@ impl App {
             preview_scroll: 0,
             preview_max_scroll: 0,
             preview_follow_tail: true,
+            preview_needs_history: false,
             session_focus: SessionFocus::List,
             last_tab_press: None,
             detail_focused: false,
@@ -888,6 +897,10 @@ impl App {
         self.preview_follow_tail = false;
         if was_following && self.preview_max_scroll == 0 {
             self.preview_scroll = lines;
+            // First press out of tail: the visible buffer is short, so the
+            // renderer would clamp the view back to the bottom. Tell the loop
+            // to load scrollback NOW so this same press actually moves the view.
+            self.preview_needs_history = true;
         } else {
             self.preview_scroll = self
                 .preview_scroll

@@ -1203,6 +1203,18 @@ async fn run_tui_loop(
             }
         }
 
+        // First scroll-up out of tail mode: load scrollback NOW (this tick,
+        // before the next draw) so the renderer has the full history and
+        // computes a real max_scroll on the SAME frame — the view moves on
+        // press #1 instead of needing a wasted second press. Only fires on the
+        // tail→history transition (flag is set once in scroll_preview_up);
+        // subsequent presses already have history and ride the normal cadence.
+        if app.preview_needs_history {
+            app.preview_needs_history = false;
+            let _ = app.refresh_preview().await;
+            last_preview_refresh = std::time::Instant::now();
+        }
+
         if last_refresh.elapsed() > std::time::Duration::from_secs(2) {
             let _ = app.refresh().await;
             let _ = app.refresh_preview().await;
