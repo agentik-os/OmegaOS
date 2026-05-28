@@ -463,26 +463,21 @@ pub fn smart_wrap_response(
     };
     let divider = "─".repeat(20);
 
-    // The agent's RESPONSE body wraps in a single <blockquote> so it
-    // renders with the colored left bar (the "yellow" visual cue).
-    // The user's question is NOT echoed here — Telegram's native
-    // reply-to header already shows it above the message.
+    // The agent's response renders as plain HTML (no outer blockquote).
+    // The "yellow" visual cue stays where it belongs: on the user's
+    // question, via Telegram's native reply-to header above the message.
     //
-    // Inside the blockquote, all the smart-md → HTML still works:
-    // inner <blockquote expandable> sections, <code>, <b>, etc.
-    // Telegram nests blockquotes correctly.
+    // Inner blockquote expandable sections (from ## headings) still work
+    // — they're applied per-section by smart_markdown_to_html.
     //
-    // user_message is kept in the signature for future use (e.g.,
-    // include in error context) but no longer rendered.
+    // user_message kept in signature for callers that want to log/cite
+    // it (e.g. error reporting), but not rendered in the body.
     let _ = user_message;
 
     let body_html = smart_markdown_to_html(body_md);
     let body_html = mask_secrets(&body_html);
     let footer = format!("<i>⌁ {:.1}s · {}</i>", duration_s, escape_html(model));
-    format!(
-        "{}\n{}\n\n<blockquote>{}</blockquote>\n\n{}",
-        header, divider, body_html, footer
-    )
+    format!("{}\n{}\n\n{}\n\n{}", header, divider, body_html, footer)
 }
 
 /// "Thinking…" placeholder with elapsed-time progress bar, edited in
