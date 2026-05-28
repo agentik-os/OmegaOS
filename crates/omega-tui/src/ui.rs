@@ -446,80 +446,24 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         String::new()
     };
 
-    if chat_focused {
-        // Dynamic chat input height: 1 line minimum, grows up to 6 lines based
-        // on visual lines needed for the current buffer at this terminal width.
-        let inner_width = area.width.saturating_sub(4) as usize; // borders + "▶ "
-        let visual_lines = visual_line_count(&app.chat_input, inner_width.max(1));
-        // height = visual_lines + 2 (borders). Clamp: min 3, max 8.
-        let input_height = (visual_lines as u16 + 2).clamp(3, 8);
-
-        let right_split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(input_height)])
-            .split(area);
-
-        let preview = Paragraph::new(preview_lines)
-            .scroll((scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("{}{}", preview_title, scroll_indicator))
-                    .border_style(preview_border_style),
-            );
-        frame.render_widget(preview, right_split[0]);
-
-        let target = app
-            .selected_session()
-            .map(|e| e.session.name.clone())
-            .unwrap_or_default();
-        let hint = if fullscreen {
-            " (Enter send, Tab-Tab to exit fullscreen, Esc back to list) "
-        } else {
-            " (Enter send, Tab-Tab fullscreen, Tab/Esc back) "
-        };
-
-        // Render the buffer as multiple visual lines so the user sees everything
-        let wrapped = wrap_text(&app.chat_input, inner_width.max(1));
-        let mut input_lines: Vec<Line> = Vec::with_capacity(wrapped.len().max(1));
-        if wrapped.is_empty() {
-            input_lines.push(Line::from(vec![
-                Span::styled("▶ ", Style::default().fg(Color::Yellow)),
-                Span::styled("█", Style::default().fg(Color::Yellow)),
-            ]));
-        } else {
-            for (i, line) in wrapped.iter().enumerate() {
-                let is_last = i + 1 == wrapped.len();
-                let prefix = if i == 0 { "▶ " } else { "  " };
-                let mut spans = vec![
-                    Span::styled(prefix.to_string(), Style::default().fg(Color::Yellow)),
-                    Span::raw(line.clone()),
-                ];
-                if is_last {
-                    spans.push(Span::styled("█", Style::default().fg(Color::Yellow)));
-                }
-                input_lines.push(Line::from(spans));
-            }
-        }
-
-        let chat = Paragraph::new(input_lines).block(
+    // Chat-input layer removed (broke interactive prompts like plan mode, OAuth).
+    // The preview takes the full right panel. To talk to the agent: press Enter
+    // → attach directly to the rmux session (terminal passthrough).
+    let title = if chat_focused {
+        format!("{}{}  [Enter = attach]", preview_title, scroll_indicator)
+    } else {
+        format!("{}{}", preview_title, scroll_indicator)
+    };
+    let preview = Paragraph::new(preview_lines)
+        .scroll((scroll, 0))
+        .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" → {}{}", target, hint))
-                .border_style(Style::default().fg(Color::Yellow)),
+                .title(title)
+                .border_style(preview_border_style),
         );
-        frame.render_widget(chat, right_split[1]);
-    } else {
-        let preview = Paragraph::new(preview_lines)
-            .scroll((scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(format!("{}{}", preview_title, scroll_indicator))
-                    .border_style(preview_border_style),
-            );
-        frame.render_widget(preview, area);
-    }
+    frame.render_widget(preview, area);
+    let _ = fullscreen; // fullscreen no longer needed (no chat input to grow)
 }
 
 fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {

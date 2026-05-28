@@ -64,15 +64,44 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
     match mouse.kind {
         MouseEventKind::ScrollDown => {
-            scroll_active_panel(app, 3, true);
+            scroll_active_panel_at(app, 3, true, mouse.column);
             Action::None
         }
         MouseEventKind::ScrollUp => {
-            scroll_active_panel(app, 3, false);
+            scroll_active_panel_at(app, 3, false, mouse.column);
+            Action::None
+        }
+        // Click in a panel = focus it (left = list, right = preview)
+        MouseEventKind::Down(_) => {
+            if app.tab == Tab::Sessions {
+                // Heuristic: list is on the left ~25-30% of screen width.
+                // If click is in the right portion, focus the preview/chat.
+                // We can't read terminal width here directly, but column 30+ is
+                // almost always the right panel for any reasonable terminal.
+                if mouse.column >= 30 {
+                    if matches!(app.session_focus, SessionFocus::List) {
+                        app.session_focus = SessionFocus::Chat;
+                        app.preview_follow_tail = false;
+                    }
+                } else {
+                    app.session_focus = SessionFocus::List;
+                }
+            }
             Action::None
         }
         _ => Action::None,
     }
+}
+
+/// Position-aware scroll: in Sessions tab, scrolling over the right panel
+/// (column >= 30) scrolls the preview regardless of focus state.
+fn scroll_active_panel_at(app: &mut App, lines: u16, down: bool, column: u16) {
+    if app.tab == Tab::Sessions && column >= 30 {
+        if down { app.scroll_preview_down(lines); }
+        else { app.scroll_preview_up(lines); }
+        return;
+    }
+    scroll_active_panel(app, lines, down);
 }
 
 fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
@@ -606,19 +635,15 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // from Omega.
         KeyCode::Enter => match app.tab {
             Tab::Sessions => {
-                // Enter focuses the chat on the selected session (same as Tab),
-                // user stays inside Omega. To "fullscreen the chat" use Tab-Tab.
-                // If user is ALREADY in chat focus, Enter still sends the message.
-                if app.selected_session().is_some() {
-                    if matches!(app.session_focus, SessionFocus::List) {
-                        app.session_focus = SessionFocus::Chat;
-                        app.preview_follow_tail = true;
-                        app.chat_input.clear();
-                        app.status_message =
-                            Some("Focus: chat — type & Enter to send (Tab to list, Tab-Tab → fullscreen)".to_string());
-                    }
+                // Enter attaches DIRECTLY to the selected rmux session — terminal
+                // passthrough so interactive prompts (plan mode, OAuth, choice
+                // menus) work natively. The old chat-input layer broke
+                // interactivity and is removed.
+                if let Some(entry) = app.selected_session() {
+                    Action::AttachSession(entry.session.name.clone())
+                } else {
+                    Action::None
                 }
-                Action::None
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
             Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
