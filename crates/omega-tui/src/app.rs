@@ -948,7 +948,8 @@ impl App {
             }
         }
 
-        let mgr = omega_core::session::SessionManager::connect().await?;
+        // Cached connection — avoid a fresh rmux daemon socket per refresh.
+        let mgr = omega_core::session::SessionManager::connect_cached().await?;
         match mgr.capture_pane(&name).await {
             Ok(content) => {
                 // Keep the full visible buffer so the user can scroll

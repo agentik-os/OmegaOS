@@ -514,7 +514,7 @@ impl TelegramBotEngine {
             let user_msg_id = msg.message_id;
 
             // Pack CONTEXT: thread the reply, react 👀 to ack receipt
-            let _ = self.set_message_reaction(chat_id, user_msg_id, "👀").await;
+            let _ = self.set_message_reaction(chat_id, user_msg_id, "🤔").await;
 
             let placeholder = formatting::thinking_placeholder(agent_label);
             let placeholder_id = self

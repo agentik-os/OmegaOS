@@ -879,7 +879,7 @@ async fn run_tui_loop(
                     app.detail_scroll = 0;
                 }
                 Action::SendToSession { session, text } => {
-                    let mgr = SessionManager::connect().await?;
+                    let mgr = SessionManager::connect_cached().await?;
                     if !text.is_empty() {
                         if let Err(e) = mgr.send_text(&session, &text).await {
                             app.status_message = Some(format!("Send failed: {}", e));
@@ -892,7 +892,7 @@ async fn run_tui_loop(
                     }
                 }
                 Action::ForwardCharToSession { session, ch } => {
-                    let mgr = SessionManager::connect().await?;
+                    let mgr = SessionManager::connect_cached().await?;
                     // Space char: route as the rmux "Space" key token. Some
                     // pane/SDK paths render a bare " " in literal mode as the
                     // word "space" — using the named key avoids that quirk
@@ -912,7 +912,7 @@ async fn run_tui_loop(
                     }
                 }
                 Action::ForwardKeyToSession { session, key } => {
-                    let mgr = SessionManager::connect().await?;
+                    let mgr = SessionManager::connect_cached().await?;
                     if let Err(e) = mgr.send_key(&session, key).await {
                         app.status_message = Some(format!("Forward {} failed: {}", key, e));
                     } else {
@@ -921,7 +921,7 @@ async fn run_tui_loop(
                     }
                 }
                 Action::SendTextRawToSession { session, text } => {
-                    let mgr = SessionManager::connect().await?;
+                    let mgr = SessionManager::connect_cached().await?;
                     if let Err(e) = mgr.send_text_raw(&session, &text).await {
                         app.status_message = Some(format!("Paste failed: {}", e));
                     } else {

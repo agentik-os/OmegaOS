@@ -96,9 +96,17 @@ impl OmegaSession {
     }
 }
 
+#[derive(Clone)]
 pub struct SessionManager {
-    rmux: Rmux,
+    rmux: std::sync::Arc<Rmux>,
 }
+
+// Process-wide singleton — reused across every Action handler in the TUI
+// and Telegram bridge. The original SessionManager::connect() was opening
+// a fresh rmux daemon socket every call (~30-50ms latency per call), which
+// stacked up to >100ms perceived latency per keystroke in interactive
+// passthrough. The cached path serves the same Arc<Rmux> to every caller.
+static CACHED_MANAGER: tokio::sync::OnceCell<SessionManager> = tokio::sync::OnceCell::const_new();
 
 impl SessionManager {
     pub async fn connect() -> Result<Self> {
@@ -107,7 +115,17 @@ impl SessionManager {
             .connect_or_start()
             .await
             .context("Failed to connect to rmux daemon")?;
-        Ok(Self { rmux })
+        Ok(Self { rmux: std::sync::Arc::new(rmux) })
+    }
+
+    /// Process-wide cached SessionManager. First call connects, every
+    /// subsequent call hands back a clone (Arc<Rmux> share). Use this
+    /// in hot paths (per-keystroke forwarding, capture refresh).
+    pub async fn connect_cached() -> Result<Self> {
+        CACHED_MANAGER
+            .get_or_try_init(|| async { Self::connect().await })
+            .await
+            .cloned()
     }
 
     pub async fn create_session(
