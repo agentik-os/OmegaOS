@@ -703,7 +703,78 @@ impl TelegramBotEngine {
                 self.send_billing_card(chat_id).await;
                 true
             }
+            "/newproject" => {
+                self.handle_newproject(chat_id, text).await;
+                true
+            }
             _ => false,
+        }
+    }
+
+    /// Handle /newproject <name> <work|clients> [emoji] — creates project + registers it
+    async fn handle_newproject(&self, chat_id: i64, text: &str) {
+        let parts: Vec<&str> = text.split_whitespace().skip(1).collect();
+        if parts.len() < 2 {
+            let _ = self.send_html(
+                chat_id,
+                "🛠️ <b>New Project</b>\n━━━━━━━━━━\n\
+                 Usage: <code>/newproject &lt;name&gt; &lt;work|clients&gt; [emoji]</code>\n\n\
+                 <b>Example:</b>\n  <code>/newproject MyApp work 🚀</code>\n\
+                 <code>/newproject ClientX clients 💼</code>",
+            ).await;
+            return;
+        }
+        let name = parts[0];
+        let location = parts[1].to_lowercase();
+        let icon = parts.get(2).copied().unwrap_or("📦");
+
+        if location != "work" && location != "clients" {
+            let _ = self.send_html(
+                chat_id,
+                &format!(
+                    "🔴 Location must be <code>work</code> or <code>clients</code>, got <code>{}</code>",
+                    formatting::escape_html(&location)
+                ),
+            ).await;
+            return;
+        }
+
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let base = home.join("VibeCoding").join(&location);
+        if let Err(e) = std::fs::create_dir_all(&base) {
+            let _ = self.send_html(
+                chat_id,
+                &format!("🔴 Could not create base dir: <code>{}</code>", formatting::escape_html(&e.to_string()))
+            ).await;
+            return;
+        }
+        let result = omega_core::project_manager::create_project(name, &base, Some(icon));
+        match result {
+            Ok(project) => {
+                let _ = self.send_html(
+                    chat_id,
+                    &format!(
+                        "🟢 <b>Project Created</b>\n━━━━━━━━━━\n\
+                         <b>Name:</b> {} {}\n\
+                         <b>Path:</b> <code>{}</code>\n\
+                         <b>Oracle:</b> <code>oracle-{}</code>\n\n\
+                         <i>Next: send a message to start working on this project.</i>",
+                        icon,
+                        formatting::escape_html(&project.name),
+                        formatting::escape_html(&project.path.display().to_string()),
+                        formatting::escape_html(&project.name),
+                    ),
+                ).await;
+            }
+            Err(e) => {
+                let _ = self.send_html(
+                    chat_id,
+                    &format!(
+                        "🔴 <b>Project creation failed</b>\n<code>{}</code>",
+                        formatting::escape_html(&e.to_string())
+                    ),
+                ).await;
+            }
         }
     }
 
@@ -1067,6 +1138,28 @@ impl TelegramBotEngine {
                     .await;
             }
         }
+    }
+
+    /// Register the bot's slash commands with Telegram so they appear
+    /// in the autocomplete menu when typing "/" in the chat.
+    async fn register_bot_commands(&self) {
+        let commands = serde_json::json!({
+            "commands": [
+                {"command": "help",       "description": "Show all available commands"},
+                {"command": "list",       "description": "List active rmux sessions"},
+                {"command": "status",     "description": "Capture last 20 lines of a session"},
+                {"command": "billing",    "description": "Show Claude usage (5h / week)"},
+                {"command": "account",    "description": "Show current account + actions"},
+                {"command": "login",      "description": "Re-authenticate with Claude OAuth"},
+                {"command": "logout",     "description": "Clear current credentials"},
+                {"command": "aisb",       "description": "Send a message to AISB Master"},
+                {"command": "relay",      "description": "Send to a specific session: /relay <name> <text>"},
+                {"command": "newproject", "description": "Create a new project: /newproject <name> <work|clients>"}
+            ]
+        });
+
+        let url = format!("{}/bot{}/setMyCommands", API_BASE, self.cfg.bot_token);
+        let _ = self.client.post(&url).json(&commands).send().await;
     }
 
     /// One-shot back-online card sent on bridge (re)start.
@@ -1473,6 +1566,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
     let engine = TelegramBotEngine::new(cfg.clone()).await?;
     engine.ensure_master().await;
+    engine.register_bot_commands().await;
     engine.send_back_online_card().await;
 
     let mut offset: i64 = 0;
