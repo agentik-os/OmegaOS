@@ -42,6 +42,25 @@ struct Update {
     message: Option<Message>,
     #[serde(default)]
     callback_query: Option<CallbackQuery>,
+    /// Fires when the bot's membership in a chat changes — e.g. added or
+    /// promoted to admin. This lets us auto-detect a project supergroup
+    /// the moment the user makes the bot admin, so no manual `/setupgroup`
+    /// is needed.
+    #[serde(default)]
+    my_chat_member: Option<ChatMemberUpdated>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMemberUpdated {
+    chat: Chat,
+    #[serde(default)]
+    new_chat_member: Option<ChatMember>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMember {
+    /// "creator" | "administrator" | "member" | "left" | "kicked"
+    status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +90,10 @@ struct Chat {
     id: i64,
     #[serde(default, rename = "type")]
     chat_type: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    is_forum: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2640,6 +2663,64 @@ impl TelegramBotEngine {
         let _ = self.send_html(chat_id, &body).await;
     }
 
+    /// Auto-setup triggered by a my_chat_member event when the bot is
+    /// added/promoted to admin in a forum-enabled supergroup. Persists the
+    /// group config, creates one topic per registered project, and DMs the
+    /// owner with a confirmation card. Idempotent — running it twice for
+    /// the same group only fills missing topics.
+    async fn auto_setup_group(&self, group_id: i64, group_name: String) {
+        use omega_core::telegram_group::TelegramGroupConfig;
+        let mut cfg = TelegramGroupConfig::load().unwrap_or_default();
+        let is_new = cfg.group_id != group_id;
+        cfg.group_id = group_id;
+        if !group_name.is_empty() {
+            cfg.group_name = group_name.clone();
+        }
+        cfg.setup_at = chrono::Utc::now().to_rfc3339();
+
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let mut created = 0usize;
+        for project in &registry.projects {
+            if cfg.topic_for(&project.name).is_some() {
+                continue;
+            }
+            if let Some(topic_id) = self.create_forum_topic(group_id, &project.name).await {
+                cfg.set_topic(&project.name, topic_id);
+                created += 1;
+            }
+        }
+        let _ = cfg.save();
+
+        // Confirm to the owner in their DM.
+        let owner = *self
+            .cfg
+            .allow_user_ids
+            .first()
+            .unwrap_or(&self.cfg.chat_id);
+        let label = if is_new { "registered" } else { "updated" };
+        let body = format!(
+            "Project group <b>{label}</b> ✓\n\n\
+             Group: <b>{name}</b>\n\
+             ID: <code>{id}</code>\n\
+             Topics mapped: {n}\n\
+             New this run: {created}\n\n\
+             <i>Oracle reports will land in each project's topic. PDF artifacts via pdfgen.</i>",
+            label = label,
+            name = formatting::escape_html(&cfg.group_name),
+            id = group_id,
+            n = cfg.topics.len(),
+            created = created,
+        );
+        let _ = self.send_html(owner, &body).await;
+        tracing::info!(
+            group_id = group_id,
+            new = is_new,
+            topics = cfg.topics.len(),
+            created = created,
+            "auto-setup of project group complete"
+        );
+    }
+
     /// createForumTopic — returns the new topic's message_thread_id, or
     /// None on failure.
     async fn create_forum_topic(&self, group_id: i64, name: &str) -> Option<i64> {
@@ -3006,7 +3087,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
         // Long-poll for updates
         let url = format!(
-            "{}/bot{}/getUpdates?timeout=25&offset={}&allowed_updates=[\"message\",\"callback_query\"]",
+            "{}/bot{}/getUpdates?timeout=25&offset={}&allowed_updates=[\"message\",\"callback_query\",\"my_chat_member\"]",
             API_BASE, cfg.bot_token, offset
         );
 
@@ -3036,6 +3117,29 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
         for upd in updates.result {
             offset = upd.update_id + 1;
+
+            // Auto-detect a project supergroup the moment the bot is added
+            // or promoted to admin in a forum-enabled chat. Triggers full
+            // auto-setup so the user never has to run /setupgroup manually.
+            if let Some(mcm) = upd.my_chat_member {
+                let chat_type = mcm.chat.chat_type.as_deref().unwrap_or("");
+                let is_forum = mcm.chat.is_forum.unwrap_or(false);
+                let status = mcm
+                    .new_chat_member
+                    .as_ref()
+                    .map(|m| m.status.as_str())
+                    .unwrap_or("");
+                let is_admin = status == "administrator" || status == "creator";
+                if is_admin && chat_type == "supergroup" && is_forum {
+                    engine
+                        .auto_setup_group(
+                            mcm.chat.id,
+                            mcm.chat.title.clone().unwrap_or_default(),
+                        )
+                        .await;
+                }
+                continue;
+            }
 
             // Handle callback queries (inline keyboard presses)
             if let Some(cb) = upd.callback_query {

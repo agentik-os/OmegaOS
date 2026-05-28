@@ -927,6 +927,73 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
 
     lines.push(Line::from(""));
 
+    // ── Project group (Telegram supergroup + per-project topics) ───────────
+    lines.push(Line::from(Span::styled(
+        "  ── Project group (auto-detected) ──",
+        Style::default().fg(Color::Yellow),
+    )));
+    match omega_core::telegram_group::TelegramGroupConfig::load() {
+        Some(gcfg) => {
+            lines.push(Line::from(vec![
+                Span::raw("    Status:         "),
+                Span::styled("● Connected", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(format!(
+                "    Group:          {}  ({})",
+                if gcfg.group_name.is_empty() { "—" } else { &gcfg.group_name },
+                gcfg.group_id
+            )));
+            lines.push(Line::from(format!(
+                "    Topics:         {} mapped",
+                gcfg.topics.len()
+            )));
+            if !gcfg.topics.is_empty() {
+                let names: Vec<String> = gcfg.topics.keys().cloned().collect();
+                let preview = names.join(", ");
+                let trimmed: String = preview.chars().take(80).collect();
+                lines.push(Line::from(format!(
+                    "                    {}{}",
+                    trimmed,
+                    if preview.len() > 80 { " …" } else { "" }
+                )));
+            }
+            lines.push(Line::from(format!("    Set up at:      {}", gcfg.setup_at)));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                "    Status:         ○ Not configured",
+                Style::default().fg(Color::Gray),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    Setup is automatic:",
+                Style::default().fg(Color::Cyan),
+            )));
+            lines.push(Line::from(Span::styled(
+                "      1. Create a Telegram supergroup, enable Topics in its settings",
+                Style::default().fg(Color::White),
+            )));
+            lines.push(Line::from(Span::styled(
+                "      2. Add the bot to the group and make it admin",
+                Style::default().fg(Color::White),
+            )));
+            lines.push(Line::from(Span::styled(
+                "      3. That's it — the bot auto-detects the promotion, persists the",
+                Style::default().fg(Color::White),
+            )));
+            lines.push(Line::from(Span::styled(
+                "         group, creates one topic per project, and DMs you a confirmation.",
+                Style::default().fg(Color::White),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    Manual fallback:  /setupgroup <group_id>  in the bot DM",
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+
     // ── Actions (arrow-navigable + letter shortcuts) ───────────────────────
     lines.push(Line::from(Span::styled(
         "  ── Actions  (↑/↓ navigate, Enter to run, or press letter) ──",
