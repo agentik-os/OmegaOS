@@ -196,6 +196,50 @@ fn collapse_blank_lines(text: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// Minimal Engineer template — wraps an agent response body with the
+/// canonical Agentik OS Telegram look:
+///
+/// ```text
+/// Ω  <agent>
+/// ────────────────────
+///
+/// <formatted body>
+///
+/// ⌁ <duration>s · <model>
+/// ```
+///
+/// `body_md` is the raw agent output (markdown). It gets converted to
+/// Telegram HTML internally. `agent` is the visible name ("AISB Master",
+/// "Oracle Causio #1", etc.). `duration_s` is the elapsed seconds since
+/// the user message was received; `model` is the LLM tag (e.g. "opus-4.7").
+pub fn wrap_response(agent: &str, body_md: &str, duration_s: f32, model: &str) -> String {
+    let body_html = markdown_to_telegram_html(body_md);
+    let agent_esc = escape_html(agent);
+    let model_esc = escape_html(model);
+    let divider = "─".repeat(20);
+    format!(
+        "Ω  <b>{agent}</b>\n{divider}\n\n{body}\n\n<i>⌁ {dur:.1}s · {model}</i>",
+        agent = agent_esc,
+        divider = divider,
+        body = body_html,
+        dur = duration_s,
+        model = model_esc,
+    )
+}
+
+/// "Thinking…" placeholder shown immediately when a user message arrives.
+/// Gets edited (editMessageText) once the real response is ready, so the
+/// user sees a single message that morphs from "thinking" → "answer".
+pub fn thinking_placeholder(agent: &str) -> String {
+    let agent_esc = escape_html(agent);
+    let divider = "─".repeat(20);
+    format!(
+        "Ω  <b>{agent}</b>\n{divider}\n\n<i>⌁ Thinking…</i>",
+        agent = agent_esc,
+        divider = divider,
+    )
+}
+
 /// Format a blockquote card with title and body (AISB report style).
 pub fn blockquote_card(title: &str, body: &str) -> String {
     let mut out = String::new();
@@ -423,5 +467,21 @@ mod tests {
         let table = kv_table(&[("Status", "Online"), ("Uptime", "12h")]);
         assert!(table.contains("Status"));
         assert!(table.contains("Online"));
+    }
+
+    #[test]
+    fn wrap_response_minimal_engineer() {
+        let out = wrap_response("AISB Master", "Hello", 2.4, "opus-4.7");
+        assert!(out.starts_with("Ω  <b>AISB Master</b>"));
+        assert!(out.contains("─"));
+        assert!(out.contains("Hello"));
+        assert!(out.contains("<i>⌁ 2.4s · opus-4.7</i>"));
+    }
+
+    #[test]
+    fn thinking_placeholder_has_marker() {
+        let p = thinking_placeholder("AISB Master");
+        assert!(p.contains("<b>AISB Master</b>"));
+        assert!(p.contains("Thinking"));
     }
 }

@@ -467,63 +467,88 @@ impl TelegramBotEngine {
         let is_master_chat = relay_target == omega_core::aisb::MASTER_SESSION_NAME;
 
         if is_master_chat {
-            // Default master chat: use persistent claude subprocess via
-            // stream-json. First call pays startup (~3s), all subsequent
-            // calls reuse the same subprocess (~LLM inference time only).
+            // ── Minimal Engineer template flow ────────────────────────────
+            // 1. Send a "Thinking…" placeholder, remember its message_id
+            // 2. Spawn a typing-action ticker (every 4s) until the LLM returns
+            // 3. Edit the placeholder with the formatted answer (single
+            //    message morphs from thinking → answer)
+            // 4. If the answer is too long for one Telegram message,
+            //    edit the placeholder with the head and send the tail as
+            //    follow-ups.
             let (provider, model) = read_active_provider_model();
-            let _ = self.send_chat_action(chat_id, "typing").await;
+            let agent_label = "AISB Master";
+            let model_label = if model.is_empty() { provider.clone() } else { model.clone() };
 
-            if provider == "claude" || provider.is_empty() {
-                match self.claude_stream.ask(text).await {
-                    Ok(response) if !response.is_empty() => {
-                        let chunks = formatting::split_message(&response, TELEGRAM_MAX_MSG_LEN);
-                        for chunk in chunks {
-                            let _ = self.send_text_plain(chat_id, &chunk).await;
+            let placeholder = formatting::thinking_placeholder(agent_label);
+            let placeholder_id = self.send_html(chat_id, &placeholder).await?.unwrap_or(0);
+
+            // Typing ticker — fire-and-forget; aborts when this scope ends.
+            let ticker = {
+                let client = self.client.clone();
+                let token = self.cfg.bot_token.clone();
+                let cid = chat_id;
+                tokio::spawn(async move {
+                    loop {
+                        let url = format!("{}/bot{}/sendChatAction", API_BASE, token);
+                        let body = serde_json::json!({"chat_id": cid, "action": "typing"});
+                        let _ = client.post(&url).json(&body).send().await;
+                        tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    }
+                })
+            };
+
+            let started = std::time::Instant::now();
+
+            // Run the LLM call.
+            let result: std::result::Result<String, String> = if provider == "claude" || provider.is_empty() {
+                self.claude_stream.ask(text).await.map_err(|e| e.to_string())
+            } else {
+                let prompt = text.to_string();
+                let p = provider.clone();
+                let m = model.clone();
+                tokio::task::spawn_blocking(move || run_llm_oneshot(&p, &m, &prompt))
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+            };
+
+            ticker.abort();
+            let duration = started.elapsed().as_secs_f32();
+
+            // Format + deliver.
+            match result {
+                Ok(body) if !body.is_empty() => {
+                    let wrapped = formatting::wrap_response(agent_label, &body, duration, &model_label);
+                    let chunks = formatting::split_message(&wrapped, TELEGRAM_MAX_MSG_LEN);
+                    if let Some(first) = chunks.first() {
+                        if placeholder_id != 0 {
+                            let _ = self.edit_message_html(chat_id, placeholder_id, first).await;
+                        } else {
+                            let _ = self.send_html(chat_id, first).await;
                         }
                     }
-                    Ok(_) => {
-                        let _ = self.send_html(chat_id, "<i>Empty response.</i>").await;
-                    }
-                    Err(e) => {
-                        let _ = self
-                            .send_html(
-                                chat_id,
-                                &format!("<i>Claude error: <code>{}</code></i>", formatting::escape_html(&e.to_string())),
-                            )
-                            .await;
+                    for tail in chunks.iter().skip(1) {
+                        let _ = self.send_html(chat_id, tail).await;
                     }
                 }
-                return Ok(());
-            }
-
-            // Non-claude providers: fall back to one-shot CLI call.
-            let output = tokio::task::spawn_blocking({
-                let prompt = text.to_string();
-                let provider = provider.clone();
-                let model = model.clone();
-                move || run_llm_oneshot(&provider, &model, &prompt)
-            })
-            .await
-            .ok()
-            .and_then(|r| r.ok());
-
-            if let Some(out) = output {
-                let response = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                if !response.is_empty() {
-                    let chunks = formatting::split_message(&response, TELEGRAM_MAX_MSG_LEN);
-                    for chunk in chunks {
-                        let _ = self.send_text_plain(chat_id, &chunk).await;
+                Ok(_) => {
+                    let empty = formatting::wrap_response(agent_label, "_Empty response._", duration, &model_label);
+                    if placeholder_id != 0 {
+                        let _ = self.edit_message_html(chat_id, placeholder_id, &empty).await;
+                    } else {
+                        let _ = self.send_html(chat_id, &empty).await;
                     }
-                } else {
-                    let _ = self.send_html(chat_id, "<i>Empty response from CLI.</i>").await;
                 }
-            } else {
-                let _ = self
-                    .send_html(
-                        chat_id,
-                        &format!("<i>Failed to run {} CLI</i>", formatting::escape_html(&provider)),
-                    )
-                    .await;
+                Err(e) => {
+                    let body = format!("`{} error`\n{}", provider, e);
+                    let err_html = formatting::wrap_response(agent_label, &body, duration, &model_label);
+                    if placeholder_id != 0 {
+                        let _ = self.edit_message_html(chat_id, placeholder_id, &err_html).await;
+                    } else {
+                        let _ = self.send_html(chat_id, &err_html).await;
+                    }
+                }
             }
             return Ok(());
         }
@@ -2204,6 +2229,27 @@ impl TelegramBotEngine {
             Err(e) => {
                 tracing::warn!(error = %e, "sendMessage with keyboard failed");
                 Ok(None)
+            }
+        }
+    }
+
+    /// Edit a previously-sent HTML message in place. Used by the
+    /// "Thinking…" placeholder pattern: send placeholder → run LLM →
+    /// edit placeholder with the formatted answer (single message
+    /// morphs from thinking → answer, no chat clutter).
+    async fn edit_message_html(&self, chat_id: i64, message_id: i64, text: &str) -> Result<()> {
+        let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+        });
+        match self.client.post(&url).json(&body).send().await {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                tracing::warn!(error = %e, "editMessageText failed");
+                Ok(())
             }
         }
     }

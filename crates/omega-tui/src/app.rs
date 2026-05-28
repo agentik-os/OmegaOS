@@ -967,7 +967,17 @@ impl App {
 
     pub async fn refresh(&mut self) -> anyhow::Result<()> {
         let mgr = SessionManager::connect().await?;
-        let sessions = mgr.list_sessions().await?;
+        let raw_sessions = mgr.list_sessions().await?;
+
+        // Hide infrastructure daemons (Telegram bridge, reauth helper).
+        // Same list as the Telegram bridge filters in /sessions — keep them
+        // in sync if you add a new background process.
+        let hidden_prefixes = ["omega-telegram-bridge", "aisb-reauth"];
+        let sessions: Vec<_> = raw_sessions
+            .into_iter()
+            .filter(|s| !hidden_prefixes.iter().any(|p| s.name.starts_with(p)))
+            .collect();
+
         let all_progress = ProgressInfo::read_all(&self.config.state_dir);
 
         self.sessions.clear();
