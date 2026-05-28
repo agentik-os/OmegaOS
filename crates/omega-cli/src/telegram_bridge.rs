@@ -1138,8 +1138,22 @@ impl TelegramBotEngine {
             return;
         };
         let cwd = entry.path.display().to_string();
-        let cmd = "claude --dangerously-skip-permissions";
-        match self.mgr.create_session(oracle_name, Some(&cwd), Some(cmd)).await {
+
+        // Render the Oracle ROLE prompt (agents/oracle.md) with this
+        // project's placeholders, write it to a per-oracle file, and
+        // launch Claude with it as the system prompt. WITHOUT this the
+        // session was a bare vanilla Claude that didn't know it was an
+        // oracle — so it never planned or dispatched workers (and died
+        // when the process exited, since there was no `exec bash`).
+        let prompt_file = render_oracle_prompt(project, &cwd, oracle_name);
+        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        if let Some(ref pf) = prompt_file {
+            cmd.push_str(&format!(" --append-system-prompt-file '{}'", pf.replace('\'', r"'\''")));
+        }
+        // `exec bash` keeps the rmux session alive after Claude exits, so
+        // the oracle pane stays attachable instead of vanishing.
+        let wrapped = format!("bash -c '{}; exec bash'", cmd.replace('\'', r"'\''"));
+        match self.mgr.create_session(oracle_name, Some(&cwd), Some(&wrapped)).await {
             Ok(_) => {
                 *self.targeted_session.lock().await = Some(oracle_name.to_string());
                 self.send_html(
@@ -2738,6 +2752,32 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 }
 
 // ── Terminal output helpers (preserved from original) ──
+
+/// Render the Oracle role prompt (agents/oracle.md) with project
+/// placeholders filled, write it to ~/.omega/state/oracle-prompts/<name>.md,
+/// and return the path. Returns None if the template can't be found.
+///
+/// Placeholders: {{PROJECT}}, {{WORKDIR}}, {{SESSION}}.
+fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<String> {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    // Prefer the installed copy, fall back to the repo copy.
+    let candidates = [
+        home.join(".omega/agents/oracle.md"),
+        std::path::PathBuf::from("agents/oracle.md"),
+    ];
+    let template = candidates
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())?;
+    let rendered = template
+        .replace("{{PROJECT}}", project)
+        .replace("{{WORKDIR}}", workdir)
+        .replace("{{SESSION}}", session);
+    let dir = home.join(".omega/state/oracle-prompts");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}.md", session));
+    std::fs::write(&path, rendered).ok()?;
+    Some(path.to_string_lossy().to_string())
+}
 
 fn clean_terminal_output(text: &str) -> String {
     let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap_or_else(|_| {

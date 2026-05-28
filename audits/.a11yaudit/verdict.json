@@ -1,0 +1,8 @@
+{
+  "score": 0,
+  "confidence": "low",
+  "skill_used": "a11yaudit",
+  "error": "missing required v2 inputs (--user-need, --hinge)",
+  "request_redispatch": true,
+  "context_note": "Additional issue: target files are Rust TUI source (.rs) — axe-core, pa11y, Lighthouse a11y are web-only tools and cannot run against Rust source. A TUI accessibility audit requires adapted criteria (color-only signals, unicode-only charts, keyboard nav). Consider /codeaudit or /logicaudit for functional verification of the auto-done feature instead."
+}

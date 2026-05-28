@@ -1,0 +1,24 @@
+{
+  "score": 0,
+  "confidence": "low",
+  "skill_used": "debugaudit",
+  "error": "missing required v2 inputs (--user-need, --hinge)",
+  "request_redispatch": true,
+  "invocation_received": {
+    "files": "crates/omega-cli/src/main.rs,crates/omega-core/src/session.rs,crates/omega-tui/src/app.rs",
+    "scope": "fix(tui): scroll first-press enters scrollback (5/5 proven) + send_paste_raw stale-retry (paste byte-exact 5559/5559)",
+    "flags_present": ["--files", "--scope", "--post-mission", "--max-phases-fast"],
+    "flags_missing": ["--user-need", "--hinge"],
+    "protocol_version": "v2",
+    "protocol_required_since": "2026-05-08"
+  },
+  "redispatch_instructions": {
+    "required_flags": {
+      "--user-need": "Verbatim quote from the user describing the desired outcome (e.g. the original bug report or feature request)",
+      "--hinge": "Load-bearing region(s) from hinge-analyzer.sh output — the file:line-range of the most critical logic in the changed files"
+    },
+    "generate_hinge_with": "~/.claude/lib/hinge-analyzer.sh /home/hacker/VibeCoding/work/OmegaOS --audit=debug --files=crates/omega-cli/src/main.rs,crates/omega-core/src/session.rs,crates/omega-tui/src/app.rs",
+    "note": "For a post-mission verification audit, --user-need should be the verbatim user complaint that triggered the original fix (e.g. 'scroll first press is a no-op' or 'paste hits stale pane'). The scope flag describes what was done, not what the user needed — it cannot substitute for --user-need."
+  },
+  "finished_at": "2026-05-28T17:28:00Z"
+}
