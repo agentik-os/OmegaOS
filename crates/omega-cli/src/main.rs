@@ -5,7 +5,9 @@ use omega_core::done::{DoneSignal, DoneStatus};
 use omega_core::session::SessionManager;
 
 mod claude_stream;
+mod forwarder;
 mod telegram_bridge;
+mod usage;
 
 #[derive(Parser)]
 #[command(
@@ -237,6 +239,14 @@ enum Commands {
         once: bool,
     },
 
+    /// Token-budget usage monitor + Telegram 80%/90% alerts.
+    Usage {
+        /// Run one check tick (cron mode): fetch usage, alert if a
+        /// threshold is crossed, then exit.
+        #[arg(long)]
+        check: bool,
+    },
+
     /// Check quality gate for an oracle
     Gate {
         /// Oracle session name
@@ -354,6 +364,22 @@ async fn main() -> Result<()> {
             cmd_ship(&project, &message, unfreeze).await
         }
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
+        Some(Commands::Usage { check }) => {
+            let _ = check; // single mode for now: always a one-shot check
+            match usage::check_and_alert().await {
+                Ok(Some(snap)) => {
+                    println!(
+                        "usage: 5h={}% week={}% (alert={}%)",
+                        snap.session_pct,
+                        snap.week_pct,
+                        snap.alert_pct()
+                    );
+                }
+                Ok(None) => println!("usage: OAuth endpoint unavailable (no alert)"),
+                Err(e) => eprintln!("usage check failed: {}", e),
+            }
+            Ok(())
+        }
         Some(Commands::Gate { oracle, mission }) => cmd_gate(&oracle, mission.as_deref()).await,
         Some(Commands::Scope { session, files }) => cmd_scope(&session, &files).await,
         Some(Commands::Status { name }) => cmd_status(&name).await,
@@ -531,14 +557,23 @@ async fn run_tui_loop(
     let mut last_preview_refresh = std::time::Instant::now();
     let mut last_refresh = std::time::Instant::now();
 
-    // Async status sink — keystroke forwarding now happens in detached
-    // tokio tasks so the event loop doesn't block on the rmux RPC (was
-    // 5-15ms per keystroke, perceived as input lag in chat-focus mode).
-    // Failures from those tasks land here and are drained into
-    // `app.status_message` at the start of each tick so the UI still
-    // surfaces forwarder errors.
+    // Async status sink — keystroke forwarding happens off the event loop so
+    // it doesn't block on the rmux RPC (was 5-15ms per keystroke, perceived as
+    // input lag in chat-focus mode). Failures land here and are drained into
+    // `app.status_message` at the start of each tick so the UI still surfaces
+    // forwarder errors.
     let async_status: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
+
+    // Single ordered keystroke forwarder. One consumer task drains a FIFO
+    // mpsc channel and is the only task that reaches the SDK transport, so
+    // delivery order is guaranteed (per-keystroke tokio::spawn raced on the
+    // multi-threaded runtime and could reorder fast typing). The loop only
+    // does a synchronous non-blocking `fwd_tx.send`, so input stays instant.
+    let fwd_tx = forwarder::spawn_forwarder(
+        SessionManager::connect_cached().await?,
+        async_status.clone(),
+    );
 
     // Track the last pane resize we issued so we only resize on change
     // (session switch OR terminal resize), not every tick.

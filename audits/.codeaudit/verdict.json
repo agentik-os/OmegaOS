@@ -1,0 +1,148 @@
+{
+  "audit": "code",
+  "score": 80,
+  "score_raw": "337/420",
+  "score_normalized": 80,
+  "confidence": "high",
+  "skill_used": "codeaudit",
+  "ticket": "post-mission-hermux-perf",
+  "preamble_version": "1.0",
+  "finished_at": "2026-05-28T15:54:00Z",
+  "user_need_match": {
+    "quote": "perf(tui): instant typing — Pane cache + non-blocking keystroke I/O + bounded drain loop (200 chars in 642ms)",
+    "addressed": true,
+    "evidence": "The pane cache (session.rs:117,266-284) eliminates per-keystroke RPC resolution. The fire-and-forget tokio::spawn pattern (main.rs:1005-1022,1031-1038) makes keystrokes non-blocking. The drain loop (main.rs:608-1076) with 8ms budget drains all queued events before redrawing. The CACHED_MANAGER singleton (session.rs:125) reuses one socket. Together these achieve the 200-char/642ms result. One regression exists: tokio::spawn order is non-deterministic, violating keystroke sequencing — actively being fixed by worker 2-2.",
+    "edge_cases_covered": ["burst paste via bracketed-paste", "space routing via send_key(Space)", "burst-typing guard skips preview during active typing", "stale pane self-heals on kill/recreate via is_pane_stale retry"]
+  },
+  "falsifiable_tests": [
+    {
+      "name": "cargo build --bin omega exits 0",
+      "hypothesis": "If the typing changes introduced a compile error, build would fail",
+      "command": "cargo build --bin omega 2>&1 | tail -3",
+      "expected": "0 errors",
+      "actual": "cargo build: 0 errors, 14 warnings (5 crates)",
+      "passed": true
+    },
+    {
+      "name": "tokio::spawn count (ordering hazard census)",
+      "hypothesis": "If ordering is guaranteed, each spawn would have a synchronization primitive before reaching the pane",
+      "command": "grep -c 'tokio::spawn' crates/omega-cli/src/main.rs",
+      "expected": "0 if ordered; >0 means concurrent scheduling risk",
+      "actual": "5 spawn sites, none guarded by a sequencing channel or mutex before pane delivery",
+      "passed": false,
+      "note": "Confirms ordering regression — 5 races to the same pane"
+    },
+    {
+      "name": "connect_cached uses OnceCell (singleton proven)",
+      "hypothesis": "If connect_cached() opened a new socket each call, pane_cache would be different per call",
+      "command": "grep -n 'OnceCell\\|get_or_try_init' crates/omega-core/src/session.rs",
+      "expected": "const_new() + get_or_try_init = singleton semantics",
+      "actual": "static CACHED_MANAGER: tokio::sync::OnceCell<SessionManager> = tokio::sync::OnceCell::const_new(); get_or_try_init(connect)",
+      "passed": true
+    },
+    {
+      "name": "preview refresh uses connect_cached (hot path correct)",
+      "hypothesis": "If refresh_preview used connect() it would add 30-50ms latency per 80ms tick",
+      "command": "grep -n 'connect_cached\\|connect()' crates/omega-tui/src/app.rs",
+      "expected": "refresh_preview uses connect_cached; refresh() may use connect() (infrequent)",
+      "actual": "line 952: connect_cached() in refresh_preview; line 979: connect() in refresh() — correct split",
+      "passed": true
+    },
+    {
+      "name": "is_pane_stale only handles 2 variants (daemon restart gap)",
+      "hypothesis": "If daemon restarts, the cached Arc<Rmux> holds a broken socket not matched by is_pane_stale",
+      "command": "grep -A4 'fn is_pane_stale' crates/omega-core/src/session.rs",
+      "expected": "Only PaneNotFound | OwnedSessionLeaseLost — io::Error not covered",
+      "actual": "matches!(err, RmuxError::PaneNotFound { .. } | RmuxError::OwnedSessionLeaseLost { .. }) — confirmed, io::Error not handled",
+      "passed": false,
+      "note": "Confirms MEDIUM finding: stale manager on daemon restart"
+    },
+    {
+      "name": "tests: 191 pass, 1 fail (out-of-scope)",
+      "hypothesis": "If the typing changes broke existing logic, tests would fail for in-scope code",
+      "command": "cargo test 2>&1 | tail -5",
+      "expected": "All in-scope tests pass",
+      "actual": "191 passed; 1 failed — failing test: credentials::tests::ensure_legacy_symlink_creates_link (panics on .unwrap() at credentials.rs:282 — unrelated to typing perf)",
+      "passed": true
+    }
+  ],
+  "hinge_findings": [
+    {
+      "location": "crates/omega-cli/src/main.rs:988-1053 (ForwardCharToSession + ForwardKeyToSession + SendTextRawToSession)",
+      "concern": "5 tokio::spawn fire-and-forget calls. Multi-threaded tokio schedules these independently. Tasks racing to pane.send_text_raw() arrive at the rmux transport mpsc in non-deterministic order. Fast typists can see scrambled output.",
+      "verified_safe_by": "NOT SAFE — confirmed by grep showing 5 spawn sites with no ordering channel. This is the regression identified in obs:45165 and being fixed by worker OmegaOS-worker-2-2."
+    },
+    {
+      "location": "crates/omega-core/src/session.rs:125,143-148 (CACHED_MANAGER / connect_cached)",
+      "concern": "OnceCell singleton — correct for performance but no reconnect path on daemon restart",
+      "verified_safe_by": "Verified via grep: get_or_try_init initializes once. is_pane_stale does NOT match io::Error. Daemon restart → all sends fail until omega restart."
+    },
+    {
+      "location": "crates/omega-cli/src/main.rs:600-1076 (drain loop)",
+      "concern": "8ms budget check fires AFTER event processing. Async actions (KillSession) can exceed budget.",
+      "verified_safe_by": "Acceptable tradeoff: kill is rare, and the cost is one missed 16ms redraw frame. Not a correctness issue."
+    },
+    {
+      "location": "crates/omega-core/src/session.rs:266-284 (pane_for cache)",
+      "concern": "Lock dropped between cache miss and RPC; two concurrent callers may both do RPCs",
+      "verified_safe_by": "or_insert_with ensures last writer wins with equivalent pane. Both point to same daemon-side pane. Benign. Comment at session.rs:272 correctly documents this."
+    }
+  ],
+  "issues_found_and_fixed": [],
+  "issues_found_not_fixed": [
+    {
+      "id": "F-001",
+      "severity": "high",
+      "location": "crates/omega-cli/src/main.rs:1005-1022,1031-1038",
+      "issue": "tokio::spawn per keystroke creates ordering race — chars can arrive at rmux pane out of sequence during fast typing",
+      "fix_status": "fix_in_flight",
+      "fix_owner": "OmegaOS-worker-2-2 (ordered forwarder task with mpsc channel + coalescing)",
+      "fix_files_locked": ["crates/omega-cli/src/main.rs", "crates/omega-cli/src/forwarder.rs"]
+    },
+    {
+      "id": "F-002",
+      "severity": "medium",
+      "location": "crates/omega-core/src/session.rs:125,143-148",
+      "issue": "CACHED_MANAGER never reconnects after rmux daemon restart — all sends silently fail until omega restart",
+      "fix_status": "unfixed — not in worker 2-2 scope, can be fixed independently"
+    },
+    {
+      "id": "F-003",
+      "severity": "low",
+      "location": "crates/omega-cli/src/main.rs:540-542",
+      "issue": "async_status: Option<String> drops concurrent errors (last write wins); multiple forwarding failures in one tick are silently merged",
+      "fix_status": "unfixed — blocked by worker 2-2 lock on main.rs"
+    },
+    {
+      "id": "F-004",
+      "severity": "low",
+      "location": "crates/omega-core/src/credentials.rs:282",
+      "issue": "Test `ensure_legacy_symlink_creates_link` panics via .unwrap() — should use proper assertion",
+      "fix_status": "unfixed — out of typing-perf scope"
+    },
+    {
+      "id": "F-005",
+      "severity": "low",
+      "location": "crates/omega-cli/src/telegram_bridge.rs",
+      "issue": "3 dead-code items: send_text_plain (line ~2382), run_llm_oneshot (line ~2915), claude_stream field (line ~354)",
+      "fix_status": "unfixed — out of typing-perf scope"
+    }
+  ],
+  "edge_cases": [
+    {
+      "finding_id": "F-001",
+      "scenario": "User holds a key down (key-repeat at 30-50ms). OS generates 20+ events/second. Each spawns a task. Under high concurrency the runtime may reorder tasks up to 10-20ms apart, causing visible character transpositions in the target REPL.",
+      "covered_by_existing_test": false,
+      "evidence_gathered": "tokio::spawn with no synchronization, 5 sites confirmed via grep"
+    },
+    {
+      "finding_id": "F-002",
+      "scenario": "rmux daemon crashes and auto-restarts (e.g., OOM kill). CACHED_MANAGER holds the old Arc<Rmux> pointing to the dead socket. All subsequent ForwardCharToSession calls produce 'Forward failed: ...' errors until the user quits and restarts omega.",
+      "covered_by_existing_test": false,
+      "evidence_gathered": "OnceCell confirmed via grep; is_pane_stale only matches PaneNotFound | OwnedSessionLeaseLost"
+    }
+  ],
+  "cross_audit_links": [],
+  "confidence_basis": "High confidence: binary build produces 0 errors (verified). Tests produce 191 pass / 1 fail with the failure confirmed out-of-scope via file path. Five Popper falsification tests run with actual command output. The ordering regression (F-001) is confirmed by grep (5 spawn sites, no ordering channel). The daemon-restart gap (F-002) is confirmed by reading is_pane_stale() exhaustively. The positive findings (pane cache, cached manager, drain loop, burst guard) are verified by reading the actual implementation. No shortcut phrases used. Worker 2-2 scope boundaries verified against obs:45167.",
+  "banned_phrase_check": "passed — no occurrences of 'looks correct', 'should be fine', 'appears to work', 'streamlined', 'to save time'"
+}
