@@ -536,6 +536,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
+        // Alt+↑ / Alt+↓ (Option on macOS) — scroll the active panel
+        // (preview, detail, etc.) regardless of focus. Faster than the
+        // selection-cycle that bare arrows do.
+        KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+            scroll_active_panel(app, 3, false);
+            return Action::None;
+        }
+        KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+            scroll_active_panel(app, 3, true);
+            return Action::None;
+        }
+
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
             // Settings tab + detail focused: navigate ACTIONABLE fields
