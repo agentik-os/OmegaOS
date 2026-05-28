@@ -328,22 +328,41 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
     );
     let fullscreen = app.session_focus == SessionFocus::ChatFullscreen;
 
-    // Fullscreen: chat takes the entire area, no session list rendered
-    let split = if fullscreen {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(0), Constraint::Percentage(100)])
-            .split(area)
+    // Responsive layout. On narrow terminals (mobile / phone-width SSH) a
+    // 25/75 split squeezes the Claude preview into an unusable sliver, so we
+    // collapse to a SINGLE column: the focused panel fills the whole width —
+    // the session list while browsing, the Claude preview while chatting.
+    // Wide terminals keep the two-column 25/75 split. Fullscreen is always
+    // preview-only. Tab toggles focus, so on mobile it flips list ⇄ chat,
+    // each full-width.
+    // Breakpoint: below this, a 25/75 split would leave Claude under ~70
+    // cols (unusable). At 100 the split still gives the preview ≥75 cols;
+    // below it we go single-column so the focused panel gets the full width.
+    const NARROW_COLS: u16 = 100;
+    let narrow = area.width < NARROW_COLS;
+
+    let (list_area, preview_area): (Option<Rect>, Option<Rect>) = if fullscreen {
+        (None, Some(area))
+    } else if narrow {
+        if chat_focused {
+            (None, Some(area))
+        } else {
+            (Some(area), None)
+        }
     } else {
-        Layout::default()
+        let split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-            .split(area)
+            .split(area);
+        (Some(split[0]), Some(split[1]))
     };
 
-    // Skip rendering the left list in fullscreen mode
-    if fullscreen {
-        draw_sessions_right(frame, app, split[1], chat_focused);
+    // Preview-only frame (fullscreen, or narrow + chat-focused): render the
+    // Claude view full-width and return.
+    if list_area.is_none() {
+        if let Some(pa) = preview_area {
+            draw_sessions_right(frame, app, pa, chat_focused);
+        }
         return;
     }
     let _ = list_focused;
@@ -399,9 +418,15 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_style(Style::default());
 
     let mut state = ListState::default().with_selected(rendered_selected);
-    frame.render_stateful_widget(list, split[0], &mut state);
+    if let Some(la) = list_area {
+        frame.render_stateful_widget(list, la, &mut state);
+    }
 
-    draw_sessions_right(frame, app, split[1], chat_focused);
+    // Wide layout shows the preview alongside the list. (Narrow + list-focused
+    // is single-column and already returned above.)
+    if let Some(pa) = preview_area {
+        draw_sessions_right(frame, app, pa, chat_focused);
+    }
 }
 
 /// Render the right column of the Sessions tab (preview + optional chat input).
