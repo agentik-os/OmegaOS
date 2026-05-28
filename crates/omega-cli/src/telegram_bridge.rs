@@ -566,19 +566,75 @@ impl TelegramBotEngine {
                 None => text.to_string(),
             };
 
-            // Run the LLM call.
-            let result: std::result::Result<String, String> = if provider == "claude" || provider.is_empty() {
-                self.claude_stream.ask(&final_prompt).await.map_err(|e| e.to_string())
-            } else {
-                let prompt = final_prompt.clone();
-                let p = provider.clone();
-                let m = model.clone();
-                tokio::task::spawn_blocking(move || run_llm_oneshot(&p, &m, &prompt))
+            // ─── PANE RELAY (unified conversation) ────────────────────
+            // The Telegram chat is the EXACT same Claude instance as the
+            // rmux aisb-master session. Attaching to the rmux session
+            // shows what the bridge is seeing in real time, and the
+            // bridge sees what you typed locally too. Single JSONL on
+            // disk → no diverging context.
+            //
+            // Trade-off vs the old claude_stream subprocess: +1-2s per
+            // message (pane polling) but unified UX.
+            let result: std::result::Result<String, String> = {
+                let relay_target = omega_core::aisb::MASTER_SESSION_NAME;
+                let before = self
+                    .mgr
+                    .capture_pane(relay_target)
                     .await
-                    .map_err(|e| e.to_string())
-                    .and_then(|r| r.map_err(|e| e.to_string()))
-                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    .unwrap_or_default();
+                match self.mgr.send_text(relay_target, &final_prompt).await {
+                    Err(e) => Err(e.to_string()),
+                    Ok(()) => {
+                        let mut last_response = String::new();
+                        let mut stable_count = 0usize;
+                        let mut out: std::result::Result<String, String> =
+                            Err("LLM timeout (60s polling)".to_string());
+                        let max_ticks = 200u32; // 200 × 300ms = 60s
+                        for _tick in 0..max_ticks {
+                            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                            let after = self
+                                .mgr
+                                .capture_pane(relay_target)
+                                .await
+                                .unwrap_or_default();
+                            if after == before {
+                                continue;
+                            }
+                            let current = extract_response(&before, &after);
+                            if current.is_empty() {
+                                continue;
+                            }
+                            if current == last_response {
+                                stable_count += 1;
+                                if stable_count >= 2 {
+                                    out = Ok(current);
+                                    break;
+                                }
+                            } else {
+                                stable_count = 0;
+                                last_response = current;
+                            }
+                            // Idle-prompt fallback: bare ❯ at bottom → done
+                            let is_idle = after.lines().rev().take(5).any(|l| {
+                                let t = l.trim();
+                                t.starts_with('❯') && t.len() <= 3
+                            });
+                            if is_idle && !last_response.is_empty() {
+                                out = Ok(last_response.clone());
+                                break;
+                            }
+                        }
+                        // Timeout but we caught a partial — ship it.
+                        if out.is_err() && !last_response.is_empty() {
+                            out = Ok(last_response);
+                        }
+                        out.map(|s| clean_terminal_output(&s))
+                    }
+                }
             };
+            // provider/model intentionally still read above for the footer
+            // tag; the actual call no longer routes through claude_stream.
+            let _ = &provider;
 
             ticker.abort();
             let duration = started.elapsed().as_secs_f32();
