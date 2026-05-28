@@ -3,7 +3,7 @@
 
 [meta]
 version = "1.0.0"
-total_audits = 17
+total_audits = 18
 doctrine = "Gestalt-Popper"
 categories = ["preventive", "detective"]
 
@@ -197,3 +197,14 @@ max_score = 360
 triggers = ["api audit", "api contracts", "endpoint audit"]
 read_only = false
 answers = "Is the API SOLID?"
+
+[[audits]]
+id = "refontaudit"
+name = "Senior Dashboard Refonte"
+domain = "design"
+category = "preventive"
+phases = 25
+max_score = 540
+triggers = ["refonte", "redesign dashboard", "comme Linear", "comme Vercel", "dashboard pro"]
+read_only = false
+answers = "How to REDESIGN it to senior level?"

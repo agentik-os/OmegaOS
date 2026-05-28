@@ -220,7 +220,7 @@ AUDITS_DST="$OMEGA_DIR/skills/audits"
 if [[ -d "$AUDITS_SRC" ]]; then
     mkdir -p "$AUDITS_DST"
     cp -r "$AUDITS_SRC"/* "$AUDITS_DST/"
-    ok "Quality Arsenal installed: 17 audit skills → $AUDITS_DST/"
+    ok "Quality Arsenal installed: 18 audit skills + 2 orchestrators → $AUDITS_DST/"
 else
     info "Audit skills not found — skipping"
 fi
