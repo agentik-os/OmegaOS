@@ -209,7 +209,9 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         ));
     }
 
-    let creds_path = credentials_path();
+    // Watch the path Claude ACTUALLY writes to (atomic write breaks symlinks,
+    // so the freshest creds always land at ~/.claude/.credentials.json).
+    let creds_path = claude_native_path();
     let before_mtime = creds_path
         .metadata()
         .and_then(|m| m.modified())
@@ -317,8 +319,20 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     // Success criteria:
     // - mtime bumped + we have a token (preferred path)
     // - OR pane explicitly confirms "Logged in as" (Claude already had valid token)
+    // - OR a token now exists at the native path and differs from before
     let success = (updated && !after_token.is_empty())
-        || pane_tail.contains("Logged in as");
+        || pane_tail.contains("Logged in as")
+        || (!after_token.is_empty() && after_token != before_token);
+
+    // On success, sync the fresh creds Claude wrote at its native path back
+    // into the omega canonical store + re-establish the symlink.
+    if success {
+        if let Err(e) = sync_credentials_to_omega() {
+            tracing::warn!(error = %e, "failed to sync credentials to omega store");
+        } else {
+            tracing::info!("synced fresh credentials to ~/.omega/credentials/claude.json");
+        }
+    }
 
     // Always clean up.
     PendingReauth::clear();
@@ -476,6 +490,48 @@ pub fn credentials_path() -> PathBuf {
         return legacy;
     }
     canonical
+}
+
+/// The path Claude Code ACTUALLY writes to during `/login`.
+/// Claude does an atomic write (temp + rename) which replaces any symlink
+/// at this path with a fresh regular file — so this is where the freshest
+/// credentials always land. We watch THIS for the login mtime check.
+pub fn claude_native_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".claude")
+        .join(".credentials.json")
+}
+
+/// After a successful login, sync the fresh credentials Claude wrote at its
+/// native path into the omega canonical store, then re-establish the symlink
+/// so future reads go through omega. Idempotent.
+pub fn sync_credentials_to_omega() -> std::io::Result<()> {
+    let native = claude_native_path();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let canonical = home.join(".omega").join("credentials").join("claude.json");
+
+    // If native is a real file (Claude's atomic write broke the symlink),
+    // copy it into omega and re-link.
+    let meta = std::fs::symlink_metadata(&native)?;
+    if meta.file_type().is_symlink() {
+        // Still a symlink — nothing to do, both already point at omega.
+        return Ok(());
+    }
+
+    // Real file at native path → copy to omega canonical, then re-symlink.
+    if let Some(parent) = canonical.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::copy(&native, &canonical)?;
+    let _ = std::fs::set_permissions(
+        &canonical,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    );
+    // Replace native with a symlink back to omega.
+    std::fs::remove_file(&native)?;
+    std::os::unix::fs::symlink(&canonical, &native)?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default)]
