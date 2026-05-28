@@ -25,6 +25,10 @@ pub type StatusSink = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 pub enum ForwardMsg {
     Text { session: String, text: String },
     Key { session: String, key: String },
+    /// A user paste — forwarded as ONE bracketed-paste block (no auto-Enter)
+    /// so the target app buffers it instead of submitting on every embedded
+    /// newline. Flushes pending coalesced text first to preserve order.
+    Paste { session: String, text: String },
 }
 
 fn set_err(sink: &StatusSink, msg: String) {
@@ -88,6 +92,14 @@ pub fn spawn_forwarder(mgr: SessionManager, sink: StatusSink) -> UnboundedSender
                     flush_text(&mut pend, &mgr, &sink).await;
                     if let Err(e) = mgr.send_key(&session, &key).await {
                         set_err(&sink, format!("Forward {} failed: {}", key, e));
+                    }
+                }
+                ForwardMsg::Paste { session, text } => {
+                    // Flush queued text first so the paste lands in order, then
+                    // send the whole block as one bracketed paste (no Enter).
+                    flush_text(&mut pend, &mgr, &sink).await;
+                    if let Err(e) = mgr.send_paste_raw(&session, &text).await {
+                        set_err(&sink, format!("Paste failed: {}", e));
                     }
                 }
             }

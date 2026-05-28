@@ -430,6 +430,74 @@ impl SessionManager {
         }
     }
 
+    /// Capture the pane INCLUDING scrollback history (last `history_lines`
+    /// lines, counted up from the live tail). `snapshot().visible_text()`
+    /// only renders the current visible screen — so the TUI preview can't
+    /// scroll up into history with it. This shells out to the rmux CLI which
+    /// supports `-S -<N>` (start N lines into the scrollback buffer).
+    ///
+    /// SLOW PATH: only used while the user is actively browsing history
+    /// (`preview_follow_tail == false`); the live tail keeps the fast
+    /// `capture_pane` snapshot path.
+    pub async fn capture_pane_history(
+        &self,
+        session_name: &str,
+        history_lines: u32,
+    ) -> Result<String> {
+        let out = tokio::process::Command::new("rmux")
+            .args([
+                "capture-pane",
+                "-p",
+                "-t",
+                session_name,
+                "-S",
+                &format!("-{}", history_lines),
+            ])
+            .output()
+            .await?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "rmux capture-pane -S failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    /// Forward a paste as ONE bracketed-paste block (`\e[200~ … \e[201~`)
+    /// with NO trailing Enter. The target app (Claude Code / a REPL) buffers
+    /// the whole block as a single paste instead of treating each embedded
+    /// `\n` as a submit — so a 30-line paste lands as 30 lines of one turn,
+    /// not 30 separate commands. The user presses Enter themselves.
+    ///
+    /// Distinct from `send_paste_then_submit` (which auto-submits) — used for
+    /// forwarding a *user* paste into the interactive preview.
+    pub async fn send_paste_raw(&self, session_name: &str, text: &str) -> Result<()> {
+        let pane = self.pane_for(session_name).await?;
+        pane.send_text("\u{1b}[200~").await?;
+        // Chunk the body so a very large paste isn't sent as one oversized
+        // PTY write. Markers are sent once; only the body is split, so the
+        // block stays atomic from the target app's perspective.
+        const CHUNK: usize = 4096;
+        if text.len() <= CHUNK {
+            pane.send_text(text).await?;
+        } else {
+            let mut start = 0;
+            let bytes = text.as_bytes();
+            while start < bytes.len() {
+                // Advance to a char boundary at/under the chunk limit.
+                let mut end = (start + CHUNK).min(bytes.len());
+                while end < bytes.len() && !text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                pane.send_text(&text[start..end]).await?;
+                start = end;
+            }
+        }
+        pane.send_text("\u{1b}[201~").await?;
+        Ok(())
+    }
+
     pub async fn wait_for_text(
         &self,
         session_name: &str,

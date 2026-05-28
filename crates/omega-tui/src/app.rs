@@ -628,9 +628,18 @@ pub struct App {
     pub input_buffer: String,
     pub config: OmegaConfig,
     pub preview_content: String,
+    /// Scroll position measured as LINES UP FROM THE TAIL (0 = newest line).
+    /// Bottom-anchored so the view stays stable when the capture buffer grows
+    /// (visible-only → full scrollback history): "3 lines up from the tail"
+    /// means the same thing whether the buffer is 50 or 1000 lines, so
+    /// scrolling never jumps. Converted to a from-top offset at render time.
     pub preview_scroll: u16,
+    /// Max scrollable lines (`content_lines - viewport_height`), written by
+    /// the renderer each frame so the scroll setters can clamp against the
+    /// real viewport without knowing the panel geometry themselves.
+    pub preview_max_scroll: u16,
     /// Auto-follow tail — preview stays glued to the bottom (latest content)
-    /// unless the user manually scrolls up.
+    /// unless the user manually scrolls up. Mirrors `preview_scroll == 0`.
     pub preview_follow_tail: bool,
     pub session_focus: SessionFocus,
     /// Tracks the last Tab press for double-tap detection (any tab).
@@ -687,6 +696,7 @@ impl App {
             config,
             preview_content: String::new(),
             preview_scroll: 0,
+            preview_max_scroll: 0,
             preview_follow_tail: true,
             session_focus: SessionFocus::List,
             last_tab_press: None,
@@ -764,6 +774,7 @@ impl App {
     pub fn enter_chat_focus(&mut self) {
         self.session_focus = SessionFocus::Chat;
         self.preview_follow_tail = true;
+        self.preview_scroll = 0;
     }
 
     /// Handle a Tab press in the Sessions tab. Detects double-tap (within
@@ -792,6 +803,7 @@ impl App {
         // When entering any chat focus, tail follow on
         if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;
+            self.preview_scroll = 0;
         }
     }
 
@@ -836,26 +848,37 @@ impl App {
         self.detail_scroll = self.detail_scroll.saturating_sub(lines);
     }
 
+    // Scroll is measured from the tail: 0 = newest. "Down" moves toward the
+    // newest line (decreasing the from-tail offset), "up" moves into history.
+
     pub fn scroll_preview_down(&mut self, lines: u16) {
-        self.preview_scroll = self.preview_scroll.saturating_add(lines);
-        // Scrolling down by hand re-engages follow if we're at the bottom
-        // (renderer will clamp). Otherwise we stay where the user wants.
-        self.preview_follow_tail = false;
+        self.preview_scroll = self.preview_scroll.saturating_sub(lines);
+        // Reaching the tail re-glues to live follow (and lets refresh_preview
+        // switch back to the cheap visible-only capture).
+        if self.preview_scroll == 0 {
+            self.preview_follow_tail = true;
+        }
     }
 
     pub fn scroll_preview_up(&mut self, lines: u16) {
-        self.preview_scroll = self.preview_scroll.saturating_sub(lines);
-        // User scrolled up → break follow, they want to read history
+        // Clamp against the real content height (set by the renderer) so we
+        // stop at the top of history instead of scrolling into the void.
+        self.preview_scroll = self
+            .preview_scroll
+            .saturating_add(lines)
+            .min(self.preview_max_scroll);
+        // User scrolled up → break follow, they want to read history.
         self.preview_follow_tail = false;
     }
 
     pub fn scroll_preview_home(&mut self) {
-        self.preview_scroll = 0;
+        // Top of available history.
+        self.preview_scroll = self.preview_max_scroll;
         self.preview_follow_tail = false;
     }
 
     pub fn scroll_preview_end(&mut self) {
-        self.preview_scroll = u16::MAX / 2;
+        self.preview_scroll = 0;
         self.preview_follow_tail = true;
     }
 
@@ -970,18 +993,22 @@ impl App {
 
         // Cached connection — avoid a fresh rmux daemon socket per refresh.
         let mgr = omega_core::session::SessionManager::connect_cached().await?;
-        match mgr.capture_pane(&name).await {
+        // Hot tail path stays on the cheap visible-only snapshot. Only when the
+        // user is browsing history (follow_tail == false) do we pay for a full
+        // scrollback capture, so there is real content above the screen to
+        // scroll into instead of an empty void.
+        let captured = if self.preview_follow_tail {
+            mgr.capture_pane(&name).await
+        } else {
+            mgr.capture_pane_history(&name, 1000).await
+        };
+        match captured {
             Ok(content) => {
-                // Keep the full visible buffer so the user can scroll
                 self.preview_content = content;
             }
             Err(_) => {
                 self.preview_content = String::from("(session has no pane content)");
             }
-        }
-        // Keep glued to the bottom when in follow mode (tail -f behavior)
-        if self.preview_follow_tail {
-            self.preview_scroll = u16::MAX / 2;
         }
         Ok(())
     }

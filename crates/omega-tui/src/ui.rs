@@ -426,7 +426,13 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     let total_lines = app.preview_content.lines().count() as u16;
     let viewport_height = area.height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(viewport_height);
-    let scroll = app.preview_scroll.min(max_scroll);
+    // Publish the real clamp bound so the scroll setters (which don't know the
+    // panel geometry) can stop at the top of history.
+    app.preview_max_scroll = max_scroll;
+    // `preview_scroll` is measured from the TAIL; the Paragraph wants a
+    // from-top offset. Clamp the from-tail value, then convert.
+    let from_tail = app.preview_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(from_tail);
 
     let preview_lines: Vec<Line> = if app.preview_content.is_empty() {
         vec![Line::from(Span::styled(

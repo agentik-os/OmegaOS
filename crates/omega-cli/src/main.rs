@@ -548,14 +548,19 @@ async fn run_tui_loop(
     // chunks instead of streaming naturally like a tmux attach.
     let tick_rate = std::time::Duration::from_millis(16);
 
-    // Preview capture: independent cadence (~12 FPS). capture_pane is
-    // the only rmux daemon RPC we make per loop, so we throttle it
-    // separately from the draw frame rate. 80ms is enough for the
-    // human eye to perceive the pane as "live" without spamming the
-    // daemon socket at 60Hz.
-    let preview_refresh_interval = std::time::Duration::from_millis(80);
+    // Preview capture: ADAPTIVE cadence. The only rmux daemon RPC per loop is
+    // the capture, so we throttle it separately from the 60 FPS draw. Idle
+    // cadence is 80ms (enough to look "live" without spamming the daemon);
+    // for a short window after the user interacts we drop to 30ms so the
+    // typed-char echo feels near-instant. Idle load is unchanged.
+    const PREVIEW_IDLE_MS: u64 = 80;
+    const PREVIEW_ACTIVE_MS: u64 = 30;
+    const PREVIEW_ACTIVE_WINDOW_MS: u64 = 300;
     let mut last_preview_refresh = std::time::Instant::now();
     let mut last_refresh = std::time::Instant::now();
+    // Last keystroke/forward activity; starts "stale" so we boot in idle mode.
+    let mut last_input_at =
+        std::time::Instant::now() - std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS);
 
     // Async status sink — keystroke forwarding happens off the event loop so
     // it doesn't block on the rmux RPC (was 5-15ms per keystroke, perceived as
@@ -598,6 +603,15 @@ async fn run_tui_loop(
         // skip the capture this tick. Preview catches up on the very
         // next tick (~16ms), and the user keeps a zero-lag echo loop.
         let event_pending = crossterm::event::poll(std::time::Duration::ZERO)?;
+        // Faster echo for a short window right after the user interacts, then
+        // back to the idle cadence so we don't hammer the daemon at rest.
+        let preview_refresh_interval = if last_input_at.elapsed()
+            < std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS)
+        {
+            std::time::Duration::from_millis(PREVIEW_ACTIVE_MS)
+        } else {
+            std::time::Duration::from_millis(PREVIEW_IDLE_MS)
+        };
         if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
@@ -1036,6 +1050,7 @@ async fn run_tui_loop(
                         let _ = fwd_tx.send(forwarder::ForwardMsg::Text { session, text: s });
                     }
                     app.scroll_preview_end();
+                    last_input_at = std::time::Instant::now();
                 }
                 Action::ForwardKeyToSession { session, key } => {
                     // HOT PATH: arrow keys / Enter / BackSpace / Escape in chat
@@ -1046,12 +1061,15 @@ async fn run_tui_loop(
                         key: key.to_string(),
                     });
                     app.scroll_preview_end();
+                    last_input_at = std::time::Instant::now();
                 }
                 Action::SendTextRawToSession { session, text } => {
-                    // Paste / multi-char send — same ordered channel; coalesces
-                    // with adjacent text for the same session.
-                    let _ = fwd_tx.send(forwarder::ForwardMsg::Text { session, text });
+                    // User paste — same ordered channel, but as a bracketed
+                    // Paste block (no auto-Enter) so embedded newlines don't
+                    // submit each line as a separate command in the target app.
+                    let _ = fwd_tx.send(forwarder::ForwardMsg::Paste { session, text });
                     app.scroll_preview_end();
+                    last_input_at = std::time::Instant::now();
                 }
                 Action::ForceRedraw => {
                     terminal.clear()?;
