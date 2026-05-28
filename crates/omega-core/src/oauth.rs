@@ -251,9 +251,30 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         .context("send Enter failed")?;
 
     // Poll credentials.json for mtime change — up to 20s.
+    // Also: Claude shows "Press Enter to continue..." after a successful login
+    // BEFORE writing the credentials file. We detect that prompt and auto-Enter
+    // so the user doesn't have to do anything else.
     let mut updated = false;
+    let mut enter_sent = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Auto-confirm the "Press Enter to continue" prompt that Claude shows
+        // after a successful login (one shot).
+        if !enter_sent {
+            let pane = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
+            if pane.contains("Login successful")
+                || pane.contains("Press Enter to continue")
+                || pane.contains("Logged in as")
+            {
+                if let Ok(p) = mgr.get_active_pane(REAUTH_SESSION).await {
+                    let _ = p.send_key("Enter").await;
+                    enter_sent = true;
+                    tracing::info!("OAuth: detected 'Login successful', sent Enter to confirm");
+                }
+            }
+        }
+
         let cur_mtime = creds_path
             .metadata()
             .and_then(|m| m.modified())
@@ -265,6 +286,16 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
             tokio::time::sleep(Duration::from_secs(1)).await; // let Claude finish writing
             updated = true;
             break;
+        }
+    }
+
+    // Final fallback: if pane says success but mtime didn't bump, consider it
+    // successful (Claude may have updated the file in place without changing mtime).
+    if !updated {
+        let pane = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
+        if pane.contains("Logged in as") && pane.contains("Login successful") {
+            tracing::info!("OAuth: pane confirms success even though mtime check didn't fire");
+            updated = true;
         }
     }
 
@@ -283,7 +314,11 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         .collect::<Vec<_>>()
         .join("\n");
 
-    let success = updated && !after_token.is_empty() && after_token != before_token;
+    // Success criteria:
+    // - mtime bumped + we have a token (preferred path)
+    // - OR pane explicitly confirms "Logged in as" (Claude already had valid token)
+    let success = (updated && !after_token.is_empty())
+        || pane_tail.contains("Logged in as");
 
     // Always clean up.
     PendingReauth::clear();

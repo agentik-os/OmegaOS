@@ -1,7 +1,7 @@
 //! Provider configuration — typed, persistent, shared across all sessions.
 //!
 //! Saved to `~/.omega/providers.toml`. When OmegaOS spawns an agent session
-//! (claude/codex/gemini/pi/glm), the relevant env vars from this file are
+//! (claude/codex/gemini/glm), the relevant env vars from this file are
 //! injected so every session uses the same credentials and model defaults.
 
 use anyhow::{Context, Result};
@@ -16,10 +16,6 @@ pub struct ProvidersConfig {
     pub codex: CodexConfig,
     #[serde(default)]
     pub gemini: GeminiConfig,
-    #[serde(default)]
-    pub pi: PiConfig,
-    #[serde(default)]
-    pub hermes: HermesConfig,
     #[serde(default)]
     pub glm: GlmConfig,
     #[serde(default)]
@@ -70,28 +66,7 @@ pub struct GeminiConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct PiConfig {
-    /// "openrouter" | "anthropic" | "openai"
-    #[serde(default)]
-    pub provider: String,
-    /// e.g. "anthropic/claude-sonnet-4.6"
-    #[serde(default)]
-    pub model: String,
-    /// Path to an extension file passed via -e
-    #[serde(default)]
-    pub extension: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GlmConfig {
-    #[serde(default)]
-    pub model: String,
-    #[serde(default)]
-    pub api_key: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct HermesConfig {
     #[serde(default)]
     pub model: String,
     #[serde(default)]
@@ -146,9 +121,6 @@ impl ProvidersConfig {
         if !self.glm.api_key.is_empty() {
             out.push(("GLM_API_KEY".to_string(), self.glm.api_key.clone()));
         }
-        if !self.hermes.api_key.is_empty() {
-            out.push(("HERMES_API_KEY".to_string(), self.hermes.api_key.clone()));
-        }
         if !self.openrouter.api_key.is_empty() {
             out.push((
                 "OPENROUTER_API_KEY".to_string(),
@@ -168,15 +140,7 @@ impl ProvidersConfig {
 
     /// All known providers in canonical order. Static slice — safe to expose.
     pub fn all_providers() -> Vec<&'static str> {
-        vec![
-            "claude",
-            "codex",
-            "gemini",
-            "glm",
-            "openrouter",
-            "pi",
-            "hermes",
-        ]
+        vec!["claude", "codex", "gemini", "glm", "openrouter"]
     }
 
     pub fn default_provider() -> &'static str {
@@ -192,8 +156,6 @@ impl ProvidersConfig {
             "gemini" => "gemini-2.5-pro",
             "glm" => "glm-4.6",
             "openrouter" => "anthropic/claude-sonnet-4.6",
-            "pi" => "anthropic/claude-sonnet-4.6",
-            "hermes" => "hermes-3-llama-3.1-405b",
             _ => "",
         }
     }
@@ -211,8 +173,6 @@ impl ProvidersConfig {
                 "openai/gpt-5",
                 "google/gemini-2.5-pro",
             ],
-            "pi" => vec!["anthropic/claude-sonnet-4.6", "openai/gpt-5"],
-            "hermes" => vec!["hermes-3-llama-3.1-405b", "hermes-3-llama-3.1-70b"],
             _ => vec![],
         }
     }
@@ -221,8 +181,7 @@ impl ProvidersConfig {
     pub fn auth_type(provider: &str) -> &'static str {
         match provider {
             "claude" | "gemini" => "oauth",
-            "codex" | "glm" | "openrouter" | "hermes" => "api_key",
-            "pi" => "config",
+            "codex" | "glm" | "openrouter" => "api_key",
             _ => "unknown",
         }
     }
