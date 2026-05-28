@@ -349,7 +349,8 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     let (email, expires_min) = if success {
         let creds = read_credentials(&creds_path).unwrap_or_default();
         let expires_min = creds.expires_min();
-        let email = creds.email.unwrap_or_else(|| "?".to_string());
+        // Email is NOT in credentials.json — get it from `claude auth status`.
+        let email = crate::account::email_from_claude_auth_status();
         (email, expires_min)
     } else {
         ("?".to_string(), 0)

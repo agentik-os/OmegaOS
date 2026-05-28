@@ -1638,8 +1638,7 @@ impl TelegramBotEngine {
                     "<b>Authenticated</b>\n\n\
                      <b>Email:</b>   <code>{}</code>\n\
                      <b>Expires:</b> <code>{} min</code>\n\n\
-                     <i>Credentials updated. Active sessions pick up the new \
-                     token on their next API call.</i>",
+                     <i>Credentials updated.</i>",
                     formatting::escape_html(&res.email),
                     res.expires_min,
                 );

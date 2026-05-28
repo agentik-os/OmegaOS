@@ -102,10 +102,18 @@ impl CurrentAccount {
         let valid = expires_min > 0;
         let warning = valid && expires_min < 30;
 
+        // The email is NOT in credentials.json — it must come from
+        // `claude auth status` (JSON with an "email" field).
+        let email = creds
+            .email
+            .clone()
+            .filter(|e| !e.is_empty() && e != "?")
+            .unwrap_or_else(email_from_claude_auth_status);
+
         Self {
             name: active_name,
             label,
-            email: creds.email.clone().unwrap_or_else(|| "?".to_string()),
+            email,
             expires_min,
             valid,
             warning,
@@ -113,6 +121,26 @@ impl CurrentAccount {
             subscription: creds.subscription_type.clone().unwrap_or_else(|| "?".to_string()),
         }
     }
+}
+
+/// Get the logged-in email by running `claude auth status` (JSON).
+/// The email is NOT stored in credentials.json — only Claude knows it.
+pub fn email_from_claude_auth_status() -> String {
+    let output = std::process::Command::new("claude")
+        .args(["auth", "status"])
+        .output();
+    if let Ok(out) = output {
+        if let Ok(text) = String::from_utf8(out.stdout) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(email) = json.get("email").and_then(|e| e.as_str()) {
+                    if !email.is_empty() {
+                        return email.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "?".to_string()
 }
 
 /// List all saved account profiles with active flag.
