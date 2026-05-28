@@ -423,11 +423,24 @@ pub fn looks_like_oauth_code(s: &str) -> bool {
 
 // ───────────────────────── credentials helpers ─────────────────────────
 
+/// Canonical Claude credentials path: `~/.omega/credentials/claude.json`.
+///
+/// The legacy `~/.claude/.credentials.json` is a symlink to this file
+/// (set up by `install.sh` and `CredentialStore::ensure_legacy_symlink`).
+/// During the transition window, if the canonical file does not yet exist
+/// but the legacy file does, we fall back to the legacy path so first-launch
+/// after upgrade still works before migration runs.
 pub fn credentials_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".claude")
-        .join(".credentials.json")
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let canonical = home.join(".omega").join("credentials").join("claude.json");
+    if canonical.exists() {
+        return canonical;
+    }
+    let legacy = home.join(".claude").join(".credentials.json");
+    if legacy.exists() && !canonical.exists() {
+        return legacy;
+    }
+    canonical
 }
 
 #[derive(Debug, Clone, Default)]

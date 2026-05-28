@@ -11,9 +11,11 @@
 
 use anyhow::{Context, Result};
 use omega_core::account::{self, CurrentAccount};
+use omega_core::credentials::CredentialStore;
 use omega_core::formatting;
 use omega_core::monitor::OmegaTelegramConfig;
 use omega_core::oauth;
+use omega_core::providers::{ActiveModel, ProvidersConfig};
 use omega_core::session::SessionManager;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -688,7 +690,7 @@ impl TelegramBotEngine {
             .unwrap_or("");
         match cmd {
             "/account" => {
-                self.send_account_card(chat_id).await;
+                self.handle_account_command(chat_id, text).await;
                 true
             }
             "/login" => {
@@ -703,12 +705,274 @@ impl TelegramBotEngine {
                 self.send_billing_card(chat_id).await;
                 true
             }
+            "/model" => {
+                self.handle_model_command(chat_id, text).await;
+                true
+            }
             "/newproject" => {
                 self.handle_newproject(chat_id, text).await;
                 true
             }
             _ => false,
         }
+    }
+
+    /// `/model` — multi-provider model selector for this Telegram chat.
+    ///
+    /// Forms:
+    ///   /model                       show current + list providers/models
+    ///   /model <provider>            switch provider (uses default model)
+    ///   /model <provider> <model>    switch provider + specific model
+    async fn handle_model_command(&self, chat_id: i64, text: &str) {
+        let parts: Vec<&str> = text.split_whitespace().skip(1).collect();
+        if parts.is_empty() {
+            let active = ActiveModel::load();
+            let mut lines = vec![
+                "<b>Model Selector</b>".to_string(),
+                format!(
+                    "Active: <code>{}</code> / <code>{}</code>",
+                    formatting::escape_html(&active.active_provider),
+                    formatting::escape_html(&active.active_model),
+                ),
+                String::new(),
+                "<b>Providers</b>".to_string(),
+            ];
+            for prov in ProvidersConfig::all_providers() {
+                let default_model = ProvidersConfig::default_model(prov);
+                let auth = ProvidersConfig::auth_type(prov);
+                let models = ProvidersConfig::models_for(prov).join(", ");
+                lines.push(format!(
+                    "  <code>{}</code> ({}) — default: <code>{}</code>\n    models: <i>{}</i>",
+                    formatting::escape_html(prov),
+                    formatting::escape_html(auth),
+                    formatting::escape_html(default_model),
+                    formatting::escape_html(&models),
+                ));
+            }
+            lines.push(String::new());
+            lines.push(
+                "Switch: <code>/model &lt;provider&gt; [model]</code>".to_string(),
+            );
+            let _ = self.send_html(chat_id, &lines.join("\n")).await;
+            return;
+        }
+
+        let provider = parts[0];
+        if !ProvidersConfig::is_known(provider) {
+            let known = ProvidersConfig::all_providers().join(", ");
+            let _ = self
+                .send_html(
+                    chat_id,
+                    &format!(
+                        "<b>Unknown provider</b> <code>{}</code>\n\
+                         Known: <code>{}</code>",
+                        formatting::escape_html(provider),
+                        formatting::escape_html(&known),
+                    ),
+                )
+                .await;
+            return;
+        }
+        let model = parts.get(1).copied();
+        match ActiveModel::set(provider, model) {
+            Ok(active) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "<b>Active model updated</b>\n\
+                             Provider: <code>{}</code>\n\
+                             Model:    <code>{}</code>",
+                            formatting::escape_html(&active.active_provider),
+                            formatting::escape_html(&active.active_model),
+                        ),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "<b>Could not set model</b>\n<code>{}</code>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+
+    /// `/account` — bare form: show legacy Claude card (kept for compat).
+    /// With args: multi-provider account management.
+    ///   /account <provider>                list accounts for provider
+    ///   /account <provider> <name>         switch to that account
+    ///   /account add <provider> <name>     save current creds as named account
+    async fn handle_account_command(&self, chat_id: i64, text: &str) {
+        let parts: Vec<&str> = text.split_whitespace().skip(1).collect();
+        if parts.is_empty() {
+            self.send_account_card(chat_id).await;
+            return;
+        }
+
+        // /account add <provider> <name>
+        if parts[0].eq_ignore_ascii_case("add") {
+            if parts.len() < 3 {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        "Usage: <code>/account add &lt;provider&gt; &lt;name&gt;</code>",
+                    )
+                    .await;
+                return;
+            }
+            let provider = parts[1];
+            let name = parts[2];
+            if !ProvidersConfig::is_known(provider) {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "Unknown provider <code>{}</code>",
+                            formatting::escape_html(provider)
+                        ),
+                    )
+                    .await;
+                return;
+            }
+            let store = match CredentialStore::new() {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<b>Credential store error</b>\n<code>{}</code>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+            };
+            match store.save_as_account(provider, name) {
+                Ok(_) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<b>Saved</b> current <code>{}</code> credentials as account <code>{}</code>",
+                                formatting::escape_html(provider),
+                                formatting::escape_html(name),
+                            ),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<b>Save failed</b>\n<code>{}</code>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                }
+            }
+            return;
+        }
+
+        let provider = parts[0];
+        if !ProvidersConfig::is_known(provider) {
+            let _ = self
+                .send_html(
+                    chat_id,
+                    &format!(
+                        "Unknown provider <code>{}</code>\nKnown: <code>{}</code>",
+                        formatting::escape_html(provider),
+                        formatting::escape_html(&ProvidersConfig::all_providers().join(", ")),
+                    ),
+                )
+                .await;
+            return;
+        }
+
+        let store = match CredentialStore::new() {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "<b>Credential store error</b>\n<code>{}</code>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+                return;
+            }
+        };
+
+        if let Some(name) = parts.get(1).copied() {
+            // /account <provider> <name>  — switch
+            match store.switch_account(provider, name) {
+                Ok(_) => {
+                    let _ = store.ensure_legacy_symlink(provider);
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<b>Switched</b> <code>{}</code> → <code>{}</code>",
+                                formatting::escape_html(provider),
+                                formatting::escape_html(name),
+                            ),
+                        )
+                        .await;
+                }
+                Err(e) => {
+                    let _ = self
+                        .send_html(
+                            chat_id,
+                            &format!(
+                                "<b>Switch failed</b>\n<code>{}</code>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                }
+            }
+            return;
+        }
+
+        // /account <provider>  — list
+        let accounts = store.list_accounts(provider);
+        let active_exists = store.active_path(provider).exists();
+        let mut lines = vec![format!(
+            "<b>{} accounts</b>",
+            formatting::escape_html(provider)
+        )];
+        lines.push(format!(
+            "Active credentials: <code>{}</code>",
+            if active_exists { "present" } else { "missing" }
+        ));
+        if accounts.is_empty() {
+            lines.push(
+                "<i>No saved accounts.</i>\nSave current with: <code>/account add {provider} &lt;name&gt;</code>"
+                    .to_string(),
+            );
+        } else {
+            lines.push("<b>Saved:</b>".to_string());
+            for a in &accounts {
+                lines.push(format!("  <code>{}</code>", formatting::escape_html(a)));
+            }
+            lines.push(String::new());
+            lines.push(format!(
+                "Switch: <code>/account {} &lt;name&gt;</code>",
+                formatting::escape_html(provider)
+            ));
+        }
+        let _ = self.send_html(chat_id, &lines.join("\n")).await;
     }
 
     /// Handle /newproject <name> <work|clients> [emoji] — creates project + registers it
@@ -1149,7 +1413,8 @@ impl TelegramBotEngine {
                 {"command": "list",       "description": "List active rmux sessions"},
                 {"command": "status",     "description": "Capture last 20 lines of a session"},
                 {"command": "billing",    "description": "Show Claude usage (5h / week)"},
-                {"command": "account",    "description": "Show current account + actions"},
+                {"command": "account",    "description": "Account card / multi-provider: /account [provider] [name]"},
+                {"command": "model",      "description": "Show or switch active provider+model"},
                 {"command": "login",      "description": "Re-authenticate with Claude OAuth"},
                 {"command": "logout",     "description": "Clear current credentials"},
                 {"command": "aisb",       "description": "Send a message to AISB Master"},
@@ -1285,6 +1550,11 @@ impl TelegramBotEngine {
                  /kill <code>session</code> — kill a session\n\n\
                  <b>Account &amp; Billing:</b>\n\
                  /account — account card + login/switch/billing\n\
+                 /account <code>&lt;provider&gt;</code> — list saved accounts for that provider\n\
+                 /account <code>&lt;provider&gt; &lt;name&gt;</code> — switch to that account\n\
+                 /account add <code>&lt;provider&gt; &lt;name&gt;</code> — save current creds as named account\n\
+                 /model — show current provider/model + list available\n\
+                 /model <code>&lt;provider&gt; [model]</code> — switch active provider/model\n\
                  /login — start OAuth reauth flow\n\
                  /logout — clear active credentials\n\
                  /billing — current Claude usage\n\n\

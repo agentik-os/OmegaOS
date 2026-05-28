@@ -5,6 +5,7 @@ pub mod aisb_agents;
 pub mod audit;
 pub mod bootstrap;
 pub mod config;
+pub mod credentials;
 pub mod dispatch;
 pub mod done;
 pub mod formatting;

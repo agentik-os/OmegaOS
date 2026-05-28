@@ -22,6 +22,18 @@ pub struct ProvidersConfig {
     pub hermes: HermesConfig,
     #[serde(default)]
     pub glm: GlmConfig,
+    #[serde(default)]
+    pub openrouter: OpenRouterConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OpenRouterConfig {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -137,6 +149,164 @@ impl ProvidersConfig {
         if !self.hermes.api_key.is_empty() {
             out.push(("HERMES_API_KEY".to_string(), self.hermes.api_key.clone()));
         }
+        if !self.openrouter.api_key.is_empty() {
+            out.push((
+                "OPENROUTER_API_KEY".to_string(),
+                self.openrouter.api_key.clone(),
+            ));
+        }
+        if !self.openrouter.base_url.is_empty() {
+            out.push((
+                "OPENROUTER_BASE_URL".to_string(),
+                self.openrouter.base_url.clone(),
+            ));
+        }
         out
+    }
+
+    // ───────── Provider catalog (static metadata) ─────────
+
+    /// All known providers in canonical order. Static slice — safe to expose.
+    pub fn all_providers() -> Vec<&'static str> {
+        vec![
+            "claude",
+            "codex",
+            "gemini",
+            "glm",
+            "openrouter",
+            "pi",
+            "hermes",
+        ]
+    }
+
+    pub fn default_provider() -> &'static str {
+        "claude"
+    }
+
+    /// Default model id for a provider (used when /model <provider> has no
+    /// model arg).
+    pub fn default_model(provider: &str) -> &'static str {
+        match provider {
+            "claude" => "opus",
+            "codex" => "gpt-5-codex",
+            "gemini" => "gemini-2.5-pro",
+            "glm" => "glm-4.6",
+            "openrouter" => "anthropic/claude-sonnet-4.6",
+            "pi" => "anthropic/claude-sonnet-4.6",
+            "hermes" => "hermes-3-llama-3.1-405b",
+            _ => "",
+        }
+    }
+
+    /// Available models for a provider (used to list options in /model UI).
+    pub fn models_for(provider: &str) -> Vec<&'static str> {
+        match provider {
+            "claude" => vec!["opus", "sonnet", "haiku"],
+            "codex" => vec!["gpt-5", "gpt-5-codex", "o3"],
+            "gemini" => vec!["gemini-2.5-pro", "gemini-2.5-flash"],
+            "glm" => vec!["glm-4.6", "glm-4.5"],
+            "openrouter" => vec![
+                "anthropic/claude-sonnet-4.6",
+                "anthropic/claude-opus-4.7",
+                "openai/gpt-5",
+                "google/gemini-2.5-pro",
+            ],
+            "pi" => vec!["anthropic/claude-sonnet-4.6", "openai/gpt-5"],
+            "hermes" => vec!["hermes-3-llama-3.1-405b", "hermes-3-llama-3.1-70b"],
+            _ => vec![],
+        }
+    }
+
+    /// Auth type for a provider: "oauth" | "api_key" | "config".
+    pub fn auth_type(provider: &str) -> &'static str {
+        match provider {
+            "claude" | "gemini" => "oauth",
+            "codex" | "glm" | "openrouter" | "hermes" => "api_key",
+            "pi" => "config",
+            _ => "unknown",
+        }
+    }
+
+    /// Relative cred file path under ~/.omega/.
+    pub fn cred_file(provider: &str) -> String {
+        format!("credentials/{}.json", provider)
+    }
+
+    /// True if the provider exists in the catalog.
+    pub fn is_known(provider: &str) -> bool {
+        Self::all_providers().iter().any(|p| *p == provider)
+    }
+}
+
+/// Track the per-Telegram-chat active model selection.
+/// Persisted to `~/.omega/state/telegram-active-model.json`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveModel {
+    #[serde(default = "default_active_provider")]
+    pub active_provider: String,
+    #[serde(default = "default_active_model")]
+    pub active_model: String,
+}
+
+fn default_active_provider() -> String {
+    ProvidersConfig::default_provider().to_string()
+}
+
+fn default_active_model() -> String {
+    ProvidersConfig::default_model(ProvidersConfig::default_provider()).to_string()
+}
+
+impl Default for ActiveModel {
+    fn default() -> Self {
+        Self {
+            active_provider: default_active_provider(),
+            active_model: default_active_model(),
+        }
+    }
+}
+
+impl ActiveModel {
+    fn path() -> PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+            .join(".omega")
+            .join("state")
+            .join("telegram-active-model.json")
+    }
+
+    pub fn load() -> Self {
+        let path = Self::path();
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self) -> Result<()> {
+        let path = Self::path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, json).context("writing active-model state")?;
+        Ok(())
+    }
+
+    /// Set the active provider+model. If `model` is empty, falls back to the
+    /// provider's default model.
+    pub fn set(provider: &str, model: Option<&str>) -> Result<Self> {
+        if !ProvidersConfig::is_known(provider) {
+            anyhow::bail!("unknown provider: {}", provider);
+        }
+        let resolved_model = match model {
+            Some(m) if !m.is_empty() => m.to_string(),
+            _ => ProvidersConfig::default_model(provider).to_string(),
+        };
+        let new = Self {
+            active_provider: provider.to_string(),
+            active_model: resolved_model,
+        };
+        new.save()?;
+        Ok(new)
     }
 }

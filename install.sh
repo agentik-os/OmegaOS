@@ -120,6 +120,52 @@ ok "omega CLI installed to $INSTALL_DIR/omega"
 step "Phase 5: Configuring OmegaOS"
 
 mkdir -p "$OMEGA_DIR"/{state,logs,locks}
+mkdir -p "$OMEGA_DIR/credentials/accounts"
+
+# ─── Phase 5a: Credential Migration ─────────────────────────────────────────
+# Move existing per-provider credentials into ~/.omega/credentials/<provider>.json
+# and replace the legacy path with a symlink. Idempotent: if the legacy path is
+# already a symlink, do nothing. If the canonical file already exists, the
+# legacy file is backed up with .pre-omega suffix.
+
+migrate_creds() {
+    local provider="$1"
+    local legacy="$2"
+    local canonical="$OMEGA_DIR/credentials/${provider}.json"
+
+    # Already a symlink? Nothing to do.
+    if [ -L "$legacy" ]; then
+        ok "$provider creds: already symlinked"
+        return
+    fi
+
+    # Legacy file exists as a real file?
+    if [ -f "$legacy" ]; then
+        mkdir -p "$(dirname "$legacy")"
+        if [ -f "$canonical" ]; then
+            # Both exist — keep canonical, backup the legacy duplicate.
+            mv "$legacy" "${legacy}.pre-omega"
+            info "$provider creds: backed up legacy duplicate to ${legacy}.pre-omega"
+        else
+            mv "$legacy" "$canonical"
+            ok "$provider creds: migrated $legacy -> $canonical"
+        fi
+    fi
+
+    # Ensure parent dir of legacy exists so the symlink can be created.
+    mkdir -p "$(dirname "$legacy")"
+
+    # Create the symlink (target may not exist yet — that is fine; the LLM
+    # will write through it on first login).
+    if [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
+        ln -s "$canonical" "$legacy"
+        ok "$provider creds: linked $legacy -> $canonical"
+    fi
+}
+
+migrate_creds "claude" "$HOME/.claude/.credentials.json"
+migrate_creds "codex"  "$HOME/.codex/auth.json"
+migrate_creds "gemini" "$HOME/.config/gemini/oauth_creds.json"
 
 if [[ ! -f "$OMEGA_DIR/config.toml" ]]; then
     cp config/default.toml "$OMEGA_DIR/config.toml"
