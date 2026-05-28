@@ -466,6 +466,33 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                 .border_style(preview_border_style),
         );
     frame.render_widget(preview, area);
+
+    // Visible terminal cursor when chat is focused — sits at the
+    // typing position (end of the last non-empty visible line). This
+    // is the OS-native cursor (blinking caret), not a fake block char,
+    // so it's the same affordance the user expects from any terminal.
+    if chat_focused {
+        let inner_w = area.width.saturating_sub(2) as usize; // -2 for borders
+        let inner_h = area.height.saturating_sub(2);          // -2 for borders
+        // Find the last non-empty line in the unscrolled buffer, then
+        // map it to viewport coords.
+        let all_lines: Vec<&str> = app.preview_content.lines().collect();
+        let (last_idx, last_line) = all_lines
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, l)| !l.trim().is_empty())
+            .map(|(i, l)| (i as u16, *l))
+            .unwrap_or((0, ""));
+        let viewport_row = last_idx.saturating_sub(scroll);
+        if viewport_row < inner_h {
+            // Column = visual width of the last line, clamped to inner_w
+            let col_chars = last_line.chars().count().min(inner_w) as u16;
+            let cursor_x = area.x + 1 + col_chars;
+            let cursor_y = area.y + 1 + viewport_row;
+            frame.set_cursor_position((cursor_x, cursor_y));
+        }
+    }
     let _ = fullscreen;
 }
 
@@ -1518,189 +1545,6 @@ fn render_settings_detail(
         Style::default().fg(Color::Gray),
     )));
     return (lines, selected_line);
-    #[allow(unreachable_code)]
-    {
-    let mut lines: Vec<Line> = vec![Line::from("")];
-
-    let cfg = &app.config;
-    let section = app.selected_settings_section();
-
-    match section {
-        SettingsSection::Install => {
-            lines.push(Line::from(Span::styled(
-                "  Install or re-install CLI agents — required before launching their sessions.",
-                Style::default().fg(Color::Yellow),
-            )));
-            lines.push(Line::from(""));
-            for agent in omega_core::agents::Agent::all() {
-                if matches!(agent, omega_core::agents::Agent::Shell) {
-                    continue; // shell is always available
-                }
-                let (status_icon, status_color, status_text) = if agent.is_available() {
-                    ("✓", Color::Green, "installed")
-                } else {
-                    ("✗", Color::Red, "not installed")
-                };
-                lines.push(Line::from(vec![
-                    Span::raw("  "),
-                    Span::styled(format!("{:8}", agent.name()), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                    Span::raw(format!("{:32} ", agent.display_name())),
-                    Span::styled(format!("{} {}", status_icon, status_text), Style::default().fg(status_color)),
-                ]));
-                if let Some(home) = agent.homepage() {
-                    lines.push(Line::from(vec![
-                        Span::raw("    home: "),
-                        Span::styled(home.to_string(), Style::default().fg(Color::Blue)),
-                    ]));
-                }
-                if let Some(install) = agent.install_command() {
-                    lines.push(Line::from(vec![
-                        Span::raw("    install: "),
-                        Span::styled(install.to_string(), Style::default().fg(Color::Yellow)),
-                    ]));
-                }
-                lines.push(Line::from(""));
-            }
-            lines.push(Line::from(Span::styled(
-                "  Run the installer from a shell, or use:",
-                Style::default().fg(Color::Gray),
-            )));
-            lines.push(Line::from(Span::styled(
-                "    omega install <agent>    (e.g. omega install hermes)",
-                Style::default().fg(Color::Yellow),
-            )));
-        }
-        SettingsSection::Hermes => {
-            let c = &providers.hermes;
-            lines.push(kv("Model", default_or(&c.model, "(default)")));
-            lines.push(kv("API key", &mask_key(&c.api_key)));
-            availability(&mut lines, omega_core::agents::Agent::Hermes);
-            lines.push(Line::from(""));
-            if !omega_core::agents::Agent::Hermes.is_available() {
-                lines.push(Line::from(Span::styled(
-                    "  Install with:",
-                    Style::default().fg(Color::Gray),
-                )));
-                if let Some(cmd) = omega_core::agents::Agent::Hermes.install_command() {
-                    lines.push(Line::from(Span::styled(
-                        format!("    {}", cmd),
-                        Style::default().fg(Color::Yellow),
-                    )));
-                }
-                lines.push(Line::from(Span::styled(
-                    "  Or:  omega install hermes",
-                    Style::default().fg(Color::Yellow),
-                )));
-            }
-        }
-        SettingsSection::General => {
-            lines.push(kv("Default AISB agent", &cfg.aisb_agent));
-            lines.push(kv("Default model", &cfg.default_model));
-            lines.push(kv("Auto-spawn Master on launch", &cfg.auto_spawn_master.to_string()));
-            lines.push(kv("Auto-naming sessions", &cfg.auto_naming.to_string()));
-            lines.push(kv("State dir", &cfg.state_dir.to_string_lossy()));
-            lines.push(kv("Logs dir", &cfg.logs_dir.to_string_lossy()));
-        }
-        SettingsSection::Claude => {
-            let c = &providers.claude;
-            lines.push(kv("Model", default_or(&c.model, "(opus)")));
-            lines.push(kv("Effort", default_or(&c.effort, "(default)")));
-            lines.push(kv("API key", &mask_key(&c.api_key)));
-            lines.push(kv("Skip-perms by default", &c.dangerously_skip_permissions.to_string()));
-            availability(&mut lines, omega_core::agents::Agent::Claude);
-        }
-        SettingsSection::Codex => {
-            let c = &providers.codex;
-            lines.push(kv("Model", default_or(&c.model, "(default)")));
-            lines.push(kv("API key", &mask_key(&c.api_key)));
-            lines.push(kv("Base URL", default_or(&c.base_url, "(default)")));
-            availability(&mut lines, omega_core::agents::Agent::Codex);
-        }
-        SettingsSection::Gemini => {
-            let c = &providers.gemini;
-            lines.push(kv("Model", default_or(&c.model, "(default)")));
-            lines.push(kv("API key", &mask_key(&c.api_key)));
-            availability(&mut lines, omega_core::agents::Agent::Gemini);
-        }
-        SettingsSection::Pi => {
-            let c = &providers.pi;
-            lines.push(kv("Provider", default_or(&c.provider, "openrouter")));
-            lines.push(kv("Model", default_or(&c.model, "anthropic/claude-sonnet-4.6")));
-            lines.push(kv("Extension", default_or(&c.extension, "(none)")));
-            availability(&mut lines, omega_core::agents::Agent::Pi);
-        }
-        SettingsSection::Glm => {
-            let c = &providers.glm;
-            lines.push(kv("Model", default_or(&c.model, "(default)")));
-            lines.push(kv("API key", &mask_key(&c.api_key)));
-            availability(&mut lines, omega_core::agents::Agent::Glm);
-        }
-        SettingsSection::Aisb => {
-            lines.push(kv("Master session name", omega_core::aisb::MASTER_SESSION_NAME));
-            lines.push(kv("Auto-spawn", &cfg.auto_spawn_master.to_string()));
-            lines.push(kv("Agent", &cfg.aisb_agent));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  System prompt: agents/aisb-master.md (compiled into binary)",
-                Style::default().fg(Color::Gray),
-            )));
-            lines.push(Line::from(Span::styled(
-                "  Materialised at: ~/.omega/aisb-master.system.md",
-                Style::default().fg(Color::Gray),
-            )));
-        }
-        SettingsSection::Telegram => {
-            match omega_core::monitor::OmegaTelegramConfig::read() {
-                Some(tg) => {
-                    if !tg.label.is_empty() {
-                        lines.push(kv("Label", &tg.label));
-                    }
-                    lines.push(kv("Enabled", &tg.enabled.to_string()));
-                    lines.push(kv("Chat ID", &tg.chat_id.to_string()));
-                    lines.push(kv("Relay session", &tg.relay_session));
-                    let sender_filter = if tg.allow_user_ids.is_empty() {
-                        "chat_id only".to_string()
-                    } else {
-                        format!("user_ids {:?}", tg.allow_user_ids)
-                    };
-                    lines.push(kv("Sender filter", &sender_filter));
-                }
-                None => {
-                    lines.push(Line::from(Span::styled(
-                        "  Not configured.",
-                        Style::default().fg(Color::Gray),
-                    )));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from("  Set up with:"));
-                    lines.push(Line::from(Span::styled(
-                        "    omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id …]",
-                        Style::default().fg(Color::Yellow),
-                    )));
-                }
-            }
-        }
-    }
-
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "  Edit settings via CLI (changes apply to all sessions):",
-        Style::default().fg(Color::Gray),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    omega config set <provider>.<key> <value>      (e.g. claude.model opus)",
-        Style::default().fg(Color::Yellow),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    omega config get <provider>.<key>",
-        Style::default().fg(Color::Yellow),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    ~/.omega/providers.toml  ~/.omega/config.toml",
-        Style::default().fg(Color::Gray),
-    )));
-
-    (lines, 0)
-    }
 }
 
 fn kv(key: &str, value: &str) -> Line<'static> {

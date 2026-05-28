@@ -967,6 +967,15 @@ impl App {
     }
 
     pub async fn refresh(&mut self) -> anyhow::Result<()> {
+        // Snapshot user-toggled protection flags BEFORE clearing self.sessions
+        // — otherwise every 5s refresh wipes the lock the user just set.
+        let protected_names: std::collections::HashSet<String> = self
+            .sessions
+            .iter()
+            .filter(|e| e.is_protected)
+            .map(|e| e.session.name.clone())
+            .collect();
+
         let mgr = SessionManager::connect().await?;
         let raw_sessions = mgr.list_sessions().await?;
 
@@ -1027,6 +1036,21 @@ impl App {
             self.flush_group_rows(&group, &all_progress, last_section.as_deref());
         }
 
+        // Restore the user's manual protection toggles
+        for entry in self.sessions.iter_mut() {
+            if protected_names.contains(&entry.session.name) {
+                entry.is_protected = true;
+            }
+        }
+        // Same for the rendered row clones
+        for row in self.rows.iter_mut() {
+            if let SessionRow::Entry(e) = row {
+                if protected_names.contains(&e.session.name) {
+                    e.is_protected = true;
+                }
+            }
+        }
+
         if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
             self.selected = self.sessions.len() - 1;
         }
@@ -1069,7 +1093,7 @@ impl App {
                 session: (*session).clone(),
                 progress,
                 is_current: false,
-                is_protected: false,
+                is_protected: false, // restored after the loop below
                 tree_prefix,
             };
             self.sessions.push(entry);

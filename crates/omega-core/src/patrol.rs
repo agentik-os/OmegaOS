@@ -283,6 +283,10 @@ impl Patrol {
                 if done.is_closeable() {
                     report.done_oracles.push(session.name.clone());
                     registry.mark_status(&session.name, OracleRegistryStatus::Done);
+                    // Self-improvement: auto-dispatch the curator worker
+                    // ONCE per done oracle. The marker file prevents
+                    // re-triggering after the curator already ran.
+                    let _ = self.maybe_trigger_curator(&session.name);
                 }
             }
 
@@ -300,6 +304,73 @@ impl Patrol {
         }
 
         let _ = registry.save(&self.config.state_dir);
+        Ok(())
+    }
+
+    /// Self-improvement hook: when an oracle's done.json flips to a
+    /// closeable status, spawn a curator worker that reads the trajectory
+    /// + done.json and proposes NEW_SKILL / EDIT_SKILL / NEW_RULE /
+    /// NEW_MEMORY items. Output lands in
+    /// `~/.omega/state/curator/<oracle>-<timestamp>.md`.
+    ///
+    /// Idempotent: marker file `~/.omega/state/curator-triggered/<oracle>.flag`
+    /// prevents re-trigger on subsequent patrol ticks.
+    fn maybe_trigger_curator(&self, oracle_name: &str) -> Result<()> {
+        let flag_dir = self.config.state_dir.join("curator-triggered");
+        let flag = flag_dir.join(format!("{}.flag", oracle_name));
+        if flag.exists() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&flag_dir)?;
+        std::fs::create_dir_all(self.config.state_dir.join("curator"))?;
+        std::fs::write(&flag, Utc::now().to_rfc3339())?;
+
+        // Spawn the curator as a detached rmux session so its output is
+        // visible in `omega menu`. The session name is prefixed with
+        // "curator-" so it's grouped distinctly in the TUI session list.
+        let curator_session = format!("curator-{}", oracle_name);
+        let done_path = self
+            .config
+            .state_dir
+            .join(format!("oracle-{}.done.json", oracle_name));
+        let prompt = format!(
+            "/omega-curate {}",
+            done_path.to_string_lossy()
+        );
+        // Use claude --print --dangerously-skip-permissions for a
+        // non-interactive one-shot. The session's output goes to its
+        // pane (capturable) AND the curator skill writes its report
+        // markdown to ~/.omega/state/curator/.
+        // Manual shell-escape: wrap in single quotes and escape any
+        // internal single quotes. Keeps us dependency-free.
+        let escaped = prompt.replace('\'', r"'\''");
+        let cmd = format!(
+            "claude --print --dangerously-skip-permissions '{}' ; exec bash",
+            escaped
+        );
+        let mgr_dispatch = std::process::Command::new("rmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &curator_session,
+                "bash",
+                "-c",
+                &cmd,
+            ])
+            .status();
+        match mgr_dispatch {
+            Ok(s) if s.success() => {
+                tracing::info!(
+                    oracle = %oracle_name,
+                    curator = %curator_session,
+                    "curator dispatched"
+                );
+            }
+            _ => {
+                tracing::warn!(oracle = %oracle_name, "curator dispatch failed");
+            }
+        }
         Ok(())
     }
 

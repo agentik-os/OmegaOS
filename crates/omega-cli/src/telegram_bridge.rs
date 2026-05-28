@@ -653,6 +653,18 @@ impl TelegramBotEngine {
             // stays self-documenting when the user scrolls back.
             match result {
                 Ok(body) if !body.is_empty() => {
+                    // OmegaTrace — append this turn to today's trajectory
+                    // JSONL. Fire-and-forget; never blocks the response.
+                    {
+                        use omega_core::trajectory::{Trajectory, TurnRole};
+                        let mut traj = Trajectory::new(
+                            format!("telegram-chat-{}", chat_id),
+                            model_label.clone(),
+                        );
+                        traj.push(TurnRole::Human, text);
+                        traj.push(TurnRole::Gpt, body.clone());
+                        omega_core::trajectory::append_silent(&traj);
+                    }
                     let file_target = formatting::suggest_file_delivery(&body);
                     let wrapped = formatting::smart_wrap_response(
                         agent_label,

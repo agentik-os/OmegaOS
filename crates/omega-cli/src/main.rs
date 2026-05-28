@@ -564,7 +564,26 @@ async fn run_tui_loop(
             last_preview_refresh = std::time::Instant::now();
         }
 
-        if crossterm::event::poll(tick_rate)? {
+        // Drain *all* events queued for this tick before redrawing. The
+        // old shape was `if poll(tick_rate)` → process one → redraw, which
+        // capped throughput at 1 event per ~10ms iteration (~100 chars/s
+        // ceiling, visible as input lag during fast typing or paste).
+        // Now we wait up to tick_rate for the first event, then drain any
+        // additional pending events with a ZERO-timeout poll. A wall-clock
+        // budget (8ms) bounds the drain so a never-ending stream cannot
+        // starve the redraw / preview / housekeeping work below.
+        let drain_start = std::time::Instant::now();
+        let drain_budget = std::time::Duration::from_millis(8);
+        let mut first_iter = true;
+        while {
+            let timeout = if first_iter {
+                tick_rate
+            } else {
+                std::time::Duration::ZERO
+            };
+            crossterm::event::poll(timeout)?
+        } {
+            first_iter = false;
             let evt = crossterm::event::read()?;
             let selected_before = app.selected;
             let tab_before = app.tab;
@@ -1015,6 +1034,11 @@ async fn run_tui_loop(
 
             if app.selected != selected_before || app.tab != tab_before {
                 let _ = app.refresh_preview().await;
+            }
+
+            // Bounded drain — don't let a flood starve the redraw loop.
+            if drain_start.elapsed() > drain_budget {
+                break;
             }
         }
 
