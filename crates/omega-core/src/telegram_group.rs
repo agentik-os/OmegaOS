@@ -61,6 +61,15 @@ impl TelegramGroupConfig {
     pub fn set_topic(&mut self, project: &str, topic_id: i64) {
         self.topics.insert(project.to_string(), topic_id);
     }
+
+    /// Reverse lookup: which project owns this forum topic? Lets the bridge
+    /// route a message typed in a topic straight to that project's oracle.
+    pub fn project_for_topic(&self, thread_id: i64) -> Option<String> {
+        self.topics
+            .iter()
+            .find(|(_, &t)| t == thread_id)
+            .map(|(p, _)| p.clone())
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +91,17 @@ mod tests {
         assert_eq!(back.group_id, -1001234567890);
         assert_eq!(back.topic_for("Causio"), Some(47));
         assert_eq!(back.topic_for("Missing"), None);
+    }
+
+    #[test]
+    fn reverse_topic_lookup() {
+        let mut cfg = TelegramGroupConfig::default();
+        cfg.set_topic("DentistryGPT", 6);
+        cfg.set_topic("OmegaOS", 7);
+        // a message in thread 7 → routes to OmegaOS' oracle
+        assert_eq!(cfg.project_for_topic(7).as_deref(), Some("OmegaOS"));
+        assert_eq!(cfg.project_for_topic(6).as_deref(), Some("DentistryGPT"));
+        // General topic / unmapped thread → None → falls through to Master
+        assert_eq!(cfg.project_for_topic(999), None);
     }
 }

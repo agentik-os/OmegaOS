@@ -537,6 +537,14 @@ impl TelegramBotEngine {
             }
         }
 
+        // 3b. Topic → project oracle. A message typed inside a project's forum
+        // topic IS a conversation with that project's oracle: spawn the oracle
+        // if none is alive, continue the existing one otherwise. Plain
+        // (non-command) text only — slash commands above still work in-topic.
+        if self.try_route_topic_to_oracle(msg, text).await {
+            return Ok(());
+        }
+
         // Resolve the relay target: a tapped session/project overrides the default.
         // Special case: "__newproject__:<location>" means create a project with
         // this message as the name.
@@ -1229,6 +1237,149 @@ impl TelegramBotEngine {
                 ).await.ok();
             }
         }
+    }
+
+    /// Route a message typed inside a project's forum topic to that project's
+    /// oracle. Spawn the oracle if none is alive; otherwise continue the
+    /// conversation by sending into the existing pane. Returns true if the
+    /// message belonged to a project topic and was handled.
+    async fn try_route_topic_to_oracle(&self, msg: &Message, text: &str) -> bool {
+        use omega_core::telegram_group::TelegramGroupConfig;
+        let Some(thread_id) = msg.message_thread_id else {
+            return false;
+        };
+        let Some(cfg) = TelegramGroupConfig::load() else {
+            return false;
+        };
+        // Only inside the configured supergroup.
+        if msg.chat.id != cfg.group_id {
+            return false;
+        }
+        let Some(project) = cfg.project_for_topic(thread_id) else {
+            // Message in the General topic or an unmapped topic → fall through
+            // to the AISB Master brain.
+            return false;
+        };
+        let group_id = cfg.group_id;
+
+        // Find a live oracle for this project (oracle-<project> or
+        // oracle-<project>-N).
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let exact = format!("oracle-{}", project);
+        let prefix = format!("oracle-{}-", project);
+        let live = sessions
+            .iter()
+            .find(|s| s.name == exact || s.name.starts_with(&prefix))
+            .map(|s| s.name.clone());
+
+        match live {
+            Some(session) => {
+                // Continue the conversation in the existing oracle pane.
+                // paste-then-submit so multi-line input lands as one message.
+                let _ = self.mgr.send_paste_then_submit(&session, text).await;
+                let _ = self
+                    .send_html_to_topic(
+                        group_id,
+                        thread_id,
+                        &format!("→ <code>{}</code>", formatting::escape_html(&session)),
+                    )
+                    .await;
+            }
+            None => {
+                let oracle_name = format!("oracle-{}-1", project);
+                self.spawn_topic_oracle(&project, &oracle_name, text, group_id, thread_id)
+                    .await;
+            }
+        }
+        true
+    }
+
+    /// Spawn a fresh oracle for a project topic and hand it its first message.
+    /// Unlike `spawn_project_oracle` (DM-centric, sets a one-shot target +
+    /// "next message goes there" ack), this is topic-native: the topic IS the
+    /// oracle's conversation, so we feed the first message straight in and ack
+    /// in the topic. The mission is amplified into a structured brief first
+    /// (skip-gated — short follow-ups pass through verbatim).
+    async fn spawn_topic_oracle(
+        &self,
+        project: &str,
+        oracle_name: &str,
+        first_message: &str,
+        group_id: i64,
+        thread_id: i64,
+    ) {
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let Some(entry) = registry.projects.iter().find(|p| p.name == *project) else {
+            let _ = self
+                .send_html_to_topic(
+                    group_id,
+                    thread_id,
+                    &format!(
+                        "<i>Project <code>{}</code> not in registry — can't spawn an oracle.</i>",
+                        formatting::escape_html(project)
+                    ),
+                )
+                .await;
+            return;
+        };
+        let cwd = entry.path.display().to_string();
+        let prompt_file = render_oracle_prompt(project, &cwd, oracle_name);
+        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        if let Some(ref pf) = prompt_file {
+            cmd.push_str(&format!(
+                " --append-system-prompt-file '{}'",
+                pf.replace('\'', r"'\''")
+            ));
+        }
+        let wrapped = format!("bash -c '{}; exec bash'", cmd.replace('\'', r"'\''"));
+        if let Err(e) = self
+            .mgr
+            .create_session(oracle_name, Some(&cwd), Some(&wrapped))
+            .await
+        {
+            let _ = self
+                .send_html_to_topic(
+                    group_id,
+                    thread_id,
+                    &format!(
+                        "<i>Spawn failed: <code>{}</code></i>",
+                        formatting::escape_html(&e.to_string())
+                    ),
+                )
+                .await;
+            return;
+        }
+
+        let _ = self
+            .send_html_to_topic(
+                group_id,
+                thread_id,
+                &format!(
+                    "✦ Spawned <code>{}</code> in <code>{}</code>. Working on it…",
+                    formatting::escape_html(oracle_name),
+                    formatting::escape_html(&cwd)
+                ),
+            )
+            .await;
+
+        // Amplify the first message into a structured brief (skip-gated).
+        // Runs a blocking subprocess → spawn_blocking so the async runtime
+        // isn't stalled. Falls back to raw text if the pass fails.
+        let brief = {
+            let raw = first_message.to_string();
+            let proj = project.to_string();
+            let wd = cwd.clone();
+            tokio::task::spawn_blocking(move || {
+                omega_core::amplify::amplify_mission(&raw, &proj, &wd)
+            })
+            .await
+            .unwrap_or_else(|_| first_message.to_string())
+        };
+
+        // The interactive `claude` REPL needs a moment to boot before it can
+        // accept piped input; pasting too early loses the keystrokes.
+        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        let _ = self.mgr.send_paste_then_submit(oracle_name, &brief).await;
     }
 
     /// Handle `proj:*` callbacks (open / new / scan).

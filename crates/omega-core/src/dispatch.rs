@@ -171,16 +171,32 @@ impl Dispatcher {
             registry.next_oracle_name(project)
         };
 
+        // Classification + ship/god-mode detection run on the RAW message —
+        // keyword signals ("ship", "god mode") must not be lost to
+        // restructuring.
         let decision = routing::classify_mission(mission);
         let ship = OraclePromptGenerator::should_ship(mission);
         let god_mode = OraclePromptGenerator::is_god_mode(mission);
+
+        // Amplify the raw message into a structured ## Mission/Context/Tasks/
+        // Success Criteria/Constraints brief BEFORE it becomes the oracle's
+        // mission body. Skip-gated + cached; falls back to raw on failure.
+        // (blocking subprocess → spawn_blocking)
+        let amplified = {
+            let raw = mission.to_string();
+            let proj = project.to_string();
+            let wd = work_dir.clone();
+            tokio::task::spawn_blocking(move || crate::amplify::amplify_mission(&raw, &proj, &wd))
+                .await
+                .unwrap_or_else(|_| mission.to_string())
+        };
 
         // Generate structured oracle prompt
         let mut prompt = OraclePromptGenerator::generate(
             project,
             &work_path,
             &oracle_name,
-            mission,
+            &amplified,
             ship,
             god_mode,
         );

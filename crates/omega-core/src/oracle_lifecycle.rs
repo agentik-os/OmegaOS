@@ -292,7 +292,14 @@ pub struct OraclePromptGenerator;
 
 impl OraclePromptGenerator {
     /// Generate the system prompt for an oracle session.
-    /// Mirrors VPS `oracle-prompt.sh`: project context + Three Laws + signal file template.
+    ///
+    /// Single source of truth: renders the shared `agents/oracle.md` v2
+    /// template (installed `~/.omega/agents/oracle.md`, falling back to the
+    /// repo copy) with the {{PROJECT}}/{{WORKDIR}}/{{SESSION}} placeholders,
+    /// prepends the amplified mission as the Layer-3 body, and appends the
+    /// per-mission dynamic blocks (ship / god mode). When the template file is
+    /// missing (pre-install), falls back to a self-contained inline prompt so
+    /// the oracle is never left without an identity.
     pub fn generate(
         project: &str,
         working_dir: &Path,
@@ -301,58 +308,18 @@ impl OraclePromptGenerator {
         ship: bool,
         god_mode: bool,
     ) -> String {
-        let mut prompt = String::with_capacity(2048);
+        let mut prompt = String::with_capacity(4096);
 
-        prompt.push_str(&format!(
-            "## Mission: {}\n## Project: {} ({})\n## Role: ORACLE\n## Session: {}\n\n",
-            mission,
-            project,
-            working_dir.display(),
-            oracle_name,
-        ));
+        // Layer 3 — the mission body comes first so it's unmissable.
+        prompt.push_str(&format!("## Mission\n{}\n\n---\n\n", mission));
 
-        // Core identity
-        prompt.push_str(
-            "You are the Oracle for this project. You are a PROJECT MANAGER — never edit code directly.\n\
-             Analyze the mission, decompose into tasks, dispatch workers, monitor progress, verify quality.\n\n",
-        );
+        // Layer 2 — the shared v2 identity/protocol template.
+        match Self::load_template(project, working_dir, oracle_name) {
+            Some(tpl) => prompt.push_str(&tpl),
+            None => Self::push_inline_fallback(&mut prompt, project, working_dir, oracle_name),
+        }
 
-        // Three Laws
-        prompt.push_str(
-            "## Three Laws\n\
-             1. Code lies. Only runtime tells the truth.\n\
-             2. Be a researcher, not a sycophant. Challenge flawed premises.\n\
-             3. Decide and proceed, never wait.\n\n",
-        );
-
-        // 5-step workflow
-        prompt.push_str(
-            "## Oracle 5-Step Workflow\n\
-             STEP 1: ANALYZE  — Read project context, decompose, define success criteria\n\
-             STEP 2: DISPATCH — `omega dispatch-worker <task> --files <scope>` for each sub-task\n\
-             STEP 3: MONITOR  — Check worker progress via `omega status`, process inbox events\n\
-             STEP 4: VERIFY   — All workers done → run quality gate: build + tests + audit\n\
-             STEP 5: REPORT   — Write signal file, report results: `omega done <oracle> done_clean \"<summary>\"`\n\n",
-        );
-
-        // Worker dispatch rules
-        prompt.push_str(
-            "## Worker Dispatch Rules\n\
-             - ALWAYS use `omega dispatch-worker` — never raw session commands\n\
-             - Every worker gets: Mission, Done Criteria, Verify Command, Files Owned\n\
-             - Workers are autonomous (Third Law) — no user interaction\n\
-             - Scope-claim enforcement: workers with overlapping files are rejected\n\n",
-        );
-
-        // Signal file
-        prompt.push_str(&format!(
-            "## Signal File (MANDATORY when done)\n\
-             Write to: `omega done {} done_clean \"<summary>\"`\n\
-             Or if failed: `omega done {} failed \"<what went wrong>\"`\n\n",
-            oracle_name, oracle_name,
-        ));
-
-        // Ship flag
+        // Per-mission dynamic blocks.
         if ship {
             prompt.push_str(
                 "## Ship Pipeline\n\
@@ -375,17 +342,57 @@ impl OraclePromptGenerator {
             );
         }
 
-        // Quality gate
+        prompt
+    }
+
+    /// Load + render the shared `agents/oracle.md` v2 template. Prefers the
+    /// installed copy, falls back to the repo copy. Returns None if neither
+    /// exists (the caller then uses the inline fallback).
+    fn load_template(project: &str, working_dir: &Path, oracle_name: &str) -> Option<String> {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+        let candidates = [
+            home.join(".omega/agents/oracle.md"),
+            std::path::PathBuf::from("agents/oracle.md"),
+        ];
+        let template = candidates.iter().find_map(|p| std::fs::read_to_string(p).ok())?;
+        Some(
+            template
+                .replace("{{PROJECT}}", project)
+                .replace("{{WORKDIR}}", &working_dir.display().to_string())
+                .replace("{{SESSION}}", oracle_name),
+        )
+    }
+
+    /// Self-contained inline identity/protocol, used only when the shared v2
+    /// template file is missing (pre-install). Kept terse but complete.
+    fn push_inline_fallback(
+        prompt: &mut String,
+        project: &str,
+        working_dir: &Path,
+        oracle_name: &str,
+    ) {
         prompt.push_str(&format!(
-            "## Quality Gate (before reporting done)\n\
-             - All workers complete (done_clean)\n\
-             - `cargo build` / `npm run build` = 0 errors\n\
-             - No runtime errors in console\n\
+            "## Project: {} ({})\n## Role: ORACLE\n## Session: {}\n\n\
+             You are the Oracle — a PROJECT MANAGER, never edit code directly. Analyze,\n\
+             decompose, dispatch workers, monitor, verify, report.\n\n\
+             ## Three Laws\n\
+             1. Code lies. Only runtime tells the truth.\n\
+             2. Be a researcher, not a sycophant. Challenge flawed premises.\n\
+             3. Decide and proceed, never wait.\n\n\
+             ## Workflow\n\
+             ANALYZE → DISPATCH (`omega spawn-worker <task> \"<prompt>\" --dir <dir> --files a,b`) → MONITOR\n\
+             (`omega status`, inbox) → VERIFY (build + tests + audit + ground-truth) → REPORT\n\
+             (`omega done {} done_clean \"<summary>\"`).\n\n\
+             ## Quality Gate (before done)\n\
+             - All workers done_clean AND survived the ground-truth gate\n\
+             - Build = 0 errors, no runtime errors\n\
              - `omega gate {}` criteria satisfied\n",
+            project,
+            working_dir.display(),
+            oracle_name,
+            oracle_name,
             oracle_name,
         ));
-
-        prompt
     }
 
     /// Detect if a mission text implies shipping.
