@@ -62,8 +62,27 @@ pub struct UsageSnapshot {
 }
 
 impl UsageSnapshot {
-    /// Read /tmp/aisb-usage.json — returns Ok(None) if file missing.
+    /// Path to the ACCURATE usage cache written by `omega usage --check`
+    /// (real OAuth utilization endpoint). Preferred over the legacy
+    /// /tmp/aisb-usage.json which holds a local-token ESTIMATE that
+    /// over-reports (showed 89% when the real 5h was 36%).
+    fn omega_usage_path() -> std::path::PathBuf {
+        dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"))
+            .join(".omega/state/usage.json")
+    }
+
+    /// Read the usage snapshot. Prefers ~/.omega/state/usage.json (real
+    /// OAuth %), falls back to the legacy /tmp/aisb-usage.json estimate.
     pub fn read() -> Result<Option<Self>> {
+        let omega = Self::omega_usage_path();
+        if omega.exists() {
+            if let Ok(content) = std::fs::read_to_string(&omega) {
+                if let Ok(snap) = serde_json::from_str::<Self>(&content) {
+                    return Ok(Some(snap));
+                }
+            }
+        }
         let path = std::path::Path::new(USAGE_PATH);
         if !path.exists() {
             return Ok(None);
@@ -75,9 +94,15 @@ impl UsageSnapshot {
         Ok(Some(snap))
     }
 
-    /// Age of the cache file in seconds (None if file missing).
+    /// Age of the preferred cache file in seconds (None if missing).
     pub fn cache_age_secs() -> Option<u64> {
-        let meta = std::fs::metadata(USAGE_PATH).ok()?;
+        let omega = Self::omega_usage_path();
+        let target = if omega.exists() {
+            omega
+        } else {
+            std::path::PathBuf::from(USAGE_PATH)
+        };
+        let meta = std::fs::metadata(&target).ok()?;
         let modified = meta.modified().ok()?;
         modified.elapsed().ok().map(|d| d.as_secs())
     }

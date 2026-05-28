@@ -879,21 +879,20 @@ async fn run_tui_loop(
                     }
                 }
                 Action::RefreshBilling => {
-                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-                    let script = home.join(".aisb/lib/usage-monitor.sh");
-                    if script.exists() {
-                        let _ = std::process::Command::new("bash")
-                            .arg(&script)
-                            .stdin(std::process::Stdio::null())
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .spawn();
-                        app.status_message = Some("Billing refresh kicked off in background".to_string());
-                    } else {
-                        app.status_message = Some(
-                            "Script not found: ~/.aisb/lib/usage-monitor.sh (AISB must be installed)".to_string(),
-                        );
-                    }
+                    // Use the native `omega usage --check` which hits the REAL
+                    // OAuth utilization endpoint and writes the accurate
+                    // ~/.omega/state/usage.json. The legacy bash script wrote a
+                    // local-token ESTIMATE that over-reported (89% vs real 36%).
+                    let exe = std::env::current_exe()
+                        .unwrap_or_else(|_| std::path::PathBuf::from("omega"));
+                    let _ = std::process::Command::new(exe)
+                        .args(["usage", "--check"])
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                    app.status_message =
+                        Some("Billing refresh (real OAuth %) running…".to_string());
                 }
                 Action::TelegramSetup => {
                     app.input_buffer = String::new();
