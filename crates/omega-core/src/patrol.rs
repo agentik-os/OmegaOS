@@ -77,21 +77,73 @@ impl Patrol {
                 if let Some(done) = DoneSignal::read(&self.config.state_dir, &session.name)? {
                     report.done_workers.push(session.name.clone());
 
+                    // ── Opus 4.8 ground-truth gate ──
+                    // A worker's `done_clean` narration is inadmissible as
+                    // proof. Verify every artifact it cited against the real
+                    // repo. We CONTEST (downgrade to failed) only on a
+                    // CONCRETE fabrication — a cited SHA/branch/file that does
+                    // not exist. Absence of artifacts is a soft warning, never
+                    // a block (avoids false-positiving honest non-code work).
+                    let repo_root = crate::session::OmegaSession::classify(&session.name)
+                        .project
+                        .as_deref()
+                        .and_then(|p| self.config.find_project(p).map(|pc| pc.path.clone()))
+                        .map(std::path::PathBuf::from);
+                    let mut effective_status = done.status;
+                    let mut contest_reason: Option<String> = None;
+                    if done.status == DoneStatus::DoneClean {
+                        let verdict = crate::done::verify_done_against_repo(
+                            &done,
+                            repo_root.as_deref(),
+                        );
+                        let fabrication = verdict.checks.iter().any(|c| !c.passed);
+                        if fabrication {
+                            let reasons: Vec<String> = verdict
+                                .checks
+                                .iter()
+                                .filter(|c| !c.passed)
+                                .map(|c| c.detail.clone())
+                                .collect();
+                            contest_reason = Some(reasons.join("; "));
+                            effective_status = DoneStatus::Failed;
+                        } else if !verdict.passes {
+                            // Weak proof (no artifacts / single-source) — accept
+                            // but log it so the trend is visible.
+                            report.actions_taken.push(format!(
+                                "{}: done_clean accepted with weak proof ({})",
+                                session.name,
+                                verdict.failures.join("; ")
+                            ));
+                        }
+                    }
+
                     if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions) {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                        let status_str = match done.status {
-                            DoneStatus::DoneClean => "done_clean",
-                            DoneStatus::Pending => "pending",
-                            DoneStatus::Failed => "failed",
-                            DoneStatus::Blocked => "blocked",
+                        let status_str = if contest_reason.is_some() {
+                            "contested"
+                        } else {
+                            match effective_status {
+                                DoneStatus::DoneClean => "done_clean",
+                                DoneStatus::Pending => "pending",
+                                DoneStatus::Failed => "failed",
+                                DoneStatus::Blocked => "blocked",
+                            }
                         };
                         let _ = inbox.push(&InboxEvent::worker_done(&session.name, status_str));
+                        // Surface the fabrication detail so the oracle can
+                        // re-dispatch with eyes open.
+                        if let Some(reason) = &contest_reason {
+                            let _ = inbox.push(&InboxEvent::worker_blocked(
+                                &session.name,
+                                &format!("GROUND-TRUTH CONTEST: {}", reason),
+                            ));
+                        }
 
                         // Update oracle state with worker completion
                         if let Ok(Some(mut oracle_state)) =
                             OracleState::read(&self.config.state_dir, &oracle.name)
                         {
-                            let ws = match done.status {
+                            let ws = match effective_status {
                                 DoneStatus::DoneClean => WorkerEntryStatus::DoneClean,
                                 DoneStatus::Pending => WorkerEntryStatus::Pending,
                                 DoneStatus::Failed => WorkerEntryStatus::Failed,
@@ -102,12 +154,19 @@ impl Patrol {
                         }
                     }
 
-                    if done.status == DoneStatus::DoneClean {
+                    if let Some(reason) = contest_reason {
+                        // Fabrication: keep the scope claim HELD (work is not
+                        // actually done) and flag it loudly.
+                        report.actions_taken.push(format!(
+                            "CONTESTED {}: done_clean failed ground-truth — {}",
+                            session.name, reason
+                        ));
+                    } else if effective_status == DoneStatus::DoneClean {
                         let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
                         self.stall_detector.forget(&session.name);
                         report
                             .actions_taken
-                            .push(format!("Released scope for {}", session.name));
+                            .push(format!("Released scope for {} (ground-truth ✓)", session.name));
                     }
                 }
 

@@ -2093,6 +2093,50 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
 
     let mut signal = DoneSignal::new(session, done_status, summary);
     signal.commit = commit.map(|s| s.to_string());
+
+    // Opus 4.8 ground-truth substrate: a worker's narration is inadmissible
+    // as proof. Auto-capture the REAL git state of the cwd (the worker runs
+    // `omega done` from its work_dir) so a legitimate done_clean carries a
+    // verifiable artifact + a non-self-report corroboration source. The
+    // patrol gate (verify_done_against_repo) then catches fabricated claims
+    // without false-positiving honest work.
+    use omega_core::done::{CorroborationSource, DoneArtifact};
+    signal.corroboration.push(CorroborationSource::WorkerSelfReport);
+    if let Ok(cwd) = std::env::current_dir() {
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&cwd)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(head_sha) = head {
+            let branch = std::process::Command::new("git")
+                .args(["rev-parse", "--abbrev-ref", "HEAD"])
+                .current_dir(&cwd)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty() && s != "HEAD");
+            signal.artifacts.push(DoneArtifact::GitSha {
+                sha: head_sha.clone(),
+                branch: branch.clone(),
+            });
+            signal.corroboration.push(CorroborationSource::FilesystemCheck);
+            // If the worker named a specific commit that is NOT the current
+            // HEAD, record it as its own claim so the gate verifies it too.
+            if let Some(c) = commit {
+                if !c.is_empty() && c != head_sha && !head_sha.starts_with(c) {
+                    signal.artifacts.push(DoneArtifact::GitSha {
+                        sha: c.to_string(),
+                        branch,
+                    });
+                }
+            }
+        }
+    }
     signal.write(&config.state_dir)?;
 
     // Release scope claim on done_clean

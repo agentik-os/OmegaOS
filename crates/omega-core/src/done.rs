@@ -59,7 +59,7 @@ pub struct DoneSignal {
     pub artifacts: Vec<DoneArtifact>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DoneStatus {
     DoneClean,

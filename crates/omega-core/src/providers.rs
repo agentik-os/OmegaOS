@@ -58,7 +58,7 @@ pub struct OpenRouterConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClaudeConfig {
-    /// "opus" | "sonnet" | "haiku" | full model id like "claude-opus-4-7"
+    /// "opus" | "sonnet" | "haiku" | full model id like "claude-opus-4-8"
     #[serde(default)]
     pub model: String,
     /// "low" | "medium" | "high" | "max" — Claude effort level
@@ -193,7 +193,7 @@ impl ProvidersConfig {
             "glm" => vec!["glm-4.6", "glm-4.5"],
             "openrouter" => vec![
                 "anthropic/claude-sonnet-4.6",
-                "anthropic/claude-opus-4.7",
+                "anthropic/claude-opus-4.8",
                 "openai/gpt-5",
                 "google/gemini-2.5-pro",
             ],
