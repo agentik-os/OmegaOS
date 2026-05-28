@@ -2427,10 +2427,21 @@ fn run_llm_oneshot(provider: &str, model: &str, prompt: &str) -> std::io::Result
     match provider {
         "claude" | "" => {
             let mut cmd = std::process::Command::new("claude");
+            // Use an isolated config dir with NO hooks → ~4s vs ~11s with
+            // the user's full settings.json (whose SessionEnd hook hangs ~7s).
+            // Credentials are symlinked into this dir so OAuth still works.
+            if let Some(home) = dirs::home_dir() {
+                let cfg = home.join(".omega/claude-bridge-config");
+                if cfg.join("settings.json").exists() {
+                    cmd.env("CLAUDE_CONFIG_DIR", &cfg);
+                }
+            }
             cmd.args(["--print", "--dangerously-skip-permissions"]);
             if !model.is_empty() {
                 cmd.args(["--model", model]);
             }
+            // Close stdin so claude doesn't wait 3s for piped input.
+            cmd.stdin(std::process::Stdio::null());
             cmd.arg(prompt).output()
         }
         "codex" => {

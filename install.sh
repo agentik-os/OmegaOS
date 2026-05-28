@@ -192,6 +192,15 @@ else
     info "PDF generator source not found — skipping (can be added later)"
 fi
 
+# Bridge config dir: a minimal Claude config (no hooks) so the Telegram
+# bridge's `claude --print` calls run fast (~4s vs ~11s with full settings).
+# Credentials are symlinked so OAuth still works.
+BRIDGE_CFG="$OMEGA_DIR/claude-bridge-config"
+mkdir -p "$BRIDGE_CFG"
+echo '{}' > "$BRIDGE_CFG/settings.json"
+ln -sf "$OMEGA_DIR/credentials/claude.json" "$BRIDGE_CFG/.credentials.json"
+ok "Bridge config dir created (fast hookless claude --print)"
+
 # Install OAuth helper (fallback for non-interactive token refresh)
 OAUTH_SRC="$OMEGA_SRC/docs/reference/oauth/claude-oauth.sh"
 OAUTH_DST_DIR="$OMEGA_DIR/bin"
