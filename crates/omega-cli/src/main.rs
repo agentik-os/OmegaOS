@@ -692,12 +692,31 @@ async fn run_tui_loop(
                     )
                     .ok();
                     terminal.show_cursor().ok();
-                    let exe = std::env::current_exe()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("omega"));
+                    // Resolve a binary path that actually exists. current_exe()
+                    // can point at a now-replaced/deleted inode after a redeploy
+                    // (cp over ~/.local/bin/omega), which makes exec() fail with
+                    // ENOENT. Prefer the canonical install path, then current_exe,
+                    // then a bare PATH lookup.
                     use std::os::unix::process::CommandExt;
-                    let err = std::process::Command::new(exe).arg("menu").exec();
-                    // exec only returns on failure
-                    eprintln!("restart failed: {}", err);
+                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+                    let candidates = [
+                        home.join(".local/bin/omega"),
+                        std::env::current_exe().unwrap_or_default(),
+                    ];
+                    let chosen = candidates
+                        .iter()
+                        .find(|p| p.exists())
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("omega"));
+                    // exec() replaces the process image; on success it never
+                    // returns. If the absolute path failed, fall back to a
+                    // PATH-resolved "omega menu" via the shell.
+                    let err = std::process::Command::new(&chosen).arg("menu").exec();
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg("exec omega menu")
+                        .exec();
+                    eprintln!("restart failed: {} (binary: {})", err, chosen.display());
                     break;
                 }
                 Action::AttachSession(name) => {
