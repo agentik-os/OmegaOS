@@ -192,10 +192,16 @@ pub fn create_project(name: &str, location: &Path, icon: Option<&str>) -> Result
         path: project_path,
         icon: icon.map(|s| s.to_string()),
         telegram_topic_id: None,
-        oracle_session: None,
+        oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
         created_at: date,
     };
+
+    // Persist to the registry so /projects sees it.
+    let mut registry = ProjectRegistry::load();
+    registry.projects.retain(|p| p.name != name);
+    registry.projects.push(project.clone());
+    registry.save()?;
 
     Ok(project)
 }
@@ -208,15 +214,25 @@ pub fn add_existing_project(path: &Path) -> Result<ManagedProject> {
         .unwrap_or("unknown")
         .to_string();
 
-    Ok(ManagedProject {
-        name,
+    let project = ManagedProject {
+        name: name.clone(),
         path: path.to_path_buf(),
         icon: None,
         telegram_topic_id: None,
-        oracle_session: None,
+        oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
         created_at: chrono::Utc::now().to_rfc3339(),
-    })
+    };
+
+    // Persist to the registry so /projects sees it next time.
+    let mut registry = ProjectRegistry::load();
+    // De-dup: replace any existing entry with the same name OR path.
+    let path_str = path.display().to_string();
+    registry.projects.retain(|p| p.name != name && p.path.display().to_string() != path_str);
+    registry.projects.push(project.clone());
+    registry.save()?;
+
+    Ok(project)
 }
 
 pub fn scan_directory(root: &Path) -> Vec<ManagedProject> {
