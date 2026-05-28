@@ -1021,70 +1021,40 @@ async fn run_tui_loop(
                     }
                 }
                 Action::ForwardCharToSession { session, ch } => {
-                    // HOT PATH (~1 call per keystroke in chat focus).
-                    //
-                    // The forwarder used to await the rmux RPC inline,
-                    // which blocked the event loop for 5-15ms per char
-                    // and produced visible input lag during fast typing.
-                    // We now fire-and-forget on tokio::spawn: the loop
-                    // returns to read the next keystroke immediately
-                    // while the daemon RPC completes in the background.
-                    // scroll_preview_end stays synchronous so the preview
-                    // tail catches up the moment the daemon echoes.
-                    let mgr = SessionManager::connect_cached().await?;
-                    let status_sink = async_status.clone();
+                    // HOT PATH (~1 call per keystroke in chat focus). Push onto
+                    // the ordered forwarder channel — synchronous + non-blocking
+                    // on an unbounded channel, so the loop returns instantly to
+                    // read the next keystroke. The lone consumer delivers in
+                    // FIFO order (per-keystroke tokio::spawn raced and reordered).
                     if ch == ' ' {
-                        // Space char: route as the rmux "Space" key token.
-                        // Bare " " literal sometimes renders as the word
-                        // "space" in pane echo; named key avoids that.
-                        tokio::spawn(async move {
-                            if let Err(e) = mgr.send_key(&session, "Space").await {
-                                if let Ok(mut g) = status_sink.lock() {
-                                    *g = Some(format!("Forward failed: {}", e));
-                                }
-                            }
+                        // Space char: route as the rmux "Space" key token. A
+                        // bare " " literal sometimes renders as the word "space"
+                        // in pane echo; the named key avoids that.
+                        let _ = fwd_tx.send(forwarder::ForwardMsg::Key {
+                            session,
+                            key: "Space".to_string(),
                         });
                     } else {
                         let mut buf = [0u8; 4];
                         let s = ch.encode_utf8(&mut buf).to_string();
-                        tokio::spawn(async move {
-                            if let Err(e) = mgr.send_text_raw(&session, &s).await {
-                                if let Ok(mut g) = status_sink.lock() {
-                                    *g = Some(format!("Forward failed: {}", e));
-                                }
-                            }
-                        });
+                        let _ = fwd_tx.send(forwarder::ForwardMsg::Text { session, text: s });
                     }
                     app.scroll_preview_end();
                 }
                 Action::ForwardKeyToSession { session, key } => {
-                    // HOT PATH: arrow keys / Enter / BackSpace / Escape
-                    // in chat focus. Same non-blocking spawn pattern as
-                    // ForwardCharToSession.
-                    let mgr = SessionManager::connect_cached().await?;
-                    let status_sink = async_status.clone();
-                    let key_owned = key.to_string();
-                    tokio::spawn(async move {
-                        if let Err(e) = mgr.send_key(&session, &key_owned).await {
-                            if let Ok(mut g) = status_sink.lock() {
-                                *g = Some(format!("Forward {} failed: {}", key_owned, e));
-                            }
-                        }
+                    // HOT PATH: arrow keys / Enter / BackSpace / Escape in chat
+                    // focus. Same ordered channel — a Key flushes any pending
+                    // coalesced text before it, preserving interleave order.
+                    let _ = fwd_tx.send(forwarder::ForwardMsg::Key {
+                        session,
+                        key: key.to_string(),
                     });
                     app.scroll_preview_end();
                 }
                 Action::SendTextRawToSession { session, text } => {
-                    // Paste / multi-char send — also non-blocking so a
-                    // large paste doesn't freeze the input loop.
-                    let mgr = SessionManager::connect_cached().await?;
-                    let status_sink = async_status.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = mgr.send_text_raw(&session, &text).await {
-                            if let Ok(mut g) = status_sink.lock() {
-                                *g = Some(format!("Paste failed: {}", e));
-                            }
-                        }
-                    });
+                    // Paste / multi-char send — same ordered channel; coalesces
+                    // with adjacent text for the same session.
+                    let _ = fwd_tx.send(forwarder::ForwardMsg::Text { session, text });
                     app.scroll_preview_end();
                 }
                 Action::ForceRedraw => {
