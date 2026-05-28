@@ -462,16 +462,15 @@ impl TelegramBotEngine {
         let is_master_chat = relay_target == omega_core::aisb::MASTER_SESSION_NAME;
 
         if is_master_chat {
-            // Simple, fast path: call claude --print, send stdout to Telegram.
+            // Simple, fast path: dispatch to the selected provider's CLI.
+            // Default: claude. User can switch via /model command.
             let _ = self.send_chat_action(chat_id, "typing").await;
+            let (provider, model) = read_active_provider_model();
             let output = tokio::task::spawn_blocking({
                 let prompt = text.to_string();
-                move || {
-                    std::process::Command::new("claude")
-                        .args(["--print", "--dangerously-skip-permissions"])
-                        .arg(&prompt)
-                        .output()
-                }
+                let provider = provider.clone();
+                let model = model.clone();
+                move || run_llm_oneshot(&provider, &model, &prompt)
             })
             .await
             .ok()
@@ -2404,4 +2403,61 @@ fn extract_response(before: &str, after: &str) -> String {
     }
 
     response_lines.join("\n")
+}
+
+/// Read the active provider+model from ~/.omega/state/telegram-active-model.json
+/// Falls back to ("claude", "") for default Claude with default model.
+fn read_active_provider_model() -> (String, String) {
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+    let path = home.join(".omega/state/telegram-active-model.json");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&s) {
+            let provider = json.get("active_provider").and_then(|v| v.as_str()).unwrap_or("claude").to_string();
+            let model = json.get("active_model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            return (provider, model);
+        }
+    }
+    ("claude".to_string(), "".to_string())
+}
+
+/// Run a one-shot LLM query using the selected provider's CLI.
+/// Returns the same Output type as Command::output() so the caller can
+/// inspect stdout/stderr.
+fn run_llm_oneshot(provider: &str, model: &str, prompt: &str) -> std::io::Result<std::process::Output> {
+    match provider {
+        "claude" | "" => {
+            let mut cmd = std::process::Command::new("claude");
+            cmd.args(["--print", "--dangerously-skip-permissions"]);
+            if !model.is_empty() {
+                cmd.args(["--model", model]);
+            }
+            cmd.arg(prompt).output()
+        }
+        "codex" => {
+            // codex CLI: codex "prompt"
+            std::process::Command::new("codex").arg(prompt).output()
+        }
+        "gemini" => {
+            let mut cmd = std::process::Command::new("gemini");
+            if !model.is_empty() {
+                cmd.args(["-m", model]);
+            }
+            cmd.arg(prompt).output()
+        }
+        "glm" => {
+            std::process::Command::new("glm").arg(prompt).output()
+        }
+        "pi" => {
+            let mut cmd = std::process::Command::new("pi");
+            cmd.args(["--provider", "openrouter"]);
+            if !model.is_empty() {
+                cmd.args(["--model", model]);
+            }
+            cmd.arg(prompt).output()
+        }
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("Unknown provider: {}", provider),
+        )),
+    }
 }
