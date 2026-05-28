@@ -259,8 +259,6 @@ pub fn fields_for_section(
             SettingsSection::Claude => Some(Agent::Claude),
             SettingsSection::Codex => Some(Agent::Codex),
             SettingsSection::Gemini => Some(Agent::Gemini),
-            SettingsSection::Pi => Some(Agent::Pi),
-            SettingsSection::Hermes => Some(Agent::Hermes),
             SettingsSection::Glm => Some(Agent::Glm),
             _ => None,
         }
@@ -387,24 +385,34 @@ pub fn fields_for_section(
             });
             out.extend(install_actions_for(Agent::Gemini));
         }
+        SettingsSection::Glm => {
+            let c = &providers.glm;
+            out.push(SettingsField::EditText {
+                label: "Model".to_string(),
+                config_key: "glm.model".to_string(),
+                current_value: c.model.clone(),
+                masked: false,
+            });
+            out.push(SettingsField::EditText {
+                label: "GLM API key".to_string(),
+                config_key: "glm.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
+            out.extend(install_actions_for(Agent::Glm));
+        }
         SettingsSection::Pi => {
             let c = &providers.pi;
             out.push(SettingsField::EditText {
-                label: "Provider (openrouter / anthropic / openai)".to_string(),
+                label: "Provider".to_string(),
                 config_key: "pi.provider".to_string(),
                 current_value: c.provider.clone(),
                 masked: false,
             });
             out.push(SettingsField::EditText {
-                label: "Model (e.g. anthropic/claude-sonnet-4.6)".to_string(),
+                label: "Model".to_string(),
                 config_key: "pi.model".to_string(),
                 current_value: c.model.clone(),
-                masked: false,
-            });
-            out.push(SettingsField::EditText {
-                label: "Extension path (.ts file)".to_string(),
-                config_key: "pi.extension".to_string(),
-                current_value: c.extension.clone(),
                 masked: false,
             });
             out.extend(install_actions_for(Agent::Pi));
@@ -424,22 +432,6 @@ pub fn fields_for_section(
                 masked: true,
             });
             out.extend(install_actions_for(Agent::Hermes));
-        }
-        SettingsSection::Glm => {
-            let c = &providers.glm;
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "glm.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
-            out.push(SettingsField::EditText {
-                label: "GLM API key".to_string(),
-                config_key: "glm.api_key".to_string(),
-                current_value: c.api_key.clone(),
-                masked: true,
-            });
-            out.extend(install_actions_for(Agent::Glm));
         }
         SettingsSection::Aisb => {
             out.push(SettingsField::Info(format!(

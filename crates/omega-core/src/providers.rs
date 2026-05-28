@@ -20,6 +20,30 @@ pub struct ProvidersConfig {
     pub glm: GlmConfig,
     #[serde(default)]
     pub openrouter: OpenRouterConfig,
+    #[serde(default)]
+    pub pi: PiConfig,
+    #[serde(default)]
+    pub hermes: HermesConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PiConfig {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub extension: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HermesConfig {
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub api_key: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
