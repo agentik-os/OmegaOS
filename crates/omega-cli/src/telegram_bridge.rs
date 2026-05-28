@@ -2698,10 +2698,16 @@ fn clean_terminal_output(text: &str) -> String {
                 return false;
             }
             let t = l.trim();
-            if t.starts_with("") { return false; }
-            if t.starts_with("") { return false; }
-            if t.starts_with("·") { return false; }
-            if t.starts_with("") { return false; }
+            // Claude UI chrome lines — drop them (the actual response text
+            // had ● already stripped by extract_response). NOTE: these used
+            // to be `starts_with("")` empty-string checks which always
+            // matched and silently stripped EVERY line — root cause of
+            // the "Empty response" bug.
+            if t.starts_with('❯') { return false; }
+            if t.starts_with('✻') { return false; }
+            if t.starts_with('⎿') { return false; }
+            if t.starts_with('·') { return false; }
+            if t.starts_with('●') { return false; }
             if t.contains("Cultivating") { return false; }
             if t.contains("Brewing") || t.contains("Brewed") { return false; }
             if t.contains("Crunched") || t.contains("Crunching") { return false; }
