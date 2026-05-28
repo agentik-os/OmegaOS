@@ -601,6 +601,34 @@ async fn run_tui_loop(
 
         terminal.draw(|f| draw(f, app))?; // app is &mut, allows auto-scroll
 
+        // ── Responsive pane sizing ──────────────────────────────────────
+        // Make the embedded Claude/agent view track the rmux preview panel's
+        // CURRENT geometry. This runs EVERY tick (~16ms), right after the
+        // draw that just wrote the live `preview_inner_*` dims — so the inner
+        // terminal follows the panel on the very next frame after the user
+        // resizes their terminal, enters/exits fullscreen, or switches
+        // sessions. The (session, cols, rows) change-detection means an
+        // actual resize RPC fires ONLY when the geometry truly changed, so
+        // running this every tick costs a couple of cheap cached lookups at
+        // rest, not a daemon round-trip. Verified live: rmux pane.resize →
+        // SIGWINCH → Claude redraws at the new width (e.g. 200→120).
+        if app.tab == omega_tui::app::Tab::Sessions {
+            if let Some(entry) = app.selected_session() {
+                let name = entry.session.name.clone();
+                let cols = app.preview_inner_width;
+                let rows = app.preview_inner_height.max(10);
+                if cols >= 20 {
+                    let want = (name.clone(), cols, rows);
+                    if last_resized.as_ref() != Some(&want) {
+                        if let Ok(m) = SessionManager::connect_cached().await {
+                            let _ = m.resize_pane(&name, cols, rows).await;
+                        }
+                        last_resized = Some(want);
+                    }
+                }
+            }
+        }
+
         // Decoupled preview refresh — runs whether or not the user is
         // typing. Hot-path Forward* actions no longer await capture,
         // they just forward + return; this loop tick picks up the
@@ -622,37 +650,6 @@ async fn run_tui_loop(
         if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
-
-            // Auto-resize the previewed session's pane to fill the preview
-            // panel width. Without this, Claude renders at its spawn-time
-            // 200-col width and the preview shows a clipped "phone-width"
-            // slice — wide lines, dividers, and the grown multi-line input box
-            // all overflow the panel and truncate. We resize whenever a
-            // session is being PREVIEWED in the Sessions tab (List focus shows
-            // the preview too), not only when chat-focused — otherwise just
-            // browsing the list leaves the pane at 200 cols and overflowing.
-            // Resize only fires when (session, w, h) changes. Verified live:
-            // rmux pane.resize → SIGWINCH → Claude redraws at the new width.
-            if app.tab == omega_tui::app::Tab::Sessions {
-                if let Some(entry) = app.selected_session() {
-                    let name = entry.session.name.clone();
-                    // Use the EXACT rendered preview text-area dimensions
-                    // (written by ui.rs each frame). Resizing to a terminal-
-                    // percentage estimate was a few cols too wide, so Claude
-                    // rendered past the visible edge and looked "cut off".
-                    let cols = app.preview_inner_width.max(40);
-                    let rows = app.preview_inner_height.max(10);
-                    if cols > 40 {
-                        let want = (name.clone(), cols, rows);
-                        if last_resized.as_ref() != Some(&want) {
-                            if let Ok(m) = SessionManager::connect_cached().await {
-                                let _ = m.resize_pane(&name, cols, rows).await;
-                            }
-                            last_resized = Some(want);
-                        }
-                    }
-                }
-            }
         }
 
         // Drain *all* events queued for this tick before redrawing. The
