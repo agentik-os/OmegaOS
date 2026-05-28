@@ -871,9 +871,18 @@ async fn run_tui_loop(
                 }
                 Action::ForwardCharToSession { session, ch } => {
                     let mgr = SessionManager::connect().await?;
-                    let mut buf = [0u8; 4];
-                    let s = ch.encode_utf8(&mut buf);
-                    if let Err(e) = mgr.send_text_raw(&session, s).await {
+                    // Space char: route as the rmux "Space" key token. Some
+                    // pane/SDK paths render a bare " " in literal mode as the
+                    // word "space" — using the named key avoids that quirk
+                    // entirely and is what tmux/rmux callers conventionally do.
+                    let result = if ch == ' ' {
+                        mgr.send_key(&session, "Space").await
+                    } else {
+                        let mut buf = [0u8; 4];
+                        let s = ch.encode_utf8(&mut buf);
+                        mgr.send_text_raw(&session, s).await
+                    };
+                    if let Err(e) = result {
                         app.status_message = Some(format!("Forward failed: {}", e));
                     } else {
                         app.scroll_preview_end();
