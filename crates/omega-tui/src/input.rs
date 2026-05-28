@@ -49,6 +49,11 @@ pub enum Action {
     CommitSettingsEdit { config_key: String, value: String },
     /// Ctrl+L — force a full terminal clear + redraw.
     ForceRedraw,
+    /// Real-time keystroke forwarding to a rmux session (preview interactive
+    /// mode). One key per Action — printable chars, special keys, Ctrl-combos
+    /// all route through this so plan-mode / OAuth / choice menus work.
+    ForwardCharToSession { session: String, ch: char },
+    ForwardKeyToSession { session: String, key: &'static str },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -647,12 +652,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // from Omega.
         KeyCode::Enter => match app.tab {
             Tab::Sessions => {
-                // Enter attaches DIRECTLY to the selected rmux session — terminal
-                // passthrough so interactive prompts (plan mode, OAuth, choice
-                // menus) work natively. The old chat-input layer broke
-                // interactivity and is removed.
-                if let Some(entry) = app.selected_session() {
-                    Action::AttachSession(entry.session.name.clone())
+                // Two-panel default: Enter focuses the preview (acts like Tab).
+                // Once focused, Enter is forwarded to the rmux session below
+                // (interactive passthrough — see the SessionFocus::Chat branch
+                // earlier in this function).
+                if let Some(_entry) = app.selected_session() {
+                    if app.session_focus == SessionFocus::List {
+                        app.session_focus = SessionFocus::Chat;
+                        app.status_message = Some(
+                            "Focus: preview — keys forward to session (Tab → list, Tab-Tab fullscreen, Esc release)".to_string(),
+                        );
+                    }
+                    Action::None
                 } else {
                     Action::None
                 }
@@ -905,83 +916,83 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
     }
 }
 
-/// Chat-input mode — typing flows into the selected session's pane via SDK.
+/// Chat-input mode — REAL-TIME keystroke passthrough to the streamed rmux
+/// session. Every key (printable, Enter, Backspace, arrows, Ctrl-combos,
+/// Esc) is forwarded one-by-one so plan mode, OAuth code paste, and choice
+/// menus work natively inside the agent.
+///
+/// TUI-local keys (never forwarded):
+///   Tab           → cycle focus (List → Chat → Fullscreen → List)
+///   Alt+Up/Down   → scroll preview
+///   PageUp/Down   → scroll preview
+///   Home/End      → scroll preview to top/bottom
+///   Ctrl+L        → handled by the global redraw branch BEFORE this
 fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
+    let session = match app.selected_session() {
+        Some(entry) => entry.session.name.clone(),
+        None => return Action::None,
+    };
+
+    // --- TUI-local (never forwarded) ---
+
+    // Tab = cycle focus (Chat ↔ Fullscreen ↔ List)
+    if key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT) {
+        app.handle_tab_in_sessions();
+        app.status_message = Some(match app.session_focus {
+            SessionFocus::List => "Focus: session list".to_string(),
+            SessionFocus::Chat => "Focus: preview interactive — keys forward to session (Tab → fullscreen, Tab-Tab → list)".to_string(),
+            SessionFocus::ChatFullscreen => "Focus: preview FULLSCREEN — keys forward to session (Tab → list)".to_string(),
+        });
+        return Action::None;
+    }
+
+    // Alt+arrows = TUI scroll preview
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        match key.code {
+            KeyCode::Up => { app.scroll_preview_up(3); return Action::None; }
+            KeyCode::Down => { app.scroll_preview_down(3); return Action::None; }
+            _ => {}
+        }
+    }
+
+    // Page / Home / End = TUI scroll
     match key.code {
-        // Tab cycles focus (single = toggle, double = fullscreen)
-        KeyCode::Tab => {
-            app.handle_tab_in_sessions();
-            app.status_message = Some(match app.session_focus {
-                SessionFocus::List => "Focus: session list".to_string(),
-                SessionFocus::Chat => "Focus: chat (Tab-Tab to fullscreen)".to_string(),
-                SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab to exit)".to_string(),
-            });
-            Action::None
-        }
-        // Esc always returns to list
-        KeyCode::Esc => {
-            app.session_focus = SessionFocus::List;
-            app.chat_input.clear();
-            app.status_message = Some("Focus: session list".to_string());
-            Action::None
-        }
-        // Submit: send buffer + Enter to the rmux pane
-        KeyCode::Enter => {
-            if let Some(entry) = app.selected_session() {
-                let session = entry.session.name.clone();
-                let text = std::mem::take(&mut app.chat_input);
-                Action::SendToSession { session, text }
-            } else {
-                Action::None
-            }
-        }
-        KeyCode::Backspace => {
-            app.chat_input.pop();
-            Action::None
-        }
-        // Scroll preview (chat history) — arrows + j/k + page keys all work
-        KeyCode::Up => {
-            app.scroll_preview_up(1);
-            Action::None
-        }
-        KeyCode::Down => {
-            app.scroll_preview_down(1);
-            Action::None
-        }
-        KeyCode::PageDown => {
-            app.scroll_preview_down(10);
-            Action::None
-        }
-        KeyCode::PageUp => {
-            app.scroll_preview_up(10);
-            Action::None
-        }
-        KeyCode::Home => {
-            app.scroll_preview_home();
-            Action::None
-        }
-        KeyCode::End => {
-            app.scroll_preview_end();
-            Action::None
-        }
+        KeyCode::PageUp => { app.scroll_preview_up(10); return Action::None; }
+        KeyCode::PageDown => { app.scroll_preview_down(10); return Action::None; }
+        KeyCode::Home => { app.scroll_preview_home(); return Action::None; }
+        KeyCode::End => { app.scroll_preview_end(); return Action::None; }
+        _ => {}
+    }
+
+    // --- Forwarded to rmux session ---
+
+    match key.code {
+        KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
+        KeyCode::Backspace => Action::ForwardKeyToSession { session, key: "BackSpace" },
+        KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
+        KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
+        KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
+        KeyCode::Left => Action::ForwardKeyToSession { session, key: "Left" },
+        KeyCode::Right => Action::ForwardKeyToSession { session, key: "Right" },
+        KeyCode::Delete => Action::ForwardKeyToSession { session, key: "Delete" },
         KeyCode::Char(c) => {
-            // Ctrl+C inside chat → back to list (don't quit, that's surprising)
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
-                app.session_focus = SessionFocus::List;
-                app.chat_input.clear();
-                return Action::None;
+            // Ctrl+<letter> → rmux "C-<letter>" so Ctrl+C interrupts the agent
+            if key.modifiers.contains(KeyModifiers::CONTROL) {
+                let lower = c.to_ascii_lowercase();
+                let key_str: &'static str = match lower {
+                    'a' => "C-a", 'b' => "C-b", 'c' => "C-c", 'd' => "C-d",
+                    'e' => "C-e", 'f' => "C-f", 'g' => "C-g", 'h' => "C-h",
+                    'i' => "C-i", 'j' => "C-j", 'k' => "C-k", 'l' => "C-l",
+                    'm' => "C-m", 'n' => "C-n", 'o' => "C-o", 'p' => "C-p",
+                    'q' => "C-q", 'r' => "C-r", 's' => "C-s", 't' => "C-t",
+                    'u' => "C-u", 'v' => "C-v", 'w' => "C-w", 'x' => "C-x",
+                    'y' => "C-y", 'z' => "C-z",
+                    _ => return Action::None,
+                };
+                Action::ForwardKeyToSession { session, key: key_str }
+            } else {
+                Action::ForwardCharToSession { session, ch: c }
             }
-            // Ctrl+U scrolls up half-page (vim-style), Ctrl+D scrolls down
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'u' {
-                app.scroll_preview_up(15);
-                return Action::None;
-            }
-            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'd' {
-                app.scroll_preview_down(15);
-                return Action::None;
-            }
-            app.chat_input.push(c);
-            Action::None
         }
         _ => Action::None,
     }

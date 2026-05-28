@@ -232,9 +232,19 @@ if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
 fi
 
 # Export operational rules to ~/.omega/rules/
+# Two passes:
+#   1. Copy the canonical .md files from the repo (covers disk-only rules)
+#   2. Run `omega rules export` (covers rules registered in code)
+# The code-rules will overwrite any disk-rule with the same filename, so the
+# binary stays the source of truth when both define the same id.
 info "Exporting operational rules..."
+mkdir -p "$OMEGA_DIR/rules"
+if [[ -d "$OMEGA_SRC/rules" ]]; then
+    cp "$OMEGA_SRC/rules"/*.md "$OMEGA_DIR/rules/" 2>/dev/null || true
+fi
 "$INSTALL_DIR/omega" rules export 2>/dev/null || true
-ok "Rules exported to $OMEGA_DIR/rules/"
+RULES_COUNT=$(ls "$OMEGA_DIR/rules" 2>/dev/null | wc -l)
+ok "Rules exported to $OMEGA_DIR/rules/ ($RULES_COUNT files)"
 
 # Copy agent prompts to ~/.omega/agents/
 cp -r "$OMEGA_SRC/agents/"* "$AGENTS_DIR/" 2>/dev/null || true

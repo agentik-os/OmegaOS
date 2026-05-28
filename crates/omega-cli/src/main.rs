@@ -869,6 +869,26 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::ForwardCharToSession { session, ch } => {
+                    let mgr = SessionManager::connect().await?;
+                    let mut buf = [0u8; 4];
+                    let s = ch.encode_utf8(&mut buf);
+                    if let Err(e) = mgr.send_text_raw(&session, s).await {
+                        app.status_message = Some(format!("Forward failed: {}", e));
+                    } else {
+                        app.scroll_preview_end();
+                        let _ = app.refresh_preview().await;
+                    }
+                }
+                Action::ForwardKeyToSession { session, key } => {
+                    let mgr = SessionManager::connect().await?;
+                    if let Err(e) = mgr.send_key(&session, key).await {
+                        app.status_message = Some(format!("Forward {} failed: {}", key, e));
+                    } else {
+                        app.scroll_preview_end();
+                        let _ = app.refresh_preview().await;
+                    }
+                }
                 Action::ForceRedraw => {
                     terminal.clear()?;
                     app.status_message = Some("Redrawn (Ctrl+L)".to_string());

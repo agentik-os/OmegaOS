@@ -446,13 +446,16 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         String::new()
     };
 
-    // Chat-input layer removed (broke interactive prompts like plan mode, OAuth).
-    // The preview takes the full right panel. To talk to the agent: press Enter
-    // → attach directly to the rmux session (terminal passthrough).
+    // No buffer-based chat-input. Keystrokes are forwarded LIVE to the rmux
+    // session when chat_focused (see input.rs::handle_key_chat). The title
+    // signals interactive mode so the user knows their keys are routed.
     let title = if chat_focused {
-        format!("{}{}  [Enter = attach]", preview_title, scroll_indicator)
+        format!(
+            "{}{}  [INTERACTIVE — keys → session  ·  Tab cycle  ·  Alt+↑↓ scroll]",
+            preview_title, scroll_indicator
+        )
     } else {
-        format!("{}{}", preview_title, scroll_indicator)
+        format!("{}{}  [Enter = type into session]", preview_title, scroll_indicator)
     };
     let preview = Paragraph::new(preview_lines)
         .scroll((scroll, 0))
@@ -463,7 +466,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                 .border_style(preview_border_style),
         );
     frame.render_widget(preview, area);
-    let _ = fullscreen; // fullscreen no longer needed (no chat input to grow)
+    let _ = fullscreen;
 }
 
 fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {

@@ -224,6 +224,22 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Raw text send — no auto-Enter. Used by the TUI interactive preview
+    /// to forward single chars without injecting a newline the user did not type.
+    pub async fn send_text_raw(&self, session_name: &str, text: &str) -> Result<()> {
+        let pane = self.get_active_pane(session_name).await?;
+        pane.send_text(text).await?;
+        Ok(())
+    }
+
+    /// Send a named key event (e.g. "Enter", "BackSpace", "Up", "Escape").
+    /// Mirrors the rmux key naming.
+    pub async fn send_key(&self, session_name: &str, key: &str) -> Result<()> {
+        let pane = self.get_active_pane(session_name).await?;
+        pane.send_key(key).await?;
+        Ok(())
+    }
+
     pub async fn capture_pane(&self, session_name: &str) -> Result<String> {
         let pane = self.get_active_pane(session_name).await?;
         let snapshot = pane.snapshot().await?;

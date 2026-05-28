@@ -172,6 +172,42 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-05-27",
             reason: "Forcing the user to invent a name every time was friction. Auto-naming + chat focus = zero clicks to talk to a new agent.",
         },
+        Rule {
+            id: "SIMPLICITY-COMPLETE",
+            title: "Simplicity does not mean incomplete",
+            category: RuleCategory::Universal,
+            description: "Solve problems with the smallest correct design. No speculative abstractions, no parallel re-implementations of an existing pattern (Hermès, OpenClaw, claude-mux), but the result must still cover the full feature surface the user asked for.",
+            applies_to: &[],
+            added_at: "2026-05-27",
+            reason: "Earlier Telegram bridge attempts ballooned into duplicate pipelines that did less than the simple version. Simplicity is the constraint, not an excuse to ship half-features.",
+        },
+        Rule {
+            id: "FILE-SIZE-LIMIT",
+            title: "Files over 1500 lines must be split",
+            category: RuleCategory::Universal,
+            description: "Any source file that crosses 1500 lines is a refactor signal. Split by responsibility (handlers / oauth / callbacks / menus) before adding more code. Hard cap: 2000 lines = build alarm.",
+            applies_to: &[],
+            added_at: "2026-05-27",
+            reason: "Files like telegram_bridge.rs grew past 2400 lines and became impossible to navigate / review. Keeping files small forces cohesion.",
+        },
+        Rule {
+            id: "RUST-BUN-DEFAULT",
+            title: "Default to Rust + Bun for everything written in this repo",
+            category: RuleCategory::Universal,
+            description: "OmegaOS itself: Rust for core/CLI/TUI/SDK. Scripts/tooling: Bun (TypeScript) over Node when a runtime is needed. Python only for ML/data-science niches. No bash mega-scripts.",
+            applies_to: &[],
+            added_at: "2026-05-27",
+            reason: "Cold-start speed + single-binary distribution matter for an OS-grade tool. Bun gives ~25ms startup + native TS so scripting stays fast.",
+        },
+        Rule {
+            id: "PROMPT-COMPLETENESS",
+            title: "Every prompt = task list + final completeness check",
+            category: RuleCategory::QualityGate,
+            description: "On any user prompt, enumerate the implied tasks, track them (TaskCreate/TaskUpdate), and at end-of-turn verify every task was completed. Missed tasks become explicit pending items reported back, not silent gaps.",
+            applies_to: &[AisbAgent::Oracle, AisbAgent::Morpheus],
+            added_at: "2026-05-27",
+            reason: "Multi-part prompts (UI change + scroll + GitHub alignment + symlink explanation) were losing the secondary tasks. Tracked list + end-of-turn verification stops the drift.",
+        },
     ]
 }
 
