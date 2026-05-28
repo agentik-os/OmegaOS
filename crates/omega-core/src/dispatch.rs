@@ -279,6 +279,41 @@ impl Dispatcher {
         Ok(oracle_name)
     }
 
+    /// Build worker LaunchOptions: Worker budget caps + a `/goal` condition
+    /// that is ONLY enabled when current usage is low enough to afford the
+    /// extra loop iterations `/goal` spends. Reads ~/.omega/state/usage.json
+    /// (written by `omega usage`). Claude-only; other providers ignore it.
+    fn worker_launch_opts(&self, worker_name: &str, goal: Option<String>) -> crate::agents::LaunchOptions {
+        let mut opts = crate::agents::LaunchOptions::default();
+        opts.session_name = Some(worker_name.to_string());
+        opts.effort = Some("medium".to_string());
+        opts.max_turns = Some(crate::budget::WORKER_TURNS_DEFAULT);
+        opts.max_budget_usd = Some(8.0);
+
+        // Usage gate: /goal loops cost more tokens. Only enable it when the
+        // closest cap is under 70% — otherwise we risk hitting the limit
+        // mid-mission. "Powerful when we can afford it" (user's words).
+        let usage_pct = self.current_usage_pct();
+        if usage_pct < 70 {
+            if let Some(g) = goal {
+                opts.goal_condition = Some(g);
+            }
+        }
+        opts
+    }
+
+    /// Highest of (5h, week) utilization % from the usage cache, or 0 if
+    /// unknown (fail-open: if we can't read usage, allow /goal).
+    fn current_usage_pct(&self) -> u32 {
+        let path = self.config.state_dir.join("usage.json");
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("alert_pct").and_then(|p| p.as_u64()))
+            .map(|p| p as u32)
+            .unwrap_or(0)
+    }
+
     /// Dispatch a worker with structured context (Fresh Context Template).
     /// Automatically registers the worker in the parent oracle's state.
     pub async fn dispatch_worker_with_context(
@@ -290,7 +325,13 @@ impl Dispatcher {
         working_dir: &str,
     ) -> Result<String> {
         let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
-        let prompt = ctx.format_prompt(&worker_name);
+        let mut prompt = ctx.format_prompt(&worker_name);
+        // Inject Worker-scoped rules (single source of truth).
+        let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
+        if !rules.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&rules);
+        }
 
         if !ctx.files_owned.is_empty() {
             crate::scope::claim_or_reject(
@@ -300,14 +341,23 @@ impl Dispatcher {
             )?;
         }
 
-        self.session_mgr
-            .create_agent_session(
-                &worker_name,
-                working_dir,
-                &self.config.agent_command,
-                Some(&prompt),
-            )
-            .await?;
+        // Usage-gated /goal: loop until the worker's done.json is written.
+        let goal = format!(
+            "task complete — `omega done {} done_clean` has been called with the work verified",
+            worker_name
+        );
+        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
+            .unwrap_or(crate::agents::Agent::Claude);
+        if matches!(agent, crate::agents::Agent::Claude) {
+            let opts = self.worker_launch_opts(&worker_name, Some(goal));
+            self.session_mgr
+                .create_agent_session_with_opts(&worker_name, working_dir, agent, Some(&prompt), opts)
+                .await?;
+        } else {
+            self.session_mgr
+                .create_agent_session(&worker_name, working_dir, &self.config.agent_command, Some(&prompt))
+                .await?;
+        }
 
         // Register worker in oracle state if it exists
         if let Ok(Some(mut oracle_state)) =
@@ -337,7 +387,7 @@ impl Dispatcher {
     ) -> Result<String> {
         let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
 
-        let worker_prompt = format!(
+        let mut worker_prompt = format!(
             "[DISPATCHED] You are an autonomous worker. Third Law: decide and proceed, never wait.\n\n\
              {}\n\n\
              ## Completion\n\
@@ -346,7 +396,27 @@ impl Dispatcher {
              If failed: `omega done {} failed \"<what went wrong>\"`",
             prompt, worker_name, worker_name, worker_name
         );
+        // Inject Worker-scoped rules (single source of truth).
+        let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
+        if !rules.is_empty() {
+            worker_prompt.push_str("\n\n");
+            worker_prompt.push_str(&rules);
+        }
 
+        let goal = format!(
+            "task complete — `omega done {} done_clean` has been called with the work verified",
+            worker_name
+        );
+        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
+            .unwrap_or(crate::agents::Agent::Claude);
+        if matches!(agent, crate::agents::Agent::Claude) {
+            let opts = self.worker_launch_opts(&worker_name, Some(goal));
+            self.session_mgr
+                .create_agent_session_with_opts(&worker_name, working_dir, agent, Some(&worker_prompt), opts)
+                .await?;
+            tracing::info!(worker = %worker_name, oracle = %oracle_name, "Worker dispatched (Claude + rules + usage-gated goal)");
+            return Ok(worker_name);
+        }
         self.session_mgr
             .create_agent_session(
                 &worker_name,
