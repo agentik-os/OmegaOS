@@ -65,6 +65,11 @@ pub enum Action {
     /// (used by handle_paste so the entire bracketed-paste block lands as
     /// one PTY write rather than N individual keystrokes).
     SendTextRawToSession { session: String, text: String },
+    /// Insert a literal newline into the agent's input box WITHOUT submitting
+    /// (Shift+Enter / Alt+Enter). Empirically, Claude Code treats a trailing
+    /// backslash followed by Enter as a newline-insert, so the main loop emits
+    /// a `\` text write then an Enter key.
+    InsertNewlineToSession { session: String },
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -1079,6 +1084,10 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             Action::ForwardKeyToSession { session, key: "M-d" }
         }
         KeyCode::Delete => Action::ForwardKeyToSession { session, key: "Delete" },
+        // Shift+Enter / Alt+Enter → insert a newline in the input (don't
+        // submit), matching real Claude Code multi-line input. Plain Enter
+        // still submits.
+        KeyCode::Enter if shift || alt => Action::InsertNewlineToSession { session },
         KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
         KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },

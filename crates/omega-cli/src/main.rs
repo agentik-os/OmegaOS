@@ -626,11 +626,14 @@ async fn run_tui_loop(
             // Auto-resize the previewed session's pane to fill the preview
             // panel width. Without this, Claude renders at its spawn-time
             // 200-col width and the preview shows a clipped "phone-width"
-            // slice. We resize only when (session, w, h) changes.
-            if matches!(
-                app.session_focus,
-                omega_tui::app::SessionFocus::Chat | omega_tui::app::SessionFocus::ChatFullscreen
-            ) {
+            // slice — wide lines, dividers, and the grown multi-line input box
+            // all overflow the panel and truncate. We resize whenever a
+            // session is being PREVIEWED in the Sessions tab (List focus shows
+            // the preview too), not only when chat-focused — otherwise just
+            // browsing the list leaves the pane at 200 cols and overflowing.
+            // Resize only fires when (session, w, h) changes. Verified live:
+            // rmux pane.resize → SIGWINCH → Claude redraws at the new width.
+            if app.tab == omega_tui::app::Tab::Sessions {
                 if let Some(entry) = app.selected_session() {
                     let name = entry.session.name.clone();
                     // Use the EXACT rendered preview text-area dimensions
@@ -1113,6 +1116,23 @@ async fn run_tui_loop(
                     // Paste block (no auto-Enter) so embedded newlines don't
                     // submit each line as a separate command in the target app.
                     let _ = fwd_tx.send(forwarder::ForwardMsg::Paste { session, text });
+                    app.scroll_preview_end();
+                    last_input_at = std::time::Instant::now();
+                }
+                Action::InsertNewlineToSession { session } => {
+                    // Shift/Alt+Enter → newline-insert. Empirically Claude Code
+                    // treats a trailing `\` + Enter as a literal newline (not a
+                    // submit). Emit the backslash as text, then the Enter key —
+                    // the Key handler flushes the pending text first, preserving
+                    // order: `\` lands, then CR turns it into a newline.
+                    let _ = fwd_tx.send(forwarder::ForwardMsg::Text {
+                        session: session.clone(),
+                        text: "\\".to_string(),
+                    });
+                    let _ = fwd_tx.send(forwarder::ForwardMsg::Key {
+                        session,
+                        key: "Enter".to_string(),
+                    });
                     app.scroll_preview_end();
                     last_input_at = std::time::Instant::now();
                 }
