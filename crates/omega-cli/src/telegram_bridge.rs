@@ -2263,28 +2263,43 @@ fn format_agent_response(text: &str) -> String {
     }
 }
 
-fn extract_response(_before: &str, after: &str) -> String {
-    // Strategy: find the LAST ● block (most recent agent response).
-    // Don't diff line-by-line — pane scrolls break that approach.
-    // The last ● is always the response to the user's most recent message.
-    let lines: Vec<&str> = after.lines().collect();
-
-    let last_bullet_idx = lines
+fn extract_response(before: &str, after: &str) -> String {
+    // Find the LAST ● in `after` (most recent agent response).
+    // Then verify it's NEW: either the line content differs from the last
+    // ● in `before`, or there are now more ● lines than before.
+    // Without this check, the polling would re-send the previous response
+    // as soon as polling starts (before the agent has answered the new msg).
+    let after_lines: Vec<&str> = after.lines().collect();
+    let before_bullets: Vec<&str> = before
+        .lines()
+        .filter(|l| l.trim().starts_with("●"))
+        .collect();
+    let after_bullets: Vec<(usize, &&str)> = after_lines
         .iter()
         .enumerate()
-        .rev()
-        .find(|(_, l)| l.trim().starts_with("●"))
-        .map(|(i, _)| i);
+        .filter(|(_, l)| l.trim().starts_with("●"))
+        .collect();
 
-    let Some(start) = last_bullet_idx else {
+    // No bullets yet → agent hasn't responded
+    let Some(&(start, last_after_bullet)) = after_bullets.last() else {
         return String::new();
     };
 
+    // Compare: new bullet count > before, OR last bullet text differs.
+    // If neither → still the same old response, not new.
+    let last_before_bullet = before_bullets.last().map(|s| s.trim()).unwrap_or("");
+    let is_new = after_bullets.len() > before_bullets.len()
+        || last_after_bullet.trim() != last_before_bullet;
+    if !is_new {
+        return String::new();
+    }
+
     let mut response_lines: Vec<String> = Vec::new();
-    let first = lines[start].trim().trim_start_matches("●").trim();
+    let first = after_lines[start].trim().trim_start_matches("●").trim();
     if !first.is_empty() {
         response_lines.push(first.to_string());
     }
+    let lines = after_lines;
 
     // Collect continuation lines (until stop marker)
     for line in lines.iter().skip(start + 1) {
