@@ -2799,13 +2799,18 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 }
 
 fn cmd_rules(action: RulesAction) -> Result<()> {
-    use omega_core::rules;
+    use omega_core::rules::{self, RuleKind};
     match action {
         RulesAction::List => {
-            let all = rules::all_rules();
-            println!("OmegaOS — {} operational rules\n", all.len());
+            let laws = rules::laws();
+            let ops = rules::operational_rules();
+            println!("⚖️  THE LAWS (inviolable — bind every agent, override every rule)\n");
+            for r in &laws {
+                println!("  {:16} {}", r.id, r.title);
+            }
+            println!("\nOPERATIONAL RULES ({})\n", ops.len());
             let mut current_cat = String::new();
-            for r in &all {
+            for r in &ops {
                 let cat = format!("{:?}", r.category);
                 if cat != current_cat {
                     println!("─── {} ───", cat);
@@ -2829,9 +2834,13 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
                     .collect::<String>();
                 let slug = slug.trim_matches('-').replace("--", "-");
                 let fname = format!("{}-{}.md", r.id, &slug[..slug.len().min(40)]);
+                let kind_label = match r.kind {
+                    RuleKind::Law => "Law",
+                    RuleKind::Rule => "Rule",
+                };
                 let content = format!(
-                    "# {} — {}\n\n**Category:** {:?}\n**Added:** {}\n\n## Rule\n\n{}\n\n## Origin\n\n{}\n",
-                    r.id, r.title, r.category, r.added_at, r.description, r.reason
+                    "# {} — {}\n\n**Kind:** {}\n**Category:** {:?}\n**Added:** {}\n\n## Rule\n\n{}\n\n## Origin\n\n{}\n",
+                    r.id, r.title, kind_label, r.category, r.added_at, r.description, r.reason
                 );
                 std::fs::write(rules_dir.join(&fname), &content)?;
                 println!("  ✓ {}", fname);

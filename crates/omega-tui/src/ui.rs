@@ -2098,7 +2098,7 @@ fn render_info_workers() -> Vec<Line<'static>> {
 }
 
 fn render_info_rules() -> Vec<Line<'static>> {
-    use omega_core::rules::{all_rules, RuleCategory};
+    use omega_core::rules::{all_rules, laws, RuleCategory, RuleKind};
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -2107,6 +2107,46 @@ fn render_info_rules() -> Vec<Line<'static>> {
         )),
         Line::from(""),
     ];
+
+    // ── LAWS — inviolable, render first, visually distinct ──
+    let law_list = laws();
+    if !law_list.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  ⚖️  THE LAWS — inviolable, bind every agent, override every rule",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        for r in &law_list {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  {:14}", r.id),
+                    Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    r.title.to_string(),
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", r.description),
+                Style::default().fg(Color::White),
+            )));
+            let applies = if r.applies_to.is_empty() {
+                "all agents".to_string()
+            } else {
+                r.applies_to.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+            };
+            lines.push(Line::from(Span::styled(
+                format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
+                Style::default().fg(Color::Gray),
+            )));
+            lines.push(Line::from(Span::styled(
+                format!("    Why: {}", r.reason),
+                Style::default().fg(Color::Gray),
+            )));
+            lines.push(Line::from(""));
+        }
+    }
 
     let categories = [
         RuleCategory::Universal,
@@ -2117,7 +2157,10 @@ fn render_info_rules() -> Vec<Line<'static>> {
     ];
 
     for cat in &categories {
-        let rules: Vec<_> = all_rules().into_iter().filter(|r| r.category == *cat).collect();
+        let rules: Vec<_> = all_rules()
+            .into_iter()
+            .filter(|r| r.kind == RuleKind::Rule && r.category == *cat)
+            .collect();
         if rules.is_empty() {
             continue;
         }

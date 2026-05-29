@@ -52,6 +52,16 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 - JSONL session persistence with branching
 - Extension hooks for customization
 
+## Laws vs Rules
+
+- **Laws (L1, L2, L3)** — inviolable, universal, top-priority. They bind every agent always and
+  override every rule and task. Few, stable, never scoped-out. Rendered first everywhere
+  (TUI Info tab, `omega rules list`, every prompt block) and visually distinct.
+- **Rules (R-NN, named)** — operational, categorized (Universal / QualityGate / Orchestration /
+  Reporting / Safety), scoped per agent level. Guidelines that implement the Laws in practice.
+
+Source of truth: `crates/omega-core/src/rules.rs` (`RuleKind::{Law, Rule}`).
+
 ## Development Rules
 
 - **LAW 0 — INSTALL PARITY (NON-NEGOTIABLE): every improvement to OmegaOS MUST

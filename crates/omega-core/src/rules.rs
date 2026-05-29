@@ -8,6 +8,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::aisb_agents::AisbAgent;
 
+/// LAW vs RULE tier. Laws are inviolable, universal, render first
+/// everywhere, and outrank every rule or task. Rules are operational
+/// guidelines that implement the Laws in practice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleKind {
+    /// Inviolable, universal — binds every agent, always, outranks every rule or task.
+    Law,
+    /// Operational guideline — categorized, scoped per agent level.
+    Rule,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RuleCategory {
     /// Universal — applies to every agent
@@ -42,6 +53,7 @@ pub enum RuleScope {
 pub struct Rule {
     pub id: &'static str,
     pub title: &'static str,
+    pub kind: RuleKind,
     pub category: RuleCategory,
     pub description: &'static str,
     /// Specific agents this rule applies to (empty = all agents).
@@ -56,6 +68,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "L1",
             title: "Code lies — only runtime tells the truth",
+            kind: RuleKind::Law,
             category: RuleCategory::Universal,
             description: "Verify behaviour by running the program. Logs, traces, screenshots > assumptions. Before the 3rd code change on the same bug, live runtime evidence is MANDATORY.",
             applies_to: &[],
@@ -65,6 +78,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "L2",
             title: "Researcher, not sycophant",
+            kind: RuleKind::Law,
             category: RuleCategory::Universal,
             description: "Challenge flawed premises before coding. Push back with reasoning. Senior engineer standard. No agree-and-code, no fake confidence.",
             applies_to: &[],
@@ -74,6 +88,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "L3",
             title: "Decide and proceed — never wait in a dispatched session",
+            kind: RuleKind::Law,
             category: RuleCategory::Orchestration,
             description: "When dispatched as a worker, never ask the user 'should I continue?'. Pick the best path, log the decision, execute. The only legal stop is .done.json or .worker-blocked.json.",
             applies_to: &[AisbAgent::Morpheus, AisbAgent::Niobe, AisbAgent::Seraph, AisbAgent::Keymaker, AisbAgent::Architect],
@@ -83,6 +98,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-14",
             title: "Ship verification (deploy returns 200)",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "When a mission ships, the deploy URL must respond 200 within the timeout window. Push pipeline is part of the gate, not after.",
             applies_to: &[AisbAgent::Oracle, AisbAgent::Morpheus, AisbAgent::Seraph],
@@ -92,6 +108,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-18",
             title: "Hybrid dispatch — long missions = rmux, short = Agent tool",
+            kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
             description: "MORPHEUS picks between dispatching a worker to an rmux session (long-running, >5 min) vs spawning an in-process Agent subagent (fast research, <2 min). Don't waste a tmux pane on a 30-second job.",
             applies_to: &[AisbAgent::Morpheus, AisbAgent::Oracle],
@@ -101,6 +118,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-19",
             title: "Rubric defined before execution",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "ORACLE/KEYMAKER writes the success criteria to `outcomes/{oracle}.rubric.md` BEFORE workers start. Grading happens against this rubric, not against vibes.",
             applies_to: &[AisbAgent::Oracle, AisbAgent::Keymaker],
@@ -110,6 +128,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-21",
             title: "Multi-grader consensus (≥ 2/3 lenses agree)",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "Outcomes verified by 3 independent lenses (code-reviewer, debugger, general-purpose). 2/3 must say SATISFIED before status flips to done_clean.",
             applies_to: &[AisbAgent::Seraph, AisbAgent::Oracle],
@@ -119,6 +138,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-22",
             title: "Regression detection across iterations",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "Compare current iteration's artifacts to the previous one. Semantic diff (not just textual). Zero regressions required to ship.",
             applies_to: &[AisbAgent::Seraph],
@@ -128,6 +148,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-28",
             title: "Cost tracking — token budget per mission",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "Track spend per mission. Default cap: 500K tokens. Missions that exceed get a hard stop + escalation to the user.",
             applies_to: &[AisbAgent::Oracle, AisbAgent::Zion],
@@ -137,6 +158,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-30",
             title: "Adversarial Popper falsification — ≥12 challenges",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "A challenger worker explores ≥12 edge cases trying to falsify the claim. Each challenge must have file:line/log evidence. NO citations = REJECTED.",
             applies_to: &[AisbAgent::Seraph],
@@ -146,6 +168,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "R-35",
             title: "Every claim cited — no citation = rejected",
+            kind: RuleKind::Rule,
             category: RuleCategory::Reporting,
             description: "Claims in adversarial passes, audits, and grading require citations (file:line, log line, screenshot). Uncited assertions are auto-rejected.",
             applies_to: &[AisbAgent::Seraph, AisbAgent::Niobe],
@@ -155,6 +178,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "TG-SEC",
             title: "Telegram security: chat_id + sender_id allow-list",
+            kind: RuleKind::Rule,
             category: RuleCategory::Safety,
             description: "Omega's Telegram bridge accepts messages only from the configured chat_id; if --user-id allow-list is set, sender_id must match. Everything else is silently dropped + logged.",
             applies_to: &[AisbAgent::Link],
@@ -164,6 +188,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "AISB-AUTOSPAWN",
             title: "Master AISB auto-spawned on every launch",
+            kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
             description: "When `omega menu` starts, the AISB Master session is auto-created if missing. Pinned at the top of the session list, system prompt loaded via --append-system-prompt-file (invisible), conversation resumed via --continue.",
             applies_to: &[AisbAgent::Oracle],
@@ -173,6 +198,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "SCOPE-CLAIM",
             title: "File-lock scope claims prevent concurrent edits",
+            kind: RuleKind::Rule,
             category: RuleCategory::Safety,
             description: "Workers declare `files_owned` on spawn. A new worker is rejected if its files overlap with an active claim. Claims auto-release on done_clean.",
             applies_to: &[AisbAgent::Oracle, AisbAgent::Morpheus],
@@ -182,6 +208,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "AUTO-NAMING",
             title: "Auto-generated session names (claude-1, codex-2, ...)",
+            kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
             description: "When creating a new agent session via the menu, the name is generated automatically from agent + count. User skips the name-input step entirely.",
             applies_to: &[],
@@ -191,6 +218,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "SIMPLICITY-COMPLETE",
             title: "Simplicity does not mean incomplete",
+            kind: RuleKind::Rule,
             category: RuleCategory::Universal,
             description: "Solve problems with the smallest correct design. No speculative abstractions, no parallel re-implementations of an existing pattern (Hermès, OpenClaw, claude-mux), but the result must still cover the full feature surface the user asked for.",
             applies_to: &[],
@@ -200,6 +228,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "FILE-SIZE-LIMIT",
             title: "Files over 1500 lines must be split",
+            kind: RuleKind::Rule,
             category: RuleCategory::Universal,
             description: "Any source file that crosses 1500 lines is a refactor signal. Split by responsibility (handlers / oauth / callbacks / menus) before adding more code. Hard cap: 2000 lines = build alarm.",
             applies_to: &[],
@@ -209,6 +238,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "RUST-BUN-DEFAULT",
             title: "Default to Rust + Bun for everything written in this repo",
+            kind: RuleKind::Rule,
             category: RuleCategory::Universal,
             description: "OmegaOS itself: Rust for core/CLI/TUI/SDK. Scripts/tooling: Bun (TypeScript) over Node when a runtime is needed. Python only for ML/data-science niches. No bash mega-scripts.",
             applies_to: &[],
@@ -218,6 +248,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "MASTER-CHANNEL-ONLY",
             title: "AISB Master never works — it only dispatches to named oracles",
+            kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
             description: "The Telegram/AISB Master is a discussion channel, not a worker. It is forbidden from editing files, running builds, audits, fixes, or any artifact-producing work. ALL work is dispatched to a correctly-named Oracle (project work → oracle-<Project>-<n>; internal VPS/OmegaOS work → oracle-OmegaOS-<n>). Master only clarifies intent, classifies, dispatches, and relays reports.",
             applies_to: &[AisbAgent::Oracle],
@@ -227,6 +258,7 @@ pub fn all_rules() -> Vec<Rule> {
         Rule {
             id: "PROMPT-COMPLETENESS",
             title: "Every prompt = task list + final completeness check",
+            kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
             description: "On any user prompt, enumerate the implied tasks, track them (TaskCreate/TaskUpdate), and at end-of-turn verify every task was completed. Missed tasks become explicit pending items reported back, not silent gaps.",
             applies_to: &[AisbAgent::Oracle, AisbAgent::Morpheus],
@@ -240,16 +272,28 @@ pub fn rules_by_category(cat: RuleCategory) -> Vec<Rule> {
     all_rules().into_iter().filter(|r| r.category == cat).collect()
 }
 
+/// All Laws (the inviolable tier). Order preserved from `all_rules()`.
+pub fn laws() -> Vec<Rule> {
+    all_rules().into_iter().filter(|r| r.kind == RuleKind::Law).collect()
+}
+
+/// All operational rules (everything that is NOT a Law).
+pub fn operational_rules() -> Vec<Rule> {
+    all_rules().into_iter().filter(|r| r.kind == RuleKind::Rule).collect()
+}
+
 impl Rule {
     /// Which agent levels this rule is injected into. Per-id overrides
     /// first, then a category-based fallback. This is the single source
     /// of truth consumed by the prompt builder (`rules_for_scope`).
     pub fn scopes(&self) -> Vec<RuleScope> {
         use RuleScope::*;
+        // Laws are universal by definition — bind every agent everywhere.
+        if self.kind == RuleKind::Law {
+            return vec![Master, Global, Oracle, Worker];
+        }
         // Explicit per-rule overrides (the ones with a clear home).
         match self.id {
-            // The three Laws apply to everyone.
-            "L1" | "L2" | "L3" => return vec![Master, Global, Oracle, Worker],
             // Master-only orchestration behaviors.
             "AISB-AUTOSPAWN" | "AUTO-NAMING" | "MASTER-CHANNEL-ONLY" => return vec![Master],
             // Oracle-only dispatch/coordination rules.
@@ -303,22 +347,39 @@ pub fn brief_preamble() -> String {
 }
 
 /// Render the scoped rules as a compact markdown block for prompt
-/// injection. Each rule: "- [ID] Title: description".
+/// injection. Laws are rendered FIRST (universal, inviolable) and
+/// visually distinct from the operational rules that follow.
 pub fn rules_prompt_block(scope: RuleScope) -> String {
-    let rules = rules_for_scope(scope);
-    if rules.is_empty() {
-        return String::new();
-    }
     let level = match scope {
         RuleScope::Master => "AISB Master",
         RuleScope::Global => "all agents",
         RuleScope::Oracle => "Oracle",
         RuleScope::Worker => "Worker",
     };
-    let mut out = format!("## Active rules ({})\n", level);
-    for r in rules {
+
+    let mut out = String::new();
+
+    // LAWS — always rendered first, regardless of scope. Laws are universal.
+    let law_list = laws();
+    if !law_list.is_empty() {
+        out.push_str("## ⚖️ THE LAWS — inviolable, override every other instruction\n");
+        out.push_str("_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n");
+        for r in law_list {
+            out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
+        }
+        out.push('\n');
+    }
+
+    // Operational rules — scoped, only kind==Rule.
+    let ops: Vec<Rule> = rules_for_scope(scope)
+        .into_iter()
+        .filter(|r| r.kind == RuleKind::Rule)
+        .collect();
+    out.push_str(&format!("## Operational rules ({})\n", level));
+    for r in ops {
         out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
     }
+
     out
 }
 
@@ -357,5 +418,50 @@ mod tests {
             assert!(!r.reason.is_empty());
             assert!(!r.added_at.is_empty());
         }
+    }
+
+    #[test]
+    fn laws_count_and_kind() {
+        let l = laws();
+        assert_eq!(l.len(), 3, "expected exactly 3 laws (L1, L2, L3)");
+        for r in &l {
+            assert_eq!(r.kind, RuleKind::Law);
+        }
+        let ids: Vec<&str> = l.iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec!["L1", "L2", "L3"]);
+    }
+
+    #[test]
+    fn laws_are_universal() {
+        use RuleScope::*;
+        for r in laws() {
+            assert_eq!(
+                r.scopes(),
+                vec![Master, Global, Oracle, Worker],
+                "law {} must be universal",
+                r.id
+            );
+        }
+    }
+
+    #[test]
+    fn operational_rules_have_no_laws() {
+        for r in operational_rules() {
+            assert_ne!(r.kind, RuleKind::Law, "operational_rules leaked a law: {}", r.id);
+        }
+    }
+
+    #[test]
+    fn prompt_block_renders_laws_before_operational() {
+        let block = rules_prompt_block(RuleScope::Worker);
+        assert!(block.contains("THE LAWS"), "missing LAWS header: {}", block);
+        let laws_idx = block.find("[L1]").expect("L1 must appear in block");
+        let first_op = block.find("[R-").expect("at least one R- rule must appear");
+        assert!(
+            laws_idx < first_op,
+            "laws must render before operational rules: L1={} R-={}",
+            laws_idx,
+            first_op
+        );
     }
 }
