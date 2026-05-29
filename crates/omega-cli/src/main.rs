@@ -2150,17 +2150,19 @@ async fn cmd_spawn_worker(
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
 
-    // Auto-detect project from current rmux session name if we're inside an oracle
+    // The current rmux session IS the oracle when spawn-worker runs inside one.
+    // Capture it to register the worker under it + derive the project via the
+    // canonical parser (not an ad-hoc trailing-digit strip).
+    let oracle_session = std::env::var("RMUX")
+        .ok()
+        .and_then(|v| v.split(',').next().map(|s| s.to_string()))
+        .filter(|s| s.starts_with("oracle-"));
+
     let project_name = match project {
         Some(p) => Some(p.to_string()),
-        None => std::env::var("RMUX")
-            .ok()
-            .and_then(|v| v.split(',').next().map(|s| s.to_string()))
-            .and_then(|sess| sess.strip_prefix("oracle-").map(|p| {
-                p.trim_end_matches(char::is_numeric)
-                    .trim_end_matches('-')
-                    .to_string()
-            })),
+        None => oracle_session
+            .as_deref()
+            .and_then(|s| omega_core::session::OmegaSession::classify(s).project),
     };
 
     let work_dir = dir.unwrap_or(".");
@@ -2185,8 +2187,37 @@ async fn cmd_spawn_worker(
         );
     }
 
-    mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(prompt))
+    // THE FUNNEL — inject the Worker-scoped Laws + operational rules, exactly
+    // like Dispatcher::dispatch_worker_with_context. Without this, a worker
+    // spawned via the CLI (the live path oracles use) gets NO doctrine.
+    let mut full_prompt = prompt.to_string();
+    let agent_ctx = omega_core::rules::agent_context_block(omega_core::rules::RuleScope::Worker);
+    if !agent_ctx.is_empty() {
+        full_prompt.push_str("\n\n");
+        full_prompt.push_str(&agent_ctx);
+    }
+
+    mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
         .await?;
+
+    // Register the worker under its oracle so the patrol routes its done/blocked
+    // events to the right parent and the TUI shows it under the oracle.
+    if let Some(ref oracle_name) = oracle_session {
+        if let Ok(Some(mut state)) =
+            omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
+        {
+            state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
+                session_name: worker_name.clone(),
+                task_id: task.to_string(),
+                task_name: task.to_string(),
+                files_owned: files.clone().unwrap_or_default(),
+                dispatched_at: chrono::Utc::now(),
+                status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
+            });
+            let _ = state.write(&config.state_dir);
+        }
+    }
+
     println!("● Worker spawned: {}", worker_name);
     if let Some(p) = &project_name {
         println!("  Under project: {}", p);
