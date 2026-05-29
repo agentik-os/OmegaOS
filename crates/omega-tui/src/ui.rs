@@ -525,23 +525,78 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     }
                     Line::from(spans)
                 } else {
-                    let spans: Vec<Span> = row
-                        .iter()
-                        .map(|sp| {
-                            let mut style = Style::default();
-                            if let Some((r, g, b)) = sp.fg {
-                                style = style.fg(Color::Rgb(r, g, b));
-                            }
-                            if let Some((r, g, b)) = sp.bg {
-                                style = style.bg(Color::Rgb(r, g, b));
-                            }
-                            if sp.bold {
-                                style = style.add_modifier(Modifier::BOLD);
-                            }
-                            Span::styled(sp.text.clone(), style)
-                        })
-                        .collect();
-                    Line::from(spans)
+                    // Extra emphasis on Claude's status + user input lines —
+                    // ANSI colors already come through from rmux (verified
+                    // via examples/dump_styled: bright red 241,76,76 is
+                    // captured), but the user reported they want MORE
+                    // visible distinction (tmux-style). High-confidence
+                    // detection so the override fires only on the right
+                    // rows; everything else renders straight from the
+                    // captured spans.
+                    let row_text: String = row.iter().map(|s| s.text.as_str()).collect();
+                    let trimmed = row_text.trim();
+                    // Claude's activity status footer, e.g.
+                    //   "Twisting… (22s · ↓ 1.0k tokens · thought for 2s)"
+                    // Pattern: contains an ellipsis or "·" AND mentions tokens.
+                    let is_activity = trimmed.contains("tokens")
+                        && (trimmed.contains('·') || trimmed.contains('…'));
+                    // User input echo line: starts with "❯ " then real text.
+                    let is_user_input = {
+                        let t = trimmed;
+                        t.starts_with("❯ ") && t.len() > 2
+                    };
+
+                    if is_activity {
+                        // Bold + bright red override across the row — pops
+                        // against any prior coloring.
+                        let red = Color::Rgb(241, 76, 76);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
+                                    Style::default()
+                                        .fg(red)
+                                        .add_modifier(Modifier::BOLD),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else if is_user_input {
+                        // Bold + soft blue background tint so YOUR messages
+                        // stand out from Claude's output. Preserve original
+                        // ANSI fg so Claude's own coloring still reads.
+                        let tint = Color::Rgb(28, 40, 64);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                let mut style = Style::default().bg(tint).add_modifier(Modifier::BOLD);
+                                if let Some((r, g, b)) = sp.fg {
+                                    style = style.fg(Color::Rgb(r, g, b));
+                                }
+                                Span::styled(sp.text.clone(), style)
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else {
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                let mut style = Style::default();
+                                if let Some((r, g, b)) = sp.fg {
+                                    style = style.fg(Color::Rgb(r, g, b));
+                                }
+                                if let Some((r, g, b)) = sp.bg {
+                                    style = style.bg(Color::Rgb(r, g, b));
+                                }
+                                if sp.bold {
+                                    style = style.add_modifier(Modifier::BOLD);
+                                }
+                                Span::styled(sp.text.clone(), style)
+                            })
+                            .collect();
+                        Line::from(spans)
+                    }
                 }
             })
             .collect()
