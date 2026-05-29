@@ -850,6 +850,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.status_message = Some("Session name for new Terminal (Enter, Esc to cancel)".to_string());
             Action::None
         }
+        // 'h' is advertised in the Help/shortcut row as Hermes; wire it like
+        // the other global launchers (p/G/t) so the advert isn't a dead key.
+        KeyCode::Char('h') => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewNamedSession("hermes".to_string());
+            app.status_message = Some("Session name for new Hermes (Enter, Esc to cancel)".to_string());
+            Action::None
+        }
 
         // Projects tab: 'd' pre-fills the dispatch with the selected project,
         // skipping the project-name step → straight to mission entry.
@@ -876,8 +884,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
 
-        // Kill — both lowercase x and uppercase X work
-        KeyCode::Char('x') | KeyCode::Char('X') => {
+        // Kill — both lowercase x and uppercase X work. Sessions tab only:
+        // the list isn't visible elsewhere, so don't kill a hidden selection
+        // from another tab.
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions => {
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
@@ -890,8 +900,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
-        // Rename selected session
-        KeyCode::Char('r') | KeyCode::Char('R') => {
+        // Rename selected session (Sessions tab only)
+        KeyCode::Char('r') | KeyCode::Char('R') if app.tab == Tab::Sessions => {
             if let Some(entry) = app.selected_session() {
                 let old = entry.session.name.clone();
                 app.input_buffer = old.clone();
@@ -906,7 +916,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Refresh
         KeyCode::F(5) => Action::Refresh,
 
-        KeyCode::Char('.') => {
+        KeyCode::Char('.') if app.tab == Tab::Sessions => {
             if let Some(entry) = app.sessions.get_mut(app.selected) {
                 entry.is_protected = !entry.is_protected;
                 let state = if entry.is_protected {
@@ -1277,5 +1287,58 @@ where
             Action::None
         }
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::SessionEntry;
+    use omega_core::config::OmegaConfig;
+    use omega_core::session::OmegaSession;
+
+    fn test_app() -> App {
+        App::new(OmegaConfig::default())
+    }
+    fn press(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    // Bug B: 'h' is advertised as the Hermes launcher; it must work from any
+    // tab like the other global launchers (p/G/t), not be a dead key.
+    #[test]
+    fn h_launches_hermes_from_any_tab() {
+        let mut app = test_app();
+        app.tab = Tab::Monitor;
+        let action = handle_key(&mut app, press('h'));
+        assert!(matches!(action, Action::None));
+        assert!(matches!(&app.input_mode, InputMode::NewNamedSession(s) if s == "hermes"));
+    }
+
+    // Bug A: destructive keys act only on the Sessions tab, never on a hidden
+    // selection from another tab.
+    #[test]
+    fn kill_key_is_guarded_to_sessions_tab() {
+        let mut app = test_app();
+        app.sessions.push(SessionEntry {
+            session: OmegaSession::classify("test-worker"),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        });
+        app.selected = 0;
+
+        app.tab = Tab::Monitor;
+        assert!(
+            matches!(handle_key(&mut app, press('x')), Action::None),
+            "x off the Sessions tab must not kill the hidden selection"
+        );
+
+        app.tab = Tab::Sessions;
+        assert!(
+            matches!(handle_key(&mut app, press('x')), Action::KillSession(n) if n == "test-worker"),
+            "x on the Sessions tab must kill the selected session"
+        );
     }
 }

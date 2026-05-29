@@ -2474,8 +2474,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
 
         section("Chat (Sessions, when chat-focused)"),
-        key("Tab", "Forward to Claude (cycle modes)"),
-        key("Shift+Tab", "Return to session list"),
+        key("Tab", "Return to session list"),
+        key("Shift+Tab", "Forward to Claude (cycle modes)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
         key("Ctrl+W / Alt+Bksp", "Delete word backwards"),
         key("Shift+Del / Alt+Del", "Delete word forwards"),
