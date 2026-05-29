@@ -1068,25 +1068,33 @@ async fn run_tui_loop(
                             );
                             send_telegram_confirmation(&bot_token, chat_id, &confirm).await;
 
-                            // 2) Auto-spawn `omega telegram run` in a background
-                            //    rmux session so the bridge actually starts.
+                            // 2) Start the bridge as the SINGLE persistent poller.
+                            //    Prefer the systemd --user service (one canonical
+                            //    poller); kill any stale rmux bridge first so two
+                            //    pollers never hit getUpdates → permanent HTTP 409.
+                            //    Fall back to an rmux session only if systemd is absent.
                             let mgr = SessionManager::connect().await?;
-                            let bridge_session = "omega-telegram-bridge";
-                            // Kill any old bridge first (idempotent)
-                            let _ = mgr.kill_session(bridge_session).await;
-                            let cmd = "bash -c 'omega telegram run 2>&1 | tee /tmp/omega-telegram.log; exec bash'";
-                            match mgr.create_session(bridge_session, None, Some(cmd)).await {
-                                Ok(_) => {
-                                    app.status_message = Some(format!(
-                                        "✓ Telegram setup done — bridge running in session `{}` (also got a Telegram confirmation)",
-                                        bridge_session
-                                    ));
-                                }
-                                Err(e) => {
-                                    app.status_message = Some(format!(
-                                        "✓ Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.",
-                                        e
-                                    ));
+                            let _ = mgr.kill_session("omega-telegram-bridge").await;
+                            let systemd_ok = tokio::process::Command::new("systemctl")
+                                .args(["--user", "enable", "--now", "omega-telegram.service"])
+                                .status().await.map(|s| s.success()).unwrap_or(false);
+                            if systemd_ok {
+                                app.status_message = Some(
+                                    "✓ Telegram setup done — bridge running as the persistent omega-telegram service".to_string(),
+                                );
+                            } else {
+                                let cmd = "bash -c 'omega telegram run 2>&1 | tee /tmp/omega-telegram.log; exec bash'";
+                                match mgr.create_session("omega-telegram-bridge", None, Some(cmd)).await {
+                                    Ok(_) => {
+                                        app.status_message = Some(
+                                            "✓ Telegram setup done — bridge running in rmux session `omega-telegram-bridge` (no systemd)".to_string(),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        app.status_message = Some(format!(
+                                            "✓ Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.", e
+                                        ));
+                                    }
                                 }
                             }
                             let _ = app.refresh().await;
