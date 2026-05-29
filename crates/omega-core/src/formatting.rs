@@ -133,32 +133,15 @@ fn format_inline(text: &str) -> String {
         }
     }
 
-    // Italic: *text* (but not inside bold tags)
-    let mut buf = String::with_capacity(result.len());
-    let mut chars = result.chars().peekable();
-    let mut in_tag = false;
-    while let Some(c) = chars.next() {
-        if c == '<' {
-            in_tag = true;
-            buf.push(c);
-        } else if c == '>' {
-            in_tag = false;
-            buf.push(c);
-        } else if c == '*' && !in_tag {
-            if let Some(end_pos) = find_closing_char(&result[buf.len() + 1..], '*') {
-                let inner: String = chars.by_ref().take(end_pos).collect();
-                buf.push_str("<i>");
-                buf.push_str(&inner);
-                buf.push_str("</i>");
-                chars.next(); // consume closing *
-            } else {
-                buf.push(c);
-            }
-        } else {
-            buf.push(c);
-        }
+    // Italic: *text*  (bold already converted **..** to <b>..</b>, so only single * remain).
+    // Byte-index splice on ASCII '*' — always lands on char boundaries, never panics on UTF-8.
+    loop {
+        let Some(start) = result.find('*') else { break };
+        let Some(rel_end) = result[start + 1..].find('*') else { break };
+        let end = start + 1 + rel_end;
+        let inner = result[start + 1..end].to_string();
+        result = format!("{}<i>{}</i>{}", &result[..start], inner, &result[end + 1..]);
     }
-    result = buf;
 
     // Inline code: `text`
     while let Some(start) = result.find('`') {
@@ -172,10 +155,6 @@ fn format_inline(text: &str) -> String {
     }
 
     result
-}
-
-fn find_closing_char(text: &str, ch: char) -> Option<usize> {
-    text.find(ch)
 }
 
 fn collapse_blank_lines(text: &str) -> String {
@@ -794,5 +773,41 @@ mod tests {
         let p = thinking_placeholder("AISB Master");
         assert!(p.contains("<b>AISB Master</b>"));
         assert!(p.contains("Thinking"));
+    }
+
+    #[test]
+    fn italic_with_accented_french_no_panic() {
+        // Exact string that crashed the live bridge at formatting.rs:148.
+        let input = "<b>La cible</b> — c'est surtout le *visuel* (une page qu'on regarde), \
+                     surtout le *système* (l'archi d'orchestration), ou *les deux* \
+                     (alors je découpe en sous-projets séquentiels) ?";
+            let html = markdown_to_telegram_html(input);
+            assert!(html.contains("<i>visuel</i>"), "italic should wrap 'visuel'");
+            assert!(html.contains("<i>système</i>"), "italic should wrap 'système'");
+            assert!(html.contains("<i>les deux</i>"), "italic should wrap 'les deux'");
+            assert!(html.contains("système"), "accented chars must survive");
+            assert!(html.contains("séquentiels"), "accented chars must survive");
+    }
+
+    #[test]
+    fn italic_char_boundary_with_accents() {
+        // Bare cases that exercise the char-boundary path directly.
+        let html = markdown_to_telegram_html("a *b* é *d* è");
+        assert!(html.contains("<i>b</i>"));
+        assert!(html.contains("<i>d</i>"));
+        assert!(html.contains("é"));
+        assert!(html.contains("è"));
+
+        // Italic content itself contains multibyte chars.
+        let html2 = markdown_to_telegram_html("ouverture *éléphant* fin");
+        assert!(html2.contains("<i>éléphant</i>"));
+    }
+
+    #[test]
+    fn italic_unpaired_asterisk_is_kept() {
+        // A lone trailing '*' should NOT panic and should be left as-is.
+        let html = markdown_to_telegram_html("hello *world");
+        assert!(!html.contains("<i>"));
+        assert!(html.contains("*world"));
     }
 }
