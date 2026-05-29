@@ -2463,7 +2463,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         // message. Falls back to status_message when the git lookup hasn't
         // resolved yet (first ~10s or non-git cwd).
         {
-            let on_sessions = app.tab == omega_tui::app::Tab::Sessions;
+            let on_sessions = app.tab == crate::app::Tab::Sessions;
             let git_text = if on_sessions {
                 app.selected_session()
                     .and_then(|e| app.session_git_status.get(&e.session.name).cloned())
