@@ -595,6 +595,11 @@ async fn run_tui_loop(
         async_status.clone(),
     );
 
+    // Extra terminal rows granted to a CHAT-FOCUSED session beyond the visible
+    // preview panel, so the agent can render a tall multi-line input box without
+    // clipping its top (see the resize block below).
+    const CHAT_INPUT_HEADROOM: u16 = 50;
+
     // Track the last pane resize we issued so we only resize on change
     // (session switch OR terminal resize), not every tick.
     let mut last_resized: Option<(String, u16, u16)> = None;
@@ -632,10 +637,30 @@ async fn run_tui_loop(
         // rest, not a daemon round-trip. Verified live: rmux pane.resize →
         // SIGWINCH → Claude redraws at the new width (e.g. 200→120).
         if app.tab == omega_tui::app::Tab::Sessions {
+            // When the chat is focused (the user is typing into the agent), give
+            // the inner terminal extra ROWS beyond the visible panel. Verified
+            // live: Claude Code clips its OWN multi-line input box to the window
+            // height, so a 22-line prompt in a 25-row window loses its first
+            // lines + top border — "I can't see the top of what I type". The
+            // mirror only ever shows the panel-height slice and auto-follows the
+            // cursor, so the extra rows simply let Claude render the full input;
+            // Alt+Up then scrolls up into it. When the session is merely being
+            // browsed (list focus) we keep the window 1:1 with the panel so the
+            // preview matches Claude's real screen exactly.
+            let chat_focused = matches!(
+                app.session_focus,
+                omega_tui::app::SessionFocus::Chat
+                    | omega_tui::app::SessionFocus::ChatFullscreen
+            );
             if let Some(entry) = app.selected_session() {
                 let name = entry.session.name.clone();
                 let cols = app.preview_inner_width;
-                let rows = app.preview_inner_height.max(10);
+                let base_rows = app.preview_inner_height.max(10);
+                let rows = if chat_focused {
+                    base_rows.saturating_add(CHAT_INPUT_HEADROOM)
+                } else {
+                    base_rows
+                };
                 if cols >= 20 {
                     let want = (name.clone(), cols, rows);
                     if last_resized.as_ref() != Some(&want) {

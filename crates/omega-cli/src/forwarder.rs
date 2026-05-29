@@ -52,14 +52,30 @@ async fn flush_text(pend: &mut Option<(String, String)>, mgr: &SessionManager, s
 /// unbounded channel), so the hot path stays instant while delivery order is
 /// guaranteed by the lone consumer.
 pub fn spawn_forwarder(mgr: SessionManager, sink: StatusSink) -> UnboundedSender<ForwardMsg> {
+    // A host terminal / SSH client may split ONE user paste into several
+    // back-to-back bracketed-paste segments (observed with mobile clients such
+    // as Termius). Each segment reaches us as its own `ForwardMsg::Paste`;
+    // forwarded separately they become multiple "[Pasted text]" placeholders in
+    // the target app (Claude Code) — the user's "the paste splits in two" bug.
+    // We merge same-session paste segments that arrive within this debounce
+    // window into ONE bracketed block. A real, deliberate second paste is far
+    // more than this apart, so it is never wrongly merged.
+    const PASTE_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(80);
+
     let (tx, mut rx) = mpsc::unbounded_channel::<ForwardMsg>();
     tokio::spawn(async move {
         // Pending coalesced text: (session, accumulated_text).
         let mut pend: Option<(String, String)> = None;
+        // A message pulled off the channel while coalescing a paste that turned
+        // out to belong to the NEXT unit of work — handled first on the
+        // following iteration instead of being dropped.
+        let mut carry: Option<ForwardMsg> = None;
         loop {
             // With pending text, drain greedily (try_recv) to coalesce; when
             // the queue is momentarily empty, flush and block on the next recv.
-            let next = if pend.is_some() {
+            let next = if let Some(m) = carry.take() {
+                m
+            } else if pend.is_some() {
                 match rx.try_recv() {
                     Ok(m) => m,
                     Err(TryRecvError::Empty) => {
@@ -95,11 +111,36 @@ pub fn spawn_forwarder(mgr: SessionManager, sink: StatusSink) -> UnboundedSender
                     }
                 }
                 ForwardMsg::Paste { session, text } => {
-                    // Flush queued text first so the paste lands in order, then
-                    // send the whole block as one bracketed paste (no Enter).
+                    // Flush queued text first so the paste lands in order.
                     flush_text(&mut pend, &mgr, &sink).await;
-                    if let Err(e) = mgr.send_paste_raw(&session, &text).await {
+                    // Coalesce split paste segments (see PASTE_COALESCE_WINDOW):
+                    // keep absorbing same-session pastes that arrive within the
+                    // debounce, then emit the whole thing as ONE bracketed block.
+                    let mut body = text;
+                    let mut closed = false;
+                    loop {
+                        match tokio::time::timeout(PASTE_COALESCE_WINDOW, rx.recv()).await {
+                            Ok(Some(ForwardMsg::Paste { session: s, text: t }))
+                                if s == session =>
+                            {
+                                body.push_str(&t);
+                            }
+                            Ok(Some(other)) => {
+                                carry = Some(other);
+                                break;
+                            }
+                            Ok(None) => {
+                                closed = true;
+                                break;
+                            }
+                            Err(_) => break, // debounce expired → no more segments
+                        }
+                    }
+                    if let Err(e) = mgr.send_paste_raw(&session, &body).await {
                         set_err(&sink, format!("Paste failed: {}", e));
+                    }
+                    if closed {
+                        break;
                     }
                 }
             }
