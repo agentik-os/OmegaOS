@@ -222,11 +222,13 @@ impl Dispatcher {
             .unwrap_or(crate::agents::Agent::Claude);
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
-            // Effort scaling per complexity classification
+            // Ultracode posture: the oracle is the strategic brain — it reasons
+            // hard on every mission. Floor raised to high; Complex/Epic go xhigh/max.
+            // (Model is Opus 4.8 via the default config; effort is the reasoning depth.)
             opts.effort = Some(match decision.complexity {
-                routing::Complexity::Simple => "low".to_string(),
-                routing::Complexity::Medium => "medium".to_string(),
-                routing::Complexity::Complex => "high".to_string(),
+                routing::Complexity::Simple => "high".to_string(),
+                routing::Complexity::Medium => "xhigh".to_string(),
+                routing::Complexity::Complex => "xhigh".to_string(),
                 routing::Complexity::Epic => "max".to_string(),
             });
             // Budget caps (rule R-28). Conservative defaults; can be
