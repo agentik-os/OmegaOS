@@ -157,7 +157,17 @@ impl SessionManager {
         let mut builder = EnsureSession::named(session_name)
             .policy(EnsureSessionPolicy::CreateOrReuse)
             .detached(true)
-            .size(TerminalSizeSpec::new(200, 50));
+            .size(TerminalSizeSpec::new(200, 50))
+            // Force a correct color terminal for every pane. Without this the
+            // pane inherits the daemon's env — usually `TERM=tmux-256color`
+            // (wrong: rmux is NOT tmux, its emulator advertises xterm-256color)
+            // and NO `COLORTERM`. Claude's `supports-color` then never reaches
+            // truecolor, and tmux-implied SGR/passthrough sequences don't paint
+            // color cells in the rmux emulator → the snapshot is monochrome and
+            // the TUI preview renders black-and-white. Pinning xterm-256color +
+            // truecolor makes Claude emit 24-bit RGB that both the rmux emulator
+            // and `styled_rows_from_snapshot` resolve to real color.
+            .environment(["TERM=xterm-256color", "COLORTERM=truecolor"]);
 
         if let Some(cmd) = command {
             builder = builder.process(ProcessSpec::shell(cmd));
