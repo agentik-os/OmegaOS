@@ -349,6 +349,7 @@ fn write_done(
         "done_clean" => DoneStatus::DoneClean,
         "pending" => DoneStatus::Pending,
         "failed" => DoneStatus::Failed,
+        "blocked" => DoneStatus::Blocked,
         _ => anyhow::bail!("Invalid status: {}", status),
     };
     let mut signal = DoneSignal::new(session, done_status, summary);
