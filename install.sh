@@ -221,7 +221,7 @@ AUDITS_DST="$OMEGA_DIR/skills/audits"
 if [[ -d "$AUDITS_SRC" ]]; then
     mkdir -p "$AUDITS_DST"
     cp -r "$AUDITS_SRC"/* "$AUDITS_DST/"
-    ok "Quality Arsenal installed: 18 audit skills + 2 orchestrators → $AUDITS_DST/"
+    ok "Quality Arsenal installed: $(ls -d "$AUDITS_DST"/*/ 2>/dev/null | wc -l) audit skills → $AUDITS_DST/"
 
     # Make each audit invocable as a Claude Code slash command (/codeaudit, etc.).
     # The full SKILL.md is large, so the stub points the agent at the installed
@@ -445,12 +445,14 @@ if command -v systemctl >/dev/null 2>&1 && [[ -f "$OMEGA_SRC/config/systemd/omeg
     cp -f "$OMEGA_SRC/config/systemd/omega-telegram.service" "$SD_DIR/omega-telegram.service"
     loginctl enable-linger "$USER" 2>/dev/null || true
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user enable omega-telegram.service 2>/dev/null || true
     if [[ -f "$OMEGA_DIR/telegram.toml" ]]; then
-        systemctl --user restart omega-telegram.service 2>/dev/null || true
+        # Token present → enable + start. (`omega telegram setup` also does this.)
+        systemctl --user enable --now omega-telegram.service 2>/dev/null || true
         ok "Telegram bridge service enabled + started (persistent, Restart=always)"
     else
-        ok "Telegram bridge service enabled — run 'omega telegram setup <TOKEN> <CHAT_ID>' then 'systemctl --user start omega-telegram'"
+        # Do NOT enable yet: with no token the bridge would crash-loop every 10s.
+        # `omega telegram setup` enables + starts it once the token is written.
+        ok "Telegram bridge unit installed — run 'omega telegram setup <TOKEN> <CHAT_ID>' (it enables + starts the service)"
     fi
 else
     info "systemd --user unavailable — run 'omega telegram run' under rmux, or use your own supervisor"

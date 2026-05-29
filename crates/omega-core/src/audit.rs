@@ -23,6 +23,11 @@ pub enum AuditDomain {
     Automation,
     Logic,
     Retention,
+    Observability,
+    Dependencies,
+    Localization,
+    Release,
+    Privacy,
 }
 
 impl AuditDomain {
@@ -45,6 +50,11 @@ impl AuditDomain {
             Self::Automation => "Automation",
             Self::Logic => "Logic",
             Self::Retention => "Retention",
+            Self::Observability => "Observability",
+            Self::Dependencies => "Dependencies",
+            Self::Localization => "Localization",
+            Self::Release => "Release",
+            Self::Privacy => "Privacy",
         }
     }
 }
@@ -282,6 +292,66 @@ pub fn all_audits() -> Vec<AuditSkill> {
             triggers: &["retention", "feature opportunities"],
             skill_path: "skills/audits/retentionaudit/SKILL.md",
             read_only: true,
+        },
+        AuditSkill {
+            id: "observabilityaudit",
+            name: "Observability",
+            domain: AuditDomain::Observability,
+            phases: 18,
+            max_score: 360,
+            normalized_max: 100,
+            description: "Can we SEE what it does in prod?",
+            triggers: &["observability", "logging audit", "tracing audit", "metrics audit", "alerting audit", "slo audit", "can we debug prod"],
+            skill_path: "skills/audits/observabilityaudit/SKILL.md",
+            read_only: false,
+        },
+        AuditSkill {
+            id: "depaudit",
+            name: "Dependency & Supply-Chain",
+            domain: AuditDomain::Dependencies,
+            phases: 18,
+            max_score: 360,
+            normalized_max: 100,
+            description: "Is the supply chain SAFE?",
+            triggers: &["dep", "depaudit", "dependency audit", "supply chain", "license audit", "lockfile integrity", "sbom"],
+            skill_path: "skills/audits/depaudit/SKILL.md",
+            read_only: false,
+        },
+        AuditSkill {
+            id: "i18naudit",
+            name: "i18n & Localization",
+            domain: AuditDomain::Localization,
+            phases: 18,
+            max_score: 360,
+            normalized_max: 100,
+            description: "Is it WORLD-READY?",
+            triggers: &["i18n", "internationalization", "localization", "l10n", "translation audit", "hardcoded strings", "rtl audit"],
+            skill_path: "skills/audits/i18naudit/SKILL.md",
+            read_only: false,
+        },
+        AuditSkill {
+            id: "releaseaudit",
+            name: "Release & Shipping-Safety",
+            domain: AuditDomain::Release,
+            phases: 20,
+            max_score: 400,
+            normalized_max: 100,
+            description: "Is shipping SAFE + reversible?",
+            triggers: &["release", "release audit", "ci/cd audit", "pipeline audit", "deploy safety", "rollback", "migration safety", "release readiness"],
+            skill_path: "skills/audits/releaseaudit/SKILL.md",
+            read_only: false,
+        },
+        AuditSkill {
+            id: "privacyaudit",
+            name: "Privacy & Data-Protection",
+            domain: AuditDomain::Privacy,
+            phases: 18,
+            max_score: 360,
+            normalized_max: 100,
+            description: "Is user data HANDLED LAWFULLY?",
+            triggers: &["privacy", "gdpr", "ccpa", "pii", "consent", "cookie compliance", "data retention", "dsar"],
+            skill_path: "skills/audits/privacyaudit/SKILL.md",
+            read_only: false,
         },
     ]
 }
@@ -544,8 +614,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_17_audits() {
-        assert_eq!(all_audits().len(), 17);
+    fn registry_has_22_audits() {
+        assert_eq!(all_audits().len(), 22);
     }
 
     #[test]
@@ -586,7 +656,7 @@ mod tests {
     #[test]
     fn select_full_audit_returns_all() {
         let selected = select_audits("full audit of the project", &[]);
-        assert_eq!(selected.len(), 17);
+        assert_eq!(selected.len(), 22);
     }
 
     #[test]

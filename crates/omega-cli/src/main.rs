@@ -1883,7 +1883,7 @@ fn set_config_value(
 
 fn cmd_monitor() -> Result<()> {
     use omega_core::monitor;
-    let snap = monitor::UsageSnapshot::read()?.unwrap_or_default();
+    let snap = monitor::UsageSnapshot::read().ok().flatten().unwrap_or_default();
     let accounts = monitor::list_accounts();
     let bot = monitor::aisb_bot_status();
     let tg = monitor::OmegaTelegramConfig::read();

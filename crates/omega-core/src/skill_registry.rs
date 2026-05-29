@@ -636,7 +636,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let registry = SkillRegistry::discover(dir.path()).unwrap();
         let orchestrator = AuditOrchestrator::new(registry);
-        assert_eq!(orchestrator.select_all().len(), 17);
+        assert_eq!(orchestrator.select_all().len(), 22);
     }
 
     #[test]

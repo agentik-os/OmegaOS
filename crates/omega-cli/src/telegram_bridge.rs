@@ -2306,7 +2306,7 @@ impl TelegramBotEngine {
             let _ = self
                 .send_html(
                     chat_id,
-                    " <i>No billing snapshot available (<code>/tmp/aisb-usage.json</code> missing).</i>",
+                    " <i>No billing snapshot yet — run <code>omega usage --check</code> (writes <code>~/.omega/state/usage.json</code>).</i>",
                 )
                 .await;
             return;
