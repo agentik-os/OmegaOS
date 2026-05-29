@@ -270,7 +270,9 @@ CLAUDE_CMD_DST="$HOME/.claude/commands"
 if [[ -d "$OMEGA_SRC/.claude/commands" ]]; then
     mkdir -p "$CLAUDE_CMD_DST"
     cp -f "$OMEGA_SRC/.claude/commands/"omega-*.md "$CLAUDE_CMD_DST/" 2>/dev/null || true
-    SHIPPED=$(ls "$CLAUDE_CMD_DST/"omega-*.md 2>/dev/null | wc -l)
+    # /dynamic — native Dynamic Workflows trigger (the Workflow tool); not omega-prefixed
+    cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/" 2>/dev/null || true
+    SHIPPED=$(ls "$CLAUDE_CMD_DST/"omega-*.md "$CLAUDE_CMD_DST/dynamic.md" 2>/dev/null | wc -l)
     if [[ "$SHIPPED" -gt 0 ]]; then
         ok "OmegaOS slash commands installed ($SHIPPED commands in $CLAUDE_CMD_DST/)"
     fi
