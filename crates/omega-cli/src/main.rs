@@ -2826,6 +2826,18 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
             let rules_dir = home.join(".omega/rules");
             std::fs::create_dir_all(&rules_dir)?;
 
+            // Idempotent: clear stale exports first so a re-export always
+            // mirrors the current registry exactly (no lingering old-id files
+            // when rules are renamed or removed).
+            if let Ok(entries) = std::fs::read_dir(&rules_dir) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|x| x.to_str()) == Some("md") {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                }
+            }
+
             let all = rules::all_rules();
             for r in &all {
                 let slug = r.title.to_lowercase()

@@ -54,11 +54,14 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 ## Laws vs Rules
 
-- **Laws (L1, L2, L3)** — inviolable, universal, top-priority. They bind every agent always and
+- **Laws (L0–L5)** — inviolable, universal, top-priority. They bind every agent always and
   override every rule and task. Few, stable, never scoped-out. Rendered first everywhere
   (TUI Info tab, `omega rules list`, every prompt block) and visually distinct.
-- **Rules (R-NN, named)** — operational, categorized (Universal / QualityGate / Orchestration /
-  Reporting / Safety), scoped per agent level. Guidelines that implement the Laws in practice.
+  The six: L0 ship-the-truth (install-parity), L1 runtime-is-truth, L2 researcher-not-sycophant,
+  L3 decide-and-proceed, L4 done-means-100%, L5 quality-over-speed.
+- **Rules (R-*, named)** — operational, categorized (Universal / QualityGate / Orchestration /
+  Reporting / Safety), scoped per agent level (Master / Global / Oracle / Worker via the explicit
+  `scopes` field). Guidelines that implement the Laws in practice.
 
 Source of truth: `crates/omega-core/src/rules.rs` (`RuleKind::{Law, Rule}`).
 
