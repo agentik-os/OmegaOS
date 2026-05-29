@@ -44,8 +44,6 @@ pub enum RuleCategory {
 pub enum RuleScope {
     /// AISB Master — the global dispatcher chat brain.
     Master,
-    /// Every agent everywhere (global system invariants).
-    Global,
     /// Oracle — strategic per-project planner/dispatcher.
     Oracle,
     /// Worker — ephemeral task executor.
@@ -69,7 +67,7 @@ pub struct Rule {
 }
 
 // Scope shorthands for the table below.
-const ALL: &[RuleScope] = &[RuleScope::Master, RuleScope::Global, RuleScope::Oracle, RuleScope::Worker];
+const ALL: &[RuleScope] = &[RuleScope::Master, RuleScope::Oracle, RuleScope::Worker];
 const EXEC: &[RuleScope] = &[RuleScope::Oracle, RuleScope::Worker];
 const PLAN: &[RuleScope] = &[RuleScope::Oracle, RuleScope::Master];
 const ORACLE_ONLY: &[RuleScope] = &[RuleScope::Oracle];
@@ -395,7 +393,7 @@ impl Rule {
     pub fn scopes(&self) -> Vec<RuleScope> {
         use RuleScope::*;
         if self.kind == RuleKind::Law {
-            return vec![Master, Global, Oracle, Worker];
+            return vec![Master, Oracle, Worker];
         }
         self.scopes.to_vec()
     }
@@ -431,7 +429,6 @@ pub fn brief_preamble() -> String {
 pub fn rules_prompt_block(scope: RuleScope) -> String {
     let level = match scope {
         RuleScope::Master => "AISB Master",
-        RuleScope::Global => "all agents",
         RuleScope::Oracle => "Oracle",
         RuleScope::Worker => "Worker",
     };
@@ -533,7 +530,7 @@ mod tests {
         for r in laws() {
             assert_eq!(
                 r.scopes(),
-                vec![Master, Global, Oracle, Worker],
+                vec![Master, Oracle, Worker],
                 "law {} must be universal",
                 r.id
             );
@@ -561,7 +558,7 @@ mod tests {
     #[test]
     fn agent_context_block_carries_laws_and_rules_for_all_scopes() {
         use RuleScope::*;
-        for scope in [Master, Global, Oracle, Worker] {
+        for scope in [Master, Oracle, Worker] {
             let ctx = agent_context_block(scope);
             assert!(
                 ctx.contains("THE LAWS"),

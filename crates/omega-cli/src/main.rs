@@ -372,18 +372,31 @@ async fn main() -> Result<()> {
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::Usage { check }) => {
-            let _ = check; // single mode for now: always a one-shot check
-            match usage::check_and_alert().await {
-                Ok(Some(snap)) => {
-                    println!(
-                        "usage: 5h={}% week={}% (alert={}%)",
-                        snap.session_pct,
-                        snap.week_pct,
-                        snap.alert_pct()
-                    );
+            if check {
+                // --check: actively fetch from the OAuth endpoint + alert on threshold.
+                match usage::check_and_alert().await {
+                    Ok(Some(snap)) => {
+                        println!(
+                            "usage: 5h={}% week={}% (alert={}%)",
+                            snap.session_pct,
+                            snap.week_pct,
+                            snap.alert_pct()
+                        );
+                    }
+                    Ok(None) => println!("usage: OAuth endpoint unavailable (no alert)"),
+                    Err(e) => eprintln!("usage check failed: {}", e),
                 }
-                Ok(None) => println!("usage: OAuth endpoint unavailable (no alert)"),
-                Err(e) => eprintln!("usage check failed: {}", e),
+            } else {
+                // no flag: show the last cached snapshot without a network call.
+                match omega_core::monitor::UsageSnapshot::read().ok().flatten() {
+                    Some(snap) => println!(
+                        "usage (cached): 5h={}% week={}%",
+                        snap.session_pct, snap.week_pct
+                    ),
+                    None => {
+                        println!("usage: no cached snapshot — run 'omega usage --check'")
+                    }
+                }
             }
             Ok(())
         }
@@ -2863,14 +2876,18 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
                 println!("  {:16} {}", r.id, r.title);
             }
             println!("\nOPERATIONAL RULES ({})\n", ops.len());
-            let mut current_cat = String::new();
-            for r in &ops {
-                let cat = format!("{:?}", r.category);
-                if cat != current_cat {
-                    println!("─── {} ───", cat);
-                    current_cat = cat;
+            // Group by a FIXED category order so each header prints exactly
+            // once, regardless of the registry's declaration order.
+            use rules::RuleCategory::*;
+            for cat in [Universal, QualityGate, Orchestration, Reporting, Safety] {
+                let in_cat: Vec<_> = ops.iter().filter(|r| r.category == cat).collect();
+                if in_cat.is_empty() {
+                    continue;
                 }
-                println!("  {:16} {}", r.id, r.title);
+                println!("─── {:?} ───", cat);
+                for r in in_cat {
+                    println!("  {:16} {}", r.id, r.title);
+                }
             }
             println!("\nRules dir: ~/.omega/rules/");
             println!("Export:    omega rules export");
