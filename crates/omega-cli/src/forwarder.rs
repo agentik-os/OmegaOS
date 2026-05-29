@@ -56,11 +56,17 @@ pub fn spawn_forwarder(mgr: SessionManager, sink: StatusSink) -> UnboundedSender
     // back-to-back bracketed-paste segments (observed with mobile clients such
     // as Termius). Each segment reaches us as its own `ForwardMsg::Paste`;
     // forwarded separately they become multiple "[Pasted text]" placeholders in
-    // the target app (Claude Code) — the user's "the paste splits in two" bug.
-    // We merge same-session paste segments that arrive within this debounce
-    // window into ONE bracketed block. A real, deliberate second paste is far
-    // more than this apart, so it is never wrongly merged.
-    const PASTE_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(80);
+    // the target app (Claude Code).
+    //
+    // Tuning: the segments of a single user paste arrive within MICROSECONDS
+    // of each other (it's the same physical event, just the client chunked it).
+    // The original 80ms window was wildly over-conservative — it imposed a
+    // perceptible 80ms delay on EVERY paste while catching genuine splits with
+    // 100x more headroom than needed. 12ms is plenty for the legitimate split
+    // case (still single-digit ms after the chunker), and invisible to the
+    // human eye. A deliberate second paste is far more than 12ms apart, so
+    // it never gets wrongly merged.
+    const PASTE_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(12);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<ForwardMsg>();
     tokio::spawn(async move {

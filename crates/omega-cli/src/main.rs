@@ -583,8 +583,15 @@ async fn run_tui_loop(
     // for a short window after the user interacts we drop to 30ms so the
     // typed-char echo feels near-instant. Idle load is unchanged.
     const PREVIEW_IDLE_MS: u64 = 80;
-    const PREVIEW_ACTIVE_MS: u64 = 30;
-    const PREVIEW_ACTIVE_WINDOW_MS: u64 = 300;
+    // 16ms = 60 fps echo while the user is actively typing — matches the
+    // event-loop tick so each keystroke can echo on the very next frame.
+    // 30ms (~33 fps) was perceivably laggy on fast typing/pasting; user
+    // explicitly asked for snappier interaction.
+    const PREVIEW_ACTIVE_MS: u64 = 16;
+    // Keep the fast cadence going for half a second after each keystroke
+    // so a short typing pause doesn't immediately drop us back to 80ms idle
+    // (avoids a perceptible "stutter" between bursts).
+    const PREVIEW_ACTIVE_WINDOW_MS: u64 = 500;
     let mut last_preview_refresh = std::time::Instant::now();
     let mut last_refresh = std::time::Instant::now();
     // Last keystroke/forward activity; starts "stale" so we boot in idle mode.
