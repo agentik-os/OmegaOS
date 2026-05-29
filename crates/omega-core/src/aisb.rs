@@ -48,7 +48,7 @@ pub async fn ensure_master(
     // tails the conversation log the bridge writes, so the user can WATCH
     // the Telegram chat stream in the TUI. It is no longer an interactive
     // Claude (that caused the "talks in the pane but not Telegram" split).
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let log = home.join(".omega/state/aisb-conversation.log");
     if let Some(parent) = log.parent() {
         let _ = std::fs::create_dir_all(parent);

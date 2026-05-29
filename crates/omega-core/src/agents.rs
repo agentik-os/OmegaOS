@@ -153,7 +153,7 @@ impl Agent {
 
     /// Returns the shell command with options (system prompt file, continue, etc.).
     pub fn launch_command_with(&self, initial_prompt: Option<&str>, opts: LaunchOptions) -> String {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/hacker".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
 
         match self {
             Agent::Claude => {

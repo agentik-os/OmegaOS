@@ -3081,7 +3081,7 @@ impl TelegramBotEngine {
         self.claude_stream.reset().await;
 
         // 2. Truncate the conversation log so the viewer starts fresh too.
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+        let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
         let log = home.join(".omega/state/aisb-conversation.log");
         let _ = std::fs::write(
             &log,
@@ -3303,7 +3303,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
             .copied()
             .unwrap_or(cfg.chat_id);
         tokio::spawn(async move {
-            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+            let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
             let inbox = home.join(".omega/state/aisb-local-inbox.jsonl");
             let mut processed: usize = std::fs::read_to_string(&inbox)
                 .map(|s| s.lines().count())
@@ -3459,7 +3459,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 ///
 /// Placeholders: {{PROJECT}}, {{WORKDIR}}, {{SESSION}}.
 fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<String> {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     // Prefer the installed copy, fall back to the repo copy.
     let candidates = [
         home.join(".omega/agents/oracle.md"),
@@ -3498,6 +3498,12 @@ fn clean_terminal_output(text: &str) -> String {
     let no_reminders = regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>")
         .map(|re| re.replace_all(&stripped, "").to_string())
         .unwrap_or_else(|_| stripped.to_string());
+    // Strip the whole <claude-mem-context> block (multi-line) — agents keep it
+    // in context (injected silently via additionalContext), but the human-facing
+    // mirror/Telegram view must never show the memory dump.
+    let no_reminders = regex::Regex::new(r"(?s)<claude-mem-context>.*?</claude-mem-context>")
+        .map(|re| re.replace_all(&no_reminders, "").to_string())
+        .unwrap_or(no_reminders);
     let lines: Vec<&str> = no_reminders
         .lines()
         .map(|l| l.trim_end())

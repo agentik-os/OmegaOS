@@ -739,7 +739,7 @@ async fn run_tui_loop(
                     // ENOENT. Prefer the canonical install path, then current_exe,
                     // then a bare PATH lookup.
                     use std::os::unix::process::CommandExt;
-                    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+                    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
                     let candidates = [
                         home.join(".local/bin/omega"),
                         std::env::current_exe().unwrap_or_default(),
@@ -2319,7 +2319,7 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
 /// type again.
 async fn cmd_aisb_chat() -> Result<()> {
     use std::io::{BufRead, Write};
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let log = home.join(".omega/state/aisb-conversation.log");
     let inbox = home.join(".omega/state/aisb-local-inbox.jsonl");
     if let Some(p) = inbox.parent() {

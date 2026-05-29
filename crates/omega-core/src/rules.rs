@@ -294,7 +294,7 @@ pub fn rules_for_scope(scope: RuleScope) -> Vec<Rule> {
 /// — it gets prepended to every Oracle and Worker brief. Empty string
 /// if neither file exists (degrades gracefully).
 pub fn brief_preamble() -> String {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let installed = home.join(".omega/agents/_brief-preamble.md");
     let repo = std::path::PathBuf::from("agents/_brief-preamble.md");
     std::fs::read_to_string(&installed)

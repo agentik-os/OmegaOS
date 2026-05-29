@@ -6,7 +6,7 @@ fn main() {
     let project = std::env::args().nth(2).unwrap_or_else(|| "OmegaOS".to_string());
     let wd = std::env::args()
         .nth(3)
-        .unwrap_or_else(|| "/home/hacker/VibeCoding/work/OmegaOS".to_string());
+        .unwrap_or_else(|| ".".to_string());
     eprintln!("--- amplifying (raw={} chars) ---", raw.len());
     let t = std::time::Instant::now();
     let brief = omega_core::amplify::amplify_mission(&raw, &project, &wd);

@@ -349,7 +349,7 @@ impl OraclePromptGenerator {
     /// installed copy, falls back to the repo copy. Returns None if neither
     /// exists (the caller then uses the inline fallback).
     fn load_template(project: &str, working_dir: &Path, oracle_name: &str) -> Option<String> {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+        let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
         let candidates = [
             home.join(".omega/agents/oracle.md"),
             std::path::PathBuf::from("agents/oracle.md"),
