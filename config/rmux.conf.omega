@@ -12,6 +12,23 @@
 # fallback for daemons that began before this config was sourced).
 set-option -g history-limit 100000
 
+# Option/Alt + Up/Down — scroll the pane's scrollback by one line (the
+# tmux-default user UX). If the pane is already in copy/view-mode, just
+# scroll. Otherwise, enter copy-mode with -e (auto-exits when you scroll
+# back to the bottom) then scroll one line. Matches what desktop tmux users
+# are used to inside Claude sessions, without touching rmux internals.
+#
+# Does NOT break the omega TUI: that app intercepts Alt+Up via crossterm
+# BEFORE rmux ever sees a key (when the user is in the omega TUI, the
+# foreground binary is the TUI itself); these root bindings only fire when
+# the user is attached directly to a session, which is exactly the case the
+# tmux-style scroll is meant for.
+#
+# Mobile (Termius without rmux on top) is unaffected — rmux is not in the
+# pipeline there, so PageUp/Down super-scroll keeps working unchanged.
+bind-key -n M-Up   if-shell -F '#{pane_in_mode}' { send-keys -X scroll-up }   { copy-mode -e ; send-keys -X scroll-up }
+bind-key -n M-Down if-shell -F '#{pane_in_mode}' { send-keys -X scroll-down } { copy-mode -e ; send-keys -X scroll-down }
+
 # Option+Z / Alt+Z → OmegaOS session manager popup (full-screen)
 bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"
 
