@@ -288,10 +288,14 @@ impl Patrol {
                         if let Some(last_update) = progress.last_updated {
                             let idle_secs = (Utc::now() - last_update).num_seconds();
                             if idle_secs > AUTO_DONE_IDLE_SECS {
+                                // Kill the still-live idle worker BEFORE releasing its
+                                // scope claim, so it cannot keep editing files that
+                                // another worker may immediately claim (data race).
+                                let _ = mgr.kill_session(&session.name).await;
                                 let mut signal = DoneSignal::new(
                                     &session.name,
                                     DoneStatus::DoneClean,
-                                    "auto-done: all todos completed, worker exited without worker-mark-done.sh",
+                                    "auto-done: todos completed + idle past threshold; patrol killed the worker and signaled done",
                                 );
                                 signal.todos_total = progress.todos_total;
                                 signal.todos_completed = progress.todos_completed;
@@ -511,9 +515,20 @@ impl Patrol {
         worker_name: &str,
         oracles: &'a [&crate::session::OmegaSession],
     ) -> Option<&'a crate::session::OmegaSession> {
+        // Authoritative: the oracle whose OracleState registry actually lists
+        // this worker. This is correct even with multiple oracles per project.
+        let states = crate::oracle_lifecycle::OracleState::read_all(&self.config.state_dir);
+        if let Some(state) = states
+            .iter()
+            .find(|s| s.workers.iter().any(|w| w.session_name == worker_name))
+        {
+            if let Some(o) = oracles.iter().find(|o| o.name == state.oracle_name) {
+                return Some(o);
+            }
+        }
+        // Fallback: first oracle of the same project (best-effort if no registry hit).
         let worker_session = crate::session::OmegaSession::classify(worker_name);
         let worker_project = worker_session.project.as_deref()?;
-
         oracles
             .iter()
             .find(|o| o.project.as_deref() == Some(worker_project))
