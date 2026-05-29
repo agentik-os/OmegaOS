@@ -406,6 +406,67 @@ if ! grep -qF 'alias om=' "$RC_FILE" 2>/dev/null; then
     ok "Added 'om' alias for omega menu"
 fi
 
+# ─── Phase 6.5: Self-containment (hooks, identity, persistent service, headless) ──
+# Everything here makes a fresh install reproduce the LIVE system with zero
+# dependency on the retired ~/.aisb legacy layer.
+
+step "Phase 6.5: Self-containment"
+
+# (a) Agent-tracking + verify hooks → ~/.omega/hooks, registered in settings.json.
+HOOKS_DST="$OMEGA_DIR/hooks"
+mkdir -p "$HOOKS_DST"
+if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
+    cp -f "$OMEGA_SRC/scripts/hooks/"*.sh "$HOOKS_DST/" 2>/dev/null && chmod +x "$HOOKS_DST/"*.sh 2>/dev/null
+    CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+    mkdir -p "$HOME/.claude"
+    [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
+    if command -v jq >/dev/null 2>&1; then
+        TMP="$(mktemp)"
+        jq --arg track "$HOOKS_DST/track-tool-use.sh" --arg verify "$HOOKS_DST/stop-verify-hook.sh" '
+          .hooks = (.hooks // {})
+          | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(((.hooks[0].command // "") | test("track-tool-use")) | not)) + [{"matcher":"*","hooks":[{"type":"command","command":$track}]}])
+          | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
+        ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null && mv "$TMP" "$CLAUDE_SETTINGS" && ok "Hooks installed + registered (PostToolUse track + Stop verify)" || { rm -f "$TMP"; info "Hook merge skipped (jq error) — hooks copied to $HOOKS_DST"; }
+    else
+        info "jq not found — hooks copied to $HOOKS_DST; install jq to auto-register them in settings.json"
+    fi
+fi
+
+# (b) Identity baseline (never overwrites an existing SOUL.md).
+if [[ -f "$OMEGA_SRC/agents/identity/SOUL.template.md" && ! -f "$OMEGA_DIR/SOUL.md" ]]; then
+    cp "$OMEGA_SRC/agents/identity/SOUL.template.md" "$OMEGA_DIR/SOUL.md"
+    ok "Identity template → $OMEGA_DIR/SOUL.md (customize it; keep private data in MEMORY.md)"
+fi
+
+# (c) Persistent Telegram bridge — systemd --user service (replaces legacy aisb-bot.service).
+if command -v systemctl >/dev/null 2>&1 && [[ -f "$OMEGA_SRC/config/systemd/omega-telegram.service" ]]; then
+    SD_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$SD_DIR"
+    cp -f "$OMEGA_SRC/config/systemd/omega-telegram.service" "$SD_DIR/omega-telegram.service"
+    loginctl enable-linger "$USER" 2>/dev/null || true
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable omega-telegram.service 2>/dev/null || true
+    if [[ -f "$OMEGA_DIR/telegram.toml" ]]; then
+        systemctl --user restart omega-telegram.service 2>/dev/null || true
+        ok "Telegram bridge service enabled + started (persistent, Restart=always)"
+    else
+        ok "Telegram bridge service enabled — run 'omega telegram setup <TOKEN> <CHAT_ID>' then 'systemctl --user start omega-telegram'"
+    fi
+else
+    info "systemd --user unavailable — run 'omega telegram run' under rmux, or use your own supervisor"
+fi
+
+# (d) Claude Code agent binary — omega needs it to spawn agents.
+if ! command -v claude >/dev/null 2>&1; then
+    info "Claude Code CLI absent — omega needs it to spawn agents. Attempting install..."
+    "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
+fi
+
+# (e) Headless rendering for PDF generation / Playwright audits (best-effort).
+if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+    sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""

@@ -1,0 +1,18 @@
+[Unit]
+Description=OmegaOS Telegram bridge (omega telegram run) — persistent phone interface
+Documentation=https://github.com/agentik-os/OmegaOS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Rust bridge — replaces the legacy python aisb-bot.service. Reads its token
+# from ~/.omega/telegram.toml (set via `omega telegram setup`). Crash-loops
+# harmlessly until the token exists, then serves.
+ExecStart=%h/.local/bin/omega telegram run
+Restart=always
+RestartSec=10
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

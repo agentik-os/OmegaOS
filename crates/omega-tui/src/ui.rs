@@ -1064,7 +1064,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "    (no /tmp/aisb-usage.json — usage-monitor cron not running)",
+            "    (no ~/.omega/state/usage.json — run 'omega usage --check')",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -1081,7 +1081,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(Span::styled(
-        "    We just READ its usage cache (/tmp/aisb-usage.json) for the billing view.",
+        "    Billing reads ~/.omega/state/usage.json (omega usage --check, native OAuth).",
         Style::default().fg(Color::Gray),
     )));
     let (bot_icon, bot_color, bot_text) = if bot_status.bot_alive {

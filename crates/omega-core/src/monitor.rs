@@ -3,8 +3,8 @@
 //! files and credential files that the AISB system already maintains.
 //!
 //! Files we read (read-only):
-//! - `/tmp/aisb-usage.json`            — live billing percentages (updated by
-//!                                       `~/.aisb/lib/usage-monitor.sh` cron)
+//! - `~/.omega/state/usage.json`       — live billing percentages (written by
+//!                                       the native `omega usage --check` cron)
 //! - `~/.claude/.credentials.json`     — current OAuth credentials
 //! - `~/.claude/accounts/*.json`       — saved account profiles
 //! - `~/.omega/telegram.toml`          — Omega's own Telegram bot config
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const USAGE_PATH: &str = "/tmp/aisb-usage.json";
+// (removed) legacy /tmp/aisb-usage.json — billing now reads ~/.omega/state/usage.json natively.
 
 /// Live billing snapshot read from the AISB usage cache.
 /// Values mirror what the AISB bot's `/billing` command shows.
@@ -72,37 +72,24 @@ impl UsageSnapshot {
             .join(".omega/state/usage.json")
     }
 
-    /// Read the usage snapshot. Prefers ~/.omega/state/usage.json (real
-    /// OAuth %), falls back to the legacy /tmp/aisb-usage.json estimate.
+    /// Read the usage snapshot from ~/.omega/state/usage.json (written natively
+    /// by `omega usage --check` from the OAuth endpoint). Omega-owned, zero
+    /// legacy dependency — returns None if absent (e.g. the cron hasn't run yet).
     pub fn read() -> Result<Option<Self>> {
         let omega = Self::omega_usage_path();
-        if omega.exists() {
-            if let Ok(content) = std::fs::read_to_string(&omega) {
-                if let Ok(snap) = serde_json::from_str::<Self>(&content) {
-                    return Ok(Some(snap));
-                }
-            }
-        }
-        let path = std::path::Path::new(USAGE_PATH);
-        if !path.exists() {
+        if !omega.exists() {
             return Ok(None);
         }
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", USAGE_PATH))?;
+        let content = std::fs::read_to_string(&omega)
+            .with_context(|| format!("reading {}", omega.display()))?;
         let snap: Self = serde_json::from_str(&content)
-            .with_context(|| format!("parsing {}", USAGE_PATH))?;
+            .with_context(|| format!("parsing {}", omega.display()))?;
         Ok(Some(snap))
     }
 
     /// Age of the preferred cache file in seconds (None if missing).
     pub fn cache_age_secs() -> Option<u64> {
-        let omega = Self::omega_usage_path();
-        let target = if omega.exists() {
-            omega
-        } else {
-            std::path::PathBuf::from(USAGE_PATH)
-        };
-        let meta = std::fs::metadata(&target).ok()?;
+        let meta = std::fs::metadata(Self::omega_usage_path()).ok()?;
         let modified = meta.modified().ok()?;
         modified.elapsed().ok().map(|d| d.as_secs())
     }
