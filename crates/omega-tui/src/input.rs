@@ -101,8 +101,10 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                 // almost always the right panel for any reasonable terminal.
                 if mouse.column >= 30 {
                     if matches!(app.session_focus, SessionFocus::List) {
-                        app.session_focus = SessionFocus::Chat;
-                        app.preview_follow_tail = false;
+                        // Use the canonical focus path (follow_tail = true) so a
+                        // mouse click behaves like the keyboard Enter — entering
+                        // chat shows the latest output instead of freezing the view.
+                        app.enter_chat_focus();
                     }
                 } else {
                     app.session_focus = SessionFocus::List;
