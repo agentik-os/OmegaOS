@@ -536,7 +536,8 @@ impl TelegramBotEngine {
                 Some(tail) => tail.split_once(' ').map(|(_, args)| args).unwrap_or(""),
                 None => rest,
             };
-            self.handle_dispatch_command(chat_id, after_at).await;
+            self.handle_dispatch_command(chat_id, msg.message_thread_id, after_at)
+                .await;
             return Ok(());
         }
 
@@ -568,9 +569,13 @@ impl TelegramBotEngine {
             if self.try_handle_keyboard_command(chat_id, text).await {
                 return Ok(());
             }
-            // Plain text commands return a string we send normally.
+            // Plain text commands return a string we send normally. If the
+            // command was typed inside a forum topic, thread the reply back
+            // into that topic so it doesn't bleed into the group's General.
             if let Some(reply) = self.handle_command(text).await {
-                let _ = self.send_html(chat_id, &reply).await;
+                let _ = self
+                    .send_html_smart(chat_id, msg.message_thread_id, &reply)
+                    .await;
                 return Ok(());
             }
         }
@@ -2852,17 +2857,22 @@ impl TelegramBotEngine {
     /// structured brief, preview it back to the user with [✅ Dispatch] /
     /// [❌ Cancel] inline buttons. The actual oracle spawn happens only on
     /// confirm — human-in-the-loop dispatch.
-    async fn handle_dispatch_command(&self, chat_id: i64, args: &str) {
+    async fn handle_dispatch_command(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        args: &str,
+    ) {
         let args = args.trim();
         let usage = "Usage: <code>/dispatch &lt;Project&gt; &lt;mission&gt;</code>\nExample: <code>/dispatch DentistryGPT fix the login redirect loop</code>";
         let Some((project, mission)) = args.split_once(char::is_whitespace) else {
-            let _ = self.send_html(chat_id, usage).await;
+            let _ = self.send_html_smart(chat_id, thread_id, usage).await;
             return;
         };
         let project = project.trim();
         let mission = mission.trim();
         if project.is_empty() || mission.is_empty() {
-            let _ = self.send_html(chat_id, usage).await;
+            let _ = self.send_html_smart(chat_id, thread_id, usage).await;
             return;
         }
 
@@ -2875,8 +2885,9 @@ impl TelegramBotEngine {
                 .map(|p| format!("<code>{}</code>", formatting::escape_html(&p.name)))
                 .collect();
             let _ = self
-                .send_html(
+                .send_html_smart(
                     chat_id,
+                    thread_id,
                     &format!(
                         "<i>Project <code>{}</code> not in registry.</i>\n\n<b>Known:</b> {}",
                         formatting::escape_html(project),
@@ -2968,12 +2979,16 @@ impl TelegramBotEngine {
                 },
             ]],
         };
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "chat_id": chat_id,
             "text": body,
             "parse_mode": "HTML",
             "reply_markup": kb,
         });
+        // Keep the preview INSIDE the topic when the command was typed there.
+        if let Some(tid) = thread_id {
+            payload["message_thread_id"] = serde_json::json!(tid);
+        }
         let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
         let _ = self.client.post(&url).json(&payload).send().await;
     }
@@ -3615,6 +3630,27 @@ impl TelegramBotEngine {
         });
         let _ = self.client.post(&url).json(&body).send().await?;
         Ok(())
+    }
+
+    /// Send HTML, threading the reply back into the originating forum topic
+    /// when `thread_id` is `Some`. Without this, slash-command replies typed
+    /// inside a project topic (`/status`, `/dispatch`, …) post into the
+    /// group's General thread instead of the topic the user was in — broken
+    /// UX. Falls back to `send_html` when `thread_id` is None so DM behavior
+    /// is unchanged.
+    async fn send_html_smart(
+        &self,
+        chat_id: i64,
+        thread_id: Option<i64>,
+        text: &str,
+    ) -> Result<()> {
+        match thread_id {
+            Some(tid) => self.send_html_to_topic(chat_id, tid, text).await,
+            None => {
+                let _ = self.send_html(chat_id, text).await;
+                Ok(())
+            }
+        }
     }
 
     /// Send a document into a specific forum topic (oracle PDF reports).
