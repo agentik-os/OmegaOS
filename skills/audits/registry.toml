@@ -3,7 +3,7 @@
 
 [meta]
 version = "1.0.0"
-total_audits = 21
+total_audits = 23
 doctrine = "Gestalt-Popper"
 categories = ["preventive", "detective"]
 
@@ -252,3 +252,14 @@ max_score = 540
 triggers = ["refonte", "redesign dashboard", "comme Linear", "comme Vercel", "dashboard pro"]
 read_only = false
 answers = "How to REDESIGN it to senior level?"
+
+[[audits]]
+id = "observabilityaudit"
+name = "Observability Audit"
+domain = "observability"
+category = "detective"
+phases = 18
+max_score = 360
+triggers = ["observability","logging audit","tracing audit","metrics audit","alerting audit","slo audit","can we debug prod"]
+read_only = false
+answers = "Can we SEE what it does in prod?"

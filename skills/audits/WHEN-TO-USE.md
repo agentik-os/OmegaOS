@@ -1,11 +1,11 @@
 # Quality Arsenal — When To Use Each Audit
 
-18 forensic audits + 2 orchestrators. All share the Gestalt-Popper doctrine: clarity gate →
+23 forensic audits + 2 orchestrators. All share the Gestalt-Popper doctrine: clarity gate →
 falsification → hinge-point 10x scrutiny → auto-fix → auto-re-audit. Every score normalizes to /100.
 
 > **Routing rule:** match the user's intent (or the changed files) to a domain below and run that
 > audit. Multiple domains matched → run each in parallel (one worker per audit, file-disjoint).
-> "full audit" / "audit complet" → run all 18 via the orchestrator. Never paraphrase an audit into
+> "full audit" / "audit complet" → run all 23 via the orchestrator. Never paraphrase an audit into
 > prose — invoke the real skill (`/<name>` on line 1 of the worker prompt).
 
 ## Preventive — architecture & design (run before/while building)
@@ -48,7 +48,7 @@ falsification → hinge-point 10x scrutiny → auto-fix → auto-re-audit. Every
 1. **One concern** (e.g. "is it secure?") → run the single matching audit.
 2. **A code change shipped** → `codeaudit` is the baseline floor; add domain audits the diff touches
    (auth→`secaudit`, ui→`uiuxaudit`, api→`apiaudit`, data→`dataaudit`).
-3. **Pre-launch / "audit complet"** → `audit-orchestrator` runs all 18 in parallel, then synthesizes.
+3. **Pre-launch / "audit complet"** → `audit-orchestrator` runs all 23 in parallel, then synthesizes.
 4. **Non-UI project** (CLI, library, backend) → `dxaudit` is primary; `uiuxaudit`/`flowaudit`/
    `motionaudit` self-abort.
 5. **Read-only ideation** → `retentionaudit` proposes features (RICE-scored), never edits code.

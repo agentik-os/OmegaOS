@@ -21,7 +21,7 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 
 ```bash
 /audit-orchestrator               # interactive: ask user what to audit
-/audit-orchestrator full          # run all 18 audits in parallel
+/audit-orchestrator full          # run all 23 audits in parallel
 /audit-orchestrator quick         # top 5 most-impactful audits at Quick level
 /audit-orchestrator standard      # smart selection at Standard level (default)
 /audit-orchestrator forensic      # deep Gestalt-Popper on selected audits
@@ -30,7 +30,7 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 /audit-orchestrator design        # uiuxaudit + motionaudit + a11yaudit + copyaudit
 ```
 
-## The 18 audits in the Quality Arsenal
+## The 23 audits in the Quality Arsenal
 
 | Audit | Domain | When to pick |
 |---|---|---|
@@ -101,7 +101,7 @@ When user says ambiguous request like "audit my project":
    - "automation/cron/scripts" → automationaudit
    - "bug/error/broken/runtime" → debugaudit
    - "redesign/refonte/dashboard" → refontaudit
-   - "full/all/everything/complet" → ALL 18 audits
+   - "full/all/everything/complet" → ALL 23 audits
 
 3. PICK POWER LEVEL
    - Default: Standard (Level 2)
@@ -143,7 +143,7 @@ Approve? [y/n/customize]
 
 When user says "full audit" / "audit complet" / "tous les audits":
 
-1. Dispatch ALL 18 audits in 3 parallel waves (file-safety partitioned):
+1. Dispatch ALL 23 audits in 3 parallel waves (file-safety partitioned):
    - **Wave 1** (read-only, can parallel): codeaudit, logicaudit, dataaudit, apiaudit, seoaudit, featureaudit, retentionaudit, copyaudit, dxaudit
    - **Wave 2** (after Wave 1 verdicts exist): secaudit (reads apiaudit), perfaudit, debugaudit, automationaudit
    - **Wave 3** (UI bundle, after Wave 1): uiuxaudit, refontaudit, motionaudit, a11yaudit, flowaudit

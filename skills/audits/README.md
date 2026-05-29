@@ -1,4 +1,4 @@
-# Quality Arsenal — 18 Forensic Audits
+# Quality Arsenal — 23 Forensic Audits
 
 OmegaOS ships with 18 Gestalt-Popper forensic audits (+ 2 orchestrators) that systematically verify every surface of a software project. Each audit is a multi-phase protocol that observes, measures, scores, fixes, and re-audits.
 
