@@ -131,6 +131,17 @@ read_only = false
 answers = "Is the logic OPTIMAL?"
 
 [[audits]]
+id = "i18naudit"
+name = "Internationalization & Localization Audit"
+domain = "localization"
+category = "preventive"
+phases = 18
+max_score = 360
+triggers = ["i18n", "internationalization", "localization", "l10n", "translation audit", "hardcoded strings", "rtl audit", "is it world-ready"]
+read_only = false
+answers = "Is it WORLD-READY?"
+
+[[audits]]
 id = "retentionaudit"
 name = "Retention & Opportunity Audit"
 domain = "retention"
