@@ -1,6 +1,6 @@
-# Quality Arsenal — 17 Forensic Audits
+# Quality Arsenal — 18 Forensic Audits
 
-OmegaOS ships with 17 Gestalt-Popper forensic audits that systematically verify every surface of a software project. Each audit is a multi-phase protocol that observes, measures, scores, fixes, and re-audits.
+OmegaOS ships with 18 Gestalt-Popper forensic audits (+ 2 orchestrators) that systematically verify every surface of a software project. Each audit is a multi-phase protocol that observes, measures, scores, fixes, and re-audits.
 
 ## Architecture
 
@@ -14,13 +14,14 @@ All audits share the **Gestalt-Popper doctrine**:
 
 ## Categories
 
-### Preventive (12) — Architecture & Design
+### Preventive (13) — Architecture & Design
 
 | Audit | Domain | Phases | Score | What it answers |
 |-------|--------|--------|-------|-----------------|
 | `/codeaudit` | Code | 23 | /420 | Is the code SOLID? |
 | `/flowaudit` | Flows | 25 | /400 | Does the experience WORK? |
 | `/uiuxaudit` | Design | 23 | /420 | Is the interface BEAUTIFUL? |
+| `/refontaudit` | Design | 25 | /540 | How to REDESIGN it to senior level? |
 | `/featureaudit` | Features | 19 | /320 | Is the product COMPLETE? |
 | `/a11yaudit` | Accessibility | 21 | /320 | Is it ACCESSIBLE? |
 | `/seoaudit` | SEO | 25 | /400 | Is it DISCOVERABLE? |
@@ -56,7 +57,7 @@ Oracles automatically select relevant audits at end of mission based on what cha
 | Bug fixes | `/debugaudit` |
 | Performance work | `/perfaudit` |
 | Content/copy | `/copyaudit`, `/seoaudit` |
-| Full product audit | All 17 in parallel |
+| Full product audit | All 18 in parallel |
 
 ### Manual invocation
 
@@ -136,5 +137,6 @@ skills/audits/
 ├── motionaudit/SKILL.md
 ├── automationaudit/SKILL.md
 ├── logicaudit/SKILL.md
+├── refontaudit/SKILL.md
 └── retentionaudit/SKILL.md
 ```

@@ -222,6 +222,28 @@ if [[ -d "$AUDITS_SRC" ]]; then
     mkdir -p "$AUDITS_DST"
     cp -r "$AUDITS_SRC"/* "$AUDITS_DST/"
     ok "Quality Arsenal installed: 18 audit skills + 2 orchestrators → $AUDITS_DST/"
+
+    # Make each audit invocable as a Claude Code slash command (/codeaudit, etc.).
+    # The full SKILL.md is large, so the stub points the agent at the installed
+    # protocol file rather than inlining it. Idempotent + non-fatal.
+    AUDIT_CMD_DST="$HOME/.claude/commands"
+    mkdir -p "$AUDIT_CMD_DST"
+    AUDIT_STUBS=0
+    for skill_md in "$AUDITS_DST"/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        name="$(basename "$(dirname "$skill_md")")"
+        cat > "$AUDIT_CMD_DST/$name.md" <<EOF
+# /$name
+
+Run the full $name protocol. Read and follow the complete forensic instructions in:
+
+\`$AUDITS_DST/$name/SKILL.md\`
+
+Execute every phase exactly as written — no streamlined or custom variant.
+EOF
+        AUDIT_STUBS=$((AUDIT_STUBS + 1))
+    done
+    ok "Audit slash commands installed ($AUDIT_STUBS stubs in $AUDIT_CMD_DST/)"
 else
     info "Audit skills not found — skipping"
 fi

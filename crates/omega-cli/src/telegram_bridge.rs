@@ -54,6 +54,8 @@ struct Update {
 struct ChatMemberUpdated {
     chat: Chat,
     #[serde(default)]
+    from: Option<User>,
+    #[serde(default)]
     new_chat_member: Option<ChatMember>,
 }
 
@@ -3396,6 +3398,15 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                     .map(|m| m.status.as_str())
                     .unwrap_or("");
                 let is_admin = status == "administrator" || status == "creator";
+                let actor_id = mcm.from.as_ref().map(|u| u.id);
+                if !cfg.is_authorized(mcm.chat.id, actor_id) {
+                    tracing::warn!(
+                        chat_id = mcm.chat.id,
+                        actor_id = ?actor_id,
+                        "rejected unauthorized my_chat_member auto-setup"
+                    );
+                    continue;
+                }
                 if is_admin && chat_type == "supergroup" && is_forum {
                     engine
                         .auto_setup_group(

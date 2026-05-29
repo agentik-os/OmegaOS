@@ -77,10 +77,20 @@ impl PersistentClaude {
         self.stdin.write_all(line.as_bytes()).await?;
         self.stdin.flush().await?;
 
-        // Read events until we see a `result` event.
+        // Read events until we see a `result` event. Each read is bounded by a
+        // 120s timeout — if the subprocess hangs (no event at all), bail with a
+        // recoverable error so the caller drops the corpse and respawns fresh.
         loop {
             let mut buf = String::new();
-            let n = self.stdout.read_line(&mut buf).await?;
+            let n = match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                self.stdout.read_line(&mut buf),
+            )
+            .await
+            {
+                Ok(r) => r?,
+                Err(_) => anyhow::bail!("claude subprocess timed out (no event in 120s)"),
+            };
             if n == 0 {
                 anyhow::bail!("claude subprocess closed stdout");
             }

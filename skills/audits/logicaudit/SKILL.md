@@ -23,7 +23,7 @@ triggers: ["logic", "optimize logic", "system optimization", "architecture logic
 
 > ## ⚠️ MANDATORY FIRST STEP — READ THE V2 META-PROTOCOL
 >
-> **Before doing ANYTHING else**, Read `~/.claude/audit-meta-protocol-v2.md`.
+> **Before doing ANYTHING else**, Read `../_shared/audit-meta-protocol-v2.md`.
 >
 > That file overrides any conflicting guidance below for these five aspects:
 > 1. Required CLI inputs (`--user-need`, `--hinge` are MANDATORY since 2026-05-08)
@@ -886,7 +886,7 @@ Code style/formatting → /codeaudit. UI → /uiuxaudit. Logic → here.
 
 ## MANDATORY BEFORE/AFTER VERIFICATION (v1.1)
 
-**Read `~/.claude/commands/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
+**Read `../_shared/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
 
 For every file this audit touches (moves, modifies, deletes), you MUST:
 

@@ -22,7 +22,7 @@ triggers: ["automation", "cron", "crontab", "scripts audit", "daemon health", "s
 
 > ## ⚠️ MANDATORY FIRST STEP — READ THE V2 META-PROTOCOL
 >
-> **Before doing ANYTHING else**, Read `~/.claude/audit-meta-protocol-v2.md`.
+> **Before doing ANYTHING else**, Read `../_shared/audit-meta-protocol-v2.md`.
 >
 > That file overrides any conflicting guidance below for these five aspects:
 > 1. Required CLI inputs (`--user-need`, `--hinge` are MANDATORY since 2026-05-08)
@@ -1075,7 +1075,7 @@ It doesn't punt to other audits. If it's automated and broken, fix it.
 
 ## MANDATORY BEFORE/AFTER VERIFICATION (v1.1)
 
-**Read `~/.claude/commands/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
+**Read `../_shared/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
 
 Automation fixes are HIGH RISK (touch live crons, daemons, scripts). Every fix MUST:
 
@@ -1095,7 +1095,7 @@ Automation fixes are HIGH RISK (touch live crons, daemons, scripts). Every fix M
 
 ### Quality Arsenal Preamble Compliance
 
-This audit implements contracts from `~/.claude/commands/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
+This audit implements contracts from `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge automation, falsification, evidence chain
 - ✅ **Concurrency lock** — `audits/.automationaudit/.lock` with 4h stale timeout

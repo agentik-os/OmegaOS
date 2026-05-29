@@ -21,7 +21,7 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 
 ```bash
 /audit-orchestrator               # interactive: ask user what to audit
-/audit-orchestrator full          # run all 17 audits in parallel
+/audit-orchestrator full          # run all 18 audits in parallel
 /audit-orchestrator quick         # top 5 most-impactful audits at Quick level
 /audit-orchestrator standard      # smart selection at Standard level (default)
 /audit-orchestrator forensic      # deep Gestalt-Popper on selected audits
@@ -30,13 +30,14 @@ RIGHT audits at the RIGHT power level, dispatch them, and synthesize results.
 /audit-orchestrator design        # uiuxaudit + motionaudit + a11yaudit + copyaudit
 ```
 
-## The 17 audits in the Quality Arsenal
+## The 18 audits in the Quality Arsenal
 
 | Audit | Domain | When to pick |
 |---|---|---|
 | `/codeaudit` | Code architecture | New codebase, refactor, technical debt |
 | `/secaudit` | Security (OWASP) | Pre-prod, payment handling, auth surfaces |
 | `/uiuxaudit` | Design quality | Visual consistency, design system audit |
+| `/refontaudit` | Dashboard refonte | Senior-level redesign (comme Linear/Vercel) |
 | `/flowaudit` | User journeys | Onboarding, conversion drops, dead-ends |
 | `/debugaudit` | Runtime bugs | Console errors, broken features, smoke test |
 | `/featureaudit` | Completeness | PRD validation, ship-readiness, "what's missing" |
@@ -100,7 +101,7 @@ When user says ambiguous request like "audit my project":
    - "automation/cron/scripts" → automationaudit
    - "bug/error/broken/runtime" → debugaudit
    - "redesign/refonte/dashboard" → refontaudit
-   - "full/all/everything/complet" → ALL 17 audits
+   - "full/all/everything/complet" → ALL 18 audits
 
 3. PICK POWER LEVEL
    - Default: Standard (Level 2)
@@ -142,10 +143,10 @@ Approve? [y/n/customize]
 
 When user says "full audit" / "audit complet" / "tous les audits":
 
-1. Dispatch ALL 17 audits in 3 parallel waves (file-safety partitioned):
+1. Dispatch ALL 18 audits in 3 parallel waves (file-safety partitioned):
    - **Wave 1** (read-only, can parallel): codeaudit, logicaudit, dataaudit, apiaudit, seoaudit, featureaudit, retentionaudit, copyaudit, dxaudit
    - **Wave 2** (after Wave 1 verdicts exist): secaudit (reads apiaudit), perfaudit, debugaudit, automationaudit
-   - **Wave 3** (UI bundle, after Wave 1): uiuxaudit, motionaudit, a11yaudit, flowaudit
+   - **Wave 3** (UI bundle, after Wave 1): uiuxaudit, refontaudit, motionaudit, a11yaudit, flowaudit
 2. After all done, generate `audits/SYNTHESIS.md` aggregating scores
 3. Score the project: average /100 across all audits + flag any < 80
 4. Telegram report with verdict + button to view each detailed report
@@ -207,6 +208,6 @@ You: send Telegram report with aggregate score + per-audit links
 
 ## Sources
 
-- 17 Quality Arsenal audits in `~/.claude/commands/`
+- 18 Quality Arsenal audits in `~/.claude/commands/`
 - Helper docs: `ARSENAL-ORCHESTRATION-PLAYBOOK.md`, `ARSENAL-INTERCONNECTIONS.md`
 - Public mirror: https://github.com/agentik-os/quality-arsenal

@@ -21,7 +21,7 @@ triggers: ["flow", "user flow", "flow audit", "parcours", "workflow audit"]
 
 > ## ⚠️ MANDATORY FIRST STEP — READ THE V2 META-PROTOCOL
 >
-> **Before doing ANYTHING else**, Read `~/.claude/audit-meta-protocol-v2.md`.
+> **Before doing ANYTHING else**, Read `../_shared/audit-meta-protocol-v2.md`.
 >
 > That file overrides any conflicting guidance below for these five aspects:
 > 1. Required CLI inputs (`--user-need`, `--hinge` are MANDATORY since 2026-05-08)
@@ -1488,7 +1488,7 @@ Integration:
 ### Gap closures (pre-100 findings → now resolved)
 
 **Gap 1: JSON schemas inline → RESOLVED via preamble §6 reference**
-verdict.json, fix-plan.json, telemetry.json, progress.json schemas fully specified in `~/.claude/commands/QUALITY-ARSENAL-PREAMBLE.md §6`. Emit `preamble_version: "1.0"` for /metaudit verification.
+verdict.json, fix-plan.json, telemetry.json, progress.json schemas fully specified in `../_shared/QUALITY-ARSENAL-PREAMBLE.md §6`. Emit `preamble_version: "1.0"` for /metaudit verification.
 
 **Gap 2: Cross-session resume protocol → RESOLVED**
 ```
@@ -1559,7 +1559,7 @@ After v1.2 compliance round:
 
 ## MANDATORY BEFORE/AFTER VERIFICATION (v1.1 — added 2026-04-14)
 
-**Read `~/.claude/commands/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
+**Read `../_shared/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**
 
 Every fix MUST follow the "Do No Harm" protocol:
 
@@ -1571,4 +1571,4 @@ Every fix MUST follow the "Do No Harm" protocol:
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 
-Full contract: `~/.claude/commands/AUDIT-VERIFICATION-CONTRACT.md`
+Full contract: `../_shared/AUDIT-VERIFICATION-CONTRACT.md`

@@ -2075,6 +2075,18 @@ async fn cmd_spawn_worker(
         omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
     }
 
+    // Worker-prompt quality gate: warn (non-blocking) if the brief is missing a
+    // Done-criteria signal AND a Verify-command signal.
+    let prompt_lc = prompt.to_lowercase();
+    if !(prompt_lc.contains("done") && prompt_lc.contains("verify")) {
+        tracing::warn!(
+            "worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
+        );
+        eprintln!(
+            "⚠ worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
+        );
+    }
+
     mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(prompt))
         .await?;
     println!("● Worker spawned: {}", worker_name);

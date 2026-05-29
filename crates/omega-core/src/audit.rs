@@ -286,11 +286,33 @@ pub fn all_audits() -> Vec<AuditSkill> {
     ]
 }
 
+/// Tokenize text into lowercase alphanumeric words (splitting on any
+/// non-alphanumeric character).
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// True if `phrase` (one or more words) appears as a contiguous run of whole
+/// words inside `words`. Single-word phrases match a single token; multi-word
+/// phrases must match consecutively.
+fn phrase_matches(words: &[String], phrase: &str) -> bool {
+    let needle = tokenize(phrase);
+    if needle.is_empty() {
+        return false;
+    }
+    words.windows(needle.len()).any(|w| w == needle.as_slice())
+}
+
 /// Select audits relevant to a mission based on keyword matching.
 pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str> {
     static AUDITS: std::sync::OnceLock<Vec<AuditSkill>> = std::sync::OnceLock::new();
     let audits = AUDITS.get_or_init(all_audits);
     let lower = mission_text.to_lowercase();
+    let words = tokenize(mission_text);
 
     // "full audit" / "audit complet" → all 17
     if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
@@ -299,12 +321,12 @@ pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str>
 
     let mut selected: Vec<&'static str> = audits
         .iter()
-        .filter(|a| a.triggers.iter().any(|t| lower.contains(t)))
+        .filter(|a| a.triggers.iter().any(|t| phrase_matches(&words, t)))
         .map(|a| a.id)
         .collect();
 
     // Composite bundles: security → secaudit + apiaudit + dataaudit
-    if lower.contains("security") || lower.contains("auth") {
+    if phrase_matches(&words, "security") || phrase_matches(&words, "auth") {
         for extra in &["secaudit", "apiaudit", "dataaudit"] {
             if !selected.contains(extra) {
                 selected.push(extra);
@@ -313,7 +335,7 @@ pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str>
     }
 
     // UI changes → uiuxaudit + a11yaudit + motionaudit
-    if lower.contains("ui") || lower.contains("ux") || lower.contains("design") {
+    if phrase_matches(&words, "ui") || phrase_matches(&words, "ux") || phrase_matches(&words, "design") {
         for extra in &["uiuxaudit", "a11yaudit", "motionaudit"] {
             if !selected.contains(extra) {
                 selected.push(extra);

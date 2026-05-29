@@ -104,18 +104,20 @@ impl SkillRegistry {
                 continue;
             }
 
-            let skill_file = path.join("SKILL.md");
-            if !skill_file.exists() {
+            // Top-level skill dir (~/.omega/skills/<name>/SKILL.md).
+            if try_register_skill(&path, &mut skills) {
                 continue;
             }
 
-            match parse_skill_file(&skill_file) {
-                Ok(skill) => {
-                    tracing::debug!(name = %skill.name, "discovered skill");
-                    skills.insert(skill.name.clone(), skill);
-                }
-                Err(e) => {
-                    tracing::warn!(path = %skill_file.display(), error = %e, "failed to parse skill");
+            // Otherwise recurse one level: treat this dir as a grouping
+            // (e.g. ~/.omega/skills/audits/) whose children are skill dirs.
+            let Ok(sub_entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for sub_entry in sub_entries.flatten() {
+                let sub_path = sub_entry.path();
+                if sub_path.is_dir() {
+                    try_register_skill(&sub_path, &mut skills);
                 }
             }
         }
@@ -183,6 +185,26 @@ impl SkillRegistry {
             self.skills.insert(skill.name.clone(), skill);
         }
     }
+}
+
+/// Try to register a skill from `dir/SKILL.md`. Returns true if `dir` was a
+/// skill directory (had a SKILL.md), regardless of parse success.
+fn try_register_skill(dir: &Path, skills: &mut HashMap<String, Skill>) -> bool {
+    let skill_file = dir.join("SKILL.md");
+    if !skill_file.exists() {
+        return false;
+    }
+
+    match parse_skill_file(&skill_file) {
+        Ok(skill) => {
+            tracing::debug!(name = %skill.name, "discovered skill");
+            skills.insert(skill.name.clone(), skill);
+        }
+        Err(e) => {
+            tracing::warn!(path = %skill_file.display(), error = %e, "failed to parse skill");
+        }
+    }
+    true
 }
 
 /// Parse a SKILL.md file to extract skill metadata from YAML-style frontmatter.
@@ -522,6 +544,26 @@ mod tests {
         let registry = SkillRegistry::discover(dir.path()).unwrap();
         assert_eq!(registry.count(), 1);
         assert!(registry.get("alpha").is_some());
+    }
+
+    #[test]
+    fn registry_discover_nested_skills() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Top-level skill.
+        let top = dir.path().join("alpha");
+        fs::create_dir_all(&top).unwrap();
+        fs::write(top.join("SKILL.md"), "---\nname: alpha\n---\n").unwrap();
+
+        // Nested skill under a grouping dir (e.g. audits/codeaudit/SKILL.md).
+        let nested = dir.path().join("audits").join("codeaudit");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("SKILL.md"), "---\nname: codeaudit\n---\n").unwrap();
+
+        let registry = SkillRegistry::discover(dir.path()).unwrap();
+        assert_eq!(registry.count(), 2);
+        assert!(registry.get("alpha").is_some());
+        assert!(registry.get("codeaudit").is_some());
     }
 
     #[test]
