@@ -43,7 +43,7 @@ When invoked, ZION reads from real data sources, formats them into dashboard pan
 
 ```bash
 # Scan all projects for active plans
-find /home/hacker/VibeCoding/{work,clients,1-life}/*/.planner/tracker.json 2>/dev/null
+find $HOME/VibeCoding/{work,clients,1-life}/*/.planner/tracker.json 2>/dev/null
 ```
 
 ---

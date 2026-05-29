@@ -14,3 +14,4 @@ tools/pdfgen/node_modules/
 tools/pdfgen/.next/
 tools/pdfgen/output/
 .claude/worktrees/
+audits/.*/

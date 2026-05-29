@@ -113,6 +113,7 @@ info "Building omega CLI..."
 cargo build --release 2>&1 | tail -3
 mkdir -p "$INSTALL_DIR"
 cp target/release/omega "$INSTALL_DIR/omega"
+ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
 ok "omega CLI installed to $INSTALL_DIR/omega"
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────

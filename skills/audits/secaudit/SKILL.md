@@ -1730,8 +1730,8 @@ Run `/metaudit --focus arsenal` to verify this audit against the 11-point preamb
 **Gap 1: Self-pentest target list → RESOLVED**
 ```
 ABORT targets (hardcoded, no override):
-  - /home/hacker/.claude/ (any subpath)
-  - /home/hacker/.aisb/ (any subpath)
+  - ~/.claude/ (any subpath)
+  - ~/.aisb/ (any subpath)
   - ~/.godmode/ (any subpath)
   - file:// URLs pointing to system areas
   - localhost:0 - 1023 (privileged ports, likely system services)

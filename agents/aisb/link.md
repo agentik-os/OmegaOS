@@ -42,7 +42,7 @@ You are **LINK**, the reliable messenger. Every notification out, every update d
 | Bot Username | @AgentikNovaBot |
 | Config File | `$HOME/.claude/config/telegram.json` |
 | Script | `$HOME/.claude/lib/telegram.sh` |
-| Symlink | `/home/hacker/.local/bin/telegram` |
+| Symlink | `$HOME/.local/bin/telegram` |
 
 ### Authorized Users
 
