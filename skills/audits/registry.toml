@@ -3,7 +3,7 @@
 
 [meta]
 version = "1.0.0"
-total_audits = 18
+total_audits = 21
 doctrine = "Gestalt-Popper"
 categories = ["preventive", "detective"]
 
@@ -141,6 +141,17 @@ triggers = ["retention", "feature opportunities", "make it sticky"]
 read_only = true
 answers = "What FEATURES are missing?"
 
+[[audits]]
+id = "depaudit"
+name = "Dependency & Supply-Chain Audit"
+domain = "dependencies"
+category = "preventive"
+phases = 18
+max_score = 360
+triggers = ["dep", "depaudit", "dependency audit", "supply chain", "license audit", "lockfile integrity", "sbom", "typosquatting", "postinstall scripts"]
+read_only = false
+answers = "Is the supply chain SAFE?"
+
 # ── Detective Audits (5) — Runtime & Security ───────────────────────────────
 
 [[audits]]
@@ -186,6 +197,28 @@ max_score = 320
 triggers = ["data integrity", "schema", "data audit", "database audit"]
 read_only = false
 answers = "Is the data INTACT?"
+
+[[audits]]
+id = "privacyaudit"
+name = "Privacy & Data-Protection Audit"
+domain = "privacy"
+category = "detective"
+phases = 18
+max_score = 360
+triggers = ["privacy", "gdpr", "ccpa", "pii", "consent", "cookie compliance", "data retention", "right to be forgotten", "dsar", "is user data handled lawfully"]
+read_only = false
+answers = "Is user data HANDLED LAWFULLY?"
+
+[[audits]]
+id = "releaseaudit"
+name = "Release & Shipping-Safety Audit"
+domain = "release"
+category = "preventive"
+phases = 20
+max_score = 400
+triggers = ["release", "release audit", "ci/cd audit", "pipeline audit", "deploy safety", "rollback", "migration safety", "is it safe to ship", "release readiness"]
+read_only = false
+answers = "Is shipping SAFE + reversible?"
 
 [[audits]]
 id = "apiaudit"

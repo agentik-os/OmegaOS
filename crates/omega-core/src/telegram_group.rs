@@ -62,6 +62,12 @@ impl TelegramGroupConfig {
         self.topics.insert(project.to_string(), topic_id);
     }
 
+    /// Remove a project's topic mapping. Returns the removed thread id, or
+    /// None if the project had no topic. Used by `/project → delete`.
+    pub fn remove_topic(&mut self, project: &str) -> Option<i64> {
+        self.topics.remove(project)
+    }
+
     /// Reverse lookup: which project owns this forum topic? Lets the bridge
     /// route a message typed in a topic straight to that project's oracle.
     pub fn project_for_topic(&self, thread_id: i64) -> Option<String> {
@@ -91,6 +97,20 @@ mod tests {
         assert_eq!(back.group_id, -1001234567890);
         assert_eq!(back.topic_for("Causio"), Some(47));
         assert_eq!(back.topic_for("Missing"), None);
+    }
+
+    #[test]
+    fn remove_topic_roundtrip() {
+        let mut cfg = TelegramGroupConfig::default();
+        cfg.set_topic("Causio", 47);
+        cfg.set_topic("Kommu", 51);
+        assert_eq!(cfg.remove_topic("Causio"), Some(47));
+        assert_eq!(cfg.topic_for("Causio"), None);
+        assert_eq!(cfg.topic_for("Kommu"), Some(51));
+        // Idempotent: removing again returns None.
+        assert_eq!(cfg.remove_topic("Causio"), None);
+        // Unknown project: None.
+        assert_eq!(cfg.remove_topic("Ghost"), None);
     }
 
     #[test]
