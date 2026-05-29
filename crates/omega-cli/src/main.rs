@@ -605,6 +605,10 @@ async fn run_tui_loop(
     // JSONL only when it actually changed.
     let mut meta_mtimes: std::collections::HashMap<String, std::time::SystemTime> =
         std::collections::HashMap::new();
+    // Throttle for the per-session git status (branch + age of oldest unpushed
+    // commit). Shown in the status bar on the Sessions tab as e.g. `↑4h • main`.
+    let mut last_git_refresh =
+        std::time::Instant::now() - std::time::Duration::from_secs(60);
 
     loop {
         // Drain any error reported by a backgrounded keystroke forwarder.
@@ -668,6 +672,33 @@ async fn run_tui_loop(
                 }
             }
             last_meta_refresh = std::time::Instant::now();
+        }
+
+        // Refresh the selected session's git status (branch + ↑Nh) every 10s
+        // for the status-bar display on the Sessions tab. Throttled + off the
+        // hot path. Two short git invocations — negligible at this cadence.
+        if app.tab == omega_tui::app::Tab::Sessions
+            && last_git_refresh.elapsed() >= std::time::Duration::from_secs(10)
+        {
+            let sel = app.selected_session().map(|e| e.session.name.clone());
+            if let Some(name) = sel {
+                let n = name.clone();
+                let status = tokio::task::spawn_blocking(move || {
+                    omega_core::git_status::status_for_session(&n)
+                })
+                .await
+                .ok()
+                .flatten();
+                match status {
+                    Some(s) => {
+                        app.session_git_status.insert(name, s);
+                    }
+                    None => {
+                        app.session_git_status.remove(&name);
+                    }
+                }
+            }
+            last_git_refresh = std::time::Instant::now();
         }
 
         // Decoupled preview refresh — runs whether or not the user is

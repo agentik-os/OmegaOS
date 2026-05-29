@@ -643,6 +643,11 @@ pub struct App {
     /// of the preview title. Keyed by session name; refreshed off the hot
     /// path (main.rs, throttled). `(short_model, tokens)`.
     pub session_meta: std::collections::HashMap<String, (String, u64)>,
+    /// Per-session compact git status (e.g. "↑4h • main" or just "main")
+    /// shown in the status bar on the Sessions tab instead of the Focus
+    /// hint chatter — that lives in the Help tab. Cached + refreshed off
+    /// the hot path (main.rs, ~10s throttle).
+    pub session_git_status: std::collections::HashMap<String, String>,
     /// REAL cursor position from the pane snapshot (row, col, visible),
     /// zero-based within the visible pane. Used to paint the caret exactly
     /// where the agent's input cursor is, instead of guessing the last
@@ -732,6 +737,7 @@ impl App {
             preview_inner_width: 0,
             preview_inner_height: 0,
             session_meta: std::collections::HashMap::new(),
+            session_git_status: std::collections::HashMap::new(),
             preview_cursor: None,
             preview_scroll: 0,
             preview_max_scroll: 0,

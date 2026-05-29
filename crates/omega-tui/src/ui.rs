@@ -2457,10 +2457,29 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(
-            app.status_message.as_deref().unwrap_or(""),
-            Style::default().fg(Color::Gray),
-        ),
+        // On Sessions tab, display the selected session's compact git status
+        // (`↑4h • main`) — the keyboard hints that used to live here are now
+        // all under the Help tab. Everywhere else, keep the regular status
+        // message. Falls back to status_message when the git lookup hasn't
+        // resolved yet (first ~10s or non-git cwd).
+        {
+            let on_sessions = app.tab == omega_tui::app::Tab::Sessions;
+            let git_text = if on_sessions {
+                app.selected_session()
+                    .and_then(|e| app.session_git_status.get(&e.session.name).cloned())
+            } else {
+                None
+            };
+            let (text, style) = match git_text {
+                Some(g) => (g, Style::default().fg(Color::Green)),
+                None if on_sessions => (String::new(), Style::default()),
+                None => (
+                    app.status_message.as_deref().unwrap_or("").to_string(),
+                    Style::default().fg(Color::Gray),
+                ),
+            };
+            Span::styled(text, style)
+        },
     ]));
     frame.render_widget(left, split[0]);
 
