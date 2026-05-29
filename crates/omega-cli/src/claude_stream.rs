@@ -36,7 +36,28 @@ impl PersistentClaude {
 
         // Inject the AISB Master system prompt so the model knows it's the
         // dispatcher, not a project agent.
+        //
+        // The Master now carries the live Laws + Master-scoped operational
+        // rules from the typed registry (omega_core::rules). We compose a
+        // runtime file = static aisb-master.md + rules_prompt_block(Master)
+        // and append THAT. Single source of truth → zero drift between the
+        // registry and what the Master LLM actually sees. If composition
+        // fails, we fall back to the raw static file (current behavior);
+        // if neither exists, we append nothing (current behavior).
         let aisb_prompt = home.join(".omega/agents/aisb-master.md");
+        let runtime_prompt = home.join(".omega/agents/_master-runtime.md");
+        let rules_block = omega_core::rules::rules_prompt_block(
+            omega_core::rules::RuleScope::Master,
+        );
+        let base = std::fs::read_to_string(&aisb_prompt).unwrap_or_default();
+        let composed = format!("{}\n\n{}\n", base.trim_end(), rules_block);
+        let composed_ok = if let Some(parent) = runtime_prompt.parent() {
+            std::fs::create_dir_all(parent).is_ok()
+                && std::fs::write(&runtime_prompt, &composed).is_ok()
+        } else {
+            false
+        };
+
         let mut args: Vec<&str> = vec![
             "--print",
             "--output-format=stream-json",
@@ -45,7 +66,11 @@ impl PersistentClaude {
             "--verbose",
         ];
         let prompt_arg;
-        if aisb_prompt.exists() {
+        if composed_ok && runtime_prompt.exists() {
+            prompt_arg = runtime_prompt.to_string_lossy().to_string();
+            args.push("--append-system-prompt-file");
+            args.push(&prompt_arg);
+        } else if aisb_prompt.exists() {
             prompt_arg = aisb_prompt.to_string_lossy().to_string();
             args.push("--append-system-prompt-file");
             args.push(&prompt_arg);
