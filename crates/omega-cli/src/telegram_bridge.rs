@@ -377,6 +377,23 @@ pub struct TelegramBotEngine {
     /// Persistent claude subprocess for instant master-chat responses.
     /// Lazy-spawned on first message; respawns on crash.
     claude_stream: Arc<crate::claude_stream::ClaudeStreamHandle>,
+    /// Bridge process start, surfaced as uptime in `/status`.
+    start_time: std::time::Instant,
+    /// Pending /dispatch confirmations: short token → (project, work_dir,
+    /// amplified brief, raw mission, created_at). Cleared on Confirm/Cancel
+    /// click. Lets the user preview the structured brief before the oracle
+    /// is actually spawned (Pack INTERACTION — human-in-the-loop dispatch).
+    pending_dispatches: Arc<Mutex<std::collections::HashMap<String, PendingDispatch>>>,
+}
+
+#[derive(Clone)]
+struct PendingDispatch {
+    project: String,
+    work_dir: String,
+    brief: String,
+    raw_mission: String,
+    created_at: chrono::DateTime<chrono::Utc>,
+    requested_by_chat: i64,
 }
 
 impl TelegramBotEngine {
@@ -402,6 +419,8 @@ impl TelegramBotEngine {
             reply_chat_id,
             targeted_session: Arc::new(Mutex::new(None)),
             claude_stream: Arc::new(crate::claude_stream::ClaudeStreamHandle::new(bridge_cfg_dir)),
+            start_time: std::time::Instant::now(),
+            pending_dispatches: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -501,6 +520,23 @@ impl TelegramBotEngine {
         // mapping in ~/.omega/telegram-group.toml. Re-runnable.
         if let Some(rest) = text.trim().strip_prefix("/setupgroup") {
             self.handle_setup_group(chat_id, rest.trim()).await;
+            return Ok(());
+        }
+
+        // /dispatch <Project> <mission> — preview the amplified brief then
+        // confirm-or-cancel via inline buttons (Pack INTERACTION). Accept
+        // both `/dispatch` and `/dispatch@BotName` forms (the @suffix is
+        // appended by Telegram when commands are sent in groups).
+        if let Some(rest) = text
+            .trim()
+            .strip_prefix("/dispatch")
+            .filter(|r| r.is_empty() || r.starts_with(' ') || r.starts_with('@'))
+        {
+            let after_at = match rest.strip_prefix('@') {
+                Some(tail) => tail.split_once(' ').map(|(_, args)| args).unwrap_or(""),
+                None => rest,
+            };
+            self.handle_dispatch_command(chat_id, after_at).await;
             return Ok(());
         }
 
@@ -1021,6 +1057,17 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
+        // /dispatch confirm/cancel (Pack INTERACTION — human-in-the-loop).
+        if let Some(action_token) = data.strip_prefix("dispatch:") {
+            let message_id = cb.message.as_ref().map(|m| m.message_id).unwrap_or(0);
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            if message_id != 0 {
+                self.handle_dispatch_callback(chat_id, message_id, action_token)
+                    .await;
+            }
+            return Ok(());
+        }
+
         // Group setup confirm button (sent in-group by /setupgroup).
         if let Some(id_str) = data.strip_prefix("setupgroup:") {
             let _ = self.answer_callback_query(&cb.id, "Setting up…").await;
@@ -1378,9 +1425,23 @@ impl TelegramBotEngine {
             .unwrap_or_else(|_| first_message.to_string())
         };
 
-        // The interactive `claude` REPL needs a moment to boot before it can
-        // accept piped input; pasting too early loses the keystrokes.
-        tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+        // The interactive `claude` REPL needs to boot before it can accept
+        // piped input; pasting too early loses the keystrokes. Instead of a
+        // fixed sleep (which races a slow boot and silently drops the mission),
+        // poll the pane until it STABILIZES (two consecutive equal non-empty
+        // captures = REPL ready). Never paste early; bounded ~30s; ~4s on a
+        // fast boot. Best-effort: if it never settles in budget, paste anyway.
+        {
+            let mut prev = String::new();
+            for _ in 0..15 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                match self.mgr.capture_pane(oracle_name).await {
+                    Ok(cur) if !cur.trim().is_empty() && cur == prev => break,
+                    Ok(cur) => prev = cur,
+                    Err(_) => {}
+                }
+            }
+        }
         let _ = self.mgr.send_paste_then_submit(oracle_name, &brief).await;
     }
 
@@ -2287,7 +2348,9 @@ impl TelegramBotEngine {
                 {"command": "projects", "description": "List projects + new / add existing"},
                 {"command": "sessions", "description": "Active sessions (tap to target)"},
                 {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"},
-                {"command": "setupgroup","description": "Register a supergroup as the project hub (+ create per-project topics)"}
+                {"command": "setupgroup","description": "Register a supergroup as the project hub (+ create per-project topics)"},
+                {"command": "status",   "description": "Live system dashboard (oracles, workers, done signals)"},
+                {"command": "dispatch", "description": "Preview a structured brief and dispatch to a project oracle (with confirm button)"}
             ]
         });
 
@@ -2417,7 +2480,9 @@ impl TelegramBotEngine {
                  <b>Core:</b>\n\
                  /help — this message\n\
                  /list — show all rmux sessions\n\
-                 /status <code>[session]</code> — capture last 20 lines\n\
+                 /status — live system dashboard (oracles, workers, done signals, group)\n\
+                 /status <code>&lt;session&gt;</code> — capture the last 20 lines of that pane\n\
+                 /dispatch <code>&lt;Project&gt; &lt;mission&gt;</code> — preview brief + confirm button → oracle\n\
                  /aisb <code>text</code> — send to AISB Master\n\
                  /relay <code>session text</code> — send to specific session\n\
                  /kill <code>session</code> — kill a session\n\n\
@@ -2463,20 +2528,22 @@ impl TelegramBotEngine {
             }
 
             "/status" => {
-                let session = if rest.is_empty() {
-                    &self.cfg.relay_session
-                } else {
-                    rest.trim()
-                };
-                let content = self.mgr.capture_pane(session).await.ok()?;
-                let tail: Vec<&str> = content.lines().rev().take(20).collect();
-                let output: Vec<&str> = tail.into_iter().rev().collect();
-                let cleaned = clean_terminal_output(&output.join("\n"));
-                Some(format!(
-                    " <b>{}</b>\n<pre>{}</pre>",
-                    formatting::escape_html(session),
-                    formatting::escape_html(&cleaned)
-                ))
+                // Two modes:
+                //   /status            → real system dashboard (oracles + workers + bridge + group)
+                //   /status <session>  → tail the last 20 lines of that pane (legacy behavior)
+                if !rest.trim().is_empty() {
+                    let session = rest.trim();
+                    let content = self.mgr.capture_pane(session).await.ok()?;
+                    let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                    let output: Vec<&str> = tail.into_iter().rev().collect();
+                    let cleaned = clean_terminal_output(&output.join("\n"));
+                    return Some(format!(
+                        " <b>{}</b>\n<pre>{}</pre>",
+                        formatting::escape_html(session),
+                        formatting::escape_html(&cleaned)
+                    ));
+                }
+                Some(self.render_status_dashboard().await)
             }
 
             "/skills" => {
@@ -2553,6 +2620,368 @@ impl TelegramBotEngine {
             }
 
             _ => None,
+        }
+    }
+
+    // ── /status: live system dashboard ────────────────────────────────────
+
+    /// Build the `/status` (no args) dashboard: bridge uptime, session
+    /// counts, live oracles + their model/tokens, recent done.json signals,
+    /// and group/topic configuration. All data is live — pulled from the
+    /// real session list, the persisted group config, and the state dir.
+    async fn render_status_dashboard(&self) -> String {
+        use omega_core::session::SessionRole;
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let mut oracles = 0usize;
+        let mut workers = 0usize;
+        let mut master = 0usize;
+        let mut system = 0usize;
+        let mut oracle_lines: Vec<String> = Vec::new();
+        for s in &sessions {
+            match s.role {
+                SessionRole::Oracle => {
+                    oracles += 1;
+                    let meta = omega_core::claude_meta::read_meta_for_session(&s.name)
+                        .map(|m| {
+                            format!(
+                                " <i>· {} · {} tok</i>",
+                                m.model,
+                                omega_core::claude_meta::fmt_tokens(m.tokens)
+                            )
+                        })
+                        .unwrap_or_default();
+                    oracle_lines.push(format!(
+                        "  ◆ <code>{}</code>{}",
+                        formatting::escape_html(&s.name),
+                        meta
+                    ));
+                }
+                SessionRole::Worker => workers += 1,
+                SessionRole::Home => master += 1,
+                SessionRole::System => system += 1,
+            }
+        }
+
+        let uptime = {
+            let secs = self.start_time.elapsed().as_secs();
+            if secs >= 86_400 {
+                format!("{}d {}h", secs / 86_400, (secs % 86_400) / 3_600)
+            } else if secs >= 3_600 {
+                format!("{}h {}m", secs / 3_600, (secs % 3_600) / 60)
+            } else if secs >= 60 {
+                format!("{}m {}s", secs / 60, secs % 60)
+            } else {
+                format!("{}s", secs)
+            }
+        };
+
+        // Recent done signals — last 3 by mtime under ~/.omega/state/.
+        let state_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"))
+            .join(".omega/state");
+        let mut done_files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&state_dir)
+            .ok()
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        let name = p.file_name()?.to_string_lossy().to_string();
+                        if !name.ends_with(".done.json") {
+                            return None;
+                        }
+                        let m = e.metadata().ok()?.modified().ok()?;
+                        Some((m, p))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        done_files.sort_by(|a, b| b.0.cmp(&a.0));
+        let recent_done: Vec<String> = done_files
+            .iter()
+            .take(3)
+            .map(|(_, p)| {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let label = name
+                    .trim_end_matches(".done.json")
+                    .trim_start_matches("worker-")
+                    .trim_start_matches("oracle-")
+                    .to_string();
+                format!("  • <code>{}</code>", formatting::escape_html(&label))
+            })
+            .collect();
+
+        let group_line = match omega_core::telegram_group::TelegramGroupConfig::load() {
+            Some(cfg) => format!(
+                "<b>Group:</b> <code>{}</code> · {} topic(s)",
+                formatting::escape_html(&cfg.group_name),
+                cfg.topics.len()
+            ),
+            None => "<b>Group:</b> <i>not configured</i> — send /setupgroup".to_string(),
+        };
+
+        let mut out = String::new();
+        out.push_str("◆ <b>OmegaOS · system status</b>\n");
+        out.push_str(&format!("<i>bridge up {}</i>\n\n", uptime));
+        out.push_str(&format!(
+            "<b>Sessions:</b> {} oracle(s) · {} worker(s) · {} master · {} system\n",
+            oracles, workers, master, system
+        ));
+        if !oracle_lines.is_empty() {
+            out.push('\n');
+            out.push_str("<b>Live oracles</b>\n");
+            out.push_str(&oracle_lines.join("\n"));
+            out.push('\n');
+        }
+        if !recent_done.is_empty() {
+            out.push_str("\n<b>Recent done signals</b>\n");
+            out.push_str(&recent_done.join("\n"));
+            out.push('\n');
+        }
+        out.push('\n');
+        out.push_str(&group_line);
+        out
+    }
+
+    // ── /dispatch + confirmation buttons (Pack INTERACTION) ───────────────
+
+    /// `/dispatch <project> <mission>` — amplify the mission into a
+    /// structured brief, preview it back to the user with [✅ Dispatch] /
+    /// [❌ Cancel] inline buttons. The actual oracle spawn happens only on
+    /// confirm — human-in-the-loop dispatch.
+    async fn handle_dispatch_command(&self, chat_id: i64, args: &str) {
+        let args = args.trim();
+        let usage = "Usage: <code>/dispatch &lt;Project&gt; &lt;mission&gt;</code>\nExample: <code>/dispatch DentistryGPT fix the login redirect loop</code>";
+        let Some((project, mission)) = args.split_once(char::is_whitespace) else {
+            let _ = self.send_html(chat_id, usage).await;
+            return;
+        };
+        let project = project.trim();
+        let mission = mission.trim();
+        if project.is_empty() || mission.is_empty() {
+            let _ = self.send_html(chat_id, usage).await;
+            return;
+        }
+
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let Some(entry) = registry.projects.iter().find(|p| p.name == *project) else {
+            let known: Vec<String> = registry
+                .projects
+                .iter()
+                .take(10)
+                .map(|p| format!("<code>{}</code>", formatting::escape_html(&p.name)))
+                .collect();
+            let _ = self
+                .send_html(
+                    chat_id,
+                    &format!(
+                        "<i>Project <code>{}</code> not in registry.</i>\n\n<b>Known:</b> {}",
+                        formatting::escape_html(project),
+                        if known.is_empty() {
+                            "<i>(none)</i>".to_string()
+                        } else {
+                            known.join(", ")
+                        }
+                    ),
+                )
+                .await;
+            return;
+        };
+        let cwd = entry.path.display().to_string();
+
+        // Amplify in a blocking pool — same path as topic dispatch.
+        let brief = {
+            let raw = mission.to_string();
+            let proj = project.to_string();
+            let wd = cwd.clone();
+            tokio::task::spawn_blocking(move || {
+                omega_core::amplify::amplify_mission(&raw, &proj, &wd)
+            })
+            .await
+            .unwrap_or_else(|_| mission.to_string())
+        };
+
+        // Short token. UTC-nanos + rand-ish disambiguation; we just need it
+        // unique per concurrent request and short enough for callback_data
+        // (Telegram caps at 64 bytes).
+        let token: String = {
+            let n = chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0) as u128;
+            const A: &[u8; 32] = b"0123456789abcdefghijklmnopqrstuv";
+            let mut t = String::with_capacity(8);
+            let mut v = n;
+            for _ in 0..8 {
+                t.push(A[(v & 31) as usize] as char);
+                v >>= 5;
+            }
+            t
+        };
+
+        let pending = PendingDispatch {
+            project: project.to_string(),
+            work_dir: cwd.clone(),
+            brief: brief.clone(),
+            raw_mission: mission.to_string(),
+            created_at: chrono::Utc::now(),
+            requested_by_chat: chat_id,
+        };
+        self.pending_dispatches
+            .lock()
+            .await
+            .insert(token.clone(), pending);
+
+        // Truncate brief preview so the Telegram message stays readable.
+        const PREVIEW_MAX: usize = 1800;
+        let brief_preview = if brief.len() > PREVIEW_MAX {
+            let mut t: String = brief.chars().take(PREVIEW_MAX).collect();
+            t.push_str(
+                "\n…\n<i>(brief truncated for preview — full text dispatched on confirm)</i>",
+            );
+            t
+        } else {
+            brief.clone()
+        };
+
+        let body = format!(
+            "✦ <b>Dispatch preview</b> · <code>{}</code>\n<i>cwd: {}</i>\n\n<pre>{}</pre>\n\n<i>Tap to confirm — the oracle will be spawned and given this brief.</i>",
+            formatting::escape_html(project),
+            formatting::escape_html(&cwd),
+            formatting::escape_html(&brief_preview)
+        );
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton {
+                    text: format!("✅ Dispatch to {}", project),
+                    callback_data: format!("dispatch:go:{}", token),
+                },
+                InlineKeyboardButton {
+                    text: "❌ Cancel".to_string(),
+                    callback_data: format!("dispatch:cancel:{}", token),
+                },
+            ]],
+        };
+        let payload = serde_json::json!({
+            "chat_id": chat_id,
+            "text": body,
+            "parse_mode": "HTML",
+            "reply_markup": kb,
+        });
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let _ = self.client.post(&url).json(&payload).send().await;
+    }
+
+    /// Handle a `dispatch:` callback (go / cancel). The message_id is the
+    /// preview message we sent — we edit it in place to reflect the outcome.
+    async fn handle_dispatch_callback(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        action_token: &str,
+    ) {
+        let Some((action, token)) = action_token.split_once(':') else {
+            return;
+        };
+        let entry = self.pending_dispatches.lock().await.remove(token);
+        let Some(pending) = entry else {
+            let _ = self
+                .edit_message_html(
+                    chat_id,
+                    message_id,
+                    "<i>This dispatch is stale (already confirmed, cancelled, or the bridge restarted).</i>",
+                )
+                .await;
+            return;
+        };
+        if pending.requested_by_chat != chat_id {
+            // Cross-chat replay — silently drop, only the requester acts on it.
+            return;
+        }
+        // Keep raw_mission + created_at as audit trail — used in log line.
+        tracing::info!(
+            project = %pending.project,
+            action = %action,
+            age_secs = (chrono::Utc::now() - pending.created_at).num_seconds(),
+            raw = %pending.raw_mission,
+            "dispatch confirmation"
+        );
+
+        match action {
+            "cancel" => {
+                let _ = self
+                    .edit_message_html(
+                        chat_id,
+                        message_id,
+                        &format!(
+                            "✗ <b>Cancelled</b> — <code>{}</code> mission not dispatched.",
+                            formatting::escape_html(&pending.project)
+                        ),
+                    )
+                    .await;
+            }
+            "go" => {
+                // Pick the next free oracle slot for this project.
+                let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+                let prefix = format!("oracle-{}-", pending.project);
+                let next_idx = sessions
+                    .iter()
+                    .filter_map(|s| {
+                        s.name
+                            .strip_prefix(&prefix)
+                            .and_then(|t| t.parse::<u32>().ok())
+                    })
+                    .max()
+                    .map(|n| n + 1)
+                    .unwrap_or(1);
+                let oracle_name = format!("oracle-{}-{}", pending.project, next_idx);
+
+                let prompt_file =
+                    render_oracle_prompt(&pending.project, &pending.work_dir, &oracle_name);
+                let mut cmd = String::from("claude --dangerously-skip-permissions");
+                if let Some(ref pf) = prompt_file {
+                    cmd.push_str(&format!(
+                        " --append-system-prompt-file '{}'",
+                        pf.replace('\'', r"'\''")
+                    ));
+                }
+                let wrapped = format!("bash -c '{}; exec bash'", cmd.replace('\'', r"'\''"));
+                let spawn_res = self
+                    .mgr
+                    .create_session(&oracle_name, Some(&pending.work_dir), Some(&wrapped))
+                    .await;
+                if let Err(e) = spawn_res {
+                    let _ = self
+                        .edit_message_html(
+                            chat_id,
+                            message_id,
+                            &format!(
+                                "<i>Spawn failed: <code>{}</code></i>",
+                                formatting::escape_html(&e.to_string())
+                            ),
+                        )
+                        .await;
+                    return;
+                }
+                let _ = self
+                    .edit_message_html(
+                        chat_id,
+                        message_id,
+                        &format!(
+                            "✓ <b>Dispatched</b> → <code>{}</code>\n<i>brief streamed in; output mirrored via the topic / reports.</i>",
+                            formatting::escape_html(&oracle_name)
+                        ),
+                    )
+                    .await;
+                // Let the claude REPL boot before pasting the brief.
+                let oracle = oracle_name.clone();
+                let brief = pending.brief.clone();
+                let mgr = self.mgr.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+                    let _ = mgr.send_paste_then_submit(&oracle, &brief).await;
+                });
+            }
+            _ => {}
         }
     }
 
@@ -2942,21 +3371,39 @@ impl TelegramBotEngine {
     }
 
     /// Probe whether a forum topic still exists. Telegram exposes no read
-    /// endpoint for topics, so we use `editForumTopic` (set the name to the
-    /// SAME value) as a harmless probe and read the error string:
-    ///   • ok:true                       → exists (edit applied)
-    ///   • "TOPIC_NOT_MODIFIED"          → exists (no-op edit, EMPIRICALLY the
-    ///                                      common reply for a live topic)
-    ///   • "TOPIC_ID_INVALID" / not found → DELETED → recreate
-    /// Only an explicit invalid/not-found error counts as deleted. Anything
-    /// else (incl. network/parse hiccups, rate limits, unknown errors) is
-    /// treated as "alive" so a transient failure never spawns duplicates.
+    /// endpoint for topics, so we abuse `editForumTopic` as a probe.
+    ///
+    /// Why the probe MUST use a DIFFERENT name (empirically verified against
+    /// the live Bot API):
+    ///   • `editForumTopic(thread, name = <SAME current name>)`
+    ///       → `Bad Request: TOPIC_NOT_MODIFIED` for BOTH live AND deleted
+    ///         topics — useless, can't tell them apart.
+    ///   • `reopenForumTopic(thread)` on a live (open) topic
+    ///       → also `TOPIC_NOT_MODIFIED` — useless.
+    ///   • `editForumTopic(thread, name = <DIFFERENT name>)`
+    ///       → `ok:true`                   on a LIVE topic (rename applied,
+    ///                                      so we restore the canonical name
+    ///                                      with a follow-up edit).
+    ///       → `TOPIC_ID_INVALID`          on a DELETED or never-existed
+    ///                                      topic. This is the only signal
+    ///                                      we can rely on.
+    ///
+    /// Behavior:
+    ///   • ok:true                              → exists. Restore the
+    ///                                            canonical name (best-effort).
+    ///   • description ~ TOPIC_ID_INVALID/etc.  → DELETED → caller recreates.
+    ///   • any other error (incl. TOPIC_NOT_MODIFIED, network/parse, rate
+    ///     limit, unknown)                      → assume alive (transient
+    ///                                            failures must not spawn
+    ///                                            duplicate topics).
     async fn topic_exists(&self, group_id: i64, thread_id: i64, name: &str) -> bool {
         let url = format!("{}/bot{}/editForumTopic", API_BASE, self.cfg.bot_token);
+        // Distinct from `name` so Telegram doesn't shortcut to TOPIC_NOT_MODIFIED.
+        let probe = format!("{name} ·");
         let body = serde_json::json!({
             "chat_id": group_id,
             "message_thread_id": thread_id,
-            "name": name,
+            "name": probe,
         });
         let json = match self.client.post(&url).json(&body).send().await {
             Ok(resp) => match resp.json::<serde_json::Value>().await {
@@ -2966,6 +3413,13 @@ impl TelegramBotEngine {
             Err(_) => return true,
         };
         if json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            // Live topic — undo the probe rename (best-effort; ignore result).
+            let restore = serde_json::json!({
+                "chat_id": group_id,
+                "message_thread_id": thread_id,
+                "name": name,
+            });
+            let _ = self.client.post(&url).json(&restore).send().await;
             return true;
         }
         let desc = json
@@ -2998,6 +3452,34 @@ impl TelegramBotEngine {
         json.get("result")
             .and_then(|r| r.get("message_thread_id"))
             .and_then(|v| v.as_i64())
+    }
+
+    /// deleteForumTopic — remove the topic from the supergroup. Returns
+    /// true on `{ok:true}`, false on any failure (network, non-ok, etc.).
+    /// Used by `/project → delete` to clean up the topic when a project
+    /// is removed from the registry.
+    async fn delete_forum_topic(&self, group_id: i64, thread_id: i64) -> bool {
+        let url = format!("{}/bot{}/deleteForumTopic", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": group_id,
+            "message_thread_id": thread_id,
+        });
+        let resp = match self.client.post(&url).json(&body).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(error = %e, thread_id = thread_id, "deleteForumTopic network error");
+                return false;
+            }
+        };
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(_) => return false,
+        };
+        let ok = json.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+        if !ok {
+            tracing::warn!(?json, thread_id = thread_id, "deleteForumTopic failed");
+        }
+        ok
     }
 
     /// Ensure a topic exists for `project`. If we have a group registered
