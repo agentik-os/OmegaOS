@@ -525,52 +525,136 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     }
                     Line::from(spans)
                 } else {
-                    // Extra emphasis on Claude's status + user input lines —
-                    // ANSI colors already come through from rmux (verified
-                    // via examples/dump_styled: bright red 241,76,76 is
-                    // captured), but the user reported they want MORE
-                    // visible distinction (tmux-style). High-confidence
-                    // detection so the override fires only on the right
-                    // rows; everything else renders straight from the
-                    // captured spans.
+                    // Extra emphasis on top of the ANSI baseline (which rmux
+                    // already preserves — verified via examples/dump_styled:
+                    // bright red 241,76,76 is captured). The user wants
+                    // tmux-style visual distinction for: Claude activity
+                    // status, user input echo, TodoWrite items, Task-tool
+                    // sub-agent dispatches. High-confidence patterns only —
+                    // anything that doesn't match falls through to the
+                    // straight ANSI render.
                     let row_text: String = row.iter().map(|s| s.text.as_str()).collect();
                     let trimmed = row_text.trim();
-                    // Claude's activity status footer, e.g.
-                    //   "Twisting… (22s · ↓ 1.0k tokens · thought for 2s)"
-                    // Pattern: contains an ellipsis or "·" AND mentions tokens.
+
+                    // ── Pattern catalog (all tight, anchored at line start
+                    //    or with multiple co-occurrences to avoid false
+                    //    positives on prose) ──────────────────────────────
+                    // 1. Activity status footer: "Twisting… (22s · ↓ 1.0k
+                    //    tokens · thought for 2s)" and siblings.
                     let is_activity = trimmed.contains("tokens")
                         && (trimmed.contains('·') || trimmed.contains('…'));
-                    // User input echo line: starts with "❯ " then real text.
-                    let is_user_input = {
-                        let t = trimmed;
-                        t.starts_with("❯ ") && t.len() > 2
-                    };
+                    // 2. User input echo: "❯ <text>".
+                    let is_user_input = trimmed.starts_with("❯ ") && trimmed.len() > 2;
+                    // 3. TodoWrite items: anchored on the status glyph at
+                    //    line start (after trim) so a glyph inside a table
+                    //    cell or sentence doesn't match.
+                    let is_todo_done = trimmed.starts_with("☑ ")
+                        || trimmed.starts_with("✅ ")
+                        || trimmed.starts_with("✓ ");
+                    let is_todo_pending = trimmed.starts_with("☐ ");
+                    let is_todo_progress = trimmed.starts_with("⏳ ");
+                    let is_todo_failed = trimmed.starts_with("☒ ")
+                        || trimmed.starts_with("✗ ")
+                        || trimmed.starts_with("⊘ ");
+                    // 4. Task-tool / sub-agent dispatch: "● Task(...)" or a
+                    //    line carrying "subagent_type=" (Claude Code's Task
+                    //    invocation echo).
+                    let is_task_dispatch = trimmed.starts_with("● Task(")
+                        || trimmed.contains("subagent_type=");
 
-                    if is_activity {
-                        // Bold + bright red override across the row — pops
-                        // against any prior coloring.
+                    // Order matters: more-specific patterns first so a TODO
+                    // line that happens to contain "tokens" isn't mis-typed
+                    // as activity. Activity is checked LAST as a fallback.
+                    if is_todo_done {
+                        // Green bold across the row.
+                        let green = Color::Rgb(35, 209, 139);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
+                                    Style::default().fg(green).add_modifier(Modifier::BOLD),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else if is_todo_failed {
+                        // Red bold — same family as activity but distinct
+                        // by anchor (line-start glyph).
                         let red = Color::Rgb(241, 76, 76);
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
                                 Span::styled(
                                     sp.text.clone(),
+                                    Style::default().fg(red).add_modifier(Modifier::BOLD),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else if is_todo_progress {
+                        // Magenta bold — actively-running todo stands out
+                        // from the pending grey and the done green.
+                        let magenta = Color::Rgb(214, 112, 214);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
+                                    Style::default().fg(magenta).add_modifier(Modifier::BOLD),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else if is_todo_pending {
+                        // Soft yellow, NOT bold — pending todos read as
+                        // backlog, not foreground action.
+                        let yellow = Color::Rgb(229, 229, 16);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| Span::styled(sp.text.clone(), Style::default().fg(yellow)))
+                            .collect();
+                        Line::from(spans)
+                    } else if is_task_dispatch {
+                        // Cyan bold + subtle blue bg — a worker is being
+                        // spawned, you want to see it.
+                        let cyan = Color::Rgb(41, 184, 219);
+                        let tint = Color::Rgb(20, 36, 52);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
                                     Style::default()
-                                        .fg(red)
+                                        .fg(cyan)
+                                        .bg(tint)
                                         .add_modifier(Modifier::BOLD),
                                 )
                             })
                             .collect();
                         Line::from(spans)
+                    } else if is_activity {
+                        // Bold + bright red across the row.
+                        let red = Color::Rgb(241, 76, 76);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
+                                    Style::default().fg(red).add_modifier(Modifier::BOLD),
+                                )
+                            })
+                            .collect();
+                        Line::from(spans)
                     } else if is_user_input {
-                        // Bold + soft blue background tint so YOUR messages
-                        // stand out from Claude's output. Preserve original
-                        // ANSI fg so Claude's own coloring still reads.
+                        // Bold + soft blue bg tint, preserving Claude's own
+                        // ANSI fg so coloring still reads.
                         let tint = Color::Rgb(28, 40, 64);
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
-                                let mut style = Style::default().bg(tint).add_modifier(Modifier::BOLD);
+                                let mut style =
+                                    Style::default().bg(tint).add_modifier(Modifier::BOLD);
                                 if let Some((r, g, b)) = sp.fg {
                                     style = style.fg(Color::Rgb(r, g, b));
                                 }
