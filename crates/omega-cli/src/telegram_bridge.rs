@@ -1445,11 +1445,43 @@ impl TelegramBotEngine {
         let _ = self.mgr.send_paste_then_submit(oracle_name, &brief).await;
     }
 
-    /// Handle `proj:*` callbacks (open / new / scan).
+    /// Handle `proj:*` callbacks (open / new / scan / delete).
     async fn handle_project_callback(&self, chat_id: i64, rest: &str) {
         let (sub, arg) = rest.split_once(':').unwrap_or((rest, ""));
         match sub {
+            "menu" => {
+                self.send_projects_menu(chat_id).await;
+            }
             "open" => {
+                // Project detail card — actions for this project.
+                let project = arg;
+                let keyboard = vec![
+                    vec![InlineKeyboardButton {
+                        text: "💬 Talk to oracle".to_string(),
+                        callback_data: format!("proj:oracle:{}", project),
+                    }],
+                    vec![InlineKeyboardButton {
+                        text: "🗑 Delete project".to_string(),
+                        callback_data: format!("proj:del:{}", project),
+                    }],
+                    vec![InlineKeyboardButton {
+                        text: "‹ Projects".to_string(),
+                        callback_data: "proj:menu".to_string(),
+                    }],
+                ];
+                let payload = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": format!(
+                        "<b>{}</b>\n\n<i>Choose an action:</i>",
+                        formatting::escape_html(project)
+                    ),
+                    "parse_mode": "HTML",
+                    "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+                });
+                let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+                self.client.post(&url).json(&payload).send().await.ok();
+            }
+            "oracle" => {
                 // Smart oracle routing:
                 // - 0 oracles exist for this project → spawn oracle-{project}-1
                 // - 1+ oracles exist → ask user: continue existing N or spawn new
@@ -1495,6 +1527,75 @@ impl TelegramBotEngine {
                     let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
                     self.client.post(&url).json(&payload).send().await.ok();
                 }
+            }
+            "del" => {
+                let project = arg;
+                let keyboard = vec![
+                    vec![InlineKeyboardButton {
+                        text: "✅ Confirm delete".to_string(),
+                        callback_data: format!("proj:delyes:{}", project),
+                    }],
+                    vec![InlineKeyboardButton {
+                        text: "Cancel".to_string(),
+                        callback_data: format!("proj:open:{}", project),
+                    }],
+                ];
+                let payload = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": format!(
+                        "🗑 <b>Delete {}?</b>\n\n\
+                        This will remove the project from Omega's registry \
+                        AND delete its Telegram topic.\n\n\
+                        <i>The project's source files on disk are NOT deleted.</i>",
+                        formatting::escape_html(project)
+                    ),
+                    "parse_mode": "HTML",
+                    "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+                });
+                let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+                self.client.post(&url).json(&payload).send().await.ok();
+            }
+            "delyes" => {
+                use omega_core::project_manager::ProjectRegistry;
+                use omega_core::telegram_group::TelegramGroupConfig;
+                let project = arg;
+
+                // 1. Remove the topic mapping + delete the forum topic (if any).
+                let mut topic_deleted = false;
+                if let Some(mut cfg) = TelegramGroupConfig::load() {
+                    if let Some(tid) = cfg.remove_topic(project) {
+                        topic_deleted = self.delete_forum_topic(cfg.group_id, tid).await;
+                        let _ = cfg.save();
+                    }
+                }
+
+                // 2. Remove from the project registry.
+                let mut reg = ProjectRegistry::load();
+                let removed = reg.remove(project);
+                let _ = reg.save();
+
+                // 3. Report.
+                let msg = if !removed && !topic_deleted {
+                    format!(
+                        "⚠️ <b>{}</b> not found in registry and had no topic.",
+                        formatting::escape_html(project)
+                    )
+                } else {
+                    let mut parts: Vec<String> = Vec::new();
+                    if removed {
+                        parts.push("removed from Omega registry".to_string());
+                    }
+                    if topic_deleted {
+                        parts.push("Telegram topic deleted".to_string());
+                    }
+                    format!(
+                        "🗑 <b>{}</b> — {}.\n<i>Source files on disk were left untouched.</i>",
+                        formatting::escape_html(project),
+                        parts.join(" + ")
+                    )
+                };
+                self.send_html(chat_id, &msg).await.ok();
+                self.send_projects_menu(chat_id).await;
             }
             "talkto" => {
                 // User chose to continue an existing oracle
@@ -2826,10 +2927,16 @@ impl TelegramBotEngine {
             created_at: chrono::Utc::now(),
             requested_by_chat: chat_id,
         };
-        self.pending_dispatches
-            .lock()
-            .await
-            .insert(token.clone(), pending);
+        {
+            let mut guard = self.pending_dispatches.lock().await;
+            // Sweep stale entries: a user who ran /dispatch but never tapped
+            // a button leaves the brief in memory forever. 15-min TTL bounds
+            // it without a background task — O(N) sweep where N is the
+            // in-flight dispatch count (single-digit in practice).
+            let now = chrono::Utc::now();
+            guard.retain(|_, p| (now - p.created_at).num_minutes() < 15);
+            guard.insert(token.clone(), pending);
+        }
 
         // Truncate brief preview so the Telegram message stays readable.
         const PREVIEW_MAX: usize = 1800;
