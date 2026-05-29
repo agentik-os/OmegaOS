@@ -62,6 +62,8 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 Source of truth: `crates/omega-core/src/rules.rs` (`RuleKind::{Law, Rule}`).
 
+Delivery: every dispatched agent (Oracle/Worker), on any LLM backend, receives its role-scoped Laws+Rules via the single funnel `rules::agent_context_block(scope)`. The Master gets them via its runtime prompt (`_master-runtime.md`). Provider-agnostic — the context is plain text injected into the prompt.
+
 ## Development Rules
 
 - **LAW 0 — INSTALL PARITY (NON-NEGOTIABLE): every improvement to OmegaOS MUST

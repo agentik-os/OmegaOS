@@ -4161,16 +4161,12 @@ fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<S
         .replace("{{PROJECT}}", project)
         .replace("{{WORKDIR}}", workdir)
         .replace("{{SESSION}}", session);
-    // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
-    let preamble = omega_core::rules::brief_preamble();
-    if !preamble.is_empty() {
-        rendered = format!("{}\n\n---\n\n{}", preamble, rendered);
-    }
-    // Inject the Oracle-scoped rules (single source of truth — rules.rs).
-    let rules = omega_core::rules::rules_prompt_block(omega_core::rules::RuleScope::Oracle);
-    if !rules.is_empty() {
+    // THE FUNNEL — Oracle-scoped Laws + operational rules in one call
+    // (single source of truth, provider-agnostic).
+    let agent_ctx = omega_core::rules::agent_context_block(omega_core::rules::RuleScope::Oracle);
+    if !agent_ctx.is_empty() {
         rendered.push_str("\n\n");
-        rendered.push_str(&rules);
+        rendered.push_str(&agent_ctx);
     }
     let dir = home.join(".omega/state/oracle-prompts");
     let _ = std::fs::create_dir_all(&dir);

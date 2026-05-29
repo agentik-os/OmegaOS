@@ -215,6 +215,16 @@ impl Dispatcher {
         // Append complexity hint
         prompt.push_str(&format!("\n## Complexity: {:?}\n", decision.complexity));
 
+        // THE FUNNEL — every dispatched agent (any LLM backend) MUST receive
+        // its role-scoped Laws + operational rules via this single call.
+        // This closes the gap where CLI/RPC-dispatched oracles previously
+        // launched without their inviolable Laws.
+        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Oracle);
+        if !ctx.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&ctx);
+        }
+
         // Claude-only smart spawn (2026-w20 features): /goal + --effort +
         // budget caps. Gemini/Codex/GLM/Pi/Hermes fall back to the bare
         // launcher with the same prompt.
@@ -344,16 +354,11 @@ impl Dispatcher {
     ) -> Result<String> {
         let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
         let mut prompt = ctx.format_prompt(&worker_name);
-        // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
-        let preamble = crate::rules::brief_preamble();
-        if !preamble.is_empty() {
-            prompt = format!("{}\n\n---\n\n{}", preamble, prompt);
-        }
-        // Inject Worker-scoped rules (single source of truth).
-        let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
-        if !rules.is_empty() {
+        // THE FUNNEL — Worker-scoped Laws + operational rules in one call.
+        let agent_ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
+        if !agent_ctx.is_empty() {
             prompt.push_str("\n\n");
-            prompt.push_str(&rules);
+            prompt.push_str(&agent_ctx);
         }
 
         if !ctx.files_owned.is_empty() {
@@ -419,16 +424,11 @@ impl Dispatcher {
              If failed: `omega done {} failed \"<what went wrong>\"`",
             prompt, worker_name, worker_name, worker_name
         );
-        // Prepend the hardened brief preamble (Opus 4.8 system-card surface).
-        let preamble = crate::rules::brief_preamble();
-        if !preamble.is_empty() {
-            worker_prompt = format!("{}\n\n---\n\n{}", preamble, worker_prompt);
-        }
-        // Inject Worker-scoped rules (single source of truth).
-        let rules = crate::rules::rules_prompt_block(crate::rules::RuleScope::Worker);
-        if !rules.is_empty() {
+        // THE FUNNEL — Worker-scoped Laws + operational rules in one call.
+        let agent_ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
+        if !agent_ctx.is_empty() {
             worker_prompt.push_str("\n\n");
-            worker_prompt.push_str(&rules);
+            worker_prompt.push_str(&agent_ctx);
         }
 
         let goal = format!(

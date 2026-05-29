@@ -383,6 +383,23 @@ pub fn rules_prompt_block(scope: RuleScope) -> String {
     out
 }
 
+/// The complete, role-scoped system context every DISPATCHED agent gets,
+/// regardless of LLM backend: the hardened brief preamble + the Laws
+/// (always, inviolable) + the operational rules scoped to this role.
+/// This is THE funnel — every oracle/worker spawn path MUST build its
+/// prompt through this so no agent, on any provider, ever runs without
+/// its role-appropriate Laws.
+pub fn agent_context_block(scope: RuleScope) -> String {
+    let mut out = String::new();
+    let preamble = brief_preamble();
+    if !preamble.is_empty() {
+        out.push_str(&preamble);
+        out.push_str("\n\n---\n\n");
+    }
+    out.push_str(&rules_prompt_block(scope));
+    out
+}
+
 pub fn rules_for_agent(agent: AisbAgent) -> Vec<Rule> {
     all_rules()
         .into_iter()
@@ -448,6 +465,31 @@ mod tests {
     fn operational_rules_have_no_laws() {
         for r in operational_rules() {
             assert_ne!(r.kind, RuleKind::Law, "operational_rules leaked a law: {}", r.id);
+        }
+    }
+
+    #[test]
+    fn agent_context_block_carries_laws_and_rules_for_all_scopes() {
+        use RuleScope::*;
+        for scope in [Master, Global, Oracle, Worker] {
+            let ctx = agent_context_block(scope);
+            assert!(
+                ctx.contains("THE LAWS"),
+                "scope {:?} missing LAWS header in funnel output",
+                scope
+            );
+            assert!(
+                ctx.contains("[L1]") && ctx.contains("[L2]") && ctx.contains("[L3]"),
+                "scope {:?} missing one or more law ids in funnel output",
+                scope
+            );
+            // Every scope gets at least one operational rule rendered
+            // (the registry guarantees rules for each scope).
+            assert!(
+                ctx.contains("Operational rules"),
+                "scope {:?} missing Operational rules header",
+                scope
+            );
         }
     }
 
