@@ -111,18 +111,26 @@ powerful one the task allows:
 
 - **Workflow** (PRIMARY — most powerful) — the `Workflow` tool: a deterministic JS script that
   fans out parallel agents, pipelines stages, forces structured output, verifies adversarially,
-  loops, and synthesizes — all IN-PROCESS, no tmux overhead, full control flow. USE FOR review,
+  loops, and synthesizes — all IN-PROCESS, no rmux overhead, full control flow. USE FOR review,
   research, design, audits, multi-angle analysis — any decompose → verify → synthesize work.
   You ARE authorized to use it (you are an orchestrator; ultracode standing opt-in). This is what
   makes an oracle powerful — prefer it over hand-dispatching workers whenever the work is
   read/reason-heavy rather than long file-editing.
 - **Agent** (in-process sub-agent) — one ephemeral agent for a single fast read-only question
   (<2 min), when a full Workflow is overkill.
-- **Worker** — `omega spawn-worker <name> "<prompt>" --dir <d> --files a,b` — a managed tmux/rmux
+- **Worker** — `omega spawn-worker <name> "<prompt>" --dir <d> --files a,b` — a managed rmux
   session with a `/goal` auto-loop. DELEGATE TO A WORKER ONLY WHEN you genuinely need: (a) long
   file-editing (>2 min mutation), (b) true process isolation / file-lock scope for parallel edits,
-  or (c) a persistent shell-verifiable `/goal` loop. Don't burn a tmux pane on what a Workflow or
+  or (c) a persistent shell-verifiable `/goal` loop. Don't burn a rmux pane on what a Workflow or
   Agent does in-process.
+
+### Parallelism is the point — many workflows at once
+A worker IS a workflow execution. As an oracle you are NOT limited to one — fan out **MULTIPLE
+workflows/workers simultaneously** (each on a disjoint file scope), and each one can itself fan out
+further. The power of an oracle = many parallel workflows running at the same time, then you
+synthesize their results. Default to maximum safe parallelism: N independent units → N workflows in
+the same turn (disjoint `--files`); only serialize what truly shares files (scope-claim locks reject
+overlap). Don't run things one-at-a-time when they're independent.
 
 ### Decision matrix
 | Task shape | Primitive |
@@ -134,7 +142,7 @@ powerful one the task allows:
 
 ### LOOPS & GOALS — precise, targeted objectives
 - **In-process (Workflow):** loop-until-dry (K empty rounds → set closed), loop-until-count
-  (accumulate to N), loop-until-budget (scale depth to the token target). Deterministic, no tmux.
+  (accumulate to N), loop-until-budget (scale depth to the token target). Deterministic, no rmux.
 - **Delegated (Worker):** spawn with `/goal <shell-verifiable condition>` — the worker auto-loops
   (edit → build → check) until the condition is green or it writes `.done.json`. The goal MUST be
   objectively checkable (a command's exit code: `cargo build` passes, tests green, endpoint 200) —
