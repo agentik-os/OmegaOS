@@ -2756,11 +2756,26 @@ impl TelegramBotEngine {
                             )
                         })
                         .unwrap_or_default();
+                    // Current activity preview — what the oracle is doing
+                    // right now. Best-effort: skip the line on capture error.
+                    let activity = self
+                        .mgr
+                        .capture_pane(&s.name)
+                        .await
+                        .ok()
+                        .as_deref()
+                        .and_then(|t| last_activity_line(t, 80));
                     oracle_lines.push(format!(
                         "  ◆ <code>{}</code>{}",
                         formatting::escape_html(&s.name),
                         meta
                     ));
+                    if let Some(line) = activity {
+                        oracle_lines.push(format!(
+                            "    <i>↳ {}</i>",
+                            formatting::escape_html(&line)
+                        ));
+                    }
                 }
                 SessionRole::Worker => workers += 1,
                 SessionRole::Home => master += 1,
@@ -4126,6 +4141,78 @@ fn render_oracle_prompt(project: &str, workdir: &str, session: &str) -> Option<S
     Some(path.to_string_lossy().to_string())
 }
 
+/// Extract a single readable "current activity" line from a captured pane.
+///
+/// Walks the pane bottom-up to surface the most recent line of REAL agent
+/// content. Crucially does NOT use clean_terminal_output (which strips
+/// `●`-prefixed lines wholesale — those are exactly Claude's status updates
+/// like "● Reading file X" and are the BEST activity signal). Instead does
+/// targeted cleanup: strip ANSI escapes, drop dividers + keyboard hints +
+/// the bare input prompt, keep everything else. Truncates to `max_chars`
+/// chars with an ellipsis. Returns None when nothing readable remains.
+fn last_activity_line(pane_text: &str, max_chars: usize) -> Option<String> {
+    fn is_chrome_hint(t: &str) -> bool {
+        let lower = t.to_lowercase();
+        t.contains('↑')
+            || t.contains('↓')
+            || t.contains('⏵')
+            || t.contains('⎿')
+            || lower.contains("enter to ")
+            || lower.contains("esc to ")
+            || lower.contains("shift+tab")
+            || lower.contains("ctrl+")
+            || lower.contains("bypass permissions")
+            || lower.contains("type something")
+            || lower.contains("to navigate")
+            || lower.contains("to interrupt")
+            || lower.contains("press up to edit")
+    }
+    fn is_divider(t: &str) -> bool {
+        !t.is_empty()
+            && t.chars()
+                .all(|c| matches!(c, '─' | '═' | '·' | '│' | ' ' | '\t'))
+    }
+    // ANSI strip (same pattern as clean_terminal_output but without the
+    // wholesale `●` drop).
+    let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
+        .unwrap_or_else(|_| regex::Regex::new(r"$^").unwrap());
+    let stripped = ansi_re.replace_all(pane_text, "");
+
+    let picked = stripped
+        .lines()
+        .rev()
+        .map(|l| l.trim_end())
+        .find(|l| {
+            let trimmed = l.trim_start();
+            if trimmed.is_empty() {
+                return false;
+            }
+            // The bare input prompt `❯ ` followed by nothing is chrome.
+            if trimmed == "❯" || trimmed.starts_with("❯ ") && trimmed.len() <= 4 {
+                return false;
+            }
+            if is_divider(trimmed) {
+                return false;
+            }
+            if is_chrome_hint(trimmed) {
+                return false;
+            }
+            true
+        })?;
+    let t = picked.trim().to_string();
+    if t.is_empty() {
+        return None;
+    }
+    let truncated: String = if t.chars().count() > max_chars {
+        let mut s: String = t.chars().take(max_chars.saturating_sub(1)).collect();
+        s.push('…');
+        s
+    } else {
+        t
+    };
+    Some(truncated)
+}
+
 fn clean_terminal_output(text: &str) -> String {
     let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap_or_else(|_| {
         regex::Regex::new(r"$^").unwrap()
@@ -4340,5 +4427,59 @@ fn run_llm_oneshot(provider: &str, model: &str, prompt: &str) -> std::io::Result
             std::io::ErrorKind::InvalidInput,
             format!("Unknown provider: {}", provider),
         )),
+    }
+}
+
+#[cfg(test)]
+mod activity_line_tests {
+    use super::last_activity_line;
+
+    #[test]
+    fn skips_ui_chrome_picks_real_content() {
+        // Real fixture from an oracle pane tail (DentistryGPT-1, post /goal).
+        let pane = "\
+  3. Tester avec vrais doublons DM↔Orthalis
+     Mettre en place un cabinet
+  4. Type something.
+───────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+";
+        let got = last_activity_line(pane, 80).unwrap();
+        // Must skip the chrome line + "Type something" + "Chat about this" not chrome but
+        // it's a label — the most recent REAL content line is "5. Chat about this".
+        // Acceptable: the picker walks bottom-up, skips chrome, lands on the
+        // last non-chrome line.
+        assert!(
+            got.contains("5. Chat about this") || got.contains("Mettre en place")
+                || got.contains("Tester"),
+            "got: {got}"
+        );
+        assert!(!got.contains("Enter to select"));
+        assert!(!got.contains("↑/↓"));
+    }
+
+    #[test]
+    fn truncates_long_lines_with_ellipsis() {
+        let pane = "● ".to_string() + &"x".repeat(200);
+        let got = last_activity_line(&pane, 20).unwrap();
+        assert_eq!(got.chars().count(), 20);
+        assert!(got.ends_with('…'));
+    }
+
+    #[test]
+    fn empty_pane_returns_none() {
+        assert_eq!(last_activity_line("", 80), None);
+        assert_eq!(last_activity_line("   \n   \n", 80), None);
+    }
+
+    #[test]
+    fn only_chrome_returns_none() {
+        let pane = "
+Enter to select · ↑/↓ to navigate · Esc to cancel
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+";
+        assert_eq!(last_activity_line(pane, 80), None);
     }
 }
