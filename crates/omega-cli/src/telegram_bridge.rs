@@ -2765,6 +2765,19 @@ impl TelegramBotEngine {
                         .ok()
                         .as_deref()
                         .and_then(|t| last_activity_line(t, 80));
+                    // Last completion result, if any (the file convention drops
+                    // the "oracle-" prefix that's already in the session name).
+                    let state_dir_for_done = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"))
+                        .join(".omega/state");
+                    let oracle_id = s.name.strip_prefix("oracle-").unwrap_or(&s.name);
+                    let last_done = omega_core::done::OracleDoneSignal::read(
+                        &state_dir_for_done,
+                        oracle_id,
+                    )
+                    .ok()
+                    .flatten();
+
                     oracle_lines.push(format!(
                         "  ◆ <code>{}</code>{}",
                         formatting::escape_html(&s.name),
@@ -2774,6 +2787,31 @@ impl TelegramBotEngine {
                         oracle_lines.push(format!(
                             "    <i>↳ {}</i>",
                             formatting::escape_html(&line)
+                        ));
+                    }
+                    if let Some(d) = last_done {
+                        use omega_core::done::DoneStatus;
+                        let (badge, label) = match d.status {
+                            DoneStatus::DoneClean => ("✓", "done_clean"),
+                            DoneStatus::Pending => ("⏳", "pending"),
+                            DoneStatus::Failed => ("✗", "failed"),
+                            DoneStatus::Blocked => ("⊘", "blocked"),
+                        };
+                        let summary = if d.summary.len() > 70 {
+                            let mut s: String = d.summary.chars().take(69).collect();
+                            s.push('…');
+                            s
+                        } else {
+                            d.summary.clone()
+                        };
+                        let suffix = if summary.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" — {}", formatting::escape_html(&summary))
+                        };
+                        oracle_lines.push(format!(
+                            "    <i>{} <b>{}</b>{}</i>",
+                            badge, label, suffix
                         ));
                     }
                 }
