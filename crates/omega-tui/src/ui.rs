@@ -543,8 +543,15 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     //    tokens · thought for 2s)" and siblings.
                     let is_activity = trimmed.contains("tokens")
                         && (trimmed.contains('·') || trimmed.contains('…'));
-                    // 2. User input echo: "❯ <text>".
-                    let is_user_input = trimmed.starts_with("❯ ") && trimmed.len() > 2;
+                    // 2. User input echo:
+                    //    - "❯ <text>"        : Claude Code's input prompt
+                    //    - "▶ You: <text>"   : AISB-master mirror format
+                    //                          (~/.omega/state/aisb-conversation.log)
+                    let is_user_input = (trimmed.starts_with("❯ ") && trimmed.len() > 2)
+                        || trimmed.starts_with("▶ You: ");
+                    // 2b. AISB-master agent reply echo: "You ▶ <text>".
+                    let is_agent_reply = trimmed.starts_with("You ▶ ")
+                        || trimmed.starts_with("You ▶");
                     // 3. TodoWrite items: anchored on the status glyph at
                     //    line start (after trim) so a glyph inside a table
                     //    cell or sentence doesn't match.
@@ -659,6 +666,24 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                                     style = style.fg(Color::Rgb(r, g, b));
                                 }
                                 Span::styled(sp.text.clone(), style)
+                            })
+                            .collect();
+                        Line::from(spans)
+                    } else if is_agent_reply {
+                        // AISB-master mirror: agent reply line. Soft green
+                        // tint + dim bg to distinguish from user lines.
+                        let tint = Color::Rgb(20, 44, 28);
+                        let green = Color::Rgb(120, 220, 160);
+                        let spans: Vec<Span> = row
+                            .iter()
+                            .map(|sp| {
+                                Span::styled(
+                                    sp.text.clone(),
+                                    Style::default()
+                                        .fg(green)
+                                        .bg(tint)
+                                        .add_modifier(Modifier::BOLD),
+                                )
                             })
                             .collect();
                         Line::from(spans)

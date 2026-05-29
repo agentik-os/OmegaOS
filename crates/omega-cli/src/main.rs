@@ -443,6 +443,20 @@ async fn run_menu() -> Result<()> {
         .output()
         .await;
 
+    // Force truecolor advertisement. SSH clients (Termius and friends) often
+    // strip COLORTERM, leaving the process to see only `TERM=xterm` — which
+    // makes crossterm/ratatui downgrade 24-bit RGB to the closest 256-color
+    // index, washing out the styled-preview reds/greens/blues we paint in
+    // ui.rs. Forcing this here is safe: terminals that genuinely can't render
+    // truecolor will downgrade themselves, but every modern client we ship
+    // to (Termius, Blink, native macOS Terminal/iTerm2, gnome-terminal,
+    // alacritty…) handles 24-bit RGB correctly. Verified empirically:
+    // without this, my (241,76,76) bright red appeared as a muddy washed
+    // orange; with it, true bright red.
+    if std::env::var("COLORTERM").as_deref().unwrap_or("") != "truecolor" {
+        std::env::set_var("COLORTERM", "truecolor");
+    }
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
