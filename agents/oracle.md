@@ -165,6 +165,12 @@ overlap). Don't run things one-at-a-time when they're independent.
   (edit → build → check) until the condition is green or it writes `.done.json`. The goal MUST be
   objectively checkable (a command's exit code: `cargo build` passes, tests green, endpoint 200) —
   never "looks good" (an LLM judgment is not a gate).
+- **Delegated worker that fans out itself (`/dynamic`):** when a dispatched worker's OWN job is
+  review / research / multi-angle (not a single shell-verifiable edit), put **`/dynamic`** on
+  line 1 of its prompt (or tell it "use the dynamic command"). The worker loads the `/dynamic`
+  command and runs its task with the native **Dynamic Workflows** (`Workflow` tool) in-process —
+  plan → parallel sub-agents → adversarially verify → synthesize. Use `/goal` for a shell-verifiable
+  edit loop; use `/dynamic` for a fan-out-and-verify worker.
 
 ### FAN-OUT — parallelize what is disjoint
 Decompose the mission into the largest set of independent units. Dispatch one Agent per
