@@ -917,4 +917,72 @@ For every file this audit touches (moves, modifies, deletes), you MUST:
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A linear audit of a system that fights itself is itself a system fighting itself. Map the whole, fan out, verify adversarially, converge."* — applies the Gestalt-Popper doctrine to the audit's OWN execution.
+
+This section governs **HOW this audit executes** when run. It changes the orchestration of the existing 20 phases — it does **NOT** add, remove, reorder, or reweight any phase, and the scoring matrix (Phase 18, /360), grade thresholds, verdict/telemetry schemas, and frontmatter all stay **exactly** as defined above. Append-only, identity-preserving.
+
+### 1. Decompose into independent parallel tracks (fan-out)
+
+After **Phase 0 (System Cartography)** and **HINGE LOGIC** identification, do NOT walk Phases 1→17 linearly. Phase 0 is the only hard prerequisite (its `discovery/` artifacts — `system-map.md`, `pipelines.json`, `decision-points.json`, `data-flows.json`, `config-surface.json`, `complexity-census.md` — feed everything downstream). The 17 analysis phases partition into **independent tracks** that share Phase-0 inventories but no mutable state, so they run **concurrently via the Workflow tool** (one workflow branch per track):
+
+| Track | Phases | Reads from discovery/ | Independent because |
+|-------|--------|------------------------|----------------------|
+| **A — Waste & redundancy** | 1 Redundant Logic, 2 Algorithmic Efficiency, 16 Dead Logic | complexity-census, decision-points | static AST/grep over the code census |
+| **B — Pipeline & concurrency** | 3 Pipeline Efficiency, 4 Orchestration Overhead, 9 Parallelization Gaps | pipelines.json, data-flows | timing/dependency analysis of chains |
+| **C — Structure & abstraction** | 5 Abstraction Audit, 13 Decision Tree Pruning, 14 Over-Engineering, 15 Under-Engineering | decision-points, complexity-census | layer/branch topology, orthogonal to perf |
+| **D — State & data** | 6 State Machine Defects, 7 Data Flow Entropy | data-flows, decision-points | state/data-truth modeling |
+| **E — Caching & errors** | 8 Caching Intelligence, 11 Error Handling Logic | data-flows, pipelines.json | hit-rate + failure-path analysis |
+| **F — Config & context** | 10 Config Complexity, 12 Context Efficiency | config-surface | config/token surface, no overlap with logic flow |
+
+Run tracks **A–F as parallel Workflow branches**. The HINGE LOGIC track (whichever track owns the identified bottleneck — e.g. an N+1 in a hot pipeline → Track B) gets **10x depth** per Law 4 (Clarity before optimization); the other tracks run at proportional-but-full depth (never degraded — Rule 46 / §14). **Phase 17 (Simplification Map)** is the **join/synthesis barrier** — it consumes the surviving findings from all six tracks and ranks them by `complexity_removed × frequency_of_path × blast_radius`, exactly as already specified. No phase definition changes; only its inputs now arrive in parallel.
+
+> **R-SCOPE (one writer per file):** parallel tracks are READ-ONLY discovery + scoring. They emit findings into their own `reports/*.md` (already file-disjoint per the OUTPUT CONTRACT). They MUST NOT apply fixes concurrently — all mutation is serialized in **Phase 19** behind the existing before/after verification contract.
+
+### 2. Adversarially verify every finding (≥2-of-3 lenses) before it counts
+
+A track's raw finding is a **hypothesis, not a verdict** (Law 5: every optimization claim is a hypothesis). Before a finding may enter Phase 17's Simplification Map or Phase 18's score, it must survive **≥2 of these 3 independent lenses** — dispatch them as concurrent sub-checks (Workflow fan-out or parallel `Agent` calls), then apply the consensus gate:
+
+1. **REPRODUCE (measure it)** — produce the number the finding claims. Map to this audit's Popper categories:
+   - *CLAIM vs MEASUREMENT* → run the benchmark / `time` the pipeline / count the dispatch hops. "It's slow" with no measured baseline = killed.
+   - *PARALLEL vs SEQUENTIAL* → prove the steps have no data dependency (trace `data-flows.json`) AND measure sequential wall-time vs theoretical parallel.
+   - *CACHE vs FRESHNESS* → instrument the real hit rate; a "missing cache" finding dies if the access pattern shows <1 repeat.
+   - *ABSTRACTION vs USAGE* → `grep` the call sites; "used once" must be the literal count.
+2. **REFUTE (steel-man the status quo)** — actively try to prove the current design is CORRECT and the finding WRONG: is the "redundant" check a real responsibility boundary? Does the "over-engineered" plugin system have a second consumer off-repo? Is the O(n²) bounded by n≤10 forever (Phase 14: O(n²) is fine for 10 items)? A finding that survives a genuine refutation attempt is strong; one that collapses is noise.
+3. **CROSS-CHECK (triangulate)** — confirm via an independent signal: a second tool (AST vs grep vs runtime trace), an adjacent track's finding on the same file:line, or a sibling audit's verdict (`audits/.codeaudit/verdict.json`, `audits/.perfaudit/verdict.json`, `audits/.automationaudit/verdict.json`). A match here triggers the existing **cross-audit elevation** mechanism (preamble §6) → `cross_audit_confirmations[]`.
+
+**Consensus gate:** ≥2 of 3 lenses must agree → finding is **ACCEPTED** (enters Phase 17 + scoring). 0–1 → finding is **KILLED** (logged to `audits/.logicaudit/discovery/killed-findings.md` with which lens(es) failed and why — this is required evidence, not optional, per R-CITE). This is the audit eating its own dog food: a logic audit that ships unfalsified optimization claims is exactly the *CLAIM vs MEASUREMENT* anti-pattern it exists to catch. Per the FIRST LAW — runtime over code over comments — REPRODUCE outranks the other two when they conflict.
+
+### 3. Synthesize survivors into THIS audit's existing scoring (unchanged)
+
+Only **ACCEPTED** findings flow into the unchanged machinery:
+- **Phase 17 Simplification Map** ranks survivors by the existing impact formula.
+- **Phase 18** scores each of the 20 phases against the **same weights** (25/25/25/20/20/20/20/20/20/15/15/20/15/15/15/10/20 → **/360**) and the **same grade thresholds** (S/A/B/C/D/F). The parallelization changes *how findings were gathered and filtered*, never *how they are scored*.
+- **Phase 19** applies fixes **sequentially** (mutation is never parallel) under the existing MANDATORY BEFORE/AFTER VERIFICATION contract (PRE-FIX baseline → fix → POST-FIX check → breakage scan → `before-after.md`).
+- `verdict.json` / `telemetry.json` keep their exact v2 schemas; record the orchestration in telemetry only via **additive** keys (do not alter required fields), e.g. `"tracks_parallel": 6`, `"findings_killed_by_verification": N`, `"verification_lenses": ["reproduce","refute","cross_check"]`.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+System logic surfaces are open-ended — new pipelines, decision points, and config layers surface as you map. Each parallel track runs a **discovery loop** until it goes **dry**:
+
+```
+per track:
+  pass = 0
+  do:
+    pass += 1
+    scan track's surface (e.g. Track B: enumerate every multi-step chain in pipelines.json)
+    new_candidates = findings not seen in prior passes
+    verify each new_candidate through the ≥2-of-3 gate (§2)
+  while new_candidates > 0  AND  pass < 5     # hard cap = preamble §4 (5-iteration cap)
+  if pass == 5 and still finding new ones:
+    mark track NEEDS_REVIEW in verdict.json.needs_review[], Telegram SOS (preamble §7)
+```
+
+"Dry" = a full pass surfaces **zero** new ACCEPTED findings. This reuses the existing **5-iteration hard cap** (§4 of the preamble / Phase 20 re-audit cap) — it does **not** introduce a new unbounded loop. The Phase 20 fix-and-re-audit loop is unchanged and still bounded at 5.
+
+**Net effect:** same 20 phases, same /360 matrix, same verdict — but executed as a fan-out of independent tracks, with every finding adversarially falsified (≥2-of-3) before it can move the score, and unknown-size surfaces explored until dry. The audit now embodies the very doctrine it enforces: parallelize what's independent, kill the claims that can't survive measurement, simplify the survivors.
+
+---
+
 *"/logicaudit v1 — The universe tends toward entropy. Your codebase doesn't have to."*

@@ -1377,3 +1377,123 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `audits/.observabilityaudit/before-after.md` with, per affected item: functional status + a BEFORE telemetry sample and an AFTER telemetry sample proving the improvement.
 
 **An audit that breaks 1 working dashboard/alert — or leaks 1 secret while "improving logging" — is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions and real captured telemetry.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Eighteen phases run sequentially is a single-threaded investigator pacing one room at a time. The three pillars are independent — interrogate them in parallel, then prove the stitch."*
+
+This section governs **HOW this audit executes when run**. It changes the execution
+*engine*, not the audit's identity: every phase (0, 0b, 1–17, H1, 18–21), every scoring
+weight in the Phase 18 matrix (/360), the grade bands, the Phase 4 PII hard gate (≤60),
+and the verdict.json schema are UNCHANGED. The Gestalt clarity gate and Popper
+falsification doctrine are preserved verbatim — this layer simply makes the fan-out
+explicit and the verification adversarial. When this section and the linear
+"PARALLEL EXECUTION STRATEGY" waves describe the same thing, treat the waves as the
+track definition and this section as the orchestration contract over them.
+
+### 1. Fan-out — decompose phases into INDEPENDENT parallel tracks
+
+After Phase 0 (programmatic gather) and Phase 0b (recon + telemetry-stack mapping +
+hinge identification + the **mandatory real emitted-telemetry capture** into
+`discovery/emitted-samples/`) complete **sequentially** — they are the shared evidence
+base every track reads and MUST run first — dispatch the domain phases as concurrent
+Workflow tracks via the `Workflow` tool (in-process fan-out, per R-ORCH), NOT one phase
+after another. The tracks are file/concern-disjoint and map onto this audit's three
+pillars + operational surface:
+
+| Track | Phases | Reads (shared, read-only) | Emits |
+|---|---|---|---|
+| **T-LOGS** | 1 Structured · 2 Levels · 3 Context · 4 Hygiene/PII | `evidence-summary.json`, `emitted-samples/`, log call-sites | `reports/structured-logging.md` … `log-hygiene.md` |
+| **T-TRACE** | 5 Tracing · 6 Propagation | `telemetry-stack.json`, span exports | `reports/tracing.md`, `span-propagation.md` |
+| **T-METRICS** | 7 RED · 8 USE+CorrelationID · 9 Cardinality/Sampling | metrics manifests, `/metrics` scrape | `reports/metrics-red.md` … `cardinality-sampling.md` |
+| **T-OPS** | 10 ErrorTracking · 11 HealthProbes · 12 Dashboards · 13 SLO/SLI · 14 Alerting · 15 Runbooks · 16 Retention/Cost | dashboard/alert configs, SLO files, probe routes | `reports/error-tracking.md` … `retention-cost.md` |
+
+Track rules:
+- All four tracks run **concurrently** — they only READ the Phase 0/0b artifacts; none
+  writes a file another reads, satisfying R-SCOPE (one writer per file).
+- The **OBSERVABILITY HINGE POINT** (the one user-critical path whose silent failure
+  costs most) is passed into every track; each applies 10× scrutiny to its slice of the
+  hinge (T-LOGS reads the hinge handler's failure branches, T-TRACE follows the hinge
+  request's spans, T-METRICS confirms RED is emitted on the hinge, T-OPS confirms the
+  hinge is alerted + runbooked).
+- Phase 17 (3am Debuggability) and Phase H1 (Hybrid synthesis) remain **sequential and
+  AFTER** all tracks — Phase 17 is the cross-track acceptance test (the one-ID stitch
+  needs all three pillars' findings present) and cannot start until logs/traces/metrics
+  tracks have landed.
+- Do NOT fan out Phase 0 / 0b (shared evidence) or Phases 17/18 (synthesis/verdict).
+
+### 2. Adversarial verification — ≥2-of-3 lenses before a finding is accepted
+
+Every candidate finding (from any track) is provisional until it survives independent
+adversarial verification. Run **three lenses** and require **≥2 to agree** before the
+finding enters `verdict.json`; this operationalises the existing H1.1 Popper protocol
+(every claim cites ≥3 falsifying commands) as a hard 2-of-3 consensus gate:
+
+1. **REPRODUCE** — exercise the real path and capture emitted output. The finding is
+   real only if the runtime artifact shows it (First Law / L1). E.g. claim "auth logs
+   have no correlation ID" → trigger an auth failure, read
+   `emitted-samples/auth-fail.log`, confirm no `request_id`/`trace_id` field.
+2. **REFUTE** — actively try to FALSIFY the finding (Popper). Hunt the counter-example:
+   a redaction layer that *does* fire, a `/ready` handler that *does* query the DB, a
+   trace that *does* continue across the async hop, an alert `for:` clause that *does*
+   suppress the blip. If refutation succeeds → **kill the finding** (demote to `info`,
+   record `falsified_at: <evidence>`).
+3. **CROSS-CHECK** — corroborate against a second independent source: a sibling audit's
+   `evidence-summary.json` (Phase 0.5 — a `codeaudit`/`debugaudit` silent-`catch` that
+   is also a logging blind spot), the error-tracker-vs-error-metric agreement test
+   (Phase 10.5), or a second telemetry signal (does the log↔trace↔metric tell the same
+   story for one request?).
+
+Verdict per finding:
+- **≥2 lenses confirm** → finding STANDS, severity per the Phase 18 weights; if REPRODUCE
+  + CROSS-CHECK both confirm a hinge-path issue → promote (cross-audit confluence already
+  bumps one level per Phase 0.5).
+- **REFUTE wins (≤1 lens confirms)** → finding is KILLED; never report a finding that
+  failed its own falsification. Surviving findings only.
+- **Inconclusive (couldn't run a lens cleanly)** → keep at most `medium`,
+  `confidence: medium`, and say so — never inflate.
+
+The Phase 4 secret/PII finding is special: it requires the **REPRODUCE** lens to fire
+against *emitted* output (not code intent) before the ≤60 hard gate trips — a static
+pattern alone is `medium` until the emitted sample confirms the leak.
+
+### 3. Synthesize back into THIS audit's existing matrix + verdict (unchanged)
+
+The surviving, verified findings from all tracks converge into the **existing** pipeline
+with ZERO change to scoring or output:
+- Phase 17 runs the reconstruction drill on the hinge using the consolidated findings
+  (the one-ID stitch: log↔trace↔error↔metric).
+- Phase H1 performs the documented Popper / hinge / user-need / edge-case / cross-audit
+  synthesis and writes the H1.6 hybrid `verdict.json`.
+- Phase 18 scores each phase 0–10 and applies the **unchanged** /360 weighted matrix
+  (Structured ×3.0, Context ×3.0, RED ×3.0, Alerting ×3.0, 3am ×3.0, … Retention ×1.0),
+  normalises `(raw / applicable_max) × 100`, and assigns the same S/A/B/C/D/F grade.
+- Phases 19–21 (fix plan, do-no-harm fix execution, re-audit + reconstruction re-drill)
+  are unchanged. The parallel layer feeds findings IN; the verdict comes OUT exactly as
+  before. Fan-out is an execution detail invisible to the score.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Blind-spot enumeration (Phase 1 silent failure branches, Phase 17 §3 blind-spot
+inventory, Phase H1.4 edge cases) is open-ended — you do not know how many silent
+failure modes exist until you stop finding them. Run discovery as a bounded
+loop-until-dry **inside** this orchestration (never as a top-level `/goal` around it —
+R-GOAL):
+
+```
+pass = 0
+until DRY or pass == 5 (Audit Verification Contract re-audit cap):
+  pass += 1
+  re-fan-out discovery over un-instrumented branches on/around the hinge path
+  for each NEW candidate blind spot → run the ≥2-of-3 verification (§2)
+  DRY when a full pass yields zero NEW surviving findings
+on pass==5 still finding → mark remaining NEEDS_REVIEW, confidence: low,
+  surface as `pending` (do NOT loop unbounded — no silent infinite loops)
+```
+
+Each newly discovered blind spot is verified by §2 before it counts, then folded into
+§3. The loop terminates on a dry pass or the 5-iteration cap — whichever first — keeping
+the discovery bounded while still exhausting the unknown-size search space (L4: done
+means 100%, the safe work is exhausted, blockers recorded).

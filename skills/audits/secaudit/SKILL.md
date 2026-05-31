@@ -1802,3 +1802,177 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"One probe lies, two confirm, three convict. Fan the attack out, then make every wound prove itself before it scores."*
+
+This section governs **how /secaudit executes when run**. It does not add, remove, reorder, or
+reweight any phase — Phases 0–24, the /400 scoring matrix, the grade bands, and the verdict format
+above are unchanged. It replaces *linear, one-phase-at-a-time grinding* with a **fan-out → adversarially-verify → synthesize → loop-until-dry** execution model, driven by the **Workflow tool**. The
+Gestalt-Popper doctrine, the SECURITY HINGE POINT, and the 7 Laws of Security Forensics all still
+bind every track. This is the operational upgrade of the existing **PARALLEL EXECUTION STRATEGY**
+section (the 5-wave plan): that section names the waves; this section names the *engine* and the
+*verification contract* that runs them.
+
+### 1. Decompose into INDEPENDENT parallel tracks (fan-out)
+
+After **Phase 0 PROGRAMMATIC GATHER** and **Phase 0 RECONNAISSANCE** complete (these are sequential
+and feed everyone — the attack surface map, auth-boundary map, `evidence-summary.json`, and the
+SECURITY HINGE POINT must exist first), launch the remaining phases **concurrently** via the
+Workflow tool instead of walking them in order. Phases are grouped into **file/surface-disjoint
+tracks** so concurrent execution never double-probes the same target or stomps the same output
+(honors R-SCOPE — one writer per `reports/*.md` file).
+
+Concretely, dispatch these tracks in parallel (mirror of the 5 waves, now true fan-out):
+
+| Track | Phases (unchanged) | Disjoint surface | Writes to |
+|-------|--------------------|------------------|-----------|
+| **T1 — Code-level injection/output** | 1 (OWASP), 2 (XSS), 3 (Injection), 20 (Input Validation) | Source code, query layer, templates | `reports/{owasp-top-10,xss-testing,injection-testing,input-validation}.md` |
+| **T2 — Transport & header config** | 4 (CORS), 5 (CSP), 17 (SSL/TLS), 18 (Security Headers) | HTTP response headers, TLS handshake | `reports/{cors-audit,csp-audit,ssl-tls,security-headers}.md` |
+| **T3 — Identity boundary (HINGE-WEIGHTED)** | 6 (Auth Bypass), 7 (Session), 8 (JWT), 9 (IDOR), 19 (API Auth) | Auth middleware, session store, token lifecycle, per-object authz | `reports/{auth-bypass,session-management,jwt-security,idor-detection,api-auth}.md` |
+| **T4 — Infra, supply chain & abuse** | 10 (SSRF), 11 (Open Redirect), 12 (File Upload), 13 (Rate Limiting), 14 (Brute Force), 15 (Secrets), 16 (Dependency CVE) | Outbound fetchers, upload sinks, deps, secrets, throttles | `reports/{ssrf-probing,open-redirect,file-upload,rate-limiting,brute-force,secrets-scanning,dependency-cve}.md` |
+
+Track **T3 carries the SECURITY HINGE POINT** in nearly every app (the auth/authorization boundary —
+Phase 0 Step 4). It is dispatched with **10× scrutiny** per Phase 2.2 (5× falsification attempts,
+3× edge-case hunts, mandatory read of the hinge file + all direct callers/callees) and gets the
+deepest sub-fan-out. If the computed hinge lands elsewhere (e.g. a public SSRF-prone fetcher in T4),
+shift the 10× weight to that track instead — the hinge is wherever maximum breach-leverage lives,
+not a fixed track.
+
+**Workflow tool usage:** one Workflow per track, all launched in a single fan-out so they run
+concurrently. Each track is itself a worker that MAY sub-fan-out its own phases (e.g. T1 runs XSS
+reflected/stored/DOM probes as parallel sub-lenses). **Honor preamble §12 rate-limit safety across the
+whole fan-out, not per-track:** the global cap is 10 req/s against the target (a 4-track fan-out must
+not become 40 req/s). Share a token-bucket / serialize the live-HTTP probing phases (T2 header probes,
+T3 auth replay, T4 SSRF/brute-force) if they target the same host; purely-static tracks (grep/AST over
+source) parallelize freely with no rate concern. Abort the whole fan-out on 3 consecutive 429/503
+(preamble §12). Self-pentest ABORT targets (the v1.2 hardcoded list — `~/.claude/`, `~/.aisb/`, the VPS)
+are checked **before** any track launches.
+
+### 2. ADVERSARIALLY VERIFY every finding (≥2-of-3 independent lenses)
+
+A single probe firing is **an input, never the verdict** (R-VERIFY). Before ANY finding is allowed to
+affect the score, it must survive **≥2-of-3 independent lenses**. A finding that does not reach 2-of-3
+is **killed** (demoted to `info` with `falsified_at`, excluded from scored severity) — exactly the
+Phase 2.1 `falsified` outcome. This *feeds* the existing Popper machinery (Phase 2.1
+`falsifiable_tests[]`); it does not replace it — it requires that falsification be done from
+**independent angles**, not one command.
+
+The three lenses (security-tailored):
+
+- **Lens A — REPRODUCE (exploit it):** independently re-trigger the vulnerability and capture the
+  proof-of-exploit. For XSS/injection → fire the payload and observe execution/DB effect. For IDOR →
+  authenticate as User A, fetch User B's object, confirm the leak. For a secret → confirm the key is
+  live (or unambiguously a real credential pattern). For a CVE → confirm the vulnerable code path is
+  actually *reachable/called* in this codebase (not just present in the dependency tree). Evidence:
+  request/response, screenshot, or command output saved under `.sec/edge-evidence/` /
+  `reports/<phase>.md`.
+- **Lens B — REFUTE (Popper counter-example):** actively try to prove the finding is a false positive —
+  the protection the tool missed. Is the XSS sink behind framework auto-escaping (React text node,
+  not `dangerouslySetInnerHTML`)? Is the "unauthenticated endpoint" actually gated by middleware the
+  static scan can't see (Phase 2.1 table)? Is the `npm audit HIGH` in a dev-only / unreachable path?
+  Is the open redirect blocked by an allowlist one layer up? If Lens B finds the mitigation → the
+  finding is **killed**.
+- **Lens C — CROSS-CHECK (independent corroboration):** confirm via a *different evidence source* than
+  Lens A. Read the route handler / middleware source to confirm the gap (static ↔ dynamic agreement);
+  cross-reference a **sibling audit's `evidence-summary.json`** (Phase 0.5 — `/apiaudit` for the same
+  auth surface, `/codeaudit` for the same `auth.ts:line`, `/dataaudit` for the same table); or confirm
+  with a second tool in `evidence-summary.json` (`cross_tool_confirmed`). Two independent tools or
+  audit↔code agreement on the same `file:line` = strong corroboration → bump severity one level and set
+  `cross_audit_confirmed: true` (Phase 2.5).
+
+**Acceptance rule (concrete):**
+- **CRITICAL / HIGH severity → require all 3 lenses** (reproduce + refute-survived + cross-check). A
+  remotely-exploitable-without-auth claim that cannot be reproduced is downgraded until it is.
+- **MEDIUM / LOW severity → require ≥2-of-3.** Reproduce + cross-check is typical when live exploit is
+  unsafe to fire against the target.
+- Record the lens outcomes per finding so the scoring phase can see *why* it survived:
+
+```jsonc
+// extends each verdict.json findings[] entry — no schema field is removed
+{
+  "id": "F-013",
+  "phase": 9,                          // IDOR — unchanged
+  "severity": "critical",
+  "verification_lenses": {
+    "reproduce":   {"passed": true,  "evidence": ".sec/edge-evidence/F-013-userB-leak.txt"},
+    "refute":      {"survived": true, "counterexample_attempted": "checked ctx.auth ownership guard in convex/orders.ts:88 — absent"},
+    "cross_check": {"passed": true,  "source": "cross-audit:apiaudit F-021 same endpoint", "cross_audit_confirmed": true}
+  },
+  "lenses_passed": 3,
+  "verdict_admissible": true           // false ⇒ killed, demoted to info, excluded from score
+}
+```
+
+This is the direct realization of the Phase 2.1 `confirmed | falsified | inconclusive` outcomes:
+`lenses_passed ≥ required` ⇒ `confirmed`; refute succeeds ⇒ `falsified` (killed);
+can't run a lens cleanly ⇒ `inconclusive` (keep severity, `confidence: medium`).
+
+### 3. Synthesize survivors into the EXISTING scoring matrix + verdict (unchanged)
+
+Synthesis is the auditor's own job — **never paste a track's summary as the verdict** (R-ORCH). Once
+every track reports and every finding has been adversarially verified:
+
+1. **Admit only survivors.** Findings with `verdict_admissible: false` are excluded from scored
+   severity (they remain logged as `info` for the record).
+2. **Map survivors back to their owning phase.** Each surviving finding scores its phase 0–10 exactly
+   per that phase's existing rubric line (e.g. Phase 2 XSS: "0 = reflected+stored XSS found … 10 = full
+   CSP + no XSS vectors"; Phase 9 IDOR: "0 = horizontal IDOR on user data … 10 = all endpoints
+   authorization-checked"). **No rubric line is altered.**
+3. **Feed Phase 21 unchanged.** Apply the **/400 SCORING MATRIX exactly as written** (Phase 1 ×3.0 …
+   Phase 20 ×2.0, TOTAL max 400), then `NORMALIZE: score = (raw / 400) × 100`, then the S/A/B/C/D/F
+   grade bands — verbatim. The fan-out and the lenses change *how confidently each phase score was
+   reached*, not *how it is computed*.
+4. **Honor the Phase 2.7 score gate.** 100/100 stays blocked unless all critical/high findings are
+   fixed or justified, load-bearing findings are Popper-confirmed, `user_need_match.addressed = true`,
+   ≥3 falsifiable tests per phase, ≥2 edge cases per top-5 finding, cross-audit synthesis attempted.
+   The verification lenses **supply** this evidence; they do not relax the gate.
+5. **Then Phases 22 → 23 → 24 run unchanged:** fix plan, fix execution (with the DO-NO-HARM safety
+   gate + the AUDIT-VERIFICATION-CONTRACT before/after baseline), and re-audit (bounded at 5
+   iterations). All existing outputs (`verdict.json`, `verdict.md`, `fix-plan.json`, `before-after.md`,
+   `telemetry.json`, …) and the output gate are produced exactly as before.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Attack surface is **not** a fixed list — every reproduced vuln and every new route/param/upload-sink
+discovered mid-audit is a fresh surface to probe. Phases 2, 3, 6, 9, 12, 15, 19, 20 are inherently
+**unknown-size** (you don't know how many injectable params, IDOR-able objects, exposed secrets, or
+unauthenticated endpoints exist until you've found them all). Run those tracks as a **loop-until-dry**,
+not a single pass:
+
+```
+queue ← all attack surfaces from Phase 0 (endpoints, inputs, upload sinks, deps, redirect params, secrets candidates)
+seen  ← ∅
+while queue not empty:
+    surface ← queue.pop()
+    if surface ∈ seen: continue
+    seen.add(surface)
+    probe surface across its owning track's phases (fan-out the payload set)
+    for each candidate finding:
+        run the ≥2-of-3 adversarial lenses (§2)
+        if admissible:
+            record; map to owning phase (§3)
+            # discovery feedback — a confirmed breach often exposes more surface:
+            #   IDOR on /orders/{id}      → enqueue sibling collections (/invoices, /files) for the SAME pattern
+            #   reflected XSS in param p  → enqueue every sink that echoes p; re-test with filter-bypass payloads
+            #   live secret found         → enqueue what it unlocks (its service's endpoints) as new surface
+            #   SSRF reaches localhost    → enqueue internal services / cloud-metadata as new targets
+            enqueue any newly-revealed surfaces
+        else:
+            log as info (killed by lens)
+terminate when: queue empty (dry) AND last full pass surfaced 0 new admissible findings
+```
+
+Termination is **convergence to dry**, not a phase counter — but it is **bounded**: obey preamble §4
+(re-audit loop ≤ 5 iterations) and **R-BUDGET** (default 500K-token mission cap — escalate, never
+silently overrun). On hitting the cap with the queue non-empty, mark the remainder `NEEDS_REVIEW`,
+emit `confidence: low`, surface as `pending` in `.done.json`, and send the Telegram SOS (preamble §7)
+— **never** report a clean 100 over an un-drained attack-surface queue.
+
+> **Net effect:** same 25 phases, same /400 matrix, same grade bands, same verdict + before/after
+> contract — now executed as a rate-limited concurrent fan-out where every wound must survive 2-of-3
+> independent lenses before it scores, and discovery loops until the attack surface is provably dry.
+> Probe. Inject. Bypass. Enumerate — *in parallel, and only believe what survives the cross-examination.*

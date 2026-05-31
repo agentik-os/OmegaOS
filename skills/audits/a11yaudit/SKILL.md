@@ -1511,3 +1511,128 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A barrier nobody can reproduce is a rumor, not a finding. Fan out to find them all; falsify each through ≥2 independent eyes before it earns a place in the verdict."*
+>
+> **APPEND-ONLY layer — changes HOW this audit runs, never WHAT it scores.** Every phase
+> above (0–16), the HINGE-FLOW Gestalt gate, the Popper doctrine, the /320 scoring matrix
+> (Phase 17), the grade bands, the fix/re-audit loop, and the verdict schema remain
+> **verbatim and authoritative**. This section is pure execution strategy: it replaces the
+> default top-to-bottom phase walk with a concurrent fan-out + adversarial-verify + synthesize
+> pipeline, then funnels every *surviving* finding straight back into the unchanged Phase 17
+> matrix. When this section and any earlier phase appear to disagree, **the earlier phase wins**.
+
+### A. Decompose into INDEPENDENT parallel tracks (fan-out via the Workflow tool)
+
+The 16 domain phases are **file/surface-disjoint by accessibility concern**, so run them
+concurrently with the `Workflow` tool (in-process fan-out per **R-ORCH**) instead of linearly.
+This is the dynamic upgrade of the static WAVE grouping documented above — same phase content,
+now driven by a Workflow that dispatches each track in parallel and self-paces discovery.
+
+Phase 0 (Reconnaissance + PHASE 0 programmatic gather) stays **strictly sequential and first** —
+every track consumes its `pages.json`, `interactive-elements.json`, `aria-inventory.json`,
+`heading-map.json`, and `.a11y/evidence-summary.json`. Then fan out (one Workflow track each):
+
+| Track | Phases (unchanged) | Independent surface | Primary lenses (§B) |
+|-------|--------------------|---------------------|---------------------|
+| **T1 — Semantic structure** (static/code) | 1 WCAG, 4 ARIA, 11 Headings, 12 Landmarks | DOM semantics, role/name/value, hierarchy, regions | reproduce + cross-check |
+| **T2 — Keyboard & focus (HINGE, 2× weight)** | 2 Keyboard, 6 Focus, 7 Skip-nav | Tab order, focus traps, visible focus, skip links | reproduce + refute |
+| **T3 — Assistive-tech runtime** | 3 Screen reader, 9 Error announcements | aria-live, announced name/role/state, error/SR semantics | reproduce + cross-check |
+| **T4 — Perceptual / visual** | 5 Color contrast, 13 Touch targets, 14 Motion | ratios, 44px hit-areas, prefers-reduced-motion | reproduce + cross-check |
+| **T5 — Forms & content** | 8 Form labels, 10 Alt text, 15 Cognitive load, 16 Reading level | label↔input binding, alt/SVG, plain-language, FK grade | reproduce + refute |
+
+Concurrency rules (inherit **R-SCOPE** one-writer-per-file): tracks **read freely in parallel**
+but each owns a **disjoint slice of the discovery surface and its own** `reports/<phase>.md`
+file — no two tracks write the same report. The HINGE track **T2** launches first and gets 10×
+scrutiny per the Gestalt gate; it may run a dedicated keyboard-only Playwright probe (real Tab
+sequence, focus-trap escape, Escape-closes-modal) that other tracks reference but never re-run.
+Budget per **R-BUDGET** (default 500K); approaching the cap → escalate, never silently truncate
+a track. Tracks emit partial findings as they complete — do not block synthesis on the slowest.
+
+### B. ADVERSARIALLY VERIFY each finding through ≥2-of-3 independent lenses (kill the survivors-only)
+
+No raw track output enters the verdict. Every candidate finding (from `evidence-summary.json`
+**and** from LLM track analysis) faces **three independent lenses; a finding survives only if
+≥2 agree** (this operationalizes Phase H1 §2.1 Popper falsification + **R-VERIFY** consensus —
+it does not replace it). The three lenses, tailored to accessibility:
+
+1. **REPRODUCE** — independently re-trigger the barrier on the live surface with a *different
+   method* than the one that first reported it. Mouse-free Tab-through for keyboard claims;
+   Playwright ARIA-snapshot / accessible-name computation for SR claims; manual WCAG ratio math
+   (relative luminance, not the tool's verdict) for contrast claims; rendered DOM measurement
+   (`getBoundingClientRect`) for touch-target claims. Reproduced → +1.
+2. **REFUTE** — actively try to PROVE the finding wrong (the Popper move). Is the "div with
+   onClick" actually keyboard-operable via a delegated handler or `tabindex`+`keydown`? Is the
+   "unlabeled input" labeled via `aria-labelledby`/`aria-label`/wrapping `<label>` the static
+   scan missed? Is contrast 4.4 (real fail) or rounded 4.5 (pass)? Does a `prefers-reduced-motion`
+   block already exist? Survives refutation (couldn't be disproven) → +1; counter-example found
+   → **−1 / kill**.
+3. **CROSS-CHECK** — confirm through a *second signal class*: a sibling tool in the gather
+   (axe-core ∧ pa11y ∧ Lighthouse agreeing → `cross_tool_confirmed`), a sibling audit's
+   `evidence-summary.json` per Phase 0.5 / H1 §2.5 (`/uiuxaudit` contrast, `/copyaudit` i18n
+   strings, `/flowaudit` form journey → `cross_audit_confirmed`, bump severity one level), or a
+   second independent WCAG success-criterion mapping to the same defect. Confirmed → +1.
+
+Decision: **score ≥ 2 → finding STANDS** (record the 2–3 lens outcomes as `falsifiable_tests[]`
+entries in `verdict.json`, exactly the existing H1 §2.1 schema). **Score < 2 → KILLED**: demote
+to `info` with `falsified_at: <evidence>`, exclude from scoring. Exactly one lens (e.g. only the
+originating tool) is **not enough** — that is the "automated tools lie / works-for-me" trap this
+audit's DOCTRINE Laws #2 and #5 exist to catch. **HINGE-track (T2) findings** require all three
+lenses run (per the 10× rule), not just two. Reaching a finding only from a single sighted code
+read with no keyboard/SR/contrast reproduction = automatic kill.
+
+### C. Synthesize survivors back into THIS audit's EXISTING matrix + verdict (UNCHANGED)
+
+Surviving findings (≥2-of-3) are the **only** inputs to the existing pipeline — nothing about
+scoring changes:
+
+1. Route each survivor to its owning phase and score that phase **0–10 exactly as Phase 17
+   defines**, then apply the **unchanged weights**: WCAG ×3.0, **Keyboard ×4.0 (HINGE)**, Screen
+   Reader ×3.0, ARIA ×2.5, Contrast ×2.5, Focus ×2.5, Skip-nav ×1.5, Form Labels ×2.0, Errors
+   ×2.0, Alt ×1.5, Headings ×1.5, Landmarks ×1.5, Touch ×1.5, Motion ×1.0, Cognitive ×1.0,
+   Reading ×1.0 → **max 320**, then `normalized = (raw / 320) × 100`. **Do not re-weight, add,
+   merge, or drop a phase.**
+2. Apply the grade bands (S/A/B/C/D/F) and the Phase 2.7 / score-gating thresholds verbatim
+   (incl. `user_need_match.addressed`, ≥3 falsifiable tests/phase, edge cases, cross-audit array).
+3. Emit the **same** `verdict.json` (hybrid v2 schema, §2.6) + `verdict.md`. Add only
+   provenance fields on each finding so the orchestration is auditable per **R-CITE**:
+   `verified_by_lenses: ["reproduce","cross-check"]`, `lens_score: 2`, `killed_in_verification:
+   <n>` summary. These annotate; they never alter the numeric score.
+4. Feed survivors into the **unchanged** Phase 18 fix-plan → Phase 19 fix execution (with its
+   "Do No Harm" safety gate) → Phase 20 re-audit loop (bounded at 5 iterations). Killed
+   candidates never reach the fix plan, eliminating wasted fixes on phantom barriers.
+
+### D. Loop-until-dry for unknown-size discovery (bounded)
+
+Accessibility surface area is rarely known up front (dynamic routes, modals/dialogs/menus that
+only mount on interaction, infinite-scroll regions, locale-switched + RTL renders, auth-gated
+pages). Wrap discovery + fan-out in a **loop-until-dry** controller (a Workflow loop per
+**R-GOAL**: the loop lives *inside* this workflow, never wraps it):
+
+```
+discovered = Phase-0 inventory (pages, interactive elements, live regions, locales)
+repeat:
+  fan out tracks T1–T5 over the NEW surface only (don't re-scan settled surface)
+  adversarially verify (§B) every candidate → keep survivors
+  expand discovery: routes/dialogs/menus newly revealed by interaction,
+                    each locale + dir="rtl", lazy/feature-flagged components
+until ( no NEW interactive surface AND no NEW survivors )  # "dry"
+  OR iteration == 5                                        # hard cap (preamble §4)
+  OR budget threshold reached                              # R-BUDGET → escalate
+on cap-without-dry: mark residual surface NEEDS_REVIEW in verdict.json, Telegram SOS,
+                    surface `pending` in .done.json — never loop silently, never fake "dry".
+```
+
+Each iteration appends to `iterations.md` (score trajectory + newly-discovered-surface count),
+exactly as the existing re-audit cap demands. "Dry" means a full pass discovered **zero** new
+interactive surface and produced **zero** new surviving findings — only then is discovery
+complete and the verdict final.
+
+> **Net effect:** same phases, same HINGE-FLOW Gestalt gate, same Popper doctrine, same /320
+> matrix and verdict — executed concurrently, with every barrier proven through ≥2 independent
+> lenses before it can cost points, and discovery that runs until the accessibility surface is
+> genuinely exhausted. Identity preserved; rigor and throughput increased.

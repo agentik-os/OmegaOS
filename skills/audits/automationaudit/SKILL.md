@@ -1110,4 +1110,81 @@ This audit implements contracts from `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Linear auditing of an automation fleet is itself a single point of failure. Fan out, falsify, then converge — the same discipline you demand of the crons you judge."*
+
+This section governs HOW the 22 phases above are EXECUTED. It changes the execution model only — **every phase definition, weight, verdict format, scoring matrix (/330 → /100), grade threshold, and frontmatter above is unchanged and authoritative**. The Gestalt-Popper doctrine and the HINGE AUTOMATION (10x scrutiny) remain the spine; this just runs the spine in parallel and verifies each vertebra adversarially.
+
+### 1. Fan-out — decompose phases into independent parallel tracks
+
+After Phase 0 discovery completes (crontab, systemd timers, daemons, scripts inventory, dispatch chains, topology), the phases partition into **file/resource-disjoint tracks** that have no read/write dependency on each other. Launch them concurrently via the **Workflow** tool instead of running 1→22 linearly. Suggested tracks for THIS domain (regroup if discovery reveals different seams):
+
+| Track | Phases | Disjoint surface it reads |
+|-------|--------|---------------------------|
+| **A — Schedule & Timing** | 1 (Cron Health), 3 (Dependency Order), 11 (Resource Impact) | crontab, systemd timers, `journalctl`, temporal map |
+| **B — Script Integrity** | 2 (Script Quality), 5 (Idempotency), 15 (Path & Env), 18 (Documentation) | the `.sh`/`.py` files themselves (static + shellcheck + `bash -n`) |
+| **C — Runtime & Liveness** | 8 (Daemon Health), 10 (Dead Automations), 14 (Lock Management) | `ps`/`systemctl`, lock files, process FDs, heartbeats |
+| **D — Resilience & Orchestration** | 4 (Error Recovery), 12 (Dispatch Chains), 13 (Failure Cascade), 16 (Backup & Recovery) | dispatch topology, done-signals, backup artifacts |
+| **E — Safety Surface** | 6 (Logging & Monitoring), 7 (Secret Exposure), 9 (Race Conditions), 17 (Permission & Ownership) | logs, git history (gitleaks), perms, shared-resource map |
+
+Rules:
+- **Disjointness is mandatory (R-SCOPE).** Two tracks must never write the same finding file or touch the same script under fix; if discovery shows a script that lives in two tracks (e.g. a daemon that is also a cron target), assign it to ONE owning track and have the other track cross-reference, never co-write.
+- **The HINGE AUTOMATION is audited inside its owning track at 10x depth** AND its findings are broadcast to every other track (a hinge failure cascades across tracks by definition — Phase 13).
+- Each track returns structured findings (`{phase, file:line, claim, evidence_cmd, evidence_output, severity}`) — never prose. Tracks do NOT score; scoring stays centralized (step 3).
+- Tracks are read-only/observational during fan-out. **All fixes (Phases 20-22) run serialized after synthesis** — parallel mutation of crons/daemons/scripts is forbidden (one-writer-per-resource, per the BEFORE/AFTER contract and R-SCOPE).
+
+### 2. Adversarial verification — every finding survives ≥2-of-3 independent lenses
+
+A track-produced finding is a **candidate**, never an accepted finding. Before it may enter the verdict, subject it to three independent lenses and require **at least 2 of 3 to agree** (Popper: actively try to kill it). Kill — do not record — any candidate that fails this gate.
+
+| Lens | For automation, this means | Example |
+|------|----------------------------|---------|
+| **REPRODUCE** | Re-run the claim against live runtime (L1: runtime is the only truth). | Claim "cron X silently fails" → run it under cron's environment: `env -i HOME=$HOME PATH=/usr/bin:/bin bash script.sh; echo "exit=$?"` and read its real log mtime + `journalctl`. |
+| **REFUTE** | Construct the strongest case the finding is WRONG; look for the guard that already handles it. | Claim "no overlap protection" → grep the script + its wrapper + crontab for `flock`/PID-check/`mkdir` lock; if a guard exists and works, the finding dies. |
+| **CROSS-CHECK** | Confirm via an independent signal/tool that doesn't share the first method's failure mode. | Claim "secret hardcoded" → confirm with BOTH `gitleaks detect --no-git` AND a raw `grep -nE` for the key pattern; "daemon dead" → confirm via `systemctl status` AND output-file freshness AND `kill -0 $(cat pidfile)`. |
+
+Gate logic:
+- **≥2 lenses agree → ACCEPTED.** Record with all three lens results in `evidence` (R-CITE: file:line + command + verbatim output). Banned phrases (`looks correct`, `should be fine`, `appears to work`) auto-fail the lens.
+- **Lenses split 1-accept / 1-refute / 1-inconclusive → ESCALATE**, do not silently keep: mark `needs_review` in verdict.json with both sides cited. Never let an unfalsified claim count as a finding.
+- A finding that REPRODUCE cannot trigger on live runtime is downgraded to `theoretical` and excluded from the score-affecting findings (it may still appear as a hardening note).
+- CRITICAL candidates (secret exposure, data-corrupting race) require REPRODUCE to be one of the two passing lenses — static signal alone is insufficient to call a secret "live-exposed".
+
+### 3. Synthesis — converge surviving findings into the UNCHANGED scoring matrix
+
+Synthesis is the auditor's own job (R-ORCH: never paste a track's summary as the verdict). After all tracks return and every candidate has passed the ≥2-of-3 gate:
+
+1. **De-duplicate across tracks.** The same root cause surfacing in two tracks (e.g. a missing `set -euo pipefail` flagged by Track B Phase 2 and its silent-failure consequence by Track E Phase 6) collapses to ONE finding with cross-track confirmation (elevate severity per preamble §6 cross-audit elevation — two independent tracks agreeing on one file:line ⇒ CRITICAL).
+2. **Map each surviving finding back to its phase weight** and score that phase exactly as Phase 19 defines — Cron Health /25, Script Quality /25, Dependency Order /25, Secret Exposure /25, Error Recovery /20, … Documentation /10. **No weight is changed, added, or reordered.**
+3. **Compute the raw /330 and normalize `(raw / 330) × 100 = /100`** and assign the S/A/B/C/D/F grade exactly per the existing thresholds. Declare `hinge_automation`, `dead_automations`, `secret_exposures`, `race_conditions`, `spofs` in `verdict.json` per the existing schema — now each entry carries its 2-of-3 lens evidence.
+4. **Proceed to Phases 20→22 (fix plan, serialized fix execution with the mandatory BEFORE/AFTER baseline + rollback, re-audit, 5-iteration cap) exactly as written.** Re-audit of a fixed track re-runs that track's phases through the SAME fan-out + 2-of-3 gate.
+
+### 4. Loop-until-dry — exhaust unknown-size discovery
+
+The automation fleet is unbounded a priori (scripts spawn scripts; crons reference wrappers that reference more scripts; dispatch chains fork workers). Discovery is therefore a **loop, not a single pass**:
+
+```
+discovered = initial_inventory()      # Phase 0 crontab + timers + find + ps
+seen = ∅
+while discovered \ seen ≠ ∅:          # until the frontier is dry
+    batch = discovered \ seen
+    seen ∪= batch
+    fan_out(batch across tracks A–E)   # step 1
+    verify_2_of_3(batch_findings)      # step 2
+    # expand the frontier from what we just learned:
+    discovered ∪= referenced_scripts(batch)      # scripts/binaries each script calls
+    discovered ∪= dispatch_children(batch)        # workers/subprocesses a dispatcher spawns
+    discovered ∪= cron_wrapper_targets(batch)     # the real script behind a cron wrapper
+    discovered ∪= timer_unit_execstart(batch)     # ExecStart= of each systemd timer/service
+guard: cap at 5 discovery rounds (preamble §4 iteration cap); if frontier still
+       non-empty at round 5 → record remaining as `needs_review` + Telegram SOS,
+       never loop unbounded.
+```
+
+A track reports **DRY** only when re-running its discovery finds zero new automations AND zero new candidate findings. Synthesis (step 3) runs only after every track is DRY or the 5-round guard trips. This guarantees a dead cron buried three wrapper-levels deep, or a worker forked by a dispatcher forked by a cron, is still found — without an arbitrary fixed phase count.
+
+**Net effect:** identical inputs and identical verdict semantics as v1, reached faster and with far higher confidence — findings are concurrent-discovered, adversarially falsified (≥2-of-3), de-duplicated across tracks, and folded into the unchanged /330 matrix. The audit's identity, doctrine, and scoring are preserved; only its execution becomes a verified parallel workflow instead of a linear walk.
+
+---
+
 *"/automationaudit v1 — Every cron is a promise. Every script is a liability. Every daemon is a lie. Prove them all wrong."*

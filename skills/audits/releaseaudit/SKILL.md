@@ -1151,4 +1151,127 @@ Run `/metaudit --focus arsenal --scope="releaseaudit only"` to verify against th
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> **This section governs HOW the 20 phases above are EXECUTED — not WHAT they check.**
+> Every phase, scoring weight, the /400 matrix, the reversibility hard-cap, the verdict format,
+> and the frontmatter remain exactly as defined above. This layer only changes the *execution
+> shape*: from one analyst grinding phases 1→18 linearly, to a fan-out of parallel tracks whose
+> survivors are adversarially verified and then folded back into the SAME matrix. Doctrine is
+> unchanged: Gestalt clarity gate (release hinge point), Popper falsification, evidence chain,
+> First Law (runtime over code). If this section ever conflicts with a phase definition, the
+> phase definition wins.
+
+### 1. Decompose into INDEPENDENT parallel tracks (fan-out)
+
+The release-safety surface is naturally partitionable: the build pipeline, the schema, the
+rollback path, and the secret/gate posture barely touch each other and can be investigated
+concurrently. Group the 18 domain phases into file-disjoint tracks and dispatch them via the
+**Workflow** tool (one branch per track, all launched together — never one-phase-at-a-time):
+
+| Track | Phases | Evidence surface (mostly disjoint) | Owns |
+|---|---|---|---|
+| **T1 — Pipeline & Build** | 1, 2, 11 | `.github/workflows/*`, `.gitlab-ci.yml`, `Jenkinsfile`, lockfiles, branch protection | CI integrity, reproducibility, deploy gates |
+| **T2 — Schema & State (HINGE)** | 5, 14 | `migrations/`, `prisma/`, `alembic/`, `convex/schema.ts`, backfill scripts | Migration reversibility, deploy ordering |
+| **T3 — Reversibility & Rollout** | 6, 7, 13 | rollback script, `vercel.json`/`fly.toml`, deploy/canary config | Rollback path, deploy strategy, zero-downtime |
+| **T4 — Secrets & Provenance** | 12, 17 | CI secret refs, deploy-token scope, signing/attestation config | Pipeline secret hygiene, artifact provenance |
+| **T5 — Versioning & Comms** | 3, 4 | `package.json`/`Cargo.toml` version, git tags, `CHANGELOG.md` | Semver, changelog-vs-diff |
+| **T6 — Verify & Drift** | 9, 10, 15 | post-deploy smoke config, `.env.*`, monitoring/deploy markers | Post-deploy verification, env parity, observability |
+| **T7 — Latent Bombs & Runbook** | 8, 16, 18 | flag inventory, expiring creds/EOL pins, runbook docs | Flag hygiene, time bombs, human process |
+
+Rules:
+- **Phase 0 / 0b run FIRST and SERIALLY** — the deterministic gather (`evidence-summary.json`) +
+  reconnaissance + **release-hinge-point identification** must complete before fan-out, because
+  every track reads that shared evidence base and the hinge assignment routes 10× depth. Do NOT
+  parallelize Phase 0.
+- The track containing the **RELEASE HINGE POINT** (almost always **T2 — Schema & State**, sometimes
+  T3's artifact-promotion/rollback step) gets the deepest branch: 5× more falsification attempts and
+  3× more edge-case hunts (per H1.2/H1.4), and a mandatory full read of the hinge step + its rollback
+  path + everything it depends on.
+- **Honor R-SCOPE (one writer per file).** Fan-out branches are READ/ANALYZE only; they emit findings,
+  they do NOT edit. All file mutation happens later in Phase 20 (Fix Execution), serialized, so two
+  tracks that both flag the same migration never write it concurrently.
+- **Synthesis is YOUR job, not a branch's** (R-ORCH) — never paste a track's summary as the verdict.
+
+### 2. Adversarially verify EVERY finding (≥2-of-3 lenses) before it survives
+
+A track's raw finding is a *hypothesis*, never a verdict (R-VERIFY). Before any finding is allowed
+into the scoring matrix, subject it to **three independent lenses** and require **≥2 to agree**.
+This reuses the existing Phase H1.1 Popper machinery — it does not replace it; it parallelizes and
+quorum-gates it:
+
+- **Lens A — REPRODUCE (runtime, First Law):** run the concrete probe that makes the failure
+  observable. E.g. read the rollback script end-to-end and confirm every referenced bucket/tag/image
+  still exists; dry-run it in staging; `git checkout <tag> && build` twice and diff the digests;
+  simulate N-1 code against the N schema; `git log <last-tag>..HEAD` vs the changelog entries.
+- **Lens B — REFUTE (try to kill it):** actively hunt the counter-example that makes the finding
+  *false* — an expand-contract migration that IS reversible, a `continue-on-error` that is scoped to
+  a non-gating job, a "leaked" secret that is actually a public publishable key, a `latest` tag that
+  is in fact pinned by digest downstream. If the refutation succeeds, the finding is **killed**.
+- **Lens C — CROSS-CHECK (independent angle):** confirm from a second source — a sibling audit
+  summary (secaudit on the same pipeline secret, dataaudit on the same migration, codeaudit on the
+  same config drift → `cross_audit_confirmed: true`, severity +1), a second config file, or the
+  deployed `/version` endpoint vs the git tag.
+
+Quorum rule (maps onto the existing H1.1 outcomes):
+- **≥2 lenses confirm** → `outcome: confirmed`, finding **survives** into the matrix at full severity.
+- **A successful REFUTE (and <2 confirm)** → `outcome: falsified`, finding is **demoted to info and
+  killed** from scoring, with the counter-example recorded as evidence.
+- **Only 1 lens runs cleanly / lenses split** → `outcome: inconclusive`, keep the finding but cap its
+  `confidence: medium`; the hinge track must escalate to a 3rd clean lens before it can score.
+- Every surviving claim still carries **≥3 concrete commands that could have falsified it but didn't**
+  (unchanged H1.1 rule). Banned phrases (`looks correct`, `should be fine`, `appears to work`) remain
+  an automatic FAIL.
+
+### 3. Synthesize survivors back into THIS audit's EXISTING scoring (unchanged)
+
+After fan-out + verification, **collapse all survivors back into the linear model** — the parallel
+shape is an execution detail, the OUTPUT is identical to a linear run:
+
+1. Map each surviving finding to its owning phase and apply that phase's **exact 0-10 rubric**.
+2. Apply the **Phase 19 SCORING MATRIX verbatim** — same per-phase multipliers (Migration ×4.0 and
+   Rollback ×4.0 still dominate as the hinges), same `max 400`.
+3. **N/A handling unchanged** — a track that finds no database (T2) marks Phase 5 N/A and it is
+   excluded from BOTH numerator and denominator; same for Phase 8 flags when risk doesn't warrant one.
+4. **Normalize unchanged:** `score = (raw / applicable_max) × 100`.
+5. **Reversibility hard-cap unchanged:** if `reversibility_assertion == NO`, the normalized score is
+   **CAPPED at 69** regardless of how many tracks passed. Parallelism never buys back reversibility.
+6. Emit the same v2 `verdict.json` (H1.6 schema) and `verdict.md`. The fan-out adds nothing new to the
+   schema except that `falsifiable_tests[]`, `hinge_findings[]`, `edge_cases[]`, and
+   `cross_audit_links[]` are now populated per-track and merged. The grade bands (S/A/B/C/D/F),
+   the Phase 20 fix pipeline, and the deploy-safety gate are untouched.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Three of this audit's surfaces are **unbounded** — you cannot know up front how many exist:
+**migrations**, **feature flags**, and **pipeline secret references**. For each, run a
+**discovery → verify → re-discover** loop instead of a fixed pass, so a release with 3 or 300
+migrations is audited to completion:
+
+```
+for surface in [migrations(T2), flags(T7), pipeline-secrets(T4)]:
+    seen = {}
+    repeat:
+        batch = enumerate <surface> not in seen        # e.g. each pending migration, each flag key, each secrets.* ref
+        for item in batch:
+            verify it via the ≥2-of-3 lenses (§2)       # reuse H1.1, do NOT re-grep what Phase 0 already gathered
+            record survivors, kill refuted
+            seen += item
+        # newly-read files often reveal MORE (a migration imports another; a flag gates a second flag;
+        # a workflow `uses:` a reusable workflow with its own secrets) — re-enumerate to catch them
+    until batch is empty (no new items two iterations running)   # DRY
+```
+
+Bound the loop by the **Audit Verification Contract's 5-iteration cap** (shared with the
+fix→re-audit loop): if a surface is still surfacing new items at iteration 5, stop, mark the
+remainder `NEEDS_REVIEW` in `verdict.json`, and fire the Telegram SOS — never spin indefinitely
+(zero tolerance for silent infinite loops, per Preamble §4).
+
+> **Net effect:** same questions, same /400 matrix, same reversibility cap, same verdict — reached
+> faster and more rigorously by running disjoint tracks in parallel, killing every finding that
+> can't survive 2-of-3 independent lenses, and looping the unbounded surfaces (migrations / flags /
+> secrets) until they run dry.
+
+---
+
 *"/releaseaudit v1 — Reproduce. Gate. Migrate-safely. Ship-gradually. Verify. Roll-back. The one question: when this breaks in prod, can you get back to safety in one command? /400."*

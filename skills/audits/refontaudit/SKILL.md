@@ -706,6 +706,79 @@ Expect 3-8 hours per app. Tokens are unlimited. Cross-ref: `~/.claude/rules/46-n
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A senior refonte is not done phase-by-phase in a single mind. The observation, the data, the references, and the falsification all run in parallel — then one taste reconciles them. Same 25 phases, same /540, same hinge. Faster truth, harder to fool."*
+
+This section governs **HOW the 25-phase pipeline executes when run** — it does not add, remove, reorder, or re-weight a single phase, scoring cell, confidence factor, or verdict band. The pipeline, the `/540` matrix, the KEEP/IMPROVE/RETHINK/KILL doctrine, the HINGE x2 weighting, and the EVOLUTION/REVOLUTION/VERIFY modes are all **unchanged**. This is an execution layer on top, not a rewrite. The Gestalt clarity gate (Phase 9) and Popper falsification (Phase 10) doctrine are *amplified*, never bypassed.
+
+### 1. Fan-out: decompose the waves into INDEPENDENT parallel tracks
+
+The pipeline already groups phases into 7 waves. Several waves are **file-disjoint and data-independent** — they read the same crawl but compute orthogonal artifacts, so they MUST run concurrently via the **Workflow tool** (fan-out) instead of one-after-another. Identify the independent tracks, dispatch them in parallel, then join before the dependent wave begins.
+
+| Wave / track | Phases | Depends on | Parallelizable? |
+|---|---|---|---|
+| **T0 — Inventory (gate)** | 1 | — | No — must finish first (every track reads `inventory.json`) |
+| **T-A — Structure** | 2 (IA), 4 (density), 5 (shadcn foundation) | T0 | YES — concurrent |
+| **T-B — Flows** | 3 (current workflows) | T0 | YES — concurrent with T-A |
+| **T-C — Data forensics** | 6 (Linear tickets / errors / analytics / git churn hotspots) | T0 | YES — each of the 4 hotspot sources is its own sub-track, fanned out (curl Linear ‖ grep errors ‖ analytics ‖ git log) |
+| **T-D — Reference mining** | 11 (shadcn Studio A ‖ shadcn standard B ‖ effect libs C ‖ conceptual D) | T0 | YES — the 4 reference sources fan out independently |
+| **Join 1 → Users** | 7 (user stories), 8 (Keep Audit), 9 (clarity), 10 (Popper) | T-A,T-B,T-C | Serial join — user stories need structure+flows+data; Keep Audit needs stories+clarity |
+| **Join 2 → Proposal** | 12–19 | Join 1 + T-D | 12 (pattern map) serial; 14/16/17/18/19 fan out **per-screen** once 13 sets the IA |
+| **Hinge (serial, 10x)** | 13 [HINGE], 22 [HINGE VERIFY] | Join 2 | **NEVER parallelized away** — 50% of effort, single reconciling mind |
+| **Polish** | 20, 21, 23, 24 | Hinge | 23 (a11y) ‖ 24 (motion) concurrent |
+| **Consolidate** | 25 (REFONTE.md), 26 (forge, optional) | all | Serial |
+
+**Rule:** the **hinge (Phase 13 + 22)** is the one thing that is *deliberately* NOT fanned out — a senior reconciles the 3-5 evolution changes (or the nav model) in one head, with 10x scrutiny. Everything feeding it parallelizes; the hinge itself stays serial and double-weighted exactly as scored (`/40` each). Respect file-scope: per-screen fan-out in Join 2 is safe only because each screen's `component-tree` / `new-flows` entry is a disjoint artifact — never two tracks writing the same screen.
+
+### 2. Adversarially verify EVERY finding through ≥2-of-3 independent lenses
+
+A refonte's findings are not "bugs" — they are **claims about the product**: "this screen is RETHINK", "this is a P1 daily-high-friction story", "/billing is ticket-hotspot #1", "command palette serves 8/10 stories". Each such claim is **guilty until proven innocent**. Before a finding is allowed to influence the Keep Audit, the IA proposal, or any confidence score, it must **survive ≥2 of 3 independent lenses**. A claim that survives only 1 lens is **killed** (dropped from the proposal, not merely down-scored).
+
+For each finding type, the three lenses are:
+
+| Finding | Lens 1 — REPRODUCE | Lens 2 — REFUTE (Popper) | Lens 3 — CROSS-CHECK |
+|---|---|---|---|
+| **Keep verdict** (KEEP/IMPROVE/RETHINK/KILL) | Re-derive from the decision criteria (P1 story? ticket count? clarity pass?) | Argue the *opposite* verdict — what evidence would force KEEP→KILL or RETHINK→KEEP? | Confirm against an independent signal: traffic/analytics, an orphan-route scan, or a second crawl pass |
+| **"P1 / high-friction" user story** | Re-trace the click path live (Playwright) and re-count clicks | Try to falsify the frequency: is "daily" real, or assumed from a route name? | Cross with Phase 6 hotspots — a P1 story on a zero-ticket, zero-churn page is suspect |
+| **Hotspot** (ticket / error / churn / traffic) | Re-run the count from raw source (Linear API / git log / logs) | Could the count be inflated (one noisy ticket spawning 12 dupes; a rename inflating churn)? | Require ≥2 of {tickets, errors, churn, analytics} to agree before "hotspot" sticks |
+| **Proposed pattern** ("add command palette", "list→detail drawer") | Confirm the pattern exists & installs (real `npx shadcn add @ss-…` command resolves) | Apply the DOMAIN-EXPERTISE gates — e.g. palette only if >20 actions AND keyboard-heavy; refute if not | Validate against ≥3 reference products (Phase 11 Source A/B/D) for the same context |
+| **Clarity fail** (Phase 9) | Re-run the 5-second test on a fresh screenshot | Could a first-time vs power-user reading flip pass↔fail? | Cross with the matching hotspot — a "fail" on a beloved zero-ticket page needs a second look |
+
+Run the three lenses for a batch of findings **concurrently** via the Workflow tool (each lens is an independent verification pass over the candidate set), then keep only the ≥2-of-3 survivors. **Record the kill list** in `falsified-hypotheses.md` (Phase 10's existing artifact) — every dropped claim is a falsified hypothesis, which is exactly what that phase is for. This *implements* Popper falsification at finding granularity; it does not replace Phase 10, it feeds it.
+
+### 3. Synthesize survivors back into THIS audit's existing scoring + verdict (UNCHANGED)
+
+Fan-out and adversarial verification change only *which claims survive* and *how fast you get there* — **never the scoring instrument**. Synthesis is the senior's own job (never paste a track's summary as the verdict):
+
+- Surviving Keep verdicts → the **Phase 8 table**, unchanged columns.
+- Surviving stories → **Phase 7** P1/P2/P3 prioritization, unchanged.
+- Surviving hotspots → the **Phase 6 confidence impact** (+20% / −20%), unchanged.
+- Surviving proposals → **Phase 13** with the **exact confidence formula** in the CONFIDENCE SCORING table (floor 10%, ceiling 99%). A claim that passed 2-of-3 but not 3-of-3 simply does not earn the lens-derived boosts — it is *not* given a parallel scoring scheme.
+- The hinge survivors feed **Phase 22's 10x scrutiny** (+10% pass / −15% per failed scenario), unchanged.
+- Final roll-up is the **same `/540` raw → `(raw/540)*100` → S/A/B/C/D/F band**, and the same VERIFICATION GATE checklist. The REPORT FORMAT block below is emitted verbatim. **No new score, no new grade, no new artifact path.**
+
+If two tracks disagree on a screen's verdict (e.g. Structure says IMPROVE, Data says KILL), that conflict is itself a finding routed through the 3 lenses — the senior reconciles it in synthesis; the tie-breaker is always *the user story* (Phase 7), per the audit's existing doctrine.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Two phases discover a set whose size is unknown up front: **Phase 1** (route/screen crawl, depth ≤3) and **Phase 7** (user-story mining). Run these as a **loop-until-dry**, not a fixed single pass:
+
+```
+discover → verify (≥2-of-3) → if NEW survivors found, expand the frontier and re-discover
+         → stop when a full pass yields ZERO new surviving screens/stories (dry)
+         → hard caps: crawl depth ≤3 (Phase 1 invariant) AND ≤5 discovery iterations
+           (Quality Arsenal re-audit cap) — then mark the residue NEEDS_REVIEW, never spin
+```
+
+- **Phase 1 loop:** each crawl pass may reveal nav-to-nothing, orphaned routes, or modal-only screens that spawn new routes; keep crawling until a pass adds no new *surviving* screen (a route that fails the ≥2-of-3 reproduction — e.g. a 404 stub — is killed, not enqueued).
+- **Phase 7 loop:** new screens from the Phase 1 loop can surface new user stories; keep mining until a pass yields no new P1/P2 story. A story that fails its lenses (frequency unfalsifiable, no serving route) is dropped, not looped.
+- The loop is **bounded** by the audit's own invariants (depth ≤3, the §4 5-iteration re-audit cap) so it can never run forever — consistent with the existing VERIFICATION GATE and the no-infinite-loop guarantee.
+
+**Net effect:** identical phases, identical scoring, identical verdict — but the observation/data/reference waves run concurrently, every claim earns its place by surviving ≥2-of-3 adversarial lenses, the unknown-size crawl and story-mine run until dry, and the hinge stays a single 10x-scrutinized reconciling mind. Quality up, fool-rate down, identity preserved.
+
+---
+
 ## REPORT FORMAT
 
 ```

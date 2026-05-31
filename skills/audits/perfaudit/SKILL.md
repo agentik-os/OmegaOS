@@ -1427,3 +1427,69 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *Same Gestalt-Popper doctrine, same 18 domain phases, same /360 matrix, same HINGE PAGE — but executed as a fan-out → adversarially-verify → synthesize Workflow instead of a linear crawl. Profiling is embarrassingly parallel: a bundle analyzer, a Lighthouse run, and a DB-query trace never touch the same byte. Run them at once.*
+
+When this audit is RUN (after Phase 0's programmatic gather lands `evidence-summary.json`), orchestrate the 18 measurement phases as a **dynamic Workflow** rather than executing them top-to-bottom. This section does NOT add, remove, reorder, or reweight any phase — Phases 1–18 keep their `x` multipliers, Phase 19 keeps the /360 matrix and grade bands, and the HINGE PAGE keeps its 10× scrutiny. It only changes *how* the same work is scheduled and *how confident* each finding must be before it reaches the scoring matrix.
+
+### 1. Decompose into independent parallel tracks (fan-out)
+
+Map the existing waves (see "PARALLEL EXECUTION STRATEGY" above) onto **file-disjoint Workflow tracks** and dispatch all tracks in a wave concurrently via the Workflow tool. The waves are already engineered for disjointness — honor it:
+
+| Track | Phases (unchanged) | Disjoint resource it owns |
+|---|---|---|
+| **A · Field metrics** | 1 Core Web Vitals, 3 Render, 4 JS execution | Live URL + traces (Lighthouse/Playwright on prod) |
+| **B · Static weight** | 2 Bundle, 11 Code splitting, 18 Third-party | Build dir `.next`/`dist`, bundle stats, source maps |
+| **C · Asset pipeline** | 5 Images, 6 Fonts, 7 Caching, 8 CDN, 17 Resource hints | Static assets + response headers |
+| **D · Server/data** | 12 API times, 13 N+1, 14 DB query, 16 Connection pooling | API endpoints + query logs |
+| **E · Architecture/lifetime** | 9 SSR/SSG, 10 Lazy loading, 15 Memory leaks | Render-strategy config + long-run heap snapshots |
+
+Rules for the fan-out:
+- **Parallelize across tracks, serialize within a track only where a real data dependency exists** (e.g. Phase 1 must know the LCP element before Phase 17 can judge whether it is preloaded — keep that ordering *inside* Track A/C, never globally). Honor **R-SCOPE**: no two tracks may write the same file in `audits/.perfaudit/reports/`; each track owns its own report files (the OUTPUT CONTRACT layout already gives every phase a distinct file).
+- Each track consumes the shared `evidence-summary.json` (and any sibling `evidence-summary.json` from Phase 0.5) read-only; it MUST NOT re-run the banned Phase-0 operations.
+- The HINGE PAGE is profiled inside whichever track touches it, but at 10× depth (5× falsification, 3× edge cases per Phase 2.2) — the fan-out does not dilute hinge scrutiny, it isolates it.
+- A track returns a structured partial: `{track, phases:[...], candidate_findings:[...], metrics:{...}}`. Nothing it returns is yet a "finding" — every candidate is unverified until Step 2.
+
+### 2. Adversarially verify every finding (≥2-of-3 lenses) before accepting
+
+No candidate finding enters the scoring matrix on a single observation. This is the Popper engine of `/perfaudit` (DOCTRINE Laws 2 & 5, falsification categories SCORE-vs-REALITY / LAB-vs-FIELD / FIRST-vs-REPEAT / DESKTOP-vs-MOBILE / AVERAGE-vs-P95) made operational as a **2-of-3 consensus**. For each candidate, run three independent lenses and require **≥2 to agree** before it survives:
+
+- **Lens 1 — REPRODUCE:** measure the regression a second time under the *condition that should expose it* — cold cache + 3G throttle + 4× CPU slowdown for CWV/render; a fresh build for bundle weight; P95 not average for API/DB. A number that only appears once (cold-cache blip, network flake) is noise, not a finding. (Maps to Phase 2.1's "re-run lighthouse twice".)
+- **Lens 2 — REFUTE:** actively try to disprove it. Is the "huge dependency" tree-shaken out of the shipped chunk? Is the "slow endpoint" already cached by SWR so the user never waits? Is the "render-blocking script" actually `async`/`defer`? Read the cited file/line and attempt a counter-example, exactly as in the falsification table (Phase 2.1).
+- **Lens 3 — CROSS-CHECK:** confirm the symptom from an *independent measurement surface* — a regression flagged by Lighthouse is corroborated by a WebPageTest/Playwright trace; an N+1 flagged by static read is corroborated by the actual query log count; a bundle bloat from `size-limit` is corroborated by the chunk map. Sibling-audit confirmation (Phase 0.5 / 2.5: a `secaudit` or `a11yaudit` hit on the same asset) also counts as a cross-check lens and triggers the existing `cross_audit_confirmed` severity bump.
+
+Verdict rule per candidate:
+- **≥2 of 3 agree → finding SURVIVES.** Record `outcome: confirmed` with all three lens results in `falsifiable_tests[]` (schema unchanged, Phase 2.6). Hinge/cross-audit-confirmed findings still get their severity escalation.
+- **≤1 agrees → KILL the finding** (demote to `info` with `falsified_at:` evidence, per Phase 2.1). A killed candidate scores nothing — it never touches the /360 matrix. This is how the parallel fan-out stays honest: speed buys more candidates, the 2-of-3 gate ensures only real ones survive.
+- **Tie/unrunnable lens → `inconclusive`, `confidence: medium`** on that finding (Phase 2.1 semantics), never silently promoted.
+
+### 3. Synthesize survivors back into THIS audit's existing matrix + verdict (unchanged)
+
+Synthesis is the orchestrator's own job — never paste a track's partial as the verdict (R-ORCH). Once all tracks return and every candidate has passed/failed the 2-of-3 gate:
+
+1. Fold the **surviving** findings into the per-phase 0–10 scores of **Phase 19's SCORING MATRIX exactly as written** — same `x 3.0 / x 2.5 / …` multipliers, same `max 360`, same `NORMALIZE: score = (raw / 360) × 100`, same S/A/B/C/D/F bands. The Workflow changes scheduling and confidence, **not arithmetic**.
+2. Run the **Phase H1 synthesis (2.1–2.7)** over the merged survivor set — Popper tests, hinge 10× cross-reference, `--user-need` match, edge-case hunt, cross-audit links — and emit the **same `verdict.json` hybrid-v2 schema** (§2.6). The 100/100 score-gate (§2.7) and the 5-iteration cap are unchanged.
+3. Feed survivors into the existing **Phase 20 fix-plan → Phase 21 fix execution (Do-No-Harm gate) → Phase 22 re-audit** flow untouched, then the **FINAL VERIFICATION GATE** / `before-after.md`. The orchestration layer ends where the verdict begins.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Page/route/endpoint/asset count is unknown up front, so discovery is a bounded loop, not a one-shot fan-out:
+
+```
+seen = ∅
+loop:
+  targets = (pages ∪ routes ∪ endpoints ∪ assets) from evidence-summary.json + Phase-0 RECONNAISSANCE  − seen
+  if targets == ∅: break                      # dry — every discovered surface profiled
+  fan-out Tracks A–E across the new targets (Step 1), 2-of-3 verify each candidate (Step 2)
+  seen ∪= targets
+  # newly profiled pages often reveal lazy routes / dynamic imports / late API calls → next wave picks them up
+guard: bounded by the 5-iteration cap (Preamble §4 / Verification Contract); on cap → NEEDS_REVIEW + Telegram SOS, never an infinite crawl
+```
+
+The hinge page is always profiled in iteration 1 at 10× depth so the most load-bearing surface is verified before breadth expands. When `targets` is empty, discovery is **dry** and synthesis (Step 3) runs over the complete, adversarially-verified survivor set.
+
+> **Invariants (do not drift):** this section is APPEND-ONLY orchestration. It must never alter Phase 1–18 definitions, the /360 weights, the grade bands, the hybrid-v2 `verdict.json` schema, the HINGE PAGE doctrine, or the frontmatter. Fan-out for speed, 2-of-3 to stay truthful, synthesize into the matrix that already exists.

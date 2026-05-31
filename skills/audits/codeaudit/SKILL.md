@@ -1935,3 +1935,74 @@ Every fix MUST follow the "Do No Harm" protocol:
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 
 Full contract: `../_shared/AUDIT-VERIFICATION-CONTRACT.md`
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Witnesses don't testify one at a time on a single bench — empanel parallel juries, cross-examine every confession, then deliver one verdict."*
+> **EXECUTION-MODEL UPGRADE — does NOT change any phase, weight, verdict template, or frontmatter above.** This section governs HOW the 23 phases run and HOW findings earn the right to enter the scoring matrix. The doctrine (Gestalt hinge point, Popper falsification, "the codebase is guilty until proven innocent") is unchanged — this makes it *concurrent* and *adversarial-by-construction*. Phase 0 (programmatic gather) and Phase H1 (hybrid synthesis) still run; this layer wraps the domain phases between them.
+
+### A. Decompose into INDEPENDENT parallel tracks (fan-out via the Workflow tool)
+
+After Phase 0's gather writes `evidence-summary.json` and the HINGE POINT is identified, do NOT walk Phases 1→19 linearly. Group them into **file-disjoint, dependency-free tracks** and dispatch each as a concurrent Workflow branch. The 23 phases cluster into tracks that share no mutable state (all read-only analysis), so they parallelize cleanly:
+
+| Track | Phases (existing, unchanged) | Independent because |
+|-------|------------------------------|---------------------|
+| **T1 — Structural** | 1 Phantoms, 2 Dependencies, 7 Blast Radius, 13 Entropy | Pure import-graph / symbol-existence analysis |
+| **T2 — Contract & Data** | 3 Contracts, 4 Data Flow, 5 State Mutation, 12 Config Drift | Follows declared vs actual behavior of symbols |
+| **T3 — Concurrency & Resilience** | 6 Concurrency, 10 Error Propagation, 19 Resilience | Failure-path / race reasoning |
+| **T4 — Temporal & Supply** | 8 Time Bombs, 9 Supply Chain, 14 Git Forensics | History, deps, expiry — no overlap with source-symbol tracks |
+| **T5 — Runtime & Observability** | 11 Behavioral, 15 Runtime, 16 Observability, 17 Test Coverage | Needs the running system / logs, not static reads |
+| **T6 — Surface verification** | 12.5 Feature Verification, 18 API Contracts | 100%-coverage census of routes/functions/endpoints |
+
+Rules:
+- Dispatch T1–T6 as **parallel Workflow branches**; each branch consumes the shared `evidence-summary.json` (read-only) and writes ONLY its own `.audit/reports/<phase>.md`. One writer per report file → no R-SCOPE collision.
+- **HINGE POINT override:** whichever track contains the hinge file/module runs at 10× depth (per Phase H1 §2.2) and is NEVER skipped or time-boxed; lighter tracks may finish first.
+- Tracks are analysis-only and emit *candidate* findings — nothing reaches the scoring matrix until it survives Section B.
+- If two phases would touch the same file during the FIX stage (Phases 21–23), they are **serialized** there (the existing "SEQUENTIAL by file group" rule in Phase 22 still governs all mutation). Parallelism is for *discovery*, not for edits.
+
+### B. Adversarially verify every finding — ≥2-of-3 independent lenses (kill non-survivors)
+
+A candidate finding from any track is an **accusation, not a conviction.** Before it is allowed into `verdict.json.findings[]` and the scoring matrix, subject it to three independent lenses and require **≥2 to agree.** This operationalizes Popper falsification (Phase H1 §2.1) as a gate, not an afterthought:
+
+1. **REPRODUCE** — run the concrete command/probe that makes the defect observable at runtime (the First Law: runtime > code > comments). E.g. for a Phase 10 silent-swallow finding, execute the path and show the error vanishing; for a Phase 12.5 dead route, `curl` it and show the 404/200 mismatch. Cite verbatim output.
+2. **REFUTE (steel-man the code)** — actively try to PROVE the finding wrong, exactly as Phase H1 §2.1: grep for the symbol in tests/dynamic-imports, read the middleware that the static scan couldn't see, check whether a "circular dep" is a type-only re-export artifact. If refutation succeeds → finding is `falsified` → demote to `info` with `falsified_at:<evidence>` and DROP it from scoring.
+3. **CROSS-CHECK** — corroborate against an independent signal: a sibling audit's `evidence-summary.json` (Phase 0.5 / H1 §2.5), a second tool in `raw/`, a different caller/callee of the hinge symbol, or git blame/churn. Agreement sets `cross_audit_confirmed: true` and bumps severity one level (per H1 §2.5).
+
+Verdict per finding:
+- **≥2 lenses confirm** → finding STANDS, enters scoring with its evidence chain (`file:line → wrong → why → blast radius → fix`).
+- **≤1 lens confirms** (or REFUTE wins) → finding is KILLED (recorded as `falsified`/`inconclusive` in `falsifiable_tests[]`, excluded from the matrix). Silence is not a finding.
+- Load-bearing (hinge) findings require all three lenses attempted and ≥2 confirming at `confidence: high` before they may carry CRITICAL severity.
+
+This is the antidote to LLM complacency named in the Adversarial Review Framing: a finding survives only because it *resisted* an honest attempt to destroy it, never because it merely "looked correct."
+
+### C. Synthesize survivors back into THIS audit's existing matrix + verdict (UNCHANGED)
+
+The surviving findings (and ONLY them) feed the unchanged scoring engine. Nothing downstream is altered:
+- Each surviving finding maps to its originating phase and scores that phase exactly per the **SCORING MATRIX (420 max)** in Phase 20 — same weights (Phantoms ×3.0 … Resilience ×2.0), same `normalize = (raw / 420) × 100`, same S/A/B/C/D/F grade bands.
+- The **FINAL OUTPUT** box, `verdict.json` (hybrid v2 schema, §2.6), `fix-plan.json`, and Phases 21→23 (plan → fix → re-audit) run verbatim. Adversarial pre-filtering only changes *which* findings arrive — it does not touch *how they are scored or fixed*.
+- Killed findings are still logged (as `falsified`/`inconclusive`) for auditability per R-CITE, but contribute zero to the score.
+- All gates remain in force: the 5-iteration fix-and-reaudit cap (Preamble §4), `user_need_match.addressed` (§2.3), the Do-No-Harm before/after matrix, and the output gate.
+
+### D. Loop-until-dry for unknown-size discovery
+
+Code-defect discovery has no a-priori cardinality (a 47-finding gather can cascade into more once callers/callees of the hinge are read). Run discovery as a **bounded loop-until-dry**, not a single pass:
+
+```
+discovered = candidates from Phase 0 gather + all 6 tracks
+loop:
+  verify each NEW candidate through Section B (≥2-of-3)
+  for every SURVIVING finding, expand its frontier:
+     - read all direct callers + callees of the implicated symbol (hinge: mandatory)
+     - re-scan the blast-radius set (Phase 7) those callers belong to
+     - pull any sibling-audit finding now sharing that file:line (Phase 0.5)
+  new_candidates = frontier findings not yet seen
+  STOP when new_candidates == ∅ (dry)  OR  iteration == 5 (Preamble §4 cap)
+on cap-without-dry: mark residual frontier NEEDS_REVIEW, emit confidence:"low",
+  surface as pending (never silently drop — Law L4)
+```
+
+The loop is over *discovery breadth*, bounded by the same 5-iteration ceiling the fix loop uses — it never spins indefinitely and never inflates the score with unverified findings. When dry, hand the survivor set to Section C.
+
+> **Net effect:** same 23 phases, same /420 matrix, same verdict + Gestalt-Popper doctrine — now executed as concurrent fan-out, with every finding earning entry through ≥2-of-3 adversarial verification, looped until the codebase yields no new survivable defect.

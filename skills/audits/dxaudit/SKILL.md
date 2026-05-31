@@ -1017,3 +1017,94 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A new developer's first day happens on many fronts at once — README, setup, errors, tooling. Audit it the same way: in parallel, then prove every wall is real before you tear it down."*
+>
+> This section governs HOW this audit runs. It changes execution mechanics only — it does **NOT** alter any phase definition, the 16-phase scoring matrix (Phase 17, /320), the HINGE EXPERIENCE doctrine, the Gestalt-Popper laws, the grade boundaries, the verdict.json schema, or the fix gate above. Phases, weights, and verdict stay exactly as written; this layer decides their concurrency, verification, and loop discipline.
+
+### 1. Fan-out: decompose phases into INDEPENDENT parallel tracks
+
+Replace the linear phase walk with concurrent fan-out via the **Workflow tool**. The existing `## PARALLEL EXECUTION STRATEGY` waves already declare the file-disjoint groupings — promote them from "agents per wave" to true Workflow tracks. Reconnaissance (Phase 0) is the only sequential prerequisite; everything downstream fans out.
+
+```
+SEQUENTIAL PREREQUISITE (must finish first — feeds every track):
+  Phase 0  Reconnaissance + HINGE EXPERIENCE lock-in (first-30-min journey)
+  → writes discovery/{project-structure,toolchain,scripts,env-vars}.json
+
+THEN fan out 4 concurrent Workflow tracks (each track = one fan-out lens, all read-only against the same tree, so no R-SCOPE file-writer collision — each writes only its own reports/*.md):
+
+  TRACK A — ONBOARDING HINGE (10x scrutiny, the hinge experience):
+    Phase 1  README Quality        (HINGE, x3.5)
+    Phase 2  Setup Complexity      (HINGE, x3.5)
+    Phase 3  Error Message Quality (x2.0)
+    Phase 16 Contribution Guide    (x1.0)
+
+  TRACK B — CODE QUALITY:
+    Phase 4  TypeScript Strictness (x2.0)
+    Phase 5  Code Documentation    (x2.0)
+    Phase 6  Testing Infrastructure(x2.5)
+    Phase 9  Dependency Management  (x2.0)
+
+  TRACK C — PROCESS:
+    Phase 7  CI/CD Pipeline        (x2.5)
+    Phase 8  PR Process            (x1.5)
+    Phase 11 Dev Tooling           (x2.0)
+    Phase 10 Monorepo Structure    (x1.5)
+
+  TRACK D — OPERATIONS:
+    Phase 12 Environment Parity    (x2.0)
+    Phase 13 Debug Tooling         (x1.5)
+    Phase 14 Migration Guides      (x1.5)
+    Phase 15 Changelog             (x1.0)
+```
+
+- Tracks run **concurrently**, not in sequence — the only ordering constraint is Phase 0 → all tracks.
+- Track A (the HINGE EXPERIENCE) still gets 10x depth per Law 4 of the DOCTRINE; concurrency never dilutes hinge scrutiny.
+- A track may itself fan out sub-lenses (e.g. README-rubric-20-items vs setup-step-count vs platform-compatibility evaluated in parallel) — depth is preserved, never traded for speed (R-46 / Law L5).
+- Disjoint outputs preserve the OUTPUT CONTRACT: every track appends only to its own `reports/*.md`; nothing writes the same file (R-SCOPE one-writer-per-file).
+
+### 2. Adversarial verification: >=2-of-3 lenses before a finding is accepted
+
+A track raising a DX friction point produces a **candidate**, not a finding. Every candidate must survive **>=2 of 3 independent lenses** before entering verdict.json. Candidates that survive <2 lenses are **killed** (logged to `discovery/killed-candidates.md` with the disproving evidence, never scored). This is the DOCTRINE's Popper falsification made executable for DX.
+
+| Lens | Question | Concrete DX action (cite verbatim output per the V2 meta-protocol) |
+|------|----------|--------------------------------------------------------------------|
+| **REPRODUCE** | Does the friction actually bite? | Follow the step LITERALLY on a fresh clone / clean shell / Docker `node:20-alpine` runner. Capture the exact failing command + stderr. README claim falsified only if a real terminal reproduces the failure. |
+| **REFUTE** | Can I make the wall disappear? | Actively try to disprove: is the missing step actually in `CONTRIBUTING.md`, a Makefile target, or a `.env.example` default? Is the "cryptic" error already documented in TROUBLESHOOTING.md? If the answer exists in-repo, the candidate is refuted and killed. ("Ask in Slack" never counts — Law 5.) |
+| **CROSS-CHECK** | Do two vantage points agree? | Compare LOCAL vs CI (does the documented setup match `.github/workflows/*.yml`?), FIRST-RUN vs REPEAT-RUN, and EXPERT vs NEWCOMER. A candidate confirmed by a second vantage (e.g. README says Node 18 but CI pins Node 20) is corroborated. Cross-reference sibling audit verdicts (`audits/.codeaudit/verdict.json` for test/build issues, `audits/.perfaudit/verdict.json` for build-speed) → matching file:line elevates per preamble §6 cross-audit confirmation. |
+
+Map directly onto this audit's existing Popper DX Falsification Categories (README vs REALITY, LOCAL vs CI, FIRST vs REPEAT, HAPPY vs ERROR, EXPERT vs NEWCOMER) — the lenses are the *mechanism* that tests each category. Banned shortcut phrases (`looks correct`, `should be fine`, `appears to work`) auto-fail a lens (V2 meta-protocol). Each surviving finding records `verified_by: ["reproduce","cross-check"]` in its verdict.json evidence so the >=2-of-3 result is auditable (R-CITE).
+
+### 3. Synthesize back into THIS audit's existing scoring + verdict (UNCHANGED)
+
+Surviving findings (>=2-of-3) are the ONLY input to scoring. Synthesis is the orchestrator's own job — never paste a track's summary as the verdict (R-ORCH):
+
+1. Each surviving finding attaches to its originating phase; that phase is scored 0-10 **exactly per Phase 17** (no new dimension, no reweighting). HINGE phases (1, 2) keep x3.5; all weights unchanged.
+2. Roll up the 16 weighted phase scores to the raw /320, then `normalized = (raw / 320) x 100` and the S/A/B/C/D/F grade boundaries — **all verbatim from Phase 17**.
+3. Killed candidates do **not** appear in `findings[]`, do not move the score, and are preserved only in `discovery/killed-candidates.md` for the evidence chain.
+4. Emit the same `verdict.json` / `verdict.md` / `fix-plan.*` per the OUTPUT CONTRACT and preamble §6, with `preamble_version: "1.0"` intact. Fan-out + verification are an execution detail invisible to the output schema.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+DX surface area is unbounded — undocumented env vars, cryptic error modes, and tribal-knowledge gaps are discovered, not enumerated up front. Run discovery-heavy phases as a **loop-until-dry** inside their track (a goal-loop *inside* the workflow, never wrapping it — R-GOAL):
+
+```
+repeat within the track:
+  sweep for the next DX friction point in this dimension, e.g.:
+    - error-message inventory: trigger each documented + undocumented failure
+      (missing .env, wrong Node version, absent service) and harvest its stderr
+    - env-var enumeration: every var the code reads vs every var .env.example documents
+    - tribal-knowledge scan: build/deploy steps that exist only in scripts or commit
+      history but never in README/CONTRIBUTING
+    - setup-step discovery: each manual step beyond the documented happy path
+  run the >=2-of-3 lenses on each new candidate (§2)
+until a full sweep yields ZERO new surviving findings (dry)
+  OR the 5-iteration fix-and-reaudit cap (preamble §4) is hit
+     → mark remainder NEEDS_REVIEW + Telegram SOS, never loop silently
+```
+
+Convergence is dry-ness (a sweep with no new survivors), not a fixed count — so a tiny CLI and a sprawling monorepo each get exactly the depth they warrant, at full per-phase rigor.

@@ -1328,3 +1328,115 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Motion is parallel by nature — easing, choreography, scroll, performance all play at once. Audit it the same way: fan out, falsify, converge."*
+>
+> This section governs HOW the phases above execute. It changes the *engine*, not the
+> *doctrine*. Every phase, every scoring weight (Phase 19 matrix, /360), every verdict
+> field, and the Gestalt-Popper laws above remain **exactly as specified** — this only
+> replaces linear phase-walking with adversarially-verified parallel fan-out via the
+> **Workflow** tool. When in doubt, the scoring matrix and verdict format upstream win.
+
+### 1. Decompose into independent parallel tracks (fan-out)
+
+Do NOT walk Phases 1→18 sequentially. After the discovery gate (Phase 0 recon + Phase 1
+inventory, which MUST finish first because every track reads `discovery/animations.json`),
+launch the remaining phases as **concurrent Workflow tracks**. The existing
+`## PARALLEL EXECUTION STRATEGY` waves are the dependency map — promote them to real
+fan-out:
+
+```
+GATE (sequential, blocking — produces the shared inventory):
+  Phase 0  Reconnaissance      → stack, libs, routes, HINGE PAGE
+  Phase 1  Motion Inventory    → discovery/*.json (animations, easing-map, duration-map, …)
+
+FAN-OUT (independent Workflow tracks — run concurrently, no shared writes):
+  Track A — Motion-system semantics : Phase 2 (Purpose, HINGE x3.5) ∥ Phase 3 (Easing) ∥ Phase 4 (Duration) ∥ Phase 5 (Choreography)
+  Track B — Interaction & navigation: Phase 6 (Scroll) ∥ Phase 7 (Page transitions) ∥ Phase 8 (Micro-interactions) ∥ Phase 9 (Loading/Skeleton)
+  Track C — Technology-specific     : Phase 10 (WebGL) ∥ Phase 11 (P5/Canvas) ∥ Phase 12 (CSS Performance, HEAVY x3.0)
+  Track D — Cross-cutting meta       : Phase 13 (Reduced motion) ∥ Phase 14 (Mobile) ∥ Phase 15 (Motion-Meaning Gap) ∥ Phase 16 (Excess) ∥ Phase 17 (Brand DNA) ∥ Phase 18 (Perf budget)
+```
+
+Each track is a self-contained Workflow unit reading the same frozen inventory from a
+different angle. Tracks share **zero** writes (each owns its `reports/*.md`), so they are
+file-disjoint and safe to parallelize per R-SCOPE. Honor the N/A gates already defined:
+Track C drops Phase 10/11 when no WebGL/Canvas exists (redistribute weight per Phase 19);
+the minimal-motion thresholds (<3 / 3–9 / ≥10 instances from the v1.2 addendum) decide how
+many tracks even spawn. The HINGE PAGE gets every track at 10x depth before any other route.
+
+### 2. Adversarially verify every finding (≥2-of-3 lenses)
+
+A track's raw observation is a **candidate**, never a finding. Before any candidate enters
+the Phase 19 score or the fix-plan, it must survive **≥2 of 3 independent lenses** — tailored
+to motion, where "I saw it move" is not proof it *should*:
+
+- **Lens 1 — REPRODUCE (runtime, First Law):** observe the actual movement, don't trust the
+  CSS/JS source. Confirm the animation truly fires at the claimed trigger — capture the real
+  computed `transition`/`animation`, a frame trace, or a DevTools Performance recording.
+  "Code says `transition: transform 200ms`" is intent; the rendered frames are truth.
+- **Lens 2 — REFUTE (Popper kill-test):** actively try to falsify the candidate. For a
+  *purpose* claim → mentally (or via DOM toggle) REMOVE the animation: if the user loses no
+  information/orientation, the "ESSENTIAL/ENHANCING" verdict is dead — reclassify DECORATIVE/
+  PURPOSELESS. For a *performance* violation → confirm the property actually triggers layout/
+  paint (not a false positive on a transform-able shorthand). For an *easing/duration system*
+  claim → check the value is genuinely arbitrary, not a token resolved at runtime. For a
+  *reduced-motion* PASS → toggle `prefers-reduced-motion: reduce` and verify state changes
+  still communicate (not a nuclear `* { animation: none }` that breaks the UI).
+- **Lens 3 — CROSS-CHECK (corroboration):** triangulate against a second source or sibling
+  audit. Same file:line flagged by `/perfaudit` (compositor/jank), `/uiuxaudit` (missing
+  feedback), or `/a11yaudit` (vestibular/motion-sensitivity) → corroboration. Or cross-map
+  Motion-Meaning Gap (Phase 15) against Motion Excess (Phase 16): a state change with no
+  transition AND an unrelated decorative loop nearby is a double-confirmed misallocation.
+
+Decision rule: **≥2 lenses agree → finding is accepted** (record which lenses + verbatim
+evidence per R-CITE, into the finding's `evidence` field). **<2 agree → KILL the candidate**
+(log it in `discovery/killed-candidates.md` with the lens that refuted it and why — never
+silently drop, never let it touch the score). When two lenses confirm a cross-audit match,
+populate `cross_audit_confirmations[]` and elevate severity per Preamble §6.
+
+This maps onto the audit's existing Popper falsification categories (PURPOSE vs DECORATION,
+SYSTEM vs RANDOM, DESKTOP vs MOBILE, FAST vs SLOW, PRESENT vs MISSING) — each candidate is
+falsified along the relevant axis before it counts.
+
+### 3. Synthesize survivors into the existing scoring matrix (unchanged)
+
+Synthesis is the orchestrator's own job — never paste a track's summary as the verdict
+(R-ORCH). Collect ONLY the surviving (≥2-of-3) findings from all four tracks and fold them
+back into **the Phase 19 SCORING MATRIX exactly as written**: same phase weights
+(Purpose x3.5, CSS Performance x3.0, Easing x2.5, …), same /360 raw max, same N/A
+redistribution rule, same `normalized = (raw / applicable_raw_max) × 100`, same S/A/B/C/D/F
+grade bands. The fan-out changes *how findings are gathered and proven*, not *how they are
+scored*. Then proceed into Phase 20 (fix plan), Phase 21 (fix execution + Do-No-Harm gate),
+Phase 22 (re-audit, 5-iteration cap) and the MANDATORY BEFORE/AFTER VERIFICATION gate above —
+all unchanged. `verdict.json` keeps its v2 schema and `preamble_version: "1.0"`.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Motion inventory is open-ended (new routes, lazy-loaded canvases, dynamically-injected
+animations, conditionally-mounted Lottie/WebGL). Run discovery as a **loop-until-dry**, not a
+single pass:
+
+```
+discovered = inventory(Phase 1)
+repeat:
+    fan-out the four tracks over `discovered` (with ≥2-of-3 verification)
+    rescan for motion sources missed last pass:
+      - routes/components not yet visited, IntersectionObserver-gated reveals,
+        code-split chunks, runtime-injected @keyframes, autoplay <video>, animated GIFs (>1 frame),
+        SVG SMIL, dotLottie — across ALL motion sources in the v1.2 coverage list
+    new = (rescan △ discovered)
+until new == ∅  (two consecutive passes add zero new animations → DRY)
+```
+
+Bound the loop by the audit's existing controls: the 5-iteration fix-and-reaudit cap, the 4h
+concurrency-lock window, and the R-BUDGET ceiling. On cap/budget hit → mark residual surfaces
+`NEEDS_REVIEW` in `verdict.json` and Telegram SOS — never spin silently, never claim DRY when
+the loop was merely truncated.
+
+---
+
+*Dynamic-Workflow Orchestration (v2): fan-out the 23 phases as parallel Workflow tracks over a frozen inventory → kill every finding that fails ≥2-of-3 lenses (reproduce / refute / cross-check) → synthesize survivors into the unchanged /360 matrix → loop-until-dry. The engine changed; the doctrine and the score did not.*

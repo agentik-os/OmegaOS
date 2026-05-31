@@ -1713,3 +1713,88 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A design audit is not a checklist you walk top-to-bottom. It is twelve specialists looking at the same product at once — and a creative director who only trusts what survives a second pair of eyes."*
+
+This section governs HOW the audit executes when run. It changes the **execution engine**, never the audit's identity: every phase (0–23), every scoring weight, the /420 raw max, the verdict template, the Gestalt-Popper dual-pass doctrine, and the `.audit/design/` output contract above remain **exactly** as defined. Dynamic orchestration is a faster, more rigorous way to *produce* the same verdict — not a different verdict.
+
+### 1. Fan-out — decompose phases into INDEPENDENT parallel tracks (Workflow tool)
+
+The 19 scoring phases are NOT a linear pipeline. Most read-only design surfaces are file-disjoint and share nothing but the Phase-0 extraction. Run them **concurrently** via the Workflow tool instead of one-after-another.
+
+**Hard ordering constraint (the only one):**
+- **Phase 0 (Design System Extraction)** runs FIRST, alone. It produces `system-extraction.md` — the tokens, component inventory, page inventory, and design-language hypothesis. Every other track depends on it (it is the STANDARD against which everything is judged). Do not fan out until Phase 0 is complete and the **HINGE COMPONENT** is named.
+
+**Then fan out the remaining phases into independent tracks** (each track = one Workflow branch, each writing only its own `.audit/design/*.md` output — one writer per file, no collisions):
+
+| Track | Phases | Reads | Writes | Independence rationale |
+|-------|--------|-------|--------|------------------------|
+| **A — Token systems** | 1 Colors, 2 Typography, 3 Spacing | tokens + grep census | colors.md, typography.md, spacing.md | Pure static census of CSS/Tailwind values; no cross-dependency |
+| **B — Component & coherence** | 4 Components, 5 Cross-Page Coherence, 14 System Maturity | component files, page layouts | components.md, coherence.md, maturity.md | Coherence is the heaviest phase (×3.0) — give it its own track with 10× scrutiny |
+| **C — Interaction & motion** | 6 Interaction/Motion, 12 Performance-as-Design | state handlers, transitions, animations | interaction.md, performance.md | State/motion exhaustiveness is orthogonal to static tokens |
+| **D — Layout & device** | 7 Responsive, 13 Dark Mode | breakpoint classes, theme variants | responsive.md, darkmode.md | Breakpoint + theme variants are a self-contained surface |
+| **E — Semantics & access** | 8 Accessibility, 10 Visual Hierarchy, 11 Microcopy | semantic HTML, ARIA, CTA weight, copy strings | accessibility.md, hierarchy.md, microcopy.md | Reading-order / hierarchy / copy share a "meaning" lens |
+| **F — Architecture & first-use** | 15 Navigation, 16 Onboarding, 18 Error Recovery | route graph, empty/error states | navigation.md, onboarding.md, error-recovery.md | Journey-shaped surfaces, disjoint from pixel surfaces |
+| **G — Smells, data-viz, brand** | 9 Design Smells, 17 Data Visualization, 19 Brand Expression | full-page gestalt, charts/tables | smells.md, data-visualization.md, brand-expression.md | The "taste" lens — AI-generic detection, chart quality, distinctiveness |
+
+Run tracks A–G **in parallel** as Workflow branches. The **HINGE COMPONENT** identified in Phase 0 is injected into EVERY track's brief so each lens scrutinizes the hinge with 10× weight from its own angle (its colors, its spacing, its states, its hierarchy, its motion, its copy). Where a track is N/A for the project (e.g. no dark mode, no charts), it returns `applicable:false` for its phases — never a hallucinated score (preamble §5).
+
+**Scope honoring:** if SCOPE DETECTION narrowed the run to specific pages or a `--focus` area, fan out ONLY the tracks that contain the in-scope phases, at FULL depth (never degraded — rule 46). A `--focus coherence` run launches Track B alone; a `--focus colors` run launches Track A alone.
+
+### 2. Adversarial verification — ≥2-of-3 independent lenses per finding (kill the survivors' opposite)
+
+Every candidate finding a track emits is a **CLAIM** (Popper). Before it is allowed into the scoring matrix or fix plan, it must survive **at least 2 of these 3 independent lenses**. A finding that passes <2 lenses is **killed** — dropped, not scored, not fixed (a hallucinated design flaw that triggers a "fix" is how an audit *breaks* a working UI).
+
+| Lens | Question | Concrete method for THIS domain |
+|------|----------|----------------------------------|
+| **L1 — Reproduce** | Is the defect actually present at runtime, not just in code? | Cite the exact `file:line` AND the runtime proof: a Playwright-CLI screenshot at the relevant breakpoint, a computed-style readout, or a rendered DOM snapshot. "Code lies; only the rendered pixel tells the truth." A `py-4` in source that the cascade overrides to `py-6` at runtime is NOT a finding. |
+| **L2 — Refute (steelman the design)** | Could a senior designer have done this ON PURPOSE? | Actively argue the opposite: is the "rogue" color actually a documented one-off accent? Is the denser page *correctly* denser (dashboard vs settings)? Is the "missing" hover state intentional on a non-interactive element? If the steelman holds, KILL the finding. |
+| **L3 — Cross-check (coherence triangulation)** | Does the claim hold across sibling pages / the reference page / the token source of truth? | Compare against the Phase-0 extraction AND the reference page. A spacing value is only "rogue" if it deviates from BOTH the token scale AND its siblings. A single-page deviation that the reference page also has is a *system* choice, not a *page* bug. |
+
+**Verification is itself fanned out:** within each track, batch its candidate findings and run the 3 lenses concurrently per finding (Workflow sub-fan-out), then keep only the ≥2-of-3 survivors. Record the verdict per finding so it is auditable (R-CITE — evidence or it didn't happen):
+
+```
+finding F-014  "P5 header padding /classroom (py-4) vs /members (py-6)"
+  L1 reproduce  ✅ screenshot before/classroom-1440.png shows 16px vs 24px gap
+  L2 refute     ✅ no design rationale; /members is the stated reference page
+  L3 cross-check ✅ /forum, /store also py-6 → /classroom is the outlier
+  → 3/3 SURVIVES → enters coherence.md + fix plan as HIGH
+```
+```
+finding F-031  "rounded-3xl on hero card = AI-generic smell"
+  L1 reproduce  ✅ present at runtime
+  L2 refute     ✅ brand language hypothesis (Phase 0) = "playful, rounded"; intentional
+  L3 cross-check ✅ ALL cards use rounded-3xl consistently → system choice, not a smell
+  → 1/3 (only L1) → KILLED, not scored
+```
+
+**Collision escalation (preserved + amplified):** a finding where Pass A (inductive, bottom-up) and Pass B (deductive, top-down) converge on the same element is already a COLLISION FINDING per the Gestalt-Popper section. When such a collision ALSO clears ≥2-of-3 lenses, it is escalated to HIGH/CRITICAL exactly as the existing doctrine dictates — and recorded in `verdict.json.cross_audit_confirmations` if another audit confirms the same `file:line` (preamble §6 elevation mechanism).
+
+### 3. Synthesize back into THIS audit's existing scoring matrix + verdict (unchanged)
+
+Orchestration ends where the existing Phase 20 begins. The surviving findings from all tracks are merged and scored using the **unchanged** Phase 20 weights — Coherence ×3.0, Component ×3.0, Hierarchy ×3.0, Typography ×2.5, Responsive ×2.5, Accessibility ×2.5, System Maturity ×2.5, Navigation ×2.5, Error Recovery ×2.5, and the ×2.0 phases — totaling the same **/420 raw**, normalized to **/100** by the identical formula. The Gestalt "whole > parts" override still applies: a page where every track scores well but the *whole* feels disjoint is still capped per the existing rule. The verdict template, grade bands (S+/S/A/B/C/D/F), and the final report ASCII box are emitted **byte-for-byte** as already specified. **Synthesis is the creative director's own job** — never paste a track's raw output as the verdict (R-ORCH). Then Phases 21→21.5→22→23 (fix plan → functional bugs → fix execution → visual re-audit) proceed unchanged, including the Do-No-Harm safety gate and the AUDIT-VERIFICATION-CONTRACT before/after matrix.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Page count, component count, and rogue-token count are **not known up front** — full-inventory runs ("/uiuxaudit" with no scope) discover an unbounded surface. Drive discovery with a **loop-until-dry**, not a fixed pass:
+
+```
+discovered = Phase-0 inventory (pages, components, tokens)
+loop:
+  fan out tracks A–G over the current `discovered` set
+  adversarially verify (≥2-of-3) → collect survivors
+  re-scan for NEWLY surfaced surfaces:
+    - routes reached only by following in-app links found this pass (orphan/deep pages)
+    - components mounted only inside other components audited this pass
+    - dynamic/empty/error states reachable only after exercising a flow this pass
+  if new surfaces found AND not yet audited → add to `discovered`, repeat
+  else → DRY → proceed to synthesis (§3)
+```
+
+The loop is **bounded** by the existing controls: the 5-iteration fix-and-reaudit cap (preamble §4), the 4h concurrency lock (preamble §3), and the discovery-drift check on resume (preamble §8). Loop until the design surface is exhaustively covered and no track yields a new survivor — never a fixed phase count, never an early "good enough" stop (Law L4 — done means 100%; L5 — quality over speed). Reaching "dry" on an unknown-size surface IS the goal-driven completion criterion.
+
+> **Invariant restated:** this section is APPEND-ONLY orchestration guidance. It does not modify, reorder, or remove any phase, scoring weight, verdict format, or frontmatter. The audit's identity — Art Director-grade, Gestalt-Popper, coherence-first, 19 scored phases at /420 — is preserved exactly. Dynamic-Workflow Orchestration only changes *how* the work fans out, *how* each finding earns the right to be scored, and *how* far discovery runs.

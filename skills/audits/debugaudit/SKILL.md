@@ -1285,6 +1285,76 @@ WAVE 5 (environment — parallel):
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"The waves above tell you WHAT can run in parallel. This section tells you HOW to run it as a Workflow — fan out the tracks, then make every wound prove itself before you call it a wound."*
+>
+> **Non-negotiable:** This is an EXECUTION layer only. It changes nothing about the phases, the /360 scoring matrix (Phase 19), the verdict/grade bands, the HINGE FEATURE doctrine, the Gestalt-Popper laws, or the Hybrid synthesis (Phase H1). It is how `/debugaudit`, WHEN RUN, schedules and verifies the existing work — never a replacement for it.
+
+When this audit runs, do NOT walk Phases 1→18 linearly. The runtime patient has many organs that fail independently; examine them concurrently, then triage each finding adversarially before it reaches the scoring matrix.
+
+### 1. Decompose into independent parallel tracks (fan-out via the Workflow tool)
+
+Map the existing waves (see PARALLEL EXECUTION STRATEGY) onto **file/surface-disjoint Workflow tracks** and dispatch them concurrently with the Workflow tool. Phase 0 (both the programmatic GATHER and RECONNAISSANCE) runs FIRST and alone — its `evidence-summary.json`, sitemap, and HINGE FEATURE feed every track. Then fan out:
+
+| Track | Phases (unchanged) | Why independent |
+|---|---|---|
+| **A · Passive observation** | 1 Console, 2 Network, 3 Visual, 4 Responsive | Pure page navigation/screenshots — read-only, no app mutation |
+| **B · Active probing** | 5 Dead features, 6 State corruption, 7 Race conditions | Mutating interactions — keep on its OWN browser context to avoid cross-talk |
+| **C · Adversarial security** | 8 Injection, 9 Auth boundary | Fuzzing/IDOR — isolate so payloads never pollute Track B's state assertions |
+| **D · Static + contract analysis** | 10 Performance, 11 API drift, 12 Data integrity, 13 Error handling, 14 Dependency health | Reads code + `evidence-summary.json`, no UI mutation |
+| **E · Environment + system** | 15 Env drift, 16 Log forensics, 16b Live runtime observation, 17 Cross-browser, 18 Chaos | OS/process/log surface, disjoint from the app DOM |
+
+Rules for the fan-out:
+- **One writer per surface.** Tracks B and C both mutate app state → give each its own authenticated browser context / data namespace; never let two tracks write the same record (R-SCOPE).
+- Each track is briefed with the SAME HINGE FEATURE and an explicit **10× scrutiny order** on it (Law 4): the hinge feature is probed inside whichever track owns it, at maximum depth.
+- Tracks return **candidate findings only** (each a `{tool, severity, location, message, repro}` row) — they do NOT self-score and do NOT write `verdict.json`. Synthesis is your job (step 3), never a track's.
+- 16b (Live Runtime Observation) is a track-E sub-routine that ANY track may escalate into the moment its bug is intermittent or survives 2 code-fix attempts — the Golden Rule (live logs before the 3rd change) overrides parallelism.
+
+### 2. Adversarially verify every finding through ≥2-of-3 independent lenses (kill what doesn't survive)
+
+A track's candidate finding is an **input, never a verdict** (R-VERIFY). Before a finding is allowed into the scoring matrix, subject it to three independent lenses and require **≥2-of-3 to agree** that the bug is real:
+
+- **Lens 1 — REPRODUCE (runtime, Law 1):** Re-trigger the exact failing path on the live URL/process. Capture verbatim proof — console line, network status code + body, screenshot, log line, or `.debug/edge-evidence/<id>.png`. The bug must manifest at runtime, not just in the code.
+- **Lens 2 — REFUTE (Popper):** Actively try to FALSIFY it. Run the category's falsification test from the Phase H1 §2.1 table (e.g. console.error → is the flow even reachable from any UI path? IDOR → is auth enforced by middleware the static scan can't see? N+1 → re-run twice, is it cold-cache noise?). If the refutation succeeds, the finding dies.
+- **Lens 3 — CROSS-CHECK (corroboration):** Independent corroboration from a second signal — `evidence-summary.json` flags the same `file:line`; a sibling audit's `evidence-summary.json` (Phase 0.5) confirms it; the log forensics (Phase 16) show the matching error; or a second tool in `raw/` independently reports it.
+
+Verdict on each candidate:
+- **≥2-of-3 agree it's real →** ACCEPT. Stamp `verification: {reproduced, refuted_attempt, cross_checked}` and carry it forward. If REPRODUCE + CROSS-CHECK both hold on a HINGE-FEATURE-touching finding, it is load-bearing (Phase H1 §2.2) → escalate severity.
+- **<2 lenses survive (e.g. cannot reproduce AND refutation succeeded) →** KILL it. Record as `falsified` / `unreproducible` with the evidence that killed it, demote to `info`, and do NOT let it touch the score. A "health check says OK / monitoring says 0 errors" claim that no lens can falsify is unfalsifiable → discard it, per the doctrine.
+- **Exactly 2 inconclusive →** keep at `confidence: medium`, never `high`; surface in `needs_review`.
+
+This lens triad is the runtime-domain instantiation of the Phase H1 §2.1 Popper step and the §2.5 cross-audit step — same rigor, run per finding, in parallel, immediately as each track reports, so dead findings never reach Phase 19.
+
+### 3. Synthesize survivors into THIS audit's existing scoring matrix + verdict (unchanged)
+
+Only findings that PASSED the ≥2-of-3 gate flow into synthesis. Then proceed EXACTLY as already specified — nothing here overrides it:
+- Fold survivors into **Phase H1** (hinge cross-reference §2.2, user-need match §2.3, edge cases §2.4, cross-audit links §2.5, the hybrid `verdict.json` schema §2.6, and the score gating §2.7).
+- Score each phase 0–10 and weight via the **unchanged /360 SCORING MATRIX** in Phase 19; normalize `(raw / 360) × 100`; assign the same S/A/B/C/D/F grade bands.
+- The fix-plan (Phase 20), fix execution with the Do-No-Harm gate (Phase 21), re-audit (Phase 22), and the Before/After matrix + Final Verification Gate are unchanged. The 5-iteration cap and all output-contract files still apply.
+- You write the single authoritative `verdict.json`; a track's summary is NEVER pasted in as the verdict.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Runtime bug surfaces are not enumerable up front (new routes appear, a fix unmasks a downstream bug, chaos testing spawns fresh edge cases). Wrap the fan-out in a **discovery loop**:
+
+```
+queue ← all surfaces from Phase 0 (pages, endpoints, components, flows, log streams)
+until queue is dry (bounded by the 5-iteration re-audit cap):
+  1. fan out tracks A–E over the current queue (step 1)
+  2. ≥2-of-3 adversarially verify every candidate finding (step 2)
+  3. ENQUEUE anything newly revealed:
+       - a route/endpoint/component discovered mid-walk
+       - a NEW failure unmasked by an accepted fix (Phase 22 re-audit)
+       - an edge case generated for a top-5 finding (Phase H1 §2.4) not yet probed
+       - a hinge-feature caller/callee not yet examined at 10× depth
+  4. when an iteration adds ZERO new surfaces AND zero new surviving findings → DRY → stop
+```
+
+The loop is the unknown-size analogue of the bounded fix→re-audit loop; it shares the same hard cap. On cap-without-dry: mark the residue `NEEDS_REVIEW`, emit `confidence: low`, fire the Telegram `sos` event, and surface `pending` in `.done.json` — never spin silently (Law L3 / preamble §4).
+
+---
+
 ## CROSS-COMMAND BRIDGE
 
 ```

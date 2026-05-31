@@ -1003,6 +1003,75 @@ Run `/metaudit --focus arsenal --scope="privacyaudit only"` to verify against th
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A privacy violation is not one finding — it is N independent flows, each with its own perimeter. Audit them in parallel, then try to kill every finding before you trust it."*
+
+This section governs HOW the audit EXECUTES when run. It does not change WHAT is audited: every phase above (0 → 0b → 1–13 → H1), every scoring weight (the /360 matrix in Phase 14), every verdict format, and the Gestalt-Popper doctrine are UNCHANGED. v2 only replaces the linear phase-walk with a fan-out → adversarial-verify → synthesize → loop execution model. Phase 0 (programmatic gather) and Phase 0b (recon + HINGE DATA FLOW) still run FIRST and SERIALLY — they produce the shared evidence base (`evidence-summary.json`, `discovery/pii-inventory.json`, the identified HINGE DATA FLOW) that every parallel track reads.
+
+### 1. Decompose into independent parallel tracks (FAN-OUT)
+
+After Phase 0 + 0b complete, dispatch the domain phases as CONCURRENT tracks via the **Workflow** tool (in-process fan-out, per R-ORCH), instead of walking 1→13 linearly. The phases are grouped by the data surface they touch so that file-disjoint tracks run together and only same-surface phases serialize:
+
+| Track | Phases (unchanged) | Reads (shared base) | Why independent |
+|---|---|---|---|
+| **A — Inventory & Minimization** | 1 (PII inventory), 10 (minimization/purpose) | `evidence-summary.json` PII census, schema | Census + necessity test share the field list |
+| **B — Consent & Cookies** | 2 (consent), 6 (cookies/tracking) | cookie/tracker scan, prod URL (Playwright) | Both gate on the live pre-consent network observation |
+| **C — Retention, Erasure & DSAR** | 3 (retention/deletion), 9 (DSAR/rights) | delete handler, every store (DB/cache/S3/search) | Erasure mechanics + user-facing rights are one flow |
+| **D — Perimeter** | 4 (third-party sharing), 5 (cross-border) | third-party SDK census, processor regions | Sub-processors + their regions are the same egress map |
+| **E — Encryption & Logging** | 7 (encryption at rest/transit), 12 (logging/telemetry PII) | transport probe, log calls, KMS config | Both are "is PII protected where it sits / flows" |
+| **F — Reconciliation** | 8 (policy vs reality) | `policy-claims.json` + ALL tracks' findings | Runs LAST among tracks — joins every other track's output |
+| **G — Children & Breach** | 11 (children's data), 13 (breach readiness) | age signals, access logs, RoPA backbone | Audience + incident-readiness, orthogonal to the rest |
+
+Rules for the fan-out:
+- Tracks **A, B, C, D, E, G** are file-disjoint enough to run in parallel. Track **F (policy-vs-reality)** depends on the others' findings (it reconciles every claim against what tracks A–E discovered) → it runs as the join/synthesis track AFTER the parallel batch returns.
+- The **HINGE DATA FLOW** (Phase 0b) is injected into EVERY track: whichever track touches a hop of the hinge flow applies the 10× scrutiny (H1.2) inside that track. The hinge is not a separate track — it is a depth multiplier carried into all of them.
+- Each parallel track emits a partial findings list in the SAME finding shape used by `evidence-summary.json.findings[]` (location, severity, `pii_category`, message, suggested_fix) so synthesis is a merge, not a re-format.
+- **R-SCOPE (one writer per file):** tracks only READ during discovery. No track writes product code in this phase — fixes happen later in Phase 15/16, serialized. If two tracks would touch the same file at fix time, serialize or worktree-isolate them.
+
+### 2. Adversarially verify every finding — ≥2-of-3 independent lenses (KILL WEAK FINDINGS)
+
+A finding surfaced by a track is a CLAIM, never a verdict (R-VERIFY). Before a finding is allowed into synthesis, it must survive **≥2 of these 3 independent lenses**. A finding that passes <2 lenses is KILLED (demoted to `info` + `falsified_at`, excluded from scoring) — exactly the H1.1 Popper protocol, now applied per-track and consensus-gated:
+
+1. **REPRODUCE** — re-run the concrete probe that PROVES the violation exists right now (First Law: runtime over code). Privacy-specific reproductions:
+   - minimization: `grep` every read site (incl. exports, analytics traits, templates, third-party payloads) → 0 reads confirms "collected without purpose".
+   - erasure gap: exercise the delete path on a TEST/seed user, then grep every store (DB, replica, cache, S3, search, logs) for the PII → residue confirms the gap.
+   - tracker pre-consent: Playwright CLI loads the PROD URL fresh/incognito, observe network BEFORE accepting the banner → a non-strictly-necessary call confirms the violation.
+   - plaintext-at-rest: inspect an actual row/dump for the sensitive column → plaintext (redacted in the report) confirms "encryption claim is false".
+2. **REFUTE** — actively try to make the finding FALSE: is there a gate/middleware/cron/SCC/DPA elsewhere that already handles it? Read the counter-evidence file the first lens did not. (e.g. the tracker IS gated by a consent-mode wrapper; the column IS field-encrypted in a hook the scanner missed; a TTL job DOES enforce retention.) If refutation succeeds → KILL the finding.
+3. **CROSS-CHECK** — independent corroboration from a different source than lens 1: a sibling audit's `evidence-summary.json` (secaudit / dataaudit / apiaudit per Phase 0.5), the privacy policy claim (`policy-claims.json`), the schema, or a second tool's raw output in `raw/`. Agreement → `cross_audit_confirmed: true` and bump severity one level (per H1.5); contradiction counts AGAINST the finding.
+
+Consensus rule: **confirmed** = survived ≥2 lenses (e.g. reproduce + cross-check) → finding stands. **falsified** = any lens produced a clean counter-example AND fewer than 2 lenses confirmed → killed. **inconclusive** = couldn't run ≥2 lenses cleanly → keep at `confidence: medium`, never `high`. Load-bearing (hinge) findings require all 3 lenses attempted and ≥2 confirming (the 5× falsification budget of H1.2 is spent here). Banned phrases (`looks correct`, `should be fine`, `appears to work`) remain an automatic FAIL — a finding "verified" by vibes is not verified.
+
+### 3. Synthesize survivors back into the EXISTING scoring matrix + verdict (UNCHANGED)
+
+Synthesis is the audit's own job, never a paste of a track's summary (R-ORCH). Merge ALL surviving (confirmed) findings from tracks A–G + the reconciliation join (F):
+- De-duplicate findings that multiple tracks raised on the same field/flow (e.g. an unencrypted PII column flagged by both Track E and a secaudit cross-check) → ONE finding, severity = max, `cross_audit_confirmed: true`.
+- Map each surviving finding to its owning phase and feed the existing **Phase 14 SCORING MATRIX (/360)** EXACTLY as written — same per-phase 0–10 scores, same weights (Inventory ×2.5, Consent ×2.5, Retention/Erasure ×3.0, Third-Party ×3.0, Cross-Border ×2.0, Cookies ×2.0, Encryption ×3.0, Policy ×2.5, DSAR ×2.5, Minimization ×2.0, Children ×1.5, Logging ×2.0, Breach ×1.5, + Recon ×2.0 + Synthesis ×2.0), same `(raw / 360) × 100` normalization, same N/A-denominator rule for proven-N/A Phase 11.
+- Emit the SAME `verdict.json` (hybrid v2 schema, H1.6), `verdict.md`, `fix-plan.json` (Phase 15), and the mandatory `before-after.md` (Phase N+4). The fan-out changes how findings were GATHERED and VERIFIED, not how they are SCORED or REPORTED. The H1.7 score gate (100/100 blocked unless all critical/high fixed-or-justified, all load-bearing confirmed, `user_need_match.addressed = true`, ≥3 falsifiable tests/phase, ≥2 edge cases/top-5) is unchanged and now naturally satisfied by the per-track verification above.
+- Killed findings are recorded (with `falsified_at` + the lens that refuted them) but contribute ZERO to score — they neither raise nor lower it. A privacy audit's credibility dies if it reports a "violation" that a single grep would have refuted.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+PII surface is not knowable up front — new flows hide in exports, CSV imports, webhook payloads, JWT claims, localStorage, error bodies, non-default-locale pages (see H1.4 edge cases). Run discovery as a **loop-until-dry** (a goal-loop INSIDE this workflow, per R-GOAL — never wrapped around it):
+
+```
+repeat:
+  fan-out tracks A–G over the CURRENT known PII surface (step 1)
+  adversarially verify new findings (step 2)
+  expand the surface: for each surviving finding, trace one hop further
+    (the field's next reader, the next store it lands in, the next third party it reaches,
+     the next locale/import/log path that handles it)
+  re-census ONLY the newly-revealed surface (do NOT re-grep what Phase 0 already covered — read its JSON)
+until: a full pass reveals 0 new PII fields AND 0 new flows AND 0 new third-party egress points
+       (i.e. the perimeter is closed) OR the 5-iteration cap (preamble §4) is hit
+on cap with surface still expanding → mark remaining tracks NEEDS_REVIEW + Telegram SOS; never loop silently.
+```
+
+Termination is "the perimeter is closed", not "I ran once". The audit is dry when one more parallel pass finds no new person-bytes entering, moving, resting, or leaving the system — and every surviving finding has cleared ≥2-of-3 lenses.
+
+---
+
 ## LAWS
 
 1. **Every field is a person.** Behind every column is someone who can be harmed. Audit accordingly.

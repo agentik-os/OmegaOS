@@ -1338,3 +1338,87 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Crawlability and competitor SERP analysis share nothing — so run them at the same time, not one after the other. Every ranking signal a tool reports is a hypothesis, not a verdict: prove it survives three independent lenses before it touches the score."*
+
+This section governs HOW the 20 SEO domain phases EXECUTE when this audit is run. It is an execution-orchestration layer ONLY: it does **not** alter any phase definition, the Phase 21 scoring matrix (/400), the grade bands, the verdict format, Phase H1 synthesis, or the frontmatter. The existing "PARALLEL EXECUTION STRATEGY" 5-wave map remains valid — this section makes that fan-out **tool-driven and adversarially gated** via the Workflow tool, and adds a discovery loop for unknown-size surfaces (page inventories, keyword universes).
+
+### 1. Decompose into independent parallel tracks (fan-out via Workflow)
+
+Instead of walking Phases 1→20 linearly, group them into **file/surface-disjoint tracks** and dispatch each track concurrently with the **Workflow tool** (fan-out). SEO's phases are unusually independent — crawl directives, on-page markup, and competitor SERPs touch entirely different evidence — so the parallelism is high. Each track is launched only AFTER Phase 0 (PROGRAMMATIC GATHER + RECONNAISSANCE) has produced `evidence-summary.json` and the page inventory, which every track reads (shared read-only input, no write contention).
+
+Canonical SEO tracks (each runs as one concurrent Workflow branch):
+
+| Track | Phases | Disjoint evidence surface |
+|---|---|---|
+| **A — Crawl & Index** (HINGE-heavy) | 1 Crawlability, 2 Indexability, 16 Redirect chains, 17 Broken links | robots.txt, sitemap.xml, canonical tags, HTTP status map, redirect graph |
+| **B — Rendering & Speed** (HINGE-heavy) | 3 Core Web Vitals, 10 Page Speed, 18 JS Rendering | rendered-DOM vs view-source diff, Lighthouse/CrUX, bundle/render timings |
+| **C — On-page markup** | 4 Schema, 5 Meta tags, 6 Heading hierarchy, 7 Image SEO, 8 URL structure | per-page `<head>`, JSON-LD, headings, `<img>` attributes, URL patterns |
+| **D — Site architecture** | 9 Mobile, 12 Internal linking, 13 External links, 14 Hreflang, 15 Pagination | link graph, viewport, hreflang reciprocity, pagination markup |
+| **E — Content & competition** | 11 Content quality (E-E-A-T), 19 GEO/AEO, 20 Competitor SERP | content corpus, llms.txt, SERP/competitor data |
+
+Rules for fan-out:
+- **Disjoint = parallel; shared-write = serial.** Tracks above never write the same `reports/*.md` file, so they run fully concurrently. Anything that would mutate a shared artifact (e.g. the unified `redirect-map.json`) is serialized within its owning track. This honours R-SCOPE (one writer per file) and R-ORCH (parallelize file-disjoint work, serialize shared).
+- **HINGE PAGES get 10× depth, in parallel too.** Per the verification contract, this audit's hinge is the **HINGE PAGES** (money/conversion pages). Tracks A and B carry the heaviest hinge weight (Phases 2 & 3 are the two `** HINGE **` rows in the Phase 21 matrix). Spawn a dedicated hinge sub-branch that runs Tracks A+B against ONLY the hinge pages at maximum scrutiny, concurrently with the broad sweep.
+- Each Workflow branch returns **structured findings** (file:line / URL → claim → evidence → blast radius → suggested fix), never a prose summary. Synthesis is the orchestrator's job (step 3), never a paste of a branch's self-report (R-ORCH).
+- Branch count tracks the wave map (≈5 concurrent branches); do not collapse tracks "to save time" (Law L5) — narrower scope uses `--focus`, never fewer phases.
+
+### 2. Adversarially verify every finding (≥2-of-3 independent lenses)
+
+A finding from Phase 0's gather or any track is a **hypothesis under test**, not an accepted result. Before a finding is allowed into the scored set, it must **survive ≥2 of 3 independent lenses**. This operationalizes the existing Popper falsification (Phase H1 §2.1) and the R-VERIFY ≥2-of-3 consensus rule into the fan-out. A finding that fails to reach 2-of-3 is **killed** (demoted to `info` with `falsified_at` evidence) and excluded from the score.
+
+The three lenses (domain-tailored to SEO):
+
+1. **Reproduce** — independently re-trigger the signal. Fetch-as-Googlebot (raw HTML), re-run Lighthouse twice (cold + warm), re-request the URL and read the actual HTTP status/headers, re-parse the served JSON-LD. The finding must reproduce, not be a one-off (cold-cache blip, network flake).
+2. **Refute** — actively try to prove the tool WRONG (true Popper). Is the "missing canonical" page intentionally non-canonical (paginated/faceted)? Is the "noindex" deliberate on a thin utility page? Is the `<a href>` actually present in initial HTML and only the tool's static scan missed the SSR output? Is the "broken link" a transient 503, not a real 404? If a counter-example is found → finding falsified.
+3. **Cross-check** — confirm against an independent source. Rendered DOM vs raw view-source (CACHED vs RENDERED). Lab (Lighthouse) vs field (CrUX) for CWV (LAB vs FIELD). Desktop vs mobile-first crawl (DESKTOP vs MOBILE). Today's SERP vs trend (TODAY vs TREND). Sibling `evidence-summary.json` (e.g. `/perfaudit` for CWV, `/copyaudit` for content) per Phase 0.5 — a confluence escalates confidence and bumps severity.
+
+Outcome encoding (extends the existing `falsifiable_tests[]` / finding records — no schema change):
+- **Survives ≥2-of-3** → finding stands; if all 3 agree, mark `confidence: high`. If a sibling audit cross-confirms, set `cross_audit_confirmed: true` and bump severity one level (existing Phase 0.5 / §2.5 mechanism).
+- **Survives only 1** → `confidence: low`, retained but cannot raise the score for that phase; flagged for re-verification.
+- **Survives 0 / refuted** → **killed**: demote to `info`, record `falsified_at: <command + output>`, exclude from scoring. The kill itself is logged (cited evidence per R-CITE).
+
+Hinge findings (on HINGE PAGES) get the 10× treatment from Phase H1 §2.2: 5× more refute attempts, mandatory all-three-lens pass before they may carry their full (×3.5) Phase 2/3 weight.
+
+### 3. Synthesize survivors back into THIS audit's existing scoring (unchanged)
+
+The fan-out and the 3-lens gate change only WHICH findings are trusted — not how they are scored. After all tracks return and every finding has its lens verdict:
+
+1. Collect the **surviving** findings (≥2-of-3) into the single finding set.
+2. Score each phase **exactly as Phase 21 already defines** — same per-phase 0–10 rubric, same weights (Crawlability ×3.0 … Competitor SERP ×2.5), same `max 400`, same `normalize = (raw / 400) × 100`, same S/A/B/C/D/F bands. Killed findings simply are not present to lower a score; low-confidence (1-lens) findings cannot *raise* a phase score.
+3. Emit the **same `verdict.json` (hybrid v2 schema, §2.6)** and `verdict.md` — score, confidence, `falsifiable_tests[]`, `hinge_findings[]`, `cross_audit_links[]`, `user_need_match`, all unchanged. The orchestrator writes the synthesis; no branch's summary is pasted as the verdict.
+4. All downstream gates are untouched: Phase 21 grade, Phase 22 fix plan, Phase 23 "Do No Harm" fix gate, Phase 24 re-audit, the 5-iteration cap, and the §2.7 score-gating thresholds all run as written.
+
+The contract: **identical inputs → identical score**. This layer raises *fidelity* (fewer false positives reaching the matrix), never the *scale*.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+SEO surfaces are open-ended — page inventories, keyword universes, competitor sets, and broken-link graphs have no fixed size up front. For these, run a **bounded discovery loop** instead of a single pass, so coverage is exhaustive without an arbitrary cutoff:
+
+```
+discovered = Phase 0 seed (sitemap URLs + homepage internal links + target keywords)
+verified_survivors = {}
+iteration = 0
+loop:
+  iteration += 1
+  fan out the relevant track(s) over the current `discovered` frontier (Workflow, step 1)
+  for each new finding: run the ≥2-of-3 lens gate (step 2); keep survivors
+  expand the frontier:
+     - new internal links found while crawling → add to page inventory
+     - new redirect targets / canonical targets → add to URL set
+     - related/competitor keywords surfaced in Phase 20 → add to keyword universe
+  if frontier added 0 new items  → DRY → break        # nothing left to discover
+  if iteration >= 5              → break + NEEDS_REVIEW # honour the 5-iter cap (preamble §4)
+synthesize survivors → Phase 21 scoring (step 3)
+```
+
+Loop discipline:
+- **Dry = no new URLs/keywords/links discovered in a full pass** — the natural, evidence-based stop (not a guessed page count).
+- The loop is **bounded at the existing 5-iteration cap** (QUALITY-ARSENAL-PREAMBLE §4). On cap-hit with the frontier still growing, mark the residual frontier `NEEDS_REVIEW`, emit the Telegram `sos` event, and proceed to synthesis with what survived — never spin silently (Law L3: decide and proceed; no infinite loops).
+- Discovery findings flow through the **same 3-lens gate and the same Phase 21 matrix** — the loop changes coverage breadth, never the scoring.
+
+> **Invariant:** this v2 layer is append-only orchestration. If anything here appears to conflict with a numbered Phase, the MANDATORY-FIRST-STEP V2 meta-protocol, or the Gestalt-Popper doctrine above, the original phase/doctrine WINS and this section yields. Fan-out + adversarial 2-of-3 verification + loop-until-dry are *how* the audit reaches its findings faster and more honestly; the audit's identity, phases, weights, and verdict are unchanged.

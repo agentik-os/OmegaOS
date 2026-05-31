@@ -206,6 +206,116 @@ You: send Telegram report with aggregate score + per-audit links
 - For audit setup / .gitignore / progress dashboard → use `/audit-tracker`
 - For oracle dispatch of audit chain → use `/aisb full`
 
+## Dynamic-Workflow Orchestration (v2)
+
+> This section UPGRADES *how* the orchestrator runs — it does NOT change WHAT it
+> selects, the 3 power levels, the wave partitioning, the `audits/SYNTHESIS.md`
+> contract, or the aggregate `/100` verdict. Same identity, same Gestalt-Popper
+> doctrine (hinge-first selection, Popper falsification, runtime > code >
+> comments). It just turns this conductor from a linear "decide → dispatch →
+> wait → synthesize" loop into a **fan-out → adversarially-verify → synthesize →
+> loop-until-dry** workflow. The orchestrator owns no scoring matrix of its own;
+> its "verdict" is the aggregate it writes to `SYNTHESIS.md`, and that is
+> untouched here.
+
+When this orchestrator runs (any invocation — interactive, `full`, a level, or a
+keyword bundle), execute the steps below via the **Workflow tool** instead of
+grinding them in series.
+
+### 1. Decompose into INDEPENDENT parallel tracks (fan-out)
+
+The orchestrator's pre-dispatch work splits into file-disjoint, side-effect-free
+tracks that have no data dependency on each other. Run them **concurrently** in a
+single Workflow fan-out, not one after another:
+
+- **Track A — Stack/signal detection** (§"Smart Selection Algorithm" step 1 +
+  preamble §16): read `package.json`, lockfiles, `.convex/`, `prisma/`, `api/`,
+  `.github/workflows/`, `tailwind.config.*`, env signals → emit
+  `project_signals_detected`.
+- **Track B — Intent parsing** (step 2): map the user's EN+FR keywords to the
+  candidate audit set + chosen power level.
+- **Track C — Maturity probe** (step 4): empty-scaffold vs mature vs pre-launch
+  ("go-live trio") classification from git age + src density.
+- **Track D — Prior-state read**: load existing `audits/SYNTHESIS.md` +
+  `audits/.{name}audit/verdict.json` freshness (fresh / stale / expired) so
+  already-fresh audits are skipped, not re-run.
+
+These tracks are read-only and touch different inputs → safe to parallelize
+(R-SCOPE: no shared writer). Join their outputs to compute the recommended audit
+list + level. The **dispatch waves themselves stay exactly as defined** in
+"Full Audit Mode" (Wave 1 read-only fan-out → Wave 2 consumers like secaudit that
+read apiaudit's verdict → Wave 3 UI bundle); each wave is itself a fan-out, and
+wave ordering is preserved because Wave 2/3 have real data dependencies on Wave 1
+verdicts. Parallelize within a wave; serialize across waves.
+
+### 2. ADVERSARIALLY VERIFY each finding before it reaches SYNTHESIS (>=2-of-3)
+
+The orchestrator does not run forensic phases itself — its "findings" are the
+**cross-audit signals it aggregates**: each child audit's top findings, every
+`cross_audit_confirmations` elevation, and every score it is about to average
+into `SYNTHESIS.md`. Before ANY of these is accepted into the synthesis, subject
+it to **three independent lenses and require >=2 to agree**:
+
+- **Lens 1 — Reproduce**: re-read the child audit's own `verdict.json` evidence
+  chain (file:line → evidence → blast radius). Does the cited artifact actually
+  exist and say what the finding claims? (Runtime > code > comments.)
+- **Lens 2 — Refute (Popper)**: actively try to kill it. Is the score an ABORT
+  misread as a pass (a 401/403/empty-surface scored as green = ABORT, never a
+  PASS — Law L5)? Did the audit hit its 5-iteration cap and leave
+  `needs_review`? Is the "finding" an opinion with no falsifiable test?
+- **Lens 3 — Cross-check**: does an *independent* audit corroborate it? A
+  finding confirmed on the same file:line by a second audit is the existing
+  elevation-to-CRITICAL mechanism (preamble §6); a contradiction between two
+  audits is itself a finding to surface, not silently averaged away.
+
+A signal that survives <2 lenses is **killed** — dropped from `SYNTHESIS.md` and
+recorded under a `rejected_signals` note (with the failing lens) so the kill is
+auditable (R-CITE). A delegate audit's own "done" is an input, never the verdict
+(R-VERIFY). Synthesis is the orchestrator's own job — never paste a child audit's
+summary verbatim as the aggregate truth (R-ORCH).
+
+### 3. Synthesize survivors into the EXISTING aggregate (unchanged)
+
+Fold only the surviving signals back into the orchestrator's existing outputs —
+the `audits/SYNTHESIS.md` aggregate, the `average /100 across all audits + flag
+any < 80` scoring, and the plan/Telegram report described above. **The synthesis
+format, the averaging rule, the grade bands, and the per-audit links are
+unchanged.** This section adds a verification stage in front of synthesis; it
+does not alter the synthesis itself.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Audit selection is open-ended: a signal detected in Track A can pull in audits
+the keyword bundle never named (e.g. discovering `stripe` →
+`/flowaudit --focus=payment`; discovering `prisma/` → `/dataaudit` + `/apiaudit`;
+discovering `framer-motion` → `/motionaudit`). Run selection as a **convergence
+loop**:
+
+```
+candidates = fan-out(Track A..D)         # initial set + level
+do:
+    run the next eligible wave (fan-out within the wave)
+    read the new verdicts → adversarially verify (step 2)
+    rescan project_signals_detected from fresh discovery artifacts
+    add any newly-relevant audits to the pending waves
+until: no new audit surfaces AND no wave has eligible un-run audits   # dry
+then: synthesize (step 3)
+```
+
+Bound the loop the same way the family already bounds work: honor the 4h
+concurrency lock per audit, the 5-iteration fix cap inside each child audit, and
+the mission token budget (R-BUDGET — escalate near the cap, never silently
+overrun). "Dry" = a full pass adds zero new audits and leaves zero eligible
+un-run audits; only then is the aggregate verdict final.
+
+### Net effect
+
+Same audits, same levels, same waves, same `SYNTHESIS.md` verdict — but selected
+by parallel discovery, hardened by >=2-of-3 adversarial verification so a single
+hallucinated child finding can't poison the aggregate, and exhaustive by
+loop-until-dry so a late-discovered stack signal never leaves a relevant audit
+unrun.
+
 ## Sources
 
 - 18 Quality Arsenal audits in `~/.claude/commands/`

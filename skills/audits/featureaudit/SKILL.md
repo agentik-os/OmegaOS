@@ -1098,3 +1098,59 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A linear sweep of 19 phases finds gaps slowly and trusts itself too much. Fan the discovery out, prosecute every gap from three angles, convict only what survives — then sentence with the SAME /320 matrix."*
+
+This section governs HOW the audit RUNS. It changes execution topology only — it does **not** alter a single phase, scoring weight, severity rubric, the Phase 17 /320 matrix, the grade bands, the HINGE CAPABILITY doctrine, or the frontmatter. Phases 0–20 remain the canonical work; this orchestrates them.
+
+### 1. Fan-out — decompose phases into INDEPENDENT parallel tracks
+
+After Phase 0 (Product Reconnaissance) completes and the **HINGE CAPABILITY** is named, dispatch the remaining phases concurrently via the **Workflow tool** instead of running them 1→16 linearly. The phases partition into file-disjoint tracks that share no write target (`discovery/feature-inventory.json` and the per-phase reports are append-only and disjoint), so they parallelize cleanly:
+
+| Track | Phases | Lens / question | Primary inputs |
+|-------|--------|-----------------|----------------|
+| **A — Promise vs Reality** | 1 (PRD Compliance), 8 (Empty Implementations) | What was promised but is missing, stubbed, or no-op? | PRD/implicit-PRD, route+handler grep |
+| **B — Depth & Edge** | 2 (Feature Depth), 5 (Edge Cases — Universal 10) | Does each feature work for everyone, everywhere, every time? | code paths, runtime smoke, throttled latency |
+| **C — Surface & Coherence** | 3 (Discoverability), 4 (Coherence), 16 (Entropy) | Can users find it, and do features speak the same language? | nav graph, UI string glossary |
+| **D — Contract & Data** | 6 (API Surface), 11 (Permissions), 12 (Data Model) | Is the machine-facing surface + data spine complete? | API routes, RBAC grep, schema files |
+| **E — Ecosystem & Scale** | 7 (Competitive Parity — WebSearch ≤10), 9 (Config), 10 (Docs), 13 (Integrations), 14 (Scaling), 15 (a11y-per-feature) | What do competitors/users expect that we lack, and will it survive 100×? | WebSearch, settings/integrations pages, load probe |
+
+Rules: the **HINGE CAPABILITY track gets 10× scrutiny** (split it into its own sub-workflow if it spans tracks — never let it ride coach). Tracks touching the **same write file serialize** (one-writer-per-file); everything else runs concurrently. The WebSearch budget (≤10 queries, Phase 7 only) is owned by Track E alone so parallel tracks never double-spend the quota. Each track emits its own report files exactly as the linear pipeline would.
+
+### 2. Adversarial verification — ≥2-of-3 independent lenses per finding
+
+No finding enters `verdict.json` on a single observation. The feature prosecutor must secure a conviction. For **every** candidate finding (a claimed gap, stub, shallow feature, parity miss, missing CRUD op, empty handler), run three independent lenses and require **≥2 to agree** before the finding survives:
+
+- **Lens 1 — REPRODUCE (the gap is real):** demonstrate the absence/shallowness at runtime, not from a grep alone. Examples: hit the route and observe a 404/501/empty render; POST to the "save" handler and confirm nothing persists to the real backend; drive the feature with the Universal-10 edge input and watch it break; click the menu item and reach a blank screen. *Code lies — runtime convicts.*
+- **Lens 2 — REFUTE (try to prove it EXISTS / is deep):** actively hunt for the implementation the first lens missed — a differently-named route, a feature flag that IS flipped on in some env, a handler in an unexpected file, a dynamic/lazy import, a capability exposed only via API or CLI, a competitor "gap" we actually ship under another label. If refutation succeeds → **kill the finding** (it was a false positive from naming drift or a missed code path).
+- **Lens 3 — CROSS-CHECK (independent source):** corroborate against a different evidence class — PRD/implicit-PRD line, schema entity, sibling audit verdict (`audits/.dataaudit/verdict.json` for schema-backed gaps, `audits/.apiaudit/verdict.json` for contract gaps), competitor matrix cell, or git history showing the feature was removed/never landed.
+
+Disposition: **≥2 lenses agree → finding SURVIVES** and is written with its evidence chain (file:line → what's missing → why it matters → blast radius → fix) plus a `verification: {reproduced, refuted, cross_checked}` triplet. **<2 agree → finding is KILLED**, logged to `discovery/killed-findings.md` with the reason (most commonly "exists under different name" or "code path missed in linear scan"). This is the Popper gate made executable: a completeness gap that cannot survive a genuine refutation attempt was never a gap. False "it's missing!" findings are the #1 failure mode of feature audits — this kills them before they reach the verdict.
+
+### 3. Synthesis — fold survivors back into THIS audit's matrix (unchanged)
+
+Surviving findings flow into the **existing Phase 17 scoring matrix exactly as written** — same per-phase weights (PRD ×3.0, Depth ×3.0, Discoverability ×2.0, Coherence ×2.5, Edge ×2.5, API ×2.0, Parity ×2.5, Empty ×3.0, Config/Docs ×1.5, Permissions/Data ×2.0, Integrations/Scaling/a11y ×1.5, Entropy ×1.0), same /320 raw max, same `normalized = (raw / applicable_max) × 100`, same S/A/B/C/D/F grade bands, same severity ladder (CRITICAL/HIGH/MEDIUM/LOW), same HINGE-CAPABILITY-gap = CRITICAL rule. The orchestration produces the **inputs** to the matrix in parallel; the matrix and the verdict format are untouched. Cross-audit elevation (preamble §6) still applies: a survivor confirmed by a sibling audit on the same file:line elevates to CRITICAL. Synthesis is the auditor's own job — never paste a track's or a lens's raw summary as the verdict.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Feature inventory has no fixed size — a monorepo may hide routes, the implicit-PRD may under-count, competitor research may surface a new table-stakes feature mid-run. Run discovery as a **loop-until-dry**, not a single pass:
+
+```
+round = 0
+repeat:
+    round += 1
+    fan out tracks A–E (§1) over the CURRENT inventory
+    adversarially verify every new candidate (§2)
+    record surviving findings + newly discovered features
+until (no NEW feature/gap surfaced this round)        # dry
+   or (round >= 5)                                    # preamble §4 hard cap
+   or (mission budget approached — R-BUDGET escalate)
+```
+
+Each round may reveal features that spawn fresh gaps (a newly found "export" route → check format depth, API parity, edge cases), so feed discoveries back into the next round's fan-out. Terminate when a full round adds nothing new ("dry"), honoring the **5-iteration cap** from QUALITY-ARSENAL-PREAMBLE §4 (mark residual unknowns `NEEDS_REVIEW` + Telegram SOS at the cap — never spin silently). The fix-and-re-audit loop in Phases 18–20 is unchanged and remains separately capped at 5.
+
+> *Topology, not doctrine: fan out the prosecution, convict only survivors of a real refutation, sentence with the unchanged /320 matrix. The Gestalt-Popper feature prosecutor, parallelized.*

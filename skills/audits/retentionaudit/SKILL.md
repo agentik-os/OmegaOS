@@ -803,4 +803,76 @@ If any returns 0 lines for a project that should have it, that's a P0 GAP.
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *This section governs HOW the 20 phases run. It changes the execution engine, not the audit: every phase, scoring weight (0-20/phase, /400 total), the RICE × Fogg matrix, the 4 lenses (Hooked / JTBD / Heath / Fogg), the 7 Laws, the HINGE EXPERIENCE gate, and the READ-ONLY contract are unchanged. Discovery is still observation-only — fan-out NEVER grants write access.*
+
+The legacy "WAVE EXECUTION" table already buckets phases into 5 sequential waves with parallel phases inside each. This section upgrades that from *manual* parallelism ("the worker prompt should mention…") to a **first-class fan-out via the Workflow tool**, adds **adversarial per-finding verification**, and adds **loop-until-dry discovery** for unbounded surfaces (empty states, drop-offs, screens). When `/retentionaudit` runs, the orchestrator MUST drive it as a dynamic workflow, not a linear sweep.
+
+### 1. Decompose into independent parallel tracks (fan-out)
+
+Map the existing waves onto concurrent Workflow branches. Each branch is a self-contained Agent call with a fresh context, its own scratch directory under `audits/.retentionaudit/discovery/`, and a strict READ-ONLY toolset (`Read`, `Grep`, `Glob`, `Bash` read-only, `WebSearch`, `WebFetch` — never `Edit`/`Write` to source). Branches inside a wave share NO mutable state, so they run truly concurrently; waves remain a sequential barrier because each consumes the prior wave's artifacts.
+
+| Workflow stage | Phases | Fan-out (concurrent branches) | Barrier input | Barrier output |
+|---|---|---|---|---|
+| **Stage A — Foundation** | 1, 2 | 2 branches: (1) HINGE EXPERIENCE forensic — gets 50% effort, runs alone with 10× scrutiny per the Gestalt gate; (2) user-journey map | product identity sources | `01-hinge-capability.md`, `user-journey.md` |
+| **Stage B — Evidence** | 3, 4, 5 | 3 branches: drop-off forensics ‖ empty-state inventory ‖ existing-hook inventory | journey map (Stage A) | drop-off / empty-state / hooks inventories |
+| **Stage C — Outside-in** | 6, 7, 8, 9 | 4 branches: competitor baseline (WebSearch) ‖ aha-moment ‖ Hooked-loop scoring ‖ personalization gap | journey + hooks inventory | one report each |
+| **Stage D — Proposal mining** | 10–19 | up to 10 branches, one per proposal-mining phase (onboarding, empty-state detail, network, sales, monetization, friction, reactivation, community, discoverability, power-user) — fully file-disjoint, no inter-deps | all Stage A–C artifacts | raw idea pools 02–14 |
+| **Stage E — Synthesis** | 20 | sequential (you, the orchestrator) | every surviving finding | `15-prioritized-roadmap.md` + `output.json` |
+
+Dispatch each branch in a stage in a **single fan-out** (all Agent calls for the stage issued together), wait for the barrier, then proceed. Cross-branch contamination (a personalization branch editing the onboarding scratch file) violates **R-SCOPE one-writer-per-file** — each branch owns exactly one discovery file.
+
+### 2. Adversarially verify EVERY finding (≥2-of-3 lenses) before it survives
+
+A finding from a single branch is a **claim, not a fact** (Popper; R-VERIFY). Before any finding enters Stage E synthesis or the score, it must survive **≥2 of 3 independent verification lenses**. A finding that passes <2 lenses is **killed** — dropped from the roadmap and the score (it contributes 0, exactly as "command not run = scores 0 for that finding" already mandates).
+
+| Lens | Question | How (READ-ONLY) | Survives if |
+|---|---|---|---|
+| **Reproduce** | Does the friction/gap actually exist in the running product surface? | Re-run the phase's falsification command from "EVERY PHASE FALSIFIES" (grep the blocking modal, the missing empty-state branch, the absent invite handler) and paste the output | command returns the predicted evidence with `file:line` |
+| **Refute** | Can a counter-search disprove it? (steel-man the product) | Search the codebase / docs for an EXISTING mechanism that already covers the gap (e.g. a hidden `EmptyState` variant, an existing D7 email trigger, a Cmd-K entry) before claiming it's missing | the counter-search comes back empty — the gap is real, not just undiscovered |
+| **Cross-check** | Does a second lens or external source independently confirm? | Confirm via a *different* framework lens (e.g. a drop-off flagged by JTBD is also a Heath "pit"; a missing hook flagged by Hooked is also a Fogg low-Trigger) OR a competitor-evidence URL (Phase 6) showing the pattern is table-stakes | ≥1 independent confirmation with citation (lens name OR `http…` URL) |
+
+Record each finding's verdict in `output.json` as `cross_audit_confirmations`-style provenance: which lenses ran, which passed, the evidence string. Findings surviving all 3 lenses are eligible for the higher scoring bands (16-20). A surviving finding with only the Reproduce lens stays — but is capped at the mid band until a second lens confirms. **Killed findings are logged** (in `session.log`) with the lens that refuted them, so the synthesis is auditable and the kill is not silent (R-CITE).
+
+This verification is itself parallelizable: fan out the 3 lenses per finding, require the 2-of-3 quorum, synthesize the verdict yourself — never accept a branch's self-graded "confirmed" as the verdict.
+
+### 3. Synthesize survivors back into THIS audit's existing scoring (unchanged)
+
+Synthesis (Stage E = Phase 20) consumes ONLY the surviving, verified findings and runs the audit's existing machinery verbatim:
+
+- Score each of the 20 phases **0-20** using the existing SCORING RUBRIC; a phase's band is driven by how many of *its* findings survived 2-of-3 (e.g. "16-19: 8+ insights **with falsifiable tests**" now means 8+ *verified* insights). Total **/400**, normalized `/400 × 100 = /100`.
+- Run the two-pass **RICE → Fogg B=MAT** scoring exactly as specified; compute `priority_score = RICE_normalized × (1 + Fogg/27)`; sort top 20.
+- Apply the ANTI-PATTERNS table (a survivor matching an anti-pattern is flagged `anti_pattern:true` and fixed or dropped — adding adversarial verification does NOT relax the anti-pattern gate).
+- Emit the unchanged v2 `output.json` schema and the unchanged report tree under `audits/.retentionaudit/`.
+- Run all 7 procedural QUALITY GATES, including **Gate 1 (NO IMPLEMENTATION — `git status --porcelain` must show 0 source edits)**: fan-out branches MUST leave that gate green. If any branch touched a source file, the READ-ONLY contract is violated → ABORT.
+
+The verdict format, the JSON schema, the RICE × Fogg formula, and the report filenames are **byte-for-byte the same** as the linear run. Fan-out + adversarial verification only change *how findings are produced and filtered*, never *how they are scored or reported*.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Several phases discover an **unbounded** set (Phase 2 screens, Phase 3 drop-off zones, Phase 4 empty states, Phase 18 hidden features). For these, the branch runs a **discovery loop** instead of a single pass:
+
+```
+seen = ∅
+loop:
+  run discovery pass (grep/glob/route-trace) for this surface
+  new = results − seen
+  for each item in new: adversarially verify (step 2) → keep or kill
+  seen ∪= new
+  if |new| == 0  → DRY, exit loop
+  if iterations >= 5 → record halt_reason:"max_iter" in session.log, exit  # bounded, never infinite
+```
+
+This guarantees the audit doesn't stop at the first 5 empty states when there are 30 — it loops until a full pass yields zero new surfaces (dry), bounded by the 5-iteration cap that the shared preamble already mandates (no silent infinite loops). The dry/halt state per surface is recorded so coverage is provable (R-CITE).
+
+### Invariants (do NOT cross)
+
+- **READ-ONLY is absolute.** Fan-out multiplies *observers*, never *writers*. No branch gets `Edit`/`Write` to source; the only writes are this audit's own report files. The skill still "proposes, never codes" and still hands off to `/planner` or `/implement`.
+- **Scoring, verdict, schema, phases, frontmatter — untouched.** This section is additive orchestration only.
+- **Synthesis is the orchestrator's job.** Never paste a branch's summary as the verdict; merge, de-dupe, and re-rank survivors yourself (R-ORCH).
+- **Budget aware.** Fan-out raises peak parallel token draw; respect the mission budget (R-BUDGET) and escalate before overrun rather than truncating phases (Law L5 — no streamlined variant).
+
+---
+
 *"The product is a promise. Retention is keeping it. — /retentionaudit v1.1, May 2026 — Hooked + JTBD + Heath + Fogg, RICE × adoption, READ-ONLY."*

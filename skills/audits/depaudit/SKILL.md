@@ -1020,6 +1020,68 @@ build status before/after, tests before/after. Zero regressions required to clai
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"The dependency tree is not a list to walk top-to-bottom — it is a forest of independent supply chains. Audit them in parallel, prove each link adversarially, and only the surviving links earn a place in the score."*
+
+This section governs HOW the 18 phases above EXECUTE. It changes nothing about WHAT they assess: every phase, weight, threshold, verdict format, and the Gestalt-Popper doctrine remain exactly as written. It replaces linear phase-walking with a fan-out → adversarial-verify → synthesize → loop-until-dry execution model, run via the **Workflow** tool.
+
+### 1. Fan-out — decompose phases into INDEPENDENT parallel tracks
+
+Phase 0 (the deterministic gather) and Phase 0b (crime-scene setup + hinge computation) ALWAYS run FIRST and serially — they produce the shared evidence base (`evidence-summary.json`, `discovery/dependency-tree.json`, `discovery/hinge-package.json`) every track reads. Once that base exists, the domain phases are **file-disjoint by data dependency**, not by ordering, so dispatch them as concurrent Workflow tracks instead of one linear pass:
+
+| Track | Phases | Why it is independent | Shared input (read-only) |
+|---|---|---|---|
+| **A — Vulnerability & freshness** | 1 (CVE), 2 (Freshness/Drift), 14 (Deprecations/EOL) | All read advisory + version-lag data; no cross-write | `evidence-summary.json`, manifests/lockfiles |
+| **B — Trust & provenance** | 3 (Abandonment), 7 (Typosquat/Confusion), 8 (Install scripts), 11 (Registry/Provenance) | All interrogate maintainer/source/script trust signals | `evidence-summary.json`, hinge source, registry metadata |
+| **C — Integrity & reproducibility** | 5 (Lockfile), 6 (Transitive resolution), 9 (Version policy), 15 (Reproducibility) | All operate on lock/manifest resolution + determinism | lockfiles, scratch-dir frozen installs |
+| **D — Licensing** | 4 (License compliance) | Pure license-graph analysis, no overlap | `evidence-summary.json`, package LICENSE files |
+| **E — Footprint & exposure** | 10 (Bloat/Duplication), 12 (Bundle exposure), 13 (Monorepo hygiene) | All read tree shape + bundle/workspace topology | dependency-tree, build/analyzer output |
+| **F — SBOM** | 16 (SBOM generation) | Consumes the resolved tree; emits its own artifact | dependency-tree, Track A advisories (VEX link) |
+
+Rules for the fan-out:
+- **Read-only concurrency.** Tracks only READ the shared evidence base + the repo; none mutate `node_modules`, lockfiles, or `target/` during the audit phase (Phase 15's frozen-install determinism test runs in a throwaway scratch dir per the existing safety note). This makes the tracks safe to run simultaneously (no shared-writer conflict).
+- **Each track is its own Workflow sub-task** with a written brief: the phase numbers it owns, the exact `evidence-summary.json` slice + manifests it may read, and its Done Criteria (every owned phase scored with ≥3 Popper tests cited, per Phase H1.1).
+- **Hinge gets 10× depth IN-TRACK.** Whichever track touches the supply-chain hinge package (`discovery/hinge-package.json`) — typically B (install scripts/provenance) and C (resolution) — applies the Phase H1.2 10× scrutiny inside that track, not as a separate pass.
+- **Scope-narrowing flags compose with fan-out.** A `--focus=licenses` run still fans out, but Track D runs at full depth and the others at proportional depth (never skipped — rule 46 / `--quick` remains forbidden).
+
+### 2. Adversarial verification — ≥2-of-3 independent lenses per finding
+
+A finding emitted by ANY track is a CANDIDATE, never an accepted finding. Before it may enter the scoring matrix it must survive **≥2 of these 3 independent lenses** (this operationalizes R-VERIFY + the existing Phase H1.1 falsification, and the audit's own Popper categories CLAIM-vs-REALITY / MANIFEST-vs-INSTALLED / PINNED-vs-RESOLVED / DECLARED-vs-LICENSED / AUDITED-vs-EXPLOITABLE):
+
+- **Lens 1 — REPRODUCE (does it actually resolve in MY tree?).** Run the concrete command that proves presence: `npm ls <pkg> --all` / `cargo tree -i <pkg>` / `pipdeptree -p <pkg>` confirms the flagged version is genuinely in the resolved tree and enumerates every dependency path. A CVE/abandonment/typosquat candidate that does not reproduce here is dead.
+- **Lens 2 — REFUTE (try to make the tool wrong).** Actively seek the counter-example using the Phase H1.1 patterns: `npm view <pkg> time.modified` to separate *finished* from *neglected*; `grep -rn "<pkg>"` across src + config + dynamic `import()` + package scripts before accepting an "unused/ghost" verdict; read the actual LICENSE file before accepting a registry "GPL" label; read the postinstall script verbatim before accepting "malicious"; `npm ci --dry-run` in a scratch dir before accepting "lockfile drift" (tooling artifact vs real drift). If the counter-example holds → the candidate is FALSIFIED.
+- **Lens 3 — CROSS-CHECK (independent corroboration).** Confirm via a second, independent source: a second scanner agreeing (`npm audit` + `osv-scanner` on the same advisory → `cross_tool_confirmed`), or a sibling audit's `evidence-summary.json` (Phase 0.5 / H1.5: secaudit reachability, codeaudit dead-import, perfaudit bundle bloat → `cross_audit_confirmed`), or the override/`resolutions` entry that actually changes the install-time version vs the at-rest manifest.
+
+Verdict rule per candidate:
+- **≥2 lenses confirm → ACCEPTED** → carries its `falsifiable_tests[]` (≥3 commands, verbatim output) into Phase H1.6 `verdict.json`. Two confirming lenses where one is Lens 3 (cross-tool or cross-audit) → set `cross_tool_confirmed` / `cross_audit_confirmed` and bump severity one level exactly as Phase 0.5 / H1.5 / the /secaudit relationship table already prescribe.
+- **Refuted by Lens 2 (counter-example) → KILLED** → demoted to `info`, recorded with `outcome: "falsified"` + `falsified_at`; it MUST NOT contribute to the score. Killing unsurvivable findings is the point — a green-but-unverified candidate is worse than no finding (L2).
+- **Only 1 lens, others inconclusive → HELD** → keep at stated severity with `confidence: "medium"` and `outcome: "inconclusive"`; never promote a single-lens candidate to `high` confidence.
+
+Banned shortcut phrases (`looks correct`, `should be fine`, `appears to work`) auto-fail a lens, exactly as the meta-protocol header requires.
+
+### 3. Synthesize — fold survivors back into THIS audit's UNCHANGED scoring
+
+Synthesis is the auditor's own job (R-ORCH: never paste a track's summary as the verdict). After all tracks return and every candidate has been run through the lenses:
+
+1. **Merge + dedupe across tracks.** The same advisory can surface from Track A (CVE) and Track F (SBOM VEX link); the same package can surface from Track B (abandoned) and Track E (bloat). Collapse to unique findings (dedupe by advisory ID / package+ecosystem), preserving the highest justified severity and the union of `falsifiable_tests[]`.
+2. **Score with the EXISTING matrix only.** Map each surviving finding to its Phase (1–16) and apply the **Phase 17 SCORING MATRIX exactly as written** (CVE ×3.0 … SBOM ×2.0, max 360), the existing N/A renormalization for non-applicable phases (12/13 on CLI/single-package), and the existing normalization `(raw / applicable_max) × 100`. The fan-out changes the order findings were produced in — it does NOT change a single weight, the PASS threshold (≥70), or the S/A/B/C/D/F grade bands.
+3. **Run Phase H1 as the synthesis gate.** H1.2 (hinge 10× cross-reference), H1.3 (`--user-need` match), H1.4 (≥2 edge cases per top-5), H1.5 (cross-audit links), and the H1.7 score-gating threshold all run here, over the merged survivor set. Killed candidates are excluded; held candidates cap confidence.
+4. **Emit the SAME contract.** `verdict.json` (the unchanged Phase H1.6 hybrid-v2 schema), `verdict.md`, `fix-plan.json/.md`, `progress.json`, `before-after.md`, `fix-log.md`, and `sbom/sbom.cyclonedx.json` — identical to the existing OUTPUT CONTRACT. Phase 18 (fix → build-integrity gate → re-audit, capped at 5 iterations) is unchanged.
+
+### 4. Loop-until-dry — for unknown-size discovery
+
+Some surfaces have no known bound up front: the count of unique advisories across N ecosystems, the set of transitive packages declaring lifecycle scripts, the number of duplicate-version clusters, every dependency path that reaches the hinge package. For these, run the owning track as a **loop-until-dry** Workflow rather than a fixed single pass:
+
+- **Iterate** the discovery within the track (e.g. resolve advisories → for each, enumerate its paths via `npm ls` → those paths may reveal further flagged transitive packages → repeat) until a pass yields **zero new candidates** (dry) — bounded by the Workflow budget primitive (default 500K-token mission cap, R-BUDGET).
+- Each newly discovered candidate enters the SAME ≥2-of-3 lens gate in §2 before acceptance — discovery breadth never bypasses verification.
+- Track F's SBOM completeness check (Phase 16.2 parity: component count == unique packages in the resolved tree) is the natural "dry" signal for the inventory loop: loop until the SBOM is parity-complete with the resolved tree (Phase 15.4 / H1 parity), then stop.
+- This is distinct from the Phase 18 fix→re-audit loop (also capped at 5): §4 is DISCOVERY loop-until-dry (finding everything); Phase 18 is REMEDIATION loop-until-clean (fixing what was found). Both coexist unchanged.
+
+> **Invariant:** This orchestration layer is purely about execution shape — parallel tracks, adversarial gating, synthesis, discovery loops. The audit's identity (forensic supply-chain investigation), its Gestalt-Popper doctrine, its 7 Laws of Supply-Chain Forensics, every phase, the /360 scoring matrix, the verdict format, and the frontmatter are all preserved verbatim. Fan-out finds faster and proves harder; the verdict it feeds is the same verdict this audit always produced.
+
+---
+
 ## CROSS-COMMAND BRIDGE
 
 ```

@@ -1337,3 +1337,79 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"The forensic pathologist does not autopsy one organ at a time when ten tables are open. Probe every endpoint surface at once, then cross-examine each corpse with three independent witnesses before signing the certificate."*
+
+This section governs **HOW /apiaudit executes WHEN RUN**. It is an execution-engine upgrade only — it does **not** add, remove, reorder, or reweight any phase (1–18, H1, 19–22), and it does **not** alter the `/360` scoring matrix, the grade bands, the verdict format, or the frontmatter. It supersedes the static "PARALLEL EXECUTION STRATEGY" waves above by running them through the **Workflow tool** (true concurrent fan-out) instead of conceptual agent-waves, and it hardens every finding with adversarial verification before it is allowed to touch the scoring matrix. The Gestalt-Popper doctrine, the 5 Laws of API Forensics, and the HINGE ENDPOINTS clarity gate remain fully in force — this only changes the *plumbing*, never the *judgement*.
+
+### 1. Decompose into INDEPENDENT parallel tracks (fan-out via the Workflow tool)
+
+After Phase 0 (programmatic gather) and Phase 0 RECONNAISSANCE complete (these stay sequential — they produce `evidence-summary.json` + the endpoint/auth/role inventory that every track reads), dispatch the domain phases as **concurrent Workflow tracks** rather than a linear 1→18 walk. Tracks are chosen so they touch **disjoint evidence and write disjoint report files** (no two tracks mutate the same `reports/*.md`), satisfying R-SCOPE one-writer-per-file:
+
+| Track | Phases fanned concurrently | Why independent | Writes |
+|-------|---------------------------|-----------------|--------|
+| **T1 — Hinge Security** (10x depth) | 3 Authentication, 4 Authorization, 16 CORS | The HINGE ENDPOINTS (money/auth/user-data) — max scrutiny, runs alone-but-parallel so it never starves | `authentication.md`, `authorization.md`, `cors.md` |
+| **T2 — Input & Contract** | 2 Contract Compliance, 5 Input Validation, 6 Error Format, 7 Status Codes | All read request/response schemas + handler signatures | `contract-compliance.md`, `input-validation.md`, `error-format.md`, `status-codes.md` |
+| **T3 — Surface & Ops** | 1 Endpoint Inventory, 8 Pagination, 9 Rate Limiting, 12 Response Times, 13 N+1, 14 Idempotency | Operational behavior per route, independent of auth verdicts | `endpoint-inventory.md`, `pagination.md`, `rate-limiting.md`, `response-times.md`, `n-plus-one.md`, `idempotency.md` |
+| **T4 — Ecosystem & Contract Hygiene** | 10 Versioning, 11 Documentation, 15 Webhooks, 17 Content Negotiation, 18 Deprecation | Spec/lifecycle concerns, no overlap with security or per-request ops | `versioning.md`, `documentation.md`, `webhooks.md`, `content-negotiation.md`, `deprecation.md` |
+
+Rules for the fan-out:
+- **Each track is a Workflow sub-task** with its own fresh context, handed: the path to `evidence-summary.json`, the hinge file (`~/.aisb/state/hinge-points-<ticket>.json`), the REST-vs-GraphQL mode (from the v1.2 mode-detection block), and its exact phase list + the report files it (and only it) may write.
+- **T1 always runs** even on the smallest scope — auth/authorization is the hinge; it is never collapsed into another track and never skipped.
+- Tracks sharing a file MUST serialize; here the table is engineered so they never do. If a scoped run (`--files=`/`--focus=`) makes two tracks target the same handler file, **merge them into one track** rather than letting two writers collide.
+- Fan-out is **bounded by budget** (R-BUDGET, default 500K) — if approaching the cap, run T1 first to completion, then the rest; never silently drop a track.
+- This is a *concurrency* change, not a *coverage* change: **all 18 phases still run at full depth.** No `--quick`/`--streamlined` shortcut is introduced (rule 46 / Law L5).
+
+### 2. ADVERSARIALLY VERIFY every finding (≥2-of-3 independent lenses before acceptance)
+
+A track's raw finding is a **candidate**, never a verdict (R-VERIFY). Before any candidate is allowed into Phase H1 synthesis or the Phase 19 scoring matrix, it must survive **≥2 of these 3 independent lenses** — run as parallel verification micro-tasks, each blind to the others' conclusion:
+
+- **Lens A — REPRODUCE (runtime, Law L1):** Actually exercise the endpoint and observe the real response. Send the offending request against the dev/`--prod`-confirmed target (honoring the rate-limit safety gate: ≤10 req/s, abort on 3×429/503, log to `request-log.txt`). For an "unauthenticated endpoint" candidate → fire the request with **no token / expired token / another user's token** and capture the actual status + body. A 200 where 401/403 was claimed-as-required = REPRODUCED. *Code that says "auth required" but returns data is a lie; runtime wins.*
+- **Lens B — REFUTE (Popper falsification):** Actively try to PROVE the finding WRONG, mapping to the audit's own falsification categories (HAPPY vs EDGE, ADMIN vs USER, SINGLE vs CONCURRENT, SPEC vs REALITY, POSTMAN vs PRODUCTION). For "missing input validation" → submit the exact malformed/boundary/injection payload and see if it's actually rejected upstream (middleware not visible to the static scan — see the Phase H1 falsification table row for `api`). If the refutation succeeds, the candidate is **killed**.
+- **Lens C — CROSS-CHECK (static + spec + cross-audit):** Read the handler + its middleware chain end-to-end; reconcile against OpenAPI/`schema.graphql` ground truth (SPEC vs REALITY) and against sibling `evidence-summary.json` files (Phase 0.5 / H1 §2.5 — e.g. `dataaudit` on the same table, `secaudit` on the same auth line). Confirmation here both validates the finding and sets `cross_audit_confirmed`.
+
+Verdict rule per candidate:
+- **≥2 lenses confirm → finding STANDS** (becomes `confirmed`; record each lens result as a `falsifiable_tests[]` entry per Phase H1 §2.1, with verbatim command + output).
+- **≤1 lens confirms (or any lens refutes it) → finding is KILLED** — demoted to `info` with `falsified_at: <evidence>`, and it MUST NOT affect the phase score. A killed finding never costs the API points.
+- **HINGE ENDPOINT findings get 3-of-3** (all three lenses mandatory, per the Phase H1 §2.2 10x-scrutiny contract: 5x falsification, all callers/callees read).
+- **Banned phrases** (`looks correct`, `should be fine`, `appears to work`) on any lens = automatic FAIL of that verification, treat as unconfirmed.
+
+This is the engine that feeds — and is gated by — the existing Phase H1 §2.1/§2.7: a finding can only enter `verdict.json` with the score-gating intact.
+
+### 3. SYNTHESIZE survivors back into the EXISTING scoring matrix (unchanged)
+
+The surviving (`confirmed`) findings — and only those — flow into the audit's **existing** machinery with zero modification:
+- Score each phase 0–10 exactly as **Phase 19** dictates, apply the **unchanged weights** (Auth ×3.5, Authz ×3.5, Input Validation ×3.0, … Content Negotiation ×0.5), sum to the **/360 raw max**, and normalize `(raw / 360) × 100` into the **same S/A/B/C/D/F grade bands**.
+- Killed findings contribute nothing; confirmed findings deduct from their phase per the existing rubric.
+- Emit the **same `verdict.json` (hybrid v2) schema** (§2.6): `falsifiable_tests[]`, `hinge_findings[]`, `cross_audit_links[]`, `user_need_match`, `score`/`score_normalized`, `preamble_version: "1.0"`. The score-gating of §2.7 (no 100/100 unless all critical/high fixed-or-justified, hinge confirmed, user-need addressed, ≥3 falsifiable tests/phase) is **the acceptance gate for this whole orchestration**.
+- Synthesis is the auditor's OWN job (R-ORCH): do **not** paste a track's or a lens's summary verbatim as the verdict — reconcile across tracks (e.g. a contract-drift finding in T2 that a T1 auth finding makes critical) and resolve conflicts before scoring.
+- Fix Plan (Phase 20), Fix Execution (Phase 21, incl. the DO-NO-HARM safety gate), and Re-Audit (Phase 22) are **untouched** and run exactly as written on the synthesized finding set.
+
+### 4. LOOP-UNTIL-DRY for unknown-size discovery
+
+Endpoint/parameter/role space is **not known a priori** — new routes, dynamic handlers, GraphQL resolvers, and webhook event types surface only as tracks dig. Run discovery as a **bounded loop-until-dry** rather than a single pass:
+
+```
+known := endpoints/params/roles from Phase 0 gather + RECONNAISSANCE inventory
+repeat:
+  fan out the 4 tracks (§1) over `known`
+  adversarially verify each candidate (§2)
+  newly_revealed := surfaces discovered DURING this round
+     (e.g. an authz probe exposes /admin/* subroutes; a GraphQL introspection
+      reveals an unscanned mutation; a 3xx redirect chain exposes a v2 route;
+      a webhook handler references an undocumented event type)
+  known := known ∪ newly_revealed
+until newly_revealed == ∅   (DRY)
+   OR round == 5            (hard cap — aligns with the 5-iteration re-audit cap)
+   OR budget cap approached (R-BUDGET → escalate, don't silently overrun)
+```
+
+- "Dry" = a full fan-out round adds **zero** new endpoints/params/roles/event-types and **zero** new confirmed findings.
+- The loop is **bounded at 5 rounds** (consistent with the Phase H1 §2.7 / preamble §4 re-audit cap). On round 5 still discovering → record `halt_reason: max_iter`, emit `confidence: low`, surface remaining surfaces as `NEEDS_REVIEW`, and send the Telegram SOS — **never** spin indefinitely.
+- Each round's net-new surfaces and net-new confirmed findings are appended to `session.log` so the discovery trajectory is auditable (R-CITE: evidence or it didn't happen).
+
+**Net effect:** same phases, same weights, same verdict, same Gestalt-Popper identity — executed concurrently, with every finding triple-checked and every hidden endpoint flushed out, instead of a single linear best-effort pass.

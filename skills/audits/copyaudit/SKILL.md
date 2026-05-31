@@ -895,6 +895,87 @@ After v1.2 compliance round:
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A finding is a hypothesis about a word. Run the phases in parallel, then make each surviving word survive three skeptics."*
+
+This section governs HOW /copyaudit executes when run. It changes the **engine**, never the doctrine: the 5 Laws of Copy Forensics, the HINGE PAGES gate, every phase, every scoring weight, the /280 → /100 normalization, the verdict format, and the Do-No-Harm fix gate are all UNCHANGED. The orchestration below replaces linear phase-walking with adversarially-verified parallel fan-out.
+
+### 1. Fan-out: decompose phases into independent parallel tracks
+
+After Phase 0 (Reconnaissance) builds `discovery/{pages,claims,ctas,microcopy}.json`, do NOT walk Phases 1–14 sequentially. Dispatch them as **concurrent Workflow tracks** keyed by data-independence — each track reads only the discovery JSON, so they never collide (R-SCOPE: read-only fan-out, no shared writer). This formalizes the existing WAVE structure into real concurrency:
+
+```
+TRACK A — Messaging core (HINGE-weighted):
+  Phase 1  Headline Clarity (5-second test)
+  Phase 2  Value Proposition Accuracy
+  Phase 3  CTA Effectiveness
+  Phase 4  Claim Verification        ← HINGE, ×4.0, 10× scrutiny, NEVER parallelized away
+
+TRACK B — Linguistic quality:
+  Phase 5  Tone Consistency
+  Phase 6  Technical Accuracy
+  Phase 7  Grammar / Spelling
+  Phase 8  Reading Level (Flesch-Kincaid)
+
+TRACK C — Context & trust:
+  Phase 9  SEO Keyword Integration
+  Phase 10 Social Proof Accuracy
+  Phase 11 Legal Compliance
+  Phase 12 Microcopy
+
+TRACK D — Standards:
+  Phase 13 Copy Accessibility
+  Phase 14 Brand Voice Adherence
+  + rule-46 banned-phrase scan + i18n wrapping detection (per v1.1/v1.2 addenda)
+```
+
+Rules:
+- Run TRACK A–D Workflows **concurrently** (fan-out). HINGE PAGES (homepage hero, pricing, signup/onboarding) get a dedicated 10×-depth pass on EVERY track — the hinge is never sacrificed to parallelism.
+- Each track emits raw candidate findings to its own `discovery/_candidates/<track>.json`. Nothing scores yet — candidates are unverified.
+- Tracks are read-only over the same discovery inputs; no two tracks write the same file (R-SCOPE preserved).
+
+### 2. Adversarial verification: ≥2-of-3 lenses before a finding is accepted
+
+A candidate is an **opinion** until it survives falsification. For EVERY candidate finding, fan out 3 independent lenses (Popper: try to disprove your own finding) and require **≥2-of-3 agreement** to accept (R-VERIFY consensus). A lone-wolf finding is killed.
+
+The three copy-domain lenses:
+- **REPRODUCE** — Re-extract the exact string from the live surface (rendered page / built bundle / error path), not from memory. Confirm `file:line` (or URL + selector) and verbatim text. Lens fails if the string can't be located → kill the finding (it was hallucinated copy).
+- **REFUTE (steel-man the copy)** — Argue the word EARNS its place: is the "vague" CTA actually clear in its in-page context? Is the "false" claim true under a fair reading? For a claim, run the promise-vs-reality probe via the bridge (`/perfaudit` for "fast", `/secaudit` for "secure", `/flowaudit` for "easy/instant", `/featureaudit` for "does X"). If refutation holds, the finding dies.
+- **CROSS-CHECK** — Independent angle: a different reader profile, a Flesch-Kincaid recomputation, brand-voice guideline diff, or the i18n/banned-phrase regex. For HINGE Phase 4 claims, cross-check against the cited audit's `verdict.json` and, where both agree on the same `file:line`, record a `cross_audit_confirmations[]` entry (auto-elevates to CRITICAL per preamble §6).
+
+Decision: accept iff ≥2 of {REPRODUCE, REFUTE-survived, CROSS-CHECK} agree the defect is real. Survivors carry the full evidence chain (file:line → what's wrong → why it matters → blast radius → suggested fix) AND a `verification: {lenses_passed: [...], killed: false}` stamp. Killed candidates are logged to `discovery/_candidates/killed.json` with the lens that refuted them — never silently dropped (L4).
+
+### 3. Synthesize into THIS audit's existing scoring matrix + verdict (unchanged)
+
+Synthesis is your own job — never paste a track's summary as the verdict (R-ORCH). Fold ONLY the surviving, ≥2-of-3-verified findings back into the **existing** machinery:
+- Score each phase 0–10 and apply the **unchanged** weights from PHASE 15 (Headline ×2.5 … **Claim Verification ×4.0 HINGE** … Brand Voice ×1.0), plus the v1.2 banned-phrase ×1.5 addendum → `applicable_raw_max` = 295.
+- Normalize identically: `score = (raw / applicable_raw_max) × 100`; same S/A/B/C/D/F grade boundaries.
+- Emit the same `verdict.json` / `verdict.md` / `fix-plan.json` per the OUTPUT CONTRACT and preamble §6 schema, with `preamble_version: "1.0"`. Verified findings populate `findings[]`; cross-audit agreements populate `cross_audit_confirmations[]`.
+- Fixes still pass the Do-No-Harm gate (PHASE 17) and the BEFORE/AFTER matrix below. Orchestration does not touch the fix protocol.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Copy surface is open-ended (new pages, lazy-loaded microcopy, deep error/empty states, locale variants). Run discovery + fan-out as a **loop-until-dry**, not a one-shot:
+
+```
+pass = 0
+until DRY:                       # DRY = a full fan-out pass yields 0 NEW verified findings
+    pass += 1
+    re-run discovery delta (new pages / strings / claims since last pass)
+    fan out TRACK A–D over the delta (step 1)
+    adversarially verify each candidate (step 2, ≥2-of-3)
+    merge survivors; record pass score trajectory in iterations.md
+    if pass >= 5:                # preamble §4 hard cap — aligns with fix re-audit cap
+        mark remainder NEEDS_REVIEW, Telegram SOS, break
+```
+
+The discovery-loop cap (5) mirrors the fix-and-reaudit cap; it is a hard ceiling, never a silent infinite loop. When the surface is bounded and the delta is empty, the loop exits early (DRY) and synthesis (step 3) runs.
+
+**Invariant:** this section adds an execution strategy only. If anything here ever conflicts with the doctrine, the phases, the scoring matrix, the verdict schema, or the Do-No-Harm gate above, **the original wins**. Append-only — identity and the Gestalt-Popper doctrine are preserved.
+
+---
+
 ## MANDATORY BEFORE/AFTER VERIFICATION (v1.1)
 
 **Read `../_shared/AUDIT-VERIFICATION-CONTRACT.md` before ANY fix execution.**

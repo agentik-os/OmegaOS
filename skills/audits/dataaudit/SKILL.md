@@ -1401,3 +1401,66 @@ Every fix MUST follow the "Do No Harm" protocol:
 5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
+
+---
+
+## Dynamic-Workflow Orchestration (v2)
+
+> *"Sixteen integrity questions, asked at once, each answer cross-examined by three witnesses before it is allowed into the verdict."*
+
+This section governs **HOW** the audit executes when run. It does not add, remove, reorder, or reweight any phase above, nor touch the /320 SCORING MATRIX (Phase 17) or the verdict format — it changes the *execution topology* from linear-sequential to **fan-out → adversarially-verify → synthesize → loop-until-dry**. The Gestalt clarity gate, the HINGE TABLES doctrine, and the 5 Popper falsification categories (SCHEMA-vs-REALITY, REFERENCE-vs-EXISTENCE, TYPE-vs-VALUE, MIGRATION-vs-STATE, DEV-vs-PROD) remain the spine; this only makes them run concurrently and survive cross-examination.
+
+### 1. Decompose into INDEPENDENT parallel tracks (fan-out via the Workflow tool)
+
+After Phase 0 (programmatic gather) + Phase 0 RECON establish the data model and the HINGE TABLES, dispatch the domain phases as **concurrent Workflow tracks** instead of walking them top-to-bottom. The existing PARALLEL EXECUTION STRATEGY waves are the contract — promote each wave-member to its own Workflow branch so file-disjoint phases run truly in parallel:
+
+| Track | Phases (unchanged) | Why independent | Shared input |
+|---|---|---|---|
+| **T1 — Schema & Types** | 1 Schema Validation, 2 Migration Status, 6 Type Safety, 7 Null Handling | Reads schema files / migration dir / type defs — no row scans | `discovery/schema.json`, `evidence-summary.json` |
+| **T2 — Integrity core (HINGE)** | 3 Orphaned Records, 4 Referential Integrity, 5 Data Consistency, 8 Duplicate Detection | Row-level LEFT-JOIN / invariant queries on the HINGE TABLES | `discovery/relationships.json` |
+| **T3 — Operations** | 9 Cascade Behavior, 10 Backup Verification, 11 Query Performance, 12 Index Coverage, 16 Transaction Integrity | Operational probes (EXPLAIN, backup config, cascade dry-runs) | `discovery/tables.json` |
+| **T4 — Governance** | 13 Data Lifecycle, 14 PII Detection, 15 Seed Data Separation | Column-classification + retention/PII scan | `discovery/schema.json` |
+
+Rules of the fan-out:
+- **T2 is the HINGE track** — give it 10× scrutiny budget (per Gestalt Law 4 + Phase 2.2). The HINGE TABLES (Users / Orders / Products / whatever the core entities are) get every Phase-3/4 check at maximum depth; peripheral tables get proportional depth.
+- **All tracks are READ-first.** Fan-out is pure discovery + scoring; no write/fix runs inside a parallel branch (R-SCOPE: one writer per file — fixes are serialized in Phase 19, never concurrent).
+- Each track writes only its own `reports/*.md` files (already file-disjoint per the OUTPUT CONTRACT), so parallel writes never collide.
+- A DESTRUCTIVE audit constraint holds: no track may issue a write/DDL statement — the DB Backup Gate (v1.1 addendum) only opens in the serialized fix phase.
+
+### 2. Adversarially VERIFY every finding (≥2-of-3 independent lenses)
+
+A single LEFT-JOIN returning rows, or a tool finding in `evidence-summary.json`, is a **candidate**, never a verdict (R-VERIFY). Before a finding is admitted to the scoring matrix it must survive **≥2 of these 3 independent lenses**:
+
+1. **REPRODUCE** — re-run the exact diagnostic against the live data a second time (or against a fresh snapshot). An orphan count that changes between runs is a race/soft-delete artifact, not a stable orphan. Cite both counts. *(Deterministic command, never LLM-as-judge — Verification Contract Pattern #3.)*
+2. **REFUTE (Popper)** — actively try to make the finding FALSE: is the FK *meant* to cascade (so the "orphan" is expected)? Was the parent removed by a real user deletion (legit) vs a bug? Is the NOT-NULL "violation" actually an `v.optional()` the schema legitimately allows? Use the Phase 2.1 falsification table row for `data`: *"orphaned record → verify the FK is supposed to cascade, or confirm the parent was deleted by an actual user action."* A finding that the refutation kills is **demoted to `info` with `falsified_at:<evidence>`** — do NOT score it as a defect.
+3. **CROSS-CHECK** — confirm the same defect from a second, independent vantage: schema-definition vs runtime-sample (the v1.2 `DATA_INTEGRITY_SCHEMA` vs `DATA_INTEGRITY_RUNTIME` split), or a sibling audit's `evidence-summary.json` (Phase 0.5 — e.g. `/apiaudit` flags the same endpoint+table contract drift, or `/secaudit` flags the same PII column). A cross-confirmed finding sets `cross_audit_confirmed: true` and bumps severity one level (Phase 2.5).
+
+**The gate:** a finding entering Phase 17 scoring must record ≥2 passing lenses in its `falsifiable_tests[]` / verification trail. Findings that pass only 1 lens are held as `confidence: medium` and MUST NOT lower a phase score on their own. Findings that survive 0 lenses are **killed** (logged in `fix-log.md` as falsified, excluded from the verdict). This is exactly the Verification Contract's "guilty until proven innocent" applied per-finding, and it preserves Popper rigor under parallelism.
+
+### 3. Synthesize survivors into THIS audit's existing scoring matrix + verdict (UNCHANGED)
+
+Synthesis is the audit's own job — never paste a track's summary as the verdict (R-ORCH). Merge the surviving, ≥2-of-3-verified findings back into the **unchanged** machinery:
+
+- Map each survivor to its originating phase and feed the existing **/320 SCORING MATRIX (Phase 17)** exactly as written — same per-phase 0-10 scoring, same weights (Phase 3 ×3.5, Phase 4 ×3.5 HINGE … Phase 16 ×1.0), same `normalize = raw/320 × 100`, same S/A/B/C/D/F grade bands.
+- Emit the **same hybrid v2 `verdict.json`** (Phase 2.6 schema): `falsifiable_tests[]` now carries the 2-of-3 lens outcomes, `hinge_findings[]` carries the T2 deep-scrutiny results, `cross_audit_links[]` carries the CROSS-CHECK confluences, and `score_gating` (Phase 2.7) still blocks 100/100 unless every critical/high is fixed-or-justified and `user_need_match.addressed=true`.
+- The fix flow is unchanged and **serial**: Phase 18 FIX PLAN → Phase 19 FIX EXECUTION (with the DB Backup Gate + Do-No-Harm + R-SCOPE one-writer serialization) → Phase 20 RE-AUDIT. Parallelism lives only in discovery/scoring, never in mutation.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+Orphans, duplicates, type-coercion surprises, and PII columns are **unbounded-size discovery** — you cannot know up front how many exist. Run each discovery track as a **loop-until-dry** rather than a fixed single pass:
+
+```
+for each discovery track (orphans / duplicates / type-mismatches / PII / invariant-violations):
+    repeat:
+        fan out the diagnostic across all in-scope tables (HINGE TABLES first, at 10× depth)
+        collect new candidate findings
+        adversarially verify each (≥2-of-3 lenses, §2)
+        feed survivors to the matrix; kill the falsified
+    until: a full pass yields ZERO new surviving findings   (dry)
+         OR the 5-iteration cap (preamble §4 / Verification Contract) is hit
+on cap reached: mark remaining candidates NEEDS_REVIEW, Telegram SOS, emit confidence:low — never loop silently
+```
+
+The loop is **bounded** (hard cap 5, per the shared preamble and the 5-iteration fix-and-reaudit cap) and **token-budgeted** (R-BUDGET, default 500K) — approaching either ceiling escalates rather than overruns. "Dry" = a complete fan-out pass across every in-scope table surfaces no new finding that survives §2. Only then is the integrity surface considered fully explored and the verdict allowed to finalize.
+
+> **Invariant:** this v2 orchestration changes only execution topology (parallel discovery + adversarial admission + bounded loop). Every phase, weight, the /320 matrix, the verdict schema, the DESTRUCTIVE backup gate, and the Gestalt-Popper doctrine above remain authoritative and unmodified.

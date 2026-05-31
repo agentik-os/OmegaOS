@@ -1418,6 +1418,137 @@ FOR EACH FIX TASK (in priority order):
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"A linear prosecutor walks one alley at a time. A flow prosecutor stakes out every alley at once, then refuses to convict on a single witness."*
+>
+> This section governs **HOW** the 20 domain phases above are EXECUTED. It changes
+> the execution *engine*, never the *evidence standard*: the Gestalt-Popper doctrine,
+> the 6 Laws of Flow Forensics, the HINGE FLOW 10× rule, the SCORING MATRIX (Phase 21,
+> /400), and every verdict/output schema remain exactly as defined above. When this
+> section and any earlier phase appear to conflict on scope, the earlier phase wins;
+> this section only parallelizes and hardens the gathering of evidence that feeds them.
+
+### DW.1 — Decompose into independent parallel tracks (fan-out)
+
+After Phase 0 (PROGRAMMATIC GATHER + FLOW SCENE RECONSTRUCTION) has produced the
+flow inventory, entry-point census, and entity state machines, do NOT walk Phases
+1–20 sequentially. Instead, partition them into **file-/journey-disjoint tracks** and
+run them CONCURRENTLY via the **Workflow** tool (fan-out → adversarially verify →
+synthesize, in-process). Workers ARE Opus-4.8 workflows — lean on the Workflow
+primitive rather than grinding linearly (R-ORCH).
+
+Tracks are cut along the natural seams of THIS audit's domain so they never write the
+same evidence file (R-SCOPE: one writer per file):
+
+| Track | Phases (run together, one Workflow branch each) | Disjoint along | Hinge-weighted? |
+|-------|--------------------------------------------------|----------------|-----------------|
+| **T-Structure** | 1 Completeness, 2 State Machines, 5 Dead Ends, 20 Entropy | entity/state-machine code + route graph | yes if hinge flow's state machine |
+| **T-HappySad** | 3 Happy Paths, 4 Error Paths, 10 Error Recovery, 15 Empty States | per-journey walkthroughs (one branch per top journey) | **HINGE FLOW journey = its own branch, 10×** |
+| **T-AuthSession** | 6 Permission Gaps, 9 Cross-Session, 17 Concurrent Users | auth/session/permission surfaces | yes if hinge flow crosses an auth boundary |
+| **T-MoneyData** | 8 Data Integrity, 14 Payments, 16 Destructive Actions | DB/data-flow + payment provider surfaces | yes if hinge flow is purchase→delivery |
+| **T-Reach** | 7 Onboarding, 11 Performance, 12 Accessibility, 13 Notifications, 18 Mobile, 19 Analytics | onboarding/first-run + cross-cutting reach surfaces | yes if hinge flow is signup→activation |
+
+Rules for the fan-out:
+- **One branch per disjoint track**, plus a **dedicated solo branch for the HINGE FLOW**
+  carrying every phase at maximum depth (Phase 0's `hinge-points-<ticket>.json` /
+  `hinge-analyzer.sh` chooses the journey — signup→activation, purchase→delivery, etc.).
+  The hinge branch is never merged into a shared track; its findings get the 10× scrutiny
+  Phase H1 §2.2 already mandates.
+- Tracks sharing a file or journey are **serialized inside the same branch**, never split
+  across branches (no two writers on one `reports/*.md` or one source file).
+- Each branch reads the SAME `evidence-summary.json` (read-only) but writes ONLY its own
+  `reports/<phase>.md` files — the Output Contract layout is unchanged.
+- Skipped phases (N/A per the CONTEXT COMPATIBILITY table — e.g. Phase 14 on a no-payments
+  app) simply drop out of their track; the track still runs its remaining phases.
+- Parallelism is for **evidence gathering and per-phase scoring drafts only**. Scoring,
+  normalization, and the verdict stay a single-writer step (DW.3) — never let a branch
+  emit the final `verdict.json`.
+
+### DW.2 — Adversarially verify every finding (≥2-of-3 independent lenses)
+
+A finding emitted by any branch is a **suspect, not a conviction** (Law 7: "the flow is
+guilty until every path is walked"; R-VERIFY: a delegate's own 'done' is an input, never
+the verdict). Before a finding is allowed into the scoring synthesis, it MUST survive
+**≥2 of 3 independent lenses**. Run the three lenses concurrently per finding; a finding
+that clears fewer than 2 is **killed** (demoted to `info`, excluded from severity scoring,
+recorded with the lens that defeated it).
+
+The three lenses, mapped to THIS audit's Popper Flow Falsification categories
+(LABEL vs ACTION / PROMISE vs EXPERIENCE / STATE vs DISPLAY / COPY vs REALITY /
+FEEDBACK vs TRUTH):
+
+1. **REPRODUCE** — walk the exact journey that triggers it. Dynamic Playwright probe on
+   the prod/deployed URL (R-TEST / R-PROD: never a local dev server), click the button,
+   submit the form, hit the dead end. Capture a screenshot/trace to
+   `.flow/edge-evidence/`. *"Did the 'Save' button actually fail to persist when I clicked
+   it on the live surface?"* If it cannot be reproduced from any real UI path → lens FAILS.
+2. **REFUTE** — actively try to PROVE the finding wrong (the Popper test of Phase H1 §2.1,
+   one lens of three). Read the route handler for middleware the static scan missed; grep
+   for the guard that already disables the impossible-state button; re-run a flaky timing
+   walkthrough twice to rule out a one-off network blip. A real falsification → lens FAILS
+   and the finding is killed with `falsified_at:<evidence>`.
+3. **CROSS-CHECK** — confirm via an INDEPENDENT source: the matching entry in
+   `evidence-summary.json` (`cross_tool_confirmed`), a sibling audit's
+   `evidence-summary.json` (Phase 0.5 / H1 §2.5 — debugaudit's broken page, secaudit's auth
+   gap, dataaudit's orphan), or the entity state-machine map from Phase 0. Agreement here
+   sets `cross_audit_confirmed: true` and bumps severity one level (existing rule).
+
+Verdict per finding: **survives** (≥2 lenses pass) → carried into scoring at its
+(possibly cross-bumped) severity; **killed** (<2) → `severity:"info"`, never scored, but
+LOGGED in `verdict.json.killed_findings[]` with `{finding_id, lenses_passed, killer_lens,
+evidence}` so the kill is auditable (R-CITE: evidence or it didn't happen). HINGE FLOW
+findings face all three lenses at 10× depth regardless of how many pass — the hinge is
+never convicted or acquitted on thin evidence.
+
+### DW.3 — Synthesize survivors back into the EXISTING scoring matrix (unchanged)
+
+Synthesis is the single-writer step and it is YOUR job, not a branch's — never paste a
+branch's summary as the verdict (R-ORCH). Fold ONLY the **surviving** findings back into
+the audit exactly as already specified — nothing about scoring changes:
+
+1. Collect every track's per-phase score draft + its surviving findings.
+2. Apply the **Phase 21 SCORING MATRIX verbatim** — same 20 weights (Completeness ×3.0,
+   State Machines ×2.5, … Entropy ×1.5), same `max 400`, same N/A handling, same
+   `score = (raw / applicable_max) × 100` normalization, same S/A/B/C/D/F grade bands.
+3. Run the **Phase H1 synthesis (§2.1–2.7)** over the merged, survivor-only finding set:
+   Popper falsifiable_tests, hinge_findings, user_need_match, edge_cases, cross_audit_links,
+   and the **§2.7 score gate** (100/100 still blocked unless every §2.7 condition holds).
+4. Emit the SAME `verdict.json` schema (hybrid v2, §2.6) with these additive fields only:
+   `parallel_tracks_run`, `killed_findings[]`, and a `verification_lenses` summary
+   (`{finding_id, lenses_passed:["reproduce","cross-check"], survived:true}` per scored
+   finding). No weight, phase, grade band, or required field is added, removed, or reordered.
+5. Hand off to Phase 22 (FIX PLAN) → Phase 23 (FIX EXECUTION, Do-No-Harm gate intact) →
+   Phase 24 (RE-AUDIT, 5-iter cap intact) unchanged.
+
+### DW.4 — Loop-until-dry for unknown-size discovery
+
+Flow discovery has no fixed N: deep links, OAuth callbacks, webhook-triggered journeys,
+bot commands, and invite/share paths surface new flows mid-audit. When the flow inventory
+is open-ended, drive the fan-out as a **loop-until-dry** (the goal-loop lives INSIDE this
+workflow, never wrapped around it — R-GOAL):
+
+```
+queue ← all flows/journeys from Phase 0 inventory
+until queue is dry:
+  fan-out a Workflow round over the current queue (DW.1 tracks + hinge branch)
+  adversarially verify every finding (DW.2, ≥2-of-3); kill the unconvicted
+  NEW flows discovered while walking (a redirect to an unmapped route, a deep link,
+    a previously-hidden state transition) → DRIFT-check vs Phase 0 inventory →
+    enqueue them
+  if a full round adds zero new flows AND zero new surviving findings → queue is dry
+bound: 5 rounds max (Audit Verification Contract re-audit cap); on round 5 still
+  finding new flows → stop, mark residual flows NEEDS_REVIEW in verdict.json,
+  Telegram SOS (Preamble §7) — never loop silently (L4: enumerate + finish, no silent drop)
+```
+
+This guarantees coverage of an unknown number of journeys without an unbounded run, then
+converges into the single DW.3 synthesis above. Tokens are unlimited and time is not a
+constraint (L5) — quality of coverage is. No `--quick`/`streamlined`/`lightweight` variant
+of this orchestration is permitted; depth per phase is never degraded to parallelize.
+
+---
+
 ## CROSS-COMMAND BRIDGE
 
 ```

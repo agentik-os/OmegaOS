@@ -1121,6 +1121,127 @@ Verification Contract; on iteration 5 if still failing, emit `confidence: low` a
 
 ---
 
+## Dynamic-Workflow Orchestration (v2)
+
+> *"7,000 languages do not arrive single-file. Neither should the audit that hunts them. Fan out across every locale at once, then let no finding live unless it survives an adversarial cross-examination."*
+
+This section governs **HOW** the audit RUNS. It does not add, remove, reorder, or reweight any
+phase — the 16 domain phases, Phase 0/0b gather, Phase H1 synthesis, and the Phase 17 `/360`
+scoring matrix are all **unchanged**. It replaces the *linear* phase-by-phase walk with a
+**fan-out → adversarial-verify → synthesize → loop-until-dry** execution, in service of the same
+Gestalt-Popper doctrine, the same LOCALIZATION HINGE POINT, and the same verdict.
+
+Run this via the **Workflow** tool (in-process fan-out; never one-worker-per-phase dispatch).
+Sequencing constraint: Phase 0/0b (the deterministic gather + reconnaissance) ALWAYS runs first and
+feeds every track its `evidence-summary.json` + `i18n-architecture.json`. Phase H1 + Phase 17 run
+**after** every track has converged. Honor R-SCOPE: tracks share read access to the catalogs but
+any FIX execution (Phase 18) is serialized per file via worktree isolation — never two tracks
+editing the same catalog or component concurrently.
+
+### 1. Decompose into independent parallel tracks (fan-out)
+
+After Phase 0/0b, partition the 16 domain phases into file-/concern-disjoint tracks that share no
+mutable state, and run them **concurrently**. Recommended decomposition for THIS domain (a track may
+be split further per-locale when the locale set is large):
+
+- **Track A — String Surface** (Phase 1 hardcoded strings + Phase 2 framework wiring + Phase 8
+  interpolation/concatenation). Owns: every user-facing literal, every `t()` key-existence proof,
+  every concatenated fragment. Disjoint input: components + the source catalog.
+- **Track B — Locale Plumbing** (Phase 3 routing/detection + Phase 11 fallback chain, plus the
+  runtime `<html lang>`/`dir` correctness shared with Track E). Owns: how a locale is reached,
+  persisted, and degraded.
+- **Track C — Formatting & Grammar** (Phase 4 date/time + Phase 5 number/unit + Phase 5b currency +
+  Phase 6 pluralization + Phase 7 gender/agreement). Owns: every `Intl.*` / `toLocale*` call site and
+  every CLDR plural/select decision. Disjoint input: formatter call sites + per-locale plural data.
+- **Track D — Encoding & Collation** (Phase 12 encoding + Phase 13 sorting/collation). Owns: the
+  byte-to-glyph journey + every locale-aware compare/sort. Disjoint input: catalog file encodings +
+  sort/compare call sites + DB collation.
+- **Track E — Rendered Reality** (Phase 9 RTL + Phase 14 layout/expansion + Phase 15 locale-data &
+  assets + Phase 16 runtime untranslated-UI leakage). Owns: everything proven only at runtime via a
+  per-locale Playwright locale-walk. This track is the **detective pass** that falsifies A/B/C.
+
+Run **one parallel branch PER DECLARED NON-SOURCE LOCALE** inside the locale-sensitive tracks
+(B/C/E): an Arabic branch, a French branch, a Japanese branch, etc., execute simultaneously rather
+than sequentially — the monolingual assumption is exposed fastest when every locale is read at once.
+
+**Hinge override (Gestalt):** the LOCALIZATION HINGE POINT identified in Phase 0b.3 (the
+provider/hook/middleware/`t()` boundary all translated text and locale decisions flow through) is
+NOT confined to one track. Every track applies 10× scrutiny to findings whose file matches the
+hinge (per Phase H1.2), because if the hinge falls, every track's screen reverts to one language.
+
+### 2. Adversarially verify every finding through ≥2-of-3 independent lenses
+
+No finding from any track enters the verdict until it **survives ≥2 of 3 independent lenses**. A
+finding that fails to clear 2-of-3 is **killed** (demoted to `info` with `falsified_at`, or dropped)
+— this extends Phase H1.1 Popper falsification from "high/critical only" to **every** surviving
+finding, and satisfies R-VERIFY (a track's own "found it" is an input, never the verdict).
+
+The three lenses, tailored to localization (each must be an independent method, not the same check
+re-run):
+
+- **Lens 1 — REPRODUCE (runtime):** make the defect happen on a real surface. Switch to the target
+  locale via Playwright CLI and load the route → the raw key / English bleed / `{name}` literal /
+  `Invalid Date` / scrambled bidi / overflow actually renders (screenshot + exact leaked text +
+  route). For a non-UI catalog defect, reproduce by executing the formatter/`Intl.PluralRules` /
+  round-tripping the torture string and capturing verbatim output.
+- **Lens 2 — REFUTE (Popper counter-example):** actively try to PROVE the finding wrong. Is the
+  "hardcoded" literal a className/testId/log (not user-facing)? Does the "missing key" fall back
+  gracefully to source text rather than showing the raw key? Is the "untranslated" value a proper
+  noun / "OK" / "Email" that is legitimately identical? Does a global default locale make the
+  arg-less `toLocaleDateString` actually correct? Is the dynamic key `t(\`${x}\`)`'s full value space
+  in fact covered? If the refutation succeeds → **kill the finding.**
+- **Lens 3 — CROSS-CHECK (independent corroboration):** confirm via a different evidence source than
+  Lens 1. The static gather's `evidence-summary.json` ↔ the runtime locale-walk ↔ the console
+  `missingKey`/`Missing message` telemetry ↔ the per-locale catalog key-diff ↔ a sibling audit's
+  finding on the same file:line (copyaudit clarity / a11yaudit lang+dir / uiuxaudit overflow /
+  dataaudit DB encoding-collation, per Phase H1.5). Two independent sources naming the same
+  defect = corroborated; bump severity one level and set `cross_audit_confirmed: true` where a
+  sibling agrees.
+
+Record the outcome on each finding: `lenses_passed: ["reproduce","cross-check"]`,
+`verification_outcome: confirmed|killed|inconclusive`. `inconclusive` (a lens couldn't run cleanly —
+e.g. no deploy URL for the reproduce lens) keeps the finding but caps its `confidence` at `medium`
+and the run's `confidence` per Phase H1.7. Load-bearing (hinge) findings demand all 3 lenses, not 2.
+
+### 3. Synthesize survivors back into THIS audit's scoring matrix + verdict (unchanged)
+
+The fan-out and the lenses change only the *path* to the verdict, never the verdict itself. Merge
+every track's surviving findings into the single `verdict.json`/`fix-plan.json`, de-duplicating
+findings two tracks both surfaced (e.g. a string flagged by Track A as unwrapped AND by Track E as
+leaking at runtime is ONE finding with two confirmations). Then score **exactly** the existing
+Phase 17 matrix — Phase 1 ×3.5, Phase 2 ×2.5, … Phase 16 ×2.0, `TOTAL = 360`,
+`normalized = (raw / 360) × 100` — with the identical grade bands (S/A/B/C/D/F) and the **70 (B)
+PASS threshold**. The Phase H1 hybrid `verdict.json` schema, the H1.7 score gates, and the Phase 18
+DO-NO-HARM fix loop are untouched: parallelism feeds them better-verified findings, it does not
+alter what they compute. Only findings with `verification_outcome: confirmed` (or `inconclusive`
+explicitly carried at capped confidence) contribute to phase deductions; killed findings leave **no**
+mark on the score.
+
+### 4. Loop-until-dry for unknown-size discovery
+
+The localization surface has no a-priori size: the locale set, the catalog key space, the count of
+hardcoded literals, and the number of dynamic-key value-spaces are all discovered, not given. Run
+the locale-sensitive tracks (and the hardcoded-string + dynamic-key sweeps) as a **loop-until-dry**
+inside the workflow:
+
+```
+repeat:
+  fan out the tracks across all currently-known locales + routes + catalogs
+  adversarially verify (≥2-of-3) every new finding
+  feed survivors to the running verdict
+until a full pass yields ZERO new confirmed findings
+       AND no newly-discovered locale/route/catalog/dynamic-key-space remains unwalked
+       (hard cap: the Audit Verification Contract's 5 fix-and-reaudit iterations;
+        on cap → mark remaining NEEDS_REVIEW, emit confidence: low, surface `pending`)
+```
+
+A pass that discovers a new locale, a lazily-loaded catalog, a new dynamic-key branch, or a new
+runtime surface (toast/async panel/empty state) re-arms the loop for that newly-found territory
+only — never re-grep what the gather already covered (Phase 0.4 ban stands). The loop ends **dry**
+(no new confirmed finding + nothing left unwalked), not on a guess.
+
+---
+
 ## PHASE 17: VERDICT
 
 Score each phase 0-10, weight by severity:
