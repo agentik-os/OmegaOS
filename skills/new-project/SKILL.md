@@ -186,9 +186,20 @@ cd "$(dirname "$PROJECT_DIR")"
 npx create-next-app@latest "<name>" --ts --app --tailwind --eslint --src-dir --import-alias "@/*" --use-npm --yes
 cd "$PROJECT_DIR"
 npx shadcn@latest init -d
+# Default theme kit — apply the tweakcn theme so every project starts on the same
+# polished design tokens (oklch). The cmpuchuiv theme first, then the Claude theme
+# layered on top (the Claude tokens win for brand consistency). Both are tweakcn
+# registry items; bunx if bun is present, else npx.
+bunx shadcn@latest add https://tweakcn.com/r/themes/cmpuchuiv000104jmhbti6yb4 -y 2>/dev/null \
+  || npx shadcn@latest add https://tweakcn.com/r/themes/cmpuchuiv000104jmhbti6yb4 -y || true
+bunx shadcn@latest add https://tweakcn.com/r/themes/claude.json -y 2>/dev/null \
+  || npx shadcn@latest add https://tweakcn.com/r/themes/claude.json -y || true
 # Full shadcn chatbot kit — EVERY chat component (Law L5: all of it, not a subset)
 npx shadcn@latest add "https://shadcn-chatbot-kit.vercel.app/r/chat.json" -y || \
   npx shadcn@latest add chat message prompt-input markdown -y
+# Design rule for this project: prefer the imported shadcn/ui components for ALL
+# UI — do not hand-roll a button/input/dialog when the library ships one. Record
+# this in the project's CLAUDE.md so every agent session honors it.
 npm i convex @clerk/nextjs stripe @stripe/stripe-js
 [ "$WANT_REACTFLOW" = yes ] && npm i @xyflow/react
 ```

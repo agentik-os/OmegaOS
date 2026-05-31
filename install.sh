@@ -618,6 +618,15 @@ if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
 fi
 
+# ─── Phase 6.9: Companion tools + skills (SST multi-LLM, best-effort, opt-out) ──
+# planning-with-files, higgsfield (CLI+skills), claude-mem, superpowers,
+# mempalace, remotion, + the best-practice reference. Sourced so its OK/WARN
+# lines fold into this install run; never fatal. Skip: OMEGA_SKIP_COMPANION=1.
+if [[ -f "$OMEGA_SRC/scripts/install-companion-tools.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "$OMEGA_SRC/scripts/install-companion-tools.sh" || info "companion tools step had warnings (non-fatal)"
+fi
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""

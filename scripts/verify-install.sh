@@ -76,6 +76,8 @@ if grep -qE '^[0-9]\. .*/omg-vision' skills/new-project/SKILL.md && grep -qE '^[
 if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi
 # Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).
 if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
+# Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
+if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools.sh" install.sh; then ok "companion tools (planning-with-files/higgsfield/claude-mem/superpowers/mempalace/remotion) shipped + wired"; else bad "companion-tools installer not shipped/wired in install.sh"; fi
 
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
 # The checks above grep install.sh for the right STRINGS; these prove the system
