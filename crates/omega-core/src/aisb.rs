@@ -1,4 +1,4 @@
-use crate::agents::{Agent, LaunchOptions};
+use crate::agents::Agent;
 use crate::session::SessionManager;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -71,11 +71,6 @@ pub async fn ensure_master(
         .await?;
 
     Ok(true)
-}
-
-/// Minimal shell-quote for the log path (single-quote wrap).
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Returns true if a given session name is the Master AISB.

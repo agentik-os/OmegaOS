@@ -1493,61 +1493,6 @@ fn pct_color(pct: f32) -> Color {
     else { Color::Red }
 }
 
-/// Wrap a string into visual lines. Honours embedded `\n` as hard breaks
-/// (paste with newlines stays multi-line). Within each logical line we
-/// soft-wrap on word boundaries; long tokens are hard-cut.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    if width == 0 || text.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    for logical in text.split('\n') {
-        if logical.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut current = String::new();
-        for word in logical.split(' ').filter(|w| !w.is_empty()) {
-            if word.chars().count() > width {
-                if !current.is_empty() {
-                    out.push(std::mem::take(&mut current));
-                }
-                let mut buf = String::new();
-                for c in word.chars() {
-                    if buf.chars().count() + 1 > width {
-                        out.push(std::mem::take(&mut buf));
-                    }
-                    buf.push(c);
-                }
-                current = buf;
-                continue;
-            }
-            let needed = if current.is_empty() {
-                word.chars().count()
-            } else {
-                current.chars().count() + 1 + word.chars().count()
-            };
-            if needed > width {
-                out.push(std::mem::take(&mut current));
-                current.push_str(word);
-            } else {
-                if !current.is_empty() {
-                    current.push(' ');
-                }
-                current.push_str(word);
-            }
-        }
-        // Always emit a row per logical line (even empty/space-only ones)
-        out.push(current);
-    }
-    out
-}
-
-fn visual_line_count(text: &str, width: usize) -> usize {
-    let n = wrap_text(text, width).len();
-    n.max(1)
-}
-
 fn short_num(n: u64) -> String {
     if n >= 1_000_000_000 {
         format!("{:.1}G", n as f64 / 1_000_000_000.0)
@@ -2086,21 +2031,6 @@ fn render_settings_detail(
     return (lines, selected_line);
 }
 
-fn kv(key: &str, value: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            format!("{:30}", key),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw(value.to_string()),
-    ])
-}
-
-fn default_or<'a>(value: &'a str, default: &'a str) -> &'a str {
-    if value.is_empty() { default } else { value }
-}
-
 /// Mask sensitive characters in an inline input (show prefix/suffix only).
 fn mask_inline(s: &str) -> String {
     if s.len() <= 6 {
@@ -2118,19 +2048,6 @@ fn mask_key(key: &str) -> String {
     } else {
         format!("{}…{}", &key[..4], &key[key.len() - 4..])
     }
-}
-
-fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent) {
-    let (icon, color, label) = if agent.is_available() {
-        ("[+]", Color::Green, "installed")
-    } else {
-        ("[x]", Color::Red, "not installed")
-    };
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(format!("{:30}", "CLI availability"), Style::default().fg(Color::Cyan)),
-        Span::styled(format!("{} {}", icon, label), Style::default().fg(color)),
-    ]));
 }
 
 fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {

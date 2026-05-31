@@ -3168,18 +3168,6 @@ impl TelegramBotEngine {
 
     // ── Telegram API methods ──
 
-    /// Send plain text (no parse_mode) — for raw agent output that may
-    /// contain unescaped < > & characters.
-    async fn send_text_plain(&self, chat_id: i64, text: &str) -> Result<()> {
-        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
-        let body = serde_json::json!({
-            "chat_id": chat_id,
-            "text": text,
-        });
-        let _ = self.client.post(&url).json(&body).send().await;
-        Ok(())
-    }
-
     async fn send_html(&self, chat_id: i64, text: &str) -> Result<Option<i64>> {
         let chunks = formatting::split_message(text, TELEGRAM_MAX_MSG_LEN);
         let mut last_msg_id = None;
