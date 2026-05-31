@@ -1657,15 +1657,18 @@ impl TelegramBotEngine {
 
     /// Scan VibeCoding dirs for git projects not yet in the registry.
     async fn scan_and_propose_projects(&self, chat_id: i64) {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
+        let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+        let scan_dirs = [
+            cfg.resolve_category_path("works"),
+            cfg.resolve_category_path("client"),
+        ];
         let registry = omega_core::project_manager::ProjectRegistry::load();
         let known: std::collections::HashSet<String> =
             registry.projects.iter().map(|p| p.path.display().to_string()).collect();
 
         let mut found: Vec<(String, String)> = Vec::new(); // (name, path)
-        for sub in ["VibeCoding/work", "VibeCoding/clients"] {
-            let base = home.join(sub);
-            if let Ok(entries) = std::fs::read_dir(&base) {
+        for base in &scan_dirs {
+            if let Ok(entries) = std::fs::read_dir(base) {
                 for e in entries.flatten() {
                     let p = e.path();
                     if p.is_dir() && p.join(".git").exists() {
@@ -1703,10 +1706,13 @@ impl TelegramBotEngine {
 
     /// Register a scanned project into the registry.
     async fn add_scanned_project(&self, chat_id: i64, name: &str) {
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-        // Find it in work or clients
-        for sub in ["VibeCoding/work", "VibeCoding/clients"] {
-            let p = home.join(sub).join(name);
+        let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+        // Find it in work or clients (config-resolved, cross-user)
+        for base in [
+            cfg.resolve_category_path("works"),
+            cfg.resolve_category_path("client"),
+        ] {
+            let p = base.join(name);
             if p.is_dir() {
                 match omega_core::project_manager::add_existing_project(&p) {
                     Ok(_) => {
@@ -2038,8 +2044,8 @@ impl TelegramBotEngine {
             return;
         }
 
-        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-        let base = home.join("VibeCoding").join(&location);
+        let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+        let base = cfg.resolve_category_path(&location);
         if let Err(e) = std::fs::create_dir_all(&base) {
             let _ = self.send_html(
                 chat_id,
@@ -2768,7 +2774,7 @@ impl TelegramBotEngine {
                     // Last completion result, if any (the file convention drops
                     // the "oracle-" prefix that's already in the session name).
                     let state_dir_for_done = dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"))
+                        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                         .join(".omega/state");
                     let oracle_id = s.name.strip_prefix("oracle-").unwrap_or(&s.name);
                     let last_done = omega_core::done::OracleDoneSignal::read(
@@ -2836,7 +2842,7 @@ impl TelegramBotEngine {
 
         // Recent done signals — last 3 by mtime under ~/.omega/state/.
         let state_dir = dirs::home_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"))
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join(".omega/state");
         let mut done_files: Vec<(std::time::SystemTime, std::path::PathBuf)> = std::fs::read_dir(&state_dir)
             .ok()

@@ -22,12 +22,35 @@ asked interactively. Never block on a value the menu already supplied.
 
 ## STACKS (registry)
 
-| id | Stack | Components |
-|----|-------|-----------|
-| `nextstack` | **Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit** | App Router, Convex realtime, Clerk auth, Stripe billing, the **full** shadcn chatbot kit (every chat component), oklch brand system. Optional: **React Flow**. |
+| id | Type | Stack |
+|----|------|-------|
+| `nextstack` | SaaS product | **Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit** (App Router, realtime, auth, billing, full chat kit, oklch brand). Optional React Flow. |
+| `nextstack-content` | Content / multi-user | Next.js 16 + Convex (docs/comments/reactions schema) + ISR + sitemap. Clerk optional. |
+| `nextstack-static` | Marketing / landing / docs | Next.js 16 **static export** (`output: export`) + shadcn + landing template. NO backend. |
+| `rust-cli` | CLI / daemon / internal tool | Rust + clap + tokio + serde + anyhow + Makefile + README. |
+| `bun-script` | Script / tooling / DOM | Bun + TypeScript + shebang entry. |
+| `expo-mobile` | Mobile iOS/Android | Expo + React Native + NativeWind + Expo Router + EAS. Clerk/Stripe optional. |
 
-> Only `nextstack` exists today. New stacks are added as new rows + a scaffold
-> block below — the menu reads this table.
+> The TUI menu reads this table (`NEW_PROJECT_STACKS` in app.rs — keep in sync).
+> `$STACK` selects the PROVISION set + SCAFFOLD block. R-STACK doctrine: Rust
+> internals, Bun tooling, Next.js clients.
+
+## STACK DISPATCH (what each `$STACK` does)
+
+Phases 2–5 below describe the **`nextstack`** reference flow. For other stacks,
+adapt per this matrix (`—` = skip the step):
+
+| $STACK | Provision (Ph2) | Scaffold (Ph3) | Env (Ph4) | Chain (Ph5) | Verify |
+|--------|-----------------|----------------|-----------|-------------|--------|
+| `nextstack` | Vercel+Convex+Clerk+Stripe+GitHub | create-next-app + shadcn-chatbot-kit + Convex + Clerk + Stripe | .env.local + push Vercel | /vision→/prd→/planner | `npm run build` |
+| `nextstack-content` | Vercel+Convex+GitHub (Clerk opt) | create-next-app + shadcn subset + Convex (docs schema) + ISR + sitemap | .env.local + push Vercel | /vision→/prd→/planner | `npm run build` |
+| `nextstack-static` | Vercel+GitHub | create-next-app (`output: export`) + shadcn + landing + robots/sitemap; **no** Convex/Clerk/Stripe | .env.example only | /vision (opt); skip /prd /planner | `npm run build` |
+| `rust-cli` | GitHub only | `cargo new <name>` + clap/tokio/serde/anyhow + main.rs skeleton + Makefile + README | — (self-contained) | skip /vision; document in README | `cargo build --release` |
+| `bun-script` | GitHub only | `bun init` + TypeScript + shebang + bunfig | — | skip /vision; document in README | runs clean |
+| `expo-mobile` | GitHub+EAS (Clerk/Stripe opt) | create-expo-app + Expo Router + NativeWind + eas.json | .env.local for API keys (opt) | /vision→/prd→/planner (if product) | `eas build` configured |
+
+Provision honesty (Law L4): a stack needing a service whose token is blank →
+PAUSE with the manual link, never silently skip.
 
 ---
 
@@ -35,20 +58,36 @@ asked interactively. Never block on a value the menu already supplied.
 
 1. Parse `$ARGUMENTS`: `STACK`, `CATEGORY`, `NAME` (positional).
 2. **Stack**: if missing or unknown → AskUserQuestion listing the table above.
-   Lock `nextstack` for now.
-3. **Category** (the guiding branch) — if missing, AskUserQuestion:
-   - `works` → personal/internal → `~/VibeCoding/work/<name>`
-   - `client` → client work → `~/VibeCoding/clients/<name>`
-   (AgentikOS ecosystem also → `~/VibeCoding/work/`. Life → `~/VibeCoding/1-life/`.)
-   The category also picks the **git identity** later (see Phase 4).
-4. **Name**: if missing → ask. Validate: lowercase, `[a-z0-9-]`, not already a
-   dir under the resolved category path, not already in `~/.omega/projects.json`.
-5. **React Flow option**: AskUserQuestion "Inclure React Flow (systèmes de
-   nœuds/diagrammes) ?" yes/no → `WANT_REACTFLOW`.
-6. Echo the resolved plan in 3 lines and proceed (no confirmation gate when the
-   menu supplied everything — Law L3).
-
-Set `PROJECT_DIR="$HOME/VibeCoding/<category-path>/<name>"`.
+   Any of the 6 ids is valid; `$STACK` drives provisioning + scaffold below.
+3. **Category** (the guiding branch) — if missing, AskUserQuestion: `works`
+   (personal/internal) or `client` (client work). Picks the **git identity** (Phase 4).
+4. **Resolve the project root from config — NEVER hardcode `~/VibeCoding`** (that
+   is only the maintainer's layout; this must work for ANY user):
+   ```bash
+   PROJECTS_DIR="$(grep -E '^projects_dir' "$HOME/.omega/config.toml" 2>/dev/null | sed 's/.*= *//; s/"//g')"
+   if [ -z "$PROJECTS_DIR" ]; then
+     for c in VibeCoding projects Projects code dev work; do
+       [ -d "$HOME/$c" ] && PROJECTS_DIR="$HOME/$c" && break
+     done
+   fi
+   [ -z "$PROJECTS_DIR" ] && PROJECTS_DIR="$HOME/projects"
+   case "$CATEGORY" in
+     client|clients) SUB=clients ;;
+     personal|life|1-life) SUB=1-life ;;
+     *) SUB=work ;;
+   esac
+   PROJECT_DIR="$PROJECTS_DIR/$SUB/$NAME"
+   ```
+5. **Name**: if missing → ask. Validate: lowercase, `[a-z0-9-]`, not already a
+   dir at `$PROJECT_DIR`, not already in `~/.omega/projects.json`.
+6. **Kickoff brief**: if the invocation prompt contains a `--- PROJECT KICKOFF
+   BRIEF ---` and/or `--- REFERENCED DOCS ---` block (the TUI wizard appends them
+   when the user gives an idea / docs), treat it as the seed — fold it into the
+   VISION/PRD (Phase 5) and let it steer scaffold choices. Absent → proceed.
+7. **React Flow** (Next.js stacks only): ask "Inclure React Flow ?" →
+   `WANT_REACTFLOW`. Skip for rust-cli/bun-script/expo-mobile.
+8. Echo the resolved plan in 3 lines and proceed (Law L3 — no gate when the menu
+   supplied everything).
 
 ---
 

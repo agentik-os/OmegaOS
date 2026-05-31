@@ -25,7 +25,13 @@ pub enum Action {
     /// New-project wizard result: spawn a Claude session that runs
     /// `/omega-new-project <stack> <category> <name>` (provision + scaffold +
     /// vision/PRD/planner). `category` is "works" | "client", `stack` a stack id.
-    CreateProject { name: String, category: String, stack: String },
+    CreateProject {
+        name: String,
+        category: String,
+        stack: String,
+        launch_prompt: Option<String>,
+        launch_docs: Option<String>,
+    },
     /// Start the provisioning-keys wizard (Monitor tab, Telegram-style).
     ProvisioningSetup,
     /// Commit the provisioning-keys wizard — (env_key, value) pairs; blanks are
@@ -429,12 +435,90 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
                 KeyCode::Enter => {
                     let stack = crate::app::NEW_PROJECT_STACKS[sel].0.to_string();
-                    app.input_mode = InputMode::Normal;
-                    Action::CreateProject { name, category, stack }
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::NewProjectLaunchPrompt(name, category, stack);
+                    app.status_message = Some(
+                        "Optional kickoff — describe the idea/requirements (Enter to continue, Esc to skip)".to_string(),
+                    );
+                    Action::None
                 }
                 _ => Action::None,
             }
         }
+
+        // New-project wizard — step 4 (optional): kickoff prompt.
+        InputMode::NewProjectLaunchPrompt(name, category, stack) => match key.code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                Action::CreateProject {
+                    name,
+                    category,
+                    stack,
+                    launch_prompt: None,
+                    launch_docs: None,
+                }
+            }
+            KeyCode::Enter => {
+                let kickoff = if app.input_buffer.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut app.input_buffer))
+                };
+                app.input_buffer = String::new();
+                app.input_mode = InputMode::NewProjectLaunchDocs(name, category, stack, kickoff);
+                app.status_message = Some(
+                    "Optional docs — comma-separated paths to seed the project (Enter to launch, Esc to skip)".to_string(),
+                );
+                Action::None
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                Action::None
+            }
+            _ => Action::None,
+        },
+
+        // New-project wizard — step 5 (optional): doc paths, then spawn.
+        InputMode::NewProjectLaunchDocs(name, category, stack, kickoff) => match key.code {
+            KeyCode::Esc => {
+                app.input_mode = InputMode::Normal;
+                Action::CreateProject {
+                    name,
+                    category,
+                    stack,
+                    launch_prompt: kickoff,
+                    launch_docs: None,
+                }
+            }
+            KeyCode::Enter => {
+                let docs = if app.input_buffer.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::mem::take(&mut app.input_buffer))
+                };
+                app.input_mode = InputMode::Normal;
+                Action::CreateProject {
+                    name,
+                    category,
+                    stack,
+                    launch_prompt: kickoff,
+                    launch_docs: docs,
+                }
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                Action::None
+            }
+            _ => Action::None,
+        },
 
         InputMode::RenameSession(old_name) => {
             handle_key_input(app, key, move |app, new_name| {

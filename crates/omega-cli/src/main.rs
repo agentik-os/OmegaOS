@@ -1088,19 +1088,33 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::CreateProject { name, category, stack } => {
-                    // Spawn a Claude session that runs the provisioning +
-                    // scaffold skill. The session cwd is the category base dir
-                    // (the skill creates <base>/<name> itself).
-                    let home = dirs::home_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
-                    let base = match category.as_str() {
-                        "client" => home.join("VibeCoding/clients"),
-                        _ => home.join("VibeCoding/work"),
-                    };
+                Action::CreateProject { name, category, stack, launch_prompt, launch_docs } => {
+                    // Cross-user: resolve the category dir from config (projects_dir),
+                    // NEVER a hardcoded ~/VibeCoding. The skill creates <base>/<name>.
+                    let cfg = OmegaConfig::load().unwrap_or_default();
+                    let base = cfg.resolve_category_path(&category);
                     let _ = std::fs::create_dir_all(&base);
                     let session = format!("{}-setup", name);
-                    let prompt = format!("/omega-new-project {} {} {}", stack, category, name);
+
+                    // Append an optional kickoff brief + doc contents so the project
+                    // session starts from the user's idea / existing docs.
+                    let mut prompt = format!("/omega-new-project {} {} {}", stack, category, name);
+                    if let Some(kick) = launch_prompt.as_deref() {
+                        if !kick.trim().is_empty() {
+                            prompt.push_str("\n\n--- PROJECT KICKOFF BRIEF ---\n");
+                            prompt.push_str(kick.trim());
+                            prompt.push_str("\n--- END BRIEF ---");
+                        }
+                    }
+                    if let Some(docs) = launch_docs.as_deref() {
+                        let attached = read_launch_docs(docs);
+                        if !attached.trim().is_empty() {
+                            prompt.push_str("\n\n--- REFERENCED DOCS ---");
+                            prompt.push_str(&attached);
+                            prompt.push_str("\n--- END DOCS ---");
+                        }
+                    }
+
                     let mgr = SessionManager::connect().await?;
                     let agent = omega_core::agents::Agent::Claude;
                     match mgr
@@ -1109,7 +1123,7 @@ async fn run_tui_loop(
                     {
                         Ok(_) => {
                             app.status_message = Some(format!(
-                                "◆ New project '{}' ({}) — provisioning in {} …",
+                                "New project '{}' ({}) — provisioning in {} ...",
                                 name, stack, session
                             ));
                             auto_focus_chat(app, &session).await;
@@ -2449,6 +2463,36 @@ async fn cmd_spawn_worker(
         println!("  Scope claimed: {}", files.join(", "));
     }
     Ok(())
+}
+
+/// Read comma-separated doc paths into a brief: inline small files (<=10KB),
+/// reference larger/missing ones by path. Lets a new project start from existing
+/// docs ("j'ai des docs qu'on peut utiliser directement").
+fn read_launch_docs(paths: &str) -> String {
+    let mut out = String::new();
+    for raw in paths.split(',') {
+        let p = raw.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let expanded = match p.strip_prefix("~/") {
+            Some(rest) => dirs::home_dir()
+                .map(|h| h.join(rest))
+                .unwrap_or_else(|| std::path::PathBuf::from(p)),
+            None => std::path::PathBuf::from(p),
+        };
+        match std::fs::metadata(&expanded) {
+            Ok(m) if m.is_file() && m.len() <= 10_240 => {
+                if let Ok(content) = std::fs::read_to_string(&expanded) {
+                    out.push_str(&format!("\n## {}\n{}\n", p, content));
+                    continue;
+                }
+            }
+            _ => {}
+        }
+        out.push_str(&format!("\n## {} (reference — read it yourself)\n", p));
+    }
+    out
 }
 
 /// The rmux session this process runs inside, if any (first RMUX field).

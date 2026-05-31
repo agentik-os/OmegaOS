@@ -65,6 +65,10 @@ pub enum InputMode {
     /// New-project wizard — step 3: stack picker. (name, category, sel) where
     /// `sel` indexes `NEW_PROJECT_STACKS`.
     NewProjectStack(String, String, usize),
+    /// New-project wizard — step 4 (optional): kickoff prompt. (name, category, stack)
+    NewProjectLaunchPrompt(String, String, String),
+    /// New-project wizard — step 5 (optional): doc paths. (name, category, stack, kickoff)
+    NewProjectLaunchDocs(String, String, String, Option<String>),
 
     /// Provisioning-keys wizard (Monitor tab, Telegram-style). `step` indexes
     /// `PROVISIONING_FIELDS`; `collected` holds the values entered so far (one
@@ -93,13 +97,19 @@ pub enum InputMode {
 /// the `/omega-new-project` skill; `label` is what the picker shows. Single
 /// source of truth for both the menu UI and the spawned command.
 pub const NEW_PROJECT_CATEGORIES: &[(&str, &str)] = &[
-    ("works", "Works — personal / internal  →  ~/VibeCoding/work"),
-    ("client", "Client work  →  ~/VibeCoding/clients"),
+    ("works", "Works — personal / internal  (work/ under your projects dir)"),
+    ("client", "Client work  (clients/ under your projects dir)"),
 ];
-pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[(
-    "nextstack",
-    "Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit",
-)];
+/// Stacks by project type. `id` is passed to /omega-new-project (which branches
+/// per id); `label` carries the type hint. Aligned with R-STACK doctrine.
+pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[
+    ("nextstack", "SaaS — Next.js 16 + Convex + Clerk + Stripe + shadcn"),
+    ("nextstack-content", "Content / multi-user — Next.js 16 + Convex"),
+    ("nextstack-static", "Marketing / landing — Next.js 16 static (no backend)"),
+    ("rust-cli", "CLI / daemon / internal tool — Rust"),
+    ("bun-script", "Script / tooling / DOM — Bun + TypeScript"),
+    ("expo-mobile", "Mobile iOS/Android — Expo + React Native"),
+];
 
 /// Provisioning-keys wizard fields (Monitor tab). `(env_key, prompt, masked)` in
 /// step order. `masked` hides the secret in the input echo. Written to

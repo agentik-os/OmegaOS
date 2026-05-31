@@ -89,6 +89,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::NewProjectCategory(..) | InputMode::NewProjectStack(..) => {
             draw_new_project_picker(frame, app);
         }
+        InputMode::NewProjectLaunchPrompt(..) => draw_simple_input_modal(
+            frame,
+            app,
+            "New project — kickoff (optional)",
+            "Describe the idea / requirements (Enter to continue, Esc to skip)",
+            false,
+        ),
+        InputMode::NewProjectLaunchDocs(..) => draw_simple_input_modal(
+            frame,
+            app,
+            "New project — docs (optional)",
+            "Comma-separated doc paths to seed the project (Enter to launch, Esc to skip)",
+            false,
+        ),
         InputMode::ProvisioningSetup { step, .. } => {
             let fields = crate::app::PROVISIONING_FIELDS;
             let (key, hint, masked) = fields
@@ -2690,6 +2704,12 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 "New project — stack (overlay ↑/↓)",
                 format!("[{}/{}]", category, name),
             ),
+            InputMode::NewProjectLaunchPrompt(..) => {
+                ("New project — kickoff (optional)", app.input_buffer.clone())
+            }
+            InputMode::NewProjectLaunchDocs(..) => {
+                ("New project — docs (optional)", app.input_buffer.clone())
+            }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);
                 let key = f.map(|x| x.0).unwrap_or("");

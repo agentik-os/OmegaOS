@@ -17,7 +17,7 @@ use std::path::PathBuf;
 /// `~/.omega/provisioning/services.env`.
 pub fn services_env_path() -> PathBuf {
     dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/home/hacker"))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".omega/provisioning/services.env")
 }
 

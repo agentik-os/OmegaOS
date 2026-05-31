@@ -7,6 +7,11 @@ pub struct OmegaConfig {
     pub state_dir: PathBuf,
     pub logs_dir: PathBuf,
     pub locks_dir: PathBuf,
+    /// Root under which project categories (work/clients/...) live. Auto-detected
+    /// per-user (see `default_projects_dir`) — never a hardcoded ~/VibeCoding.
+    /// Override in ~/.omega/config.toml.
+    #[serde(default = "default_projects_dir")]
+    pub projects_dir: PathBuf,
     pub projects: Vec<ProjectConfig>,
     pub agent_command: String,
     pub default_model: String,
@@ -29,6 +34,20 @@ fn default_auto_master() -> bool {
 
 fn default_auto_naming() -> bool {
     true
+}
+
+/// Auto-detect the user's project root: the first existing common work
+/// container under $HOME, else ~/projects. Cross-user — NO ~/VibeCoding
+/// hardcode, so a fresh install adapts to whatever layout the user has.
+fn default_projects_dir() -> PathBuf {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    for cand in ["VibeCoding", "projects", "Projects", "code", "dev", "work"] {
+        let p = home.join(cand);
+        if p.is_dir() {
+            return p;
+        }
+    }
+    home.join("projects")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +80,7 @@ impl Default for OmegaConfig {
             state_dir: omega_dir.join("state"),
             logs_dir: omega_dir.join("logs"),
             locks_dir: omega_dir.join("locks"),
+            projects_dir: default_projects_dir(),
             projects: Vec::new(),
             agent_command: "claude".to_string(),
             default_model: "opus".to_string(),
@@ -95,6 +115,17 @@ impl OmegaConfig {
         std::fs::create_dir_all(&self.logs_dir)?;
         std::fs::create_dir_all(&self.locks_dir)?;
         Ok(())
+    }
+
+    /// Resolve a project category (works/client/personal/...) to an absolute
+    /// directory under `projects_dir`. Cross-user — no hardcoded paths.
+    pub fn resolve_category_path(&self, category: &str) -> PathBuf {
+        match category {
+            "client" | "clients" => self.projects_dir.join("clients"),
+            "personal" | "life" | "1-life" => self.projects_dir.join("1-life"),
+            "works" | "work" => self.projects_dir.join("work"),
+            other => self.projects_dir.join(other),
+        }
     }
 
     pub fn find_project(&self, name: &str) -> Option<&ProjectConfig> {
@@ -141,5 +172,33 @@ impl OmegaConfig {
         }
         projects.sort_by(|a, b| a.name.cmp(&b.name));
         projects
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_category_path_is_under_projects_dir_no_vibecoding() {
+        let mut c = OmegaConfig::default();
+        c.projects_dir = PathBuf::from("/home/someuser/projects");
+        assert_eq!(
+            c.resolve_category_path("works"),
+            PathBuf::from("/home/someuser/projects/work")
+        );
+        assert_eq!(
+            c.resolve_category_path("client"),
+            PathBuf::from("/home/someuser/projects/clients")
+        );
+        assert_eq!(
+            c.resolve_category_path("1-life"),
+            PathBuf::from("/home/someuser/projects/1-life")
+        );
+        // Unknown category → uses its own name as the subdir.
+        assert_eq!(
+            c.resolve_category_path("research"),
+            PathBuf::from("/home/someuser/projects/research")
+        );
     }
 }
