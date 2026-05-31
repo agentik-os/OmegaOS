@@ -41,7 +41,8 @@ export const meta = {
   ],
 }
 
-const a = args || {}
+// args may arrive as an object OR a JSON string (the runtime stringifies it) — parse defensively.
+const a = (typeof args === 'string' ? JSON.parse(args || '{}') : (args || {}))
 const NAME = a.name
 const STACK = a.stack || 'nextstack'
 const CATEGORY = a.category || 'works'

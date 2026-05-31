@@ -1067,8 +1067,28 @@ impl TelegramBotEngine {
                         let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
                     }
                 }
+                "status" => {
+                    let (text, kb) = self.status_card().await;
+                    if message_id != 0 {
+                        self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+                    } else {
+                        let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                    }
+                }
                 _ => {}
             }
+            return Ok(());
+        }
+
+        // Help / skills category drill-down.
+        if let Some(rest) = data.strip_prefix("help:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            self.handle_help_callback(chat_id, message_id, rest).await;
+            return Ok(());
+        }
+        if let Some(rest) = data.strip_prefix("skl:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            self.handle_skills_callback(chat_id, message_id, rest).await;
             return Ok(());
         }
 
@@ -1077,14 +1097,15 @@ impl TelegramBotEngine {
             let _ = self.answer_callback_query(&cb.id, "").await;
             match rest {
                 "status" => {
-                    let dash = self.render_status_dashboard().await;
-                    let _ = self.send_html(chat_id, &dash).await;
+                    let (text, kb) = self.status_card().await;
+                    let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                }
+                "audits" => {
+                    let (text, kb) = self.audits_list_card();
+                    let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
                 }
                 "projects" => self.send_projects_menu(chat_id).await,
                 "account" => self.handle_account_command(chat_id, "/account").await,
-                "audits" => {
-                    let _ = self.send_html(chat_id, "Send <code>/audits</code> to list the Quality Arsenal.").await;
-                }
                 "dispatch" => {
                     let _ = self.send_html(chat_id, "Dispatch: <code>/dispatch &lt;Project&gt; &lt;mission&gt;</code>").await;
                 }
@@ -1207,6 +1228,41 @@ impl TelegramBotEngine {
             "/audits" => {
                 let (text, kb) = self.audits_list_card();
                 let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                true
+            }
+            "/help" => {
+                let (text, kb) = self.help_menu();
+                let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                true
+            }
+            "/status" => {
+                let arg = text.split_whitespace().nth(1).unwrap_or("");
+                if arg.is_empty() {
+                    let (t, kb) = self.status_card().await;
+                    let _ = self.send_html_with_keyboard(chat_id, &t, &kb).await;
+                } else {
+                    let body = match self.mgr.capture_pane(arg).await {
+                        Ok(content) => {
+                            let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                            let out: Vec<&str> = tail.into_iter().rev().collect();
+                            let cleaned = clean_terminal_output(&out.join("\n"));
+                            format!("<b>📊 {}</b>\n<pre>{}</pre>", formatting::escape_html(arg), formatting::escape_html(&cleaned))
+                        }
+                        Err(e) => format!("Could not read <code>{}</code>: {}", formatting::escape_html(arg), formatting::escape_html(&e.to_string())),
+                    };
+                    let _ = self.send_html(chat_id, &body).await;
+                }
+                true
+            }
+            "/skills" => {
+                let query: String = text.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
+                if query.trim().is_empty() {
+                    let (t, kb) = self.skills_categories_card();
+                    let _ = self.send_html_with_keyboard(chat_id, &t, &kb).await;
+                } else {
+                    let body = self.skills_search_text(query.trim());
+                    let _ = self.send_html(chat_id, &body).await;
+                }
                 true
             }
             "/account" => {
@@ -2275,6 +2331,146 @@ impl TelegramBotEngine {
             )
             .await;
             self.handle_dispatch_command(chat_id, None, &format!("{} run the full forensic audit (all 17 audits)", project)).await;
+        }
+    }
+
+    // ── Interactive UI: status / help / skills ────────────────────────────
+
+    /// `/status` dashboard + action buttons (Refresh / Sessions / Close).
+    async fn status_card(&self) -> (String, InlineKeyboardMarkup) {
+        let text = self.render_status_dashboard().await;
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton { text: "🔄 Refresh".into(), callback_data: "ui:status".into() },
+                InlineKeyboardButton { text: "🗂 Sessions".into(), callback_data: "ui:sessions".into() },
+                InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+            ]],
+        };
+        (text, kb)
+    }
+
+    /// `/help` — categorized button menu.
+    fn help_menu(&self) -> (String, InlineKeyboardMarkup) {
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![
+                    InlineKeyboardButton { text: "⚡ Core".into(), callback_data: "help:core".into() },
+                    InlineKeyboardButton { text: "🔍 Audits".into(), callback_data: "help:audits".into() },
+                ],
+                vec![
+                    InlineKeyboardButton { text: "🗂 Sessions".into(), callback_data: "help:sessions".into() },
+                    InlineKeyboardButton { text: "📁 Projects".into(), callback_data: "help:projects".into() },
+                ],
+                vec![
+                    InlineKeyboardButton { text: "👤 Account".into(), callback_data: "help:account".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ],
+            ],
+        };
+        ("<b>Ω OmegaOS — Help</b>\nTap a category:".to_string(), kb)
+    }
+
+    fn help_category_text(&self, cat: &str) -> String {
+        match cat {
+            "core" => "<b>⚡ Core</b>\n/menu — action hub\n/status — live dashboard\n/dispatch &lt;Project&gt; &lt;mission&gt;\n/clean — reset master",
+            "audits" => "<b>🔍 Audits</b>\n/audits — Quality Arsenal (tap → run on a project)",
+            "sessions" => "<b>🗂 Sessions</b>\n/sessions — cards (Relay/Status/Kill)\n/kill &lt;session&gt;\n/killall — kill all (confirm)",
+            "projects" => "<b>📁 Projects</b>\n/projects — list / new / add\n/newproject — bootstrap a stack",
+            "account" => "<b>👤 Account</b>\n/account — login/switch/billing\n/model — provider + model",
+            _ => "Unknown category.",
+        }
+        .to_string()
+    }
+
+    /// `/skills` — category buttons (browse) + hint to search.
+    fn skills_categories_card(&self) -> (String, InlineKeyboardMarkup) {
+        let cats = ["Audit", "Build", "Design", "Orchestration", "Marketing", "Utility", "Custom"];
+        let mut rows: Vec<Vec<InlineKeyboardButton>> = cats
+            .chunks(2)
+            .map(|c| {
+                c.iter()
+                    .map(|x| InlineKeyboardButton {
+                        text: format!("📦 {}", x),
+                        callback_data: format!("skl:cat:{}", x),
+                    })
+                    .collect()
+            })
+            .collect();
+        rows.push(vec![InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() }]);
+        (
+            "<b>📦 Skills</b>\nBrowse by category, or <code>/skills &lt;word&gt;</code> to search:".to_string(),
+            InlineKeyboardMarkup { inline_keyboard: rows },
+        )
+    }
+
+    fn skills_category_text(&self, cat_label: &str) -> String {
+        let reg = match omega_core::skill_registry::SkillRegistry::discover_default() {
+            Ok(mut r) => { r.register_audits(); r }
+            Err(_) => return "Could not load skills.".to_string(),
+        };
+        let skills: Vec<_> = reg.list().into_iter().filter(|s| s.category.label() == cat_label).collect();
+        if skills.is_empty() {
+            return format!("<b>📦 {}</b>\n<i>No skills.</i>", cat_label);
+        }
+        let mut lines = vec![format!("<b>📦 {}</b> ({})", cat_label, skills.len())];
+        for s in skills.iter().take(40) {
+            lines.push(format!("<code>{}</code> — {}", formatting::escape_html(&s.name), formatting::escape_html(&s.description)));
+        }
+        lines.join("\n")
+    }
+
+    fn skills_search_text(&self, query: &str) -> String {
+        let reg = match omega_core::skill_registry::SkillRegistry::discover_default() {
+            Ok(mut r) => { r.register_audits(); r }
+            Err(_) => return "Could not load skills.".to_string(),
+        };
+        let q = query.to_lowercase();
+        let hits: Vec<_> = reg
+            .list()
+            .into_iter()
+            .filter(|s| s.name.to_lowercase().contains(&q) || s.description.to_lowercase().contains(&q))
+            .collect();
+        if hits.is_empty() {
+            return format!("No skill matches <code>{}</code>.", formatting::escape_html(query));
+        }
+        let mut lines = vec![format!("<b>🔍 Skills matching “{}”</b> ({})", formatting::escape_html(query), hits.len())];
+        for s in hits.iter().take(25) {
+            lines.push(format!("<code>{}</code> — {}", formatting::escape_html(&s.name), formatting::escape_html(&s.description)));
+        }
+        lines.join("\n")
+    }
+
+    async fn handle_help_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
+        if rest == "menu" {
+            let (t, kb) = self.help_menu();
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        let text = self.help_category_text(rest);
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "help:menu".into() },
+                InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+            ]],
+        };
+        self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+    }
+
+    async fn handle_skills_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
+        if rest == "menu" {
+            let (t, kb) = self.skills_categories_card();
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if let Some(cat) = rest.strip_prefix("cat:") {
+            let text = self.skills_category_text(cat);
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "skl:menu".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ]],
+            };
+            self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
         }
     }
 
