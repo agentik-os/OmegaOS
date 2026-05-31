@@ -324,6 +324,21 @@ impl PlanTracker {
         Ok(())
     }
 
+    /// Increment the retry counter for a step.
+    pub fn bump_attempt(&mut self, step_id: &str) -> Result<()> {
+        let step = self.get_step_mut(step_id).context("step not found")?;
+        step.attempt = step.attempt.saturating_add(1);
+        Ok(())
+    }
+
+    /// Return an in-progress step to pending so it can be re-dispatched.
+    pub fn reset_to_pending(&mut self, step_id: &str) -> Result<()> {
+        let step = self.get_step_mut(step_id).context("step not found")?;
+        step.status = StepStatus::Pending;
+        step.started_at = None;
+        Ok(())
+    }
+
     fn maybe_advance_phase(&mut self) {
         if let Some(phase) = self.phases.iter().find(|p| p.id == self.active_phase) {
             let all_done = phase.step_ids.iter().all(|sid| {
@@ -817,5 +832,17 @@ mod tests {
         t.mark_done("IMPL").unwrap();
         let ready2: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
         assert_eq!(ready2, vec!["AUD".to_string()]);
+    }
+
+    #[test]
+    fn retry_resets_to_pending_and_bumps_attempt() {
+        let mut t = sample_tracker();
+        t.start_step("STEP-001").unwrap();
+        t.bump_attempt("STEP-001").unwrap();
+        t.reset_to_pending("STEP-001").unwrap();
+        let s = t.get_step("STEP-001").unwrap();
+        assert_eq!(s.attempt, 1);
+        assert_eq!(s.status, StepStatus::Pending);
+        assert_eq!(t.ready_steps(10)[0].step_id, "STEP-001");
     }
 }
