@@ -374,6 +374,10 @@ pub struct TelegramBotEngine {
     /// When set, the next plain-text message is relayed to THIS session
     /// instead of the default relay_session (set by tapping a session button).
     targeted_session: Arc<Mutex<Option<String>>>,
+    /// Maps a SHORT token → full session name. Telegram caps callback_data at
+    /// 64 bytes, but oracle session names can be long sentences — so session
+    /// buttons carry a token and we resolve it here. Repopulated on each list.
+    session_name_by_token: Arc<Mutex<HashMap<String, String>>>,
     /// Persistent claude subprocess for instant master-chat responses.
     /// Lazy-spawned on first message; respawns on crash.
     claude_stream: Arc<crate::claude_stream::ClaudeStreamHandle>,
@@ -418,6 +422,7 @@ impl TelegramBotEngine {
             reply_router: Arc::new(Mutex::new(ReplyRouter::new())),
             reply_chat_id,
             targeted_session: Arc::new(Mutex::new(None)),
+            session_name_by_token: Arc::new(Mutex::new(HashMap::new())),
             claude_stream: Arc::new(crate::claude_stream::ClaudeStreamHandle::new(bridge_cfg_dir)),
             start_time: std::time::Instant::now(),
             pending_dispatches: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1957,87 +1962,77 @@ impl TelegramBotEngine {
 
     /// Handle `sess:*` callbacks (target a session for the next message).
     async fn handle_session_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
-        // card:NAME → show the action card in-place.
-        if let Some(name) = rest.strip_prefix("card:") {
-            let (text, kb) = self.session_card(name);
+        // rest = "action:token". Resolve the token → full session name (the
+        // token map was filled when the session list / card was rendered).
+        let (action, token) = rest.split_once(':').unwrap_or((rest, ""));
+        let name = self.session_name_by_token.lock().await.get(token).cloned();
+        let Some(name) = name else {
+            // Stale token (bridge restarted, or list changed) → re-show the list.
+            let (text, kb) = self.session_list().await;
             self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
             return;
-        }
-        // relay:NAME (or legacy target:NAME) → set the targeted session.
-        if let Some(name) = rest
-            .strip_prefix("relay:")
-            .or_else(|| rest.strip_prefix("target:"))
-        {
-            *self.targeted_session.lock().await = Some(name.to_string());
-            let (card, kb) = self.session_card(name);
-            self.edit_message_with_keyboard(
-                chat_id,
-                message_id,
-                &format!(
-                    "{}\n\n💬 <i>Targeting this session — your next message goes here. /cancel to clear.</i>",
-                    card
-                ),
-                &kb,
-            )
-            .await;
-            return;
-        }
-        // status:NAME → tail the pane (new message so the card stays).
-        if let Some(name) = rest.strip_prefix("status:") {
-            let body = match self.mgr.capture_pane(name).await {
-                Ok(content) => {
-                    let tail: Vec<&str> = content.lines().rev().take(20).collect();
-                    let out: Vec<&str> = tail.into_iter().rev().collect();
-                    let cleaned = clean_terminal_output(&out.join("\n"));
-                    format!(
-                        "<b>📊 {}</b>\n<pre>{}</pre>",
-                        formatting::escape_html(name),
-                        formatting::escape_html(&cleaned)
-                    )
-                }
-                Err(e) => format!(
-                    "Could not read <code>{}</code>: {}",
-                    formatting::escape_html(name),
-                    formatting::escape_html(&e.to_string())
-                ),
-            };
-            let _ = self.send_html(chat_id, &body).await;
-            return;
-        }
-        // kill:NAME → confirm card in-place.
-        if let Some(name) = rest.strip_prefix("kill:") {
-            let kb = InlineKeyboardMarkup {
-                inline_keyboard: vec![vec![
-                    InlineKeyboardButton { text: "☠ Confirm kill".into(), callback_data: format!("sess:killgo:{}", name) },
-                    InlineKeyboardButton { text: "⬅ Cancel".into(), callback_data: format!("sess:card:{}", name) },
-                ]],
-            };
-            self.edit_message_with_keyboard(
-                chat_id,
-                message_id,
-                &format!("Kill <b>{}</b>? This cannot be undone.", formatting::escape_html(name)),
-                &kb,
-            )
-            .await;
-            return;
-        }
-        // killgo:NAME → execute + report in-place.
-        if let Some(name) = rest.strip_prefix("killgo:") {
-            let body = match self.mgr.kill_session(name).await {
-                Ok(_) => format!("☠ Killed <b>{}</b>.", formatting::escape_html(name)),
-                Err(e) => format!(
-                    "Could not kill <code>{}</code>: {}",
-                    formatting::escape_html(name),
-                    formatting::escape_html(&e.to_string())
-                ),
-            };
-            let kb = InlineKeyboardMarkup {
-                inline_keyboard: vec![vec![
-                    InlineKeyboardButton { text: "⬅ Sessions".into(), callback_data: "ui:sessions".into() },
-                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
-                ]],
-            };
-            self.edit_message_with_keyboard(chat_id, message_id, &body, &kb).await;
+        };
+
+        match action {
+            "card" => {
+                let (text, kb) = self.session_card(&name, token);
+                self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+            }
+            "relay" | "target" => {
+                *self.targeted_session.lock().await = Some(name.clone());
+                let (card, kb) = self.session_card(&name, token);
+                self.edit_message_with_keyboard(
+                    chat_id,
+                    message_id,
+                    &format!(
+                        "{}\n\n💬 <i>Targeting this session — your next message goes here. /cancel to clear.</i>",
+                        card
+                    ),
+                    &kb,
+                )
+                .await;
+            }
+            "status" => {
+                let body = match self.mgr.capture_pane(&name).await {
+                    Ok(content) => {
+                        let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                        let out: Vec<&str> = tail.into_iter().rev().collect();
+                        let cleaned = clean_terminal_output(&out.join("\n"));
+                        format!("<b>📊 {}</b>\n<pre>{}</pre>", formatting::escape_html(&name), formatting::escape_html(&cleaned))
+                    }
+                    Err(e) => format!("Could not read <code>{}</code>: {}", formatting::escape_html(&name), formatting::escape_html(&e.to_string())),
+                };
+                let _ = self.send_html(chat_id, &body).await;
+            }
+            "kill" => {
+                let kb = InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![
+                        InlineKeyboardButton { text: "☠ Confirm kill".into(), callback_data: format!("sess:killgo:{}", token) },
+                        InlineKeyboardButton { text: "⬅ Cancel".into(), callback_data: format!("sess:card:{}", token) },
+                    ]],
+                };
+                self.edit_message_with_keyboard(
+                    chat_id,
+                    message_id,
+                    &format!("Kill <b>{}</b>? This cannot be undone.", formatting::escape_html(&name)),
+                    &kb,
+                )
+                .await;
+            }
+            "killgo" => {
+                let body = match self.mgr.kill_session(&name).await {
+                    Ok(_) => format!("☠ Killed <b>{}</b>.", formatting::escape_html(&name)),
+                    Err(e) => format!("Could not kill <code>{}</code>: {}", formatting::escape_html(&name), formatting::escape_html(&e.to_string())),
+                };
+                let kb = InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![
+                        InlineKeyboardButton { text: "⬅ Sessions".into(), callback_data: "ui:sessions".into() },
+                        InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                    ]],
+                };
+                self.edit_message_with_keyboard(chat_id, message_id, &body, &kb).await;
+            }
+            _ => {}
         }
     }
 
@@ -2226,6 +2221,10 @@ impl TelegramBotEngine {
 
         let mut text = String::from("<b>Active Sessions</b>\n");
         let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        // Repopulate the token→name map (callback_data is capped at 64 bytes,
+        // but session names can be long sentences).
+        let mut tokens = self.session_name_by_token.lock().await;
+        tokens.clear();
         if sessions.is_empty() {
             text.push_str("\n<i>No active sessions.</i>");
         } else {
@@ -2237,12 +2236,15 @@ impl TelegramBotEngine {
                     omega_core::session::SessionRole::Home => "⌂",
                     omega_core::session::SessionRole::System => "⚙",
                 };
+                let token = Self::session_token(&s.name);
+                tokens.insert(token.clone(), s.name.clone());
                 keyboard.push(vec![InlineKeyboardButton {
                     text: format!("{} {}", icon, s.name),
-                    callback_data: format!("sess:card:{}", s.name),
+                    callback_data: format!("sess:card:{}", token),
                 }]);
             }
         }
+        drop(tokens);
         keyboard.push(vec![
             InlineKeyboardButton { text: "🔄 Refresh".into(), callback_data: "ui:sessions".into() },
             InlineKeyboardButton { text: "☠ Kill all".into(), callback_data: "ka:list".into() },
@@ -2286,15 +2288,26 @@ impl TelegramBotEngine {
     }
 
     /// Build a session card (text + action buttons) for `name`.
-    fn session_card(&self, name: &str) -> (String, InlineKeyboardMarkup) {
+    /// Short, stable token for a session name (callback_data is ≤64 bytes;
+    /// names can be long). Deterministic so the same name → same token.
+    fn session_token(name: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut h);
+        format!("{:x}", h.finish())
+    }
+
+    /// Action card for a session. Buttons carry the short `token` (not the
+    /// possibly-long name) so the keyboard stays under Telegram's 64-byte cap.
+    fn session_card(&self, name: &str, token: &str) -> (String, InlineKeyboardMarkup) {
         let text = format!("<b>◆ {}</b>\nChoose an action:", formatting::escape_html(name));
         let kb = InlineKeyboardMarkup {
             inline_keyboard: vec![
                 vec![
-                    InlineKeyboardButton { text: "💬 Relay".into(), callback_data: format!("sess:relay:{}", name) },
-                    InlineKeyboardButton { text: "📊 Status".into(), callback_data: format!("sess:status:{}", name) },
+                    InlineKeyboardButton { text: "💬 Relay".into(), callback_data: format!("sess:relay:{}", token) },
+                    InlineKeyboardButton { text: "📊 Status".into(), callback_data: format!("sess:status:{}", token) },
                 ],
-                vec![InlineKeyboardButton { text: "☠ Kill".into(), callback_data: format!("sess:kill:{}", name) }],
+                vec![InlineKeyboardButton { text: "☠ Kill".into(), callback_data: format!("sess:kill:{}", token) }],
                 vec![
                     InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "ui:sessions".into() },
                     InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
