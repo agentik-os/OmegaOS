@@ -76,10 +76,36 @@ pub struct TelegramConfig {
     pub chat_id: i64,
 }
 
+/// The OmegaOS system root — the single source of truth for where all state,
+/// config, credentials, agents, skills, and logs live.
+///
+/// Resolution order (first hit wins):
+///   1. `$OMEGA_DIR`            — explicit override (install.sh already honors it;
+///                                this makes the binary agree, fixing a long-standing
+///                                install.sh-vs-binary split).
+///   2. `$HOME/OmegaOS/System`  — the consolidated 3-folder layout, IF it exists
+///                                (a fresh install or the migration creates it).
+///   3. `$HOME/.omega`          — the legacy dotfolder, for machines not migrated.
+///
+/// Every other path in the codebase derives from this, so relocating the whole
+/// system is one env var or one migration, not an N-site rewrite.
+pub fn omega_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("OMEGA_DIR") {
+        if !d.is_empty() {
+            return PathBuf::from(d);
+        }
+    }
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let consolidated = home.join("OmegaOS").join("System");
+    if consolidated.is_dir() {
+        return consolidated;
+    }
+    home.join(".omega")
+}
+
 impl Default for OmegaConfig {
     fn default() -> Self {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-        let omega_dir = home.join(".omega");
+        let omega_dir = omega_dir();
         Self {
             state_dir: omega_dir.join("state"),
             logs_dir: omega_dir.join("logs"),
@@ -108,10 +134,7 @@ impl OmegaConfig {
     }
 
     pub fn config_path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".omega")
-            .join("config.toml")
+        omega_dir().join("config.toml")
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
@@ -266,5 +289,24 @@ mod tests {
         let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
         assert_eq!(cfg.default_model, "sonnet"); // overridden
         assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
+    }
+
+    #[test]
+    fn omega_dir_honors_explicit_env_override() {
+        // $OMEGA_DIR wins over everything — this is what lets the whole system
+        // relocate with one env var (and makes the binary agree with install.sh).
+        // Serialize the env mutation; cargo runs tests in parallel.
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("OMEGA_DIR").ok();
+        std::env::set_var("OMEGA_DIR", "/tmp/omega-test-root");
+        assert_eq!(omega_dir(), PathBuf::from("/tmp/omega-test-root"));
+        // empty value is ignored (falls through to a real default, never "")
+        std::env::set_var("OMEGA_DIR", "");
+        assert_ne!(omega_dir(), PathBuf::from(""));
+        match prev {
+            Some(v) => std::env::set_var("OMEGA_DIR", v),
+            None => std::env::remove_var("OMEGA_DIR"),
+        }
     }
 }
