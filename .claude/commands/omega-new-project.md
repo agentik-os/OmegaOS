@@ -4,7 +4,7 @@ description: >
   external services (Vercel/Convex/GitHub/Clerk/Stripe) from ~/.omega/provisioning →
   scaffold the full stack → wire every key → register the project → chain into
   vision/PRD/planner. Launchable from the TUI Projects menu or by typing /omega-new-project.
-argument-hint: "[stack] [category] [name]   e.g. nextstack works acme   (all optional → interactive)"
+argument-hint: "[stack] [category] [name] [group]   e.g. nextstack client acme acme-corp   (all optional → interactive)"
 allowed-tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "AskUserQuestion", "Task", "ToolSearch"]
 ---
 
@@ -56,7 +56,10 @@ PAUSE with the manual link, never silently skip.
 
 ## PHASE 0 — Resolve inputs (no redundant questions)
 
-1. Parse `$ARGUMENTS`: `STACK`, `CATEGORY`, `NAME` (positional).
+1. Parse `$ARGUMENTS`: `STACK`, `CATEGORY`, `NAME`, `GROUP` (positional; `GROUP`
+   defaults to `default`). For **client** projects `GROUP` is the client's own
+   credential set (its own Vercel/Convex/Clerk/Stripe/GitHub accounts) — the TUI
+   wizard sets it. Export for Phase 1: `GROUP="${4:-default}"`.
 2. **Stack**: if missing or unknown → AskUserQuestion listing the table above.
    Any of the 6 ids is valid; `$STACK` drives provisioning + scaffold below.
 3. **Category** (the guiding branch) — if missing, AskUserQuestion: `works`
@@ -94,9 +97,17 @@ PAUSE with the manual link, never silently skip.
 ## PHASE 1 — Load provisioning credentials
 
 ```bash
-PROV="$HOME/.omega/provisioning/services.env"
+# $GROUP (4th arg, default "default") selects the credential set. CLIENT projects
+# get their OWN accounts via groups/<group>.env; "default" = the shared services.env.
+GROUP="${GROUP:-default}"
+if [ "$GROUP" = "default" ] || [ -z "$GROUP" ]; then
+  PROV="$HOME/.omega/provisioning/services.env"
+else
+  PROV="$HOME/.omega/provisioning/groups/${GROUP}.env"
+fi
 if [[ -f "$PROV" ]]; then set -a; source "$PROV"; set +a; else
-  echo "⚠ No ~/.omega/provisioning/services.env — provisioning will run in MANUAL/PAUSE mode."
+  echo "No $PROV — credential group '$GROUP' is empty; provisioning runs in MANUAL/PAUSE mode."
+  echo "Fill it with:  omega provision set $GROUP VERCEL_TOKEN=... CONVEX_TEAM_TOKEN=... ..."
 fi
 ```
 

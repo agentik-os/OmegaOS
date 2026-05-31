@@ -88,6 +88,89 @@ fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) 
     Ok(())
 }
 
+// ─── Credential groups (multi-account, per-client) ──────────────────────────
+//
+// A client project needs its OWN accounts (Vercel/Convex/Clerk/Stripe/GitHub).
+// Each group is a full credential set stored at
+// `~/.omega/provisioning/groups/<slug>.env`. The `default` group IS the shared
+// `services.env` (personal / works projects). At new-project time the user
+// picks an existing group or creates a new one; the chosen group is recorded
+// on the project so push / deploy / update all use the same account.
+
+/// `~/.omega/provisioning/groups/` — one `<slug>.env` per client credential set.
+pub fn groups_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".omega/provisioning/groups")
+}
+
+/// Sanitize a free-text group/client name into a safe filename stem.
+pub fn sanitize_group(name: &str) -> String {
+    let slug: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    slug.trim_matches('-').to_string()
+}
+
+/// Resolve a group name to its env file. `default` / empty → the shared
+/// `services.env`; any other name → `groups/<slug>.env`.
+pub fn group_env_path(group: &str) -> PathBuf {
+    let g = group.trim();
+    if g.is_empty() || g.eq_ignore_ascii_case("default") {
+        services_env_path()
+    } else {
+        groups_dir().join(format!("{}.env", sanitize_group(g)))
+    }
+}
+
+/// List credential groups — `default` (the shared set) always first, then each
+/// `groups/<slug>.env` by name.
+pub fn list_groups() -> Vec<String> {
+    let mut groups = vec!["default".to_string()];
+    if let Ok(entries) = std::fs::read_dir(groups_dir()) {
+        let mut named: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("env") {
+                    p.file_stem().and_then(|s| s.to_str()).map(str::to_string)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        named.sort();
+        groups.extend(named);
+    }
+    groups
+}
+
+/// Read a key from a specific group's env (`None` if unset/empty/missing).
+pub fn read_value_in(group: &str, key: &str) -> Option<String> {
+    let content = std::fs::read_to_string(group_env_path(group)).ok()?;
+    for line in content.lines() {
+        if let Some((k, v)) = parse_export(line) {
+            if k == key {
+                return if v.is_empty() { None } else { Some(v) };
+            }
+        }
+    }
+    None
+}
+
+/// Merge updates into a specific group's env (non-destructive, atomic, 0600).
+pub fn update_group_env(group: &str, updates: &[(String, String)]) -> Result<()> {
+    update_services_env_at(&group_env_path(group), updates)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,6 +210,22 @@ mod tests {
         assert!(out2.contains("export VERCEL_TOKEN=\"vc_live_123\""), "blank kept old value");
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn credential_groups_resolve_and_sanitize() {
+        // default / empty → the shared services.env (back-compat).
+        assert_eq!(group_env_path("default"), services_env_path());
+        assert_eq!(group_env_path(""), services_env_path());
+        // a named client → groups/<slug>.env
+        let p = group_env_path("Acme Corp!");
+        assert!(
+            p.to_string_lossy().ends_with("groups/acme-corp.env"),
+            "got {}",
+            p.display()
+        );
+        assert_eq!(sanitize_group("Acme Corp!"), "acme-corp");
+        assert_eq!(sanitize_group("  Big_Client-2  "), "big_client-2");
     }
 }
 

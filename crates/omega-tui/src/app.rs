@@ -62,6 +62,9 @@ pub enum InputMode {
     /// indexes `NEW_PROJECT_CATEGORIES`. Selection lives in the variant so the
     /// wizard needs no extra App state.
     NewProjectCategory(String, usize),
+    /// New-project wizard — step 2b (client only): pick/create a credential
+    /// group (separate client accounts). (name, category)
+    NewProjectCredGroup(String, String),
     /// New-project wizard — step 3: stack picker. (name, category, sel) where
     /// `sel` indexes `NEW_PROJECT_STACKS`.
     NewProjectStack(String, String, usize),
@@ -708,6 +711,9 @@ pub struct App {
     /// show all. Applied at the data source in refresh() so navigation is
     /// unaffected — the list is simply narrower.
     pub session_filter: Option<String>,
+    /// New-project wizard: chosen credential group for a client project (set in
+    /// the cred-group step, read by the CreateProject handler). None = default.
+    pub new_project_cred_group: Option<String>,
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
@@ -813,6 +819,7 @@ impl App {
             menu_confirm_pending: None,
             session_badges: std::collections::HashMap::new(),
             session_filter: None,
+            new_project_cred_group: None,
             info_section_selected: 0,
             info_agent_selected: 0,
             agent_picker_index: 0,

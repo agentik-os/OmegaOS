@@ -6,6 +6,7 @@ pub mod claude_meta;
 pub mod git_status;
 pub mod aisb_agents;
 pub mod audit;
+pub mod backup;
 pub mod bootstrap;
 pub mod budget;
 pub mod cleanup;

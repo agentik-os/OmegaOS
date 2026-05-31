@@ -89,6 +89,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::NewProjectCategory(..) | InputMode::NewProjectStack(..) => {
             draw_new_project_picker(frame, app);
         }
+        InputMode::NewProjectCredGroup(..) => {
+            let groups = omega_core::provisioning::list_groups().join(", ");
+            draw_simple_input_modal(
+                frame,
+                app,
+                "Client credentials — group",
+                &format!(
+                    "Existing: {}  —  type one to reuse, or a NEW client name (Enter; Esc = default)",
+                    groups
+                ),
+                false,
+            );
+        }
         InputMode::NewProjectLaunchPrompt(..) => draw_simple_input_modal(
             frame,
             app,
@@ -2704,6 +2717,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 "New project — stack (overlay ↑/↓)",
                 format!("[{}/{}]", category, name),
             ),
+            InputMode::NewProjectCredGroup(..) => {
+                ("New project — credential group", app.input_buffer.clone())
+            }
             InputMode::NewProjectLaunchPrompt(..) => {
                 ("New project — kickoff (optional)", app.input_buffer.clone())
             }

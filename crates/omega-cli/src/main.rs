@@ -267,7 +267,27 @@ enum Commands {
     /// One-shot health check of the whole stack — daemon, socket, doctrine,
     /// agent CLI, Telegram service, hooks, secrets, memory. Run it first after
     /// a fresh install / VPS reset.
-    Doctor,
+    Doctor {
+        /// Pre-reset readiness report: what irreproducible state you'd lose if
+        /// you wiped this machine right now (secrets present, memory size,
+        /// crontab, and which project repos have uncommitted / unpushed work).
+        /// Read-only — writes nothing.
+        #[arg(long)]
+        pre_reset: bool,
+    },
+
+    /// Back up the irreproducible OmegaOS state (`~/.omega` + crontab) to a
+    /// single `.tgz` you can `scp` off the machine before a reset. Your project
+    /// repos are NOT bundled (they live in your own git) — they are only
+    /// reported if they have unpushed work. Run `omega doctor --pre-reset` first.
+    Backup {
+        /// Output archive path (default: ~/omega-backup-<timestamp>.tgz).
+        #[arg(long)]
+        out: Option<String>,
+        /// Also include the claude-mem memory store (~/.claude/projects — large).
+        #[arg(long)]
+        include_memory: bool,
+    },
 
     /// Replay an oracle's full dispatch→done history (debug stuck missions).
     Timeline {
@@ -280,6 +300,13 @@ enum Commands {
     Resurrect {
         /// Oracle session name; omit to resurrect all dead oracles.
         oracle: Option<String>,
+    },
+
+    /// Manage provisioning credential groups (per-client accounts): list, show,
+    /// or set tokens. Each client project uses its own group for push/deploy.
+    Provision {
+        #[command(subcommand)]
+        action: ProvisionAction,
     },
 
     /// Interactive AISB Master chat REPL (runs inside the aisb-master
@@ -422,9 +449,17 @@ async fn main() -> Result<()> {
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
-        Some(Commands::Doctor) => cmd_doctor().await,
+        Some(Commands::Doctor { pre_reset }) => {
+            if pre_reset {
+                cmd_doctor_pre_reset()
+            } else {
+                cmd_doctor().await
+            }
+        }
+        Some(Commands::Backup { out, include_memory }) => cmd_backup(out, include_memory),
         Some(Commands::Timeline { oracle }) => cmd_timeline(&oracle).await,
         Some(Commands::Resurrect { oracle }) => cmd_resurrect(oracle).await,
+        Some(Commands::Provision { action }) => cmd_provision(action),
         Some(Commands::Usage { check }) => {
             if check {
                 // --check: actively fetch from the OAuth endpoint + alert on threshold.
@@ -1095,10 +1130,16 @@ async fn run_tui_loop(
                     let base = cfg.resolve_category_path(&category);
                     let _ = std::fs::create_dir_all(&base);
                     let session = format!("{}-setup", name);
+                    // Credential group chosen in the wizard (client projects); default = shared.
+                    let group = app
+                        .new_project_cred_group
+                        .take()
+                        .unwrap_or_else(|| "default".to_string());
 
                     // Append an optional kickoff brief + doc contents so the project
                     // session starts from the user's idea / existing docs.
-                    let mut prompt = format!("/omega-new-project {} {} {}", stack, category, name);
+                    let mut prompt =
+                        format!("/omega-new-project {} {} {} {}", stack, category, name, group);
                     if let Some(kick) = launch_prompt.as_deref() {
                         if !kick.trim().is_empty() {
                             prompt.push_str("\n\n--- PROJECT KICKOFF BRIEF ---\n");
@@ -1844,6 +1885,25 @@ enum RulesAction {
 }
 
 #[derive(Subcommand)]
+enum ProvisionAction {
+    /// List credential groups (default = the shared services.env).
+    Groups,
+    /// Show which provisioning keys a group has set (values never printed).
+    Show {
+        /// Group name (or `default`).
+        group: String,
+    },
+    /// Set tokens in a group: omega provision set <group> KEY=VALUE [KEY=VALUE...]
+    Set {
+        /// Group name (a new name creates the group; `default` = shared).
+        group: String,
+        /// One or more KEY=VALUE pairs.
+        #[arg(required = true)]
+        kv: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum AuditAction {
     /// List all 17 Quality Arsenal audits with metadata
     List,
@@ -2564,6 +2624,57 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_provision(action: ProvisionAction) -> Result<()> {
+    use omega_core::provisioning;
+    match action {
+        ProvisionAction::Groups => {
+            println!("Credential groups (default = shared services.env):");
+            for g in provisioning::list_groups() {
+                let p = provisioning::group_env_path(&g);
+                let mark = if p.exists() { "" } else { "  (empty)" };
+                println!("  {:18} {}{}", g, p.display(), mark);
+            }
+        }
+        ProvisionAction::Show { group } => {
+            println!(
+                "Group '{}' → {}",
+                group,
+                provisioning::group_env_path(&group).display()
+            );
+            for key in [
+                "VERCEL_TOKEN",
+                "CONVEX_TEAM_TOKEN",
+                "CONVEX_TEAM_SLUG",
+                "GITHUB_TOKEN",
+                "STRIPE_SECRET_KEY",
+            ] {
+                let set = provisioning::read_value_in(&group, key).is_some();
+                println!("  {:20} {}", key, if set { "set" } else { "-" });
+            }
+        }
+        ProvisionAction::Set { group, kv } => {
+            let mut updates = Vec::new();
+            for pair in &kv {
+                match pair.split_once('=') {
+                    Some((k, v)) => updates.push((k.trim().to_string(), v.trim().to_string())),
+                    None => eprintln!("skipping '{}' (expected KEY=VALUE)", pair),
+                }
+            }
+            if updates.is_empty() {
+                anyhow::bail!("no valid KEY=VALUE pairs");
+            }
+            provisioning::update_group_env(&group, &updates)?;
+            println!(
+                "Updated {} key(s) in group '{}' → {}",
+                updates.len(),
+                group,
+                provisioning::group_env_path(&group).display()
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {
     use omega_core::dispatch::ResurrectOutcome;
     let config = OmegaConfig::load().unwrap_or_default();
@@ -2636,6 +2747,124 @@ async fn cmd_doctor() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `omega doctor --pre-reset` — read-only readiness report before a VPS wipe.
+fn cmd_doctor_pre_reset() -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let r = omega_core::backup::pre_reset_report(&config);
+    println!("OmegaOS — pre-reset readiness\n");
+
+    if r.omega_present {
+        println!(
+            "  [+] ~/.omega present  ({} secret/config file(s))",
+            r.secret_files.len()
+        );
+        for f in &r.secret_files {
+            println!("        - ~/.omega/{}", f);
+        }
+    } else {
+        println!("  [!] ~/.omega NOT found — nothing OmegaOS-owned to back up");
+    }
+
+    match r.memory_mb {
+        Some(mb) => println!(
+            "  [i] claude-mem memory: {} MB (~/.claude/projects) — opt-in via --include-memory",
+            mb
+        ),
+        None => println!("  [i] claude-mem memory: none"),
+    }
+    match r.crontab_lines {
+        Some(n) => println!("  [+] crontab: {} line(s) (captured by `omega backup`)", n),
+        None => println!("  [i] crontab: none / unavailable"),
+    }
+
+    println!(
+        "\n  Projects under {} — {} scanned:",
+        r.projects_dir.display(),
+        r.projects_scanned
+    );
+    if r.at_risk.is_empty() {
+        println!("  [+] all scanned repos are clean and pushed — safe");
+    } else {
+        println!(
+            "  [!] {} repo(s) with work NOT safely on a remote — push these to YOUR git first:",
+            r.at_risk.len()
+        );
+        for repo in &r.at_risk {
+            println!("        - {}  [{}]", repo.path.display(), risk_tags(repo));
+        }
+    }
+
+    println!("\n  Next: `omega backup`  (writes ~/omega-backup-<ts>.tgz — scp it OFF this machine).");
+    Ok(())
+}
+
+/// `omega backup` — archive the irreproducible OmegaOS state. Projects are never
+/// bundled (only reported); they belong to the user's own git.
+fn cmd_backup(out: Option<String>, include_memory: bool) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let report =
+        omega_core::backup::run_backup(&config, out.map(std::path::PathBuf::from), include_memory, &ts)?;
+
+    println!("OmegaOS backup\n");
+    println!("  archive : {}", report.archive.display());
+    println!("  size    : {}", human_bytes(report.archive_bytes));
+    println!("  included: {}", report.included.join(", "));
+    if let Some(target) = &report.omega_symlink_target {
+        println!(
+            "  note    : ~/.omega is a symlink → {} (legacy layout) — dereferenced into the archive",
+            target.display()
+        );
+    }
+    if report.memory_included {
+        println!("            (claude-mem memory included)");
+    }
+    println!();
+    if report.at_risk.is_empty() {
+        println!("  [+] all project repos clean + pushed — nothing else to save");
+    } else {
+        println!(
+            "  [!] {} project repo(s) have work NOT on a remote — push to YOUR git (NOT bundled here):",
+            report.at_risk.len()
+        );
+        for repo in &report.at_risk {
+            println!("        - {}  [{}]", repo.path.display(), risk_tags(repo));
+        }
+    }
+    println!("\n  Now copy it OFF this machine, e.g.:");
+    println!("    scp {} you@backup-host:~/", report.archive.display());
+    Ok(())
+}
+
+/// Format a byte count as B / KB / MB / GB.
+fn human_bytes(n: u64) -> String {
+    const KB: f64 = 1024.0;
+    let f = n as f64;
+    if f < KB {
+        format!("{} B", n)
+    } else if f < KB * KB {
+        format!("{:.1} KB", f / KB)
+    } else if f < KB * KB * KB {
+        format!("{:.1} MB", f / (KB * KB))
+    } else {
+        format!("{:.2} GB", f / (KB * KB * KB))
+    }
+}
+
+/// Human tags for an at-risk repo (uncommitted / no-remote / unpushed).
+fn risk_tags(repo: &omega_core::backup::RepoRisk) -> String {
+    let mut tags = Vec::new();
+    if repo.dirty {
+        tags.push("uncommitted");
+    }
+    if repo.no_upstream {
+        tags.push("no-remote");
+    } else if repo.unpushed {
+        tags.push("unpushed");
+    }
+    tags.join(", ")
 }
 
 async fn cmd_team(

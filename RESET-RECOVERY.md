@@ -1,5 +1,35 @@
 # RESET-RECOVERY — after a full VPS reset
 
+## 0. BACK UP FIRST (before you wipe anything)
+
+A reset is irreversible. `install.sh` reproduces OmegaOS itself, but your
+**secrets** (`~/.omega`) and any **unpushed project work** are NOT in the repo —
+wipe them and they're gone. Two built-in commands make this safe:
+
+```bash
+omega doctor --pre-reset   # read-only: what you'd lose right now
+                           #   → secrets present, memory size, crontab,
+                           #     and which project repos have uncommitted/unpushed work
+omega backup               # writes ~/omega-backup-<timestamp>.tgz  (just ~/.omega + crontab)
+```
+
+Then **copy the archive OFF the machine** and **push your projects to your own git**:
+
+```bash
+# from your LOCAL machine — pull the backup down:
+scp -P <ssh-port> <user>@<host>:~/omega-backup-*.tgz ./
+```
+
+> `omega backup` bundles **only OmegaOS-owned state** (`~/.omega`). It never
+> touches your project repositories — those live in your own GitHub. It only
+> *reports* repos with unpushed work so you push them yourself. Add
+> `--include-memory` to also archive the claude-mem store (large).
+
+To restore after reinstall: `tar xzf omega-backup-*.tgz -C ~` (puts `~/.omega`
+back), then re-clone your project repos from your git.
+
+---
+
 OmegaOS reinstalls with one command:
 
 ```bash

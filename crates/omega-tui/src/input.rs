@@ -406,14 +406,68 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
                 KeyCode::Enter => {
                     let category = crate::app::NEW_PROJECT_CATEGORIES[sel].0.to_string();
-                    app.input_mode = InputMode::NewProjectStack(name, category, 0);
-                    app.status_message =
-                        Some("↑/↓ stack — Enter to create, Esc to cancel".to_string());
+                    if category == "client" {
+                        // Client → choose/create a credential group (separate accounts).
+                        app.new_project_cred_group = None;
+                        app.input_buffer = String::new();
+                        let groups = omega_core::provisioning::list_groups().join(", ");
+                        app.input_mode = InputMode::NewProjectCredGroup(name, category);
+                        app.status_message = Some(format!(
+                            "Credential group — existing: {}  —  type one to reuse OR a new client name (Enter, Esc=default)",
+                            groups
+                        ));
+                    } else {
+                        app.new_project_cred_group = None; // works → shared/default creds
+                        app.input_mode = InputMode::NewProjectStack(name, category, 0);
+                        app.status_message =
+                            Some("↑/↓ stack — Enter to continue, Esc to cancel".to_string());
+                    }
                     Action::None
                 }
                 _ => Action::None,
             }
         }
+
+        // New-project wizard — step 2b (client only): pick/create a credential group.
+        InputMode::NewProjectCredGroup(name, category) => match key.code {
+            KeyCode::Esc => {
+                app.new_project_cred_group = Some("default".to_string());
+                app.input_buffer = String::new();
+                app.input_mode = InputMode::NewProjectStack(name, category, 0);
+                app.status_message = Some("Credential group: default (shared)".to_string());
+                Action::None
+            }
+            KeyCode::Enter => {
+                let typed = app.input_buffer.trim().to_string();
+                let group = if typed.is_empty() { "default".to_string() } else { typed };
+                let existing = group == "default"
+                    || omega_core::provisioning::list_groups()
+                        .iter()
+                        .any(|g| g == &omega_core::provisioning::sanitize_group(&group));
+                app.new_project_cred_group = Some(group.clone());
+                app.input_buffer = String::new();
+                app.input_mode = InputMode::NewProjectStack(name, category, 0);
+                app.status_message = Some(format!(
+                    "Credential group: {} ({})",
+                    group,
+                    if existing {
+                        "reuse"
+                    } else {
+                        "NEW — fill it later with: omega provision set"
+                    }
+                ));
+                Action::None
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                Action::None
+            }
+            _ => Action::None,
+        },
 
         // New-project wizard — step 3: stack picker → spawn the provisioning session
         InputMode::NewProjectStack(name, category, sel) => {
