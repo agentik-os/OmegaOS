@@ -351,6 +351,20 @@ enum Commands {
 
     /// Initialize OmegaOS configuration
     Init,
+
+    /// Show plan progress from .planner/tracker.json (read-only)
+    PlanStatus {
+        /// Project directory containing .planner/tracker.json
+        #[arg(default_value = ".")]
+        path: String,
+    },
+
+    /// Drive a plan to completion via the executor (spawns real workers per step)
+    PlanRun {
+        /// Project directory containing .planner/tracker.json
+        #[arg(default_value = ".")]
+        path: String,
+    },
 }
 
 #[tokio::main]
@@ -450,6 +464,8 @@ async fn main() -> Result<()> {
         Some(Commands::Route { mission }) => cmd_route(&mission),
         Some(Commands::Completions { shell }) => cmd_completions(&shell),
         Some(Commands::Init) => cmd_init().await,
+        Some(Commands::PlanStatus { path }) => cmd_plan_status(&path),
+        Some(Commands::PlanRun { path }) => cmd_plan_run(&path).await,
     }
 }
 
@@ -2263,6 +2279,68 @@ async fn cmd_orchestrate(
         }
     }
 
+    Ok(())
+}
+
+/// Read-only plan progress from .planner/tracker.json.
+fn cmd_plan_status(path: &str) -> Result<()> {
+    let dir = std::path::Path::new(path);
+    let tracker = omega_core::planner::PlanTracker::load(dir)
+        .ok_or_else(|| anyhow::anyhow!("no .planner/tracker.json in {path}"))?;
+    let st = tracker.status();
+    println!(
+        "Plan: {} | {:.0}% ({}/{} done) | ready {} | blocked {} | failed {} | phase {}/{}",
+        tracker.project,
+        st.progress_pct(),
+        st.done,
+        st.total,
+        st.ready,
+        st.blocked,
+        st.failed,
+        st.active_phase,
+        st.total_phases,
+    );
+    for s in &tracker.steps {
+        println!("  {} {} {}", s.status.icon(), s.step_id, s.title);
+    }
+    Ok(())
+}
+
+/// Drive a plan to completion via the executor. Spawns one real rmux worker
+/// per ready step (RmuxRuntime), gates every completion through the Guardian.
+async fn cmd_plan_run(path: &str) -> Result<()> {
+    use omega_core::executor::{run, RmuxRuntime, RunOptions};
+
+    let dir = std::path::Path::new(path);
+    let config = OmegaConfig::load().unwrap_or_default();
+    config.ensure_dirs()?;
+    // Construct the SessionManager exactly as Orchestrator::new does.
+    let mgr = SessionManager::connect().await?;
+    let project = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("project")
+        .to_string();
+
+    let runtime = RmuxRuntime {
+        mgr: &mgr,
+        state_dir: config.state_dir.clone(),
+        project,
+        agent: omega_core::agents::Agent::Claude,
+        poll: std::time::Duration::from_secs(5),
+    };
+
+    let report = run(dir, &runtime, RunOptions::default()).await?;
+    println!(
+        "Run finished: success={} | completed {} | failed {:?} | blocked {:?}",
+        report.success,
+        report.completed.len(),
+        report.failed,
+        report.blocked,
+    );
+    if !report.success {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
