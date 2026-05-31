@@ -198,6 +198,27 @@ impl Patrol {
 
             match mgr.capture_pane(&session.name).await {
                 Ok(content) => {
+                    // A content-filter block or hard API error means the agent is
+                    // stuck on an error, not merely idle. Escalate to the oracle now
+                    // (with the reason) instead of waiting out the stall thresholds,
+                    // and stop tracking it as a potential stall.
+                    if let Some(reason) = detect_fatal_agent_error(&content) {
+                        report.blocked_workers.push(session.name.clone());
+                        if let Some(oracle) =
+                            self.find_parent_oracle(&session.name, &oracle_sessions)
+                        {
+                            let inbox =
+                                Inbox::for_oracle(&self.config.state_dir, &oracle.name);
+                            let _ = inbox
+                                .push(&InboxEvent::worker_blocked(&session.name, reason));
+                        }
+                        report.actions_taken.push(format!(
+                            "Worker {} blocked by {} — escalated to oracle",
+                            session.name, reason
+                        ));
+                        self.stall_detector.forget(&session.name);
+                        continue;
+                    }
                     let action = self.stall_detector.check(&session.name, &content);
                     match action {
                         StallAction::Nudge { ref session, idle_secs } => {
@@ -628,5 +649,52 @@ impl Patrol {
             .open(&log_path)?;
         file.write_all(log_line.as_bytes())?;
         Ok(())
+    }
+}
+
+/// Detect a fatal, non-recoverable agent error in a session's pane output — the
+/// agent is stuck on an error rather than working or idle. Only the tail (the
+/// live error, not old scrollback) is inspected. A content-filter block and a
+/// hard API error qualify; a line that says it is retrying does not. The
+/// returned string is a short reason for the oracle's inbox.
+fn detect_fatal_agent_error(content: &str) -> Option<&'static str> {
+    let tail: String = content.lines().rev().take(8).collect::<Vec<_>>().join("\n");
+    if tail.contains("content filtering policy") || tail.contains("Output blocked by content") {
+        Some("content-filter block")
+    } else if tail.contains("API Error") && !tail.contains("retry") && !tail.contains("Retrying") {
+        Some("API error")
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_content_filter_block() {
+        let pane = "working\nAPI Error: Output blocked by content filtering policy\n❯";
+        assert_eq!(detect_fatal_agent_error(pane), Some("content-filter block"));
+    }
+
+    #[test]
+    fn detects_hard_api_error() {
+        assert_eq!(detect_fatal_agent_error("boom\nAPI Error: 500 internal\n❯"), Some("API error"));
+    }
+
+    #[test]
+    fn ignores_retrying_and_normal_output() {
+        assert_eq!(detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"), None);
+        assert_eq!(detect_fatal_agent_error("just working on it\n❯"), None);
+    }
+
+    #[test]
+    fn ignores_stale_error_in_scrollback() {
+        let mut lines = vec!["API Error: Output blocked by content filtering policy"];
+        for _ in 0..20 {
+            lines.push("normal output line");
+        }
+        assert_eq!(detect_fatal_agent_error(&lines.join("\n")), None);
     }
 }
