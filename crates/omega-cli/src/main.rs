@@ -3641,7 +3641,7 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
         RulesAction::List => {
             let laws = rules::laws();
             let ops = rules::operational_rules();
-            println!("⚖️  THE LAWS (inviolable — bind every agent, override every rule)\n");
+            println!("THE LAWS (inviolable — bind every agent, override every rule)\n");
             for r in &laws {
                 println!("  {:16} {}", r.id, r.title);
             }
