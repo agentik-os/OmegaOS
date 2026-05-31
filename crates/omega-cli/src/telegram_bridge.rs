@@ -1048,9 +1048,61 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
-        // Session targeting callbacks
+        let message_id = cb.message.as_ref().map(|m| m.message_id).unwrap_or(0);
+
+        // UI chrome callbacks: close / refresh-sessions.
+        if let Some(rest) = data.strip_prefix("ui:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            match rest {
+                "close" => {
+                    if message_id != 0 {
+                        self.delete_message(chat_id, message_id).await;
+                    }
+                }
+                "sessions" => {
+                    let (text, kb) = self.session_list().await;
+                    if message_id != 0 {
+                        self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+                    } else {
+                        let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                    }
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Main-menu hub callbacks → route to the relevant view.
+        if let Some(rest) = data.strip_prefix("menu:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            match rest {
+                "status" => {
+                    let dash = self.render_status_dashboard().await;
+                    let _ = self.send_html(chat_id, &dash).await;
+                }
+                "projects" => self.send_projects_menu(chat_id).await,
+                "account" => self.handle_account_command(chat_id, "/account").await,
+                "audits" => {
+                    let _ = self.send_html(chat_id, "Send <code>/audits</code> to list the Quality Arsenal.").await;
+                }
+                "dispatch" => {
+                    let _ = self.send_html(chat_id, "Dispatch: <code>/dispatch &lt;Project&gt; &lt;mission&gt;</code>").await;
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
+
+        // Kill-all callbacks (dry-run list → confirm/cancel).
+        if let Some(rest) = data.strip_prefix("ka:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            self.handle_killall_callback(chat_id, message_id, rest).await;
+            return Ok(());
+        }
+
+        // Session card callbacks.
         if let Some(rest) = data.strip_prefix("sess:") {
-            self.handle_session_callback(chat_id, rest).await;
+            self.handle_session_callback(chat_id, message_id, rest).await;
             let _ = self.answer_callback_query(&cb.id, "").await;
             return Ok(());
         }
@@ -1136,6 +1188,15 @@ impl TelegramBotEngine {
             .next()
             .unwrap_or("");
         match cmd {
+            "/menu" => {
+                self.send_main_menu(chat_id).await;
+                true
+            }
+            "/killall" => {
+                let (text, kb) = self.killall_confirm_card().await;
+                let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                true
+            }
             "/account" => {
                 // Centralized: account card has buttons for login/logout/billing/switch
                 self.handle_account_command(chat_id, text).await;
@@ -1732,16 +1793,88 @@ impl TelegramBotEngine {
     }
 
     /// Handle `sess:*` callbacks (target a session for the next message).
-    async fn handle_session_callback(&self, chat_id: i64, rest: &str) {
-        if let Some(session) = rest.strip_prefix("target:") {
-            *self.targeted_session.lock().await = Some(session.to_string());
-            self.send_html(
+    async fn handle_session_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
+        // card:NAME → show the action card in-place.
+        if let Some(name) = rest.strip_prefix("card:") {
+            let (text, kb) = self.session_card(name);
+            self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+            return;
+        }
+        // relay:NAME (or legacy target:NAME) → set the targeted session.
+        if let Some(name) = rest
+            .strip_prefix("relay:")
+            .or_else(|| rest.strip_prefix("target:"))
+        {
+            *self.targeted_session.lock().await = Some(name.to_string());
+            let (card, kb) = self.session_card(name);
+            self.edit_message_with_keyboard(
                 chat_id,
+                message_id,
                 &format!(
-                    "Targeting <code>{}</code>.\nYour next message will be sent there. Send <code>/cancel</code> to clear.",
-                    formatting::escape_html(session)
+                    "{}\n\n💬 <i>Targeting this session — your next message goes here. /cancel to clear.</i>",
+                    card
                 ),
-            ).await.ok();
+                &kb,
+            )
+            .await;
+            return;
+        }
+        // status:NAME → tail the pane (new message so the card stays).
+        if let Some(name) = rest.strip_prefix("status:") {
+            let body = match self.mgr.capture_pane(name).await {
+                Ok(content) => {
+                    let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                    let out: Vec<&str> = tail.into_iter().rev().collect();
+                    let cleaned = clean_terminal_output(&out.join("\n"));
+                    format!(
+                        "<b>📊 {}</b>\n<pre>{}</pre>",
+                        formatting::escape_html(name),
+                        formatting::escape_html(&cleaned)
+                    )
+                }
+                Err(e) => format!(
+                    "Could not read <code>{}</code>: {}",
+                    formatting::escape_html(name),
+                    formatting::escape_html(&e.to_string())
+                ),
+            };
+            let _ = self.send_html(chat_id, &body).await;
+            return;
+        }
+        // kill:NAME → confirm card in-place.
+        if let Some(name) = rest.strip_prefix("kill:") {
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton { text: "☠ Confirm kill".into(), callback_data: format!("sess:killgo:{}", name) },
+                    InlineKeyboardButton { text: "⬅ Cancel".into(), callback_data: format!("sess:card:{}", name) },
+                ]],
+            };
+            self.edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                &format!("Kill <b>{}</b>? This cannot be undone.", formatting::escape_html(name)),
+                &kb,
+            )
+            .await;
+            return;
+        }
+        // killgo:NAME → execute + report in-place.
+        if let Some(name) = rest.strip_prefix("killgo:") {
+            let body = match self.mgr.kill_session(name).await {
+                Ok(_) => format!("☠ Killed <b>{}</b>.", formatting::escape_html(name)),
+                Err(e) => format!(
+                    "Could not kill <code>{}</code>: {}",
+                    formatting::escape_html(name),
+                    formatting::escape_html(&e.to_string())
+                ),
+            };
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton { text: "⬅ Sessions".into(), callback_data: "ui:sessions".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ]],
+            };
+            self.edit_message_with_keyboard(chat_id, message_id, &body, &kb).await;
         }
     }
 
@@ -1804,9 +1937,10 @@ impl TelegramBotEngine {
     }
 
     /// `/sessions` or `/relay` — interactive menu listing active rmux sessions.
-    async fn send_sessions_menu(&self, chat_id: i64) {
+    /// Build the session-list card (text + buttons). Shared by the send path
+    /// (`/sessions`) and the in-place edit path (Back / Refresh callbacks).
+    async fn session_list(&self) -> (String, InlineKeyboardMarkup) {
         let all_sessions = self.mgr.list_sessions().await.unwrap_or_default();
-        // Hide infra daemons — they're not for the user to interact with.
         let hidden_prefixes = ["omega-telegram-bridge", "aisb-reauth"];
         let sessions: Vec<_> = all_sessions
             .into_iter()
@@ -1815,33 +1949,178 @@ impl TelegramBotEngine {
 
         let mut text = String::from("<b>Active Sessions</b>\n");
         let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
-
         if sessions.is_empty() {
             text.push_str("\n<i>No active sessions.</i>");
         } else {
-            text.push_str(&format!("\n<i>{} session(s) — tap one to send a message:</i>\n", sessions.len()));
+            text.push_str(&format!("\n<i>{} session(s) — tap one for actions:</i>\n", sessions.len()));
             for s in sessions.iter().take(20) {
-                let label = match s.role {
-                    omega_core::session::SessionRole::Oracle => format!("[oracle] {}", s.name),
-                    omega_core::session::SessionRole::Worker => format!("[worker] {}", s.name),
-                    omega_core::session::SessionRole::Home => format!("[home] {}", s.name),
-                    omega_core::session::SessionRole::System => format!("[system] {}", s.name),
+                let icon = match s.role {
+                    omega_core::session::SessionRole::Oracle => "◆",
+                    omega_core::session::SessionRole::Worker => "●",
+                    omega_core::session::SessionRole::Home => "⌂",
+                    omega_core::session::SessionRole::System => "⚙",
                 };
                 keyboard.push(vec![InlineKeyboardButton {
-                    text: label,
-                    callback_data: format!("sess:target:{}", s.name),
+                    text: format!("{} {}", icon, s.name),
+                    callback_data: format!("sess:card:{}", s.name),
                 }]);
             }
         }
+        keyboard.push(vec![
+            InlineKeyboardButton { text: "🔄 Refresh".into(), callback_data: "ui:sessions".into() },
+            InlineKeyboardButton { text: "☠ Kill all".into(), callback_data: "ka:list".into() },
+            InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+        ]);
+        (text, InlineKeyboardMarkup { inline_keyboard: keyboard })
+    }
 
-        let payload = serde_json::json!({
-            "chat_id": chat_id,
-            "text": text,
-            "parse_mode": "HTML",
-            "reply_markup": InlineKeyboardMarkup { inline_keyboard: keyboard },
+    async fn send_sessions_menu(&self, chat_id: i64) {
+        let (text, kb) = self.session_list().await;
+        let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+    }
+
+    // ── Interactive UI: main menu hub + session cards + helpers ────────────
+
+    /// `/menu` — a single hub message with the top actions as buttons.
+    async fn send_main_menu(&self, chat_id: i64) {
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![
+                    InlineKeyboardButton { text: "🗂 Sessions".into(), callback_data: "ui:sessions".into() },
+                    InlineKeyboardButton { text: "📊 Status".into(), callback_data: "menu:status".into() },
+                ],
+                vec![
+                    InlineKeyboardButton { text: "🚀 Dispatch".into(), callback_data: "menu:dispatch".into() },
+                    InlineKeyboardButton { text: "📁 Projects".into(), callback_data: "menu:projects".into() },
+                ],
+                vec![
+                    InlineKeyboardButton { text: "🔍 Audits".into(), callback_data: "menu:audits".into() },
+                    InlineKeyboardButton { text: "👤 Account".into(), callback_data: "menu:account".into() },
+                ],
+                vec![
+                    InlineKeyboardButton { text: "☠ Kill all".into(), callback_data: "ka:list".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ],
+            ],
+        };
+        let _ = self
+            .send_html_with_keyboard(chat_id, "<b>Ω OmegaOS — Menu</b>\nTap an action:", &kb)
+            .await;
+    }
+
+    /// Build a session card (text + action buttons) for `name`.
+    fn session_card(&self, name: &str) -> (String, InlineKeyboardMarkup) {
+        let text = format!("<b>◆ {}</b>\nChoose an action:", formatting::escape_html(name));
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![
+                    InlineKeyboardButton { text: "💬 Relay".into(), callback_data: format!("sess:relay:{}", name) },
+                    InlineKeyboardButton { text: "📊 Status".into(), callback_data: format!("sess:status:{}", name) },
+                ],
+                vec![InlineKeyboardButton { text: "☠ Kill".into(), callback_data: format!("sess:kill:{}", name) }],
+                vec![
+                    InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "ui:sessions".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ],
+            ],
+        };
+        (text, kb)
+    }
+
+    /// Edit a message's text + inline keyboard in-place (drill-down without spam).
+    async fn edit_message_with_keyboard(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        keyboard: &InlineKeyboardMarkup,
+    ) {
+        let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id, "message_id": message_id,
+            "text": text, "parse_mode": "HTML", "reply_markup": keyboard,
         });
-        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
-        let _ = self.client.post(&url).json(&payload).send().await;
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
+
+    /// Delete a message (the ✕ Close button).
+    async fn delete_message(&self, chat_id: i64, message_id: i64) {
+        let url = format!("{}/bot{}/deleteMessage", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({ "chat_id": chat_id, "message_id": message_id });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
+
+    /// Build the kill-all confirmation card: lists the sessions that would die
+    /// (infra kept), with Confirm / Cancel buttons.
+    async fn killall_confirm_card(&self) -> (String, InlineKeyboardMarkup) {
+        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+        let keep = omega_core::cleanup::infrastructure_keep(&sessions);
+        let targets: Vec<String> = sessions
+            .iter()
+            .map(|s| s.name.clone())
+            .filter(|n| !keep.contains(n))
+            .collect();
+        if targets.is_empty() {
+            return (
+                "Nothing to kill — only infrastructure (bridge, master) is live.".to_string(),
+                InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![InlineKeyboardButton {
+                        text: "✕ Close".into(),
+                        callback_data: "ui:close".into(),
+                    }]],
+                },
+            );
+        }
+        let list = targets
+            .iter()
+            .map(|t| format!("• <code>{}</code>", formatting::escape_html(t)))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let text = format!(
+            "⚠ <b>Kill ALL sessions?</b> ({} session(s); infra kept)\n{}",
+            targets.len(),
+            list
+        );
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                InlineKeyboardButton { text: "☠ Confirm — kill all".into(), callback_data: "ka:go".into() },
+                InlineKeyboardButton { text: "✕ Cancel".into(), callback_data: "ui:sessions".into() },
+            ]],
+        };
+        (text, kb)
+    }
+
+    async fn handle_killall_callback(&self, chat_id: i64, message_id: i64, action: &str) {
+        match action {
+            "list" => {
+                let (text, kb) = self.killall_confirm_card().await;
+                if message_id != 0 {
+                    self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
+                } else {
+                    let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                }
+            }
+            "go" => {
+                let sessions = self.mgr.list_sessions().await.unwrap_or_default();
+                let keep = omega_core::cleanup::infrastructure_keep(&sessions);
+                let body = match omega_core::cleanup::kill_all(&self.mgr, &keep).await {
+                    Ok(killed) => format!("☠ Killed {} session(s).", killed.len()),
+                    Err(e) => format!("Kill-all failed: {}", formatting::escape_html(&e.to_string())),
+                };
+                let kb = InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![InlineKeyboardButton {
+                        text: "✕ Close".into(),
+                        callback_data: "ui:close".into(),
+                    }]],
+                };
+                if message_id != 0 {
+                    self.edit_message_with_keyboard(chat_id, message_id, &body, &kb).await;
+                } else {
+                    let _ = self.send_html_with_keyboard(chat_id, &body, &kb).await;
+                }
+            }
+            _ => {}
+        }
     }
 
     /// `/account` — bare form: show legacy Claude card (kept for compat).
@@ -2454,6 +2733,7 @@ impl TelegramBotEngine {
     async fn register_bot_commands(&self) {
         let commands = serde_json::json!({
             "commands": [
+                {"command": "menu",     "description": "Action hub — everything as buttons"},
                 {"command": "help",     "description": "Show available commands"},
                 {"command": "account",  "description": "Account / billing / login (with buttons)"},
                 {"command": "model",    "description": "Switch AI provider and model"},
@@ -2591,6 +2871,7 @@ impl TelegramBotEngine {
                 "<b>OmegaOS Bot Engine</b>\n\
                  \n\n\
                  <b>Core:</b>\n\
+                 /menu — action hub (everything as buttons) ⭐\n\
                  /help — this message\n\
                  /list — show all rmux sessions\n\
                  /status — live system dashboard (oracles, workers, done signals, group)\n\
@@ -2733,60 +3014,8 @@ impl TelegramBotEngine {
                 }
             }
 
-            "/killall" => {
-                // Kill every session EXCEPT infrastructure (this Telegram bridge
-                // + the AISB master), so the bot survives to report back.
-                // Destructive → require an explicit `/killall confirm`.
-                let sessions = match self.mgr.list_sessions().await {
-                    Ok(s) => s,
-                    Err(e) => {
-                        return Some(format!(
-                            "Could not list sessions: {}",
-                            formatting::escape_html(&e.to_string())
-                        ))
-                    }
-                };
-                let keep = omega_core::cleanup::infrastructure_keep(&sessions);
-                let targets: Vec<String> = sessions
-                    .iter()
-                    .map(|s| s.name.clone())
-                    .filter(|n| !keep.contains(n))
-                    .collect();
-                if targets.is_empty() {
-                    return Some(
-                        "Nothing to kill — only infrastructure (bridge, master) is live."
-                            .to_string(),
-                    );
-                }
-                if rest.trim() != "confirm" {
-                    let list = targets
-                        .iter()
-                        .map(|t| format!("• <code>{}</code>", formatting::escape_html(t)))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    return Some(format!(
-                        "⚠ <b>/killall</b> would kill {} session(s):\n{}\n\n\
-                         Infra (bridge, master) is kept. Send <code>/killall confirm</code> to proceed.",
-                        targets.len(),
-                        list
-                    ));
-                }
-                match omega_core::cleanup::kill_all(&self.mgr, &keep).await {
-                    Ok(killed) => Some(format!(
-                        "☠ Killed {} session(s): {}",
-                        killed.len(),
-                        killed
-                            .iter()
-                            .map(|k| formatting::escape_html(k))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    )),
-                    Err(e) => Some(format!(
-                        "Kill-all failed: {}",
-                        formatting::escape_html(&e.to_string())
-                    )),
-                }
-            }
+            // /killall is now interactive (buttons) — handled in
+            // try_handle_keyboard_command before reaching here.
 
             _ => None,
         }
