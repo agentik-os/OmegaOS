@@ -6,15 +6,15 @@ description: >
   that the Rust engine (`omega plan-run`) executes with structural can't-skip enforcement
   (Gate) and independent verify-command proof (Guardian). Replaces the prose-only VPS
   planner: sequential execution is enforced by the engine, not by instructions.
-  Use when user says "/planner", "plan this", "make a plan", "build the plan", "decompose",
+  Use when user says "/omg-planner", "plan this", "make a plan", "build the plan", "decompose",
   "planifie", "fais le plan".
 allowed-tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"]
 domain: orchestration
 read_only: false
-triggers: ["planner", "plan this", "make a plan", "build the plan", "decompose", "planifie"]
+triggers: ["omg-planner", "plan this", "make a plan", "build the plan", "decompose", "planifie"]
 ---
 
-# /planner — OmegaOS-native Implementation Planner
+# /omg-planner — OmegaOS-native Implementation Planner
 
 You produce a **typed plan** that the Rust engine drives. Your job is NOT to execute the
 plan step-by-step yourself — you generate `.planner/tracker.json`, then hand it to the
@@ -24,9 +24,9 @@ engine. The engine guarantees no step is skipped and no step is "done" without i
 ## Commands
 
 ```bash
-/planner [task]          # Generate .planner/tracker.json from Vision/PRD (then offer to run)
-/planner run             # Execute the existing plan via the engine  → omega plan-run
-/planner status          # Progress dashboard                         → omega plan-status
+/omg-planner [task]      # Generate .planner/tracker.json from Vision/PRD (then offer to run)
+/omg-planner run         # Execute the existing plan via the engine  → omega plan-run
+/omg-planner status      # Progress dashboard                         → omega plan-status
 ```
 
 The engine binary is `omega` (built from source by `install.sh`, at `~/.local/bin/omega`).

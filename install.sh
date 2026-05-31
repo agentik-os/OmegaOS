@@ -263,18 +263,18 @@ else
     info "Audit skills not found — skipping"
 fi
 
-# Install the orchestration planner skill (engine-native /planner).
-# Ships the SKILL.md + Bun fallback, and a /planner slash stub that drives the
-# Rust engine (omega plan-run / plan-status) with can't-skip + Guardian verify.
+# Install the orchestration planner skill (engine-native).
+# OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
+# user's other commands (e.g. a pre-existing prose `/planner`).
 PLANNER_SRC="$OMEGA_SRC/skills/planner"
 PLANNER_DST="$OMEGA_DIR/skills/planner"
+OMG_CMD_DST="$HOME/.claude/commands"
+mkdir -p "$OMG_CMD_DST"
 if [[ -d "$PLANNER_SRC" ]]; then
     mkdir -p "$PLANNER_DST"
     cp -r "$PLANNER_SRC"/* "$PLANNER_DST/"
-    PLANNER_CMD_DST="$HOME/.claude/commands"
-    mkdir -p "$PLANNER_CMD_DST"
-    cat > "$PLANNER_CMD_DST/planner.md" <<EOF
-# /planner
+    cat > "$OMG_CMD_DST/omg-planner.md" <<EOF
+# /omg-planner
 
 Generate a typed .planner/tracker.json and drive it with the OmegaOS engine.
 Read and follow the full protocol in:
@@ -284,9 +284,33 @@ Read and follow the full protocol in:
 The engine (\`omega plan-run\` / \`omega plan-status\`) enforces can't-skip + Guardian
 verify. If \`omega\` is missing, fall back to: \`bun $PLANNER_DST/fallback/plan.ts\`.
 EOF
-    ok "Planner skill installed → $PLANNER_DST/ (+ /planner stub)"
+    ok "Planner skill installed → $PLANNER_DST/ (+ /omg-planner stub)"
 else
     info "Planner skill not found — skipping"
+fi
+
+# Install the end-to-end new-project skill (engine-driven). Ships as repo asset
+# and installs BOTH /omg-new-project (canonical) and /omega-new-project (the name
+# the TUI [N] New Project menu already dispatches) — same skill, no collision.
+NEWPROJ_SRC="$OMEGA_SRC/skills/new-project"
+NEWPROJ_DST="$OMEGA_DIR/skills/new-project"
+if [[ -d "$NEWPROJ_SRC" ]]; then
+    mkdir -p "$NEWPROJ_DST"
+    cp -r "$NEWPROJ_SRC"/* "$NEWPROJ_DST/"
+    for cmd in omg-new-project omega-new-project; do
+        cat > "$OMG_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+End-to-end OmegaOS new project: guiding (client/works) → provision → scaffold →
+vision/PRD → /omg-planner → \`omega plan-run\` (engine executes with can't-skip +
+Guardian verify). Read and follow the full protocol in:
+
+\`$NEWPROJ_DST/SKILL.md\`
+EOF
+    done
+    ok "New-project skill installed → $NEWPROJ_DST/ (+ /omg-new-project, /omega-new-project stubs)"
+else
+    info "New-project skill not found — skipping"
 fi
 
 # Install OMEGA.md master system prompt

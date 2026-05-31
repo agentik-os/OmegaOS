@@ -65,7 +65,10 @@ if grep -q "usage --check" install.sh; then ok "native billing cron (omega usage
 # 10. Orchestration engine (Gate+Driver+Guardian) + planner skill shipped.
 if [ -f crates/omega-core/src/executor.rs ] && [ -f crates/omega-core/src/guardian.rs ]; then ok "orchestration engine (executor + guardian) in source"; else bad "engine source (executor/guardian) missing"; fi
 if grep -qE "PlanRun|PlanStatus|plan-run|plan_run" crates/omega-cli/src/main.rs; then ok "omega plan-run/plan-status CLI present"; else bad "engine CLI commands missing from main.rs"; fi
-if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && grep -q "skills/planner" install.sh; then ok "planner skill + Bun fallback shipped + installed"; else bad "planner skill not shipped/wired in install.sh"; fi
+if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && grep -q "omg-planner" install.sh; then ok "/omg-planner skill + Bun fallback shipped + installed"; else bad "planner skill not shipped/wired in install.sh"; fi
+if [ -f skills/new-project/SKILL.md ] && grep -q "skills/new-project" install.sh && grep -q "omg-new-project" install.sh; then ok "/omg-new-project end-to-end skill shipped + installed"; else bad "new-project skill not shipped/wired in install.sh"; fi
+# OmegaOS slash commands are /omg-* namespaced (no collision with other commands).
+if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
