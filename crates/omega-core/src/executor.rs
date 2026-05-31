@@ -4,8 +4,9 @@
 //! the Guardian before marking a step Done.
 
 use crate::done::DoneSignal;
-use crate::planner::PlanStep;
-use anyhow::Result;
+use crate::guardian::{Guardian, Verdict};
+use crate::planner::{PlanStep, PlanTracker, StepStatus};
+use anyhow::{bail, Context, Result};
 use std::path::Path;
 use std::time::Duration;
 
@@ -51,6 +52,85 @@ pub fn render_brief(step: &PlanStep) -> String {
     )
 }
 
+/// Drive a plan to completion. Selects work via ready_steps only; gates every
+/// completion through the Guardian. Resumable: persists after each transition.
+pub async fn run<R: WorkerRuntime>(
+    project_dir: &Path,
+    runtime: &R,
+    opts: RunOptions,
+) -> Result<RunReport> {
+    let mut tracker = PlanTracker::load(project_dir)
+        .context("no .planner/tracker.json — run `omega plan` first")?;
+    if !tracker.is_acyclic() {
+        bail!("plan DAG contains a cycle — aborting");
+    }
+    let guardian = Guardian::new(opts.max_attempts);
+    let mut report = RunReport::default();
+
+    loop {
+        let ready: Vec<String> = tracker
+            .ready_steps(opts.parallelism)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
+
+        if ready.is_empty() {
+            let st = tracker.status();
+            report.success = st.is_complete();
+            if !st.is_complete() {
+                // Terminal sweep: classify whatever never reached Done.
+                // A step the Guardian failed mid-loop was already recorded in
+                // `report.failed`, so guard against double-counting it here.
+                for s in &tracker.steps {
+                    match s.status {
+                        StepStatus::Failed => {
+                            if !report.failed.contains(&s.step_id) {
+                                report.failed.push(s.step_id.clone());
+                            }
+                        }
+                        StepStatus::Pending => report.blocked.push(s.step_id.clone()),
+                        _ => {}
+                    }
+                }
+            }
+            return Ok(report);
+        }
+
+        let mut inflight: Vec<(String, String)> = Vec::new();
+        for sid in &ready {
+            tracker.start_step(sid)?;
+            let step = tracker.get_step(sid).context("step vanished")?.clone();
+            let brief = render_brief(&step);
+            let session = runtime.spawn(&step, &brief, project_dir).await?;
+            inflight.push((sid.clone(), session));
+        }
+        tracker.save(project_dir)?;
+
+        for (sid, session) in inflight {
+            let _done: DoneSignal = runtime.wait_done(&session, opts.worker_timeout).await?;
+            let step = tracker.get_step(&sid).context("step vanished")?.clone();
+            let attempt = step.attempt + 1;
+            match guardian.verify(&step, project_dir, attempt).await {
+                Verdict::Pass => {
+                    tracker.mark_done(&sid)?;
+                    report.completed.push(sid.clone());
+                }
+                Verdict::Retry { feedback } => {
+                    tracing::warn!(step = %sid, %feedback, "guardian: retry");
+                    tracker.bump_attempt(&sid)?;
+                    tracker.reset_to_pending(&sid)?;
+                }
+                Verdict::Fail { reason } => {
+                    tracing::error!(step = %sid, %reason, "guardian: fail");
+                    tracker.mark_failed(&sid)?;
+                    report.failed.push(sid.clone());
+                }
+            }
+            tracker.save(project_dir)?;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,5 +160,39 @@ mod tests {
         let b = render_brief(&s);
         assert!(b.contains("a.rs"));
         assert!(b.contains("true"));
+    }
+
+    use crate::planner::step;
+
+    fn save_linear_plan(dir: &Path, verify: &str) {
+        let mut t = PlanTracker::new("P");
+        let p = t.add_phase("F", "g");
+        t.add_step(p, step("STEP-001", p).title("a").files(&["a.rs"]).criteria("ok").verify(verify).build()).unwrap();
+        t.add_step(p, step("STEP-002", p).title("b").files(&["b.rs"]).criteria("ok").verify(verify).depends(&["STEP-001"]).build()).unwrap();
+        t.add_step(p, step("STEP-003", p).title("c").files(&["c.rs"]).criteria("ok").verify(verify).depends(&["STEP-002"]).build()).unwrap();
+        t.save(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_completes_all_steps_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        save_linear_plan(dir.path(), "true");
+        let rt = FakeRuntime { script: HashMap::new() };
+        let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
+        assert!(report.success);
+        assert_eq!(report.completed, vec!["STEP-001", "STEP-002", "STEP-003"]);
+        let t = PlanTracker::load(dir.path()).unwrap();
+        assert!(t.status().is_complete());
+    }
+
+    #[tokio::test]
+    async fn guardian_overrides_worker_done_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        save_linear_plan(dir.path(), "false"); // worker claims DoneClean but verify fails
+        let rt = FakeRuntime { script: HashMap::new() };
+        let report = run(dir.path(), &rt, RunOptions { max_attempts: 1, ..Default::default() }).await.unwrap();
+        assert!(!report.success);
+        assert_eq!(report.failed, vec!["STEP-001"]);
+        assert!(report.completed.is_empty());
     }
 }
