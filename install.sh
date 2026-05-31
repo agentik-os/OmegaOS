@@ -263,6 +263,32 @@ else
     info "Audit skills not found — skipping"
 fi
 
+# Install the orchestration planner skill (engine-native /planner).
+# Ships the SKILL.md + Bun fallback, and a /planner slash stub that drives the
+# Rust engine (omega plan-run / plan-status) with can't-skip + Guardian verify.
+PLANNER_SRC="$OMEGA_SRC/skills/planner"
+PLANNER_DST="$OMEGA_DIR/skills/planner"
+if [[ -d "$PLANNER_SRC" ]]; then
+    mkdir -p "$PLANNER_DST"
+    cp -r "$PLANNER_SRC"/* "$PLANNER_DST/"
+    PLANNER_CMD_DST="$HOME/.claude/commands"
+    mkdir -p "$PLANNER_CMD_DST"
+    cat > "$PLANNER_CMD_DST/planner.md" <<EOF
+# /planner
+
+Generate a typed .planner/tracker.json and drive it with the OmegaOS engine.
+Read and follow the full protocol in:
+
+\`$PLANNER_DST/SKILL.md\`
+
+The engine (\`omega plan-run\` / \`omega plan-status\`) enforces can't-skip + Guardian
+verify. If \`omega\` is missing, fall back to: \`bun $PLANNER_DST/fallback/plan.ts\`.
+EOF
+    ok "Planner skill installed → $PLANNER_DST/ (+ /planner stub)"
+else
+    info "Planner skill not found — skipping"
+fi
+
 # Install OMEGA.md master system prompt
 if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
     cp "$OMEGA_SRC/OMEGA.md" "$OMEGA_DIR/OMEGA.md"
