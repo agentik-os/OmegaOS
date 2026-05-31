@@ -2627,6 +2627,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let ram = format!("RAM {}%", stats.ram_pct);
     let disk = format!("DSK {}%", stats.disk_used_pct);
     let n_sessions = format!("{} sess", app.sessions.len());
+    // 5h token-budget snapshot (written by the `omega usage --check` cron) —
+    // the real "before the hard stop" signal. None until the first check.
+    let usage = omega_core::monitor::UsageSnapshot::read().ok().flatten();
 
     let now = chrono::Local::now();
     let time_str = now.format("%H:%M").to_string();
@@ -2646,7 +2649,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let split = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(0), Constraint::Length(60)])
+        .constraints([Constraint::Min(0), Constraint::Length(70)])
         .split(area);
 
     // Left side: Ω badge (no bg, bold) + selected session + status message
@@ -2700,26 +2703,44 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     };
 
-    let right = Paragraph::new(Line::from(vec![
-        Span::styled(cpu, Style::default().fg(stat_color(((stats.cpu_load * 25.0) as u8).min(99)))),
-        Span::raw("  "),
-        Span::styled(ram, Style::default().fg(stat_color(stats.ram_pct))),
-        Span::raw("  "),
-        Span::styled(disk, Style::default().fg(stat_color(stats.disk_used_pct))),
-        Span::raw("  "),
-        Span::styled(
-            n_sessions,
+    // Token-budget meter color escalates toward the 80/90% usage alerts.
+    let usage_color = |pct: u32| -> Color {
+        match pct {
+            0..=69 => Color::Green,
+            70..=89 => Color::Yellow,
+            _ => Color::Red,
+        }
+    };
+    let mut right_spans: Vec<Span> = Vec::new();
+    if let Some(ref u) = usage {
+        right_spans.push(Span::styled(
+            format!("⛽{}%", u.session_pct),
             Style::default()
-                .fg(Color::White)
+                .fg(usage_color(u.session_pct))
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            time_str,
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ]))
-    .alignment(ratatui::layout::Alignment::Right);
+        ));
+        right_spans.push(Span::raw("  "));
+    }
+    right_spans.push(Span::styled(
+        cpu,
+        Style::default().fg(stat_color(((stats.cpu_load * 25.0) as u8).min(99))),
+    ));
+    right_spans.push(Span::raw("  "));
+    right_spans.push(Span::styled(ram, Style::default().fg(stat_color(stats.ram_pct))));
+    right_spans.push(Span::raw("  "));
+    right_spans.push(Span::styled(disk, Style::default().fg(stat_color(stats.disk_used_pct))));
+    right_spans.push(Span::raw("  "));
+    right_spans.push(Span::styled(
+        n_sessions,
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+    right_spans.push(Span::raw("  "));
+    right_spans.push(Span::styled(
+        time_str,
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+    ));
+    right_spans.push(Span::raw(" "));
+    let right = Paragraph::new(Line::from(right_spans))
+        .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, split[1]);
 }
