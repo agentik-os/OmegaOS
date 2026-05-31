@@ -67,6 +67,11 @@ if [ -f crates/omega-core/src/executor.rs ] && [ -f crates/omega-core/src/guardi
 if grep -qE "PlanRun|PlanStatus|plan-run|plan_run" crates/omega-cli/src/main.rs; then ok "omega plan-run/plan-status CLI present"; else bad "engine CLI commands missing from main.rs"; fi
 if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && grep -q "omg-planner" install.sh; then ok "/omg-planner skill + Bun fallback shipped + installed"; else bad "planner skill not shipped/wired in install.sh"; fi
 if [ -f skills/new-project/SKILL.md ] && grep -q "skills/new-project" install.sh && grep -q "omg-new-project" install.sh; then ok "/omg-new-project end-to-end skill shipped + installed"; else bad "new-project skill not shipped/wired in install.sh"; fi
+# Pipeline self-containment: OmegaOS ships its OWN /omg-vision + /omg-prd, so a
+# fresh install does not depend on the user's personal /vision /prd. The
+# new-project skill must delegate to the /omg-* versions, not the bare ones.
+if [ -f skills/vision/SKILL.md ] && [ -f skills/prd/SKILL.md ] && grep -q "omg-\$psk" install.sh; then ok "/omg-vision + /omg-prd shipped (pipeline self-contained)"; else bad "vision/prd not shipped as /omg-* (fresh install pipeline would break)"; fi
+if grep -qE '^[0-9]\. .*/omg-vision' skills/new-project/SKILL.md && grep -qE '^[0-9]\. .*/omg-prd' skills/new-project/SKILL.md; then ok "new-project pipeline delegates to /omg-vision + /omg-prd"; else bad "new-project still calls bare /vision or /prd"; fi
 # OmegaOS slash commands are /omg-* namespaced (no collision with other commands).
 if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi
 # Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).

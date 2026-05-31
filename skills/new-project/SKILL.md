@@ -216,8 +216,8 @@ Then create:
 Do not re-implement vision/PRD/planning — delegate, in order, scoped to
 `$PROJECT_DIR`:
 
-1. `/vision` — emotional positioning → `VISION.md`
-2. `/prd` — full doc suite from the vision
+1. `/omg-vision` — emotional positioning → `VISION.md`
+2. `/omg-prd` — full doc suite from the vision
 3. `/omg-planner` — generate the **typed** `.planner/tracker.json` (a DAG of
    single-worker-dispatch steps; audits as a terminal `wave`). Verify it loads:
    `omega plan-status .` must print the steps with `ready N | blocked M`.
@@ -227,7 +227,7 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    without its verify proof. Watch progress with `omega plan-status .`.
    If `omega` is not on PATH, fall back to `bun ~/.omega/skills/planner/fallback/plan.ts run .`.
 
-Offer to stop after `/vision` so the user can review, or — in a dispatched
+Offer to stop after `/omg-vision` so the user can review, or — in a dispatched
 (non-interactive) context — proceed automatically through to `omega plan-run`
 (Law L3). The engine, not the LLM, owns the execution loop from step 4 on.
 

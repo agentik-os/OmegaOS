@@ -318,6 +318,28 @@ else
     info "New-project skill not found — skipping"
 fi
 
+# Install the OmegaOS pipeline skills (vision, prd) the new-project flow delegates
+# to — shipped as /omg-* so a FRESH install is self-contained (the pipeline no
+# longer depends on the user's personal /vision /prd existing). Does NOT touch any
+# pre-existing /vision /prd the user may already have.
+for psk in vision prd; do
+    PSK_SRC="$OMEGA_SRC/skills/$psk"
+    PSK_DST="$OMEGA_DIR/skills/$psk"
+    if [[ -d "$PSK_SRC" ]]; then
+        mkdir -p "$PSK_DST"
+        cp -r "$PSK_SRC"/* "$PSK_DST/"
+        cat > "$OMG_CMD_DST/omg-$psk.md" <<EOF
+# /omg-$psk
+
+OmegaOS-shipped \`$psk\` step of the new-project pipeline. Read and follow the
+full protocol in:
+
+\`$PSK_DST/SKILL.md\`
+EOF
+        ok "Pipeline skill installed → $PSK_DST/ (+ /omg-$psk stub)"
+    fi
+done
+
 # Install OMEGA.md master system prompt
 if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
     cp "$OMEGA_SRC/OMEGA.md" "$OMEGA_DIR/OMEGA.md"
