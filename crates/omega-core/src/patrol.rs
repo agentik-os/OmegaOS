@@ -445,6 +445,9 @@ impl Patrol {
         // ── Oracle patrol: check done signals + registry cleanup ──
         self.patrol_oracles(&mgr, &sessions, &mut report).await?;
 
+        // ── Oracle recovery: resurrect crashed-mid-mission oracles (guarded) ──
+        let _ = self.resurrect_dead_oracles(&mut report).await;
+
         // ── Signal file watcher: detect new oracle result files ──
         if let Ok(new_signals) = self.signal_watcher.poll() {
             for (oracle_name, signal) in &new_signals {
@@ -506,6 +509,59 @@ impl Patrol {
         }
 
         let _ = registry.save(&self.config.state_dir);
+        Ok(())
+    }
+
+    /// Auto-resurrect oracles that crashed mid-mission — the install-time
+    /// equivalent of an oracle-watchdog. Guarded against thrash: an oracle is
+    /// only brought back if it has unfinished work (workers not all terminal AND
+    /// no closeable done signal), its mission is still recent (phase changed
+    /// within 24h), and we have not already tried within the last 5 minutes. A
+    /// finished, abandoned, or stale-stopped oracle stays dead.
+    async fn resurrect_dead_oracles(&self, report: &mut PatrolReport) -> Result<()> {
+        let dispatcher =
+            crate::dispatch::Dispatcher::new(SessionManager::connect().await?, self.config.clone());
+        for name in dispatcher.dead_oracles().await {
+            let state = match OracleState::read(&self.config.state_dir, &name) {
+                Ok(Some(s)) => s,
+                _ => continue,
+            };
+            // Finished → leave it dead.
+            if state.all_workers_terminal() {
+                continue;
+            }
+            if let Ok(Some(done)) = OracleDoneSignal::read(&self.config.state_dir, &name) {
+                if done.is_closeable() {
+                    continue;
+                }
+            }
+            // Abandoned (no activity in 24h) → leave it dead.
+            if (Utc::now() - state.phase_entered_at).num_hours() > 24 {
+                continue;
+            }
+            // Anti-thrash: don't retry within 5 minutes.
+            let marker = self
+                .config
+                .state_dir
+                .join(format!("oracle-{}.resurrect-attempt", name));
+            let recently_tried = std::fs::metadata(&marker)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map(|e| e.as_secs() < 300)
+                .unwrap_or(false);
+            if recently_tried {
+                continue;
+            }
+            let _ = std::fs::write(&marker, Utc::now().to_rfc3339());
+            if let Ok(crate::dispatch::ResurrectOutcome::Resurrected) =
+                dispatcher.resurrect_oracle(&name).await
+            {
+                report
+                    .actions_taken
+                    .push(format!("Resurrected crashed oracle {} (mission unfinished)", name));
+            }
+        }
         Ok(())
     }
 
