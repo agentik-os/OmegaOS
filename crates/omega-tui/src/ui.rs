@@ -1769,7 +1769,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
                     .map(|s| s.status == omega_core::planner::StepStatus::Done)
                     .unwrap_or(false)
             });
-            let phase_icon = if phase_done { "✅" } else if phase.id == status.active_phase { "⏳" } else { "⬚" };
+            let phase_icon = if phase_done { "[+]" } else if phase.id == status.active_phase { "[~]" } else { "[ ]" };
             lines.push(Line::from(format!(
                 "    {} Phase {}: {}",
                 phase_icon, phase.id, phase.name
@@ -1794,11 +1794,11 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
             let done = state.is_done(*phase);
             let active = *phase == state.current_phase && !done;
             let icon = if done {
-                "✅"
+                "[+]"
             } else if active {
-                "⏳"
+                "[~]"
             } else {
-                "⬚"
+                "[ ]"
             };
             lines.push(Line::from(format!(
                 "    {} {} {}",
@@ -2354,7 +2354,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
     let law_list = laws();
     if !law_list.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ⚖️  THE LAWS — inviolable, bind every agent, override every rule",
+            "  THE LAWS — inviolable, bind every agent, override every rule",
             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));

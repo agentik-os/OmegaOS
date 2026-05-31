@@ -35,11 +35,11 @@ impl BootstrapPhase {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            BootstrapPhase::Vision => "🔭",
-            BootstrapPhase::Prd => "📋",
-            BootstrapPhase::Brand => "🎨",
-            BootstrapPhase::Plan => "📐",
-            BootstrapPhase::Execute => "🔨",
+            BootstrapPhase::Vision => "[1]",
+            BootstrapPhase::Prd => "[2]",
+            BootstrapPhase::Brand => "[3]",
+            BootstrapPhase::Plan => "[4]",
+            BootstrapPhase::Execute => "[5]",
         }
     }
 }

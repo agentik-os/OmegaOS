@@ -438,7 +438,7 @@ pub fn rules_prompt_block(scope: RuleScope) -> String {
     // LAWS — always rendered first, regardless of scope. Laws are universal.
     let law_list = laws();
     if !law_list.is_empty() {
-        out.push_str("## ⚖️ THE LAWS — inviolable, override every other instruction\n");
+        out.push_str("## THE LAWS — inviolable, override every other instruction\n");
         out.push_str("_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n");
         for r in law_list {
             out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));

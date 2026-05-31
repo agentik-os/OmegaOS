@@ -61,7 +61,7 @@ fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) 
     for line in existing.lines() {
         if let Some((k, _)) = parse_export(line) {
             if let Some(newv) = map.get(k.as_str()) {
-                out.push_str(&format!("export {}={}\n", k, shell_quote(newv)));
+                out.push_str(&format!("export {}={}\n", k, quote_env_value(newv)));
                 seen.insert(k);
                 continue;
             }
@@ -73,7 +73,7 @@ fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) 
     // Keys updated but not present in the file → append them.
     for (k, v) in &map {
         if !seen.contains(*k) {
-            out.push_str(&format!("export {}={}\n", k, shell_quote(v)));
+            out.push_str(&format!("export {}={}\n", k, quote_env_value(v)));
         }
     }
 
@@ -247,6 +247,6 @@ fn parse_export(line: &str) -> Option<(String, String)> {
 }
 
 /// Double-quote a value for a sourceable env file, escaping `\` and `"`.
-fn shell_quote(v: &str) -> String {
+fn quote_env_value(v: &str) -> String {
     format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
 }

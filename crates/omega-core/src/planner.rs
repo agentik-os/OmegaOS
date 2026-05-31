@@ -52,11 +52,11 @@ impl StepStatus {
 
     pub fn icon(&self) -> &'static str {
         match self {
-            StepStatus::Pending => "⬚",
-            StepStatus::InProgress => "⏳",
-            StepStatus::Done => "✅",
-            StepStatus::Blocked => "🚫",
-            StepStatus::Failed => "❌",
+            StepStatus::Pending => "[ ]",
+            StepStatus::InProgress => "[~]",
+            StepStatus::Done => "[+]",
+            StepStatus::Blocked => "[!]",
+            StepStatus::Failed => "[x]",
         }
     }
 }

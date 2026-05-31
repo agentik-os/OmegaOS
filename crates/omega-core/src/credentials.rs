@@ -237,18 +237,25 @@ fn sanitize(name: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::sync::{Mutex, MutexGuard};
 
-    fn fresh_store(tmp: &Path) -> CredentialStore {
+    // fresh_store mutates the process-global HOME, and cargo runs tests in
+    // parallel, so without this lock two tests clobber each other's HOME and a
+    // legacy symlink can land in the wrong tmp dir. Serialize HOME-touching tests.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn fresh_store(tmp: &Path) -> (CredentialStore, MutexGuard<'static, ()>) {
+        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("HOME", tmp);
         // Force re-eval of omega_dir
         std::fs::create_dir_all(tmp.join(".omega").join("credentials").join("accounts")).unwrap();
-        CredentialStore::new().unwrap()
+        (CredentialStore::new().unwrap(), guard)
     }
 
     #[test]
     fn write_read_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = fresh_store(tmp.path());
+        let (store, _env) = fresh_store(tmp.path());
         let data = json!({"apiKey": "sk-abc123", "model": "gpt-5"});
         store.write("codex", &data).unwrap();
         let read = store.read("codex").unwrap();
@@ -258,7 +265,7 @@ mod tests {
     #[test]
     fn save_and_switch_account() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = fresh_store(tmp.path());
+        let (store, _env) = fresh_store(tmp.path());
         store.write("codex", &json!({"k": "v1"})).unwrap();
         store.save_as_account("codex", "work").unwrap();
         store.write("codex", &json!({"k": "v2"})).unwrap();
@@ -275,7 +282,7 @@ mod tests {
     #[test]
     fn ensure_legacy_symlink_creates_link() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = fresh_store(tmp.path());
+        let (store, _env) = fresh_store(tmp.path());
         store.write("claude", &json!({"claudeAiOauth": {}})).unwrap();
         store.ensure_legacy_symlink("claude").unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
@@ -290,7 +297,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
         std::fs::write(&legacy, "{\"k\":1}").unwrap();
-        let store = fresh_store(tmp.path());
+        let (store, _env) = fresh_store(tmp.path());
         store.ensure_legacy_symlink("claude").unwrap();
         // canonical should now exist
         assert!(store.active_path("claude").exists());
