@@ -1100,6 +1100,13 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
+        // Audit (Quality Arsenal) callbacks: list / card / pick / run / full.
+        if let Some(rest) = data.strip_prefix("aud:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            self.handle_audit_callback(chat_id, message_id, rest).await;
+            return Ok(());
+        }
+
         // Session card callbacks.
         if let Some(rest) = data.strip_prefix("sess:") {
             self.handle_session_callback(chat_id, message_id, rest).await;
@@ -1194,6 +1201,11 @@ impl TelegramBotEngine {
             }
             "/killall" => {
                 let (text, kb) = self.killall_confirm_card().await;
+                let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
+                true
+            }
+            "/audits" => {
+                let (text, kb) = self.audits_list_card();
                 let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
                 true
             }
@@ -2123,6 +2135,149 @@ impl TelegramBotEngine {
         }
     }
 
+    // ── Interactive UI: audits (Quality Arsenal) ──────────────────────────
+
+    /// `/audits` card: every audit as a tappable button + Full-audit + Close.
+    fn audits_list_card(&self) -> (String, InlineKeyboardMarkup) {
+        let audits = omega_core::audit::all_audits();
+        let text = format!(
+            "<b>🔍 Quality Arsenal</b> ({} audits)\nTap one for details + run:",
+            audits.len()
+        );
+        let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        for pair in audits.chunks(2) {
+            keyboard.push(
+                pair.iter()
+                    .map(|a| InlineKeyboardButton {
+                        text: format!("/{}", a.id),
+                        callback_data: format!("aud:card:{}", a.id),
+                    })
+                    .collect(),
+            );
+        }
+        keyboard.push(vec![
+            InlineKeyboardButton { text: "🚀 Full audit".into(), callback_data: "aud:fullpick".into() },
+            InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+        ]);
+        (text, InlineKeyboardMarkup { inline_keyboard: keyboard })
+    }
+
+    /// Card for a single audit: details + Run / Back / Close.
+    fn audit_card(&self, id: &str) -> (String, InlineKeyboardMarkup) {
+        let audits = omega_core::audit::all_audits();
+        let Some(a) = audits.iter().find(|a| a.id == id) else {
+            return (
+                "Unknown audit.".to_string(),
+                InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![InlineKeyboardButton {
+                        text: "⬅ Back".into(),
+                        callback_data: "aud:list".into(),
+                    }]],
+                },
+            );
+        };
+        let ro = if a.read_only { "\n🔒 <i>read-only — proposes, never edits</i>" } else { "" };
+        let text = format!(
+            "<b>/{}</b> — {}\n<i>{}</i>\n{} phases · /{}{}",
+            a.id,
+            formatting::escape_html(a.name),
+            formatting::escape_html(a.description),
+            a.phases,
+            a.max_score,
+            ro
+        );
+        let kb = InlineKeyboardMarkup {
+            inline_keyboard: vec![
+                vec![InlineKeyboardButton { text: "▶ Run on…".into(), callback_data: format!("aud:pick:{}", a.id) }],
+                vec![
+                    InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "aud:list".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ],
+            ],
+        };
+        (text, kb)
+    }
+
+    /// Project picker for running an audit. `cb_prefix` builds the per-project
+    /// callback (e.g. `aud:run:codeaudit:` → `aud:run:codeaudit:Foo`).
+    fn audit_project_picker(&self, title: &str, cb_prefix: &str, back: &str) -> (String, InlineKeyboardMarkup) {
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        for p in registry.projects.iter().take(20) {
+            keyboard.push(vec![InlineKeyboardButton {
+                text: format!("📁 {}", p.name),
+                callback_data: format!("{}{}", cb_prefix, p.name),
+            }]);
+        }
+        if keyboard.is_empty() {
+            return (
+                "<i>No projects in registry. Add one with /projects.</i>".to_string(),
+                InlineKeyboardMarkup {
+                    inline_keyboard: vec![vec![InlineKeyboardButton {
+                        text: "⬅ Back".into(),
+                        callback_data: back.into(),
+                    }]],
+                },
+            );
+        }
+        keyboard.push(vec![InlineKeyboardButton { text: "⬅ Back".into(), callback_data: back.into() }]);
+        (title.to_string(), InlineKeyboardMarkup { inline_keyboard: keyboard })
+    }
+
+    async fn handle_audit_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
+        if rest == "list" {
+            let (t, kb) = self.audits_list_card();
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if let Some(id) = rest.strip_prefix("card:") {
+            let (t, kb) = self.audit_card(id);
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if let Some(id) = rest.strip_prefix("pick:") {
+            let (t, kb) = self.audit_project_picker(
+                &format!("Run <b>/{}</b> on which project?", formatting::escape_html(id)),
+                &format!("aud:run:{}:", id),
+                &format!("aud:card:{}", id),
+            );
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if rest == "fullpick" {
+            let (t, kb) = self.audit_project_picker(
+                "Run the <b>FULL forensic audit</b> on which project?",
+                "aud:fullrun:",
+                "aud:list",
+            );
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if let Some(spec) = rest.strip_prefix("run:") {
+            if let Some((id, project)) = spec.split_once(':') {
+                self.edit_message_with_keyboard(
+                    chat_id,
+                    message_id,
+                    &format!("Dispatching <b>/{}</b> → <b>{}</b>…", formatting::escape_html(id), formatting::escape_html(project)),
+                    &InlineKeyboardMarkup { inline_keyboard: vec![] },
+                )
+                .await;
+                self.handle_dispatch_command(chat_id, None, &format!("{} /{}", project, id)).await;
+            }
+            return;
+        }
+        if let Some(project) = rest.strip_prefix("fullrun:") {
+            self.edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                &format!("Dispatching <b>full audit</b> → <b>{}</b>…", formatting::escape_html(project)),
+                &InlineKeyboardMarkup { inline_keyboard: vec![] },
+            )
+            .await;
+            self.handle_dispatch_command(chat_id, None, &format!("{} run the full forensic audit (all 17 audits)", project)).await;
+        }
+    }
+
     /// `/account` — bare form: show legacy Claude card (kept for compat).
     /// With args: multi-provider account management.
     ///   /account <provider>                list accounts for provider
@@ -2977,21 +3132,8 @@ impl TelegramBotEngine {
                 }
             }
 
-            "/audits" => {
-                let audits = omega_core::audit::all_audits();
-                let mut lines = vec![format!(
-                    " <b>Quality Arsenal</b> ({} audits)\n",
-                    audits.len()
-                )];
-                for audit in &audits {
-                    let ro = if audit.read_only { " " } else { "" };
-                    lines.push(format!(
-                        "  <code>/{}</code> — {} ({} phases, /{}){ro}",
-                        audit.id, audit.description, audit.phases, audit.max_score
-                    ));
-                }
-                Some(lines.join("\n"))
-            }
+            // /audits is now interactive (buttons) — handled in
+            // try_handle_keyboard_command before reaching here.
 
             // /aisb removed — plain text already routes to master.
             // /relay handled via interactive button menu (see handle_account_command path).

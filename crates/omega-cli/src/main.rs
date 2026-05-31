@@ -46,6 +46,41 @@ enum Commands {
         files: Option<Vec<String>>,
     },
 
+    /// Bootstrap a brand-new project (provision + scaffold + vision/PRD/plan) via the
+    /// workflow-driven /omega-new-project pipeline. Spawns a Claude session in the
+    /// resolved category dir. Use --dry-run to print the plan without spawning.
+    NewProject {
+        /// Project name (lowercase [a-z0-9-])
+        name: String,
+        /// Stack (default: nextstack — the only stack today)
+        #[arg(default_value = "nextstack")]
+        stack: String,
+        /// Category: works | client | 1-life | AgentikOS
+        #[arg(default_value = "works")]
+        category: String,
+        /// Provisioning credential group (client projects)
+        #[arg(long, default_value = "default")]
+        group: String,
+        /// Resume a half-finished bootstrap (continues from the first non-completed phase)
+        #[arg(long)]
+        resume: bool,
+        /// Re-enter from a specific phase
+        #[arg(long)]
+        from: Option<String>,
+        /// Skip phases (csv) — the reason is recorded, never silently dropped
+        #[arg(long)]
+        skip: Option<String>,
+        /// Token budget ceiling for the run
+        #[arg(long)]
+        budget: Option<u64>,
+        /// Opt into the execute (/build) phase
+        #[arg(long)]
+        build: bool,
+        /// Print the resolved DAG and exit — zero mutation, no session spawned
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// List supported agents and their availability
     Agents,
 
@@ -410,6 +445,9 @@ async fn main() -> Result<()> {
         Some(Commands::Menu) | None => run_menu().await,
         Some(Commands::New { name, dir, cmd, agent, prompt, files }) => {
             cmd_new(&name, dir.as_deref(), cmd.as_deref(), agent.as_deref(), prompt.as_deref(), files).await
+        }
+        Some(Commands::NewProject { name, stack, category, group, resume, from, skip, budget, build, dry_run }) => {
+            cmd_new_project(&name, &stack, &category, &group, resume, from.as_deref(), skip.as_deref(), budget, build, dry_run).await
         }
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::Projects) => cmd_projects(),
@@ -1661,6 +1699,62 @@ async fn cmd_new(
     if let Some(ref files) = files {
         println!("  Scope claimed: {}", files.join(", "));
     }
+    Ok(())
+}
+
+/// Bootstrap a new project via the workflow-driven /omega-new-project pipeline.
+/// Mirrors the TUI `Action::CreateProject` path: resolve the category dir from
+/// config (never a hardcoded ~/VibeCoding), create it, and spawn a Claude
+/// session whose first line invokes the v2 command. `--dry-run` prints the plan
+/// and spawns nothing (zero mutation).
+#[allow(clippy::too_many_arguments)]
+async fn cmd_new_project(
+    name: &str,
+    stack: &str,
+    category: &str,
+    group: &str,
+    resume: bool,
+    from: Option<&str>,
+    skip: Option<&str>,
+    budget: Option<u64>,
+    build: bool,
+    dry_run: bool,
+) -> Result<()> {
+    let cfg = OmegaConfig::load().unwrap_or_default();
+    let base = cfg.resolve_category_path(category);
+    let project_dir = base.join(name);
+
+    // Assemble the flag string passed through to the /omega-new-project command.
+    let mut flags = String::new();
+    if resume { flags.push_str(" --resume"); }
+    if let Some(f) = from { flags.push_str(&format!(" --from={}", f)); }
+    if let Some(s) = skip { flags.push_str(&format!(" --skip={}", s)); }
+    if let Some(b) = budget { flags.push_str(&format!(" --budget={}", b)); }
+    if build { flags.push_str(" --build"); }
+    if dry_run { flags.push_str(" --dry-run"); }
+
+    let prompt = format!("/omega-new-project {} {} {} {}{}", stack, category, name, group, flags);
+
+    if dry_run {
+        println!("omega new-project (DRY-RUN) — no session spawned, zero mutation");
+        println!("  name:        {}", name);
+        println!("  stack:       {}", stack);
+        println!("  category:    {}", category);
+        println!("  project dir: {}", project_dir.display());
+        println!("  session:     {}-setup", name);
+        println!("  invocation:  {}", prompt);
+        println!("  DAG: P0 Capability -> P1 Provision(5//) -> GATE-A(2of3) -> P2 Scaffold(pipeline) -> P3 Wire -> GATE-B(2of3) -> vision -> prd -> brand -> deepux -> planner -> [build] -> audit/verify");
+        return Ok(());
+    }
+
+    let _ = std::fs::create_dir_all(&base);
+    let session = format!("{}-setup", name);
+    let mgr = SessionManager::connect().await?;
+    let agent = omega_core::agents::Agent::Claude;
+    mgr.create_session_with_agent(&session, project_dir.to_str(), agent, Some(&prompt))
+        .await?;
+    println!("New project '{}' ({}/{}) — bootstrap running in session '{}'", name, stack, category, session);
+    println!("  dir: {}", project_dir.display());
     Ok(())
 }
 
