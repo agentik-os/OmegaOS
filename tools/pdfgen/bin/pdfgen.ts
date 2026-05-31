@@ -51,11 +51,15 @@ function parseArgs(argv: string[]): CLI {
 }
 
 async function sendTelegram(pdfPath: string, opts: { dm?: boolean; topic?: string; group?: string; caption?: string }) {
-  const telegramSh = "/home/hacker/.claude/lib/telegram.sh";
+  const HOME = process.env.HOME ?? "";
+  // Cross-user: env override wins, then ~/.omega, then the legacy ~/.claude path.
+  const telegramSh = process.env.OMEGA_TELEGRAM_SCRIPT
+    ?? `${HOME}/.omega/telegram.sh`;
   const filename = path.basename(pdfPath);
   if (opts.topic && opts.group) {
     const fs = await import("node:fs/promises");
-    const CONFIG_FILE = "/home/hacker/.claude/config/telegram.json";
+    const CONFIG_FILE = process.env.OMEGA_TELEGRAM_CONFIG
+      ?? `${HOME}/.claude/config/telegram.json`;
     const token = JSON.parse(await fs.readFile(CONFIG_FILE, "utf-8")).bot.token;
     const api = `https://api.telegram.org/bot${token}/sendDocument`;
     const { execFileSync } = await import("node:child_process");
