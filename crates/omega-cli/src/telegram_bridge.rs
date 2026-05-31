@@ -609,6 +609,20 @@ impl TelegramBotEngine {
                 self.handle_dispatch_command(chat_id, None, &format!("{} {}", project, text.trim())).await;
                 return Ok(());
             }
+            if let Some(provider) = t.strip_prefix("__apikey__:") {
+                // Connect flow armed it: the message text is the API key.
+                let key = text.trim();
+                let ok = Self::store_provider_api_key(provider, key);
+                // Best-effort: delete the user's message so the key doesn't linger.
+                let _ = self.delete_message(chat_id, msg.message_id).await;
+                let body = if ok {
+                    format!("🔑 Saved <b>{}</b> API key (0600, gitignored). Switch to it with /model.", formatting::escape_html(provider))
+                } else {
+                    format!("Could not save the <b>{}</b> key.", formatting::escape_html(provider))
+                };
+                let _ = self.send_html(chat_id, &body).await;
+                return Ok(());
+            }
         }
 
         let relay_target = target.clone().unwrap_or_else(|| self.cfg.relay_session.clone());
@@ -1169,7 +1183,8 @@ impl TelegramBotEngine {
 
         // Model selection callbacks
         if let Some(rest) = data.strip_prefix("model:") {
-            self.handle_model_callback(chat_id, rest).await;
+            let mid = cb.message.as_ref().map(|m| m.message_id).unwrap_or(0);
+            self.handle_model_callback(chat_id, mid, rest).await;
             let _ = self.answer_callback_query(&cb.id, "").await;
             return Ok(());
         }
@@ -1365,6 +1380,9 @@ impl TelegramBotEngine {
                         .collect()
                 })
                 .collect();
+            keyboard.push(vec![
+                InlineKeyboardButton { text: "🔌 Connect providers".into(), callback_data: "model:connect".into() },
+            ]);
             keyboard.push(vec![InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() }]);
             let _ = self
                 .send_html_with_keyboard(
@@ -2020,7 +2038,121 @@ impl TelegramBotEngine {
     }
 
     /// Handle `model:*` callbacks (switch provider/model).
-    async fn handle_model_callback(&self, chat_id: i64, rest: &str) {
+    /// Provider-connection sub-menu: one button per provider, showing whether
+    /// it connects via OAuth login or an API key.
+    fn model_connect_card(&self) -> (String, InlineKeyboardMarkup) {
+        let mut rows: Vec<Vec<InlineKeyboardButton>> = Vec::new();
+        for p in ProvidersConfig::all_providers() {
+            let auth = ProvidersConfig::auth_type(p);
+            let has_key = !ProvidersConfig::load().api_key_for(p).is_empty();
+            let (icon, kind) = if auth == "oauth" {
+                ("🔌", "Connect (login)")
+            } else {
+                ("🔑", "Set API key")
+            };
+            let status = if has_key { " ✓" } else { "" };
+            rows.push(vec![InlineKeyboardButton {
+                text: format!("{} {} — {}{}", icon, p, kind, status),
+                callback_data: format!("model:auth:{}", p),
+            }]);
+        }
+        rows.push(vec![
+            InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "model:back".into() },
+            InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+        ]);
+        (
+            "<b>🔌 Connect providers</b>\nOAuth providers open a login; API providers ask for a key (stored in ~/.omega/providers.toml, 0600, gitignored).".to_string(),
+            InlineKeyboardMarkup { inline_keyboard: rows },
+        )
+    }
+
+    /// Connect a provider: OAuth → start the login flow; API key → arm a
+    /// one-shot "next message is your key" capture.
+    async fn handle_model_auth(&self, chat_id: i64, message_id: i64, provider: &str) {
+        if !ProvidersConfig::is_known(provider) {
+            return;
+        }
+        if ProvidersConfig::auth_type(provider) == "oauth" {
+            if provider == "claude" {
+                self.start_login_flow(chat_id, "Connect Claude (Telegram)").await;
+            } else {
+                // Spawn the provider CLI in a session for its interactive login.
+                let session = format!("login-{}", provider);
+                let cmd = format!("bash -c '{}; echo; echo \"— login done, detach with your prefix —\"; exec bash'", provider);
+                let _ = self.mgr.create_session(&session, None, Some(&cmd)).await;
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "🔌 Started a login session for <b>{}</b> (<code>{}</code>). Attach in OmegaOS and follow the prompts, then send /model to verify.",
+                            formatting::escape_html(provider),
+                            formatting::escape_html(&session)
+                        ),
+                    )
+                    .await;
+            }
+            return;
+        }
+        // API-key provider → arm the one-shot capture (reuses the target slot).
+        *self.targeted_session.lock().await = Some(format!("__apikey__:{}", provider));
+        let text = format!(
+            "🔑 Send your <b>{}</b> API key now (your next message). It's saved to ~/.omega/providers.toml (0600, gitignored) and the message can be deleted after. /cancel to abort.",
+            formatting::escape_html(provider)
+        );
+        if message_id != 0 {
+            self.edit_message_with_keyboard(chat_id, message_id, &text, &InlineKeyboardMarkup { inline_keyboard: vec![] }).await;
+        } else {
+            let _ = self.send_html(chat_id, &text).await;
+        }
+    }
+
+    /// Store an API key for `provider` into providers.toml (0600).
+    fn store_provider_api_key(provider: &str, key: &str) -> bool {
+        let mut cfg = ProvidersConfig::load();
+        match provider {
+            "claude" => cfg.claude.api_key = key.to_string(),
+            "codex" => cfg.codex.api_key = key.to_string(),
+            "gemini" => cfg.gemini.api_key = key.to_string(),
+            "glm" => cfg.glm.api_key = key.to_string(),
+            "openrouter" => cfg.openrouter.api_key = key.to_string(),
+            _ => return false,
+        }
+        if cfg.save().is_err() {
+            return false;
+        }
+        // Lock down the file (secrets at rest).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dirs::home_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+                .join(".omega/providers.toml");
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        true
+    }
+
+    async fn handle_model_callback(&self, chat_id: i64, message_id: i64, rest: &str) {
+        // "back" → the model selector card.
+        if rest == "back" {
+            self.handle_model_command(chat_id, "/model").await;
+            return;
+        }
+        // "connect" → the provider-connection sub-menu.
+        if rest == "connect" {
+            let (t, kb) = self.model_connect_card();
+            if message_id != 0 {
+                self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            } else {
+                let _ = self.send_html_with_keyboard(chat_id, &t, &kb).await;
+            }
+            return;
+        }
+        // "auth:<provider>" → start OAuth login or arm an API-key entry.
+        if let Some(provider) = rest.strip_prefix("auth:") {
+            self.handle_model_auth(chat_id, message_id, provider).await;
+            return;
+        }
         // rest = "provider" or "provider:model"
         let (provider, model) = rest.split_once(':').unwrap_or((rest, ""));
         // Persist active selection to ~/.omega/state/telegram-active-model.json

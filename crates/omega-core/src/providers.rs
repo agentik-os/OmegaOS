@@ -126,6 +126,18 @@ impl ProvidersConfig {
         Ok(())
     }
 
+    /// The stored API key for a provider (empty string if none / unknown).
+    pub fn api_key_for(&self, provider: &str) -> &str {
+        match provider {
+            "claude" => &self.claude.api_key,
+            "codex" => &self.codex.api_key,
+            "gemini" => &self.gemini.api_key,
+            "glm" => &self.glm.api_key,
+            "openrouter" => &self.openrouter.api_key,
+            _ => "",
+        }
+    }
+
     /// Build the env vars that should be injected into every agent session.
     pub fn env_vars(&self) -> Vec<(String, String)> {
         let mut out = Vec::new();
