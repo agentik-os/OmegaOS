@@ -77,6 +77,25 @@ if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"'
 # Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).
 if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
 
+# ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
+# The checks above grep install.sh for the right STRINGS; these prove the system
+# actually builds and the shipped config actually parses. Skip with VERIFY_FAST=1
+# (the fast curator path); CI and the L0 gate run the real thing.
+if [ "${VERIFY_FAST:-0}" != "1" ] && command -v cargo >/dev/null 2>&1; then
+  if cargo check --workspace --locked >/dev/null 2>&1; then
+    ok "workspace compiles against the committed Cargo.lock (reproducible)"
+  else
+    bad "cargo check --locked failed — lockfile out of sync or code broken"
+  fi
+  if cargo test -p omega-core --lib shipped_default_toml_deserializes >/dev/null 2>&1; then
+    ok "shipped config/default.toml deserializes into OmegaConfig"
+  else
+    bad "config/default.toml does not deserialize — fresh install would discard it"
+  fi
+else
+  ok "behavioral build/deserialize gates skipped (VERIFY_FAST or no cargo)"
+fi
+
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
   printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'
