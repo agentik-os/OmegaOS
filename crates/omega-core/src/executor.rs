@@ -86,10 +86,8 @@ pub async fn run<R: WorkerRuntime>(
                 // `report.failed`, so guard against double-counting it here.
                 for s in &tracker.steps {
                     match s.status {
-                        StepStatus::Failed => {
-                            if !report.failed.contains(&s.step_id) {
-                                report.failed.push(s.step_id.clone());
-                            }
+                        StepStatus::Failed if !report.failed.contains(&s.step_id) => {
+                            report.failed.push(s.step_id.clone());
                         }
                         StepStatus::Pending => report.blocked.push(s.step_id.clone()),
                         _ => {}
