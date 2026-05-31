@@ -10,6 +10,42 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// Maximum session-name length. Keeps rmux happy AND keeps any Telegram
+/// `callback_data` that embeds a session name under the 64-byte API cap
+/// (longest prefix today is `stop_workers:` = 13 bytes; 13 + 48 = 61 < 64).
+pub const MAX_SESSION_NAME_LEN: usize = 48;
+
+/// Slugify an arbitrary string into a safe rmux session name.
+///
+/// rmux keys kill/rename/capture on the session name; spaces, non-ASCII, and
+/// punctuation (`:` `?` U+202F …) break that lookup and produce un-killable
+/// zombie sessions. This collapses anything outside `[A-Za-z0-9._-]` to a
+/// single `-`, trims separators, and bounds the length. Idempotent on
+/// already-clean names (`oracle-Kommu`, `aisb-master` map to themselves).
+pub fn sanitize_session_name(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(MAX_SESSION_NAME_LEN));
+    let mut last_dash = false;
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+            out.push(ch);
+            last_dash = false;
+        } else if !last_dash {
+            // Any space / accent / punctuation collapses to one '-'.
+            out.push('-');
+            last_dash = true;
+        }
+        if out.len() >= MAX_SESSION_NAME_LEN {
+            break;
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '-' || c == '.').to_string();
+    if trimmed.is_empty() {
+        "session".to_string()
+    } else {
+        trimmed
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRole {
     Oracle,
@@ -153,7 +189,15 @@ impl SessionManager {
         working_dir: Option<&str>,
         command: Option<&str>,
     ) -> Result<Session> {
-        let session_name = SessionName::new(name)?;
+        // Defense-in-depth chokepoint: rmux keys every operation (kill, rename,
+        // capture) on the session name, and names with spaces, non-ASCII, or
+        // punctuation (`:`, `?`, U+202F …) break that lookup — the session
+        // becomes permanently un-killable. This happened when raw Telegram
+        // message text leaked into a project/oracle name. Slugify here so a
+        // dangerous name can NEVER reach rmux, regardless of caller. Idempotent:
+        // already-clean names (oracle-Kommu, aisb-master) pass through unchanged.
+        let safe = sanitize_session_name(name);
+        let session_name = SessionName::new(&safe)?;
         let mut builder = EnsureSession::named(session_name)
             .policy(EnsureSessionPolicy::CreateOrReuse)
             .detached(true)
@@ -236,7 +280,10 @@ impl SessionManager {
     }
 
     pub async fn get_session(&self, name: &str) -> Result<Session> {
-        let session_name = SessionName::new(name)?;
+        // Resolve with the same slug used at creation so a caller that kept the
+        // original (possibly dirty) name still finds the session. Idempotent on
+        // clean names — every menu/list path already passes the real name.
+        let session_name = SessionName::new(&sanitize_session_name(name))?;
         self.rmux
             .session(session_name)
             .await
@@ -781,4 +828,57 @@ fn is_pane_stale(err: &rmux_sdk::RmuxError) -> bool {
         rmux_sdk::RmuxError::PaneNotFound { .. }
             | rmux_sdk::RmuxError::OwnedSessionLeaseLost { .. }
     )
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::sanitize_session_name as s;
+    use super::MAX_SESSION_NAME_LEN;
+
+    #[test]
+    fn clean_names_unchanged() {
+        // Idempotency: real session names must pass through untouched.
+        for n in [
+            "oracle-Kommu",
+            "oracle-OmegaOS",
+            "aisb-master",
+            "omega-telegram-bridge",
+            "oracle-DentistryGPT-1",
+            "worker-Causio-3",
+            "oracle-Agentik-Academy-2",
+        ] {
+            assert_eq!(s(n), n, "clean name should be unchanged: {n}");
+        }
+    }
+
+    #[test]
+    fn the_three_zombies_become_killable_slugs() {
+        // The exact names that became un-killable rmux zombies. After
+        // sanitization they are plain ASCII slugs rmux can key on.
+        let cases = [
+            " stockées les photos",
+            "oracle- on met un dossier, on voit que l'analyse va analyser toute la database\u{202f}:",
+            "oracle-DentistryGPT-1 la page très lente, est-ce que tu pourrais améliorer\u{202f}?",
+        ];
+        for raw in cases {
+            let out = s(raw);
+            assert!(!out.is_empty());
+            assert!(out.len() <= MAX_SESSION_NAME_LEN, "too long: {out}");
+            assert!(!out.starts_with('-') && !out.ends_with('-'), "edge dash: {out}");
+            assert!(
+                out.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+                "non-slug char survived in {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn collapses_and_bounds() {
+        assert_eq!(s("a   b"), "a-b"); // whitespace run → single dash
+        assert_eq!(s("a:::b"), "a-b"); // punctuation run → single dash
+        assert_eq!(s("--x--"), "x"); // trim edge dashes
+        assert_eq!(s("é"), "session"); // empty-after-strip → fallback
+        assert_eq!(s(""), "session");
+        assert!(s(&"x".repeat(200)).len() <= MAX_SESSION_NAME_LEN);
+    }
 }

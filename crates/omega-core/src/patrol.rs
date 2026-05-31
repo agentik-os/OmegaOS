@@ -586,7 +586,11 @@ impl Patrol {
         // Spawn the curator as a detached rmux session so its output is
         // visible in `omega menu`. The session name is prefixed with
         // "curator-" so it's grouped distinctly in the TUI session list.
-        let curator_session = format!("curator-{}", oracle_name);
+        // This is a direct `rmux new-session` (not via SessionManager), so
+        // slugify here too — keep the curator name killable even if oracle_name
+        // carries legacy garbage. See session::sanitize_session_name.
+        let curator_session =
+            crate::session::sanitize_session_name(&format!("curator-{}", oracle_name));
         let done_path = self
             .config
             .state_dir
