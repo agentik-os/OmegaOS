@@ -7,7 +7,7 @@ description: >
   /omg-planner (typed DAG plan) → omega plan-run (the engine executes it with can't-skip
   Gate + Guardian verify). Launchable from the TUI [N] New Project menu or by typing
   /omg-new-project (alias /omega-new-project).
-argument-hint: "[stack] [category] [name]   e.g. nextstack works acme   (all optional → interactive)"
+argument-hint: "[stack|repo-url] [category] [name]   e.g. nextstack customer acme  OR  https://github.com/acme/app customer   (all optional → interactive)"
 allowed-tools: ["Read", "Write", "Edit", "Bash", "Glob", "Grep", "AskUserQuestion", "Task", "ToolSearch"]
 domain: orchestration
 read_only: false
@@ -38,6 +38,21 @@ asked interactively. Never block on a value the menu already supplied.
 ---
 
 ## PHASE 0 — Resolve inputs (no redundant questions)
+
+**Import mode (existing GitHub repo).** If an argument is a git URL (`git@…`,
+`https://….git`, or `https://github.com/<owner>/<repo>`), this is an IMPORT, not
+a fresh scaffold:
+1. Resolve `CATEGORY` (ask if missing: `customer` / `side-business` / `tools`)
+   and `<projects_dir>` exactly as below — so the repo lands in the right place.
+2. `git clone <url> "<projects_dir>/<category-path>/<repo-name>"` (repo-name from
+   the URL unless `NAME` overrides it). For a `customer`, also pick/create its
+   credential group so deploys use that customer's own accounts.
+3. Set the category git identity (Phase 4 step 3), detect the stack from the
+   cloned tree (package.json / Cargo.toml / pyproject.toml / go.mod), and
+   register the project in `~/.omega/projects.json` so it shows in the TUI.
+4. Run provisioning (Phase 2) ONLY for services the repo needs but is missing
+   (absent `.env` keys); never scaffold over existing source.
+Then stop — import is done. The scaffold phases below are for fresh projects.
 
 1. Parse `$ARGUMENTS`: `STACK`, `CATEGORY`, `NAME` (positional).
 2. **Stack**: if missing or unknown → AskUserQuestion listing the table above.
