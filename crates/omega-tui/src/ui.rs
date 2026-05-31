@@ -1,4 +1,5 @@
 use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
+use omega_core::done::DoneStatus;
 use omega_core::session::SessionRole;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -446,7 +447,11 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ])),
             SessionRow::Entry(entry) => {
-                let item = render_session_item(entry, entry_idx == app.selected && list_focused);
+                let item = render_session_item(
+                    entry,
+                    entry_idx == app.selected && list_focused,
+                    app.session_badges.get(&entry.session.name).copied(),
+                );
                 entry_idx += 1;
                 item
             }
@@ -886,7 +891,11 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     let _ = fullscreen;
 }
 
-fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static> {
+fn render_session_item(
+    entry: &SessionEntry,
+    selected: bool,
+    badge: Option<DoneStatus>,
+) -> ListItem<'static> {
     let is_master = omega_core::aisb::is_master(&entry.session.name);
 
     let icon = if is_master {
@@ -940,6 +949,15 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
 
     let protect_marker = if entry.is_protected { "§ " } else { "" };
 
+    // Done/blocked badge from the worker's done.json / worker-blocked signal.
+    let (badge_glyph, badge_color) = match badge {
+        Some(DoneStatus::DoneClean) => ("✓ ", Color::Green),
+        Some(DoneStatus::Pending) => ("◔ ", Color::Yellow),
+        Some(DoneStatus::Failed) => ("✗ ", Color::Red),
+        Some(DoneStatus::Blocked) => ("⚠ ", Color::Rgb(255, 165, 0)),
+        None => ("", Color::Reset),
+    };
+
     let line = Line::from(vec![
         Span::styled(prefix, Style::default().fg(Color::Cyan)),
         Span::raw(entry.tree_prefix.clone()),
@@ -948,6 +966,10 @@ fn render_session_item(entry: &SessionEntry, selected: bool) -> ListItem<'static
             Style::default().fg(icon_color),
         ),
         Span::styled(protect_marker, Style::default().fg(Color::Magenta)),
+        Span::styled(
+            badge_glyph,
+            Style::default().fg(badge_color).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(entry.session.name.clone(), name_style),
         Span::styled(progress_str, Style::default().fg(Color::Cyan)),
     ]);
@@ -2648,6 +2670,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 "Rename session",
                 format!("[{} →] {}", old, app.input_buffer),
             ),
+            InputMode::SessionFilter => ("Filter sessions", app.input_buffer.clone()),
             InputMode::NewProjectName => ("New project — name", app.input_buffer.clone()),
             InputMode::NewProjectCategory(name, _) => (
                 "New project — category (overlay ↑/↓)",
