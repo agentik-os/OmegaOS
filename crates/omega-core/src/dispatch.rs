@@ -342,6 +342,78 @@ impl Dispatcher {
             .unwrap_or(0)
     }
 
+    /// Re-spawn a crashed oracle from its persisted OracleState — survives a
+    /// daemon restart or an accidental kill. Returns whether it was actually
+    /// resurrected, was already alive, or had no saved state.
+    pub async fn resurrect_oracle(&self, oracle_name: &str) -> Result<ResurrectOutcome> {
+        let state = match OracleState::read(&self.config.state_dir, oracle_name)? {
+            Some(s) => s,
+            None => return Ok(ResurrectOutcome::NotFound),
+        };
+        let alive = self
+            .session_mgr
+            .list_sessions()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .any(|s| s.name == oracle_name);
+        if alive {
+            return Ok(ResurrectOutcome::AlreadyAlive);
+        }
+
+        let mut prompt = build_resume_prompt(&state);
+        // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
+        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Oracle);
+        if !ctx.is_empty() {
+            prompt.push_str("\n\n");
+            prompt.push_str(&ctx);
+        }
+
+        let work_dir = state.working_dir.to_string_lossy().to_string();
+        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
+            .unwrap_or(crate::agents::Agent::Claude);
+        if matches!(agent, crate::agents::Agent::Claude) {
+            let mut opts = crate::agents::LaunchOptions::default();
+            opts.effort = Some("xhigh".to_string());
+            opts.session_name = Some(oracle_name.to_string());
+            opts.goal_condition = Some(format!(
+                "mission complete for project {} — .done.json written with status=done_clean",
+                state.project
+            ));
+            self.session_mgr
+                .create_agent_session_with_opts(oracle_name, &work_dir, agent, Some(&prompt), opts)
+                .await?;
+        } else {
+            self.session_mgr
+                .create_agent_session(
+                    oracle_name,
+                    &work_dir,
+                    &self.config.agent_command,
+                    Some(&prompt),
+                )
+                .await?;
+        }
+        Ok(ResurrectOutcome::Resurrected)
+    }
+
+    /// Oracle names that have a persisted OracleState but no live session —
+    /// candidates for `omega resurrect`.
+    pub async fn dead_oracles(&self) -> Vec<String> {
+        let alive: Vec<String> = self
+            .session_mgr
+            .list_sessions()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        OracleState::read_all(&self.config.state_dir)
+            .into_iter()
+            .filter(|st| !alive.contains(&st.oracle_name))
+            .map(|st| st.oracle_name)
+            .collect()
+    }
+
     /// Dispatch a worker with structured context (Fresh Context Template).
     /// Automatically registers the worker in the parent oracle's state.
     pub async fn dispatch_worker_with_context(
@@ -515,5 +587,79 @@ impl Dispatcher {
 
     pub fn session_manager(&self) -> &SessionManager {
         &self.session_mgr
+    }
+}
+
+/// Outcome of a [`Dispatcher::resurrect_oracle`] attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResurrectOutcome {
+    Resurrected,
+    AlreadyAlive,
+    NotFound,
+}
+
+/// Build the resume prompt for a resurrected oracle from its persisted state —
+/// mission + last phase + the workers it had already dispatched, with a strong
+/// "don't duplicate completed work" instruction.
+fn build_resume_prompt(state: &OracleState) -> String {
+    let mut p = String::new();
+    p.push_str(
+        "[RESURRECTED] Your oracle session crashed or was killed; your state was \
+         persisted. Resume exactly where you left off — do NOT restart the mission \
+         from scratch.\n\n",
+    );
+    p.push_str(&format!("## Project\n{}\n\n", state.project));
+    p.push_str(&format!("## Mission\n{}\n\n", state.mission_text));
+    p.push_str(&format!(
+        "## Last phase\n{:?} — re-assess, then continue.\n\n",
+        state.phase
+    ));
+    if state.workers.is_empty() {
+        p.push_str("## Workers\nNone dispatched yet.\n\n");
+    } else {
+        p.push_str("## Workers already dispatched\n");
+        for w in &state.workers {
+            p.push_str(&format!(
+                "- '{}' [{:?}] — session {}\n",
+                w.task_name, w.status, w.session_name
+            ));
+        }
+        p.push_str(
+            "\nBefore re-dispatching: check each worker's session + done.json. \
+             Do NOT duplicate completed work.\n\n",
+        );
+    }
+    p.push_str(
+        "## Resume\nVerify what's already done (workers' done.json + git state), \
+         continue to completion, then write your own .done.json.\n",
+    );
+    p
+}
+
+#[cfg(test)]
+mod resurrect_tests {
+    use super::*;
+    use crate::mission::Mission;
+    use crate::oracle_lifecycle::{OracleState, WorkerEntry, WorkerEntryStatus};
+    use chrono::Utc;
+    use std::path::PathBuf;
+
+    #[test]
+    fn resume_prompt_carries_mission_workers_and_no_dupe_warning() {
+        let mission = Mission::new("Acme", "ship the feature", PathBuf::from("/tmp"));
+        let mut state = OracleState::new("oracle-Acme-1", &mission);
+        state.register_worker(WorkerEntry {
+            session_name: "Acme-worker-auth".into(),
+            task_id: "t1".into(),
+            task_name: "auth".into(),
+            files_owned: vec![],
+            dispatched_at: Utc::now(),
+            status: WorkerEntryStatus::DoneClean,
+        });
+        let p = build_resume_prompt(&state);
+        assert!(p.contains("[RESURRECTED]"));
+        assert!(p.contains("ship the feature"));
+        assert!(p.contains("auth"));
+        assert!(p.contains("Do NOT duplicate completed work"));
     }
 }

@@ -274,6 +274,13 @@ enum Commands {
         oracle: String,
     },
 
+    /// Re-spawn a crashed oracle from its persisted OracleState (survives a
+    /// daemon restart). No arg = resurrect every dead oracle.
+    Resurrect {
+        /// Oracle session name; omit to resurrect all dead oracles.
+        oracle: Option<String>,
+    },
+
     /// Interactive AISB Master chat REPL (runs inside the aisb-master
     /// pane). Each line you type is injected into the running bot exactly
     /// as if it had arrived from Telegram — same brain, same response,
@@ -402,6 +409,7 @@ async fn main() -> Result<()> {
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
         Some(Commands::Doctor) => cmd_doctor().await,
         Some(Commands::Timeline { oracle }) => cmd_timeline(&oracle).await,
+        Some(Commands::Resurrect { oracle }) => cmd_resurrect(oracle).await,
         Some(Commands::Usage { check }) => {
             if check {
                 // --check: actively fetch from the OAuth endpoint + alert on threshold.
@@ -2373,6 +2381,34 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     println!("  {}", report.summary());
     for note in &report.notes {
         println!("  - {}", note);
+    }
+    Ok(())
+}
+
+async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {
+    use omega_core::dispatch::ResurrectOutcome;
+    let config = OmegaConfig::load().unwrap_or_default();
+    let mgr = SessionManager::connect().await?;
+    let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, config.clone());
+    let targets = match oracle {
+        Some(o) => vec![o],
+        None => {
+            let dead = dispatcher.dead_oracles().await;
+            if dead.is_empty() {
+                println!("No dead oracles — every OracleState has a live session (or none exist).");
+                return Ok(());
+            }
+            println!("Dead oracles with persisted state: {}", dead.join(", "));
+            dead
+        }
+    };
+    for o in targets {
+        match dispatcher.resurrect_oracle(&o).await {
+            Ok(ResurrectOutcome::Resurrected) => println!("◆ resurrected {}", o),
+            Ok(ResurrectOutcome::AlreadyAlive) => println!("• {} already alive — skipped", o),
+            Ok(ResurrectOutcome::NotFound) => println!("✗ no OracleState for {}", o),
+            Err(e) => println!("✗ {} failed: {}", o, e),
+        }
     }
     Ok(())
 }
