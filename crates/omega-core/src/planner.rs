@@ -20,6 +20,10 @@ pub struct PlanStep {
     pub done_criteria: String,
     pub verify_command: String,
     pub depends_on: Vec<String>,
+    #[serde(default)]
+    pub wave: Option<Wave>,
+    #[serde(default)]
+    pub attempt: u8,
     pub status: StepStatus,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -54,6 +58,36 @@ impl StepStatus {
             StepStatus::Blocked => "🚫",
             StepStatus::Failed => "❌",
         }
+    }
+}
+
+/// Optional scheduling tier. The DAG (`depends_on`) is the enforced order;
+/// `Wave` is sugar that lets the driver hold terminal tiers (audit/deploy)
+/// until all implementation work is done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wave {
+    Foundation,
+    W1,
+    W2,
+    W3,
+    Audit,
+    Deploy,
+}
+
+impl Wave {
+    pub fn ordinal(&self) -> u8 {
+        match self {
+            Wave::Foundation => 0,
+            Wave::W1 => 1,
+            Wave::W2 => 1,
+            Wave::W3 => 1,
+            Wave::Audit => 2,
+            Wave::Deploy => 3,
+        }
+    }
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Wave::Audit | Wave::Deploy)
     }
 }
 
@@ -430,6 +464,7 @@ pub fn step(id: &str, phase: usize) -> PlanStepBuilder {
         done_criteria: String::new(),
         verify_command: String::new(),
         depends_on: Vec::new(),
+        wave: None,
     }
 }
 
@@ -442,6 +477,7 @@ pub struct PlanStepBuilder {
     done_criteria: String,
     verify_command: String,
     depends_on: Vec<String>,
+    wave: Option<Wave>,
 }
 
 impl PlanStepBuilder {
@@ -469,6 +505,10 @@ impl PlanStepBuilder {
         self.depends_on = deps.iter().map(|s| s.to_string()).collect();
         self
     }
+    pub fn wave(mut self, w: Wave) -> Self {
+        self.wave = Some(w);
+        self
+    }
     pub fn build(self) -> PlanStep {
         PlanStep {
             step_id: self.step_id,
@@ -479,6 +519,8 @@ impl PlanStepBuilder {
             done_criteria: self.done_criteria,
             verify_command: self.verify_command,
             depends_on: self.depends_on,
+            wave: self.wave,
+            attempt: 0,
             status: StepStatus::Pending,
             started_at: None,
             completed_at: None,
@@ -666,5 +708,19 @@ mod tests {
         assert_eq!(loaded.project, "TestProject");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn wave_and_attempt_defaults() {
+        let s = step("STEP-001", 1).title("X").criteria("ok").verify("true").build();
+        assert_eq!(s.attempt, 0);
+        assert!(s.wave.is_none());
+    }
+
+    #[test]
+    fn wave_ordinal_ordering() {
+        assert!(Wave::Foundation.ordinal() < Wave::W1.ordinal());
+        assert!(Wave::W1.ordinal() < Wave::Audit.ordinal());
+        assert!(Wave::Audit.ordinal() < Wave::Deploy.ordinal());
     }
 }
