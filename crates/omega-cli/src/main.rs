@@ -2494,8 +2494,14 @@ async fn cmd_spawn_worker(
         full_prompt.push_str(&agent_ctx);
     }
 
-    mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
-        .await?;
+    if let Err(e) = mgr
+        .create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
+        .await
+    {
+        // Roll back the scope claim so a failed spawn doesn't lock files forever.
+        let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
+        return Err(e);
+    }
 
     // Register the worker under its oracle so the patrol routes its done/blocked
     // events to the right parent and the TUI shows it under the oracle.
