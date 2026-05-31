@@ -264,6 +264,10 @@ enum Commands {
         yes: bool,
     },
 
+    /// One-shot health check of the whole stack — daemon, doctrine, agent CLI,
+    /// Telegram service, secrets, memory. Run it first after a fresh install.
+    Doctor,
+
     /// Interactive AISB Master chat REPL (runs inside the aisb-master
     /// pane). Each line you type is injected into the running bot exactly
     /// as if it had arrived from Telegram — same brain, same response,
@@ -390,6 +394,7 @@ async fn main() -> Result<()> {
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
+        Some(Commands::Doctor) => cmd_doctor().await,
         Some(Commands::Usage { check }) => {
             if check {
                 // --check: actively fetch from the OAuth endpoint + alert on threshold.
@@ -2361,6 +2366,25 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     println!("  {}", report.summary());
     for note in &report.notes {
         println!("  - {}", note);
+    }
+    Ok(())
+}
+
+async fn cmd_doctor() -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let checks = omega_core::doctor::run_all(&config).await;
+    println!("OmegaOS doctor\n");
+    for c in &checks {
+        println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);
+    }
+    println!();
+    match omega_core::doctor::overall(&checks) {
+        omega_core::doctor::Health::Ok => println!("✓ all systems healthy"),
+        omega_core::doctor::Health::Warn => println!("⚠ healthy, with warnings above"),
+        omega_core::doctor::Health::Fail => {
+            println!("✗ problems detected — see ✗ lines above");
+            std::process::exit(1);
+        }
     }
     Ok(())
 }

@@ -12,6 +12,7 @@ pub mod cleanup;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;
+pub mod doctor;
 pub mod done;
 pub mod failover;
 pub mod skill_packs;
