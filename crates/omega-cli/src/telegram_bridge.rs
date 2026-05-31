@@ -545,22 +545,20 @@ impl TelegramBotEngine {
         // --continue → brand new conversation, clean slate). Lets the user
         // reset the master at any time from Telegram.
         if text.trim() == "/clean" {
-            let placeholder = formatting::thinking_placeholder("AISB Master");
-            let pid = self.send_html(chat_id, &placeholder).await?.unwrap_or(0);
-            let result = self.clean_master().await;
-            let body = match result {
-                Ok(_) => "AISB Master cleaned and restarted fresh. New conversation, clean slate. Ping me with the mission.",
-                Err(_) => "AISB Master kill succeeded but respawn had an issue — it will auto-respawn on the next message.",
+            // Confirm before wiping the master conversation.
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton { text: "🧹 Reset master".into(), callback_data: "clean:go".into() },
+                    InlineKeyboardButton { text: "✕ Cancel".into(), callback_data: "ui:close".into() },
+                ]],
             };
-            let card = formatting::smart_wrap_response(
-                "AISB Master", body, 0.0, "system", None, None, None,
-                formatting::ResponseTier::Ok,
-            );
-            if pid != 0 {
-                let _ = self.edit_message_html(chat_id, pid, &card).await;
-            } else {
-                let _ = self.send_html(chat_id, &card).await;
-            }
+            let _ = self
+                .send_html_with_keyboard(
+                    chat_id,
+                    "Reset the AISB Master to a fresh conversation? Current context is dropped.",
+                    &kb,
+                )
+                .await;
             return Ok(());
         }
 
@@ -604,6 +602,11 @@ impl TelegramBotEngine {
             if let Some(location) = t.strip_prefix("__newproject__:") {
                 // The message text is the project name
                 self.handle_newproject(chat_id, &format!("/newproject {} {}", text.trim(), location)).await;
+                return Ok(());
+            }
+            if let Some(project) = t.strip_prefix("__dispatch__:") {
+                // Picker armed it: the message text is the mission.
+                self.handle_dispatch_command(chat_id, None, &format!("{} {}", project, text.trim())).await;
                 return Ok(());
             }
         }
@@ -1125,6 +1128,35 @@ impl TelegramBotEngine {
         if let Some(rest) = data.strip_prefix("aud:") {
             let _ = self.answer_callback_query(&cb.id, "").await;
             self.handle_audit_callback(chat_id, message_id, rest).await;
+            return Ok(());
+        }
+
+        // /clean confirm.
+        if data == "clean:go" {
+            let _ = self.answer_callback_query(&cb.id, "Resetting…").await;
+            let body = match self.clean_master().await {
+                Ok(_) => "🧹 AISB Master reset — fresh conversation. Ping me with the mission.",
+                Err(_) => "Master kill ok but respawn had an issue — it auto-respawns on the next message.",
+            };
+            if message_id != 0 {
+                self.edit_message_with_keyboard(chat_id, message_id, body, &InlineKeyboardMarkup { inline_keyboard: vec![] }).await;
+            } else {
+                let _ = self.send_html(chat_id, body).await;
+            }
+            return Ok(());
+        }
+
+        // Dispatch project picker → arm a one-shot "next message = mission".
+        if let Some(project) = data.strip_prefix("disp:pick:") {
+            let _ = self.answer_callback_query(&cb.id, "").await;
+            *self.targeted_session.lock().await = Some(format!("__dispatch__:{}", project));
+            self.edit_message_with_keyboard(
+                chat_id,
+                message_id,
+                &format!("🚀 <b>{}</b> — send the mission now (your next message). /cancel to abort.", formatting::escape_html(project)),
+                &InlineKeyboardMarkup { inline_keyboard: vec![] },
+            )
+            .await;
             return Ok(());
         }
 
@@ -3130,8 +3162,10 @@ impl TelegramBotEngine {
                 {"command": "account",  "description": "Account / billing / login (with buttons)"},
                 {"command": "model",    "description": "Switch AI provider and model"},
                 {"command": "projects", "description": "List projects + new / add existing"},
-                {"command": "sessions", "description": "Active sessions (tap to target)"},
-                {"command": "killall",  "description": "Kill ALL sessions (keeps bridge + master) — /killall confirm to run"},
+                {"command": "sessions", "description": "Active sessions — cards (Relay/Status/Kill)"},
+                {"command": "audits",   "description": "Quality Arsenal — tap an audit → run on a project"},
+                {"command": "skills",   "description": "Browse skills by category / search"},
+                {"command": "killall",  "description": "Kill ALL sessions (keeps bridge + master)"},
                 {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"},
                 {"command": "setupgroup","description": "Register a supergroup as the project hub (+ create per-project topics)"},
                 {"command": "status",   "description": "Live system dashboard (oracles, workers, done signals)"},
@@ -3537,8 +3571,31 @@ impl TelegramBotEngine {
     ) {
         let args = args.trim();
         let usage = "Usage: <code>/dispatch &lt;Project&gt; &lt;mission&gt;</code>\nExample: <code>/dispatch DentistryGPT fix the login redirect loop</code>";
+        // No args (or a bare project name) → show a project PICKER; tapping one
+        // arms a one-shot "your next message is the mission" flow.
         let Some((project, mission)) = args.split_once(char::is_whitespace) else {
-            let _ = self.send_html_smart(chat_id, thread_id, usage).await;
+            let registry = omega_core::project_manager::ProjectRegistry::load();
+            if registry.projects.is_empty() {
+                let _ = self.send_html_smart(chat_id, thread_id, usage).await;
+                return;
+            }
+            let mut keyboard: Vec<Vec<InlineKeyboardButton>> = registry
+                .projects
+                .iter()
+                .take(20)
+                .map(|p| vec![InlineKeyboardButton {
+                    text: format!("🚀 {}", p.name),
+                    callback_data: format!("disp:pick:{}", p.name),
+                }])
+                .collect();
+            keyboard.push(vec![InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() }]);
+            let _ = self
+                .send_html_with_keyboard(
+                    chat_id,
+                    "<b>🚀 Dispatch</b> — pick a project (you'll send the mission next):",
+                    &InlineKeyboardMarkup { inline_keyboard: keyboard },
+                )
+                .await;
             return;
         };
         let project = project.trim();
