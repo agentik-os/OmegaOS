@@ -1321,10 +1321,26 @@ impl TelegramBotEngine {
                 ));
             }
             lines.push(String::new());
-            lines.push(
-                "Switch: <code>/model &lt;provider&gt; [model]</code>".to_string(),
-            );
-            let _ = self.send_html(chat_id, &lines.join("\n")).await;
+            lines.push("Tap a provider to switch (uses its default model):".to_string());
+            let mut keyboard: Vec<Vec<InlineKeyboardButton>> = ProvidersConfig::all_providers()
+                .chunks(2)
+                .map(|c| {
+                    c.iter()
+                        .map(|p| InlineKeyboardButton {
+                            text: format!("⚙ {}", p),
+                            callback_data: format!("model:{}", p),
+                        })
+                        .collect()
+                })
+                .collect();
+            keyboard.push(vec![InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() }]);
+            let _ = self
+                .send_html_with_keyboard(
+                    chat_id,
+                    &lines.join("\n"),
+                    &InlineKeyboardMarkup { inline_keyboard: keyboard },
+                )
+                .await;
             return;
         }
 
@@ -1590,18 +1606,26 @@ impl TelegramBotEngine {
                 // Project detail card — actions for this project.
                 let project = arg;
                 let keyboard = vec![
-                    vec![InlineKeyboardButton {
-                        text: "💬 Talk to oracle".to_string(),
-                        callback_data: format!("proj:oracle:{}", project),
-                    }],
-                    vec![InlineKeyboardButton {
-                        text: "🗑 Delete project".to_string(),
-                        callback_data: format!("proj:del:{}", project),
-                    }],
-                    vec![InlineKeyboardButton {
-                        text: "‹ Projects".to_string(),
-                        callback_data: "proj:menu".to_string(),
-                    }],
+                    vec![
+                        InlineKeyboardButton {
+                            text: "💬 Talk to oracle".to_string(),
+                            callback_data: format!("proj:oracle:{}", project),
+                        },
+                        InlineKeyboardButton {
+                            text: "📊 Status".to_string(),
+                            callback_data: format!("proj:status:{}", project),
+                        },
+                    ],
+                    vec![
+                        InlineKeyboardButton {
+                            text: "🗑 Delete".to_string(),
+                            callback_data: format!("proj:del:{}", project),
+                        },
+                        InlineKeyboardButton {
+                            text: "‹ Projects".to_string(),
+                            callback_data: "proj:menu".to_string(),
+                        },
+                    ],
                 ];
                 let payload = serde_json::json!({
                     "chat_id": chat_id,
@@ -1614,6 +1638,23 @@ impl TelegramBotEngine {
                 });
                 let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
                 self.client.post(&url).json(&payload).send().await.ok();
+            }
+            "status" => {
+                // Tail the project's oracle pane.
+                let session = format!("oracle-{}", arg);
+                let body = match self.mgr.capture_pane(&session).await {
+                    Ok(content) => {
+                        let tail: Vec<&str> = content.lines().rev().take(20).collect();
+                        let out: Vec<&str> = tail.into_iter().rev().collect();
+                        let cleaned = clean_terminal_output(&out.join("\n"));
+                        format!("<b>📊 {}</b>\n<pre>{}</pre>", formatting::escape_html(&session), formatting::escape_html(&cleaned))
+                    }
+                    Err(_) => format!(
+                        "No live oracle for <b>{}</b> yet. Use 💬 Talk to oracle to start one.",
+                        formatting::escape_html(arg)
+                    ),
+                };
+                let _ = self.send_html(chat_id, &body).await;
             }
             "oracle" => {
                 // Smart oracle routing:
