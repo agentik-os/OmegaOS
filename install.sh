@@ -45,9 +45,46 @@ fi
 
 step "Phase 2: Checking Dependencies"
 
+# Bootstrap the OS packages a BARE VPS lacks. Without this, the rustup curl
+# below dies with `command not found` on a fresh Ubuntu/Debian image, and even
+# with Rust the rmux build fails for want of a C toolchain (`cc`) + pkg-config.
+# Idempotent: only installs what is actually missing.
+bootstrap_os_packages() {
+    local need=()
+    command -v git >/dev/null 2>&1 || need+=("git")
+    command -v curl >/dev/null 2>&1 || need+=("curl")
+    { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; } || need+=("C-toolchain")
+    command -v pkg-config >/dev/null 2>&1 || need+=("pkg-config")
+    if [[ ${#need[@]} -eq 0 ]]; then
+        ok "Build prerequisites present (git, curl, cc, pkg-config)"
+        return 0
+    fi
+    info "Installing build prerequisites: ${need[*]}"
+    local SUDO=""
+    [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    if command -v apt-get >/dev/null 2>&1; then
+        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates build-essential pkg-config
+    elif command -v dnf >/dev/null 2>&1; then
+        $SUDO dnf install -y curl git ca-certificates gcc gcc-c++ make pkgconf-pkg-config
+    elif command -v yum >/dev/null 2>&1; then
+        $SUDO yum install -y curl git ca-certificates gcc gcc-c++ make pkgconfig
+    elif command -v pacman >/dev/null 2>&1; then
+        $SUDO pacman -Sy --noconfirm curl git ca-certificates base-devel pkgconf
+    elif command -v apk >/dev/null 2>&1; then
+        $SUDO apk add --no-cache curl git ca-certificates build-base pkgconf
+    else
+        err "No supported package manager (apt/dnf/yum/pacman/apk)."
+        err "Install these manually, then re-run ./install.sh: ${need[*]}"
+        exit 1
+    fi
+    ok "Build prerequisites installed"
+}
+bootstrap_os_packages
+
 # Check for Rust
 if ! command -v cargo &>/dev/null; then
     info "Rust not found. Installing via rustup..."
+    command -v curl >/dev/null 2>&1 || { err "curl is required to bootstrap Rust but is missing; install curl and re-run."; exit 1; }
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
     source "$HOME/.cargo/env"
     ok "Rust installed: $(rustc --version)"
