@@ -1,0 +1,161 @@
+# OmegaOS
+
+一个终端控制平面，用于并行运行一支 AI 编码 agent 编队，编队里的每个 agent 都遵守同一套类型化规则手册。
+
+[English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | 中文
+
+OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。
+
+默认的 agent 运行时是 Claude Code。并行跑 agent 的工具多得是，这里不一样的地方在于：每个 agent，无论它在树里钻得多深，都带着同一套不容商量的规则——以纯文本形式注入进它的 prompt。这就是 doctrine（教义），也是你该从这里入手的原因。
+
+版本 0.1.0。我每天都在用它，请预期会有些粗糙的地方。
+
+## doctrine
+
+有一个类型化的注册表，包含 6 条 Law 和 20 条 Rule。它住在 Rust 里，位于 `crates/omega-core/src/rules.rs`，所以它是一件编译产物，而不是某个没人想起来更新的 YAML 文件。
+
+**Law 不可违背。**它们约束每一个 agent，并且凌驾于每一条 rule、每一个 task 之上。一共六条：
+
+- **L0 — Ship the truth（交付真相）。**一处改动，只有在一次干净的重新构建能复现它、并且它已被 push 之后，才算完成。差一点的都只是草稿。
+- **L1 — Runtime is the only truth（运行时是唯一的真相）。**代码和注释陈述的是意图，只有真正跑起来才会显出现实。两者不一致时，运行时说了算。
+- **L2 — Researcher, not sycophant（做研究者，别做马屁精）。**遇到有缺陷的前提，先用推理去质疑它，再动手。不要装出来的自信。"这应该能行"而没有证据，就是撒谎。
+- **L3 — Decide and proceed（决断并推进）。**被派发出去的 agent 是自主的。它绝不停下来问"我该继续吗？"它自己决断、自己执行、事后再汇报。
+- **L4 — Done means 100%, verified（完成意味着 100%，且经过验证）。**92% 不叫完成。把任务逐条列出来，逐条做完，逐条对着运行时验证。
+- **L5 — Quality over speed（质量高于速度）。**真协议不存在精简版、轻量版或快速版。403 或 401 是中止，不是通过。
+
+**Rule 是操作层面的。**一共二十条，归入 Universal、QualityGate、Orchestration、Reporting、Safety 几类。每条 Rule 都按它所约束的角色来划定范围：Master、Oracle、Worker。一个 worker 不会被它根本无从下手的编排规则压上身，一个 oracle 也不会背上 worker 那套文件加锁的纪律。同一个注册表，切出不同的片。
+
+### 漏斗
+
+机制就在这里。一个函数，`rules::agent_context_block(scope)`，构建出按角色切片的 Law 与 Rule，并在每个 agent 被派发的那一刻，把它注入进该 agent 的系统 prompt。
+
+一个钻到树里三层深的 worker，带着的六条 Law 和顶端的 Master 一模一样。谁也没法悄悄生一个把 L5 偷偷丢掉、好跑得更快的子节点——因为子节点的 prompt 是由同一个函数、从同一个注册表里组装出来的。
+
+正因为 doctrine 只是文本，所以无论后端是 Claude、GPT、Gemini，还是你以后加进来的别的东西，它的运作方式都一样。
+
+看完整内容：
+
+```
+omega rules list
+```
+
+## 架构
+
+四层，自上而下。
+
+**第 1 层 —— 人机界面。**TUI、CLI（40+ 命令）和 Telegram 桥接,在底下驱动的都是同一层。
+
+**第 2 层 —— AISB Master。**一个常驻的 agent，保持运行，挂了会自动重启，并用 `--continue` 续上它自己的对话。它内置 13 个以《黑客帝国》角色命名的 agent 模板（Oracle、Morpheus、Seraph、Keymaker、Smith、Niobe、Architect、Merovingian、Neo、Zion、Link、Construct、Pythia）。Master 是个派发器。它只做分类，把活儿路由给各个 oracle。
+
+**第 3 层 —— Oracle。**每个项目一个。它给请求分类、做规划、派发 worker，并在最后跑质量门禁。一个 oracle 负责编排，它自己不动项目代码。
+
+**第 4 层 —— Worker。**短命的。它们并行运行，每一个都被一份文件锁声明圈定到它自己的那些文件上：一个文件一个写入者，用咨询式文件锁（fs2）强制执行。这把锁是实打实的，不是君子约定。一个 worker 通过写一个 `done.json`、把 status 标成 `done_clean`、`pending` 或 `failed` 来发出完成信号；没有这个 status，它就不算完成。
+
+## 技术栈
+
+这是一个 Rust workspace，含三个 crate：
+
+- `omega-core` —— 编排、规则注册表、doctor、timeline、cleanup、patrol、文件范围加锁。
+- `omega-cli` —— `omega` 二进制，构建在 `clap` 之上。
+- `omega-tui` —— 会话管理器，构建在 `ratatui` 之上。
+
+再往下，它跑在 [rmux](https://github.com/agentik-os/rmux) 上——一个 Rust 写的终端复用器：一个守护进程、一套类型化 SDK，外加 PTY 处理。rmux 是一个类型化的 Rust 库，所以 OmegaOS 直接调用它，而不是去 shell 出 tmux 再解析文本。整个项目任何地方都没有对 tmux 的依赖。
+
+Bun 和 TypeScript 负责 PDF 报告的渲染，经由 Next.js 和 Playwright。Bash 只在一个地方露面：安装的引导脚本。
+
+## 安装
+
+你需要一台 Linux 机器和一套 Rust 工具链。安装器会从源码构建 `rmux` 和 `omega`，所以第一次跑起来不会是瞬间完成的。
+
+```
+git clone https://github.com/agentik-os/OmegaOS
+cd OmegaOS
+./install.sh
+```
+
+跑完之后，运行 doctor。
+
+## 用法
+
+`omega doctor` 是第一个该跑的命令，也是一旦觉得哪里不对劲就该跑的命令。它会把整个技术栈检查一遍：
+
+```
+OmegaOS doctor
+
+  [+] binary           omega 0.1.0
+  [+] rmux daemon      connected, 8 live session(s)
+  [+] rmux socket      /tmp/rmux-1000/default
+  [+] doctrine         6 Laws + 20 Rules
+  [+] agent CLI        claude available
+  [+] state dir        /home/hacker/.omega/state
+  [!] telegram service omega-telegram.service inactive (start: systemctl --user start omega-telegram)
+  [!] hooks            hook scripts missing from /home/hacker/.omega/hooks
+  [+] secrets dir      /home/hacker/.omega present
+  [+] memory           18422MB available
+```
+
+`[!]` 那几行是警告，不是错误。这里 Telegram 服务停着，hook 脚本也没装。两者都是可选的。其余全绿。
+
+命令面，挑你实际真会用到的列一下：
+
+```
+omega menu          启动 TUI 会话管理器
+omega doctor        对整个技术栈做一次性健康检查
+omega rules list    列出 Law 与 Rule
+omega dispatch      把一项任务派发给某个 oracle
+omega orchestrate   端到端跑完一整项任务（分类、规划、派发、监控、门禁）
+omega spawn-worker  在当前 oracle 之下生出一个 worker
+omega team          在分屏窗格里生出一队 agent
+omega done          发出任务完成信号（由 worker 调用）
+omega timeline      回放某个 oracle 从派发到完成的历史
+omega resurrect     从持久化状态里把一个崩掉的 oracle 重新生出来
+omega cleanup       对游离会话和过期状态做核弹级清理
+omega backup        把无法复现的 ~/.omega 状态备份成单个 tgz
+omega telegram      管理 Telegram 桥接
+omega pdf           生成一份 PDF 报告
+```
+
+`omega menu` 打开 TUI。rmux 守护进程拥有每一个 PTY，每个会话都带一个角色：Master、Oracle、Worker、Home（你自己的交互式 shell）或 System（像 Telegram 桥接这类守护进程）。TUI 把它们列出来，附带实时进度，让你能 kill、加锁、重命名。里头内置了 kill-all、一个状态变陈旧时用的核弹级清理，还有 doctor。
+
+日常的循环很小。`omega orchestrate` 端到端跑完一整项任务。`omega timeline` 一次一次派发地回放某个 oracle 干过的事。而当一个 oracle 崩了，`omega resurrect` 会把它从持久化状态里救回来。
+
+## 质量军火库
+
+在 `skills/audits/` 下有大约两打法证级审计——`codeaudit`、`secaudit`、`perfaudit`、`a11yaudit`、`uiuxaudit`、`flowaudit`、`seoaudit`、`apiaudit` 等等。每一个都跑一套 Gestalt-Popper 协议：先是一道清晰度门禁，接着是主动证伪——审计会去想方设法把这东西弄坏，而不是去印证它——然后对那个最要紧的单点施以 10 倍的审视，而不是把注意力均摊出去。一个 oracle 跑完一项任务时，会自动挑出与刚刚改动相匹配的那些审计，省得你去记该跑哪些。
+
+## 局限
+
+这些事，我宁愿你进来之前就知道。
+
+- **Linux 优先。**在一台无头 VPS 上开发。没有 Windows。macOS 未经测试，但大体上应该能用，毕竟它就是 Rust 加 rmux。
+- TUI 假定终端支持 256 色。在 16 色终端上它会很丑。
+- 默认的 agent 运行时是 Claude Code，所以你需要 `claude` CLI 和一个 Anthropic 账号。其他 agent（pi、codex、gemini、glm）经由 `omega install` 安装也能跑，但它们被磨炼得少些。
+- **单机。**rmux 守护进程是本地的。没有跨主机的编排。
+- 这是 0.1.0。我每天都用，但你会撞上一些我还没撞过的粗糙地方。
+
+## 致谢
+
+OmegaOS 建立在许多其他人的工作之上：
+
+最大的一笔债是 [rmux](https://github.com/agentik-os/rmux)，这里一切都跑在它上面的那个 Rust 终端复用器。
+
+Rust 技术栈的其余部分：
+
+- [ratatui](https://github.com/ratatui/ratatui) 和 [crossterm](https://github.com/crossterm-rs/crossterm) —— TUI。
+- [tokio](https://github.com/tokio-rs/tokio) —— 异步运行时。
+- [clap](https://github.com/clap-rs/clap) 和 `clap_complete` —— CLI 与 shell 补全。
+- [serde](https://github.com/serde-rs/serde)，配合 `serde_json`、`serde_yaml` 和 `toml` —— 配置与状态。
+- [anyhow](https://github.com/dtolnay/anyhow) 和 [thiserror](https://github.com/dtolnay/thiserror) —— 错误处理。
+- `chrono`（时间戳）、`dirs`（路径）、`fs2`（范围声明背后的那些咨询式文件锁）、`regex`、`tempfile`、`tracing` 配合 `tracing-subscriber`（日志），以及 `reqwest`（Telegram 与 PDF 的 HTTP）。
+
+Anthropic 出品的 [Claude Code](https://www.anthropic.com) 是 agent 运行时。
+
+三笔模式上的债，是用 Rust 重新实现的，而非直接 vendor 进来：
+
+- **tmux-claude** —— 会话管理器的 UX 模式，对着 rmux SDK 重建，不带 tmux 运行时。
+- **OmegaSetup** —— 那套编排模式：dispatch、质量门禁、done 信号。
+- [earendil-works](https://github.com/earendil-works) 出品的 **Pi** —— 会话架构，具体说是 JSONL 持久化和一个 RPC 模式。
+
+## 许可证
+
+双许可，[MIT](LICENSE-MIT) 与 [Apache-2.0](LICENSE-APACHE) 任选其一，悉听尊便。标准的 Rust 惯例。挑你顺眼的那个就行。
