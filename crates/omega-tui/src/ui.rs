@@ -1,6 +1,36 @@
 use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
 use omega_core::done::DoneStatus;
-use omega_core::session::SessionRole;
+use omega_core::session::{PreviewColor, SessionRole};
+
+/// Map a preview color to a ratatui Color, PRESERVING depth so the emitted
+/// escape matches the terminal's capability. ANSI 0–15 → the 16-color named
+/// variants (emit `3x`/`9x`, render on any color terminal incl. over mosh);
+/// 16–255 → 256-indexed; true RGB → 24-bit. (Forcing everything to RGB made
+/// Claude's 16-color stream render as grey truecolor on non-truecolor terminals.)
+fn preview_to_color(c: PreviewColor) -> Color {
+    match c {
+        PreviewColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        PreviewColor::Indexed(i) => match i {
+            0 => Color::Black,
+            1 => Color::Red,
+            2 => Color::Green,
+            3 => Color::Yellow,
+            4 => Color::Blue,
+            5 => Color::Magenta,
+            6 => Color::Cyan,
+            7 => Color::Gray,
+            8 => Color::DarkGray,
+            9 => Color::LightRed,
+            10 => Color::LightGreen,
+            11 => Color::LightYellow,
+            12 => Color::LightBlue,
+            13 => Color::LightMagenta,
+            14 => Color::LightCyan,
+            15 => Color::White,
+            n => Color::Indexed(n),
+        },
+    }
+}
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -595,7 +625,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         // TTY) we are free to make it unmistakable: any row whose leading
         // visible span is the accent blue gets a full-width highlight bar
         // (▶ marker + blue background + bold).
-        const ACCENT: (u8, u8, u8) = (59, 142, 234);
+        const ACCENT: PreviewColor = PreviewColor::Indexed(12); // Claude's bright-blue selection accent
         let inner_w = area.width.saturating_sub(2) as usize;
         styled
             .iter()
@@ -621,7 +651,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     for sp in row {
                         let fg = match sp.fg {
                             Some(ACCENT) | None => Color::Rgb(150, 200, 255),
-                            Some((r, g, b)) => Color::Rgb(r, g, b),
+                            Some(c) => preview_to_color(c),
                         };
                         width += sp.text.chars().count();
                         spans.push(Span::styled(
@@ -775,8 +805,8 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .map(|sp| {
                                 let mut style =
                                     Style::default().bg(tint).add_modifier(Modifier::BOLD);
-                                if let Some((r, g, b)) = sp.fg {
-                                    style = style.fg(Color::Rgb(r, g, b));
+                                if let Some(c) = sp.fg {
+                                    style = style.fg(preview_to_color(c));
                                 }
                                 Span::styled(sp.text.clone(), style)
                             })
@@ -805,11 +835,11 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .iter()
                             .map(|sp| {
                                 let mut style = Style::default();
-                                if let Some((r, g, b)) = sp.fg {
-                                    style = style.fg(Color::Rgb(r, g, b));
+                                if let Some(c) = sp.fg {
+                                    style = style.fg(preview_to_color(c));
                                 }
-                                if let Some((r, g, b)) = sp.bg {
-                                    style = style.bg(Color::Rgb(r, g, b));
+                                if let Some(c) = sp.bg {
+                                    style = style.bg(preview_to_color(c));
                                 }
                                 if sp.bold {
                                     style = style.add_modifier(Modifier::BOLD);

@@ -620,14 +620,26 @@ impl SessionManager {
     }
 }
 
-/// One styled run of text within a preview row. Colors are RGB (already
-/// resolved from the ANSI/indexed palette) so the TUI doesn't need the
-/// rmux color enum. `None` = terminal default.
+/// A preview color, PRESERVING its original depth. Critical: converting an
+/// ANSI 16-color (what Claude/most CLIs emit) into 24-bit RGB makes the TUI
+/// emit truecolor `38;2;…` escapes — which a terminal reached over mosh / a
+/// `TERM=xterm` session renders as DEFAULT (grey). Keeping the original index
+/// lets the renderer emit the matching 16-color (`9x`) / 256 (`38;5`) escape,
+/// which renders everywhere the chrome already does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewColor {
+    /// ANSI/xterm palette index (0–15 = the 16 base colors, 16–255 = 256-cube).
+    Indexed(u8),
+    /// True 24-bit color (only when the source cell was genuinely RGB).
+    Rgb(u8, u8, u8),
+}
+
+/// One styled run of text within a preview row. `None` = terminal default.
 #[derive(Debug, Clone)]
 pub struct PreviewSpan {
     pub text: String,
-    pub fg: Option<(u8, u8, u8)>,
-    pub bg: Option<(u8, u8, u8)>,
+    pub fg: Option<PreviewColor>,
+    pub bg: Option<PreviewColor>,
     pub bold: bool,
 }
 
@@ -644,8 +656,8 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
     for r in 0..rows {
         let mut line: PreviewLine = Vec::new();
         let mut cur_text = String::new();
-        let mut cur_fg: Option<(u8, u8, u8)> = None;
-        let mut cur_bg: Option<(u8, u8, u8)> = None;
+        let mut cur_fg: Option<PreviewColor> = None;
+        let mut cur_bg: Option<PreviewColor> = None;
         let mut cur_bold = false;
         let mut started = false;
         for col in 0..cols {
@@ -655,13 +667,13 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             let attr_bits = cell.attributes.bits;
             let reverse = attr_bits & rmux_sdk::PaneAttributes::REVERSE.bits != 0;
             let bold = attr_bits & rmux_sdk::PaneAttributes::BOLD.bits != 0;
-            let mut fg = pane_color_to_rgb(&cell.foreground);
-            let mut bg = pane_color_to_rgb(&cell.background);
+            let mut fg = pane_color_to_preview(&cell.foreground);
+            let mut bg = pane_color_to_preview(&cell.background);
             if reverse {
                 std::mem::swap(&mut fg, &mut bg);
                 // ensure a visible swap even when one side was default
-                if fg.is_none() { fg = Some((0, 0, 0)); }
-                if bg.is_none() { bg = Some((200, 200, 200)); }
+                if fg.is_none() { fg = Some(PreviewColor::Indexed(0)); }
+                if bg.is_none() { bg = Some(PreviewColor::Indexed(7)); }
             }
             let glyph = if ch.is_empty() { " ".to_string() } else { ch };
             if started && fg == cur_fg && bg == cur_bg && bold == cur_bold {
@@ -693,48 +705,22 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
     out
 }
 
-/// Resolve a rmux PaneColor into an RGB triple (None = terminal default).
-fn pane_color_to_rgb(c: &rmux_sdk::PaneColor) -> Option<(u8, u8, u8)> {
+/// Resolve a rmux PaneColor into a PreviewColor, PRESERVING its depth so the
+/// renderer can emit a 16-color / 256 / truecolor escape that matches what the
+/// source actually used. `None` = terminal default. Upconverting ANSI→RGB here
+/// was the bug that rendered Claude's 16-color output as grey truecolor.
+fn pane_color_to_preview(c: &rmux_sdk::PaneColor) -> Option<PreviewColor> {
     use rmux_sdk::PaneColor;
     match c {
         PaneColor::Default | PaneColor::None | PaneColor::Terminal => None,
-        PaneColor::Rgb { red, green, blue } => Some((*red, *green, *blue)),
-        PaneColor::Ansi { index } => Some(ansi16_rgb(*index)),
-        PaneColor::BrightAnsi { index } => Some(ansi16_rgb(index.wrapping_add(8))),
-        PaneColor::Indexed { index } => Some(xterm256_rgb(*index)),
+        PaneColor::Rgb { red, green, blue } => Some(PreviewColor::Rgb(*red, *green, *blue)),
+        PaneColor::Ansi { index } => Some(PreviewColor::Indexed(index & 0x0f)),
+        PaneColor::BrightAnsi { index } => Some(PreviewColor::Indexed((index & 0x07) + 8)),
+        PaneColor::Indexed { index } => Some(PreviewColor::Indexed(*index)),
         _ => None,
     }
 }
 
-/// Standard 16-color ANSI palette → RGB.
-fn ansi16_rgb(i: u8) -> (u8, u8, u8) {
-    match i & 0x0f {
-        0 => (0, 0, 0),        1 => (205, 49, 49),   2 => (13, 188, 121),
-        3 => (229, 229, 16),   4 => (36, 114, 200),  5 => (188, 63, 188),
-        6 => (17, 168, 205),   7 => (229, 229, 229),
-        8 => (102, 102, 102),  9 => (241, 76, 76),   10 => (35, 209, 139),
-        11 => (245, 245, 67),  12 => (59, 142, 234),  13 => (214, 112, 214),
-        14 => (41, 184, 219),  _ => (255, 255, 255),
-    }
-}
-
-/// xterm 256-color index → RGB (16-231 color cube, 232-255 grayscale).
-fn xterm256_rgb(i: u8) -> (u8, u8, u8) {
-    if i < 16 {
-        return ansi16_rgb(i);
-    }
-    if i >= 232 {
-        let v = 8 + (i as u16 - 232) * 10;
-        let v = v.min(255) as u8;
-        return (v, v, v);
-    }
-    let i = i as u16 - 16;
-    let r = i / 36;
-    let g = (i % 36) / 6;
-    let b = i % 6;
-    let step = |n: u16| -> u8 { if n == 0 { 0 } else { (55 + n * 40).min(255) as u8 } };
-    (step(r), step(g), step(b))
-}
 
 fn section_order(role: &SessionRole) -> u8 {
     match role {
