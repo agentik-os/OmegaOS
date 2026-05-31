@@ -17,9 +17,9 @@ pub enum Health {
 impl Health {
     pub fn glyph(&self) -> &'static str {
         match self {
-            Health::Ok => "✓",
-            Health::Warn => "⚠",
-            Health::Fail => "✗",
+            Health::Ok => "[+]",
+            Health::Warn => "[!]",
+            Health::Fail => "[x]",
         }
     }
 }

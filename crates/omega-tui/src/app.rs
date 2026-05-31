@@ -355,7 +355,7 @@ pub fn fields_for_section(
                     continue;
                 }
                 let installed = agent.is_available();
-                let badge = if installed { "✓" } else { "✗" };
+                let badge = if installed { "[+]" } else { "[x]" };
                 let agent_name = agent.name();
                 out.push(SettingsField::Info(format!(
                     "{}  {:8}  {}",
@@ -563,7 +563,7 @@ pub fn fields_for_section(
 fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
     let mut out = Vec::new();
     let installed = agent.is_available();
-    let badge = if installed { "✓ installed" } else { "✗ not installed" };
+    let badge = if installed { "[+] installed" } else { "[x] not installed" };
     out.push(SettingsField::Info(String::new()));
     out.push(SettingsField::Info(format!("Status: {}", badge)));
     if let Some(cmd) = agent.install_command() {

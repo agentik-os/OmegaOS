@@ -1160,7 +1160,7 @@ async fn run_tui_loop(
                     } else {
                         // Switch to Sessions tab + chat-focus the new login session
                         app.status_message =
-                            Some(format!("✓ {} opened — paste the code from your browser into the chat box.", name));
+                            Some(format!("[+] {} opened — paste the code from your browser into the chat box.", name));
                         auto_focus_chat(app, &name).await;
                     }
                 }
@@ -1203,7 +1203,7 @@ async fn run_tui_loop(
                         Ok(()) => {
                             let n = values.iter().filter(|(_, v)| !v.trim().is_empty()).count();
                             app.status_message = Some(format!(
-                                "✓ Saved {} provisioning key(s) → ~/.omega/provisioning/services.env",
+                                "[+] Saved {} provisioning key(s) → ~/.omega/provisioning/services.env",
                                 n
                             ));
                         }
@@ -1254,19 +1254,19 @@ async fn run_tui_loop(
                                 .status().await.map(|s| s.success()).unwrap_or(false);
                             if systemd_ok {
                                 app.status_message = Some(
-                                    "✓ Telegram setup done — bridge running as the persistent omega-telegram service".to_string(),
+                                    "[+] Telegram setup done — bridge running as the persistent omega-telegram service".to_string(),
                                 );
                             } else {
                                 let cmd = "bash -c 'omega telegram run 2>&1 | tee /tmp/omega-telegram.log; exec bash'";
                                 match mgr.create_session("omega-telegram-bridge", None, Some(cmd)).await {
                                     Ok(_) => {
                                         app.status_message = Some(
-                                            "✓ Telegram setup done — bridge running in rmux session `omega-telegram-bridge` (no systemd)".to_string(),
+                                            "[+] Telegram setup done — bridge running in rmux session `omega-telegram-bridge` (no systemd)".to_string(),
                                         );
                                     }
                                     Err(e) => {
                                         app.status_message = Some(format!(
-                                            "✓ Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.", e
+                                            "[+] Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.", e
                                         ));
                                     }
                                 }
@@ -1323,7 +1323,7 @@ async fn run_tui_loop(
                     if let Err(e) = toggle_bool_config(&config_key) {
                         app.status_message = Some(format!("Toggle failed: {}", e));
                     } else {
-                        app.status_message = Some(format!("Toggled {} — saved ✓", config_key));
+                        app.status_message = Some(format!("Toggled {} — saved [+]", config_key));
                         // Reload the app's config so the change is reflected
                         app.config = OmegaConfig::load().unwrap_or_default();
                         // Bust the providers cache so Settings re-reads fresh.
@@ -1338,7 +1338,7 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Save failed: {}", e));
                     } else {
                         app.status_message =
-                            Some(format!("Saved {} to providers.toml ✓", config_key));
+                            Some(format!("Saved {} to providers.toml [+]", config_key));
                         // Bust the cache so the Settings panel reflects the
                         // value just typed (not the stale in-memory copy).
                         app.invalidate_providers();
@@ -1360,7 +1360,7 @@ async fn run_tui_loop(
                 Action::TelegramDisconnect => {
                     match omega_core::monitor::OmegaTelegramConfig::disconnect() {
                         Ok(true) => {
-                            app.status_message = Some("✓ Telegram bot disconnected".to_string());
+                            app.status_message = Some("[+] Telegram bot disconnected".to_string());
                         }
                         Ok(false) => {
                             app.status_message =
@@ -1636,7 +1636,7 @@ async fn cmd_install_bindings() -> Result<()> {
             .output();
         match result {
             Ok(o) if o.status.success() => {
-                println!("✓ {} → {}", key, desc);
+                println!("[+] {} → {}", key, desc);
                 installed += 1;
             }
             Ok(o) => failed.push(format!("{}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
@@ -1651,7 +1651,7 @@ async fn cmd_install_bindings() -> Result<()> {
             .output();
         match result {
             Ok(o) if o.status.success() => {
-                println!("✓ C-b {} → {}", key, desc);
+                println!("[+] C-b {} → {}", key, desc);
                 installed += 1;
             }
             Ok(o) => failed.push(format!("C-b {}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
@@ -1690,7 +1690,7 @@ bind-key o display-popup -E -w 100% -h 100% "omega menu"
 bind-key z display-popup -E -w 100% -h 100% "omega menu"
 "#;
     std::fs::write(&conf_path, content)?;
-    println!("✓ Persistent config written to {}", conf_path.display());
+    println!("[+] Persistent config written to {}", conf_path.display());
 
     // Also patch the user's ~/.rmux.conf to source this file if not already done.
     if let Some(home) = dirs::home_dir() {
@@ -1706,9 +1706,9 @@ bind-key z display-popup -E -w 100% -h 100% "omega menu"
             content.push_str(&source_line);
             content.push('\n');
             std::fs::write(&rmux_conf, content)?;
-            println!("✓ Added source-file to {}", rmux_conf.display());
+            println!("[+] Added source-file to {}", rmux_conf.display());
         } else {
-            println!("✓ ~/.rmux.conf already sources OmegaOS bindings");
+            println!("[+] ~/.rmux.conf already sources OmegaOS bindings");
         }
     }
 
@@ -1743,7 +1743,7 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
     })?;
 
     if agent.is_available() && !dry_run {
-        println!("✓ {} is already installed.", agent.display_name());
+        println!("[+] {} is already installed.", agent.display_name());
         println!("  Re-run with `--dry-run` to see the install command anyway.");
         return Ok(());
     }
@@ -1776,10 +1776,10 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
 
     // Verify
     if agent.is_available() {
-        println!("\n✓ {} is now installed and on PATH.", agent.display_name());
+        println!("\n[+] {} is now installed and on PATH.", agent.display_name());
     } else {
         println!(
-            "\n⚠ Installer reported success but `{}` is not on PATH yet.",
+            "\n[!] Installer reported success but `{}` is not on PATH yet.",
             agent.name()
         );
         println!("  You may need to restart your shell or add the binary directory to PATH.");
@@ -1896,7 +1896,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                 enabled: true,
             };
             cfg.write()?;
-            println!("✓ Telegram config saved to ~/.omega/telegram.toml");
+            println!("[+] Telegram config saved to ~/.omega/telegram.toml");
             if !cfg.label.is_empty() {
                 println!("  Label:         {}", cfg.label);
             }
@@ -1904,7 +1904,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             println!("  Chat ID:       {}", cfg.chat_id);
             if cfg.allow_user_ids.is_empty() {
                 println!("  Sender filter: only chat_id={} accepted", cfg.chat_id);
-                println!("  ⚠ For shared chats, restrict further with --user-id");
+                println!("  [!] For shared chats, restrict further with --user-id");
             } else {
                 println!("  Sender filter: only user_ids {:?} accepted", cfg.allow_user_ids);
             }
@@ -1936,7 +1936,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
         }
         TelegramAction::Disconnect => {
             match OmegaTelegramConfig::disconnect()? {
-                true => println!("✓ Telegram bot disconnected (~/.omega/telegram.toml removed)"),
+                true => println!("[+] Telegram bot disconnected (~/.omega/telegram.toml removed)"),
                 false => println!("(nothing to disconnect — no config present)"),
             }
             Ok(())
@@ -1945,7 +1945,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             if let Some(mut cfg) = OmegaTelegramConfig::read() {
                 cfg.enabled = true;
                 cfg.write()?;
-                println!("✓ Telegram bot enabled");
+                println!("[+] Telegram bot enabled");
             } else {
                 anyhow::bail!("Not configured. Run: omega telegram setup …");
             }
@@ -1955,7 +1955,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             if let Some(mut cfg) = OmegaTelegramConfig::read() {
                 cfg.enabled = false;
                 cfg.write()?;
-                println!("✓ Telegram bot disabled");
+                println!("[+] Telegram bot disabled");
             } else {
                 anyhow::bail!("Not configured.");
             }
@@ -1998,7 +1998,7 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
         ConfigAction::Set { key, value } => {
             set_config_value(&mut cfg, &key, &value)?;
             cfg.save()?;
-            println!("✓ Set {} = {}", key, value);
+            println!("[+] Set {} = {}", key, value);
             println!("Applies to all newly spawned sessions.");
         }
     }
@@ -2133,7 +2133,7 @@ async fn cmd_master() -> Result<()> {
 fn cmd_agents() -> Result<()> {
     println!("Available agents:\n");
     for agent in omega_core::agents::Agent::all() {
-        let status = if agent.is_available() { "✓" } else { "✗" };
+        let status = if agent.is_available() { "[+]" } else { "[x]" };
         let color = if agent.is_available() { "\x1b[32m" } else { "\x1b[31m" };
         println!(
             "  {}{}\x1b[0m  {:8}  {}",
@@ -2264,13 +2264,13 @@ async fn cmd_orchestrate(
 
     match outcome.status {
         omega_core::mission::OutcomeStatus::Success => {
-            println!("✓ Mission completed successfully");
+            println!("[+] Mission completed successfully");
         }
         omega_core::mission::OutcomeStatus::PartialSuccess => {
-            println!("⚠ Mission partially completed");
+            println!("[!] Mission partially completed");
         }
         omega_core::mission::OutcomeStatus::Failed => {
-            println!("✗ Mission failed");
+            println!("[x] Mission failed");
             std::process::exit(1);
         }
         omega_core::mission::OutcomeStatus::Aborted => {
@@ -2406,7 +2406,7 @@ async fn cmd_spawn_worker(
             "worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
         );
         eprintln!(
-            "⚠ worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
+            "[!] worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
         );
     }
 
@@ -2485,7 +2485,7 @@ async fn cmd_kill_all(yes: bool) -> Result<()> {
     if !yes {
         println!("Would kill {} session(s):", targets.len());
         for t in &targets {
-            println!("  ✗ {}", t);
+            println!("  [x] {}", t);
         }
         println!("Re-run with --yes to kill them.");
         return Ok(());
@@ -2541,8 +2541,8 @@ async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {
         match dispatcher.resurrect_oracle(&o).await {
             Ok(ResurrectOutcome::Resurrected) => println!("◆ resurrected {}", o),
             Ok(ResurrectOutcome::AlreadyAlive) => println!("• {} already alive — skipped", o),
-            Ok(ResurrectOutcome::NotFound) => println!("✗ no OracleState for {}", o),
-            Err(e) => println!("✗ {} failed: {}", o, e),
+            Ok(ResurrectOutcome::NotFound) => println!("[x] no OracleState for {}", o),
+            Err(e) => println!("[x] {} failed: {}", o, e),
         }
     }
     Ok(())
@@ -2584,10 +2584,10 @@ async fn cmd_doctor() -> Result<()> {
     }
     println!();
     match omega_core::doctor::overall(&checks) {
-        omega_core::doctor::Health::Ok => println!("✓ all systems healthy"),
-        omega_core::doctor::Health::Warn => println!("⚠ healthy, with warnings above"),
+        omega_core::doctor::Health::Ok => println!("[+] all systems healthy"),
+        omega_core::doctor::Health::Warn => println!("[!] healthy, with warnings above"),
         omega_core::doctor::Health::Fail => {
-            println!("✗ problems detected — see ✗ lines above");
+            println!("[x] problems detected — see [x] lines above");
             std::process::exit(1);
         }
     }
@@ -2709,7 +2709,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
     }
 
-    println!("✓ Done signal written for: {}", session);
+    println!("[+] Done signal written for: {}", session);
     Ok(())
 }
 
@@ -2776,12 +2776,12 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
 
     if unfreeze {
         pipeline.unfreeze(project)?;
-        println!("✓ Ship pipeline unfrozen for {}", project);
+        println!("[+] Ship pipeline unfrozen for {}", project);
         return Ok(());
     }
 
     if pipeline.is_frozen(project) {
-        println!("✗ Ship pipeline is FROZEN for {}. Use --unfreeze to clear.", project);
+        println!("[x] Ship pipeline is FROZEN for {}. Use --unfreeze to clear.", project);
         return Ok(());
     }
 
@@ -2789,7 +2789,7 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     let result = pipeline.execute(project, message, &Vec::<String>::new()).await;
 
     for step in &result.steps_completed {
-        let icon = if step.passed { "✓" } else { "✗" };
+        let icon = if step.passed { "[+]" } else { "[x]" };
         println!("  {} {} ({}ms)", icon, step.name, step.duration_ms);
     }
 
@@ -2804,10 +2804,10 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
             }
         }
         omega_core::ship::ShipOutcome::Failed => {
-            println!("✗ Ship failed: {}", result.error.as_deref().unwrap_or("unknown"));
+            println!("[x] Ship failed: {}", result.error.as_deref().unwrap_or("unknown"));
         }
         omega_core::ship::ShipOutcome::Frozen => {
-            println!("✗ Ship pipeline is frozen — resolve the issue first");
+            println!("[x] Ship pipeline is frozen — resolve the issue first");
         }
         omega_core::ship::ShipOutcome::Skipped => {
             println!("- Ship skipped");
@@ -2915,7 +2915,7 @@ async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
             println!("Done workers: {}", report.done_workers.join(", "));
         }
         if !report.stalled_workers.is_empty() {
-            println!("⚠ Stalled: {}", report.stalled_workers.join(", "));
+            println!("[!] Stalled: {}", report.stalled_workers.join(", "));
         }
         if !report.blocked_workers.is_empty() {
             println!("⊘ Blocked: {}", report.blocked_workers.join(", "));
@@ -2987,9 +2987,9 @@ async fn cmd_scope(session: &str, files: &[String]) -> Result<()> {
     let conflicts = omega_core::scope::check_conflicts(&config.state_dir, session, files)?;
 
     if conflicts.is_empty() {
-        println!("✓ No scope conflicts for {}", session);
+        println!("[+] No scope conflicts for {}", session);
     } else {
-        println!("✗ Scope conflicts detected:");
+        println!("[x] Scope conflicts detected:");
         for conflict in &conflicts {
             println!(
                 "  {} owns: {}",
@@ -3170,7 +3170,7 @@ async fn cmd_pdf(
     }
 
     let size = std::fs::metadata(pdf_path)?.len();
-    println!("✓ PDF generated: {} ({:.1} KB)", out, size as f64 / 1024.0);
+    println!("[+] PDF generated: {} ({:.1} KB)", out, size as f64 / 1024.0);
 
     // Send via Telegram if requested
     if send_telegram {
@@ -3253,7 +3253,7 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 
     let resp = client.post(&url).multipart(form).send().await.context("sendDocument")?;
     if resp.status().is_success() {
-        println!("✓ PDF sent via Telegram");
+        println!("[+] PDF sent via Telegram");
     } else {
         let body = resp.text().await.unwrap_or_default();
         anyhow::bail!("Telegram sendDocument failed: {}", body);
@@ -3323,7 +3323,7 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
                     r.id, r.title, kind_label, r.category, r.added_at, r.description, r.reason
                 );
                 std::fs::write(rules_dir.join(&fname), &content)?;
-                println!("  ✓ {}", fname);
+                println!("  [+] {}", fname);
             }
             println!("\n{} rules exported to {}", all.len(), rules_dir.display());
         }
@@ -3441,7 +3441,7 @@ fn cmd_sync() -> Result<()> {
     let omega_md_dst = omega_dir.join("OMEGA.md");
     if omega_md_src.exists() {
         std::fs::copy(omega_md_src, &omega_md_dst)?;
-        println!("✓ OMEGA.md → {}", omega_md_dst.display());
+        println!("[+] OMEGA.md → {}", omega_md_dst.display());
     }
 
     // Copy agents from repo if available
@@ -3464,7 +3464,7 @@ fn cmd_sync() -> Result<()> {
                 std::fs::copy(entry.path(), &dst)?;
             }
         }
-        println!("✓ Agents synced to {}", agents_dst.display());
+        println!("[+] Agents synced to {}", agents_dst.display());
     }
 
     // Copy skills from repo if available (pdfgen etc.)
@@ -3479,7 +3479,7 @@ fn cmd_sync() -> Result<()> {
             .status();
         if let Ok(s) = status {
             if s.success() {
-                println!("✓ PDF generator synced to {}", skills_dst.display());
+                println!("[+] PDF generator synced to {}", skills_dst.display());
             }
         }
     }
@@ -3499,7 +3499,7 @@ fn cmd_sync() -> Result<()> {
             if !link.exists() {
                 #[cfg(unix)]
                 std::os::unix::fs::symlink(entry.path(), &link)?;
-                println!("  ✓ Claude rule: {}", name_str);
+                println!("  [+] Claude rule: {}", name_str);
             }
         }
 
@@ -3516,11 +3516,11 @@ fn cmd_sync() -> Result<()> {
                 if !link.exists() {
                     #[cfg(unix)]
                     std::os::unix::fs::symlink(entry.path(), &link)?;
-                    println!("  ✓ Claude skill: {}", name.to_string_lossy());
+                    println!("  [+] Claude skill: {}", name.to_string_lossy());
                 }
             }
         }
-        println!("✓ Claude Code synced (rules + skills)");
+        println!("[+] Claude Code synced (rules + skills)");
     }
 
     // ── Gemini CLI integration ──
@@ -3532,11 +3532,11 @@ fn cmd_sync() -> Result<()> {
             let content = std::fs::read_to_string(&gemini_md)?;
             if !content.contains("OmegaOS") {
                 std::fs::write(&gemini_md, format!("{}{}", content, omega_ref))?;
-                println!("✓ Gemini: appended OmegaOS reference to GEMINI.md");
+                println!("[+] Gemini: appended OmegaOS reference to GEMINI.md");
             }
         } else {
             std::fs::write(&gemini_md, omega_ref)?;
-            println!("✓ Gemini: created GEMINI.md → OmegaOS");
+            println!("[+] Gemini: created GEMINI.md → OmegaOS");
         }
     }
 
@@ -3547,11 +3547,11 @@ fn cmd_sync() -> Result<()> {
         if !agents_md.exists() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&omega_md_dst, &agents_md)?;
-            println!("✓ Codex: AGENTS.md → OMEGA.md");
+            println!("[+] Codex: AGENTS.md → OMEGA.md");
         }
     }
 
-    println!("\n✓ OmegaOS sync complete — all LLMs reference ~/.omega/");
+    println!("\n[+] OmegaOS sync complete — all LLMs reference ~/.omega/");
     Ok(())
 }
 

@@ -166,7 +166,7 @@ impl Patrol {
                         self.stall_detector.forget(&session.name);
                         report
                             .actions_taken
-                            .push(format!("Released scope for {} (ground-truth ✓)", session.name));
+                            .push(format!("Released scope for {} (ground-truth [+])", session.name));
                     }
                 }
 

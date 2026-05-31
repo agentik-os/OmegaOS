@@ -39,10 +39,10 @@ fn truncate(s: &str, max: usize) -> String {
 
 fn done_marker(status: &DoneStatus) -> &'static str {
     match status {
-        DoneStatus::DoneClean => "✓",
-        DoneStatus::Pending => "◔",
-        DoneStatus::Failed => "✗",
-        DoneStatus::Blocked => "⚠",
+        DoneStatus::DoneClean => "[+]",
+        DoneStatus::Pending => "[~]",
+        DoneStatus::Failed => "[x]",
+        DoneStatus::Blocked => "[!]",
     }
 }
 

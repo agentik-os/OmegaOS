@@ -1339,7 +1339,7 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
             "KILL ALL sessions"
         };
         app.status_message =
-            Some(format!("⚠ {} — press Enter again to CONFIRM, Esc to cancel", verb));
+            Some(format!("[!] {} — press Enter again to CONFIRM, Esc to cancel", verb));
         return Action::None;
     }
 

@@ -311,9 +311,9 @@ fn draw_agent_picker(frame: &mut Frame, app: &App, session_name: &str) {
             let selected = i == app.agent_picker_index;
             let prefix = if selected { "▶ " } else { "  " };
             let availability = if agent.is_available() {
-                Span::styled(" ✓ ", Style::default().fg(Color::Green))
+                Span::styled(" [+] ", Style::default().fg(Color::Green))
             } else {
-                Span::styled(" ✗ ", Style::default().fg(Color::Red))
+                Span::styled(" [x] ", Style::default().fg(Color::Red))
             };
             let label_style = if selected {
                 Style::default()
@@ -2088,9 +2088,9 @@ fn mask_key(key: &str) -> String {
 
 fn availability(lines: &mut Vec<Line<'static>>, agent: omega_core::agents::Agent) {
     let (icon, color, label) = if agent.is_available() {
-        ("✓", Color::Green, "installed")
+        ("[+]", Color::Green, "installed")
     } else {
-        ("✗", Color::Red, "not installed")
+        ("[x]", Color::Red, "not installed")
     };
     lines.push(Line::from(vec![
         Span::raw("  "),
