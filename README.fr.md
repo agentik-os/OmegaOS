@@ -41,6 +41,8 @@ Pour tout voir :
 omega rules list
 ```
 
+![omega rules list — les 6 Lois et 20 Règles, affichées par OmegaOS](assets/omega-rules.svg)
+
 ## Architecture
 
 Quatre niveaux, de haut en bas.

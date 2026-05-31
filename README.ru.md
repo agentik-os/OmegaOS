@@ -41,6 +41,8 @@ OmegaOS — это не библиотека, которую вы импорти
 omega rules list
 ```
 
+![omega rules list — 6 Законов и 20 Правил, выводимые OmegaOS](assets/omega-rules.svg)
+
 ## Архитектура
 
 Четыре уровня, сверху вниз.

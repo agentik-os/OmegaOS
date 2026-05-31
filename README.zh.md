@@ -41,6 +41,8 @@ OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上
 omega rules list
 ```
 
+![omega rules list —— OmegaOS 输出的 6 条 Law 与 20 条 Rule](assets/omega-rules.svg)
+
 ## 架构
 
 四层，自上而下。
