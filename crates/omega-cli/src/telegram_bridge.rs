@@ -2597,7 +2597,8 @@ impl TelegramBotEngine {
                  /dispatch <code>&lt;Project&gt; &lt;mission&gt;</code> — preview brief + confirm button → oracle\n\
                  /aisb <code>text</code> — send to AISB Master\n\
                  /relay <code>session text</code> — send to specific session\n\
-                 /kill <code>session</code> — kill a session\n\n\
+                 /kill <code>session</code> — kill a session\n\
+                 /killall — kill ALL sessions (keeps bridge + master); <code>/killall confirm</code> to execute\n\n\
                  <b>Account &amp; Billing:</b>\n\
                  /account — account card + login/switch/billing\n\
                  /account <code>&lt;provider&gt;</code> — list saved accounts for that provider\n\
@@ -2726,6 +2727,61 @@ impl TelegramBotEngine {
                     Err(e) => Some(format!(
                         " Could not kill <code>{}</code>: {}",
                         formatting::escape_html(session),
+                        formatting::escape_html(&e.to_string())
+                    )),
+                }
+            }
+
+            "/killall" => {
+                // Kill every session EXCEPT infrastructure (this Telegram bridge
+                // + the AISB master), so the bot survives to report back.
+                // Destructive → require an explicit `/killall confirm`.
+                let sessions = match self.mgr.list_sessions().await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Some(format!(
+                            "Could not list sessions: {}",
+                            formatting::escape_html(&e.to_string())
+                        ))
+                    }
+                };
+                let keep = omega_core::cleanup::infrastructure_keep(&sessions);
+                let targets: Vec<String> = sessions
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .filter(|n| !keep.contains(n))
+                    .collect();
+                if targets.is_empty() {
+                    return Some(
+                        "Nothing to kill — only infrastructure (bridge, master) is live."
+                            .to_string(),
+                    );
+                }
+                if rest.trim() != "confirm" {
+                    let list = targets
+                        .iter()
+                        .map(|t| format!("• <code>{}</code>", formatting::escape_html(t)))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    return Some(format!(
+                        "⚠ <b>/killall</b> would kill {} session(s):\n{}\n\n\
+                         Infra (bridge, master) is kept. Send <code>/killall confirm</code> to proceed.",
+                        targets.len(),
+                        list
+                    ));
+                }
+                match omega_core::cleanup::kill_all(&self.mgr, &keep).await {
+                    Ok(killed) => Some(format!(
+                        "☠ Killed {} session(s): {}",
+                        killed.len(),
+                        killed
+                            .iter()
+                            .map(|k| formatting::escape_html(k))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    Err(e) => Some(format!(
+                        "Kill-all failed: {}",
                         formatting::escape_html(&e.to_string())
                     )),
                 }
