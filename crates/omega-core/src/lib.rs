@@ -47,4 +47,5 @@ pub mod ship;
 pub mod skill_registry;
 pub mod sysinfo;
 pub mod team;
+pub mod timeline;
 pub mod verifier;

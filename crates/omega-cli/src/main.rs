@@ -268,6 +268,12 @@ enum Commands {
     /// Telegram service, secrets, memory. Run it first after a fresh install.
     Doctor,
 
+    /// Replay an oracle's full dispatch→done history (debug stuck missions).
+    Timeline {
+        /// Oracle session name (e.g. oracle-Causio-1).
+        oracle: String,
+    },
+
     /// Interactive AISB Master chat REPL (runs inside the aisb-master
     /// pane). Each line you type is injected into the running bot exactly
     /// as if it had arrived from Telegram — same brain, same response,
@@ -395,6 +401,7 @@ async fn main() -> Result<()> {
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
         Some(Commands::Doctor) => cmd_doctor().await,
+        Some(Commands::Timeline { oracle }) => cmd_timeline(&oracle).await,
         Some(Commands::Usage { check }) => {
             if check {
                 // --check: actively fetch from the OAuth endpoint + alert on threshold.
@@ -2366,6 +2373,33 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     println!("  {}", report.summary());
     for note in &report.notes {
         println!("  - {}", note);
+    }
+    Ok(())
+}
+
+async fn cmd_timeline(oracle: &str) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    match omega_core::timeline::build(&config.state_dir, oracle)? {
+        Some(tl) => {
+            println!("◆ {} [{}]  phase={}", tl.oracle_name, tl.project, tl.phase);
+            println!();
+            for e in &tl.events {
+                println!("  {}  {} {}", e.at.format("%m-%d %H:%M:%S"), e.marker, e.text);
+            }
+            println!("\n{} event(s)", tl.events.len());
+        }
+        None => {
+            println!("No timeline — no OracleState for '{}'.", oracle);
+            let states = omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir);
+            if states.is_empty() {
+                println!("(no oracles have written state yet)");
+            } else {
+                println!("Known oracles:");
+                for s in states {
+                    println!("  - {}", s.oracle_name);
+                }
+            }
+        }
     }
     Ok(())
 }
