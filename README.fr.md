@@ -51,6 +51,22 @@ Quatre niveaux, de haut en bas.
 
 **Niveau 4 — Workers.** Éphémères. Ils tournent en parallèle, et chacun est cadré à ses propres fichiers par une revendication de verrou : un seul rédacteur par fichier, garanti par des verrous de fichiers consultatifs (fs2). Le verrou est réel, ce n'est pas une convention. Un worker signale qu'il a fini en écrivant un `done.json` dont le statut vaut `done_clean`, `pending` ou `failed` ; sans ce statut, ce n'est pas terminé.
 
+## Comment se déroule une mission
+
+Une requête arrive par l'une de trois voies : la TUI, la CLI `omega`, ou le pont Telegram. Quel que soit son point de départ, elle atterrit sur l'AISB Master. Le Master la lit, la classe, et l'aiguille vers l'oracle responsable du projet concerné. Il ne touche à aucun fichier. Tout son rôle se résume à décider où part le travail.
+
+L'Oracle prend ensuite le relais. Il est responsable d'un seul projet : il planifie la mission, la découpe en tâches, et dépêche un worker par tâche. Quand les workers rendent leur compte, il passe un contrôle qualité, puis fait remonter le rapport dans la chaîne. Ce qu'il ne fait jamais, c'est éditer le code du projet. Le correcteur et le rédacteur sont des agents distincts, si bien que la note n'est pas une auto-évaluation. Comme le correcteur n'a pas écrit le code, sa note est indépendante.
+
+Les workers ont une durée de vie courte et s'exécutent en parallèle. Avant d'écrire dans un fichier, un worker se réserve ce fichier par un verrou consultatif (via `fs2`) : deux workers ne peuvent donc physiquement pas écrire le même fichier en même temps. On obtient ainsi un seul rédacteur par fichier, garanti par le verrou plutôt que par convention. Un worker accomplit sa tâche, confronte le résultat au comportement réel à l'exécution, et écrit un `done.json` portant le statut `done_clean`, `pending` ou `failed`. L'Oracle lit ce fichier, en accuse réception, et clôt la session. Tant que le statut n'est pas `done_clean`, la mission n'est pas terminée.
+
+Un worker n'est pas obligé de mâcher ses sous-tâches une à une. Il peut exécuter un Workflow dans son propre processus : engendrer des sous-agents en parallèle, vérifier leurs sorties, et les fondre en une seule réponse. La revue de code en use, tout comme la recherche, les audits et le travail de design. C'est en général moins coûteux, et le résultat est meilleur que de dépêcher un nouveau worker pour chaque sous-tâche.
+
+La vérification est délibérément contradictoire : un worker qui rapporte « terminé » ne clôt pas le contrôle ; son affirmation doit encore être vérifiée. Chaque affirmation passe par des agents indépendants, et ne survit que si une majorité (deux sur trois) s'accordent. Chaque constat est confronté aux autres agents avant d'être accepté. Les audits du Quality Arsenal se branchent précisément ici, au niveau du contrôle.
+
+Tout cela repose sur l'entonnoir doctrinal décrit plus haut : chaque agent, à chaque niveau, reçoit les Lois et Règles cadrées à son rôle au moment même où il est dépêché. Un worker situé trois niveaux plus bas reçoit les mêmes règles L0–L5 que le Master.
+
+Cette section du README en est elle-même un exemple. Elle est née d'un Workflow. Un agent en a rédigé le brouillon, des relecteurs indépendants l'ont passé au crible en traquant la prose générée par IA, un autre agent l'a révisé d'après leurs signalements, et des locuteurs natifs en ont assuré la traduction. Ainsi, aucune partie de ce texte n'est issue d'une seule passe non relue.
+
 ## Stack
 
 C'est un workspace Rust avec trois crates :
@@ -149,12 +165,6 @@ Le reste de la stack Rust :
 - `chrono` (horodatages), `dirs` (chemins), `fs2` (les verrous de fichiers consultatifs derrière les revendications de portée), `regex`, `tempfile`, `tracing` avec `tracing-subscriber` (logs), et `reqwest` (le HTTP pour Telegram et les PDF).
 
 [Claude Code](https://www.anthropic.com) d'Anthropic est le runtime d'agent.
-
-Trois dettes de pattern, réimplémentées en Rust plutôt que vendorées :
-
-- **tmux-claude** — les patterns d'UX du gestionnaire de sessions, reconstruits sur le SDK rmux, sans runtime tmux.
-- **OmegaSetup** — les patterns d'orchestration : dispatch, portes qualité, signaux de complétion.
-- **Pi** de [earendil-works](https://github.com/earendil-works) — l'architecture de sessions, en particulier la persistance JSONL et un mode RPC.
 
 ## Licence
 

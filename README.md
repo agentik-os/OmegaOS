@@ -51,6 +51,22 @@ Four levels, top to bottom.
 
 **Level 4 — Workers.** Ephemeral. They run in parallel, and each one is scoped to its own files by a file-lock claim: one writer per file, enforced with advisory file locks (fs2). The lock is real, not a convention. A worker signals completion by writing a `done.json` with status `done_clean`, `pending`, or `failed`; without that status it isn't done.
 
+## How a mission runs
+
+A request enters one of three ways: the TUI, the `omega` CLI, or the Telegram bridge. Wherever it starts, it lands on the AISB Master. The Master reads it, classifies it, and routes it to the oracle that owns the relevant project. It does not touch files. Its whole job is to decide where the work goes.
+
+The oracle takes it from there. It owns exactly one project, and it plans the mission, splits it into tasks, and dispatches a worker per task. When the workers report back it runs a quality gate, then reports up the chain. What it never does is edit the project's code. The grader and the writer are different agents, so the grade isn't self-assessment. Because the grader didn't write the code, its grade is independent.
+
+Workers are short-lived and run in parallel. Before a worker writes to a file it claims that file with an advisory lock (via `fs2`), so two workers physically cannot write the same file at the same time. This gives one writer per file, enforced by the lock rather than by convention. A worker does its task, checks the result against actual runtime, and writes a `done.json` with a status of `done_clean`, `pending`, or `failed`. The oracle reads that file, acknowledges, and closes the session. If the status isn't `done_clean`, the mission isn't done.
+
+A worker doesn't have to chew through its subtasks one at a time. It can run a workflow in-process: spawn parallel sub-agents, check their outputs, and combine them into one answer. Code review uses this, as do research, audits, and design work. It's usually cheaper and the output is better than dispatching a fresh worker for every subtask.
+
+Verification is deliberately adversarial: a worker reporting "done" doesn't end the check; its claim still has to be verified. Each claim goes to independent agents, and it only survives if a majority (two of three) agree. Each finding is checked against the other agents before it's accepted. The Quality Arsenal audits plug in right here, at the gate.
+
+This depends on the doctrine funnel above: every agent, at every level, gets its role-scoped Laws and Rules injected the moment it's dispatched. A worker three levels down gets the same L0–L5 rules as the Master.
+
+This README section is itself an example. A workflow produced it. One agent wrote the draft, independent readers went through it hunting for AI-generated prose, another agent revised against what they flagged, and native speakers handled the translation. So no part of this text came from a single unreviewed pass.
+
 ## Stack
 
 It's a Rust workspace with three crates:
@@ -149,12 +165,6 @@ The rest of the Rust stack:
 - `chrono` (timestamps), `dirs` (paths), `fs2` (the advisory file locks behind scope claims), `regex`, `tempfile`, `tracing` with `tracing-subscriber` (logging), and `reqwest` (Telegram and PDF HTTP).
 
 [Claude Code](https://www.anthropic.com) by Anthropic is the agent runtime.
-
-Three pattern debts, reimplemented in Rust rather than vendored:
-
-- **tmux-claude** — session-manager UX patterns, rebuilt against the rmux SDK with no tmux runtime.
-- **OmegaSetup** — the orchestration patterns: dispatch, quality gates, done signals.
-- **Pi** by [earendil-works](https://github.com/earendil-works) — session architecture, specifically JSONL persistence and an RPC mode.
 
 ## License
 

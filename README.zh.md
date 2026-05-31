@@ -51,6 +51,22 @@ omega rules list
 
 **第 4 层 —— Worker。**短命的。它们并行运行，每一个都被一份文件锁声明圈定到它自己的那些文件上：一个文件一个写入者，用咨询式文件锁（fs2）强制执行。这把锁是实打实的，不是君子约定。一个 worker 通过写一个 `done.json`、把 status 标成 `done_clean`、`pending` 或 `failed` 来发出完成信号；没有这个 status，它就不算完成。
 
+## 一个任务是怎么跑起来的
+
+一个请求可以从三个入口进来：TUI、`omega` CLI，或者 Telegram 桥接。无论从哪里出发，它最终都会落到 AISB Master 手里。Master 读取它、分类它，再把它路由到负责相关项目的那个 oracle。它不碰任何文件。它的全部职责就是决定活儿该往哪儿走。
+
+接下来由 oracle 接手。它名下只管一个项目；它来规划任务、把任务拆成若干子任务，然后给每个子任务派发一个 worker。当各个 worker 汇报回来，它跑一道质量门禁，再把结果向上逐级汇报。它唯一不会做的事，就是改动该项目的代码。打分的 agent 和写代码的 agent 不是同一个，所以这个分数不是自评。正因为打分者没写过这段代码，它给的分才是独立的。
+
+worker 都是短生命周期的，并行运行。一个 worker 在写某个文件之前，会先用一把建议锁（通过 `fs2`）把那个文件占住，所以两个 worker 在物理上根本没法同时写同一个文件。这样就保证了每个文件只有一个写入者——靠的是锁，而不是靠约定。worker 做完自己那份活，对照真实运行时核对结果，然后写出一份 `done.json`，状态是 `done_clean`、`pending` 或 `failed` 之一。oracle 读这份文件，确认，然后关闭会话。只要状态不是 `done_clean`，任务就不算完成。
+
+worker 并不非得一个一个地啃自己的子任务。它可以在进程内跑一个 Workflow：派生一批并行的子 agent，核对它们的输出，再把它们汇成一个答案。代码评审就是这么干的，调研、审计和设计工作也一样。这通常比为每个子任务都派发一个全新 worker 更省，而且产出更好。
+
+验证是刻意做成对抗式的：一个 worker 报了「done」并不会就此结束核查；它的说法仍然必须被验证。每条说法都交给若干独立的 agent，只有在多数（三取二）认可时它才能存活下来。每一条结论在被接纳之前，都要和其他 agent 互相比对核验。Quality Arsenal 那套审计，正是接在这里——接在门禁这一环。
+
+这一切都依赖前面讲的那个 doctrine 漏斗：每个 agent，在每一层级，一被派发,就会立刻被注入按角色裁剪过的那套 Laws 和 Rules。往下三层的一个 worker，拿到的 L0–L5 规则和 Master 拿到的一模一样。
+
+这一节 README 本身就是个例子。它是一个 Workflow 产出的。一个 agent 写了初稿，几个独立的审阅者逐句过了一遍、专门揪那些一看就是 AI 写出来的腔调，另一个 agent 对着他们标出来的地方做了修订，再由母语者完成翻译。所以这段文字没有哪一部分是出自某一次没人复核的单遍生成。
+
 ## 技术栈
 
 这是一个 Rust workspace，含三个 crate：
@@ -149,12 +165,6 @@ Rust 技术栈的其余部分：
 - `chrono`（时间戳）、`dirs`（路径）、`fs2`（范围声明背后的那些咨询式文件锁）、`regex`、`tempfile`、`tracing` 配合 `tracing-subscriber`（日志），以及 `reqwest`（Telegram 与 PDF 的 HTTP）。
 
 Anthropic 出品的 [Claude Code](https://www.anthropic.com) 是 agent 运行时。
-
-三笔模式上的债，是用 Rust 重新实现的，而非直接 vendor 进来：
-
-- **tmux-claude** —— 会话管理器的 UX 模式，对着 rmux SDK 重建，不带 tmux 运行时。
-- **OmegaSetup** —— 那套编排模式：dispatch、质量门禁、done 信号。
-- [earendil-works](https://github.com/earendil-works) 出品的 **Pi** —— 会话架构，具体说是 JSONL 持久化和一个 RPC 模式。
 
 ## 许可证
 
