@@ -76,6 +76,10 @@ pub enum Wave {
 }
 
 impl Wave {
+    /// Scheduling-tier ordinal. NOTE: `W1`/`W2`/`W3` are intentionally peers
+    /// (all ordinal 1) — intra-implementation order is enforced by the DAG
+    /// (`depends_on`), not by wave. Only terminal tiers (`Audit`=2, `Deploy`=3)
+    /// use the ordinal, via `wave_open`, to wait for all lower tiers.
     pub fn ordinal(&self) -> u8 {
         match self {
             Wave::Foundation => 0,
