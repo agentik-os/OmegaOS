@@ -139,6 +139,11 @@ impl OracleState {
     }
 
     pub fn register_worker(&mut self, entry: WorkerEntry) {
+        // Idempotent — never double-register the same session (retry / concurrent
+        // dispatch would otherwise duplicate the entry and break terminal detection).
+        if self.workers.iter().any(|w| w.session_name == entry.session_name) {
+            return;
+        }
         self.workers.push(entry);
     }
 
@@ -149,11 +154,17 @@ impl OracleState {
     }
 
     pub fn all_workers_terminal(&self) -> bool {
+        // Blocked + Stalled are terminal too — a worker in either state will not
+        // progress on its own, so the oracle must move on (to Verify/Report)
+        // instead of hanging in Monitor forever waiting for done_clean/failed.
         !self.workers.is_empty()
             && self.workers.iter().all(|w| {
                 matches!(
                     w.status,
-                    WorkerEntryStatus::DoneClean | WorkerEntryStatus::Failed
+                    WorkerEntryStatus::DoneClean
+                        | WorkerEntryStatus::Failed
+                        | WorkerEntryStatus::Blocked
+                        | WorkerEntryStatus::Stalled
                 )
             })
     }

@@ -151,11 +151,25 @@ impl WorkerRuntime for RmuxRuntime<'_> {
             scope::claim_or_reject(&self.state_dir, &session, step.files_to_touch.clone())
                 .with_context(|| format!("scope claim for {session}"))?;
         }
+        // THE FUNNEL — inject the Worker-scoped Laws + operational rules. This
+        // plan-run/executor dispatch path previously spawned workers with NO
+        // doctrine; mirror cmd_spawn_worker so every dispatched agent gets it.
+        let mut full_brief = brief.to_string();
+        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
+        if !ctx.is_empty() {
+            full_brief.push_str("\n\n");
+            full_brief.push_str(&ctx);
+        }
         let cwd = cwd.to_string_lossy();
-        self.mgr
-            .create_session_with_agent(&session, Some(&cwd), self.agent, Some(brief))
+        if let Err(e) = self
+            .mgr
+            .create_session_with_agent(&session, Some(&cwd), self.agent, Some(&full_brief))
             .await
-            .with_context(|| format!("spawning {session}"))?;
+        {
+            // Roll back the scope claim so a failed spawn doesn't lock files forever.
+            let _ = scope::ScopeClaim::release(&self.state_dir, &session);
+            return Err(e).with_context(|| format!("spawning {session}"));
+        }
         Ok(session)
     }
 
