@@ -406,14 +406,14 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
                 KeyCode::Enter => {
                     let category = crate::app::NEW_PROJECT_CATEGORIES[sel].0.to_string();
-                    if category == "client" {
-                        // Client → choose/create a credential group (separate accounts).
+                    if category == "customer" {
+                        // Customer → choose/create a credential group (separate accounts).
                         app.new_project_cred_group = None;
                         app.input_buffer = String::new();
                         let groups = omega_core::provisioning::list_groups().join(", ");
                         app.input_mode = InputMode::NewProjectCredGroup(name, category);
                         app.status_message = Some(format!(
-                            "Credential group — existing: {}  —  type one to reuse OR a new client name (Enter, Esc=default)",
+                            "Credential group — existing: {}  —  type one to reuse OR a new customer name (Enter, Esc=default)",
                             groups
                         ));
                     } else {

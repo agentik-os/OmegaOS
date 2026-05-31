@@ -100,8 +100,9 @@ pub enum InputMode {
 /// the `/omega-new-project` skill; `label` is what the picker shows. Single
 /// source of truth for both the menu UI and the spawned command.
 pub const NEW_PROJECT_CATEGORIES: &[(&str, &str)] = &[
-    ("works", "Works — personal / internal  (work/ under your projects dir)"),
-    ("client", "Client work  (clients/ under your projects dir)"),
+    ("customer", "Customer — client work  (customers/ under your projects dir)"),
+    ("side-business", "Side business — your own products  (side-business/ under your projects dir)"),
+    ("tools", "Tools — internal tooling / libraries  (tools/ under your projects dir)"),
 ];
 /// Stacks by project type. `id` is passed to /omega-new-project (which branches
 /// per id); `label` carries the type hint. Aligned with R-STACK doctrine.

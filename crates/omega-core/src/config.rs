@@ -117,15 +117,27 @@ impl OmegaConfig {
         Ok(())
     }
 
-    /// Resolve a project category (works/client/personal/...) to an absolute
-    /// directory under `projects_dir`. Cross-user — no hardcoded paths.
+    /// Resolve a project category (customer/side-business/tools/personal/...)
+    /// to an absolute directory under `projects_dir`. Cross-user — no hardcoded
+    /// paths.
     pub fn resolve_category_path(&self, category: &str) -> PathBuf {
-        match category {
-            "client" | "clients" => self.projects_dir.join("clients"),
-            "personal" | "life" | "1-life" => self.projects_dir.join("1-life"),
-            "works" | "work" => self.projects_dir.join("work"),
-            other => self.projects_dir.join(other),
-        }
+        // New installs use customer / side-business / tools. Older layouts used
+        // clients / work / 1-life. Prefer an existing conventional dir so we
+        // don't fragment a user's tree, then fall back to the new canonical name.
+        let candidates: &[&str] = match category {
+            "customer" | "customers" | "client" | "clients" => &["customers", "clients"],
+            "side-business" | "side_business" | "sidebusiness" | "work" | "works" => {
+                &["side-business", "work"]
+            }
+            "tool" | "tools" => &["tools"],
+            "personal" | "life" | "1-life" => &["1-life", "personal"],
+            other => return self.projects_dir.join(other),
+        };
+        candidates
+            .iter()
+            .map(|c| self.projects_dir.join(c))
+            .find(|p| p.is_dir())
+            .unwrap_or_else(|| self.projects_dir.join(candidates[0]))
     }
 
     pub fn find_project(&self, name: &str) -> Option<&ProjectConfig> {
@@ -142,9 +154,9 @@ impl OmegaConfig {
                 continue;
             }
             let category = match dir.file_name().and_then(|n| n.to_str()) {
-                Some("clients") => ProjectCategory::Client,
-                Some("1-life") => ProjectCategory::Personal,
-                _ => ProjectCategory::Work,
+                Some("clients") | Some("customers") => ProjectCategory::Client,
+                Some("1-life") | Some("personal") => ProjectCategory::Personal,
+                _ => ProjectCategory::Work, // work, side-business, tools, ...
             };
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {

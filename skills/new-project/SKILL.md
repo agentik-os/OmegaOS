@@ -43,10 +43,14 @@ asked interactively. Never block on a value the menu already supplied.
 2. **Stack**: if missing or unknown → AskUserQuestion listing the table above.
    Lock `nextstack` for now.
 3. **Category** (the guiding branch) — if missing, AskUserQuestion:
-   - `works` → personal/internal → `~/VibeCoding/work/<name>`
-   - `client` → client work → `~/VibeCoding/clients/<name>`
-   (AgentikOS ecosystem also → `~/VibeCoding/work/`. Life → `~/VibeCoding/1-life/`.)
-   The category also picks the **git identity** later (see Phase 4).
+   - `customer` → client work → `<projects_dir>/customers/<name>` (falls back to
+     an existing `clients/` if that's the user's layout)
+   - `side-business` → your own products → `<projects_dir>/side-business/<name>`
+     (falls back to an existing `work/`)
+   - `tools` → internal tooling / libraries → `<projects_dir>/tools/<name>`
+   Resolve `<projects_dir>` from `~/.omega/config.toml` (key `projects_dir`),
+   never a hardcoded `~/VibeCoding`. Life → `<projects_dir>/1-life/`. The category
+   also picks the **git identity** later (see Phase 4).
 4. **Name**: if missing → ask. Validate: lowercase, `[a-z0-9-]`, not already a
    dir under the resolved category path, not already in `~/.omega/projects.json`.
 5. **React Flow option**: AskUserQuestion "Inclure React Flow (systèmes de
@@ -54,7 +58,9 @@ asked interactively. Never block on a value the menu already supplied.
 6. Echo the resolved plan in 3 lines and proceed (no confirmation gate when the
    menu supplied everything — Law L3).
 
-Set `PROJECT_DIR="$HOME/VibeCoding/<category-path>/<name>"`.
+Set `PROJECT_DIR="<projects_dir>/<category-path>/<name>"` using the resolved
+`projects_dir` and the category→path mapping above (customers / side-business /
+tools, falling back to an existing `clients/` or `work/`).
 
 ---
 
@@ -196,7 +202,8 @@ Then create:
    Also write `.env.example` with the same keys blanked (committed).
 2. Push the non-public vars to Vercel (`CAN_VERCEL`): `vercel env add <KEY> production` via API/CLI with `--token`.
 3. **Git identity by category** (Law R-FICHE): set `git config user.email` —
-   client → that client's email; works/AgentikOS → `x@agentik-os.com`. Commit
+   customer → that customer's email; side-business / tools / AgentikOS →
+   `x@agentik-os.com`. Commit
    the scaffold. Push to origin if the repo was created.
 4. **Register** in `~/.omega/projects.json` (append an entry: name, path,
    category, created date) so it shows up in the TUI Projects tab immediately.
