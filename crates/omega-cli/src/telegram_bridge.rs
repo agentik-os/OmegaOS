@@ -1267,6 +1267,10 @@ impl TelegramBotEngine {
                 self.send_main_menu(chat_id).await;
                 true
             }
+            "/keyboard" => {
+                self.send_reply_keyboard(chat_id).await;
+                true
+            }
             "/killall" => {
                 let (text, kb) = self.killall_confirm_card().await;
                 let _ = self.send_html_with_keyboard(chat_id, &text, &kb).await;
@@ -2323,6 +2327,25 @@ impl TelegramBotEngine {
         let _ = self.client.post(&url).json(&body).send().await;
     }
 
+    /// Install a persistent reply-keyboard (bottom of chat) with the top actions.
+    async fn send_reply_keyboard(&self, chat_id: i64) {
+        let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({
+            "chat_id": chat_id,
+            "text": "⌨️ Quick keyboard installed — tap below or type a command.",
+            "reply_markup": {
+                "keyboard": [
+                    [{"text": "/menu"}, {"text": "/status"}],
+                    [{"text": "/sessions"}, {"text": "/audits"}],
+                    [{"text": "/dispatch"}, {"text": "/model"}]
+                ],
+                "resize_keyboard": true,
+                "is_persistent": true
+            }
+        });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
+
     /// Build the kill-all confirmation card: lists the sessions that would die
     /// (infra kept), with Confirm / Cancel buttons.
     async fn killall_confirm_card(&self) -> (String, InlineKeyboardMarkup) {
@@ -2399,14 +2422,50 @@ impl TelegramBotEngine {
     // ── Interactive UI: audits (Quality Arsenal) ──────────────────────────
 
     /// `/audits` card: every audit as a tappable button + Full-audit + Close.
-    fn audits_list_card(&self) -> (String, InlineKeyboardMarkup) {
+    /// Super-category of an audit, by id keyword — robust without matching the
+    /// full AuditDomain enum.
+    fn audit_group(id: &str) -> &'static str {
+        match id {
+            "codeaudit" | "logicaudit" | "dxaudit" | "depaudit" => "Code",
+            "flowaudit" | "uiuxaudit" | "designaudit" | "motionaudit" | "a11yaudit" | "copyaudit" => "UX",
+            "secaudit" | "privacyaudit" => "Security",
+            "perfaudit" | "debugaudit" | "automationaudit" | "observabilityaudit" | "releaseaudit" => "Perf/Ops",
+            "seoaudit" | "retentionaudit" | "featureaudit" | "i18naudit" => "Growth",
+            "dataaudit" | "apiaudit" => "Data/API",
+            _ => "Other",
+        }
+    }
+
+    /// `/audits` card. `filter` = None → all; Some(group) → that super-category.
+    fn audits_list_card_filtered(&self, filter: Option<&str>) -> (String, InlineKeyboardMarkup) {
         let audits = omega_core::audit::all_audits();
+        let shown: Vec<_> = audits
+            .iter()
+            .filter(|a| filter.map_or(true, |g| Self::audit_group(a.id) == g))
+            .collect();
         let text = format!(
-            "<b>🔍 Quality Arsenal</b> ({} audits)\nTap one for details + run:",
-            audits.len()
+            "<b>🔍 Quality Arsenal</b> ({}{})\nTap one for details + run:",
+            shown.len(),
+            filter.map(|g| format!(" · {}", g)).unwrap_or_default()
         );
         let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
-        for pair in audits.chunks(2) {
+        // Category filter row.
+        let cats = ["Code", "UX", "Security", "Perf/Ops", "Growth", "Data/API"];
+        for chunk in cats.chunks(3) {
+            keyboard.push(
+                chunk
+                    .iter()
+                    .map(|c| InlineKeyboardButton {
+                        text: if filter == Some(*c) { format!("▸{}", c) } else { c.to_string() },
+                        callback_data: format!("aud:cat:{}", c),
+                    })
+                    .collect(),
+            );
+        }
+        if filter.is_some() {
+            keyboard.push(vec![InlineKeyboardButton { text: "↺ All".into(), callback_data: "aud:list".into() }]);
+        }
+        for pair in shown.chunks(2) {
             keyboard.push(
                 pair.iter()
                     .map(|a| InlineKeyboardButton {
@@ -2418,9 +2477,51 @@ impl TelegramBotEngine {
         }
         keyboard.push(vec![
             InlineKeyboardButton { text: "🚀 Full audit".into(), callback_data: "aud:fullpick".into() },
+            InlineKeyboardButton { text: "📊 Scores".into(), callback_data: "aud:scorepick".into() },
             InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
         ]);
         (text, InlineKeyboardMarkup { inline_keyboard: keyboard })
+    }
+
+    fn audits_list_card(&self) -> (String, InlineKeyboardMarkup) {
+        self.audits_list_card_filtered(None)
+    }
+
+    /// Read the latest audit scores for a project from
+    /// `<project>/audits/.<name>/verdict.json` (or `audits/.<name>/`).
+    fn audit_scores_text(&self, project: &str) -> String {
+        let registry = omega_core::project_manager::ProjectRegistry::load();
+        let Some(p) = registry.projects.iter().find(|p| p.name == project) else {
+            return format!("Unknown project <code>{}</code>.", formatting::escape_html(project));
+        };
+        let dir = p.path.join("audits");
+        let mut lines = vec![format!("<b>📊 {} — audit scores</b>", formatting::escape_html(project))];
+        let mut found = 0;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            let mut subs: Vec<_> = entries.flatten().map(|e| e.path()).collect();
+            subs.sort();
+            for sub in subs {
+                let verdict = sub.join("verdict.json");
+                if let Ok(content) = std::fs::read_to_string(&verdict) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) {
+                        let name = sub.file_name().and_then(|n| n.to_str()).unwrap_or("?").trim_start_matches('.');
+                        let score = v.get("normalized_score")
+                            .or_else(|| v.get("score"))
+                            .or_else(|| v.get("normalized"))
+                            .and_then(|s| s.as_f64());
+                        if let Some(s) = score {
+                            let dot = if s >= 85.0 { "🟢" } else if s >= 70.0 { "🟡" } else { "🔴" };
+                            lines.push(format!("{} <code>{}</code> — {:.0}/100", dot, formatting::escape_html(name), s));
+                            found += 1;
+                        }
+                    }
+                }
+            }
+        }
+        if found == 0 {
+            lines.push("<i>No audit results yet. Run an audit on this project first.</i>".to_string());
+        }
+        lines.join("\n")
     }
 
     /// Card for a single audit: details + Run / Back / Close.
@@ -2491,6 +2592,11 @@ impl TelegramBotEngine {
             self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
             return;
         }
+        if let Some(group) = rest.strip_prefix("cat:") {
+            let (t, kb) = self.audits_list_card_filtered(Some(group));
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
         if let Some(id) = rest.strip_prefix("card:") {
             let (t, kb) = self.audit_card(id);
             self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
@@ -2512,6 +2618,26 @@ impl TelegramBotEngine {
                 "aud:list",
             );
             self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if rest == "scorepick" {
+            let (t, kb) = self.audit_project_picker(
+                "Show last audit scores for which project?",
+                "aud:scores:",
+                "aud:list",
+            );
+            self.edit_message_with_keyboard(chat_id, message_id, &t, &kb).await;
+            return;
+        }
+        if let Some(project) = rest.strip_prefix("scores:") {
+            let text = self.audit_scores_text(project);
+            let kb = InlineKeyboardMarkup {
+                inline_keyboard: vec![vec![
+                    InlineKeyboardButton { text: "⬅ Back".into(), callback_data: "aud:list".into() },
+                    InlineKeyboardButton { text: "✕ Close".into(), callback_data: "ui:close".into() },
+                ]],
+            };
+            self.edit_message_with_keyboard(chat_id, message_id, &text, &kb).await;
             return;
         }
         if let Some(spec) = rest.strip_prefix("run:") {
