@@ -288,14 +288,59 @@ impl Patrol {
                         if let Some(last_update) = progress.last_updated {
                             let idle_secs = (Utc::now() - last_update).num_seconds();
                             if idle_secs > AUTO_DONE_IDLE_SECS {
+                                // ── Conservative ground-truth gate ──
+                                // Ticking all todos is NOT proof the worker
+                                // finished cleanly — it may have crashed
+                                // mid-edit right after the last tick. The
+                                // strongest available "finished cleanly"
+                                // signal is the rmux session being GONE (the
+                                // process actually exited), not merely idle at
+                                // a prompt. Re-probe liveness now via the
+                                // SessionManager: `capture_pane` returns Err
+                                // when the session/pane no longer resolves —
+                                // the same dead-session idiom used by the pane
+                                // stall + orphan passes above/below. We do NOT
+                                // suppress legitimate auto-done: an alive-but-
+                                // idle worker keeps the prior behaviour, just
+                                // logged distinctly so the heuristic is visible.
+                                let session_gone =
+                                    mgr.capture_pane(&session.name).await.is_err();
+                                if session_gone {
+                                    tracing::info!(
+                                        worker = %session.name,
+                                        idle_secs,
+                                        "Auto-done: rmux session GONE — clean-exit confirmed"
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        worker = %session.name,
+                                        idle_secs,
+                                        "Auto-done HEURISTIC: session still alive but idle past \
+                                         threshold with all todos ticked — proceeding (may have \
+                                         stalled mid-edit; kill+auto-done as before)"
+                                    );
+                                    report.actions_taken.push(format!(
+                                        "Auto-done HEURISTIC (session alive, idle): {} ({}/{} todos, idle {}s)",
+                                        session.name,
+                                        progress.todos_completed,
+                                        progress.todos_total,
+                                        idle_secs,
+                                    ));
+                                }
                                 // Kill the still-live idle worker BEFORE releasing its
                                 // scope claim, so it cannot keep editing files that
                                 // another worker may immediately claim (data race).
+                                // (No-op / Err when the session is already gone.)
                                 let _ = mgr.kill_session(&session.name).await;
+                                let reason = if session_gone {
+                                    "auto-done: todos completed + session gone (clean exit confirmed); patrol signaled done"
+                                } else {
+                                    "auto-done: todos completed + idle past threshold (session still alive — heuristic); patrol killed the worker and signaled done"
+                                };
                                 let mut signal = DoneSignal::new(
                                     &session.name,
                                     DoneStatus::DoneClean,
-                                    "auto-done: todos completed + idle past threshold; patrol killed the worker and signaled done",
+                                    reason,
                                 );
                                 signal.todos_total = progress.todos_total;
                                 signal.todos_completed = progress.todos_completed;

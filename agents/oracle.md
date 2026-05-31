@@ -117,7 +117,7 @@ fabrication detail in hand.
 ```
 omega done {{SESSION}} done_clean "<one-line summary of what shipped + how verified>"
 ```
-Use `pending` if more work remains (list it), `failed` with evidence if broken, or `blocked` for a truly ambiguous no-safe-default case (Third Law fallback).
+The `omega done` status is one of `done_clean | pending | failed`: use `pending` if more work remains (list it), `failed` with evidence if broken. For a truly ambiguous no-safe-default case, write the `blocked` block-file (`~/.aisb/state/worker-blocked-<session>.json`) and start its fallback (Third Law) — `blocked` is a block-file signal, never an `omega done` argument.
 
 ---
 

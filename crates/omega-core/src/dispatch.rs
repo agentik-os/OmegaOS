@@ -2,10 +2,10 @@ use crate::config::OmegaConfig;
 use crate::done::DoneSignal;
 use crate::oracle_lifecycle::{
     OraclePromptGenerator, OracleRegistryEntry, OracleRegistryStatus, OracleRegistry,
-    OracleState, WorkerEntry, WorkerEntryStatus,
+    OracleState,
 };
 use crate::routing;
-use crate::session::{SessionManager, SessionRole};
+use crate::session::SessionManager;
 use anyhow::{bail, Result};
 use chrono::Utc;
 use std::path::Path;
@@ -163,12 +163,29 @@ impl Dispatcher {
         };
         let work_path = std::path::PathBuf::from(&work_dir);
 
-        // Use oracle registry for naming + reuse of idle oracles
+        // Use oracle registry for naming + reuse of idle oracles.
+        // A registry entry alone is NOT proof of life — an idle oracle may
+        // have crashed or been killed in rmux. Extract the candidate name as
+        // an owned Option<String> (ends the immutable borrow of `registry`),
+        // verify liveness against rmux, and only reuse it if its session is
+        // actually present; otherwise fall through to a fresh name.
         let mut registry = OracleRegistry::load(&self.config.state_dir);
-        let oracle_name = if let Some(idle) = registry.find_available(project) {
-            idle.oracle_name.clone()
-        } else {
-            registry.next_oracle_name(project)
+        let reuse_candidate: Option<String> = registry
+            .find_available(project)
+            .map(|idle| idle.oracle_name.clone());
+        let oracle_name = match reuse_candidate {
+            Some(name)
+                if self
+                    .session_mgr
+                    .list_sessions()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|s| s.name == name) =>
+            {
+                name
+            }
+            _ => registry.next_oracle_name(project),
         };
 
         // Classification + ship/god-mode detection run on the RAW message —
@@ -307,41 +324,6 @@ impl Dispatcher {
         Ok(oracle_name)
     }
 
-    /// Build worker LaunchOptions: Worker budget caps + a `/goal` condition
-    /// that is ONLY enabled when current usage is low enough to afford the
-    /// extra loop iterations `/goal` spends. Reads ~/.omega/state/usage.json
-    /// (written by `omega usage`). Claude-only; other providers ignore it.
-    fn worker_launch_opts(&self, worker_name: &str, goal: Option<String>) -> crate::agents::LaunchOptions {
-        let mut opts = crate::agents::LaunchOptions::default();
-        opts.session_name = Some(worker_name.to_string());
-        opts.effort = Some("medium".to_string());
-        opts.max_turns = Some(crate::budget::WORKER_TURNS_DEFAULT);
-        opts.max_budget_usd = Some(8.0);
-
-        // Usage gate: /goal loops cost more tokens. Only enable it when the
-        // closest cap is under 70% — otherwise we risk hitting the limit
-        // mid-mission. "Powerful when we can afford it" (user's words).
-        let usage_pct = self.current_usage_pct();
-        if usage_pct < 70 {
-            if let Some(g) = goal {
-                opts.goal_condition = Some(g);
-            }
-        }
-        opts
-    }
-
-    /// Highest of (5h, week) utilization % from the usage cache, or 0 if
-    /// unknown (fail-open: if we can't read usage, allow /goal).
-    fn current_usage_pct(&self) -> u32 {
-        let path = self.config.state_dir.join("usage.json");
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| v.get("alert_pct").and_then(|p| p.as_u64()))
-            .map(|p| p as u32)
-            .unwrap_or(0)
-    }
-
     /// Re-spawn a crashed oracle from its persisted OracleState — survives a
     /// daemon restart or an accidental kill. Returns whether it was actually
     /// resurrected, was already alive, or had no saved state.
@@ -412,154 +394,6 @@ impl Dispatcher {
             .filter(|st| !alive.contains(&st.oracle_name))
             .map(|st| st.oracle_name)
             .collect()
-    }
-
-    /// Dispatch a worker with structured context (Fresh Context Template).
-    /// Automatically registers the worker in the parent oracle's state.
-    pub async fn dispatch_worker_with_context(
-        &self,
-        oracle_name: &str,
-        task_id: &str,
-        task_name: &str,
-        ctx: &WorkerContext,
-        working_dir: &str,
-    ) -> Result<String> {
-        let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
-        let mut prompt = ctx.format_prompt(&worker_name);
-        // THE FUNNEL — Worker-scoped Laws + operational rules in one call.
-        let agent_ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
-        if !agent_ctx.is_empty() {
-            prompt.push_str("\n\n");
-            prompt.push_str(&agent_ctx);
-        }
-
-        if !ctx.files_owned.is_empty() {
-            crate::scope::claim_or_reject(
-                &self.config.state_dir,
-                &worker_name,
-                ctx.files_owned.clone(),
-            )?;
-        }
-
-        // Usage-gated /goal: loop until the worker's done.json is written.
-        let goal = format!(
-            "task complete — `omega done {} done_clean` has been called with the work verified",
-            worker_name
-        );
-        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-            .unwrap_or(crate::agents::Agent::Claude);
-        if matches!(agent, crate::agents::Agent::Claude) {
-            let opts = self.worker_launch_opts(&worker_name, Some(goal));
-            self.session_mgr
-                .create_agent_session_with_opts(&worker_name, working_dir, agent, Some(&prompt), opts)
-                .await?;
-        } else {
-            self.session_mgr
-                .create_agent_session(&worker_name, working_dir, &self.config.agent_command, Some(&prompt))
-                .await?;
-        }
-
-        // Register worker in oracle state if it exists
-        if let Ok(Some(mut oracle_state)) =
-            OracleState::read(&self.config.state_dir, oracle_name)
-        {
-            oracle_state.register_worker(WorkerEntry {
-                session_name: worker_name.clone(),
-                task_id: task_id.to_string(),
-                task_name: task_name.to_string(),
-                files_owned: ctx.files_owned.clone(),
-                dispatched_at: Utc::now(),
-                status: WorkerEntryStatus::Running,
-            });
-            let _ = oracle_state.write(&self.config.state_dir);
-        }
-
-        tracing::info!(worker = %worker_name, oracle = %oracle_name, task = %task_name, "Worker dispatched with structured context");
-        Ok(worker_name)
-    }
-
-    pub async fn dispatch_worker(
-        &self,
-        oracle_name: &str,
-        task_name: &str,
-        prompt: &str,
-        working_dir: &str,
-    ) -> Result<String> {
-        let worker_name = format!("{}-worker-{}", oracle_name.replace("oracle-", ""), task_name);
-
-        let mut worker_prompt = format!(
-            "[DISPATCHED] You are an autonomous worker. Third Law: decide and proceed, never wait.\n\n\
-             {}\n\n\
-             ## Completion\n\
-             When done: `omega done {} done_clean \"<summary>\"`\n\
-             If blocked: `omega done {} blocked \"<what's blocking>\"`\n\
-             If failed: `omega done {} failed \"<what went wrong>\"`",
-            prompt, worker_name, worker_name, worker_name
-        );
-        // THE FUNNEL — Worker-scoped Laws + operational rules in one call.
-        let agent_ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
-        if !agent_ctx.is_empty() {
-            worker_prompt.push_str("\n\n");
-            worker_prompt.push_str(&agent_ctx);
-        }
-
-        let goal = format!(
-            "task complete — `omega done {} done_clean` has been called with the work verified",
-            worker_name
-        );
-        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-            .unwrap_or(crate::agents::Agent::Claude);
-        if matches!(agent, crate::agents::Agent::Claude) {
-            let opts = self.worker_launch_opts(&worker_name, Some(goal));
-            self.session_mgr
-                .create_agent_session_with_opts(&worker_name, working_dir, agent, Some(&worker_prompt), opts)
-                .await?;
-            tracing::info!(worker = %worker_name, oracle = %oracle_name, "Worker dispatched (Claude + rules + usage-gated goal)");
-            return Ok(worker_name);
-        }
-        self.session_mgr
-            .create_agent_session(
-                &worker_name,
-                working_dir,
-                &self.config.agent_command,
-                Some(&worker_prompt),
-            )
-            .await?;
-
-        tracing::info!(worker = %worker_name, oracle = %oracle_name, "Worker dispatched");
-        Ok(worker_name)
-    }
-
-    /// Find or generate an oracle name. Checks registry first (reuse idle),
-    /// falls back to live session scan (compat), then generates a new name.
-    async fn find_available_oracle(&self, project: &str) -> Result<String> {
-        // Check registry first
-        let registry = OracleRegistry::load(&self.config.state_dir);
-        if let Some(idle) = registry.find_available(project) {
-            return Ok(idle.oracle_name.clone());
-        }
-
-        // Fallback: scan live sessions
-        let sessions = self.session_mgr.list_sessions().await?;
-        let existing_oracles: Vec<_> = sessions
-            .iter()
-            .filter(|s| {
-                s.role == SessionRole::Oracle
-                    && s.project.as_deref() == Some(project)
-            })
-            .collect();
-
-        if existing_oracles.is_empty() {
-            return Ok(format!("oracle-{}", project));
-        }
-
-        let max_index = existing_oracles
-            .iter()
-            .filter_map(|s| s.oracle_index)
-            .max()
-            .unwrap_or(1);
-
-        Ok(format!("oracle-{}-{}", project, max_index + 1))
     }
 
     pub async fn wait_for_done(

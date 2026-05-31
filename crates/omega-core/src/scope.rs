@@ -1,7 +1,9 @@
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::File;
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +103,13 @@ pub fn claim_or_reject(
     if files.is_empty() {
         return Ok(());
     }
+
+    // Serialize the check-then-write critical section behind an exclusive
+    // advisory file lock to close the TOCTOU race: without it two concurrent
+    // claimers can both pass check_conflicts then both write overlapping claims.
+    // The lock auto-releases when `lockfile` drops at the end of this function.
+    let lockfile = File::create(state_dir.join(".scope.lock"))?;
+    lockfile.lock_exclusive()?;
 
     let conflicts = check_conflicts(state_dir, session, &files)?;
     if !conflicts.is_empty() {
