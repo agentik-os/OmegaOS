@@ -750,6 +750,12 @@ pub struct App {
     /// selection highlight that plain text drops. None when browsing
     /// scrollback (plain-text path).
     pub preview_styled: Option<Vec<omega_core::session::PreviewLine>>,
+    /// Pane revision of the currently-cached styled preview. The capture is
+    /// skipped (no restyle/flatten) when the pane's revision still matches this.
+    pub preview_revision: u64,
+    /// Session name the cached preview/revision belongs to — reset the gate on
+    /// a session switch so the new pane always gets a fresh capture.
+    pub preview_session: Option<String>,
     /// Scroll position measured as LINES UP FROM THE TAIL (0 = newest line).
     /// Bottom-anchored so the view stays stable when the capture buffer grows
     /// (visible-only → full scrollback history): "3 lines up from the tail"
@@ -830,6 +836,8 @@ impl App {
             config,
             preview_content: String::new(),
             preview_styled: None,
+            preview_revision: 0,
+            preview_session: None,
             preview_inner_width: 0,
             preview_inner_height: 0,
             session_meta: std::collections::HashMap::new(),
@@ -1176,23 +1184,42 @@ impl App {
             // Tail path: capture STYLED rows + text + REAL cursor together.
             // Styled rows carry the `/` selector highlight + Claude's
             // colored UI; plain text is kept as a fallback + for scroll math.
-            match mgr.capture_pane_styled(&name).await {
-                Ok((styled, row, col, visible)) => {
+            // Revision gate: only pay the full restyle+flatten when the pane
+            // actually changed. Force a fresh capture (since=0) on a session
+            // switch so the new pane's content always loads.
+            let cache_valid = self.preview_styled.is_some()
+                && self.preview_session.as_deref() == Some(name.as_str());
+            let since = if cache_valid { self.preview_revision } else { 0 };
+            match mgr.capture_pane_styled(&name, since).await {
+                // Pane unchanged since last render — keep the cached preview,
+                // skip the ~10k-cell restyle + the text flatten entirely.
+                Ok(omega_core::session::StyledCapture::Unchanged) => {}
+                Ok(omega_core::session::StyledCapture::Changed {
+                    rows,
+                    cursor_row,
+                    cursor_col,
+                    cursor_visible,
+                    revision,
+                }) => {
                     // Flatten styled rows to plain text for scroll/cursor math.
-                    self.preview_content = styled
+                    self.preview_content = rows
                         .iter()
                         .map(|line| {
                             line.iter().map(|s| s.text.as_str()).collect::<String>()
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    self.preview_styled = Some(styled);
-                    self.preview_cursor = Some((row, col, visible));
+                    self.preview_styled = Some(rows);
+                    self.preview_cursor = Some((cursor_row, cursor_col, cursor_visible));
+                    self.preview_revision = revision;
+                    self.preview_session = Some(name.clone());
                 }
                 Err(_) => {
                     self.preview_content = String::from("(session has no pane content)");
                     self.preview_styled = None;
                     self.preview_cursor = None;
+                    self.preview_revision = 0;
+                    self.preview_session = None;
                 }
             }
         } else {

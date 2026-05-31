@@ -480,12 +480,21 @@ impl SessionManager {
     /// entirely (the user "can't see what they're selecting"). Also makes
     /// diffs, syntax highlighting, and status colors visible.
     ///
-    /// Returns (styled_rows, cursor_row, cursor_col, cursor_visible).
-    /// Adjacent same-style cells are merged into spans for cheap rendering.
+    /// Capture the visible pane as styled rows, GATED on the pane's revision.
+    ///
+    /// `since_revision` = the revision the caller last rendered. The pane's
+    /// `revision` (in every snapshot) bumps on any observable change — output,
+    /// resize, clear, cursor move. If it hasn't moved, we return
+    /// [`StyledCapture::Unchanged`] WITHOUT running `styled_rows_from_snapshot`
+    /// over ~10k cells or flattening to text — the dominant per-frame cost.
+    /// During the (frequent) "agent is thinking" pauses the preview redraws for
+    /// free off the cached rows. Pass `0` to force a fresh capture (e.g. on a
+    /// session switch). Revision `0` (stale/empty snapshot) never gates.
     pub async fn capture_pane_styled(
         &self,
         session_name: &str,
-    ) -> Result<(Vec<PreviewLine>, u16, u16, bool)> {
+        since_revision: u64,
+    ) -> Result<StyledCapture> {
         let pane = self.pane_for(session_name).await?;
         let snapshot = match pane.snapshot().await {
             Ok(s) => s,
@@ -496,9 +505,18 @@ impl SessionManager {
             }
             Err(e) => return Err(e.into()),
         };
+        if snapshot.revision != 0 && snapshot.revision == since_revision {
+            return Ok(StyledCapture::Unchanged);
+        }
         let c = snapshot.cursor;
         let rows = styled_rows_from_snapshot(&snapshot);
-        Ok((rows, c.row, c.col, c.visible))
+        Ok(StyledCapture::Changed {
+            rows,
+            cursor_row: c.row,
+            cursor_col: c.col,
+            cursor_visible: c.visible,
+            revision: snapshot.revision,
+        })
     }
 
     /// Capture the pane INCLUDING scrollback history (last `history_lines`
@@ -645,6 +663,20 @@ pub struct PreviewSpan {
 
 /// A styled preview row = a sequence of spans.
 pub type PreviewLine = Vec<PreviewSpan>;
+
+/// Result of a revision-gated styled capture. `Unchanged` means the pane's
+/// revision matched what the caller already rendered — no restyle was done and
+/// the caller should keep its cached preview.
+pub enum StyledCapture {
+    Unchanged,
+    Changed {
+        rows: Vec<PreviewLine>,
+        cursor_row: u16,
+        cursor_col: u16,
+        cursor_visible: bool,
+        revision: u64,
+    },
+}
 
 /// Convert a pane snapshot into styled rows, merging adjacent same-style
 /// cells into spans. Honors REVERSE by swapping fg/bg (that's how the
