@@ -334,12 +334,29 @@ fi
 CLAUDE_CMD_DST="$HOME/.claude/commands"
 if [[ -d "$OMEGA_SRC/.claude/commands" ]]; then
     mkdir -p "$CLAUDE_CMD_DST"
-    cp -f "$OMEGA_SRC/.claude/commands/"omega-*.md "$CLAUDE_CMD_DST/" 2>/dev/null || true
-    # /dynamic — native Dynamic Workflows trigger (the Workflow tool); not omega-prefixed
-    cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/" 2>/dev/null || true
-    SHIPPED=$(ls "$CLAUDE_CMD_DST/"omega-*.md "$CLAUDE_CMD_DST/dynamic.md" 2>/dev/null | wc -l)
+    # Each OmegaOS command ships under TWO names: its canonical /omg-<name>
+    # (short, namespaced — avoids colliding with the user's other commands)
+    # AND its legacy /omega-<name>. This is an ALIAS, never a rename — renaming
+    # would break references (patrol.rs dispatches /omega-curate; the TUI [N]
+    # New Project menu dispatches /omega-new-project). Both always work.
+    # new-project is skipped here: its engine-integrated stubs (/omg-new-project
+    # + /omega-new-project) are generated above from skills/new-project, so both
+    # names point at the can't-skip engine version, not the prose copy.
+    for src in "$OMEGA_SRC/.claude/commands/"omega-*.md; do
+        [[ -f "$src" ]] || continue
+        bn="$(basename "$src")"
+        [[ "$bn" == "omega-new-project.md" ]] && continue
+        cp -f "$src" "$CLAUDE_CMD_DST/$bn"               # /omega-<name> (legacy, unchanged)
+        cp -f "$src" "$CLAUDE_CMD_DST/omg-${bn#omega-}"  # /omg-<name>   (canonical alias)
+    done
+    # /dynamic — native Dynamic Workflows trigger — keep + add /omg-dynamic alias.
+    if [[ -f "$OMEGA_SRC/.claude/commands/dynamic.md" ]]; then
+        cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/dynamic.md"
+        cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/omg-dynamic.md"
+    fi
+    SHIPPED=$(ls "$CLAUDE_CMD_DST/"omg-*.md 2>/dev/null | wc -l)
     if [[ "$SHIPPED" -gt 0 ]]; then
-        ok "OmegaOS slash commands installed ($SHIPPED commands in $CLAUDE_CMD_DST/)"
+        ok "OmegaOS slash commands installed (/omg-* canonical + /omega-* aliases — $SHIPPED /omg-* in $CLAUDE_CMD_DST/)"
     fi
 fi
 

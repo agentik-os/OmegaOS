@@ -69,6 +69,8 @@ if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && g
 if [ -f skills/new-project/SKILL.md ] && grep -q "skills/new-project" install.sh && grep -q "omg-new-project" install.sh; then ok "/omg-new-project end-to-end skill shipped + installed"; else bad "new-project skill not shipped/wired in install.sh"; fi
 # OmegaOS slash commands are /omg-* namespaced (no collision with other commands).
 if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi
+# Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).
+if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
