@@ -89,6 +89,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::NewProjectCategory(..) | InputMode::NewProjectStack(..) => {
             draw_new_project_picker(frame, app);
         }
+        InputMode::ProvisioningSetup { step, .. } => {
+            let fields = crate::app::PROVISIONING_FIELDS;
+            let (key, hint, masked) = fields
+                .get(step)
+                .map(|f| (f.0, f.1, f.2))
+                .unwrap_or(("", "", true));
+            let title =
+                format!("Provisioning keys — {}/{}: {}", step + 1, fields.len(), key);
+            draw_simple_input_modal_owned(frame, app, &title, hint, masked);
+        }
         _ => {}
     }
 }
@@ -2680,6 +2690,17 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 "New project — stack (overlay ↑/↓)",
                 format!("[{}/{}]", category, name),
             ),
+            InputMode::ProvisioningSetup { step, .. } => {
+                let f = crate::app::PROVISIONING_FIELDS.get(*step);
+                let key = f.map(|x| x.0).unwrap_or("");
+                let masked = f.map(|x| x.2).unwrap_or(true);
+                let echo = if masked {
+                    mask_inline(&app.input_buffer)
+                } else {
+                    app.input_buffer.clone()
+                };
+                ("Provisioning keys", format!("[{}] {}", key, echo))
+            }
             InputMode::TelegramSetupToken => (
                 "Telegram setup 1/3 — BOT_TOKEN",
                 mask_inline(&app.input_buffer),

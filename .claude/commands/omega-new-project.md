@@ -61,6 +61,12 @@ if [[ -f "$PROV" ]]; then set -a; source "$PROV"; set +a; else
 fi
 ```
 
+> **Guided token entry:** the user fills these tokens without editing any file —
+> in the OmegaOS TUI, **Monitor tab → "Set up project provisioning keys" (P)** runs
+> a step-by-step wizard (Vercel → Convex → GitHub → Stripe) that writes them safely
+> to `services.env` (chmod 600, blanks skipped). If tokens are missing, point the
+> user there before falling back to PAUSE mode.
+
 Build a capability map (each ON only if its token is present):
 
 - `CAN_VERCEL`  = `[ -n "$VERCEL_TOKEN" ]`

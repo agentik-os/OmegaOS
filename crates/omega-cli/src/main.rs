@@ -1172,6 +1172,31 @@ async fn run_tui_loop(
                             .to_string(),
                     );
                 }
+                Action::ProvisioningSetup => {
+                    app.input_buffer = String::new();
+                    let fields = omega_tui::app::PROVISIONING_FIELDS;
+                    app.input_mode = omega_tui::app::InputMode::ProvisioningSetup {
+                        step: 0,
+                        collected: Vec::new(),
+                    };
+                    app.status_message =
+                        Some(format!("Step 1/{}: {}", fields.len(), fields[0].1));
+                }
+                Action::ProvisioningCommit { values } => {
+                    match omega_core::provisioning::update_services_env(&values) {
+                        Ok(()) => {
+                            let n = values.iter().filter(|(_, v)| !v.trim().is_empty()).count();
+                            app.status_message = Some(format!(
+                                "✓ Saved {} provisioning key(s) → ~/.omega/provisioning/services.env",
+                                n
+                            ));
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Provisioning save failed: {}", e));
+                        }
+                    }
+                }
                 Action::TelegramSetupCommit { bot_token, chat_id, user_ids } => {
                     let cfg = omega_core::monitor::OmegaTelegramConfig {
                         bot_token: bot_token.clone(),

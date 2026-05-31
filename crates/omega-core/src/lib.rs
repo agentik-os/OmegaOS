@@ -34,6 +34,7 @@ pub mod planner;
 pub mod progress;
 pub mod project_manager;
 pub mod projects;
+pub mod provisioning;
 pub mod providers;
 pub mod router;
 pub mod routing;

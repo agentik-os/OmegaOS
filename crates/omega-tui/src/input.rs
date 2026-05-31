@@ -26,6 +26,11 @@ pub enum Action {
     /// `/omega-new-project <stack> <category> <name>` (provision + scaffold +
     /// vision/PRD/planner). `category` is "works" | "client", `stack` a stack id.
     CreateProject { name: String, category: String, stack: String },
+    /// Start the provisioning-keys wizard (Monitor tab, Telegram-style).
+    ProvisioningSetup,
+    /// Commit the provisioning-keys wizard — (env_key, value) pairs; blanks are
+    /// ignored by the writer (existing values preserved).
+    ProvisioningCommit { values: Vec<(String, String)> },
     /// Open Claude /login in a fresh session for OAuth re-auth.
     LoginClaude,
     /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
@@ -531,6 +536,24 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 _ => Action::None,
             }
         }
+
+        // ── Provisioning-keys wizard (N skippable steps) ────────────────────
+        InputMode::ProvisioningSetup { step, collected } => match key.code {
+            KeyCode::Esc => provisioning_advance(app, collected, String::new(), step),
+            KeyCode::Enter => {
+                let value = std::mem::take(&mut app.input_buffer);
+                provisioning_advance(app, collected, value, step)
+            }
+            KeyCode::Backspace => {
+                app.input_buffer.pop();
+                Action::None
+            }
+            KeyCode::Char(c) => {
+                app.input_buffer.push(c);
+                Action::None
+            }
+            _ => Action::None,
+        },
     }
 }
 
@@ -884,6 +907,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Monitor tab letter shortcuts
         KeyCode::Char('L') if app.tab == Tab::Monitor => Action::LoginClaude,
         KeyCode::Char('T') if app.tab == Tab::Monitor => Action::TelegramSetup,
+        KeyCode::Char('P') if app.tab == Tab::Monitor => Action::ProvisioningSetup,
         KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
 
@@ -1118,6 +1142,7 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
         MonitorAction::Login => Action::LoginClaude,
         MonitorAction::TelegramSetup => Action::TelegramSetup,
         MonitorAction::TelegramDisconnect => Action::TelegramDisconnect,
+        MonitorAction::ProvisioningSetup => Action::ProvisioningSetup,
         MonitorAction::RefreshBilling => Action::RefreshBilling,
     }
 }
@@ -1397,6 +1422,39 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
         }
         // Per-agent variants handled above
         _ => Action::None,
+    }
+}
+
+/// Advance the provisioning-keys wizard: record `value` for the current `step`,
+/// then move to the next field or, when the last field is done, emit the commit
+/// action with all (key, value) pairs zipped from `PROVISIONING_FIELDS`.
+fn provisioning_advance(
+    app: &mut App,
+    mut collected: Vec<String>,
+    value: String,
+    step: usize,
+) -> Action {
+    let fields = crate::app::PROVISIONING_FIELDS;
+    collected.push(value);
+    let next = step + 1;
+    if next >= fields.len() {
+        app.input_mode = InputMode::Normal;
+        let values: Vec<(String, String)> = fields
+            .iter()
+            .zip(collected.iter())
+            .map(|((k, _, _), v)| (k.to_string(), v.clone()))
+            .collect();
+        Action::ProvisioningCommit { values }
+    } else {
+        app.input_buffer = String::new();
+        app.input_mode = InputMode::ProvisioningSetup { step: next, collected };
+        app.status_message = Some(format!(
+            "Step {}/{}: {}",
+            next + 1,
+            fields.len(),
+            fields[next].1
+        ));
+        Action::None
     }
 }
 

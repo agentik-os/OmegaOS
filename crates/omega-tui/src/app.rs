@@ -66,6 +66,15 @@ pub enum InputMode {
     /// `sel` indexes `NEW_PROJECT_STACKS`.
     NewProjectStack(String, String, usize),
 
+    /// Provisioning-keys wizard (Monitor tab, Telegram-style). `step` indexes
+    /// `PROVISIONING_FIELDS`; `collected` holds the values entered so far (one
+    /// per completed step, in order). The current field's value is in
+    /// `input_buffer`.
+    ProvisioningSetup {
+        step: usize,
+        collected: Vec<String>,
+    },
+
     /// Telegram setup wizard — step 1: bot token
     TelegramSetupToken,
     /// Step 2: chat id (carries the bot token)
@@ -91,6 +100,18 @@ pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[(
     "nextstack",
     "Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit",
 )];
+
+/// Provisioning-keys wizard fields (Monitor tab). `(env_key, prompt, masked)` in
+/// step order. `masked` hides the secret in the input echo. Written to
+/// `~/.omega/provisioning/services.env` by `omega_core::provisioning`. Each step
+/// is skippable (Esc = leave blank → keeps any existing value).
+pub const PROVISIONING_FIELDS: &[(&str, &str, bool)] = &[
+    ("VERCEL_TOKEN", "Vercel token — vercel.com/account/tokens (Full Account). Esc to skip.", true),
+    ("CONVEX_TEAM_TOKEN", "Convex team token — dashboard → Team Settings → access token. Esc to skip.", true),
+    ("CONVEX_TEAM_SLUG", "Convex team slug — your team's URL slug (not secret). Esc to skip.", false),
+    ("GITHUB_TOKEN", "GitHub token (repo+workflow) — or Esc to skip & use `gh auth`.", true),
+    ("STRIPE_SECRET_KEY", "Stripe secret key — dashboard → Developers → API keys. Esc to skip.", true),
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
@@ -618,6 +639,7 @@ pub enum MonitorAction {
     Login,
     TelegramSetup,
     TelegramDisconnect,
+    ProvisioningSetup,
     RefreshBilling,
 }
 
@@ -627,6 +649,7 @@ impl MonitorAction {
             MonitorAction::Login,
             MonitorAction::TelegramSetup,
             MonitorAction::TelegramDisconnect,
+            MonitorAction::ProvisioningSetup,
             MonitorAction::RefreshBilling,
         ]
     }
@@ -635,6 +658,7 @@ impl MonitorAction {
             MonitorAction::Login => "Login / re-auth Claude   (opens session with `claude /login`)",
             MonitorAction::TelegramSetup => "Set up Omega Telegram bot   (omega telegram setup …)",
             MonitorAction::TelegramDisconnect => "Disconnect Telegram bot   (removes ~/.omega/telegram.toml)",
+            MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe → ~/.omega/provisioning)",
             MonitorAction::RefreshBilling => "Refresh billing now   (re-runs usage-monitor.sh)",
         }
     }
@@ -643,6 +667,7 @@ impl MonitorAction {
             MonitorAction::Login => "L",
             MonitorAction::TelegramSetup => "T",
             MonitorAction::TelegramDisconnect => "D",
+            MonitorAction::ProvisioningSetup => "P",
             MonitorAction::RefreshBilling => "B",
         }
     }
