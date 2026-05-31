@@ -193,24 +193,55 @@ mod tests {
 
     #[test]
     fn resolve_category_path_is_under_projects_dir_no_vibecoding() {
+        // Fresh layout (no category dir exists yet) → the new canonical names.
         let mut c = OmegaConfig::default();
         c.projects_dir = PathBuf::from("/home/someuser/projects");
         assert_eq!(
-            c.resolve_category_path("works"),
-            PathBuf::from("/home/someuser/projects/work")
+            c.resolve_category_path("customer"),
+            PathBuf::from("/home/someuser/projects/customers")
         );
         assert_eq!(
-            c.resolve_category_path("client"),
-            PathBuf::from("/home/someuser/projects/clients")
+            c.resolve_category_path("side-business"),
+            PathBuf::from("/home/someuser/projects/side-business")
+        );
+        assert_eq!(
+            c.resolve_category_path("tools"),
+            PathBuf::from("/home/someuser/projects/tools")
         );
         assert_eq!(
             c.resolve_category_path("1-life"),
             PathBuf::from("/home/someuser/projects/1-life")
+        );
+        // Old aliases fall to the new canonical when no legacy dir exists.
+        assert_eq!(
+            c.resolve_category_path("client"),
+            PathBuf::from("/home/someuser/projects/customers")
+        );
+        assert_eq!(
+            c.resolve_category_path("work"),
+            PathBuf::from("/home/someuser/projects/side-business")
         );
         // Unknown category → uses its own name as the subdir.
         assert_eq!(
             c.resolve_category_path("research"),
             PathBuf::from("/home/someuser/projects/research")
         );
+        // Never a hardcoded ~/VibeCoding.
+        assert!(c
+            .resolve_category_path("customer")
+            .starts_with("/home/someuser/projects"));
+    }
+
+    #[test]
+    fn resolve_category_path_prefers_existing_legacy_dir() {
+        // Backward-compat: a machine already using clients/ + work/ keeps them
+        // instead of fragmenting into customers/ + side-business/.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("clients")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("work")).unwrap();
+        let mut c = OmegaConfig::default();
+        c.projects_dir = tmp.path().to_path_buf();
+        assert_eq!(c.resolve_category_path("customer"), tmp.path().join("clients"));
+        assert_eq!(c.resolve_category_path("side-business"), tmp.path().join("work"));
     }
 }
