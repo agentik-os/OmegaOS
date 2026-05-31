@@ -14,6 +14,7 @@ pub mod credentials;
 pub mod dispatch;
 pub mod doctor;
 pub mod done;
+pub mod executor;
 pub mod failover;
 pub mod skill_packs;
 pub mod telegram_group;

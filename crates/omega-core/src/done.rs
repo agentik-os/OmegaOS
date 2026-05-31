@@ -159,6 +159,27 @@ impl DoneSignal {
         }
     }
 
+    /// Minimal constructor for tests and synthetic signals. Sets `session`
+    /// and `status` to the args and zeroes/empties every other field.
+    pub fn stub(session: &str, status: DoneStatus) -> Self {
+        Self {
+            session: session.to_string(),
+            status,
+            summary: String::new(),
+            commit: None,
+            finished_at: Utc::now(),
+            todos_total: 0,
+            todos_completed: 0,
+            pending_actions: Vec::new(),
+            not_done: Vec::new(),
+            scope: ScopeFraming::default(),
+            corroboration: Vec::new(),
+            failure_mode: None,
+            retry_thrash_count: 0,
+            artifacts: Vec::new(),
+        }
+    }
+
     /// Single-source = the worker's word only, no independent ground-truth.
     /// Reports flagged single-source must be shown to the user as such (#65).
     pub fn is_single_source(&self) -> bool {
