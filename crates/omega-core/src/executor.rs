@@ -3,12 +3,15 @@
 //! worker per step through a WorkerRuntime, and gates every completion through
 //! the Guardian before marking a step Done.
 
+use crate::agents::Agent;
 use crate::done::DoneSignal;
 use crate::guardian::{Guardian, Verdict};
 use crate::planner::{PlanStep, PlanTracker, StepStatus};
+use crate::scope;
+use crate::session::SessionManager;
 use anyhow::{bail, Context, Result};
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Pluggable worker backend — real rmux sessions in prod, scripted in tests.
 #[allow(async_fn_in_trait)]
@@ -127,6 +130,52 @@ pub async fn run<R: WorkerRuntime>(
                 }
             }
             tracker.save(project_dir)?;
+        }
+    }
+}
+
+/// Real backend: spawns rmux worker sessions and waits on their done.json —
+/// the exact contract the Orchestrator already uses
+/// (`create_session_with_agent` + polling `state_dir/worker-{session}.done.json`).
+pub struct RmuxRuntime<'a> {
+    pub mgr: &'a SessionManager,
+    pub state_dir: PathBuf,
+    pub project: String,
+    pub agent: Agent,
+    pub poll: Duration,
+}
+
+impl WorkerRuntime for RmuxRuntime<'_> {
+    async fn spawn(&self, step: &PlanStep, brief: &str, cwd: &Path) -> Result<String> {
+        let session = format!("{}-step-{}", self.project, step.step_id.to_lowercase());
+        // Claim file scope upfront — fail fast on conflict (same gate as dispatch_task).
+        if !step.files_to_touch.is_empty() {
+            scope::claim_or_reject(&self.state_dir, &session, step.files_to_touch.clone())
+                .with_context(|| format!("scope claim for {session}"))?;
+        }
+        let cwd = cwd.to_string_lossy();
+        self.mgr
+            .create_session_with_agent(&session, Some(&cwd), self.agent, Some(brief))
+            .await
+            .with_context(|| format!("spawning {session}"))?;
+        Ok(session)
+    }
+
+    async fn wait_done(&self, session: &str, timeout: Duration) -> Result<DoneSignal> {
+        let done_path = self.state_dir.join(format!("worker-{session}.done.json"));
+        let deadline = Instant::now() + timeout;
+        loop {
+            if done_path.exists() {
+                let content = std::fs::read_to_string(&done_path)
+                    .with_context(|| format!("reading {}", done_path.display()))?;
+                let signal: DoneSignal = serde_json::from_str(&content)
+                    .with_context(|| format!("parsing {}", done_path.display()))?;
+                return Ok(signal);
+            }
+            if Instant::now() >= deadline {
+                bail!("worker {session} timed out after {}s", timeout.as_secs());
+            }
+            tokio::time::sleep(self.poll).await;
         }
     }
 }
