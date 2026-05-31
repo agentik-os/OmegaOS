@@ -4,6 +4,8 @@
 
 [English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | 中文
 
+[![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
+
 OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。
 
 默认的 agent 运行时是 Claude Code。并行跑 agent 的工具多得是，这里不一样的地方在于：每个 agent，无论它在树里钻得多深，都带着同一套不容商量的规则——以纯文本形式注入进它的 prompt。这就是 doctrine（教义），也是你该从这里入手的原因。

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      # Hard gate: shipped code (lib + bins) must build with zero warnings.
+      # rmux is fetched from its public git remote; no token needed.
+      - name: Build (warnings are errors)
+        run: cargo build --release --workspace
+        env:
+          RUSTFLAGS: "-D warnings"
+
+      # Hard gate: the test suite must pass.
+      - name: Test
+        run: cargo test --workspace
+
+      # Advisory: clippy and fmt are not yet clean across the tree, so they
+      # report but don't fail the build. Tighten these to hard gates once the
+      # backlog is cleared.
+      - name: Clippy (advisory)
+        run: cargo clippy --all-targets
+        continue-on-error: true
+
+      - name: Format check (advisory)
+        run: cargo fmt --all -- --check
+        continue-on-error: true

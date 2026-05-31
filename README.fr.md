@@ -4,6 +4,8 @@ Un plan de contrôle en terminal pour piloter en parallèle une flotte d'agents 
 
 [English](README.md) | Français | [Русский](README.ru.md) | [中文](README.zh.md)
 
+[![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
+
 OmegaOS n'est pas une bibliothèque qu'on importe. On l'installe sur une machine Linux. On récupère la commande `omega`, une TUI pour surveiller et tuer les sessions, et une couche d'orchestration qui distribue le travail aux agents. Il y a aussi un pont Telegram, si l'on veut piloter le tout depuis son téléphone.
 
 Le runtime d'agent par défaut, c'est Claude Code. Beaucoup d'outils savent faire tourner des agents en parallèle. Ce qui change ici, c'est que chaque agent, aussi profond soit-il dans l'arbre, porte les mêmes règles non négociables, injectées en texte brut dans son prompt. C'est la doctrine, et c'est par là qu'il faut commencer.

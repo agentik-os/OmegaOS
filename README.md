@@ -4,6 +4,8 @@ A terminal control plane for running a fleet of AI coding agents in parallel, wh
 
 [English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [中文](README.zh.md)
 
+[![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
+
 OmegaOS is not a library you import. You install it on a Linux box. You get the `omega` command, a TUI for watching and killing sessions, and an orchestration layer that hands work to agents. There's also a Telegram bridge if you want to drive it from your phone.
 
 The default agent runtime is Claude Code. Lots of tools run agents in parallel. What's different here is that every agent, however deep in the tree, carries the same non-negotiable rules, injected as plain text into its prompt. That's the doctrine, and it's where to start.

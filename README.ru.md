@@ -4,6 +4,8 @@
 
 [English](README.md) | [Français](README.fr.md) | Русский | [中文](README.zh.md)
 
+[![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
+
 OmegaOS — это не библиотека, которую вы импортируете. Вы ставите её на Linux-машину. Вы получаете команду `omega`, TUI для наблюдения за сессиями и их завершения, а также слой оркестрации, который раздаёт работу агентам. Есть ещё мост в Telegram, если хочется управлять всем этим с телефона.
 
 Среда исполнения агентов по умолчанию — Claude Code. Параллельно агентов запускает много инструментов. Здесь иначе то, что каждый агент, как бы глубоко в дереве он ни сидел, несёт один и тот же набор правил, не подлежащих обсуждению, — они вшиваются в его промпт обычным текстом. Это и есть доктрина, и с неё стоит начать.
