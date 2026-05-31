@@ -264,8 +264,9 @@ enum Commands {
         yes: bool,
     },
 
-    /// One-shot health check of the whole stack — daemon, doctrine, agent CLI,
-    /// Telegram service, secrets, memory. Run it first after a fresh install.
+    /// One-shot health check of the whole stack — daemon, socket, doctrine,
+    /// agent CLI, Telegram service, hooks, secrets, memory. Run it first after
+    /// a fresh install / VPS reset.
     Doctor,
 
     /// Replay an oracle's full dispatch→done history (debug stuck missions).

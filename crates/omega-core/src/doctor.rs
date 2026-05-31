@@ -72,6 +72,56 @@ fn ram_available_mb() -> u64 {
         .unwrap_or(0)
 }
 
+/// The rmux daemon socket path, if present — `$RMUX_SOCKET` override, else the
+/// conventional `/tmp/rmux-<uid>/default`.
+fn rmux_socket_path() -> Option<std::path::PathBuf> {
+    if let Ok(s) = std::env::var("RMUX_SOCKET") {
+        let p = std::path::PathBuf::from(s);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    for e in std::fs::read_dir("/tmp").ok()?.flatten() {
+        if e.file_name().to_string_lossy().starts_with("rmux-") {
+            let sock = e.path().join("default");
+            if sock.exists() {
+                return Some(sock);
+            }
+        }
+    }
+    None
+}
+
+/// Claude Code hooks: scripts present under `~/.omega/hooks` AND registered in
+/// `~/.claude/settings.json` (PostToolUse track-tool-use + Stop stop-verify).
+fn check_hooks(config: &OmegaConfig) -> Check {
+    let hooks_dir = config
+        .state_dir
+        .parent()
+        .map(|p| p.join("hooks"))
+        .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"));
+    let scripts_present = hooks_dir.join("track-tool-use.sh").exists()
+        && hooks_dir.join("stop-verify-hook.sh").exists();
+
+    let registered = dirs::home_dir()
+        .map(|h| h.join(".claude/settings.json"))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.contains("track-tool-use") && s.contains("stop-verify"))
+        .unwrap_or(false);
+
+    match (scripts_present, registered) {
+        (true, true) => Check::ok("hooks", "track + verify present, registered in settings.json"),
+        (true, false) => Check::warn(
+            "hooks",
+            "scripts present but not registered in settings.json (re-run install.sh; needs jq)",
+        ),
+        (false, _) => Check::warn(
+            "hooks",
+            format!("hook scripts missing from {}", hooks_dir.display()),
+        ),
+    }
+}
+
 /// Run every health check. Each is independent and never panics.
 pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -86,6 +136,16 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             checks.push(Check::ok("rmux daemon", format!("connected, {} live session(s)", n)));
         }
         Err(e) => checks.push(Check::fail("rmux daemon", format!("unreachable: {}", e))),
+    }
+
+    // 2b. rmux socket file present (distinct from the daemon RPC above —
+    // catches a dead daemon that left a stale or missing socket).
+    match rmux_socket_path() {
+        Some(p) => checks.push(Check::ok("rmux socket", p.display().to_string())),
+        None => checks.push(Check::warn(
+            "rmux socket",
+            "no socket under /tmp/rmux-*/ or $RMUX_SOCKET (daemon down?)",
+        )),
     }
 
     // 3. Doctrine integrity (6 Laws + 20 operational rules).
@@ -139,6 +199,9 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
             "systemd user unit not found (optional)",
         )),
     }
+
+    // 6b. Claude Code hooks installed + registered.
+    checks.push(check_hooks(config));
 
     // 7. Secrets present (~/.omega exists + non-empty).
     let omega_dir = config.state_dir.parent().map(|p| p.to_path_buf());
