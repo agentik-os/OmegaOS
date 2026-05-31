@@ -1,36 +1,22 @@
-# OmegaOS default configuration
-# Copy to ~/.omega/config.toml and customize
+# OmegaOS configuration
+# Copy to ~/.omega/config.toml. Every field has a sensible built-in default, so
+# an empty or partial file is valid — uncomment only what you want to override.
+# (Fields are top-level, not nested under a table.)
 
-# Directories for state, logs, and locks
-state_dir = "~/.omega/state"
-logs_dir = "~/.omega/logs"
-locks_dir = "~/.omega/locks"
+# The agent runtime CLI and the default model it runs.
+# agent_command = "claude"
+# default_model = "opus"
 
-# Agent CLI command (e.g., "claude", "codex", or path to custom agent)
-agent_command = "claude"
+# Root that holds your project category folders (customers/ side-business/
+# tools/). Auto-detected per-user if omitted — never hardcoded.
+# projects_dir = "/home/you/projects"
 
-# Default model for agents
-default_model = "opus"
+# Persistent AISB master + automatic session naming.
+# aisb_agent = "claude"
+# auto_spawn_master = true
+# auto_naming = true
 
-# Project definitions
-# [[projects]]
-# name = "MyProject"
-# path = "/home/user/projects/myproject"
-# category = "Work"
-# icon = "🚀"
-
-# Quality Arsenal (17 forensic audits)
-[audits]
-# Which audits to auto-run at end of mission (empty = auto-select based on mission)
-auto_audits = []
-# Minimum score threshold for audit PASS (0-100)
-pass_threshold = 70
-# Enable end-of-mission audit hook
-end_of_mission_hook = true
-# Maximum concurrent audit workers
-max_parallel = 4
-
-# Optional Telegram integration
+# Telegram bridge (optional — omit the whole section to disable).
 # [telegram]
-# bot_token = "YOUR_BOT_TOKEN"
+# bot_token = "..."
 # chat_id = 123456789

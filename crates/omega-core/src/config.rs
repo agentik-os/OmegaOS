@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Every field falls back to the manual `Default` impl below, so a partial or
+// even empty config.toml deserializes cleanly instead of silently discarding
+// the whole file (`OmegaConfig::load()` used to Err on any missing field).
+#[serde(default)]
 pub struct OmegaConfig {
     pub state_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -243,5 +247,24 @@ mod tests {
         c.projects_dir = tmp.path().to_path_buf();
         assert_eq!(c.resolve_category_path("customer"), tmp.path().join("clients"));
         assert_eq!(c.resolve_category_path("side-business"), tmp.path().join("work"));
+    }
+
+    #[test]
+    fn shipped_default_toml_deserializes() {
+        // The shipped template MUST parse into OmegaConfig — it used to fail and
+        // silently discard the whole config on a fresh install.
+        let cfg: OmegaConfig = toml::from_str(include_str!("../../../config/default.toml"))
+            .expect("config/default.toml must deserialize into OmegaConfig");
+        assert_eq!(cfg.agent_command, "claude");
+        assert_eq!(cfg.default_model, "opus");
+    }
+
+    #[test]
+    fn partial_config_overrides_only_its_keys() {
+        // A partial config overrides its keys and keeps defaults for the rest,
+        // instead of nuking the whole file.
+        let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
+        assert_eq!(cfg.default_model, "sonnet"); // overridden
+        assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
     }
 }
