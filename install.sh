@@ -123,6 +123,21 @@ step "Phase 5: Configuring OmegaOS"
 mkdir -p "$OMEGA_DIR"/{state,logs,locks}
 mkdir -p "$OMEGA_DIR/credentials/accounts"
 
+# ─── Provisioning credential store (for /omega-new-project) ─────────────────
+# ~/.omega/provisioning/ holds the tokens that auto-create + wire external
+# services (Vercel/Convex/GitHub/Clerk/Stripe) for a fresh project. We seed
+# the templates ONCE and NEVER clobber a real file the user has filled in.
+mkdir -p "$OMEGA_DIR/provisioning"
+chmod 700 "$OMEGA_DIR/provisioning"
+if [[ -f "$OMEGA_SRC/config/provisioning.sample" && ! -f "$OMEGA_DIR/provisioning/services.env" ]]; then
+    cp "$OMEGA_SRC/config/provisioning.sample" "$OMEGA_DIR/provisioning/services.env"
+    chmod 600 "$OMEGA_DIR/provisioning/services.env"
+fi
+if [[ -f "$OMEGA_SRC/config/clerk-pool.sample" && ! -f "$OMEGA_DIR/provisioning/clerk-pool.env" ]]; then
+    cp "$OMEGA_SRC/config/clerk-pool.sample" "$OMEGA_DIR/provisioning/clerk-pool.env"
+    chmod 600 "$OMEGA_DIR/provisioning/clerk-pool.env"
+fi
+
 # ─── Phase 5a: Credential Migration ─────────────────────────────────────────
 # Move existing per-provider credentials into ~/.omega/credentials/<provider>.json
 # and replace the legacy path with a symlink. Idempotent: if the legacy path is

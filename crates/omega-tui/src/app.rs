@@ -52,6 +52,19 @@ pub enum InputMode {
     DispatchMission(String),
     /// Renaming an existing session — holds the original name.
     RenameSession(String),
+    /// Live session-list filter — the in-progress query is in `input_buffer`,
+    /// the applied query in `session_filter`.
+    SessionFilter,
+
+    /// New-project wizard — step 1: project name (text input).
+    NewProjectName,
+    /// New-project wizard — step 2: category picker. (name, sel) where `sel`
+    /// indexes `NEW_PROJECT_CATEGORIES`. Selection lives in the variant so the
+    /// wizard needs no extra App state.
+    NewProjectCategory(String, usize),
+    /// New-project wizard — step 3: stack picker. (name, category, sel) where
+    /// `sel` indexes `NEW_PROJECT_STACKS`.
+    NewProjectStack(String, String, usize),
 
     /// Telegram setup wizard — step 1: bot token
     TelegramSetupToken,
@@ -67,6 +80,18 @@ pub enum InputMode {
     },
 }
 
+/// New-project wizard option lists. `(id, label)` — `id` is the token passed to
+/// the `/omega-new-project` skill; `label` is what the picker shows. Single
+/// source of truth for both the menu UI and the spawned command.
+pub const NEW_PROJECT_CATEGORIES: &[(&str, &str)] = &[
+    ("works", "Works — personal / internal  →  ~/VibeCoding/work"),
+    ("client", "Client work  →  ~/VibeCoding/clients"),
+];
+pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[(
+    "nextstack",
+    "Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit",
+)];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MenuAction {
     NewClaude,
@@ -76,6 +101,7 @@ pub enum MenuAction {
     NewHermes,
     NewGlm,
     NewTerminal,
+    NewProject,
     DispatchOracle,
     Refresh,
     ToggleProtection,
@@ -96,6 +122,7 @@ impl MenuAction {
             MenuAction::NewHermes,
             MenuAction::NewGlm,
             MenuAction::NewTerminal,
+            MenuAction::NewProject,
             MenuAction::DispatchOracle,
             MenuAction::Refresh,
             MenuAction::ToggleProtection,
@@ -116,6 +143,9 @@ impl MenuAction {
             MenuAction::NewHermes => "New Hermes session (Nous Research)",
             MenuAction::NewGlm => "New GLM session",
             MenuAction::NewTerminal => "New Terminal (plain shell)",
+            MenuAction::NewProject => {
+                "New project  →  pick stack + auto-provision (Convex/Vercel/Clerk/Stripe)"
+            }
             MenuAction::DispatchOracle => "Dispatch oracle  →  project + mission",
             MenuAction::Refresh => "Refresh sessions list",
             MenuAction::ToggleProtection => "Toggle protection on selected",
@@ -138,6 +168,7 @@ impl MenuAction {
             MenuAction::NewHermes => "h",
             MenuAction::NewGlm => "G",
             MenuAction::NewTerminal => "t",
+            MenuAction::NewProject => "N",
             MenuAction::DispatchOracle => "d",
             MenuAction::Refresh => "F5",
             MenuAction::ToggleProtection => ".",
@@ -635,6 +666,13 @@ pub struct App {
     /// Two-press confirm for destructive menu items (KillAll / NuclearCleanup):
     /// first Enter arms it, second Enter on the same item fires.
     pub menu_confirm_pending: Option<MenuAction>,
+    /// Session-list status badges (done/blocked) by name, refreshed each tick
+    /// from done.json + worker-blocked signals.
+    pub session_badges: std::collections::HashMap<String, omega_core::done::DoneStatus>,
+    /// Active session-list filter (case-insensitive substring on name); None =
+    /// show all. Applied at the data source in refresh() so navigation is
+    /// unaffected — the list is simply narrower.
+    pub session_filter: Option<String>,
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
@@ -738,6 +776,8 @@ impl App {
             settings_field_selected: 0,
             settings_confirm_pending: None,
             menu_confirm_pending: None,
+            session_badges: std::collections::HashMap::new(),
+            session_filter: None,
             info_section_selected: 0,
             info_agent_selected: 0,
             agent_picker_index: 0,
@@ -834,6 +874,30 @@ impl App {
         self.session_focus = SessionFocus::Chat;
         self.preview_follow_tail = true;
         self.preview_scroll = 0;
+    }
+
+    /// Jump the selection to the next session flagged Blocked or Failed
+    /// (wraps around). Returns the name jumped to, if any.
+    pub fn jump_to_next_flagged(&mut self) -> Option<String> {
+        use omega_core::done::DoneStatus;
+        let n = self.sessions.len();
+        if n == 0 {
+            return None;
+        }
+        let mut target = None;
+        for off in 1..=n {
+            let idx = (self.selected + off) % n;
+            if matches!(
+                self.session_badges.get(&self.sessions[idx].session.name),
+                Some(DoneStatus::Blocked) | Some(DoneStatus::Failed)
+            ) {
+                target = Some(idx);
+                break;
+            }
+        }
+        let idx = target?;
+        self.selected = idx;
+        Some(self.sessions[idx].session.name.clone())
     }
 
     /// Handle a Tab press in the Sessions tab. Detects double-tap (within
@@ -1129,10 +1193,26 @@ impl App {
         // Same list as the Telegram bridge filters in /sessions — keep them
         // in sync if you add a new background process.
         let hidden_prefixes = ["omega-telegram-bridge", "aisb-reauth"];
+        let filter_lc = self.session_filter.as_ref().map(|q| q.to_lowercase());
         let sessions: Vec<_> = raw_sessions
             .into_iter()
             .filter(|s| !hidden_prefixes.iter().any(|p| s.name.starts_with(p)))
+            .filter(|s| match &filter_lc {
+                Some(q) => s.name.to_lowercase().contains(q.as_str()),
+                None => true,
+            })
             .collect();
+
+        // Status badges (done/blocked) for the list — read once per refresh.
+        // A worker-blocked signal wins over a stale done.json.
+        self.session_badges.clear();
+        for d in omega_core::done::DoneSignal::read_all(&self.config.state_dir) {
+            self.session_badges.insert(d.session, d.status);
+        }
+        for b in omega_core::done::WorkerBlocked::read_all(&self.config.state_dir) {
+            self.session_badges
+                .insert(b.session, omega_core::done::DoneStatus::Blocked);
+        }
 
         let all_progress = ProgressInfo::read_all(&self.config.state_dir);
 

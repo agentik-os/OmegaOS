@@ -78,8 +78,72 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let hint = "Type new value, Enter to save, Esc to cancel".to_string();
             draw_simple_input_modal_owned(frame, app, &title, &hint, masked);
         }
+        InputMode::NewProjectName => draw_simple_input_modal(
+            frame,
+            app,
+            "New project — step 1/3",
+            "Project name (Enter to continue, Esc to cancel)",
+            false,
+        ),
+        InputMode::NewProjectCategory(..) | InputMode::NewProjectStack(..) => {
+            draw_new_project_picker(frame, app);
+        }
         _ => {}
     }
+}
+
+/// Overlay picker for new-project wizard steps 2 (category) and 3 (stack).
+/// Reads the option list + selection index straight from the InputMode variant.
+fn draw_new_project_picker(frame: &mut Frame, app: &App) {
+    let (title, options, sel): (String, &[(&str, &str)], usize) = match &app.input_mode {
+        InputMode::NewProjectCategory(name, sel) => (
+            format!(" New project [{}] — step 2/3: category — ↑/↓, Enter, Esc ", name),
+            crate::app::NEW_PROJECT_CATEGORIES,
+            *sel,
+        ),
+        InputMode::NewProjectStack(name, _category, sel) => (
+            format!(" New project [{}] — step 3/3: stack — ↑/↓, Enter, Esc ", name),
+            crate::app::NEW_PROJECT_STACKS,
+            *sel,
+        ),
+        _ => return,
+    };
+
+    let area = centered_rect(60, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, (id, label))| {
+            let selected = i == sel;
+            let prefix = if selected { "▶ " } else { "  " };
+            let label_style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!(" {:10} ", id),
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(*label, label_style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, area);
 }
 
 /// Centered overlay modal for the 3-step Telegram setup wizard.
@@ -900,7 +964,7 @@ fn menu_group(action: &MenuAction) -> &'static str {
         | MenuAction::NewHermes
         | MenuAction::NewGlm => "New agent sessions",
         MenuAction::NewTerminal => "Terminal",
-        MenuAction::DispatchOracle => "Orchestration",
+        MenuAction::NewProject | MenuAction::DispatchOracle => "Orchestration",
         MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => "Session actions",
         MenuAction::KillAll | MenuAction::NuclearCleanup => "Danger zone",
         MenuAction::Restart | MenuAction::Quit => "OmegaOS",
@@ -2583,6 +2647,15 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             InputMode::RenameSession(old) => (
                 "Rename session",
                 format!("[{} →] {}", old, app.input_buffer),
+            ),
+            InputMode::NewProjectName => ("New project — name", app.input_buffer.clone()),
+            InputMode::NewProjectCategory(name, _) => (
+                "New project — category (overlay ↑/↓)",
+                format!("[{}]", name),
+            ),
+            InputMode::NewProjectStack(name, category, _) => (
+                "New project — stack (overlay ↑/↓)",
+                format!("[{}/{}]", category, name),
             ),
             InputMode::TelegramSetupToken => (
                 "Telegram setup 1/3 — BOT_TOKEN",

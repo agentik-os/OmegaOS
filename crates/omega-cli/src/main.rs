@@ -1071,6 +1071,37 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::CreateProject { name, category, stack } => {
+                    // Spawn a Claude session that runs the provisioning +
+                    // scaffold skill. The session cwd is the category base dir
+                    // (the skill creates <base>/<name> itself).
+                    let home = dirs::home_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("/home/hacker"));
+                    let base = match category.as_str() {
+                        "client" => home.join("VibeCoding/clients"),
+                        _ => home.join("VibeCoding/work"),
+                    };
+                    let _ = std::fs::create_dir_all(&base);
+                    let session = format!("{}-setup", name);
+                    let prompt = format!("/omega-new-project {} {} {}", stack, category, name);
+                    let mgr = SessionManager::connect().await?;
+                    let agent = omega_core::agents::Agent::Claude;
+                    match mgr
+                        .create_session_with_agent(&session, base.to_str(), agent, Some(&prompt))
+                        .await
+                    {
+                        Ok(_) => {
+                            app.status_message = Some(format!(
+                                "◆ New project '{}' ({}) — provisioning in {} …",
+                                name, stack, session
+                            ));
+                            auto_focus_chat(app, &session).await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("New project failed: {}", e));
+                        }
+                    }
+                }
                 Action::DispatchOracle(project, mission) => {
                     let cfg = OmegaConfig::load().unwrap_or_default();
                     let mgr = SessionManager::connect().await?;

@@ -22,6 +22,10 @@ pub enum Action {
         prompt: Option<String>,
     },
     DispatchOracle(String, String),
+    /// New-project wizard result: spawn a Claude session that runs
+    /// `/omega-new-project <stack> <category> <name>` (provision + scaffold +
+    /// vision/PRD/planner). `category` is "works" | "client", `stack` a stack id.
+    CreateProject { name: String, category: String, stack: String },
     /// Open Claude /login in a fresh session for OAuth re-auth.
     LoginClaude,
     /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
@@ -361,6 +365,72 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             })
         }
 
+        // New-project wizard — step 1: name → category picker
+        InputMode::NewProjectName => handle_key_input(app, key, |app, value| {
+            let name = value.trim().to_lowercase().replace(' ', "-");
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewProjectCategory(name, 0);
+            app.status_message =
+                Some("↑/↓ category — Enter to continue, Esc to cancel".to_string());
+            Action::None
+        }),
+
+        // New-project wizard — step 2: category picker (works/client)
+        InputMode::NewProjectCategory(name, sel) => {
+            let count = crate::app::NEW_PROJECT_CATEGORIES.len();
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::NewProjectCategory(name, (sel + 1) % count);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::NewProjectCategory(name, next);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let category = crate::app::NEW_PROJECT_CATEGORIES[sel].0.to_string();
+                    app.input_mode = InputMode::NewProjectStack(name, category, 0);
+                    app.status_message =
+                        Some("↑/↓ stack — Enter to create, Esc to cancel".to_string());
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
+
+        // New-project wizard — step 3: stack picker → spawn the provisioning session
+        InputMode::NewProjectStack(name, category, sel) => {
+            let count = crate::app::NEW_PROJECT_STACKS.len();
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::NewProjectStack(name, category, (sel + 1) % count);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::NewProjectStack(name, category, next);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let stack = crate::app::NEW_PROJECT_STACKS[sel].0.to_string();
+                    app.input_mode = InputMode::Normal;
+                    Action::CreateProject { name, category, stack }
+                }
+                _ => Action::None,
+            }
+        }
+
         InputMode::RenameSession(old_name) => {
             handle_key_input(app, key, move |app, new_name| {
                 app.input_mode = InputMode::Normal;
@@ -371,6 +441,18 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 Action::RenameSession { old: old_name.clone(), new: new_name }
             })
         }
+
+        InputMode::SessionFilter => handle_key_input(app, key, |app, query| {
+            app.input_mode = InputMode::Normal;
+            let q = query.trim();
+            app.session_filter = if q.is_empty() { None } else { Some(q.to_string()) };
+            app.selected = 0; // the filtered list changes length — reset selection.
+            app.status_message = Some(match &app.session_filter {
+                Some(f) => format!("Filter: '{}' (press / to change)", f),
+                None => "Filter cleared".to_string(),
+            });
+            Action::Refresh
+        }),
 
         // ── Telegram setup wizard (3 steps) ─────────────────────────────────
         InputMode::TelegramSetupToken => handle_key_input(app, key, |app, token| {
@@ -920,6 +1002,22 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         // Refresh
+        // Sessions tab: '/' filters the list; 'b' jumps to the next blocked/failed.
+        KeyCode::Char('/') if app.tab == Tab::Sessions => {
+            app.input_buffer = app.session_filter.clone().unwrap_or_default();
+            app.input_mode = InputMode::SessionFilter;
+            app.status_message =
+                Some("Filter: type a substring, Enter to apply, empty+Enter clears".to_string());
+            Action::None
+        }
+        KeyCode::Char('b') if app.tab == Tab::Sessions => {
+            match app.jump_to_next_flagged() {
+                Some(name) => app.status_message = Some(format!("→ {}", name)),
+                None => app.status_message = Some("No blocked/failed sessions".to_string()),
+            }
+            Action::None
+        }
+
         KeyCode::F(5) => Action::Refresh,
 
         KeyCode::Char('.') if app.tab == Tab::Sessions => {
@@ -1258,6 +1356,13 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
             app.input_buffer = String::new();
             app.input_mode = InputMode::DispatchProject;
             app.status_message = Some("Project name (Enter to continue)".to_string());
+            Action::None
+        }
+        MenuAction::NewProject => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::NewProjectName;
+            app.status_message =
+                Some("New project — name (Enter to continue, Esc to cancel)".to_string());
             Action::None
         }
         MenuAction::Refresh => Action::Refresh,
