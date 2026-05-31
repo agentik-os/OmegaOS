@@ -1734,13 +1734,22 @@ impl TelegramBotEngine {
                     let oracle_name = format!("oracle-{}-1", project);
                     self.spawn_project_oracle(chat_id, project, &oracle_name).await;
                 } else {
-                    // Show buttons: each existing oracle + "new oracle" option
+                    // Show buttons: each existing oracle + "new oracle" option.
+                    // Oracle session names can be long sentences, so the
+                    // callback carries a short token (not the name) to stay
+                    // under Telegram's 64-byte callback_data cap. The token→name
+                    // mapping reuses the shared session token map.
                     let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
-                    for name in &existing {
-                        keyboard.push(vec![InlineKeyboardButton {
-                            text: format!("Continue {}", name),
-                            callback_data: format!("proj:talkto:{}", name),
-                        }]);
+                    {
+                        let mut tokens = self.session_name_by_token.lock().await;
+                        for name in &existing {
+                            let token = Self::session_token(name);
+                            tokens.insert(token.clone(), name.clone());
+                            keyboard.push(vec![InlineKeyboardButton {
+                                text: format!("Continue {}", name),
+                                callback_data: format!("proj:talkto:{}", token),
+                            }]);
+                        }
                     }
                     let next_idx = existing.len() + 1;
                     let new_oracle = format!("oracle-{}-{}", project, next_idx);
@@ -1832,13 +1841,22 @@ impl TelegramBotEngine {
                 self.send_projects_menu(chat_id).await;
             }
             "talkto" => {
-                // User chose to continue an existing oracle
-                *self.targeted_session.lock().await = Some(arg.to_string());
+                // arg is a short token → resolve to the full oracle name.
+                let name = self.session_name_by_token.lock().await.get(arg).cloned();
+                let Some(name) = name else {
+                    // Stale token (bridge restarted) → re-show the project menu.
+                    self.send_html(
+                        chat_id,
+                        "That oracle button expired. Open the project again to refresh.",
+                    ).await.ok();
+                    return;
+                };
+                *self.targeted_session.lock().await = Some(name.clone());
                 self.send_html(
                     chat_id,
                     &format!(
                         "Targeting <code>{}</code>.\nNext message goes there. /cancel to clear.",
-                        formatting::escape_html(arg)
+                        formatting::escape_html(&name)
                     ),
                 ).await.ok();
             }
@@ -2223,8 +2241,12 @@ impl TelegramBotEngine {
         let mut keyboard: Vec<Vec<InlineKeyboardButton>> = Vec::new();
         // Repopulate the token→name map (callback_data is capped at 64 bytes,
         // but session names can be long sentences).
+        // Additive (not cleared): tokens are deterministic, so re-inserting a
+        // name is idempotent. Keeping prior entries lets tokens minted by other
+        // flows (e.g. proj:talkto oracle buttons) survive a session refresh.
+        // Stale entries (dead sessions) resolve to a name that simply fails to
+        // act — never a wrong target.
         let mut tokens = self.session_name_by_token.lock().await;
-        tokens.clear();
         if sessions.is_empty() {
             text.push_str("\n<i>No active sessions.</i>");
         } else {
