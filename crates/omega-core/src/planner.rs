@@ -212,6 +212,57 @@ impl PlanTracker {
         })
     }
 
+    /// All pending steps whose deps are Done, whose wave is open, and whose
+    /// files_to_touch are pairwise disjoint within the returned set — capped.
+    /// This is the ONLY selector the driver uses. Parallel-safe.
+    pub fn ready_steps(&self, cap: usize) -> Vec<&PlanStep> {
+        let mut out: Vec<&PlanStep> = Vec::new();
+        let mut claimed: Vec<&str> = Vec::new();
+        for s in &self.steps {
+            if out.len() >= cap {
+                break;
+            }
+            if s.status != StepStatus::Pending {
+                continue;
+            }
+            if !self.deps_satisfied(&s.step_id) {
+                continue;
+            }
+            if !self.wave_open(s) {
+                continue;
+            }
+            let disjoint = s
+                .files_to_touch
+                .iter()
+                .all(|f| !claimed.contains(&f.as_str()));
+            if !disjoint {
+                continue;
+            }
+            for f in &s.files_to_touch {
+                claimed.push(f.as_str());
+            }
+            out.push(s);
+        }
+        out
+    }
+
+    /// A terminal-tier step (audit/deploy) is withheld until every step of a
+    /// strictly-lower wave ordinal is Done. Non-waved steps are gated only by
+    /// the DAG (always "open" here).
+    fn wave_open(&self, step: &PlanStep) -> bool {
+        let Some(w) = step.wave else {
+            return true;
+        };
+        if !w.is_terminal() {
+            return true;
+        }
+        let my = w.ordinal();
+        self.steps.iter().all(|other| {
+            let other_ord = other.wave.map(|x| x.ordinal()).unwrap_or(0);
+            other_ord >= my || other.status == StepStatus::Done
+        })
+    }
+
     /// Check if all dependencies for a step are satisfied (status == Done).
     pub fn deps_satisfied(&self, step_id: &str) -> bool {
         let Some(step) = self.get_step(step_id) else {
@@ -722,5 +773,49 @@ mod tests {
         assert!(Wave::Foundation.ordinal() < Wave::W1.ordinal());
         assert!(Wave::W1.ordinal() < Wave::Audit.ordinal());
         assert!(Wave::Audit.ordinal() < Wave::Deploy.ordinal());
+    }
+
+    #[test]
+    fn ready_steps_respects_dag() {
+        let tracker = sample_tracker();
+        let ready = tracker.ready_steps(10);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].step_id, "STEP-001");
+    }
+
+    #[test]
+    fn ready_steps_parallel_disjoint_files() {
+        let mut t = PlanTracker::new("P");
+        let p = t.add_phase("F", "g");
+        t.add_step(p, step("A", p).title("a").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
+        t.add_step(p, step("B", p).title("b").files(&["b.rs"]).criteria("ok").verify("true").build()).unwrap();
+        t.add_step(p, step("C", p).title("c").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
+        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        assert_eq!(ready, vec!["A".to_string(), "B".to_string()]);
+    }
+
+    #[test]
+    fn ready_steps_cap() {
+        let mut t = PlanTracker::new("P");
+        let p = t.add_phase("F", "g");
+        for i in 0..5 {
+            t.add_step(p, step(&format!("S{i}"), p).title("x")
+                .files(&[&format!("f{i}.rs")]).criteria("ok").verify("true").build()).unwrap();
+        }
+        assert_eq!(t.ready_steps(2).len(), 2);
+    }
+
+    #[test]
+    fn ready_steps_holds_audit_until_impl_done() {
+        let mut t = PlanTracker::new("P");
+        let p = t.add_phase("F", "g");
+        t.add_step(p, step("IMPL", p).title("impl").files(&["x.rs"]).criteria("ok").verify("true").build()).unwrap();
+        t.add_step(p, step("AUD", p).title("audit").files(&["y.rs"]).criteria("ok").verify("true").wave(Wave::Audit).build()).unwrap();
+        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        assert_eq!(ready, vec!["IMPL".to_string()]);
+        t.start_step("IMPL").unwrap();
+        t.mark_done("IMPL").unwrap();
+        let ready2: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        assert_eq!(ready2, vec!["AUD".to_string()]);
     }
 }
