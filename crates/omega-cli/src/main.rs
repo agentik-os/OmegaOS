@@ -1013,7 +1013,7 @@ async fn run_tui_loop(
                     match omega_core::cleanup::kill_all(&mgr, &keep).await {
                         Ok(killed) => {
                             app.status_message =
-                                Some(format!("● Killed {} session(s)", killed.len()));
+                                Some(format!("Killed {} session(s)", killed.len()));
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Kill-all failed: {}", e))
@@ -1028,7 +1028,7 @@ async fn run_tui_loop(
                     let keep = tui_cleanup_keep(&app, &sessions);
                     match omega_core::cleanup::nuclear_cleanup(&mgr, &cfg, &keep).await {
                         Ok(report) => {
-                            app.status_message = Some(format!("☢ {}", report.summary()));
+                            app.status_message = Some(format!("Nuclear cleanup: {}", report.summary()));
                         }
                         Err(e) => {
                             app.status_message =
@@ -2491,7 +2491,7 @@ async fn cmd_kill_all(yes: bool) -> Result<()> {
         return Ok(());
     }
     let killed = omega_core::cleanup::kill_all(&mgr, &keep).await?;
-    println!("● Killed {} session(s): {}", killed.len(), killed.join(", "));
+    println!("Killed {} session(s): {}", killed.len(), killed.join(", "));
     Ok(())
 }
 
@@ -2503,16 +2503,16 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     let keep = cleanup_keep_set(&sessions);
     if !yes {
         let targets = omega_core::cleanup::killable(&mgr, &keep).await;
-        println!("☢ NUCLEAR CLEANUP — would:");
-        println!("  • kill {} session(s): {}", targets.len(), targets.join(", "));
-        println!("  • prune stale state from dead sessions (scope claims, done/blocked signals)");
-        println!("  • clear /tmp omega-*/claude-* scratch");
-        println!("  • drop the Linux page cache (if permitted)");
+        println!("NUCLEAR CLEANUP — would:");
+        println!("  -kill {} session(s): {}", targets.len(), targets.join(", "));
+        println!("  -prune stale state from dead sessions (scope claims, done/blocked signals)");
+        println!("  -clear /tmp omega-*/claude-* scratch");
+        println!("  -drop the Linux page cache (if permitted)");
         println!("Re-run with --yes to execute.");
         return Ok(());
     }
     let report = omega_core::cleanup::nuclear_cleanup(&mgr, &config, &keep).await?;
-    println!("☢ Nuclear cleanup complete.");
+    println!("Nuclear cleanup complete.");
     println!("  {}", report.summary());
     for note in &report.notes {
         println!("  - {}", note);
@@ -3079,7 +3079,7 @@ fn cmd_route(mission: &str) -> Result<()> {
     println!();
     println!("Reasoning:");
     for r in &decision.reasoning {
-        println!("  • {}", r);
+        println!("  -{}", r);
     }
     if !decision.audit_skills.is_empty() {
         println!();

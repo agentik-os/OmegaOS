@@ -173,7 +173,7 @@ impl MenuAction {
             MenuAction::KillSelected => "Kill selected session",
             MenuAction::KillAll => "Kill ALL sessions (keeps current + protected + infra)",
             MenuAction::NuclearCleanup => {
-                "☢ Nuclear cleanup — kill all + prune state + clear scratch + free RAM"
+                "Nuclear cleanup — kill all + prune state + clear scratch + free RAM"
             }
             MenuAction::Restart => "Restart OmegaOS (reload binary)",
             MenuAction::Quit => "Quit OmegaOS",

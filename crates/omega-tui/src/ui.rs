@@ -961,10 +961,10 @@ fn render_session_item(
 
     // Done/blocked badge from the worker's done.json / worker-blocked signal.
     let (badge_glyph, badge_color) = match badge {
-        Some(DoneStatus::DoneClean) => ("✓ ", Color::Green),
-        Some(DoneStatus::Pending) => ("◔ ", Color::Yellow),
-        Some(DoneStatus::Failed) => ("✗ ", Color::Red),
-        Some(DoneStatus::Blocked) => ("⚠ ", Color::Rgb(255, 165, 0)),
+        Some(DoneStatus::DoneClean) => ("+ ", Color::Green),
+        Some(DoneStatus::Pending) => ("~ ", Color::Yellow),
+        Some(DoneStatus::Failed) => ("x ", Color::Red),
+        Some(DoneStatus::Blocked) => ("! ", Color::Rgb(255, 165, 0)),
         None => ("", Color::Reset),
     };
 
@@ -2831,7 +2831,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut right_spans: Vec<Span> = Vec::new();
     if let Some(ref u) = usage {
         right_spans.push(Span::styled(
-            format!("⛽{}%", u.session_pct),
+            format!("TKN {}%", u.session_pct),
             Style::default()
                 .fg(usage_color(u.session_pct))
                 .add_modifier(Modifier::BOLD),
