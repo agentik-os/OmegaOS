@@ -2459,6 +2459,7 @@ impl TelegramBotEngine {
                 {"command": "model",    "description": "Switch AI provider and model"},
                 {"command": "projects", "description": "List projects + new / add existing"},
                 {"command": "sessions", "description": "Active sessions (tap to target)"},
+                {"command": "killall",  "description": "Kill ALL sessions (keeps bridge + master) — /killall confirm to run"},
                 {"command": "clean",    "description": "Restart AISB Master fresh (clean slate)"},
                 {"command": "setupgroup","description": "Register a supergroup as the project hub (+ create per-project topics)"},
                 {"command": "status",   "description": "Live system dashboard (oracles, workers, done signals)"},

@@ -7,7 +7,19 @@ use omega_core::session::SessionManager;
 async fn main() -> anyhow::Result<()> {
     let target = std::env::args().nth(1).unwrap_or_else(|| "slugtest".into());
     let mgr = SessionManager::connect().await?;
-    let (rows, crow, ccol, cvis) = mgr.capture_pane_styled(&target).await?;
+    let (rows, crow, ccol, cvis) = match mgr.capture_pane_styled(&target, 0).await? {
+        omega_core::session::StyledCapture::Changed {
+            rows,
+            cursor_row,
+            cursor_col,
+            cursor_visible,
+            ..
+        } => (rows, cursor_row, cursor_col, cursor_visible),
+        omega_core::session::StyledCapture::Unchanged => {
+            eprintln!("(snapshot unchanged — nothing to dump)");
+            return Ok(());
+        }
+    };
     eprintln!("cursor: row={crow} col={ccol} visible={cvis}");
     for row in &rows {
         let text: String = row.iter().map(|s| s.text.clone()).collect();
