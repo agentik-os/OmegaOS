@@ -6,6 +6,10 @@ pub enum Action {
     Quit,
     AttachSession(String),
     KillSession(String),
+    /// Kill all sessions except current + protected + infrastructure.
+    KillAllSessions,
+    /// Nuclear cleanup: kill all + prune stale state + clear scratch + drop cache.
+    NuclearCleanup,
     Refresh,
     CreateSession(String),
     CreateSessionWithAgent {
@@ -939,6 +943,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::Esc => {
+            // Cancel any armed destructive-menu confirm first.
+            if app.menu_confirm_pending.take().is_some() {
+                app.status_message = Some("Cancelled".to_string());
+                return Action::None;
+            }
             // Esc is a layered "back" key:
             // 1. If detail/fullscreen focused → return to section list
             // 2. If on section list → go to Sessions tab
@@ -1184,6 +1193,33 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 }
 
 fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
+    // Destructive items (KillAll / NuclearCleanup) need a two-press confirm:
+    // first Enter arms, second Enter on the SAME item fires. Any other
+    // selection disarms.
+    let armed = app.menu_confirm_pending == Some(action);
+    if !armed {
+        app.menu_confirm_pending = None;
+    }
+    if matches!(action, MenuAction::KillAll | MenuAction::NuclearCleanup) {
+        if armed {
+            app.menu_confirm_pending = None;
+            return match action {
+                MenuAction::KillAll => Action::KillAllSessions,
+                MenuAction::NuclearCleanup => Action::NuclearCleanup,
+                _ => Action::None,
+            };
+        }
+        app.menu_confirm_pending = Some(action);
+        let verb = if matches!(action, MenuAction::NuclearCleanup) {
+            "NUCLEAR CLEANUP (kill all + prune state + free RAM)"
+        } else {
+            "KILL ALL sessions"
+        };
+        app.status_message =
+            Some(format!("⚠ {} — press Enter again to CONFIRM, Esc to cancel", verb));
+        return Action::None;
+    }
+
     // Per-agent direct launchers — ALL go straight to session creation with
     // chat focus. No "initial prompt" step. The user talks via the chat input
     // box once the session is up.

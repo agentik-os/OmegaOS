@@ -902,6 +902,7 @@ fn menu_group(action: &MenuAction) -> &'static str {
         MenuAction::NewTerminal => "Terminal",
         MenuAction::DispatchOracle => "Orchestration",
         MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => "Session actions",
+        MenuAction::KillAll | MenuAction::NuclearCleanup => "Danger zone",
         MenuAction::Restart | MenuAction::Quit => "OmegaOS",
     }
 }

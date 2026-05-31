@@ -8,6 +8,7 @@ pub mod aisb_agents;
 pub mod audit;
 pub mod bootstrap;
 pub mod budget;
+pub mod cleanup;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;

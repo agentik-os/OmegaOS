@@ -247,6 +247,23 @@ enum Commands {
         check: bool,
     },
 
+    /// Kill all sessions except the current one + infrastructure (your
+    /// Home/System shells, the Telegram bridge, the master).
+    KillAll {
+        /// Actually kill. Without it, just lists what would be killed.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Nuclear cleanup — kill stray sessions, prune stale state, clear /tmp
+    /// scratch, and drop the page cache where permitted. Adapts to the host;
+    /// never touches current/infra sessions and never hard-requires root.
+    Cleanup {
+        /// Actually run. Without it, prints the plan (dry run).
+        #[arg(long)]
+        yes: bool,
+    },
+
     /// Interactive AISB Master chat REPL (runs inside the aisb-master
     /// pane). Each line you type is injected into the running bot exactly
     /// as if it had arrived from Telegram — same brain, same response,
@@ -371,6 +388,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
+        Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
+        Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
         Some(Commands::Usage { check }) => {
             if check {
                 // --check: actively fetch from the OAuth endpoint + alert on threshold.
@@ -560,6 +579,24 @@ fn save_omega_config(c: &OmegaConfig) -> Result<()> {
     let content = toml::to_string_pretty(c)?;
     std::fs::write(&path, content)?;
     Ok(())
+}
+
+/// keep-set for a TUI-initiated kill-all / nuclear cleanup: infrastructure
+/// singletons + the current session + every protected session.
+fn tui_cleanup_keep(
+    app: &omega_tui::app::App,
+    sessions: &[omega_core::session::OmegaSession],
+) -> std::collections::HashSet<String> {
+    let mut keep = omega_core::cleanup::infrastructure_keep(sessions);
+    if let Some(ref cur) = app.current_session {
+        keep.insert(cur.clone());
+    }
+    for e in &app.sessions {
+        if e.is_protected {
+            keep.insert(e.session.name.clone());
+        }
+    }
+    keep
 }
 
 async fn auto_focus_chat(app: &mut omega_tui::app::App, session_name: &str) {
@@ -931,6 +968,37 @@ async fn run_tui_loop(
                             app.status_message = Some(format!("Kill failed: {}", e));
                         }
                     }
+                }
+                Action::KillAllSessions => {
+                    let mgr = SessionManager::connect().await?;
+                    let sessions = mgr.list_sessions().await.unwrap_or_default();
+                    let keep = tui_cleanup_keep(&app, &sessions);
+                    match omega_core::cleanup::kill_all(&mgr, &keep).await {
+                        Ok(killed) => {
+                            app.status_message =
+                                Some(format!("● Killed {} session(s)", killed.len()));
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Kill-all failed: {}", e))
+                        }
+                    }
+                    let _ = app.refresh().await;
+                }
+                Action::NuclearCleanup => {
+                    let mgr = SessionManager::connect().await?;
+                    let cfg = OmegaConfig::load().unwrap_or_default();
+                    let sessions = mgr.list_sessions().await.unwrap_or_default();
+                    let keep = tui_cleanup_keep(&app, &sessions);
+                    match omega_core::cleanup::nuclear_cleanup(&mgr, &cfg, &keep).await {
+                        Ok(report) => {
+                            app.status_message = Some(format!("☢ {}", report.summary()));
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Nuclear cleanup failed: {}", e))
+                        }
+                    }
+                    let _ = app.refresh().await;
                 }
                 Action::CreateSession(name) => {
                     let mgr = SessionManager::connect().await?;
@@ -2224,6 +2292,75 @@ async fn cmd_spawn_worker(
     }
     if let Some(ref files) = files {
         println!("  Scope claimed: {}", files.join(", "));
+    }
+    Ok(())
+}
+
+/// The rmux session this process runs inside, if any (first RMUX field).
+fn current_session() -> Option<String> {
+    std::env::var("RMUX")
+        .ok()
+        .and_then(|v| v.split(',').next().map(|s| s.to_string()))
+}
+
+/// keep-set for kill-all / cleanup: current session + infrastructure singletons.
+fn cleanup_keep_set(
+    sessions: &[omega_core::session::OmegaSession],
+) -> std::collections::HashSet<String> {
+    let mut keep = omega_core::cleanup::infrastructure_keep(sessions);
+    if let Some(cur) = current_session() {
+        keep.insert(cur);
+    }
+    keep
+}
+
+async fn cmd_kill_all(yes: bool) -> Result<()> {
+    let mgr = SessionManager::connect().await?;
+    let sessions = mgr.list_sessions().await?;
+    let keep = cleanup_keep_set(&sessions);
+    let targets: Vec<String> = sessions
+        .iter()
+        .map(|s| s.name.clone())
+        .filter(|n| !keep.contains(n))
+        .collect();
+    if targets.is_empty() {
+        println!("Nothing to kill — only the current + infrastructure sessions are live.");
+        return Ok(());
+    }
+    if !yes {
+        println!("Would kill {} session(s):", targets.len());
+        for t in &targets {
+            println!("  ✗ {}", t);
+        }
+        println!("Re-run with --yes to kill them.");
+        return Ok(());
+    }
+    let killed = omega_core::cleanup::kill_all(&mgr, &keep).await?;
+    println!("● Killed {} session(s): {}", killed.len(), killed.join(", "));
+    Ok(())
+}
+
+async fn cmd_cleanup(yes: bool) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    config.ensure_dirs()?;
+    let mgr = SessionManager::connect().await?;
+    let sessions = mgr.list_sessions().await?;
+    let keep = cleanup_keep_set(&sessions);
+    if !yes {
+        let targets = omega_core::cleanup::killable(&mgr, &keep).await;
+        println!("☢ NUCLEAR CLEANUP — would:");
+        println!("  • kill {} session(s): {}", targets.len(), targets.join(", "));
+        println!("  • prune stale state from dead sessions (scope claims, done/blocked signals)");
+        println!("  • clear /tmp omega-*/claude-* scratch");
+        println!("  • drop the Linux page cache (if permitted)");
+        println!("Re-run with --yes to execute.");
+        return Ok(());
+    }
+    let report = omega_core::cleanup::nuclear_cleanup(&mgr, &config, &keep).await?;
+    println!("☢ Nuclear cleanup complete.");
+    println!("  {}", report.summary());
+    for note in &report.notes {
+        println!("  - {}", note);
     }
     Ok(())
 }

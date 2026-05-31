@@ -80,6 +80,8 @@ pub enum MenuAction {
     Refresh,
     ToggleProtection,
     KillSelected,
+    KillAll,
+    NuclearCleanup,
     Restart,
     Quit,
 }
@@ -98,6 +100,8 @@ impl MenuAction {
             MenuAction::Refresh,
             MenuAction::ToggleProtection,
             MenuAction::KillSelected,
+            MenuAction::KillAll,
+            MenuAction::NuclearCleanup,
             MenuAction::Restart,
             MenuAction::Quit,
         ]
@@ -116,6 +120,10 @@ impl MenuAction {
             MenuAction::Refresh => "Refresh sessions list",
             MenuAction::ToggleProtection => "Toggle protection on selected",
             MenuAction::KillSelected => "Kill selected session",
+            MenuAction::KillAll => "Kill ALL sessions (keeps current + protected + infra)",
+            MenuAction::NuclearCleanup => {
+                "☢ Nuclear cleanup — kill all + prune state + clear scratch + free RAM"
+            }
             MenuAction::Restart => "Restart OmegaOS (reload binary)",
             MenuAction::Quit => "Quit OmegaOS",
         }
@@ -134,6 +142,8 @@ impl MenuAction {
             MenuAction::Refresh => "F5",
             MenuAction::ToggleProtection => ".",
             MenuAction::KillSelected => "x",
+            MenuAction::KillAll => "—",
+            MenuAction::NuclearCleanup => "—",
             MenuAction::Restart => "R",
             MenuAction::Quit => "q",
         }
@@ -622,6 +632,9 @@ pub struct App {
     /// Field index awaiting a second Enter to confirm a destructive Action
     /// (the `confirm_first` flag). Cleared on navigation or section change.
     pub settings_confirm_pending: Option<usize>,
+    /// Two-press confirm for destructive menu items (KillAll / NuclearCleanup):
+    /// first Enter arms it, second Enter on the same item fires.
+    pub menu_confirm_pending: Option<MenuAction>,
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
@@ -724,6 +737,7 @@ impl App {
             settings_selected: 0,
             settings_field_selected: 0,
             settings_confirm_pending: None,
+            menu_confirm_pending: None,
             info_section_selected: 0,
             info_agent_selected: 0,
             agent_picker_index: 0,
