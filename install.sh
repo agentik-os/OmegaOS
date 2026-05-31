@@ -247,8 +247,12 @@ if [[ -d "$AUDITS_SRC" ]]; then
     for skill_md in "$AUDITS_DST"/*/SKILL.md; do
         [[ -f "$skill_md" ]] || continue
         name="$(basename "$(dirname "$skill_md")")"
-        cat > "$AUDIT_CMD_DST/$name.md" <<EOF
-# /$name
+        # Ship each audit under BOTH its canonical /<name> (kept — the CLAUDE.md
+        # keyword detection maps to these) AND a namespaced /omg-<name> alias.
+        # Alias, never rename — both always work (non-breaking).
+        for cmd in "$name" "omg-$name"; do
+            cat > "$AUDIT_CMD_DST/$cmd.md" <<EOF
+# /$cmd
 
 Run the full $name protocol. Read and follow the complete forensic instructions in:
 
@@ -256,9 +260,10 @@ Run the full $name protocol. Read and follow the complete forensic instructions 
 
 Execute every phase exactly as written — no streamlined or custom variant.
 EOF
+        done
         AUDIT_STUBS=$((AUDIT_STUBS + 1))
     done
-    ok "Audit slash commands installed ($AUDIT_STUBS stubs in $AUDIT_CMD_DST/)"
+    ok "Audit slash commands installed ($AUDIT_STUBS audits → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
 else
     info "Audit skills not found — skipping"
 fi
