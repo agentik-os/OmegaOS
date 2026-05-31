@@ -3218,7 +3218,7 @@ impl TelegramBotEngine {
         let rest = parts.next().unwrap_or("");
 
         match cmd {
-            "/start" | "/help" => Some(
+            "/start" => Some(
                 "<b>OmegaOS Bot Engine</b>\n\
                  \n\n\
                  <b>Core:</b>\n\
@@ -3273,60 +3273,8 @@ impl TelegramBotEngine {
                 Some(lines.join("\n"))
             }
 
-            "/status" => {
-                // Two modes:
-                //   /status            → real system dashboard (oracles + workers + bridge + group)
-                //   /status <session>  → tail the last 20 lines of that pane (legacy behavior)
-                if !rest.trim().is_empty() {
-                    let session = rest.trim();
-                    let content = self.mgr.capture_pane(session).await.ok()?;
-                    let tail: Vec<&str> = content.lines().rev().take(20).collect();
-                    let output: Vec<&str> = tail.into_iter().rev().collect();
-                    let cleaned = clean_terminal_output(&output.join("\n"));
-                    return Some(format!(
-                        " <b>{}</b>\n<pre>{}</pre>",
-                        formatting::escape_html(session),
-                        formatting::escape_html(&cleaned)
-                    ));
-                }
-                Some(self.render_status_dashboard().await)
-            }
-
-            "/skills" => {
-                let registry = omega_core::skill_registry::SkillRegistry::discover_default();
-                match registry {
-                    Ok(mut reg) => {
-                        reg.register_audits();
-                        let skills = reg.list();
-                        let mut lines = vec![format!(
-                            " <b>Skills</b> ({})\n",
-                            skills.len()
-                        )];
-                        let mut by_cat: HashMap<&str, Vec<&omega_core::skill_registry::Skill>> =
-                            HashMap::new();
-                        for skill in &skills {
-                            by_cat
-                                .entry(skill.category.label())
-                                .or_default()
-                                .push(skill);
-                        }
-                        let mut cats: Vec<_> = by_cat.keys().copied().collect();
-                        cats.sort();
-                        for cat in cats {
-                            lines.push(format!("\n<b>{}</b>", formatting::escape_html(cat)));
-                            for skill in &by_cat[cat] {
-                                lines.push(format!(
-                                    "  <code>{}</code> — {}",
-                                    formatting::escape_html(&skill.name),
-                                    formatting::escape_html(&skill.description)
-                                ));
-                            }
-                        }
-                        Some(lines.join("\n"))
-                    }
-                    Err(_) => Some(" <i>Could not load skill registry</i>".to_string()),
-                }
-            }
+            // /status and /skills are now interactive (buttons) — handled in
+            // try_handle_keyboard_command before reaching here.
 
             // /audits is now interactive (buttons) — handled in
             // try_handle_keyboard_command before reaching here.
