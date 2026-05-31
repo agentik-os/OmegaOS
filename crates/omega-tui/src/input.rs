@@ -1183,15 +1183,27 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::F(5) => Action::Refresh,
 
         KeyCode::Char('.') if app.tab == Tab::Sessions => {
-            if let Some(entry) = app.sessions.get_mut(app.selected) {
+            // Toggle on the source entry, then return owned (name, state) so the
+            // &mut borrow ends before we touch app.rows / app.status_message.
+            let toggled = app.sessions.get_mut(app.selected).map(|entry| {
                 entry.is_protected = !entry.is_protected;
-                let state = if entry.is_protected {
-                    "protected"
-                } else {
-                    "unprotected"
-                };
-                app.status_message =
-                    Some(format!("{} is now {}", entry.session.name, state));
+                (entry.session.name.clone(), entry.is_protected)
+            });
+            if let Some((nm, prot)) = toggled {
+                // Reflect in the RENDERED rows immediately — they are clones made
+                // at refresh time, so without this the § marker lags ~2s.
+                for row in app.rows.iter_mut() {
+                    if let crate::app::SessionRow::Entry(e) = row {
+                        if e.session.name == nm {
+                            e.is_protected = prot;
+                        }
+                    }
+                }
+                app.status_message = Some(format!(
+                    "{} is now {}",
+                    nm,
+                    if prot { "protected" } else { "unprotected" }
+                ));
             }
             Action::None
         }

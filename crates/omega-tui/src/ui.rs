@@ -518,7 +518,14 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Sessions ({}) ", app.sessions.len()))
+                .title(format!(
+                    " Sessions ({}) — {} ",
+                    app.sessions.len(),
+                    match app.session_focus {
+                        crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
+                        _ => "CHAT (Esc → list to manage)",
+                    }
+                ))
                 .border_style(list_border_style),
         )
         .highlight_style(Style::default());
