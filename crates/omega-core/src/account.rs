@@ -311,10 +311,11 @@ pub fn switch_account(name: &str) -> SwitchResult {
     }
     chmod_600(&creds_path);
 
-    // Best-effort refresh via the bundled helper script (if present).
-    let helper = dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".omega")
+    // Best-effort refresh via the bundled helper script (if present). Lives
+    // under the consolidated system root via config::omega_dir() (was a
+    // hardcoded ~/.omega that missed the script after relocation); ~/.claude
+    // below stays as-is — that is Claude's own dir, not OmegaOS state.
+    let helper = crate::config::omega_dir()
         .join("bin")
         .join("claude-oauth.sh");
     let mut refresh_ok = true;

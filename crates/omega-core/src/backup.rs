@@ -131,7 +131,10 @@ fn git_ahead(repo: &Path) -> bool {
 
 /// Gather the read-only pre-reset readiness report.
 pub fn pre_reset_report(config: &OmegaConfig) -> PreResetReport {
-    let omega_dir = home().join(".omega");
+    // The single state root, not a hardcoded ~/.omega: post-relocation the real
+    // credentials live under config::omega_dir() (~/OmegaOS/System), so checking
+    // ~/.omega would report the wrong dir's contents.
+    let omega_dir = crate::config::omega_dir();
     let omega_present = omega_dir.is_dir();
 
     // Which known secret/config files are present (names only — never values).
@@ -183,13 +186,14 @@ pub fn run_backup(
     timestamp: &str,
 ) -> Result<BackupReport> {
     let home = home();
-    let omega_dir = home.join(".omega");
+    let omega_dir = crate::config::omega_dir();
     anyhow::ensure!(
         omega_dir.is_dir(),
-        "~/.omega not found — nothing to back up (is OmegaOS installed?)"
+        "OmegaOS state dir not found at {} — nothing to back up (is OmegaOS installed?)",
+        omega_dir.display()
     );
 
-    // Capture the crontab INTO ~/.omega so it lands in the archive.
+    // Capture the crontab INTO the state dir so it lands in the archive.
     if let Ok(o) = Command::new("crontab").arg("-l").output() {
         if o.status.success() {
             let _ = std::fs::write(omega_dir.join("crontab.bak"), &o.stdout);
@@ -199,9 +203,19 @@ pub fn run_backup(
     let archive =
         out.unwrap_or_else(|| home.join(format!("omega-backup-{}.tgz", timestamp)));
 
-    // Relative paths tar'd from $HOME. `.omega` is the OmegaOS-owned state.
+    // Tar relative to $HOME so the memory store (.claude/projects) shares one
+    // base with the state dir. The state dir is config::omega_dir() — legacy
+    // ~/.omega OR the consolidated ~/OmegaOS/System — and always lives under
+    // $HOME, so derive its $HOME-relative path for the include + exclude globs.
+    // (Was a hardcoded ".omega" that, post-relocation, archived the empty legacy
+    // dir and silently missed the real relocated credentials.)
+    let omega_rel = omega_dir
+        .strip_prefix(&home)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".omega".to_string());
+
     // Memory is opt-in (large). No project files, ever.
-    let mut included = vec![".omega".to_string()];
+    let mut included = vec![omega_rel.clone()];
     let memory_rel = ".claude/projects";
     let memory_included = include_memory && home.join(memory_rel).is_dir();
     if memory_included {
@@ -220,19 +234,24 @@ pub fn run_backup(
     // Exclude regenerable bulk (logs/state/locks/*.log) so a legacy symlinked
     // ~/.omega doesn't drag gigabytes of logs into the archive. Secrets,
     // credentials, provisioning, and config are always kept.
+    // Regenerable OmegaOS runtime state, excluded relative to the real state
+    // dir (omega_rel), so this tracks a relocated root instead of a stale
+    // ".omega" literal.
+    let omega_excludes = [
+        format!("--exclude={}/logs", omega_rel),
+        format!("--exclude={}/state", omega_rel),
+        format!("--exclude={}/locks", omega_rel),
+    ];
     let status = Command::new("tar")
         .args(["czhf"])
         .arg(&archive)
         .arg("-C")
         .arg(&home)
+        .args(&omega_excludes)
         .args([
-            // Regenerable OmegaOS runtime state.
-            "--exclude=.omega/logs",
-            "--exclude=.omega/state",
-            "--exclude=.omega/locks",
             "--exclude=*.log",
             // Regenerable dev/dep artifacts (matter only for legacy symlinked
-            // layouts; a clean ~/.omega has none of these). Never secrets.
+            // layouts; a clean state dir has none of these). Never secrets.
             "--exclude=node_modules",
             "--exclude=__pycache__",
             "--exclude=.venv",

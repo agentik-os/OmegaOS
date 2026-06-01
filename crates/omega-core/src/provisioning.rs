@@ -14,11 +14,12 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-/// `~/.omega/provisioning/services.env`.
+/// `<omega_dir>/provisioning/services.env`. Derives from `config::omega_dir()`
+/// (the single root: `$OMEGA_DIR`, else consolidated `~/OmegaOS/System`, else
+/// legacy `~/.omega`) — was a hardcoded `~/.omega` that silently diverged from
+/// credentials/state once the system relocated to the consolidated layout.
 pub fn services_env_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".omega/provisioning/services.env")
+    crate::config::omega_dir().join("provisioning/services.env")
 }
 
 /// Current value of an `export KEY="..."` line, or `None` if unset/empty.
@@ -97,11 +98,10 @@ fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) 
 // picks an existing group or creates a new one; the chosen group is recorded
 // on the project so push / deploy / update all use the same account.
 
-/// `~/.omega/provisioning/groups/` — one `<slug>.env` per client credential set.
+/// `<omega_dir>/provisioning/groups/` — one `<slug>.env` per client credential
+/// set. Derives from `config::omega_dir()` (see `services_env_path`).
 pub fn groups_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".omega/provisioning/groups")
+    crate::config::omega_dir().join("provisioning/groups")
 }
 
 /// Sanitize a free-text group/client name into a safe filename stem.
