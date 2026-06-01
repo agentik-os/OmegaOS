@@ -2622,19 +2622,29 @@ async fn cmd_spawn_worker(
     // Register the worker under its oracle so the patrol routes its done/blocked
     // events to the right parent and the TUI shows it under the oracle.
     if let Some(ref oracle_name) = oracle_session {
-        if let Ok(Some(mut state)) =
-            omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
-        {
-            state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
-                session_name: worker_name.clone(),
-                task_id: task.to_string(),
-                task_name: task.to_string(),
-                files_owned: files.clone().unwrap_or_default(),
-                dispatched_at: chrono::Utc::now(),
-                status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
+        // Upsert: if the oracle never wrote a full state, create a minimal one
+        // so the worker→oracle link is ALWAYS persisted. Previously this only
+        // updated an EXISTING state and silently dropped the link otherwise —
+        // which is why the menu couldn't nest these workers under their oracle.
+        let mut state = omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                omega_core::oracle_lifecycle::OracleState::new_minimal(
+                    oracle_name,
+                    project_name.as_deref().unwrap_or(""),
+                    std::path::PathBuf::from(work_dir),
+                )
             });
-            let _ = state.write(&config.state_dir);
-        }
+        state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
+            session_name: worker_name.clone(),
+            task_id: task.to_string(),
+            task_name: task.to_string(),
+            files_owned: files.clone().unwrap_or_default(),
+            dispatched_at: chrono::Utc::now(),
+            status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
+        });
+        let _ = state.write(&config.state_dir);
     }
 
     println!("● Worker spawned: {}", worker_name);

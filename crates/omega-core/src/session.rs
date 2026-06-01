@@ -267,15 +267,7 @@ impl SessionManager {
             .map(|name| OmegaSession::classify(name.as_ref()))
             .collect();
 
-        sessions.sort_by(|a, b| {
-            let sa = section_order(&a.role);
-            let sb = section_order(&b.role);
-            sa.cmp(&sb)
-                .then_with(|| a.project.cmp(&b.project))
-                .then_with(|| a.oracle_index.cmp(&b.oracle_index))
-                .then_with(|| role_order(&a.role).cmp(&role_order(&b.role)))
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        sessions.sort_by(order_sessions);
         Ok(sessions)
     }
 
@@ -801,6 +793,23 @@ fn pane_color_to_preview(c: &rmux_sdk::PaneColor) -> Option<PreviewColor> {
 }
 
 
+/// Menu ordering for the session list. Groups by section (Home, project work,
+/// System), then by project, then — within a project — oracles BEFORE their
+/// workers so workers render nested under the oracle block (the ├/└ tree).
+///
+/// `role_order` is compared BEFORE `oracle_index` on purpose: workers carry
+/// `oracle_index == None`, and `None < Some(_)`, so comparing the index first
+/// would float every worker above its governing oracle (the reported bug —
+/// "DentistryGPT-worker-…" listed above "oracle-DentistryGPT-1").
+fn order_sessions(a: &OmegaSession, b: &OmegaSession) -> std::cmp::Ordering {
+    section_order(&a.role)
+        .cmp(&section_order(&b.role))
+        .then_with(|| a.project.cmp(&b.project))
+        .then_with(|| role_order(&a.role).cmp(&role_order(&b.role)))
+        .then_with(|| a.oracle_index.cmp(&b.oracle_index))
+        .then_with(|| a.name.cmp(&b.name))
+}
+
 fn section_order(role: &SessionRole) -> u8 {
     match role {
         SessionRole::Home => 0,
@@ -880,5 +889,64 @@ mod sanitize_tests {
         assert_eq!(s("é"), "session"); // empty-after-strip → fallback
         assert_eq!(s(""), "session");
         assert!(s(&"x".repeat(200)).len() <= MAX_SESSION_NAME_LEN);
+    }
+}
+
+#[cfg(test)]
+mod order_tests {
+    use super::{order_sessions, OmegaSession};
+
+    #[test]
+    fn workers_nest_under_their_project_oracles() {
+        // The exact reported case: 2 oracles + 2 workers in DentistryGPT,
+        // delivered alphabetically (workers' "D…" sorts before "oracle-…").
+        // order_sessions must put oracles first (by index), workers after, so
+        // the menu tree renders workers nested under the oracle block.
+        let mut v: Vec<OmegaSession> = [
+            "DentistryGPT-worker-composio-v3",
+            "DentistryGPT-worker-agent-actions",
+            "oracle-DentistryGPT-2",
+            "oracle-DentistryGPT-1",
+        ]
+        .iter()
+        .map(|n| OmegaSession::classify(n))
+        .collect();
+        v.sort_by(order_sessions);
+        let names: Vec<&str> = v.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "oracle-DentistryGPT-1",        // oracle idx 1 first
+                "oracle-DentistryGPT-2",        // then idx 2
+                "DentistryGPT-worker-agent-actions", // workers after, by name
+                "DentistryGPT-worker-composio-v3",
+            ]
+        );
+    }
+
+    #[test]
+    fn projects_stay_grouped_and_oracles_lead_each() {
+        // Two projects interleaved on input must come out grouped, each led by
+        // its oracle, workers trailing — never a worker above its oracle.
+        let mut v: Vec<OmegaSession> = [
+            "Kommu-worker-build-1",
+            "oracle-DentistryGPT-1",
+            "oracle-Kommu-1",
+            "DentistryGPT-fix-login-2",
+        ]
+        .iter()
+        .map(|n| OmegaSession::classify(n))
+        .collect();
+        v.sort_by(order_sessions);
+        let names: Vec<&str> = v.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "oracle-DentistryGPT-1",
+                "DentistryGPT-fix-login-2",
+                "oracle-Kommu-1",
+                "Kommu-worker-build-1",
+            ]
+        );
     }
 }

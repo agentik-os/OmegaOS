@@ -1286,6 +1286,19 @@ impl App {
 
         let all_progress = ProgressInfo::read_all(&self.config.state_dir);
 
+        // Worker → governing-oracle map, read from each oracle's persisted
+        // state (spawn-worker records the link there). Lets the menu nest a
+        // worker under the SPECIFIC oracle that spawned it, not just its
+        // project. Workers with no recorded parent fall back (single-oracle
+        // project → that oracle; multi-oracle → project level — no guessing).
+        let mut worker_oracle: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for st in omega_core::oracle_lifecycle::OracleState::read_all(&self.config.state_dir) {
+            for w in &st.workers {
+                worker_oracle.insert(w.session_name.clone(), st.oracle_name.clone());
+            }
+        }
+
         self.sessions.clear();
         self.rows.clear();
 
@@ -1322,14 +1335,14 @@ impl App {
             }
             let section_label = section_for(session);
             if last_section.as_ref() != Some(&section_label) && !group.is_empty() {
-                self.flush_group_rows(&group, &all_progress, last_section.as_deref());
+                self.flush_group_rows(&group, &all_progress, &worker_oracle, last_section.as_deref());
                 group.clear();
             }
             group.push(session);
             last_section = Some(section_label);
         }
         if !group.is_empty() {
-            self.flush_group_rows(&group, &all_progress, last_section.as_deref());
+            self.flush_group_rows(&group, &all_progress, &worker_oracle, last_section.as_deref());
         }
 
         // Restore the user's manual protection toggles
@@ -1358,45 +1371,99 @@ impl App {
         &mut self,
         group: &[&OmegaSession],
         all_progress: &[ProgressInfo],
+        worker_oracle: &std::collections::HashMap<String, String>,
         section_label: Option<&str>,
     ) {
-        let has_oracle = group.iter().any(|s| s.role == SessionRole::Oracle);
-        let worker_count = group.iter().filter(|s| s.role == SessionRole::Worker).count();
-        let show_tree = has_oracle && worker_count > 0;
-
         if let Some(label) = section_label {
             self.rows
                 .push(SessionRow::Header(format!("─ {} ─", label)));
         }
 
-        for (i, session) in group.iter().enumerate() {
-            let progress = all_progress
+        let oracles: Vec<&OmegaSession> = group
+            .iter()
+            .copied()
+            .filter(|s| s.role == SessionRole::Oracle)
+            .collect();
+        let workers: Vec<&OmegaSession> = group
+            .iter()
+            .copied()
+            .filter(|s| s.role == SessionRole::Worker)
+            .collect();
+        let others: Vec<&OmegaSession> = group
+            .iter()
+            .copied()
+            .filter(|s| s.role != SessionRole::Oracle && s.role != SessionRole::Worker)
+            .collect();
+
+        // Resolve a worker's governing oracle: the recorded link first; else,
+        // only when the project has exactly ONE oracle, that sole oracle; else
+        // None (unattributed — never guessed between several oracles).
+        let sole_oracle: Option<&str> = if oracles.len() == 1 {
+            Some(oracles[0].name.as_str())
+        } else {
+            None
+        };
+        let parent_of = |w: &OmegaSession| -> Option<String> {
+            worker_oracle
+                .get(&w.name)
+                .cloned()
+                .or_else(|| sole_oracle.map(|s| s.to_string()))
+        };
+
+        // Each oracle, immediately followed by the workers it governs (├/└).
+        let mut shown: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for &oracle in &oracles {
+            self.push_session_row(oracle, all_progress, String::new());
+            let mine: Vec<&OmegaSession> = workers
                 .iter()
-                .find(|p| p.session == session.name)
-                .cloned();
-
-            let tree_prefix = if show_tree && session.role == SessionRole::Worker {
-                if i == group.len() - 1 {
-                    "  └ ".to_string()
-                } else {
-                    "  ├ ".to_string()
-                }
-            } else {
-                String::new()
-            };
-
-            let entry = SessionEntry {
-                session: (*session).clone(),
-                progress,
-                is_current: false,
-                is_protected: false, // restored after the loop below
-                tree_prefix,
-            };
-            self.sessions.push(entry);
-            self.rows.push(SessionRow::Entry(
-                self.sessions.last().unwrap().clone_for_row(),
-            ));
+                .copied()
+                .filter(|w| parent_of(w).as_deref() == Some(oracle.name.as_str()))
+                .collect();
+            let n = mine.len();
+            for (i, w) in mine.into_iter().enumerate() {
+                let prefix = if i + 1 == n { "  └ " } else { "  ├ " };
+                self.push_session_row(w, all_progress, prefix.to_string());
+                shown.insert(w.name.clone());
+            }
         }
+
+        // Workers with no resolvable parent in this group (multi-oracle project
+        // with no recorded link, or a killed oracle): project level, after the
+        // oracles. Honest — we show them rather than hide or misattribute them.
+        for &w in &workers {
+            if !shown.contains(&w.name) {
+                self.push_session_row(w, all_progress, String::new());
+            }
+        }
+
+        // Anything else in the section (e.g. a stray shell classified here).
+        for &o in &others {
+            self.push_session_row(o, all_progress, String::new());
+        }
+    }
+
+    /// Append one session as a list row (+ its progress + tree prefix).
+    /// `is_protected` is restored by the caller after the whole group is built.
+    fn push_session_row(
+        &mut self,
+        session: &OmegaSession,
+        all_progress: &[ProgressInfo],
+        tree_prefix: String,
+    ) {
+        let progress = all_progress
+            .iter()
+            .find(|p| p.session == session.name)
+            .cloned();
+        let entry = SessionEntry {
+            session: session.clone(),
+            progress,
+            is_current: false,
+            is_protected: false,
+            tree_prefix,
+        };
+        self.sessions.push(entry);
+        self.rows
+            .push(SessionRow::Entry(self.sessions.last().unwrap().clone_for_row()));
     }
 
     pub fn selected_session(&self) -> Option<&SessionEntry> {

@@ -119,6 +119,29 @@ impl OracleState {
         }
     }
 
+    /// Minimal state for a live oracle that has no persisted mission yet.
+    /// Lets `spawn-worker` ALWAYS record the worker→oracle link (the session
+    /// menu nests workers under their governing oracle from it) even when the
+    /// oracle never wrote a full `OracleState`. Placeholders are overwritten by
+    /// a later full `new()` / `transition()`.
+    pub fn new_minimal(oracle_name: &str, project: &str, working_dir: PathBuf) -> Self {
+        let now = Utc::now();
+        Self {
+            oracle_name: oracle_name.to_string(),
+            project: project.to_string(),
+            mission_id: MissionId(String::new()),
+            mission_text: String::new(),
+            working_dir,
+            phase: OraclePhase::Dispatch,
+            workers: Vec::new(),
+            god_mode: None,
+            ship_requested: false,
+            started_at: now,
+            phase_entered_at: now,
+            phase_history: Vec::new(),
+        }
+    }
+
     pub fn transition(&mut self, to: OraclePhase, reason: &str) {
         let from = self.phase;
         self.phase_history.push(PhaseTransition {
