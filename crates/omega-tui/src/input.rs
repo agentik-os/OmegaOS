@@ -1311,7 +1311,16 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
 fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     let session = match app.selected_session() {
         Some(entry) => entry.session.name.clone(),
-        None => return Action::None,
+        None => {
+            // No session to chat with — e.g. the focused session died and the
+            // list emptied. Returning None here swallowed EVERY key (even Tab
+            // and q), soft-locking the whole UI. Instead drop back to list focus
+            // and re-dispatch this keystroke in normal mode so it still acts
+            // (Tab, q, arrows all work again). No recursion: focus is now List,
+            // so handle_key_normal won't route back into the chat handler.
+            app.session_focus = SessionFocus::List;
+            return handle_key_normal(app, key);
+        }
     };
 
     // --- TUI-local (never forwarded) ---
@@ -1690,6 +1699,28 @@ mod tests {
         assert!(
             matches!(handle_key(&mut app, press('x')), Action::KillSession(n) if n == "test-worker"),
             "x on the Sessions tab must kill the selected session"
+        );
+    }
+
+    // Soft-lock regression: chat focus with an EMPTY session list used to
+    // swallow every key (even q and Tab) because handle_key_chat returned
+    // Action::None when selected_session() was None — locking the whole UI. It
+    // must instead recover to list focus and still act on the keystroke.
+    #[test]
+    fn chat_focus_with_empty_list_does_not_soft_lock() {
+        let mut app = test_app();
+        app.tab = Tab::Sessions;
+        app.session_focus = SessionFocus::Chat;
+        assert!(app.sessions.is_empty(), "precondition: no session to chat with");
+
+        let action = handle_key(&mut app, press('q'));
+        assert!(
+            matches!(action, Action::Quit),
+            "q must still quit, not be swallowed in empty-list chat focus"
+        );
+        assert!(
+            matches!(app.session_focus, SessionFocus::List),
+            "focus must recover to the session list, not stay stuck in chat"
         );
     }
 }
