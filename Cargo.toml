@@ -30,6 +30,17 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Release profile tuned for a shipped single-binary tool: full LTO + a single
+# codegen unit produce a smaller, faster binary, and strip drops debug symbols.
+# panic stays "unwind" (default) — the orchestration layer must not abort the
+# whole process on a worker panic. The extra build time is a one-time install
+# cost (install.sh builds from source); runtime speed is what ships.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
 dirs = "6.0"
 toml = "0.8"
 clap_complete = "4.5"
