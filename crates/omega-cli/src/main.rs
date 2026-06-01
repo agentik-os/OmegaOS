@@ -2021,7 +2021,7 @@ enum AuditAction {
         /// Oracle session name
         oracle: String,
     },
-    /// Dispatch an audit worker
+    /// Show an audit's metadata + print the spawn-worker command to run it
     Run {
         /// Audit id (e.g. codeaudit, secaudit)
         audit_id: String,
@@ -3362,8 +3362,23 @@ async fn cmd_gate(oracle: &str, mission: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
+    // Prefer the ACTUAL gate result if the oracle has been graded — that is what
+    // "check the gate" means. Falls back to showing the rubric (the criteria the
+    // gate will grade against) when no result exists yet.
+    let result_path = config.state_dir.join(format!("{}.gate-result.json", oracle));
+    if result_path.exists() {
+        let content = std::fs::read_to_string(&result_path)?;
+        let r: omega_core::gate::GateResult = serde_json::from_str(&content)?;
+        let mark = |b: bool| if b { "PASS" } else { "FAIL" };
+        println!("Gate result for {} — {} ({:.1}/100)", oracle, mark(r.overall_pass), r.score);
+        println!("  rubric={}  consensus={}  adversarial={}  regression={}", mark(r.rubric_pass), mark(r.consensus_pass), mark(r.adversarial_pass), mark(r.regression_pass));
+        println!("  audit={}  token_budget={}  citation={}", mark(r.audit_pass), mark(r.token_budget_pass), mark(r.citation_pass));
+        return Ok(());
+    }
+
     match omega_core::gate::Rubric::read(&config.state_dir, oracle)? {
         Some(rubric) => {
+            println!("No gate result yet for {} — showing the rubric it will grade against.", oracle);
             println!("Mission: {}", rubric.mission);
             println!("Criteria:");
             for c in &rubric.criteria {
@@ -3371,7 +3386,7 @@ async fn cmd_gate(oracle: &str, mission: Option<&str>) -> Result<()> {
             }
         }
         None => {
-            println!("No rubric found for {}. Create one with: omega gate {} --mission \"...\"", oracle, oracle);
+            println!("No gate result or rubric found for {}. Create a rubric with: omega gate {} --mission \"...\"", oracle, oracle);
         }
     }
     Ok(())
