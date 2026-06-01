@@ -509,8 +509,10 @@ pub fn claude_native_path() -> PathBuf {
 /// so future reads go through omega. Idempotent.
 pub fn sync_credentials_to_omega() -> std::io::Result<()> {
     let native = claude_native_path();
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let canonical = home.join(".omega").join("credentials").join("claude.json");
+    // Use the SAME resolver credentials_path() reads from — honoring $OMEGA_DIR /
+    // the consolidated ~/OmegaOS/System layout. A hardcoded ~/.omega here would
+    // write fresh OAuth creds where the reader never looks under a relocated root.
+    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
 
     // If native is a real file (Claude's atomic write broke the symlink),
     // copy it into omega and re-link.
