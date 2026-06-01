@@ -5225,10 +5225,8 @@ fn last_activity_line(pane_text: &str, max_chars: usize) -> Option<String> {
                 .all(|c| matches!(c, '─' | '═' | '·' | '│' | ' ' | '\t'))
     }
     // ANSI strip (same pattern as clean_terminal_output but without the
-    // wholesale `●` drop).
-    let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07")
-        .unwrap_or_else(|_| regex::Regex::new(r"$^").unwrap());
-    let stripped = ansi_re.replace_all(pane_text, "");
+    // wholesale `●` drop). Reuse the precompiled ANSI_RE — no per-call recompile.
+    let stripped = ANSI_RE.replace_all(pane_text, "");
 
     let picked = stripped
         .lines()
@@ -5265,20 +5263,26 @@ fn last_activity_line(pane_text: &str, max_chars: usize) -> Option<String> {
     Some(truncated)
 }
 
+// Compiled ONCE (not per call). clean_terminal_output runs on every pane
+// snapshot the bridge mirrors, and Regex::new is expensive — recompiling three
+// patterns per call was a measurable hot-path waste. LazyLock = std, no new dep.
+static ANSI_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").expect("ANSI_RE")
+});
+static SYS_REMINDER_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>").expect("SYS_REMINDER_RE")
+});
+static MEM_CTX_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?s)<claude-mem-context>.*?</claude-mem-context>").expect("MEM_CTX_RE")
+});
+
 fn clean_terminal_output(text: &str) -> String {
-    let ansi_re = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07").unwrap_or_else(|_| {
-        regex::Regex::new(r"$^").unwrap()
-    });
-    let stripped = ansi_re.replace_all(text, "");
-    let no_reminders = regex::Regex::new(r"(?s)<system-reminder>.*?</system-reminder>")
-        .map(|re| re.replace_all(&stripped, "").to_string())
-        .unwrap_or_else(|_| stripped.to_string());
+    let stripped = ANSI_RE.replace_all(text, "");
+    let no_reminders = SYS_REMINDER_RE.replace_all(&stripped, "");
     // Strip the whole <claude-mem-context> block (multi-line) — agents keep it
     // in context (injected silently via additionalContext), but the human-facing
     // mirror/Telegram view must never show the memory dump.
-    let no_reminders = regex::Regex::new(r"(?s)<claude-mem-context>.*?</claude-mem-context>")
-        .map(|re| re.replace_all(&no_reminders, "").to_string())
-        .unwrap_or(no_reminders);
+    let no_reminders = MEM_CTX_RE.replace_all(&no_reminders, "").to_string();
     let lines: Vec<&str> = no_reminders
         .lines()
         .map(|l| l.trim_end())
