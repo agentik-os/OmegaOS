@@ -1,27 +1,9 @@
 use crate::agents::Agent;
 use crate::session::SessionManager;
 use anyhow::Result;
-use std::path::PathBuf;
 
 /// Canonical name of the Master AISB session — the always-on brain.
 pub const MASTER_SESSION_NAME: &str = "aisb-master";
-
-/// The system prompt for the Master AISB session.
-/// Inlined at compile time so it always travels with the binary.
-pub const MASTER_SYSTEM_PROMPT: &str = include_str!("../../../agents/aisb-master.md");
-
-/// Returns the on-disk path where the AISB system prompt is materialised
-/// for `--append-system-prompt-file`. Created on first use.
-pub fn ensure_prompt_file() -> Result<PathBuf> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let path = home.join(".omega").join("aisb-master.system.md");
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    // Always rewrite — guarantees the file matches the binary's embedded prompt
-    std::fs::write(&path, MASTER_SYSTEM_PROMPT)?;
-    Ok(path)
-}
 
 /// Ensures the Master AISB session exists. Idempotent — creates only if missing.
 ///

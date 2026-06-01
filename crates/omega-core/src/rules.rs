@@ -593,4 +593,119 @@ mod tests {
             first_op
         );
     }
+
+    /// Locate the canonical markdown rules directory, if present. There is
+    /// no vendored copy inside the repo (the only repo `rules/` dir is a
+    /// gitignored stale worktree on an obsolete scheme), so the canonical
+    /// parity source is `$HOME/.aisb/rules`. An `OMEGA_RULES_DIR` override
+    /// lets CI or a future vendored dir point the test elsewhere.
+    /// Returns `None` (→ test skips) when no directory exists.
+    fn markdown_rules_dir() -> Option<std::path::PathBuf> {
+        if let Ok(dir) = std::env::var("OMEGA_RULES_DIR") {
+            let p = std::path::PathBuf::from(dir);
+            if p.is_dir() {
+                return Some(p);
+            }
+        }
+        let home = dirs::home_dir()
+            .or_else(|| std::env::var("HOME").ok().map(std::path::PathBuf::from))?;
+        let p = home.join(".aisb/rules");
+        p.is_dir().then_some(p)
+    }
+
+    /// Extract the rule id from a markdown basename. Filenames are
+    /// `<ID>-<slug>.md` where the id is either a Law (`L` + digits, e.g.
+    /// `L0`) or a Rule (`R-` + UPPERCASE, e.g. `R-SCOPE`). Splitting on the
+    /// first `-` is wrong (it would mangle `R-SCOPE` into `R`), so we walk
+    /// the id grammar explicitly.
+    fn id_from_basename(stem: &str) -> Option<String> {
+        let bytes = stem.as_bytes();
+        match bytes.first()? {
+            // Law: 'L' followed by one or more ASCII digits.
+            b'L' => {
+                let digits: String = stem[1..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect();
+                if digits.is_empty() {
+                    None
+                } else {
+                    Some(format!("L{digits}"))
+                }
+            }
+            // Rule: 'R-' followed by one or more UPPERCASE ASCII letters.
+            b'R' if bytes.get(1) == Some(&b'-') => {
+                let upper: String = stem[2..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_uppercase())
+                    .collect();
+                if upper.is_empty() {
+                    None
+                } else {
+                    Some(format!("R-{upper}"))
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Parity gate: the Rust registry (`all_rules()`) must not drift from the
+    /// canonical markdown rule files. Skips gracefully when the markdown dir
+    /// is absent (e.g. a clean CI checkout without `$HOME/.aisb/rules`),
+    /// rather than failing spuriously. When present, the set of registry ids
+    /// must equal the set of markdown rule-file ids.
+    #[test]
+    fn registry_matches_markdown_rule_files() {
+        use std::collections::BTreeSet;
+
+        let Some(dir) = markdown_rules_dir() else {
+            eprintln!(
+                "registry_matches_markdown_rule_files: no markdown rules dir found \
+                 (set OMEGA_RULES_DIR or populate $HOME/.aisb/rules) — skipping parity check"
+            );
+            return;
+        };
+
+        let mut md_ids: BTreeSet<String> = BTreeSet::new();
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("cannot read markdown rules dir {}: {e}", dir.display()));
+        for entry in entries {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let stem = match path.file_stem().and_then(|s| s.to_str()) {
+                Some(s) => s,
+                None => continue,
+            };
+            if let Some(id) = id_from_basename(stem) {
+                md_ids.insert(id);
+            }
+        }
+
+        // An empty/irrelevant directory shouldn't fail the build spuriously.
+        if md_ids.is_empty() {
+            eprintln!(
+                "registry_matches_markdown_rule_files: {} has no recognizable rule files — skipping",
+                dir.display()
+            );
+            return;
+        }
+
+        let registry_ids: BTreeSet<String> =
+            all_rules().iter().map(|r| r.id.to_string()).collect();
+
+        let missing_in_registry: Vec<&String> = md_ids.difference(&registry_ids).collect();
+        let missing_in_markdown: Vec<&String> = registry_ids.difference(&md_ids).collect();
+
+        assert!(
+            missing_in_registry.is_empty() && missing_in_markdown.is_empty(),
+            "rule registry drifted from markdown ({}):\n  \
+             in markdown but NOT in all_rules(): {:?}\n  \
+             in all_rules() but NOT in markdown: {:?}",
+            dir.display(),
+            missing_in_registry,
+            missing_in_markdown
+        );
+    }
 }

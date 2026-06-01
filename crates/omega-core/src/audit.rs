@@ -98,7 +98,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the code SOLID?",
             triggers: &["code", "code audit", "audit code"],
-            skill_path: "skills/audits/codeaudit/SKILL.md",
+            skill_path: "audits/codeaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -110,7 +110,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Does the experience WORK?",
             triggers: &["flow", "user flow", "parcours"],
-            skill_path: "skills/audits/flowaudit/SKILL.md",
+            skill_path: "audits/flowaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -122,7 +122,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the interface BEAUTIFUL?",
             triggers: &["ux", "ui", "design audit"],
-            skill_path: "skills/audits/uiuxaudit/SKILL.md",
+            skill_path: "audits/uiuxaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -134,7 +134,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "What is BROKEN right now?",
             triggers: &["debug", "runtime bug", "chaos"],
-            skill_path: "skills/audits/debugaudit/SKILL.md",
+            skill_path: "audits/debugaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -146,7 +146,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the product COMPLETE?",
             triggers: &["feature", "completeness"],
-            skill_path: "skills/audits/featureaudit/SKILL.md",
+            skill_path: "audits/featureaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -158,7 +158,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is it FAST enough?",
             triggers: &["perf", "performance", "core web vitals"],
-            skill_path: "skills/audits/perfaudit/SKILL.md",
+            skill_path: "audits/perfaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -170,7 +170,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is it SECURE?",
             triggers: &["sec", "security", "owasp", "vulnerab"],
-            skill_path: "skills/audits/secaudit/SKILL.md",
+            skill_path: "audits/secaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -182,7 +182,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is it ACCESSIBLE?",
             triggers: &["a11y", "accessibility", "wcag"],
-            skill_path: "skills/audits/a11yaudit/SKILL.md",
+            skill_path: "audits/a11yaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -194,7 +194,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is it DISCOVERABLE?",
             triggers: &["seo", "crawlability"],
-            skill_path: "skills/audits/seoaudit/SKILL.md",
+            skill_path: "audits/seoaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -206,7 +206,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the data INTACT?",
             triggers: &["data integrity", "schema", "data audit"],
-            skill_path: "skills/audits/dataaudit/SKILL.md",
+            skill_path: "audits/dataaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -218,7 +218,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the API SOLID?",
             triggers: &["api audit", "api contracts"],
-            skill_path: "skills/audits/apiaudit/SKILL.md",
+            skill_path: "audits/apiaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -230,7 +230,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the copy CLEAR?",
             triggers: &["copy", "messaging"],
-            skill_path: "skills/audits/copyaudit/SKILL.md",
+            skill_path: "audits/copyaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -242,7 +242,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the DX SMOOTH?",
             triggers: &["dx", "developer experience"],
-            skill_path: "skills/audits/dxaudit/SKILL.md",
+            skill_path: "audits/dxaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -254,7 +254,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the motion PURPOSEFUL?",
             triggers: &["motion", "animation"],
-            skill_path: "skills/audits/motionaudit/SKILL.md",
+            skill_path: "audits/motionaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -266,7 +266,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is automation RELIABLE?",
             triggers: &["automation", "cron", "scripts"],
-            skill_path: "skills/audits/automationaudit/SKILL.md",
+            skill_path: "audits/automationaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -278,7 +278,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the logic OPTIMAL?",
             triggers: &["logic", "optimize logic"],
-            skill_path: "skills/audits/logicaudit/SKILL.md",
+            skill_path: "audits/logicaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -290,7 +290,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "What FEATURES are missing?",
             triggers: &["retention", "feature opportunities"],
-            skill_path: "skills/audits/retentionaudit/SKILL.md",
+            skill_path: "audits/retentionaudit/SKILL.md",
             read_only: true,
         },
         AuditSkill {
@@ -302,7 +302,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Can we SEE what it does in prod?",
             triggers: &["observability", "logging audit", "tracing audit", "metrics audit", "alerting audit", "slo audit", "can we debug prod"],
-            skill_path: "skills/audits/observabilityaudit/SKILL.md",
+            skill_path: "audits/observabilityaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -314,7 +314,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is the supply chain SAFE?",
             triggers: &["dep", "depaudit", "dependency audit", "supply chain", "license audit", "lockfile integrity", "sbom"],
-            skill_path: "skills/audits/depaudit/SKILL.md",
+            skill_path: "audits/depaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -326,7 +326,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is it WORLD-READY?",
             triggers: &["i18n", "internationalization", "localization", "l10n", "translation audit", "hardcoded strings", "rtl audit"],
-            skill_path: "skills/audits/i18naudit/SKILL.md",
+            skill_path: "audits/i18naudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -338,7 +338,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is shipping SAFE + reversible?",
             triggers: &["release", "release audit", "ci/cd audit", "pipeline audit", "deploy safety", "rollback", "migration safety", "release readiness"],
-            skill_path: "skills/audits/releaseaudit/SKILL.md",
+            skill_path: "audits/releaseaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -350,7 +350,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Is user data HANDLED LAWFULLY?",
             triggers: &["privacy", "gdpr", "ccpa", "pii", "consent", "cookie compliance", "data retention", "dsar"],
-            skill_path: "skills/audits/privacyaudit/SKILL.md",
+            skill_path: "audits/privacyaudit/SKILL.md",
             read_only: false,
         },
         AuditSkill {
@@ -362,7 +362,7 @@ pub fn all_audits() -> Vec<AuditSkill> {
             normalized_max: 100,
             description: "Should the dashboard be REDESIGNED (Linear/Vercel-grade)?",
             triggers: &["refonte", "redesign dashboard", "comme linear", "comme vercel", "dashboard pro", "dashboard senior"],
-            skill_path: "skills/audits/refontaudit/SKILL.md",
+            skill_path: "audits/refontaudit/SKILL.md",
             read_only: false,
         },
     ]

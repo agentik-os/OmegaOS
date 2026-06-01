@@ -233,6 +233,9 @@ enum Commands {
         /// Files owned by this worker (scope-claim)
         #[arg(long, value_delimiter = ',')]
         files: Option<Vec<String>>,
+        /// Bypass the prompt-completeness gate (downgrade reject to a warning)
+        #[arg(long)]
+        force: bool,
     },
 
     /// Spawn a team of agents in split panes
@@ -491,8 +494,8 @@ async fn main() -> Result<()> {
         Some(Commands::Orchestrate { project, mission, dir, timeout, no_gate }) => {
             cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await
         }
-        Some(Commands::SpawnWorker { task, prompt, dir, project, files }) => {
-            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files).await
+        Some(Commands::SpawnWorker { task, prompt, dir, project, files, force }) => {
+            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files, force).await
         }
         Some(Commands::Team { project, count, dir, members }) => {
             cmd_team(&project, count, dir.as_deref(), &members).await
@@ -2656,6 +2659,7 @@ async fn cmd_spawn_worker(
     dir: Option<&str>,
     project: Option<&str>,
     files: Option<Vec<String>>,
+    force: bool,
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
@@ -2685,20 +2689,40 @@ async fn cmd_spawn_worker(
         None => format!("worker-{}", task),
     };
 
-    if let Some(ref files) = files {
-        omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
+    // Worker-prompt completeness gate (cheap, no LLM): the brief MUST carry both a
+    // Done-criteria signal AND a Verify-command signal. Checked BEFORE the scope
+    // claim so a rejected dispatch never leaves a file lock behind.
+    let prompt_lc = prompt.to_lowercase();
+    let has_done = prompt_lc.contains("done criteria")
+        || prompt_lc.contains("done:")
+        || prompt_lc.contains("done-criteria");
+    let has_verify = prompt_lc.contains("verify");
+    if !(has_done && has_verify) {
+        let missing = match (has_done, has_verify) {
+            (false, false) => "Done Criteria + Verify Command",
+            (false, true) => "Done Criteria",
+            (true, false) => "Verify Command",
+            (true, true) => unreachable!(),
+        };
+        if force {
+            tracing::warn!(
+                "worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
+                missing
+            );
+            eprintln!(
+                "[!] worker prompt missing {} — --force set, dispatching anyway (quality gate may fail)",
+                missing
+            );
+        } else {
+            anyhow::bail!(
+                "worker prompt missing {missing}. Add explicit \"Done Criteria:\" and a \"Verify Command:\" \
+                 to the prompt so the worker has measurable success criteria (rule R-RUBRIC), or pass --force to override."
+            );
+        }
     }
 
-    // Worker-prompt quality gate: warn (non-blocking) if the brief is missing a
-    // Done-criteria signal AND a Verify-command signal.
-    let prompt_lc = prompt.to_lowercase();
-    if !(prompt_lc.contains("done") && prompt_lc.contains("verify")) {
-        tracing::warn!(
-            "worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
-        );
-        eprintln!(
-            "[!] worker prompt missing Done Criteria / Verify command — dispatching anyway, but quality gate may fail"
-        );
+    if let Some(ref files) = files {
+        omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
     }
 
     // THE FUNNEL — inject the Worker-scoped Laws + operational rules, exactly

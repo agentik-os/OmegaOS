@@ -635,6 +635,23 @@ mod tests {
     }
 
     #[test]
+    fn register_audits_joined_path_resolves() {
+        // S3: skill_path consts must NOT re-include the leading "skills/" — the
+        // join is onto skills_dir which already ends in "skills". A representative
+        // audit's joined path must resolve to <skills_dir>/audits/<name>/SKILL.md
+        // with no doubled "skills/skills" segment.
+        let dir = tempfile::tempdir().unwrap();
+        let skills_dir = dir.path().join("skills");
+        fs::create_dir_all(&skills_dir).unwrap();
+        let mut registry = SkillRegistry::discover(&skills_dir).unwrap();
+        registry.register_audits();
+
+        let code = registry.get("codeaudit").unwrap();
+        assert_eq!(code.path, skills_dir.join("audits/codeaudit/SKILL.md"));
+        assert!(!code.path.to_string_lossy().contains("skills/skills"));
+    }
+
+    #[test]
     fn registry_find_by_trigger() {
         let dir = tempfile::tempdir().unwrap();
         let mut registry = SkillRegistry::discover(dir.path()).unwrap();
