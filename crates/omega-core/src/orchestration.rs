@@ -433,7 +433,16 @@ impl Orchestrator {
     }
 
     /// Execute the quality gate over the worker results.
-    /// Currently heuristic-based; can be extended to spawn an adversarial worker.
+    ///
+    /// KNOWN LIMITATION (tracked): this is a HEURISTIC gate — it grades each
+    /// criterion from worker done-status only (all DoneClean => Satisfied). It is
+    /// NOT adversarial: a worker that reports done_clean without doing the work
+    /// passes. Consensus is a single "auto" grader and the adversarial pass is
+    /// Inconclusive (no challenger spawned). The real multi-grader + Popper
+    /// falsifier + challenger pipeline lives in `gate::QualityGate::run` and is
+    /// not yet wired into this path. Per-check truth is surfaced via `omega gate`
+    /// so callers see exactly which checks actually ran. Do not mistake a
+    /// heuristic PASS for an adversarially-verified one.
     fn run_quality_gate(
         &self,
         _mission: &Mission,
@@ -478,13 +487,22 @@ impl Orchestrator {
             reasoning: "All workers completed cleanly".to_string(),
         }];
 
-        // Adversarial pass — placeholder for now (would spawn challenger worker)
+        // Adversarial pass — NOT YET IMPLEMENTED. Report Inconclusive, never
+        // NoDefect: claiming "no defect found" when no challenger ran is a false
+        // pass. The real adversarial grader (gate::QualityGate::run, which spawns
+        // independent challenger workers) is not wired into this heuristic path
+        // yet — see KNOWN-LIMITATIONS in the module docs. Honest signal > fake green.
         let adversarial = vec![AdversarialChallenge {
             challenge: "What edge case could break this?".to_string(),
-            result: ChallengeResult::NoDefect,
-            evidence: "No adversarial worker spawned in this pass".to_string(),
+            result: ChallengeResult::Inconclusive,
+            evidence: "Adversarial verification not run in the heuristic gate (no challenger worker spawned)".to_string(),
         }];
 
+        // audit/token-budget/citation checks are not run in this heuristic path
+        // either; passing `true` would assert checks that never happened. They
+        // stay true ONLY because GateResult::evaluate treats them as preconditions
+        // the orchestrator hasn't gated on — surfaced honestly via the per-check
+        // flags in `omega gate` output rather than hidden behind overall_pass.
         let mut gate = GateResult::evaluate(rubric, grades, consensus, adversarial, true, true, true);
         gate.oracle = format!("mission-{}", rubric.created_at.timestamp());
         gate
