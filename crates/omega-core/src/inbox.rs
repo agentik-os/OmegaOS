@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -102,7 +103,22 @@ impl Inbox {
         }
     }
 
+    /// Exclusive advisory lock guarding the push/drain critical sections, held
+    /// for the lifetime of the returned handle (drop = unlock). Without it
+    /// drain()'s peek-then-remove races a concurrent push(): an event appended
+    /// between the read and the unlink is deleted unread. Only push and drain
+    /// take it — the read-only peek()/count() stay lock-free (a torn last line
+    /// is skipped by the parse), and drain() calls peek() while already holding
+    /// the lock, so locking peek() too would self-deadlock (flock is per-fd).
+    /// Mirrors scope.rs's `.scope.lock` pattern.
+    fn lock(&self) -> Result<std::fs::File> {
+        let f = std::fs::File::create(self.path.with_extension("lock"))?;
+        f.lock_exclusive()?;
+        Ok(f)
+    }
+
     pub fn push(&self, event: &InboxEvent) -> Result<()> {
+        let _lock = self.lock()?;
         let line = serde_json::to_string(event)?;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -133,6 +149,11 @@ impl Inbox {
     }
 
     pub fn drain(&self) -> Result<Vec<InboxEvent>> {
+        // Hold the exclusive lock across peek+remove so a concurrent push can't
+        // append an event into the window between the read and the unlink (which
+        // remove_file would then delete unread). peek() is called lock-free here
+        // on purpose — we already hold the lock.
+        let _lock = self.lock()?;
         let events = self.peek()?;
         if self.path.exists() {
             std::fs::remove_file(&self.path)?;
@@ -179,5 +200,46 @@ mod tests {
         assert_eq!(events[1].event_type, EventType::WorkerStalled);
 
         assert_eq!(inbox.count().unwrap(), 0);
+    }
+
+    // Regression for the push/drain race: pushers append while the main thread
+    // drains, exercising exactly the window remove_file used to delete unread.
+    // The exclusive lock makes push and drain mutually exclusive, so every
+    // pushed event is either drained or still pending — never lost. Invariant:
+    // total drained == total pushed.
+    #[test]
+    fn concurrent_push_drain_loses_no_events() {
+        use std::sync::Arc;
+        use std::thread;
+        const THREADS: usize = 4;
+        const PER: usize = 25;
+
+        let tmp = TempDir::new().unwrap();
+        let dir = Arc::new(tmp.path().to_path_buf());
+
+        let mut handles = Vec::new();
+        for t in 0..THREADS {
+            let dir = Arc::clone(&dir);
+            handles.push(thread::spawn(move || {
+                let inbox = Inbox::for_oracle(&dir, "race");
+                for i in 0..PER {
+                    inbox
+                        .push(&InboxEvent::worker_done(&format!("w-{t}-{i}"), "done_clean"))
+                        .unwrap();
+                }
+            }));
+        }
+
+        // Drain in parallel with the live pushers (the race window), then drain
+        // once more after they all finish to collect the tail.
+        let inbox = Inbox::for_oracle(&dir, "race");
+        let mut collected = 0;
+        for h in handles {
+            collected += inbox.drain().unwrap().len();
+            h.join().unwrap();
+        }
+        collected += inbox.drain().unwrap().len();
+
+        assert_eq!(collected, THREADS * PER, "lock must lose no event across push/drain");
     }
 }
