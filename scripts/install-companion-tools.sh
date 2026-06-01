@@ -50,6 +50,20 @@ if [ -n "$NPX" ]; then
   fi
 fi
 
+# 1b. Design/taste skill packs (SST -g — every agent dir). Best-effort.
+if [ -n "$NPX" ]; then
+  if "$NPX" -y skills add Leonxlnx/taste-skill -g </dev/null >/dev/null 2>&1; then
+    ok "taste-skill installed (all agents)"
+  else
+    warn "taste-skill: install manually -> npx skills add Leonxlnx/taste-skill -g"
+  fi
+  if "$NPX" -y skills add emilkowalski/skill -g </dev/null >/dev/null 2>&1; then
+    ok "impeccable (emilkowalski/skill) installed (all agents)"
+  else
+    warn "impeccable: install manually -> npx skills add emilkowalski/skill -g"
+  fi
+fi
+
 # 2. Higgsfield — image/video generation CLI + its skill pack.
 if have npm; then
   if have higgsfield; then ok "higgsfield CLI already installed"
