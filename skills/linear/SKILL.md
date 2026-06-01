@@ -140,9 +140,11 @@ page is an ABORT, never a PASS.
 When the gate passes, the ticket moves to a **neutral review state for the human operator to
 check** — discover it via the Linear `workflowStates` query (NEVER hardcode a stateId):
 
-1. Prefer an exact match for **`Omega Review`** (OmegaOS's review state), then
-2. fallback to any **`In Review`** state, then
-3. if none exists → ABORT and tell the operator: "no review state found, ticket left in current state."
+1. Prefer the operator's standard **`In Review`** state (type `started`), then
+2. fallback to **`Omega Review`** — OmegaOS's neutral review state, auto-created on demand if the team has none, then
+3. if neither exists and `Omega Review` cannot be created → ABORT and tell the operator: "no review state found, ticket left in current state."
+
+(This ordering matches RULES.md §7 — the operator's existing `In Review` wins; `Omega Review` is the auto-created neutral fallback.)
 
 ```graphql
 mutation { issueUpdate(id: "UUID", input: { stateId: "REVIEW_STATE_UUID" }) { success } }

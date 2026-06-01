@@ -84,6 +84,16 @@ enum Commands {
     /// List supported agents and their availability
     Agents,
 
+    /// Remove "junk" rmux sessions — ones omega could not have created (their
+    /// rmux name isn't its own sanitized slug, e.g. "istryGPT -" from a mangled
+    /// multi-line paste). Dry-run by default; pass --force to actually kill them.
+    #[command(name = "clean-junk")]
+    CleanJunk {
+        /// Actually kill the junk sessions (default is a dry-run preview).
+        #[arg(long)]
+        force: bool,
+    },
+
     /// Print the localized wall-clock for the rmux status bar. Honors the
     /// `timezone` config field (falls back to $TZ, then system local). One
     /// source of truth shared with the TUI clock — see omega_core::clock.
@@ -459,6 +469,7 @@ async fn main() -> Result<()> {
             cmd_new_project(&name, &stack, &category, &group, resume, from.as_deref(), skip.as_deref(), budget, build, dry_run).await
         }
         Some(Commands::Agents) => cmd_agents(),
+        Some(Commands::CleanJunk { force }) => cmd_clean_junk(force).await,
         Some(Commands::Clock { full }) => cmd_clock(full),
         Some(Commands::Projects) => cmd_projects(),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
@@ -2317,6 +2328,63 @@ fn cmd_clock(full: bool) -> Result<()> {
         .and_then(|c| c.timezone);
     let fmt = if full { "%H:%M %d-%b-%y" } else { "%H:%M" };
     println!("{}", omega_core::clock::now_fmt(tz.as_deref(), fmt));
+    Ok(())
+}
+
+/// Remove junk rmux sessions — ones omega could not have created (their rmux
+/// name isn't its own sanitized slug). Dry-run unless `force`. The current
+/// session is always kept so this never kills the shell you're running it from.
+async fn cmd_clean_junk(force: bool) -> Result<()> {
+    let mgr = SessionManager::connect().await?;
+    let sessions = mgr.list_sessions().await?;
+    let mut keep = std::collections::HashSet::new();
+    if let Ok(v) = std::env::var("RMUX") {
+        if let Some(name) = v.split(',').next() {
+            keep.insert(name.to_string());
+        }
+    }
+    let junk = omega_core::cleanup::find_junk_sessions(&sessions, &keep);
+    if junk.is_empty() {
+        println!("✓ No junk sessions — every session name is a clean slug.");
+        return Ok(());
+    }
+    println!(
+        "Junk sessions (rmux name ≠ sanitized slug — not created by omega):"
+    );
+    for j in &junk {
+        println!("  • {:?}", j);
+    }
+    if !force {
+        println!(
+            "\nDry run — nothing killed. Re-run with --force to kill these {} session(s).",
+            junk.len()
+        );
+        return Ok(());
+    }
+    let mut killed = 0;
+    for j in &junk {
+        // Kill via the RAW rmux name — NOT mgr.kill_session, which sanitizes the
+        // target and would look for a slug that doesn't exist ("Session not
+        // found"). Junk sessions are exactly the ones whose real name has chars
+        // sanitize strips, so we must hand rmux the original bytes verbatim.
+        let out = tokio::process::Command::new("rmux")
+            .args(["kill-session", "-t", j])
+            .output()
+            .await;
+        match out {
+            Ok(o) if o.status.success() => {
+                println!("  ✗ killed {:?}", j);
+                killed += 1;
+            }
+            Ok(o) => println!(
+                "  ! failed {:?}: {}",
+                j,
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => println!("  ! failed {:?}: {}", j, e),
+        }
+    }
+    println!("Removed {} junk session(s).", killed);
     Ok(())
 }
 

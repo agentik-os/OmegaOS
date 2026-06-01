@@ -390,6 +390,71 @@ EOF
     fi
 done
 
+# Install the Linear feedback-resolution skill (self-contained, engine-native).
+# Ships the launcher (SKILL.md) + the full ported protocol (RULES.md) to
+# ~/.omega/skills/linear/, and installs BOTH /omg-linear (canonical, namespaced)
+# AND /linear (the keyword the CLAUDE.md trigger table maps to). Alias, never a
+# rename — both always work. No maintainer-private deps: the audit gate runs
+# through the shipped /omg-audit Quality Arsenal, NOT any private selector/gate
+# script. The stub points the agent at the installed RULES.md (single source of
+# truth) so a fresh `git clone && ./install.sh` reproduces the whole pipeline.
+LINEAR_SRC="$OMEGA_SRC/skills/linear"
+LINEAR_DST="$OMEGA_DIR/skills/linear"
+if [[ -d "$LINEAR_SRC" ]]; then
+    mkdir -p "$LINEAR_DST"
+    cp -r "$LINEAR_SRC"/* "$LINEAR_DST/"
+    for cmd in omg-linear linear; do
+        cat > "$OMG_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+OmegaOS Linear feedback-resolution pipeline (v2, Workflow-driven). TRIGGER-GUARDED:
+only act on Linear when the user explicitly signals it (the word "linear", "fix linear",
+"regler les feedbacks", a ticket id, or a linear.app URL) — bare "feedback"/"ticket"
+never triggers it, and never mention Linear unless the user did.
+
+Read and follow the full protocol (the single source of truth) in:
+
+\`$LINEAR_DST/RULES.md\`
+
+The launcher is \`$LINEAR_DST/SKILL.md\`. Resolve tickets end-to-end via the OmegaOS
+Workflow primitive (\`/dynamic\`): triage → surgical fix → BEFORE/AFTER evidence →
+the /omg-audit gate (\`omega audit select\` → run each /omg-<name>audit, 100/100 each)
+→ strict Fix-Verification comment → move each ticket to the neutral "In Review" /
+"Omega Review" state for the operator. A human marks Done; the agent NEVER self-marks Done.
+EOF
+    done
+    ok "Linear skill installed → $LINEAR_DST/ (+ /omg-linear, /linear stubs)"
+else
+    info "Linear skill not found — skipping"
+fi
+
+# Install the one-time Linear app-setup wizard (installs the in-app feedback
+# widget + Linear labels + API routes into the user's OWN project). Ships to
+# ~/.omega/skills/linear-setup/ with /omg-linear-setup (+ /linear-setup alias).
+LINEAR_SETUP_SRC="$OMEGA_SRC/skills/linear-setup"
+LINEAR_SETUP_DST="$OMEGA_DIR/skills/linear-setup"
+if [[ -d "$LINEAR_SETUP_SRC" ]]; then
+    mkdir -p "$LINEAR_SETUP_DST"
+    cp -r "$LINEAR_SETUP_SRC"/* "$LINEAR_SETUP_DST/"
+    for cmd in omg-linear-setup linear-setup; do
+        cat > "$OMG_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+One-time Linear feedback-system setup for the CURRENT project: installs the
+in-app feedback widget (screenshot + page URL + element selector + console
+capture), the Linear label groups the pipeline keys off, and the API route(s)
+that turn a widget report into a Linear issue. Auto-detects the project's stack,
+auth provider, UI library, and src/ layout. Run this ONCE per project; after it,
+use /omg-linear to resolve the tickets. Read and follow the full wizard in:
+
+\`$LINEAR_SETUP_DST/SKILL.md\`
+EOF
+    done
+    ok "Linear-setup wizard installed → $LINEAR_SETUP_DST/ (+ /omg-linear-setup, /linear-setup stubs)"
+else
+    info "Linear-setup skill not found — skipping"
+fi
+
 # Install OMEGA.md master system prompt
 if [[ -f "$OMEGA_SRC/OMEGA.md" ]]; then
     cp "$OMEGA_SRC/OMEGA.md" "$OMEGA_DIR/OMEGA.md"

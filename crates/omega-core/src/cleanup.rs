@@ -68,6 +68,24 @@ pub fn infrastructure_keep(sessions: &[OmegaSession]) -> HashSet<String> {
         .collect()
 }
 
+/// "Junk" sessions — ones OmegaOS could NOT have created. Every omega
+/// create-path runs `sanitize_session_name` (alnum/._- only; spaces, accents,
+/// bullets, punctuation collapse to '-'), so a live session whose rmux name
+/// differs from its own sanitized form was born OUTSIDE omega: a paste-
+/// corruption artifact (e.g. `"istryGPT -"` from a mangled menu copy pasted
+/// into a session) or a hand-rolled `rmux new-session`. Clean slugs
+/// (oracle-…, …-worker-…, claude-1, the master, the bridge) all equal their
+/// sanitized form and are therefore never flagged. `keep` shields the caller's
+/// current session.
+pub fn find_junk_sessions(sessions: &[OmegaSession], keep: &HashSet<String>) -> Vec<String> {
+    sessions
+        .iter()
+        .filter(|s| !keep.contains(&s.name))
+        .filter(|s| s.name != crate::session::sanitize_session_name(&s.name))
+        .map(|s| s.name.clone())
+        .collect()
+}
+
 /// The sessions a kill-all/nuclear WOULD kill given a `keep` set — for the
 /// confirmation preview (show before you destroy).
 pub async fn killable(mgr: &SessionManager, keep: &HashSet<String>) -> Vec<String> {
@@ -308,5 +326,36 @@ mod tests {
         // Mission sessions are NOT shielded — they're the clutter we reclaim.
         assert!(!keep.contains("Causio-worker-fix-auth"));
         assert!(!keep.contains("oracle-Causio-1"));
+    }
+
+    #[test]
+    fn junk_detection_flags_only_unsanitized_names() {
+        let sessions = vec![
+            OmegaSession::classify("istryGPT -"),       // paste artifact (space + dash)
+            OmegaSession::classify("• Dentistry"),      // bullet + space
+            OmegaSession::classify("oracle-DentistryGPT-1"), // clean omega slug
+            OmegaSession::classify("DentistryGPT-worker-x"), // clean
+            OmegaSession::classify("aisb-master"),      // clean
+            OmegaSession::classify("claude-1"),         // clean user shell
+        ];
+        let keep = HashSet::new();
+        let junk = find_junk_sessions(&sessions, &keep);
+        assert!(junk.contains(&"istryGPT -".to_string()));
+        assert!(junk.contains(&"• Dentistry".to_string()));
+        // Every clean slug equals its sanitized form → never flagged.
+        assert!(!junk.iter().any(|j| j == "oracle-DentistryGPT-1"));
+        assert!(!junk.iter().any(|j| j == "DentistryGPT-worker-x"));
+        assert!(!junk.iter().any(|j| j == "aisb-master"));
+        assert!(!junk.iter().any(|j| j == "claude-1"));
+        assert_eq!(junk.len(), 2);
+    }
+
+    #[test]
+    fn junk_detection_honors_keep() {
+        let sessions = vec![OmegaSession::classify("my notes")];
+        let mut keep = HashSet::new();
+        keep.insert("my notes".to_string());
+        // A dirty name the caller explicitly keeps (e.g. current session) is spared.
+        assert!(find_junk_sessions(&sessions, &keep).is_empty());
     }
 }
