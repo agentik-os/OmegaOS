@@ -86,6 +86,14 @@ if [ -f crates/omega-core/src/executor.rs ] && [ -f crates/omega-core/src/guardi
 if grep -qE "PlanRun|PlanStatus|plan-run|plan_run" crates/omega-cli/src/main.rs; then ok "omega plan-run/plan-status CLI present"; else bad "engine CLI commands missing from main.rs"; fi
 if [ -f skills/planner/SKILL.md ] && [ -f skills/planner/fallback/plan.ts ] && grep -q "omg-planner" install.sh; then ok "/omg-planner skill + Bun fallback shipped + installed"; else bad "planner skill not shipped/wired in install.sh"; fi
 if [ -f skills/new-project/SKILL.md ] && grep -q "skills/new-project" install.sh && grep -q "omg-new-project" install.sh; then ok "/omg-new-project end-to-end skill shipped + installed"; else bad "new-project skill not shipped/wired in install.sh"; fi
+# Linear feedback-resolution skill + one-time setup wizard shipped + wired,
+# self-contained (RULES.md present, no maintainer-private audit-selector dep).
+if [ -f skills/linear/SKILL.md ] && [ -f skills/linear/RULES.md ] && grep -q "skills/linear" install.sh && grep -q "omg-linear" install.sh; then ok "/omg-linear skill (+ RULES.md) shipped + installed"; else bad "linear skill not shipped/wired in install.sh"; fi
+if [ -f skills/linear-setup/SKILL.md ] && grep -q "skills/linear-setup" install.sh && grep -q "omg-linear-setup" install.sh; then ok "/omg-linear-setup wizard shipped + installed"; else bad "linear-setup skill not shipped/wired in install.sh"; fi
+# Linear skill must not LEAK a maintainer-private path (it may mention them in
+# negative "does NOT read ~/.claude" prose; only a real ~/.claude/ or /home/hacker
+# path token is a leak). Check for the home-dir literal specifically.
+if ! grep -q "/home/hacker" skills/linear/RULES.md skills/linear/SKILL.md; then ok "linear skill has no hardcoded maintainer path"; else bad "linear skill leaks /home/hacker"; fi
 # Pipeline self-containment: OmegaOS ships its OWN /omg-vision + /omg-prd, so a
 # fresh install does not depend on the user's personal /vision /prd. The
 # new-project skill must delegate to the /omg-* versions, not the bare ones.

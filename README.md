@@ -143,6 +143,22 @@ The everyday loop is small. `omega orchestrate` runs a full mission end to end. 
 
 There are around two dozen forensic audits under `skills/audits/` — `codeaudit`, `secaudit`, `perfaudit`, `a11yaudit`, `uiuxaudit`, `flowaudit`, `seoaudit`, `apiaudit`, and more. Each one runs a Gestalt-Popper protocol: a clarity gate up front, then active falsification — the audit tries to break the thing instead of confirming it — then 10x scrutiny on the single most important point instead of spreading attention evenly. When an oracle finishes a mission it auto-selects the audits that fit what just changed, so you don't have to remember which audits to run.
 
+## Linear integration
+
+If you track user feedback in [Linear](https://linear.app), OmegaOS resolves the tickets end to end. Two commands.
+
+`/omg-linear-setup` is a one-time wizard, run inside your own app. It installs an in-app feedback widget (it captures a screenshot, the page URL, the clicked element, and the browser console at report time), the Linear labels the pipeline keys off, and the API route that turns a widget report into a Linear issue. It detects your stack, auth provider, and UI library first, so it writes code that fits the project rather than a generic template.
+
+`/omg-linear` does the work. It reads the open tickets, and for each one it fixes the code, captures before/after evidence, then runs the [Quality Arsenal](#quality-arsenal) audits that fit the change. A ticket only advances if those audits hit 100/100. Then it posts a fix-verification comment on the ticket and moves it to a review state — `In Review` if your team has one, otherwise a neutral `Omega Review` it creates. It never marks a ticket Done; a human does that after checking. The v2 engine runs this through a Workflow: it triages the open tickets, fans the per-ticket fix-and-audit out in parallel, and verifies each resolution adversarially before commenting.
+
+It's trigger-guarded. OmegaOS only touches Linear when you ask for it by name (`/omg-linear`, `fix linear`, a ticket id like `KOM-7`, or a `linear.app` link). The bare word "feedback" never sets it off, and it won't mention Linear unless you do.
+
+```
+omega_dir=~/.omega          # the protocol ships to ~/.omega/skills/linear/
+/omg-linear-setup           # once per app — installs the widget + labels + route
+/omg-linear                 # resolve open tickets: fix -> audit -> comment -> In Review
+```
+
 ## Limits
 
 I'd rather you know these going in.
