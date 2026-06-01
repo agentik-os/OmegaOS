@@ -513,9 +513,24 @@ impl OracleDoneSignal {
         }
     }
 
+    /// Canonical on-disk name is `oracle-<key>.done.json`, where `<key>` is the
+    /// session name minus a single leading `oracle-` prefix (any numeric index
+    /// is RETAINED: `oracle-OmegaOS-2` -> key `OmegaOS-2`). Callers legitimately
+    /// hold the name in either form — `omega done` runs inside an oracle session
+    /// and knows only its full `oracle-<name>` session name, while the close-gate
+    /// passes the bare project key — so both `read` and `write` normalize through
+    /// this one rule. Without it the writer and patrol's reader (which passes the
+    /// full `session.name`) disagreed by one `oracle-` prefix and the signal was
+    /// silently invisible to whichever side guessed wrong. Project keys never
+    /// themselves begin with `oracle-`, so stripping the prefix is unambiguous.
+    fn oracle_key(oracle: &str) -> &str {
+        oracle.strip_prefix("oracle-").unwrap_or(oracle)
+    }
+
     pub fn write(&self, state_dir: &Path) -> Result<()> {
-        let path = state_dir.join(format!("oracle-{}.done.json", self.oracle));
-        let tmp = state_dir.join(format!(".oracle-{}.done.json.tmp", self.oracle));
+        let key = Self::oracle_key(&self.oracle);
+        let path = state_dir.join(format!("oracle-{}.done.json", key));
+        let tmp = state_dir.join(format!(".oracle-{}.done.json.tmp", key));
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&tmp, &content)?;
         std::fs::rename(&tmp, &path)?;
@@ -523,7 +538,8 @@ impl OracleDoneSignal {
     }
 
     pub fn read(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
-        let path = state_dir.join(format!("oracle-{}.done.json", oracle));
+        let key = Self::oracle_key(oracle);
+        let path = state_dir.join(format!("oracle-{}.done.json", key));
         if !path.exists() {
             return Ok(None);
         }
@@ -533,5 +549,50 @@ impl OracleDoneSignal {
 
     pub fn is_closeable(&self) -> bool {
         self.status == DoneStatus::DoneClean && self.pending_actions.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod oracle_done_tests {
+    use super::*;
+
+    #[test]
+    fn oracle_done_signal_prefix_normalized_read_write() {
+        // The writer (`omega done` inside an oracle session, which knows only
+        // its full `oracle-<name>` session name) and patrol's reader (which
+        // also passes the full `session.name`) must agree on the filename. Both
+        // normalize through oracle_key, so a bare-key write resolves on a
+        // full-name read and vice-versa — no `oracle-oracle-` double prefix.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let sig = OracleDoneSignal::new("OmegaOS", "OmegaOS", DoneStatus::DoneClean, "mission");
+        sig.write(dir).unwrap();
+
+        let f = dir.join("oracle-OmegaOS.done.json");
+        assert!(f.exists(), "expected {:?} to exist", f);
+        assert!(
+            !dir.join("oracle-oracle-OmegaOS.done.json").exists(),
+            "double-prefixed file must NOT be created"
+        );
+
+        // Full session name (what patrol passes) resolves the bare-keyed file.
+        let via_full = OracleDoneSignal::read(dir, "oracle-OmegaOS").unwrap();
+        assert!(via_full.is_some(), "patrol's full-name read must find the signal");
+        assert!(via_full.unwrap().is_closeable());
+
+        // Bare key (what the close-gate passes) resolves the same file.
+        assert!(OracleDoneSignal::read(dir, "OmegaOS").unwrap().is_some());
+    }
+
+    #[test]
+    fn oracle_done_signal_retains_index() {
+        // Only the single `oracle-` prefix is stripped; a numeric index stays.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let sig = OracleDoneSignal::new("OmegaOS-2", "OmegaOS", DoneStatus::DoneClean, "mission");
+        sig.write(dir).unwrap();
+        assert!(dir.join("oracle-OmegaOS-2.done.json").exists());
+        assert!(OracleDoneSignal::read(dir, "oracle-OmegaOS-2").unwrap().is_some());
     }
 }

@@ -3162,6 +3162,40 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         _ => anyhow::bail!("Invalid status: {}. Use: done_clean, pending, failed, blocked", status),
     };
 
+    // Role-aware done signal. An Oracle session emits an OracleDoneSignal
+    // (oracle-<key>.done.json — the schema patrol's curator/auto-resurrect and
+    // the mission close-gate read), NOT a worker DoneSignal. Until now `omega
+    // done` always wrote a worker signal, so an oracle calling it produced a
+    // worker-<oracle>.done.json that no oracle-side consumer ever read, and
+    // OracleDoneSignal::write had zero callers. The key is the session name
+    // minus its single "oracle-" prefix (index retained), matching
+    // OracleDoneSignal's read/write normalization. Workers fall through below.
+    if omega_core::session::OmegaSession::classify(session).role
+        == omega_core::session::SessionRole::Oracle
+    {
+        let key = session.strip_prefix("oracle-").unwrap_or(session);
+        let mut osignal =
+            omega_core::done::OracleDoneSignal::new(key, key, done_status, summary);
+        osignal.summary = summary.to_string();
+        if let Some(c) = commit.filter(|c| !c.is_empty()) {
+            osignal.ship = Some(omega_core::done::OracleShipResult {
+                requested: false,
+                result: "committed".to_string(),
+                commit: Some(c.to_string()),
+                push_url: None,
+                deploy_url: None,
+                deploy_status: None,
+            });
+        }
+        osignal.write(&config.state_dir)?;
+        // Release the scope claim on a clean close, mirroring the worker path.
+        if osignal.is_closeable() {
+            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
+        }
+        println!("[+] Oracle done signal written: oracle-{}.done.json", key);
+        return Ok(());
+    }
+
     let mut signal = DoneSignal::new(session, done_status, summary);
     signal.commit = commit.map(|s| s.to_string());
 
