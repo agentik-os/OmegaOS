@@ -105,6 +105,10 @@ if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"'
 if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
 if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools.sh" install.sh; then ok "companion tools (planning-with-files/higgsfield/claude-mem/superpowers/mempalace/remotion) shipped + wired"; else bad "companion-tools installer not shipped/wired in install.sh"; fi
+# Browser engine for the Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester)
+# + CDP/DevTools automation: install.sh must provision Playwright AND its Chromium
+# (Chromium ships the DevTools Protocol, so one install covers both).
+if grep -q "playwright install chromium" install.sh && grep -q "OMEGA_SKIP_BROWSER" install.sh; then ok "Playwright + Chromium (CDP/DevTools) provisioned by install.sh"; else bad "install.sh does not install Playwright/Chromium — browser audits would fail on a fresh box"; fi
 
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
 # The checks above grep install.sh for the right STRINGS; these prove the system

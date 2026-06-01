@@ -693,6 +693,40 @@ if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
     sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
 fi
 
+# (f) Playwright + Chromium — the browser engine the Quality Arsenal audits
+# (uiux/flow/a11y/perf, browser-tester) and any CDP/DevTools automation drive
+# via the Playwright CLI from Bash. Chromium ships the DevTools Protocol, so
+# this single install covers BOTH Playwright AND CDP/DevTools — there is no
+# separate package. Best-effort and opt-out (OMEGA_SKIP_BROWSER=1) because the
+# Chromium download is ~150MB; never fatal to the install.
+if [[ "${OMEGA_SKIP_BROWSER:-0}" != "1" ]]; then
+    if command -v npm >/dev/null 2>&1; then
+        if command -v playwright >/dev/null 2>&1; then
+            ok "Playwright CLI already present ($(playwright --version 2>/dev/null || echo installed))"
+        else
+            info "Installing Playwright CLI (browser automation for the audits)..."
+            npm install -g playwright >/dev/null 2>&1 \
+                && ok "Playwright CLI installed" \
+                || info "Playwright CLI install failed — run 'npm install -g playwright' manually"
+        fi
+        if command -v playwright >/dev/null 2>&1; then
+            # Idempotent: a no-op when the Chromium build is already cached.
+            playwright install chromium >/dev/null 2>&1 \
+                && ok "Chromium installed (Playwright + CDP/DevTools ready)" \
+                || info "Chromium download failed — run 'playwright install chromium' manually"
+            # System libraries Chromium needs (apt + sudo; preserve PATH so the
+            # root shell finds the global playwright bin). Non-fatal.
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo env "PATH=$PATH" playwright install-deps chromium >/dev/null 2>&1 \
+                    && ok "Chromium system deps installed" \
+                    || info "For Chromium libs: 'sudo playwright install-deps chromium'"
+            fi
+        fi
+    else
+        info "npm not found — skipping Playwright (install Node.js, then 'npm i -g playwright && playwright install chromium')"
+    fi
+fi
+
 # ─── Phase 6.9: Companion tools + skills (SST multi-LLM, best-effort, opt-out) ──
 # planning-with-files, higgsfield (CLI+skills), claude-mem, superpowers,
 # mempalace, remotion, + the best-practice reference. Sourced so its OK/WARN
