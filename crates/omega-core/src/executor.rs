@@ -141,6 +141,12 @@ pub async fn run<R: WorkerRuntime>(
                     tracing::warn!(step = %sid, %feedback, "guardian: retry");
                     tracker.bump_attempt(&sid)?;
                     tracker.reset_to_pending(&sid)?;
+                    // Release the file-scope claim from this attempt so the retry
+                    // re-spawn can re-claim it. Without this, claim_or_reject in the
+                    // next spawn() rejects (files still locked by the prior attempt)
+                    // and the step can never actually retry. spawn() also clears the
+                    // stale done.json + kills the old session.
+                    runtime.cleanup_failed(&session).await;
                 }
                 Verdict::Fail { reason } => {
                     tracing::error!(step = %sid, %reason, "guardian: fail");
@@ -167,6 +173,17 @@ pub struct RmuxRuntime<'a> {
 impl WorkerRuntime for RmuxRuntime<'_> {
     async fn spawn(&self, step: &PlanStep, brief: &str, cwd: &Path) -> Result<String> {
         let session = format!("{}-step-{}", self.project, step.step_id.to_lowercase());
+
+        // Retry-safety: the session name is deterministic per step, so on a
+        // guardian-Retry re-dispatch the OLD attempt's worker-<session>.done.json
+        // still exists (wait_done would return it instantly and re-verify
+        // unchanged state) and the rmux session may still be alive (create-or-reuse
+        // would attach to the stale pane and never deliver the new brief). Clear
+        // both so a retry actually re-runs the step with the fresh brief:
+        let done_path = self.state_dir.join(format!("worker-{session}.done.json"));
+        let _ = std::fs::remove_file(&done_path);
+        let _ = self.mgr.kill_session(&session).await;
+
         // Claim file scope upfront — fail fast on conflict (same gate as dispatch_task).
         if !step.files_to_touch.is_empty() {
             scope::claim_or_reject(&self.state_dir, &session, step.files_to_touch.clone())
