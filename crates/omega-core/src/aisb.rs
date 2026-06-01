@@ -7,10 +7,10 @@ pub const MASTER_SESSION_NAME: &str = "aisb-master";
 
 /// Ensures the Master AISB session exists. Idempotent — creates only if missing.
 ///
-/// The system prompt is delivered via `--append-system-prompt-file` so it is
-/// HIDDEN from the chat (it's instructions, not content). The conversation
-/// resumes from the most recent thread via `--continue` so the user always
-/// returns to the same flow.
+/// The session is a PURE READ-ONLY VIEWER: it `tail -F`s the conversation log
+/// the brain stream writes, so the user can WATCH the live Telegram exchange
+/// in the TUI. It is NOT the brain and NOT interactive (the brain is the
+/// Telegram bot's own SDK subprocess — see `claude_stream.rs`).
 ///
 /// Returns true if a new session was created, false if it already existed.
 pub async fn ensure_master(
@@ -43,11 +43,14 @@ pub async fn ensure_master(
              Talk to AISB from Telegram. Exchanges stream here.\n",
         );
     }
-    let _ = log; // ensured to exist above; the REPL replays + tails it
-    // The master pane runs the interactive chat REPL: you type, it goes
-    // to the bot exactly like a Telegram message, the reply shows here +
-    // in Telegram. `exec bash` keeps the pane alive if the REPL exits.
-    let cmd = "exec omega aisb-chat".to_string();
+    // The master pane is a PURE READ-ONLY MIRROR of the brain's
+    // conversation: it tails the same `aisb-conversation.log` the brain
+    // stream appends to via `mirror_to_master_pane`. It is NOT interactive
+    // — there is one brain (the Telegram bot's SDK subprocess) and the user
+    // talks to it from Telegram; this pane only lets them WATCH the live
+    // exchange in the TUI. `exec` so the pane dies cleanly if the tail does.
+    let log_path = log.to_string_lossy();
+    let cmd = format!("exec tail -n 200 -F {}", shell_quote(&log_path));
 
     mgr.create_session(MASTER_SESSION_NAME, Some(working_dir), Some(&cmd))
         .await?;
@@ -58,4 +61,12 @@ pub async fn ensure_master(
 /// Returns true if a given session name is the Master AISB.
 pub fn is_master(name: &str) -> bool {
     name == MASTER_SESSION_NAME
+}
+
+/// Single-quote a path for safe interpolation into a shell command
+/// (the viewer pane's `tail -F <path>`). Wraps in single quotes and
+/// escapes any embedded single quote, so spaces/specials in the home
+/// path can't break or inject into the command.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

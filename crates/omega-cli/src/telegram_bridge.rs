@@ -476,24 +476,6 @@ impl TelegramBotEngine {
             .clone()
     }
 
-    /// Handle a text message through the full handler chain.
-    /// Inject a locally-typed line (from the aisb-master chat REPL) as if
-    /// it had arrived from Telegram. Synthesizes a minimal Message with
-    /// the owner's chat_id and routes it through the normal handler — so
-    /// the reply goes to Telegram AND mirrors into the conversation log
-    /// the REPL tails.
-    async fn process_local_text(&self, chat_id: i64, text: &str) {
-        let msg_json = serde_json::json!({
-            "message_id": 0,
-            "text": text,
-            "chat": { "id": chat_id },
-            "from": { "id": chat_id, "first_name": "You" }
-        });
-        if let Ok(msg) = serde_json::from_value::<Message>(msg_json) {
-            let _ = self.handle_text(&msg, text).await;
-        }
-    }
-
     /// PRE-FILTER: OAuth-code capture, isolated from all conversational
     /// routing. Runs before any reply-routing, reply-context, slash-command,
     /// or brain/relay logic. Returns true iff the message was an OAuth code
@@ -5118,43 +5100,12 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     engine.register_bot_commands().await;
     engine.send_back_online_card().await;
 
-    // ── Local inbox watcher ──────────────────────────────────────────
-    // The aisb-master pane runs `omega aisb-chat`, which appends typed
-    // lines to ~/.omega/state/aisb-local-inbox.jsonl. This task watches
-    // that file and injects each new line as a synthetic Telegram message
-    // (same brain, response also goes to Telegram). Runs independently of
-    // the 25s long-poll so local input is processed immediately.
-    {
-        let watcher = engine.clone();
-        let owner_chat = cfg
-            .allow_user_ids
-            .first()
-            .copied()
-            .unwrap_or(cfg.chat_id);
-        tokio::spawn(async move {
-            let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
-            let inbox = home.join(".omega/state/aisb-local-inbox.jsonl");
-            let mut processed: usize = std::fs::read_to_string(&inbox)
-                .map(|s| s.lines().count())
-                .unwrap_or(0);
-            loop {
-                tokio::time::sleep(Duration::from_millis(400)).await;
-                let Ok(content) = std::fs::read_to_string(&inbox) else { continue };
-                let lines: Vec<&str> = content.lines().collect();
-                if lines.len() <= processed {
-                    continue;
-                }
-                for line in &lines[processed..] {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-                        if let Some(text) = v.get("text").and_then(|t| t.as_str()) {
-                            watcher.process_local_text(owner_chat, text).await;
-                        }
-                    }
-                }
-                processed = lines.len();
-            }
-        });
-    }
+    // NOTE (Chunk 5a — collapse the two masters): the aisb-master pane is
+    // now a PURE READ-ONLY MIRROR (`tail -F aisb-conversation.log`, see
+    // omega_core::aisb::ensure_master). There is ONE brain — this bot's SDK
+    // subprocess — driven exclusively from Telegram. The former local-inbox
+    // watcher that injected pane-typed lines as synthetic Telegram messages
+    // has been removed; the pane no longer feeds the conversation.
 
     let mut offset: i64 = 0;
     let mut last_healthcheck = std::time::Instant::now();
