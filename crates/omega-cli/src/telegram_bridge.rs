@@ -1753,9 +1753,18 @@ impl TelegramBotEngine {
                     }
                     let next_idx = existing.len() + 1;
                     let new_oracle = format!("oracle-{}-{}", project, next_idx);
+                    // `project|oracle` (both names) easily exceeds Telegram's
+                    // 64-byte callback_data cap, which would make Telegram reject
+                    // the whole keyboard. Store the payload behind a short token.
+                    let spawn_payload = format!("{}|{}", project, new_oracle);
+                    let spawn_token = Self::session_token(&spawn_payload);
+                    self.session_name_by_token
+                        .lock()
+                        .await
+                        .insert(spawn_token.clone(), spawn_payload);
                     keyboard.push(vec![InlineKeyboardButton {
                         text: format!("+ Spawn new ({})", new_oracle),
-                        callback_data: format!("proj:spawn:{}|{}", project, new_oracle),
+                        callback_data: format!("proj:spawn:{}", spawn_token),
                     }]);
                     let payload = serde_json::json!({
                         "chat_id": chat_id,
