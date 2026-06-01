@@ -286,6 +286,10 @@ AUDITS_DST="$OMEGA_DIR/skills/audits"
 if [[ -d "$AUDITS_SRC" ]]; then
     mkdir -p "$AUDITS_DST"
     cp -r "$AUDITS_SRC"/* "$AUDITS_DST/"
+    # Vendored shared shell tools must stay executable after copy (cp -r does not
+    # guarantee the bit on every fs). The audits invoke _shared/*.sh
+    # (hinge-analyzer.sh, grep-loop.sh, …).
+    [[ -d "$AUDITS_DST/_shared" ]] && chmod +x "$AUDITS_DST/_shared/"*.sh 2>/dev/null || true
     ok "Quality Arsenal installed: $(ls -d "$AUDITS_DST"/*/ 2>/dev/null | wc -l) audit skills → $AUDITS_DST/"
 
     # Make each audit invocable as a Claude Code slash command (/codeaudit, etc.).

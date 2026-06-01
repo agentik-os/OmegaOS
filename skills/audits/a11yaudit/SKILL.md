@@ -196,7 +196,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
    `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
-   `~/.claude/lib/hinge-analyzer.sh` if no ticket).
+   `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
    wastes tokens and produces the same evidence.
@@ -954,7 +954,7 @@ read:
 HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
-~/.claude/lib/hinge-analyzer.sh "$PROJECT_PATH" --audit=a11y --user-need="$USER_NEED_QUOTE" \
+${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=a11y --user-need="$USER_NEED_QUOTE" \
   > "$HINGE_FILE"
 ```
 
@@ -1348,7 +1348,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.a11yaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.a11yaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
-- ✅ **Deprecation registry** — cross-references checked against `~/.claude/DEPRECATED.md`; stale refs flagged as findings
+- ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings
 - ✅ **Rule-46 compliance** — NO `--quick`/`--streamlined`/`--lightweight` variants. Narrower scope uses `--focus <area>` flags with FULL phase depth. Orchestrator prompts containing rule-46 banned phrases are REFUSED.
 - ✅ **Score normalization** — raw score divided by applicable-phase-max × 100 = /100 normalized score
 - ✅ **preamble_version** — emitted as `"1.0"` in verdict.json for `/metaudit` compliance scan

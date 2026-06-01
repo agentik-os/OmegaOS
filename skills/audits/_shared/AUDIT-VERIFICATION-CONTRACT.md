@@ -119,7 +119,8 @@ iterations and prevent spinning on subjective LLM judgment:
 
 ```bash
 # Use the audit's deterministic re-verify command — NOT an LLM call.
-~/.claude/lib/grep-loop.sh "$WORKER_SESSION" \
+# grep-loop.sh is vendored into _shared/ (install-parity) so a blank-VPS clone has it.
+"${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/grep-loop.sh" "$WORKER_SESSION" \
     "bash -n \$CHANGED_FILE && bash ~/.aisb/lib/safe-npm-build.sh" \
     --max=3 --max-diff=500 --sleep=30
 ```

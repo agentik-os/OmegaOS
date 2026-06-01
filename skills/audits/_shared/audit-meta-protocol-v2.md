@@ -21,7 +21,7 @@ Result: scores reached 100/100 while real bugs slipped through, because the scor
 1. **Intent-aware** — every audit ingests the user-need quote and verifies the change addresses it.
 2. **Falsifiable** — every PASS must cite ≥3 concrete runtime tests that **could have failed but didn't**.
 3. **Confidence-calibrated** — output `high | medium | low` — measures how much was actually verified vs assumed.
-4. **Hinge-focused** — 10x scrutiny on the load-bearing 10% of the change (computed by `~/.claude/lib/hinge-analyzer.sh`).
+4. **Hinge-focused** — 10x scrutiny on the load-bearing 10% of the change (computed by `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh`).
 5. **Anti-shortcut** — banned phrases trigger automatic FAIL.
 
 ---
@@ -188,8 +188,8 @@ This catches confirmation bias — a single audit may rationalize a passing scor
 ## Cross-references
 
 - `~/.aisb/lib/audit-selector.py` — picks the audit set per mission
-- `~/.aisb/lib/hinge-analyzer.sh` — picks the load-bearing 10% of the change
-- `~/.claude/lib/linear-ticket-gate.sh` — enforces v2 schema at the gate
+- `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` — picks the load-bearing 10% of the change (vendored; install-parity)
+- the Linear ticket gate (host-specific, only when a Linear integration is configured: `$OMEGA_DIR/lib/linear-ticket-gate.sh` if present) — enforces v2 schema at the gate
 - `~/.aisb/prompts/worker.md` — INTENT-DRIVEN AUDIT INVOCATION section
 - `~/.aisb/lib/oracle-prompt.sh` — R-6 dynamic dispatch
 - `~/.claude/commands/linear.md` — Step 8 dynamic audit set + Step 8c intent verification

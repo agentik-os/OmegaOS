@@ -978,7 +978,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.aisb/bin/audit-notify.sh`.
 - ✅ **Discovery drift check** — on resumed runs, if `discovery/` > 1h old, re-verify inventory or abort with user-confirm.
 - ✅ **Self-telemetry** — `telemetry.json` at completion (duration, tokens, phases, fixes, pii_fields_count, trackers_pre_consent, model, preamble_version).
-- ✅ **Deprecation registry** — cross-references checked against `~/.claude/DEPRECATED.md`; stale refs flagged.
+- ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged.
 - ✅ **Rule-46 compliance** — NO `--quick`/`--streamlined`/`--lightweight`. Narrower scope = `--focus <area>` at FULL phase depth. Orchestrator prompts with banned phrases are REFUSED.
 - ✅ **Score normalization** — `raw / applicable_max × 100 = /100` (applicable_max excludes proven-N/A phases).
 - ✅ **preamble_version** — emitted as `"1.0"` in verdict.json for `/metaudit`.

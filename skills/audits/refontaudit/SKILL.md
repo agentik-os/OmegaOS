@@ -293,31 +293,28 @@ Output: `keep-audit.md` with a table.
 
 **THREE sources of reference** (use ALL, priority order):
 
-**Source A — shadcn Studio Premium** (CONCRETE, INSTALLABLE, 1343+ items):
-The VPS has a licensed shadcn Studio account with 3 premium registries:
+**Source A — Premium shadcn registry (OPTIONAL, host-configured)** (CONCRETE, INSTALLABLE, 1343+ items):
+If the host has a licensed premium shadcn registry configured (credentials live in `$OMEGA_DIR/provisioning/`,
+never in the repo), use it. Otherwise SKIP Source A and rely on Source B (free, always available):
 ```bash
-# Reference project with ALL components installed + license
-cd ~/.claude/resources/ui-components/shadcnui-components
-# Env: EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1
+# Credentials are read from the host env / $OMEGA_DIR — never hardcoded here.
+# export EMAIL=... LICENSE_KEY=...   (from $OMEGA_DIR/provisioning/, if configured)
 
-# List premium components (608 total)
-EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1 npx shadcn@latest list @ss-components
-
-# List premium blocks (735 total — dashboard layouts, sidebars, tables, settings pages)
-EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1 npx shadcn@latest list @ss-blocks
-
-# List premium themes (22 — modern-minimal, art-deco, material-design, etc.)
-EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1 npx shadcn@latest list @ss-themes
+# List premium components / blocks / themes
+npx shadcn@latest list @ss-components   # premium components
+npx shadcn@latest list @ss-blocks       # dashboard layouts, sidebars, tables, settings pages
+npx shadcn@latest list @ss-themes       # premium themes
 
 # Install a specific premium component into the target project
-EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1 npx shadcn@latest add @ss-components/data-table-01
-EMAIL=x@agentik-os.com LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1 npx shadcn@latest add @ss-blocks/dashboard-page-01
+npx shadcn@latest add @ss-components/data-table-01
+npx shadcn@latest add @ss-blocks/dashboard-page-01
 ```
 Use `--offset=N` to paginate through the full catalog (100 items per page).
 **Search by keyword**: pipe `list` output through python/jq to filter by name pattern.
 
-**Source B — shadcn/ui standard (56 components, all installed + up to date)**:
-Reference: `~/.claude/resources/ui-components/shadcnui-components/src/components/ui/` (56 components, freshly updated)
+**Source B — shadcn/ui standard (free, always available — 56 components)**:
+Reference: the official shadcn/ui registry via the shadcn CLI (`npx shadcn@latest add <name>`)
+and the Context7 MCP for component docs/examples (no host path required).
 Key dashboard primitives:
 - **Sidebar**: `SidebarProvider`, `SidebarRail`, `SidebarInset`, `SidebarMenuSub` — collapsible rail, team switcher, nested nav, cookie state persistence
 - **DataTable**: TanStack Table + `table.tsx` + toolbar (filter + column visibility + pagination)
@@ -329,7 +326,7 @@ Key dashboard primitives:
 - **Empty**: empty state component (shadcn Studio addition)
 
 **Source C — 4 additional UI libraries (148 components)**:
-All in `~/.claude/resources/ui-components/`:
+Each is a public registry — install via the shadcn CLI / its own registry URL (no host path required):
 | Library | Components | Use for |
 |---|---|---|
 | KokonutUI (44) | stats-card, profile-dropdown, glitch-text, magnet-button | AI components, modern effects |
@@ -687,7 +684,7 @@ Refuse if dispatch prompt contains: `streamlined`, `lightweight`, `quick version
 
 **A refonte without user stories is decoration. A refonte without data is guessing. A refonte without Keep Audit is vandalism.**
 
-Expect 3-8 hours per app. Tokens are unlimited. Cross-ref: `~/.claude/rules/46-no-time-panic.md`.
+Expect 3-8 hours per app. Tokens are unlimited. Cross-ref: Law L5 (quality-over-speed) — `omega rules list`.
 
 ---
 

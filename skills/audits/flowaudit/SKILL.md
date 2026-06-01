@@ -269,7 +269,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
    `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
-   `~/.claude/lib/hinge-analyzer.sh` if no ticket).
+   `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
    wastes tokens and produces the same evidence.
@@ -1106,7 +1106,7 @@ read:
 HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
-~/.claude/lib/hinge-analyzer.sh "$PROJECT_PATH" --audit=flow --user-need="$USER_NEED_QUOTE" \
+${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=flow --user-need="$USER_NEED_QUOTE" \
   > "$HINGE_FILE"
 ```
 

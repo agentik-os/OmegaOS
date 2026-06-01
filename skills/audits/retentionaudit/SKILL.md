@@ -762,7 +762,19 @@ THE CPO-MINDSET LOOP (every quarter, ideally):
 
 ### Lessons handoff (SMITH integration)
 
-After every run, append to `~/.claude/agents/AISB/SMITH-lessons-retention.md` (create if absent):
+After every run, append the lessons to the OmegaOS state dir (install-parity: this
+ships with the install tree, never under `~/.claude/`). Resolve the path and ensure
+the dir exists first:
+
+```bash
+# Resolve OMEGA_DIR: $OMEGA_DIR env > config.toml omega_dir key > default ~/.omega
+OMEGA_DIR="${OMEGA_DIR:-$(awk -F'=' '/^[[:space:]]*omega_dir[[:space:]]*=/{gsub(/[" ]/,"",$2);print $2}' "$HOME/.omega/config.toml" 2>/dev/null)}"
+OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
+mkdir -p "$OMEGA_DIR/state"
+LESSONS="$OMEGA_DIR/state/smith-lessons-retention.md"   # create on first append
+```
+
+Then append a block to `$LESSONS`:
 
 ```markdown
 ## <date> — <project> retention audit lessons

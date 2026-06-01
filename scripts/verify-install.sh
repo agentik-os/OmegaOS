@@ -121,6 +121,24 @@ if [ -f docs/reference/oauth/claude-oauth.sh ] && grep -q "claude-oauth.sh" inst
 # Reference docs tree shipped + wired (`omega docs` + $HOME Claude sessions read it).
 if [ -d docs ] && [ -f docs/ARCHITECTURE.md ] && grep -q "OMEGA_SRC/docs" install.sh; then ok "reference docs shipped + wired in install.sh"; else bad "docs tree not shipped/wired in install.sh"; fi
 
+# 10b. No SKILL.md leaks a maintainer-private ~/.claude or /home/hacker path that
+#      install.sh does NOT create. OmegaOS ships on a blank VPS: an audit skill that
+#      shells out to `~/.claude/lib/hinge-analyzer.sh` or reads `~/.claude/DEPRECATED.md`
+#      silently breaks on a fresh clone. install.sh only provisions ~/.claude/commands/,
+#      ~/.claude/settings.json, and ~/.claude/.credentials.json — anything else under
+#      ~/.claude/ (lib/data/agents/resources/rules/projects/…) or under /home/hacker/ is a leak.
+#      Documented blank-VPS warnings ("never reference ~/.claude/…") are prose, not leaks.
+leaks=$(grep -rhnE '(~/\.claude/|/home/hacker/)[A-Za-z0-9_./-]+' skills/audits/*/SKILL.md skills/audits/_shared/* 2>/dev/null \
+  | grep -vE '~/\.claude/(commands/|settings\.json|\.credentials\.json)' \
+  | grep -vE '~/\.claude/\.\.\.' \
+  | grep -vE '(blank-VPS|never reference|never reach|forbids|ships them|shipped INSIDE|vendored next)')
+if [ -z "$leaks" ]; then
+  ok "no SKILL.md references an unshipped ~/.claude or /home/hacker path"
+else
+  bad "SKILL.md files reference ~/.claude/home paths install.sh does NOT create (blank-VPS clone breaks):"
+  printf '%s\n' "$leaks" | sed 's/^/      /'
+fi
+
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
 # The checks above grep install.sh for the right STRINGS; these prove the system
 # actually builds and the shipped config actually parses. Skip with VERIFY_FAST=1

@@ -88,7 +88,7 @@ EXAMPLES:
   → Focus: wasted compilation, cache misses, sequential bottlenecks
 
   "/logicaudit our rules system"
-  → TARGETED: ~/.claude/rules/, CLAUDE.md, context loading
+  → TARGETED: the doctrine registry (`omega rules list`), CLAUDE.md, context loading
   → Focus: token waste, redundant rules, context saturation
 
   "/logicaudit --focus performance"
@@ -595,7 +595,7 @@ find . -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.sh" 
 
 ```
 1. RULES FILE ANALYSIS
-   - Total tokens loaded per session from ~/.claude/rules/
+   - Total tokens loaded per session from the doctrine registry (`omega rules list`)
    - Which rules are used in what % of sessions?
    - Rules that overlap (same instruction in 3 files)
    - Rules that contradict each other

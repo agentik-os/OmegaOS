@@ -959,7 +959,7 @@ costs most. Compute or read:
 ```bash
 HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
 # Otherwise compute on the fly:
-~/.claude/lib/hinge-analyzer.sh "$PROJECT_PATH" --audit=observability --user-need="$USER_NEED_QUOTE" \
+${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=observability --user-need="$USER_NEED_QUOTE" \
   > "$HINGE_FILE"   # if the analyzer is unavailable, identify the hinge manually in Phase 0b and record it here
 ```
 
@@ -1339,7 +1339,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.aisb/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `discovery/` (esp. `emitted-samples/`) > 1h old, re-capture telemetry or abort with user-confirm (emitted telemetry is the ground truth — stale samples lie)
 - ✅ **Self-telemetry** — `telemetry.json` at completion (duration, tokens, phases, fixes, model, preamble_version)
-- ✅ **Deprecation registry** — cross-references checked against `~/.claude/DEPRECATED.md`; stale refs flagged
+- ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged
 - ✅ **Rule-46 compliance** — NO `--quick`/`--streamlined`/`--lightweight` variants. Narrower scope uses `--focus <area>` with FULL phase depth. Orchestrator prompts with rule-46 banned phrases are REFUSED.
 - ✅ **Score normalization** — raw / applicable-phase-max × 100 = /100
 - ✅ **preamble_version** — emitted as `"1.0"` in verdict.json for `/metaudit` compliance scan

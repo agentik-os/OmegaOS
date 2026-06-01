@@ -30,7 +30,7 @@ Before any finding, any fix, any conclusion: **observe the actual runtime behavi
 - When a comment says "X is required" but X's purpose is unclear → test the alternative in isolation.
 - When a fix "should work" but symptoms persist → runtime observation is mandatory before the next attempt.
 
-**Anti-pattern catastrophe (2026-04-14):** 2h35 wasted on `tmux paste-buffer -p` because the comment said "-p is required". Runtime test with and without `-p`: only *without* worked. The comment lied for years. See `~/.claude/projects/-home-hacker/memory/feedback_live_debug_first.md` for the full protocol.
+**Anti-pattern catastrophe (2026-04-14):** 2h35 wasted on `tmux paste-buffer -p` because the comment said "-p is required". Runtime test with and without `-p`: only *without* worked. The comment lied for years. This is Law L1 (runtime is the only truth) — see `omega rules list` for the full protocol.
 
 ---
 
@@ -301,7 +301,7 @@ Emit `.{audit}/telemetry.json` at completion (schema in §6). Used by `/metaudit
 
 ## 10. DEPRECATION REGISTRY
 
-Check `~/.claude/DEPRECATED.md` for deprecated skill/command names before invoking cross-references. If an audit references a deprecated name, surface it as a finding.
+Check `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md` for deprecated skill/command names before invoking cross-references. If an audit references a deprecated name, surface it as a finding.
 
 Current known deprecations (as of 2026-04-14):
 - `/hunt` → `/debugaudit` (renamed 2026-03-26)

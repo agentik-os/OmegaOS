@@ -135,9 +135,29 @@ Recommended (Power Level: Forensic):
 
 Estimated duration: 4-6h (parallel waves)
 Estimated tokens: ~800K
-
-Approve? [y/n/customize]
 ```
+
+### Plan confirmation — session-scoped (Law L3 autonomy)
+
+The confirmation step depends on WHO is running this:
+
+- **Interactive session** (Home / a human is watching the terminal): print
+  `Approve? [y/n/customize]` and WAIT for the answer before dispatching.
+- **Dispatched session** (spawned by an oracle / worker / AISB — any tmux name
+  matching `oracle-*`, `*-linear`, `*-fix-*`, `*-dev-*`, `AISB-*`, or started via
+  `dispatch-to-session.sh`): do NOT ask. Pausing for `[y/n]` strands the run
+  because nobody is watching (Law L3). Instead, **LOG the decision and proceed
+  at the default power level**:
+
+  ```
+  Plan confirmation auto-approved (dispatched session — L3 autonomy).
+  Power level: {detected default — Standard unless a forensic/go-live keyword was given}.
+  Proceeding to dispatch.
+  ```
+
+  If the detected scope is genuinely ambiguous with no safe default, write the
+  block-file (`~/.aisb/state/worker-blocked-<session>.json`) with the candidate
+  plan as the fallback and execute that fallback — never idle at a prompt.
 
 ## Full Audit Mode
 
@@ -179,7 +199,7 @@ location). Never to `./.{name}audit/` at project root. The new audit-orchestrato
 - ❌ Running `/codeaudit` when project has no source code (use /dxaudit instead)
 - ❌ Running `/motionaudit` on CLI/library project (it ABORTS automatically)
 - ❌ Forensic level on every audit (token waste; use Standard unless go-live)
-- ❌ Skipping the plan-confirmation step (user wants to see what you'll run)
+- ❌ Skipping the plan output (always print the plan). In an INTERACTIVE session also wait for `[y/n/customize]`; in a DISPATCHED session log auto-approval and proceed at default power (Law L3) — never idle at a `[y/n]` prompt nobody is watching
 - ❌ Running audits in serial when waves allow parallelism
 - ❌ Treating retentionaudit as fix-mode (it's READ-ONLY by design)
 
@@ -190,9 +210,11 @@ User: "/audit-orchestrator security"
   ↓
 You: parse "security" → secaudit + apiaudit + dataaudit
 You: detect project at Standard level (no "deep/forensic" keyword)
-You: emit plan markdown, ask confirmation
+You: emit plan markdown
+     → interactive session: ask `[y/n/customize]` and wait
+     → dispatched session: log auto-approval, proceed at default power (Law L3)
   ↓
-User: "y"
+User: "y"   (interactive only; dispatched skips straight to dispatch)
   ↓
 You: dispatch 3 audits in parallel via tmux work sessions
 You: monitor verdict.json files appearing under audits/.{name}/
