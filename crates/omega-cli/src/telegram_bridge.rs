@@ -9,7 +9,7 @@
 //!
 //! HTML parse_mode throughout, using omega_core::formatting for rich output.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use omega_core::account::{self, CurrentAccount};
 use omega_core::credentials::CredentialStore;
 use omega_core::formatting;
@@ -1059,142 +1059,52 @@ impl TelegramBotEngine {
             return Ok(());
         }
 
-        // Targeted session path — keep pane-based relay for now.
-        // N14 guard (Chunk 1): hold the per-session pane lock across the WHOLE
-        // capture→send→poll cycle. The update loop is now concurrent, so two
-        // handlers targeting the same rmux session must not interleave their
-        // keystrokes / captures. The guard lives until this function returns.
-        let _pane_guard_holder = self.pane_lock(&relay_target).await;
-        let _pane_guard = _pane_guard_holder.lock().await;
+        // ── Targeted-session "talk to this session" mode (Chunk 4) ────────
+        // The OLD relay screen-scraped the target pane: it captured a
+        // before/after snapshot, sent the text, then polled at 300ms with a
+        // 2-tick stability + bare-❯ heuristic to guess when the answer was
+        // "done" (N12/N13), and the before/after capture race was the N14
+        // root. ALL of that is gone.
+        //
+        // This is now a one-way INJECTION into the target rmux session — the
+        // master's own dispatch path (`handle_dispatch_command` / the topic
+        // router) is how oracles are spawned and driven, and completion flows
+        // back through the EXISTING `done.json → deliver_reports()` webhook
+        // path — not by parsing a TUI. This branch only remains as a
+        // power-user "type a line straight into a specific live session"
+        // affordance (armed by `proj:talkto` / `sess:relay`). We:
+        //   • acquire the per-session pane lock (Chunk 1) so a concurrent
+        //     update can't interleave keystrokes into the same pane (kills the
+        //     N14 race at its root — there is no capture to race anymore),
+        //   • paste-then-submit the text as ONE message,
+        //   • ack receipt; the session's real output is delivered via its
+        //     topic mirror and `done.json` reports, never scraped here.
+        let guard_holder = self.pane_lock(&relay_target).await;
+        let _pane_guard = guard_holder.lock().await;
 
-        let before = self
-            .mgr
-            .capture_pane(&relay_target)
-            .await
-            .unwrap_or_default();
-
-        // 3b. Relay to the target session (default: AISB Master)
-        if let Err(_) = self.mgr.send_text(&relay_target, text).await {
-            let _ = self
-                .send_html(
-                    chat_id,
-                    " <i>AISB Master redémarrage — reprise de la conversation…</i>",
-                )
-                .await;
-
-            let cwd = std::env::current_dir()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-
-            match omega_core::aisb::ensure_master(
-                &self.mgr,
-                omega_core::agents::Agent::Claude,
-                &cwd,
-            )
-            .await
-            {
-                Ok(_) => {
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                    if let Err(e) = self.mgr.send_text(&relay_target, text).await {
-                        let _ = self
-                            .send_html(
-                                chat_id,
-                                &format!(
-                                    "<b>Relay failed after restart</b>\n<code>{}</code>",
-                                    formatting::escape_html(&e.to_string())
-                                ),
-                            )
-                            .await;
-                        return Ok(());
-                    }
-                }
-                Err(e) => {
-                    let _ = self
-                        .send_html(
-                            chat_id,
-                            &format!(
-                                "<b>Could not restart AISB Master</b>\n<code>{}</code>",
-                                formatting::escape_html(&e.to_string())
-                            ),
-                        )
-                        .await;
-                    return Ok(());
-                }
+        match self.mgr.send_paste_then_submit(&relay_target, text).await {
+            Ok(_) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "→ <code>{}</code>\n<i>Sent. Output streams in the session's topic / reports.</i>",
+                            formatting::escape_html(&relay_target)
+                        ),
+                    )
+                    .await;
             }
-        }
-
-        // 4. Show typing and wait for response (`before` was captured before send)
-        let _ = self.send_chat_action(chat_id, "typing").await;
-
-        // Fast-response polling: 300ms ticks (vs 2s before).
-        // Strategy: as soon as we detect a ● marker (agent response) followed
-        // by 2 consecutive stable captures (response complete), send it.
-        let mut response_text = String::new();
-        let mut last_response = String::new();
-        let mut stable_count = 0;
-        let max_ticks = 200; // 200 × 300ms = 60s max
-
-        for tick in 0..max_ticks {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-
-            // Refresh typing indicator every ~4s (expires at 5s)
-            if tick % 13 == 12 {
-                let _ = self.send_chat_action(chat_id, "typing").await;
-            }
-
-            let after = self
-                .mgr
-                .capture_pane(&relay_target)
-                .await
-                .unwrap_or_default();
-
-            if after == before {
-                continue;
-            }
-
-            let current = extract_response(&before, &after);
-            if !current.is_empty() {
-                tracing::debug!(tick, len = current.len(), "extract_response found content");
-            }
-
-            // If we have a response and it hasn't changed for 2 ticks → ship it
-            if !current.is_empty() && current == last_response {
-                stable_count += 1;
-                if stable_count >= 2 {
-                    response_text = current;
-                    break;
-                }
-            } else {
-                stable_count = 0;
-                last_response = current;
-            }
-
-            // Final fallback: idle prompt detection (bare ❯ prompt)
-            let last_lines: Vec<&str> = after.lines().rev().take(5).collect();
-            let is_idle = last_lines
-                .iter()
-                .any(|l| {
-                    let t = l.trim();
-                    t.starts_with('❯') && t.len() <= 3
-                });
-            if is_idle && !last_response.is_empty() {
-                response_text = last_response.clone();
-                break;
-            }
-        }
-
-        // If timeout reached but we have a partial response, send it anyway
-        if response_text.is_empty() && !last_response.is_empty() {
-            response_text = last_response;
-        }
-
-        let cleaned = clean_terminal_output(&response_text);
-        if !cleaned.is_empty() {
-            let formatted = format_agent_response(&cleaned);
-            let chunks = formatting::split_message(&formatted, TELEGRAM_MAX_MSG_LEN);
-            for chunk in chunks {
-                let _ = self.send_html(chat_id, &chunk).await;
+            Err(e) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "<b>Could not reach <code>{}</code></b>\n<code>{}</code>\n<i>The session may have exited. Use /dispatch to spawn a fresh one.</i>",
+                            formatting::escape_html(&relay_target),
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
             }
         }
 
@@ -5056,22 +4966,6 @@ impl TelegramBotEngine {
         }
     }
 
-    async fn send_chat_action(&self, chat_id: i64, action: &str) -> Result<()> {
-        let url = format!("{}/bot{}/sendChatAction", API_BASE, self.cfg.bot_token);
-        let body = serde_json::json!({
-            "chat_id": chat_id,
-            "action": action,
-        });
-        let _ = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .context("sendChatAction")?;
-        Ok(())
-    }
-
     async fn answer_callback_query(&self, callback_id: &str, text: &str) -> Result<()> {
         let url = format!(
             "{}/bot{}/answerCallbackQuery",
@@ -5560,11 +5454,9 @@ fn clean_terminal_output(text: &str) -> String {
                 return false;
             }
             let t = l.trim();
-            // Claude UI chrome lines — drop them (the actual response text
-            // had ● already stripped by extract_response). NOTE: these used
-            // to be `starts_with("")` empty-string checks which always
-            // matched and silently stripped EVERY line — root cause of
-            // the "Empty response" bug.
+            // Claude UI chrome lines — drop them. Still used by the /status
+            // pane-snapshot and report-rendering paths (no longer by any
+            // response-scraping relay, which was deleted in Chunk 4).
             if t.starts_with('❯') { return false; }
             if t.starts_with('✻') { return false; }
             if t.starts_with('⎿') { return false; }
@@ -5600,91 +5492,6 @@ fn clean_terminal_output(text: &str) -> String {
         })
         .collect();
     lines.join("\n").trim().to_string()
-}
-
-fn format_agent_response(text: &str) -> String {
-    let escaped = formatting::escape_html(text);
-    let code_lines = escaped
-        .lines()
-        .filter(|l| {
-            l.starts_with("  ") || l.starts_with("\t") || l.contains("fn ") || l.contains("{}")
-        })
-        .count();
-    let total_lines = escaped.lines().count().max(1);
-
-    if code_lines as f32 / total_lines as f32 > 0.5 {
-        format!("<pre>{}</pre>", escaped)
-    } else {
-        escaped
-    }
-}
-
-fn extract_response(before: &str, after: &str) -> String {
-    // Find the LAST ● in `after` (most recent agent response).
-    // Then verify it's NEW: either the line content differs from the last
-    // ● in `before`, or there are now more ● lines than before.
-    // Without this check, the polling would re-send the previous response
-    // as soon as polling starts (before the agent has answered the new msg).
-    let after_lines: Vec<&str> = after.lines().collect();
-    let before_bullets: Vec<&str> = before
-        .lines()
-        .filter(|l| l.trim().starts_with("●"))
-        .collect();
-    let after_bullets: Vec<(usize, &&str)> = after_lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.trim().starts_with("●"))
-        .collect();
-
-    // No bullets yet → agent hasn't responded
-    let Some(&(start, last_after_bullet)) = after_bullets.last() else {
-        return String::new();
-    };
-
-    // Compare: new bullet count > before, OR last bullet text differs.
-    // If neither → still the same old response, not new.
-    let last_before_bullet = before_bullets.last().map(|s| s.trim()).unwrap_or("");
-    let is_new = after_bullets.len() > before_bullets.len()
-        || last_after_bullet.trim() != last_before_bullet;
-    if !is_new {
-        return String::new();
-    }
-
-    let mut response_lines: Vec<String> = Vec::new();
-    let first = after_lines[start].trim().trim_start_matches("●").trim();
-    if !first.is_empty() {
-        response_lines.push(first.to_string());
-    }
-    let lines = after_lines;
-
-    // Collect continuation lines (until stop marker).
-    // Empty-string starts_with checks (which always matched) were the
-    // accidental-strip side-effect of the emoji cleanup pass — removed.
-    for line in lines.iter().skip(start + 1) {
-        let t = line.trim();
-        if t.is_empty() { continue; }
-
-        // Stop markers — line starts with Claude's chrome characters
-        // OR contains a known status phrase.
-        let first_char = t.chars().next();
-        let is_chrome_prefix = matches!(first_char, Some('❯' | '✻' | '⎿' | '·' | '●'));
-        let is_separator = t.starts_with("───") || t.starts_with("━━━");
-        let is_status = t.contains("bypass permissions")
-            || t.contains("esc to interrupt")
-            || t.contains("shift+tab")
-            || t.contains("Churned")
-            || t.contains("Brewed")
-            || t.contains("Cultivating")
-            || t.contains("Crunched")
-            || t.contains("Pontificating")
-            || t.contains("Cogitated");
-        if is_chrome_prefix || is_separator || is_status {
-            break;
-        }
-        response_lines.push(t.to_string());
-    }
-
-    response_lines.join("\n")
 }
 
 /// Read the active provider+model from ~/.omega/state/telegram-active-model.json
