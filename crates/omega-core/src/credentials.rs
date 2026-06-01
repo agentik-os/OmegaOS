@@ -10,6 +10,16 @@
 //!   - The CLI still finds its creds.
 //!   - OmegaOS owns the source of truth.
 //!   - Account switching = atomic rewrite of the canonical file (symlink stays).
+//!
+//! ## Relationship to `account.rs` (KNOWN DESIGN-DEBT)
+//! `account.rs` is a SEPARATE, Claude-only surface for the `/account` billing +
+//! switch view (keyed by `~/.claude/accounts/accounts-meta.json`). The two share
+//! the active Claude file (account.rs writes via `oauth::credentials_path()` =
+//! this store's `claude.json`), so the ACTIVE account is consistent — but the two
+//! SAVED-profile lists are not unified (a Claude account saved here via `/model`
+//! is not listed by `/account`, and vice versa). See the account.rs module doc for
+//! the full boundary + why a merge is deferred. Keep both lists in sync if you
+//! change Claude account-switching.
 
 use anyhow::{Context, Result};
 use serde_json::Value;

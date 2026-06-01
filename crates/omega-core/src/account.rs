@@ -1,6 +1,24 @@
 //! Account management for OmegaOS — high-level API on top of the OAuth flow
 //! and the credentials/profile layout under `~/.claude/`.
 //!
+//! ## Boundary vs `credentials::CredentialStore` (KNOWN DESIGN-DEBT — read this)
+//! There are intentionally TWO account surfaces, with different jobs:
+//!   - THIS module (`account.rs`): Claude-ONLY. It owns the live-login *billing /
+//!     usage* view (`get_billing`, `email_from_claude_auth_status`) and the
+//!     `/account` switch flow, keyed by `~/.claude/accounts/accounts-meta.json`.
+//!   - `credentials::CredentialStore`: the MULTI-PROVIDER store (claude / codex /
+//!     gemini / glm) under `~/.omega/credentials/`, used by the `/model` flow.
+//! They SHARE the active Claude credential file: `switch_account` here writes
+//! through `oauth::credentials_path()`, which resolves to the same
+//! `${OMEGA_DIR}/credentials/claude.json` the CredentialStore reads. So the
+//! *active* account stays consistent. What does NOT reconcile is the two SAVED
+//! lists: a Claude profile saved via `/model` (CredentialStore `accounts/claude-*`)
+//! is not visible to `/account` (this module's `accounts-meta.json`) and vice
+//! versa. Unifying the saved-profile storage is a real refactor (this module also
+//! carries billing/OAuth-status logic CredentialStore has no equivalent for); it
+//! is deliberately deferred rather than risk the working billing+switch flow.
+//! If you touch account-switching, keep BOTH lists + the active file in sync.
+//!
 //! Layout we care about:
 //!   ~/.claude/.credentials.json           — currently active credentials
 //!   ~/.claude/.credentials.json.previous  — backup made on switch/logout
