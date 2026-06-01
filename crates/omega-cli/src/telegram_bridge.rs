@@ -5143,7 +5143,17 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
 
             // Route by message type
             if let Some(text) = msg.text.as_deref() {
-                tracing::info!(text = %text, chat_id = msg.chat.id, "text message");
+                // NEVER log raw message text: the provider-connect flow has the
+                // user paste an API key as a bare text message, and OAuth codes
+                // / private DMs also arrive here. Log the command NAME for slash
+                // commands (the routable event) and reduce bare text to a length
+                // so a pasted secret never reaches the logs.
+                let summary = if text.starts_with('/') {
+                    text.split_whitespace().next().unwrap_or("/").to_string()
+                } else {
+                    format!("<{} chars>", text.chars().count())
+                };
+                tracing::info!(msg = %summary, chat_id = msg.chat.id, "text message");
                 let _ = engine.handle_text(&msg, text).await;
             } else if let Some(voice) = &msg.voice {
                 let _ = engine.handle_voice(&msg, voice).await;
