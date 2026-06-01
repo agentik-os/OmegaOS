@@ -353,6 +353,18 @@ pub fn all_audits() -> Vec<AuditSkill> {
             skill_path: "skills/audits/privacyaudit/SKILL.md",
             read_only: false,
         },
+        AuditSkill {
+            id: "refontaudit",
+            name: "Dashboard Refonte",
+            domain: AuditDomain::Design,
+            phases: 25,
+            max_score: 540,
+            normalized_max: 100,
+            description: "Should the dashboard be REDESIGNED (Linear/Vercel-grade)?",
+            triggers: &["refonte", "redesign dashboard", "comme linear", "comme vercel", "dashboard pro", "dashboard senior"],
+            skill_path: "skills/audits/refontaudit/SKILL.md",
+            read_only: false,
+        },
     ]
 }
 
@@ -614,8 +626,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_has_22_audits() {
-        assert_eq!(all_audits().len(), 22);
+    fn registry_has_23_audits() {
+        assert_eq!(all_audits().len(), 23);
     }
 
     #[test]
@@ -656,7 +668,7 @@ mod tests {
     #[test]
     fn select_full_audit_returns_all() {
         let selected = select_audits("full audit of the project", &[]);
-        assert_eq!(selected.len(), 22);
+        assert_eq!(selected.len(), 23);
     }
 
     #[test]
