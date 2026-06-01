@@ -14,6 +14,15 @@ use std::time::Duration;
 const STALL_THRESHOLD_SECS: i64 = 900; // 15 minutes without progress = stalled (file-based)
 const AUTO_DONE_IDLE_SECS: i64 = 120; // 2 minutes idle after 100% todos = patrol auto-done
 
+// Deterministic worker close (Task#6). After a worker's done_clean clears the
+// ground-truth gate, patrol marks the rmux session Closeable and reaps it (kill
+// + lock release) once the parent oracle has CONSUMED/ack'd the worker_done
+// event (its inbox no longer carries it) OR this bounded grace window elapses —
+// whichever comes first. This removes reliance on the idle/CPU heuristic for the
+// honest-done case (an honest worker used to linger as a zombie because the
+// primary path never killed it). Const, not a config.rs knob, by design.
+const WORKER_CLOSE_GRACE_SECS: i64 = 45;
+
 #[derive(Debug)]
 pub struct PatrolReport {
     pub total_sessions: usize,
@@ -172,9 +181,23 @@ impl Patrol {
                     } else if effective_status == DoneStatus::DoneClean {
                         let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
                         self.stall_detector.forget(&session.name);
+                        // Task#6 — deterministic close: an honest worker that
+                        // wrote a verified done_clean used to keep its rmux
+                        // session ALIVE (the only kill_session was the idle
+                        // heuristic), leaving a zombie. Mark it Closeable now; the
+                        // reap pass below kills it once the parent oracle ack's
+                        // the worker_done event OR the grace window elapses.
+                        let parent = self
+                            .find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
+                            .map(|o| o.name.clone());
+                        WorkerCloseMarker::ensure(
+                            &self.config.state_dir,
+                            &session.name,
+                            parent.as_deref(),
+                        );
                         report
                             .actions_taken
-                            .push(format!("Released scope for {} (ground-truth [+])", session.name));
+                            .push(format!("Released scope for {} (ground-truth [+]); marked Closeable", session.name));
                     }
                 }
 
@@ -356,29 +379,39 @@ impl Patrol {
                                         idle_secs,
                                     ));
                                 }
-                                // Kill the still-live idle worker BEFORE releasing its
-                                // scope claim, so it cannot keep editing files that
-                                // another worker may immediately claim (data race).
+                                // Kill the still-live idle worker so it cannot keep
+                                // editing files while we record its (un-trusted)
+                                // state. N8: scope is NOT released here — it stays
+                                // HELD until a real done_clean clears the gate, so
+                                // no other worker can claim these files yet.
                                 // (No-op / Err when the session is already gone.)
                                 let _ = mgr.kill_session(&session.name).await;
+                                // N8: the idle-heuristic NEVER claims done_clean
+                                // on a silently-exited worker's behalf. Ticking
+                                // todos + going idle is not ground truth — only a
+                                // worker-written done-signal that survives the
+                                // ground-truth gate is. We write Pending instead:
+                                // it re-confirms next tick, preserves the contest
+                                // mechanism, and — critically — does NOT release
+                                // the scope claim as if the work were clean.
                                 let reason = if session_gone {
-                                    "auto-done: todos completed + session gone (clean exit confirmed); patrol signaled done"
+                                    "auto-done HEURISTIC: todos completed + session gone — recorded PENDING (not clean; re-confirm next tick), scope HELD"
                                 } else {
-                                    "auto-done: todos completed + idle past threshold (session still alive — heuristic); patrol killed the worker and signaled done"
+                                    "auto-done HEURISTIC: todos completed + idle past threshold (session still alive) — patrol killed the worker, recorded PENDING (not clean), scope HELD"
                                 };
                                 let mut signal = DoneSignal::new(
                                     &session.name,
-                                    DoneStatus::DoneClean,
+                                    DoneStatus::Pending,
                                     reason,
                                 );
                                 signal.todos_total = progress.todos_total;
                                 signal.todos_completed = progress.todos_completed;
                                 if let Ok(()) = signal.write(&self.config.state_dir) {
                                     report.done_workers.push(session.name.clone());
-                                    let _ = ScopeClaim::release(
-                                        &self.config.state_dir,
-                                        &session.name,
-                                    );
+                                    // Do NOT release scope here — the heuristic is
+                                    // not proof of clean completion. Scope stays
+                                    // held until a real done_clean clears the
+                                    // ground-truth gate in the primary path.
                                     self.stall_detector.forget(&session.name);
                                     if let Some(oracle) =
                                         self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
@@ -389,7 +422,7 @@ impl Patrol {
                                         );
                                         let _ = inbox.push(&InboxEvent::worker_done(
                                             &session.name,
-                                            "done_clean",
+                                            "pending",
                                         ));
                                         if let Ok(Some(mut oracle_state)) = OracleState::read(
                                             &self.config.state_dir,
@@ -397,7 +430,7 @@ impl Patrol {
                                         ) {
                                             oracle_state.update_worker_status(
                                                 &session.name,
-                                                WorkerEntryStatus::DoneClean,
+                                                WorkerEntryStatus::Pending,
                                             );
                                             let _ = oracle_state.write(&self.config.state_dir);
                                         }
@@ -406,10 +439,10 @@ impl Patrol {
                                         worker = %session.name,
                                         todos = progress.todos_completed,
                                         idle_secs,
-                                        "Patrol auto-done: worker closed"
+                                        "Patrol auto-done HEURISTIC: worker recorded PENDING (scope held)"
                                     );
                                     report.actions_taken.push(format!(
-                                        "Auto-done {} ({}/{} todos, idle {}s)",
+                                        "Auto-done HEURISTIC -> PENDING {} ({}/{} todos, idle {}s, scope held)",
                                         session.name,
                                         progress.todos_completed,
                                         progress.todos_total,
@@ -420,6 +453,63 @@ impl Patrol {
                         }
                     }
                 }
+            }
+        }
+
+        // ── Deterministic worker reap (Task#6) ──
+        // For each Closeable worker, reap (kill rmux session + release any
+        // remaining locks) once the parent oracle has CONSUMED its worker_done
+        // event (its inbox no longer carries one for this worker) OR the grace
+        // window elapsed. Honest-done workers no longer linger as zombies, and
+        // the reap is deterministic rather than gated on the idle/CPU heuristic.
+        let live_session_names: std::collections::HashSet<&str> =
+            sessions.iter().map(|s| s.name.as_str()).collect();
+        for marker in WorkerCloseMarker::read_all(&self.config.state_dir) {
+            // Oracle ack = the worker_done event was drained from its inbox.
+            // peek() lists what's still queued; absence after we pushed it ⇒
+            // the oracle consumed it (its drain deletes the file).
+            let oracle_acked = match &marker.oracle {
+                Some(oracle_name) => {
+                    let inbox = Inbox::for_oracle(&self.config.state_dir, oracle_name);
+                    let still_queued = inbox
+                        .peek()
+                        .map(|evts| {
+                            evts.iter().any(|e| {
+                                e.event_type == crate::inbox::EventType::WorkerDone
+                                    && e.payload.get("session").and_then(|v| v.as_str())
+                                        == Some(marker.session.as_str())
+                            })
+                        })
+                        .unwrap_or(false);
+                    !still_queued
+                }
+                // No known parent ⇒ rely solely on the grace window.
+                None => false,
+            };
+            let closeable_secs = (Utc::now() - marker.since).num_seconds();
+            if should_reap_closeable(oracle_acked, closeable_secs) {
+                // Kill the rmux session (no-op/Err if already gone) and release
+                // any remaining scope lock, atomically from patrol's view.
+                let _ = mgr.kill_session(&marker.session).await;
+                let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
+                self.stall_detector.forget(&marker.session);
+                WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
+                let trigger = if oracle_acked { "oracle ack'd" } else { "grace elapsed" };
+                tracing::info!(
+                    worker = %marker.session,
+                    trigger,
+                    closeable_secs,
+                    "Deterministic reap: honest-done worker closed"
+                );
+                report.actions_taken.push(format!(
+                    "Reaped done_clean worker {} ({}, {}s closeable)",
+                    marker.session, trigger, closeable_secs
+                ));
+            } else if !live_session_names.contains(marker.session.as_str()) {
+                // Session already gone (e.g. the worker exited on its own before
+                // the reap fired). Nothing to kill — just clear the marker + lock.
+                let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
+                WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
             }
         }
 
@@ -616,9 +706,15 @@ impl Patrol {
         // Manual shell-escape: wrap in single quotes and escape any
         // internal single quotes. Keeps us dependency-free.
         let escaped = prompt.replace('\'', r"'\''");
+        // Build the curator command from the configured agent, not a hardcoded
+        // "claude". Resolve config.agent_command -> Agent -> binary name; fall
+        // back to the literal string if it's an unknown agent name.
+        let agent_bin = crate::agents::Agent::from_name(&self.config.agent_command)
+            .map(|a| a.name().to_string())
+            .unwrap_or_else(|| self.config.agent_command.clone());
         let cmd = format!(
-            "claude --print --dangerously-skip-permissions '{}' ; exec bash",
-            escaped
+            "{} --print --dangerously-skip-permissions '{}' ; exec bash",
+            agent_bin, escaped
         );
         let mgr_dispatch = std::process::Command::new("rmux")
             .args([
@@ -724,6 +820,72 @@ impl Patrol {
     }
 }
 
+/// Deterministic worker-close marker (Task#6). Written when a worker's
+/// done_clean clears the ground-truth gate; consumed by the reap pass. Persisted
+/// so a patrol restart still reaps a pending close instead of leaking a zombie.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct WorkerCloseMarker {
+    session: String,
+    /// Parent oracle to watch for the worker_done ack (inbox consumption).
+    oracle: Option<String>,
+    /// When the worker became Closeable — start of the grace window.
+    since: chrono::DateTime<Utc>,
+}
+
+impl WorkerCloseMarker {
+    fn path(state_dir: &std::path::Path, session: &str) -> std::path::PathBuf {
+        state_dir.join(format!("worker-close-{}.json", session))
+    }
+
+    /// Write the marker once. Idempotent: if it already exists, keep the
+    /// original `since` so the grace clock isn't reset every tick.
+    fn ensure(state_dir: &std::path::Path, session: &str, oracle: Option<&str>) {
+        let path = Self::path(state_dir, session);
+        if path.exists() {
+            return;
+        }
+        let marker = WorkerCloseMarker {
+            session: session.to_string(),
+            oracle: oracle.map(|s| s.to_string()),
+            since: Utc::now(),
+        };
+        if let Ok(content) = serde_json::to_string(&marker) {
+            let _ = std::fs::write(&path, content);
+        }
+    }
+
+    fn read_all(state_dir: &std::path::Path) -> Vec<WorkerCloseMarker> {
+        let mut out = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(state_dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("worker-close-") && name.ends_with(".json") {
+                        if let Ok(c) = std::fs::read_to_string(&p) {
+                            if let Ok(m) = serde_json::from_str::<WorkerCloseMarker>(&c) {
+                                out.push(m);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    fn remove(state_dir: &std::path::Path, session: &str) {
+        let _ = std::fs::remove_file(Self::path(state_dir, session));
+    }
+}
+
+/// Reap predicate (Task#6, pure + testable). Given whether the parent oracle
+/// has consumed the worker_done event (`oracle_acked`) and how long the worker
+/// has been Closeable, decide whether to reap NOW. Reap when the oracle ack'd OR
+/// the bounded grace window elapsed — whichever first.
+fn should_reap_closeable(oracle_acked: bool, closeable_secs: i64) -> bool {
+    oracle_acked || closeable_secs >= WORKER_CLOSE_GRACE_SECS
+}
+
 /// Detect a fatal, non-recoverable agent error in a session's pane output — the
 /// agent is stuck on an error rather than working or idle. Only the tail (the
 /// live error, not old scrollback) is inspected. A content-filter block and a
@@ -759,6 +921,36 @@ mod tests {
     fn ignores_retrying_and_normal_output() {
         assert_eq!(detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"), None);
         assert_eq!(detect_fatal_agent_error("just working on it\n❯"), None);
+    }
+
+    #[test]
+    fn reap_fires_on_oracle_ack_or_grace() {
+        // Task#6 reap predicate: reap as soon as the oracle ack's, regardless of
+        // how little time has elapsed.
+        assert!(should_reap_closeable(true, 0));
+        assert!(should_reap_closeable(true, WORKER_CLOSE_GRACE_SECS - 1));
+        // Without an ack, reap only after the bounded grace window elapses.
+        assert!(!should_reap_closeable(false, 0));
+        assert!(!should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS - 1));
+        assert!(should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS));
+        assert!(should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS + 10));
+    }
+
+    #[test]
+    fn close_marker_is_idempotent_keeps_since() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X"));
+        let first = WorkerCloseMarker::read_all(dir);
+        assert_eq!(first.len(), 1);
+        let since0 = first[0].since;
+        // Re-ensure must NOT reset `since` (grace clock stability).
+        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X"));
+        let second = WorkerCloseMarker::read_all(dir);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].since, since0);
+        WorkerCloseMarker::remove(dir, "worker-x");
+        assert!(WorkerCloseMarker::read_all(dir).is_empty());
     }
 
     #[test]

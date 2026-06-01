@@ -70,6 +70,13 @@ pub struct OracleState {
     pub phase_entered_at: DateTime<Utc>,
     #[serde(default)]
     pub phase_history: Vec<PhaseTransition>,
+    /// N10: timestamp at which this oracle reached a real *closeable* state —
+    /// i.e. it wrote a genuine done-signal / finished its mission, NOT merely
+    /// that `all_workers_terminal()` became true. An oracle is reusable
+    /// (`dispatch::find_available`) ONLY when this is set. `None` means the
+    /// oracle is still live work, even if every worker is in a terminal status.
+    #[serde(default)]
+    pub closeable_since: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +124,7 @@ impl OracleState {
             started_at: now,
             phase_entered_at: now,
             phase_history: Vec::new(),
+            closeable_since: None,
         }
     }
 
@@ -140,6 +148,7 @@ impl OracleState {
             started_at: now,
             phase_entered_at: now,
             phase_history: Vec::new(),
+            closeable_since: None,
         }
     }
 
@@ -191,6 +200,31 @@ impl OracleState {
                         | WorkerEntryStatus::Stalled
                 )
             })
+    }
+
+    /// N10: mark this oracle as having reached a real, closeable done-state
+    /// (it wrote a genuine done-signal / finished its mission). Idempotent —
+    /// the first timestamp wins so the close-grace clock isn't reset on every
+    /// patrol tick. Reaching the terminal `Done` phase implies this too.
+    pub fn mark_closeable(&mut self) {
+        if self.closeable_since.is_none() {
+            self.closeable_since = Some(Utc::now());
+        }
+    }
+
+    /// N10: an oracle has a real done-signal / is in a closeable state when its
+    /// phase is terminal `Done` OR `mark_closeable` was recorded. This is the
+    /// authoritative "safe to reuse / close" predicate — STRICTLY stronger than
+    /// `all_workers_terminal()`, which only means no worker will progress on its
+    /// own (the oracle may still owe Verify/Report work).
+    pub fn is_closeable(&self) -> bool {
+        self.phase.is_terminal() || self.closeable_since.is_some()
+    }
+
+    /// Convenience alias for `is_closeable` matching the N10 wording — true when
+    /// the oracle has written a real done-signal / reached a closeable state.
+    pub fn has_done_signal(&self) -> bool {
+        self.is_closeable()
     }
 
     pub fn any_worker_failed(&self) -> bool {
@@ -745,15 +779,22 @@ impl WorkerStallDetector {
     /// Checks for common prompt patterns: `❯`, `$`, `>` at end of visible output.
     fn detect_idle_prompt(content: &str) -> bool {
         let trimmed = content.trim();
+        // N11: an EMPTY pane capture is NOT proof of an idle prompt — it usually
+        // means the capture raced a redraw or the session is mid-spawn. Treating
+        // it as idle was a false-positive that mis-escalated live workers. Empty
+        // => not idle.
         if trimmed.is_empty() {
-            return true;
+            return false;
         }
 
         // Check the last non-empty line, trimming trailing whitespace
         let last_line = trimmed.lines().last().unwrap_or("");
         let last_trimmed = last_line.trim_end();
 
-        // Claude Code prompt indicators
+        // Claude Code / zsh prompt indicator. '❯' is a prompt glyph that
+        // virtually never terminates a code/markup line, so a line ending in it
+        // is an idle prompt (unchanged behaviour). The ambiguous case the N11
+        // exclusions target is the ASCII '>' below.
         if last_trimmed.ends_with('❯') {
             return true;
         }
@@ -766,9 +807,12 @@ impl WorkerStallDetector {
             return true;
         }
 
-        // Prompt ending with "> " or bare ">"
+        // Bare '>' / '❯' prompt — but ONLY when it's a standalone prompt, never
+        // when the line ends in code/markup punctuation that merely closes with
+        // '>': '=>', '->', '/>', '});', generic-type '<T>', JSX/HTML tags, etc.
+        // Those are output, not an idle prompt.
         if last_trimmed.ends_with('>') {
-            return true;
+            return is_standalone_prompt(last_trimmed, '>');
         }
 
         false
@@ -779,6 +823,42 @@ impl WorkerStallDetector {
         self.last_active.remove(session);
         self.idle_since.remove(session);
     }
+}
+
+/// True only when `line` is a *standalone* prompt ending in `glyph` (one of
+/// `>` / `❯`), not a code/markup line that merely happens to end with it.
+///
+/// Excludes the common code/markup line-endings that close with `>`: `=>`,
+/// `->`, `/>`, `<T>` / `<Foo>` generics, JSX/HTML tags, and a `});`-style
+/// statement that still ends with `>` after a fat-arrow body. A genuine idle
+/// prompt is a short line: either just the glyph, or a shell-style
+/// `user@host …>` style prefix followed by the glyph.
+fn is_standalone_prompt(line: &str, glyph: char) -> bool {
+    let line = line.trim_end();
+    if !line.ends_with(glyph) {
+        return false;
+    }
+    // The character immediately before the prompt glyph decides intent.
+    // Code/markup endings put punctuation right before the closing '>'.
+    let before = line[..line.len() - glyph.len_utf8()].trim_end_matches(' ');
+    if let Some(prev) = before.chars().last() {
+        // '=>' '->' '/>' and tag/generic closers like 'foo>' are NOT prompts;
+        // a real prompt has whitespace (or nothing) before the glyph.
+        if matches!(prev, '=' | '-' | '/' | ')' | ';' | '"' | '\'' | '`') {
+            return false;
+        }
+        // An alphanumeric immediately before '>' is a closing tag / generic
+        // (e.g. `</div>`, `Vec<T>`), not a bare prompt.
+        if prev.is_alphanumeric() {
+            return false;
+        }
+    }
+    // Markup/JSX tag lines also typically OPEN with '<' somewhere — a line that
+    // both contains '<' and ends with '>' is overwhelmingly a tag, not a prompt.
+    if glyph == '>' && before.contains('<') {
+        return false;
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -962,10 +1042,25 @@ mod tests {
         assert!(WorkerStallDetector::detect_idle_prompt("some output\n❯"));
         assert!(WorkerStallDetector::detect_idle_prompt("some output\n❯ "));
         assert!(WorkerStallDetector::detect_idle_prompt("hacker@vps ~ $ "));
-        assert!(WorkerStallDetector::detect_idle_prompt(""));
+        // N11: an empty pane capture is NOT an idle prompt (was a false-positive).
+        assert!(!WorkerStallDetector::detect_idle_prompt(""));
         assert!(!WorkerStallDetector::detect_idle_prompt("Thinking..."));
         assert!(!WorkerStallDetector::detect_idle_prompt("Writing file.rs"));
         assert!(!WorkerStallDetector::detect_idle_prompt("Running tests..."));
+    }
+
+    #[test]
+    fn idle_prompt_excludes_code_and_markup_endings() {
+        // N11: a line that ends in '>' but is code/markup is NOT an idle prompt.
+        assert!(!WorkerStallDetector::detect_idle_prompt("let f = |x| x => x + 1"));
+        assert!(!WorkerStallDetector::detect_idle_prompt("fn foo() -> u32 {\nreturn 1 ->"));
+        assert!(!WorkerStallDetector::detect_idle_prompt("<input type=\"text\" />"));
+        assert!(!WorkerStallDetector::detect_idle_prompt("    </div>"));
+        assert!(!WorkerStallDetector::detect_idle_prompt("let v: Vec<T>"));
+        assert!(!WorkerStallDetector::detect_idle_prompt("arr.map(x => x);"));
+        // A genuine bare '>' prompt still counts.
+        assert!(WorkerStallDetector::detect_idle_prompt("output\n>"));
+        assert!(WorkerStallDetector::detect_idle_prompt("output\n> "));
     }
 
     #[test]
