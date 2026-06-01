@@ -2362,6 +2362,29 @@ impl TelegramBotEngine {
     }
 
     /// Edit a message's text + inline keyboard in-place (drill-down without spam).
+    /// Telegram hard-caps callback_data at 64 BYTES; an over-cap button makes
+    /// Telegram reject the WHOLE message (BUTTON_DATA_INVALID), so the keyboard
+    /// silently fails to send. This guard logs every offending button loudly
+    /// (with the fix hint: tokenize via session_name_by_token) so an overflow is
+    /// a VISIBLE error, not a dead button, at the single chokepoint both keyboard
+    /// send paths pass through.
+    fn assert_cb_cap(keyboard: &InlineKeyboardMarkup) {
+        for row in &keyboard.inline_keyboard {
+            for btn in row {
+                let bytes = btn.callback_data.len();
+                if bytes > 64 {
+                    tracing::error!(
+                        callback_data = %btn.callback_data,
+                        bytes,
+                        button = %btn.text,
+                        "callback_data exceeds Telegram's 64-byte cap — keyboard WILL be rejected; tokenize this payload via session_name_by_token"
+                    );
+                    debug_assert!(false, "callback_data over 64 bytes ({bytes}): {}", btn.callback_data);
+                }
+            }
+        }
+    }
+
     async fn edit_message_with_keyboard(
         &self,
         chat_id: i64,
@@ -2369,6 +2392,7 @@ impl TelegramBotEngine {
         text: &str,
         keyboard: &InlineKeyboardMarkup,
     ) {
+        Self::assert_cb_cap(keyboard);
         let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
         let body = serde_json::json!({
             "chat_id": chat_id, "message_id": message_id,
@@ -4188,6 +4212,7 @@ impl TelegramBotEngine {
         text: &str,
         keyboard: &InlineKeyboardMarkup,
     ) -> Result<Option<i64>> {
+        Self::assert_cb_cap(keyboard);
         let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
         let body = serde_json::json!({
             "chat_id": chat_id,
