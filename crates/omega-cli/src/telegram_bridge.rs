@@ -494,8 +494,38 @@ impl TelegramBotEngine {
         }
     }
 
+    /// PRE-FILTER: OAuth-code capture, isolated from all conversational
+    /// routing. Runs before any reply-routing, reply-context, slash-command,
+    /// or brain/relay logic. Returns true iff the message was an OAuth code
+    /// that we consumed here (caller must then short-circuit).
+    ///
+    /// Decoupling rationale (N2): an inbound OAuth paste is an authentication
+    /// event, not a conversation turn. It must never reach handle_text's
+    /// message/brain branching — otherwise a 92-char code can be mis-routed as
+    /// content. Its only trigger is its own state (a pending, non-stale reauth)
+    /// plus the code shape; nothing about the chat/oracle/brain state gates it.
+    async fn oauth_prefilter(&self, chat_id: i64, text: &str) -> bool {
+        let trimmed = text.trim();
+        if !oauth::looks_like_oauth_code(trimmed) {
+            return false;
+        }
+        let state = oauth::PendingReauth::load();
+        if !state.pending || state.is_stale() {
+            return false;
+        }
+        self.handle_oauth_code(chat_id, trimmed).await;
+        true
+    }
+
     async fn handle_text(&self, msg: &Message, text: &str) -> Result<()> {
         let chat_id = msg.chat.id;
+
+        // 0. OAuth PRE-FILTER (N2): auth events are isolated from conversation.
+        // If this is an OAuth code for a pending reauth, consume it here and
+        // stop — it never enters the reply/brain/relay branching below.
+        if self.oauth_prefilter(chat_id, text).await {
+            return Ok(());
+        }
 
         // 1. Check for reply-based routing — if the replied message is one
         // we tracked as belonging to a project oracle, route there directly.
@@ -545,16 +575,8 @@ impl TelegramBotEngine {
             })
         });
 
-        // 2. OAuth code paste — only triggers if a reauth is pending.
-        // Code pattern: 20+ chars of [A-Za-z0-9_-], optionally followed by #state.
-        let trimmed = text.trim();
-        if oauth::looks_like_oauth_code(trimmed) {
-            let state = oauth::PendingReauth::load();
-            if state.pending && !state.is_stale() {
-                self.handle_oauth_code(chat_id, trimmed).await;
-                return Ok(());
-            }
-        }
+        // (OAuth-code capture moved to the oauth_prefilter at the top of
+        // handle_text — see N2. It no longer lives in the conversational chain.)
 
         // /cancel clears any targeted session.
         if text.trim() == "/cancel" {

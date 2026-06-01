@@ -282,9 +282,10 @@ pub struct OmegaTelegramConfig {
     /// The ONLY chat_id allowed to talk to the bot. Messages from any other
     /// chat are silently dropped.
     pub chat_id: i64,
-    /// Optional allow-list of Telegram user IDs (sender). When empty, only
-    /// the chat_id check applies. When non-empty, the message author MUST
-    /// match one of these IDs OR the chat_id check is bypassed.
+    /// Optional allow-list of Telegram user IDs (sender). The chat_id check
+    /// ALWAYS applies. When empty, any sender in the configured chat is allowed.
+    /// When non-empty, the sender MUST additionally match one of these IDs
+    /// (it narrows within the chat — it never bypasses the chat_id gate).
     #[serde(default)]
     pub allow_user_ids: Vec<i64>,
     /// Session to relay messages to (default: aisb-master)
@@ -345,23 +346,23 @@ impl OmegaTelegramConfig {
 
     /// True if a Telegram message is allowed to interact with this bot.
     ///
-    /// Security model (2-level, either path grants access):
-    ///   1. sender_id is in allow_user_ids → authorized (works for DMs and groups)
-    ///   2. chat_id matches config AND allow_user_ids is empty → authorized (group-only legacy mode)
+    /// Security model (BOTH gates must pass — no bypass):
+    ///   1. chat_id MUST equal the configured chat_id, AND
+    ///   2. EITHER allow_user_ids is empty (no per-sender restriction)
+    ///      OR the sender_id is present and in allow_user_ids.
     ///
-    /// For DMs: chat_id == sender's user_id (not the bot's ID), so the user_id
-    /// check is the primary gate. The chat_id field in config is mainly for
-    /// restricting to a specific group chat when allow_user_ids is empty.
+    /// This closes N17: previously a non-empty allow-list bypassed the chat_id
+    /// check, so a listed sender in the WRONG chat was authorized and the
+    /// configured chat with an un-listed sender was rejected. Now the chat gate
+    /// is always enforced and the sender allow-list narrows within that chat.
     pub fn is_authorized(&self, chat_id: i64, sender_id: Option<i64>) -> bool {
-        if let Some(uid) = sender_id {
-            if !self.allow_user_ids.is_empty() && self.allow_user_ids.contains(&uid) {
-                return true;
-            }
+        if chat_id != self.chat_id {
+            return false;
         }
-        if chat_id == self.chat_id && self.allow_user_ids.is_empty() {
+        if self.allow_user_ids.is_empty() {
             return true;
         }
-        false
+        matches!(sender_id, Some(uid) if self.allow_user_ids.contains(&uid))
     }
 }
 
@@ -379,5 +380,45 @@ mod tests {
     #[test]
     fn list_accounts_does_not_panic() {
         let _ = list_accounts();
+    }
+
+    fn auth_cfg(chat_id: i64, allow_user_ids: Vec<i64>) -> OmegaTelegramConfig {
+        OmegaTelegramConfig {
+            bot_token: String::new(),
+            chat_id,
+            allow_user_ids,
+            relay_session: default_relay_session(),
+            label: String::new(),
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn is_authorized_requires_both_chat_and_sender() {
+        // Right chat + right sender = allow
+        let cfg = auth_cfg(100, vec![42]);
+        assert!(cfg.is_authorized(100, Some(42)));
+
+        // Right chat + wrong sender = reject (no chat bypass)
+        assert!(!cfg.is_authorized(100, Some(999)));
+        // Right chat + missing sender = reject when an allow-list is set
+        assert!(!cfg.is_authorized(100, None));
+
+        // Wrong chat + right sender = reject (closes N17 bypass)
+        assert!(!cfg.is_authorized(200, Some(42)));
+        // Wrong chat + wrong sender = reject
+        assert!(!cfg.is_authorized(200, Some(999)));
+    }
+
+    #[test]
+    fn is_authorized_empty_allowlist_gates_on_chat_only() {
+        // Right chat + empty allow-list = allow (any sender, incl. None)
+        let cfg = auth_cfg(100, vec![]);
+        assert!(cfg.is_authorized(100, Some(7)));
+        assert!(cfg.is_authorized(100, None));
+
+        // Wrong chat + empty allow-list = reject
+        assert!(!cfg.is_authorized(200, Some(7)));
+        assert!(!cfg.is_authorized(200, None));
     }
 }
