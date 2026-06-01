@@ -20,6 +20,10 @@ pub trait WorkerRuntime {
     async fn spawn(&self, step: &PlanStep, brief: &str, cwd: &Path) -> Result<String>;
     /// Block until the worker's done.json appears (or timeout).
     async fn wait_done(&self, session: &str, timeout: Duration) -> Result<DoneSignal>;
+    /// Reconcile a worker whose wait_done failed (timeout / bad done.json):
+    /// kill its session and release its file-scope claim so the next run starts
+    /// clean. Default no-op (scripted test runtimes have nothing to clean).
+    async fn cleanup_failed(&self, _session: &str) {}
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +112,24 @@ pub async fn run<R: WorkerRuntime>(
         tracker.save(project_dir)?;
 
         for (sid, session) in inflight {
-            let _done: DoneSignal = runtime.wait_done(&session, opts.worker_timeout).await?;
+            // A single worker's wait_done error (timeout / unreadable / unparseable
+            // done.json) must NOT abort the whole plan: that would strand every
+            // sibling step persisted as Running, never reconciled. Treat it as a
+            // failed step, record it, release its scope claim, and continue the
+            // batch so the rest of the plan still drives to completion.
+            match runtime.wait_done(&session, opts.worker_timeout).await {
+                Ok(_done) => {}
+                Err(e) => {
+                    tracing::error!(step = %sid, session = %session, error = %e, "worker wait failed — marking step failed");
+                    tracker.mark_failed(&sid)?;
+                    report.failed.push(sid.clone());
+                    // Runtime-specific cleanup: kill the (likely hung) session and
+                    // free its file-scope claim so the next run starts clean.
+                    runtime.cleanup_failed(&session).await;
+                    tracker.save(project_dir)?;
+                    continue;
+                }
+            }
             let step = tracker.get_step(&sid).context("step vanished")?.clone();
             let attempt = step.attempt + 1;
             match guardian.verify(&step, project_dir, attempt).await {
@@ -189,6 +210,13 @@ impl WorkerRuntime for RmuxRuntime<'_> {
             }
             tokio::time::sleep(self.poll).await;
         }
+    }
+
+    async fn cleanup_failed(&self, session: &str) {
+        // Kill the hung/failed worker session (best-effort) and free its scope
+        // claim so a resumed plan run does not see a locked file or a zombie pane.
+        let _ = self.mgr.kill_session(session).await;
+        let _ = scope::ScopeClaim::release(&self.state_dir, session);
     }
 }
 
