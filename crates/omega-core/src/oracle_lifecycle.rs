@@ -8,6 +8,7 @@ use crate::done::DoneStatus;
 use crate::mission::{Mission, MissionId, WorkerResult};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -831,6 +832,50 @@ impl OracleRegistry {
         Ok(())
     }
 
+    /// Atomically reserve + register an Active oracle name for `project`,
+    /// serialized across processes by an exclusive advisory lock (fs2, the same
+    /// pattern as scope.rs / inbox.rs). Without it two concurrent dispatches
+    /// both load the registry, both compute the SAME next_oracle_name, and both
+    /// save — colliding on one name and losing a registration. The lock guards
+    /// a fresh reload + name pick + register + save, so each caller sees the
+    /// other's reservation. `preferred` (a caller-verified live idle oracle to
+    /// reuse) is honored only if still Idle in the reloaded registry. The lock
+    /// guards only synchronous IO — do any async liveness check BEFORE calling.
+    pub fn reserve_oracle(
+        state_dir: &Path,
+        project: &str,
+        preferred: Option<&str>,
+    ) -> Result<String> {
+        std::fs::create_dir_all(state_dir)?;
+        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
+        lockfile.lock_exclusive()?;
+
+        // Reload under the lock so a concurrent reservation is merged, not lost.
+        let mut reg = Self::load(state_dir);
+        let name = match preferred {
+            Some(p)
+                if reg
+                    .oracles
+                    .iter()
+                    .any(|e| e.oracle_name == p && e.status == OracleRegistryStatus::Idle) =>
+            {
+                p.to_string()
+            }
+            _ => reg.next_oracle_name(project),
+        };
+        reg.register(OracleRegistryEntry {
+            oracle_name: name.clone(),
+            project: project.to_string(),
+            session_name: name.clone(),
+            status: OracleRegistryStatus::Active,
+            spawned_at: Utc::now(),
+            files_owned: Vec::new(),
+        });
+        reg.save(state_dir)?;
+        Ok(name)
+        // lockfile drops here -> advisory lock released
+    }
+
     pub fn register(&mut self, entry: OracleRegistryEntry) {
         // Replace existing entry for same oracle name
         self.oracles.retain(|e| e.oracle_name != entry.oracle_name);
@@ -979,6 +1024,37 @@ mod tests {
         });
 
         assert_eq!(reg.next_oracle_name("Kommu"), "oracle-Kommu-2");
+    }
+
+    #[test]
+    fn reserve_oracle_concurrent_names_are_unique() {
+        use std::collections::HashSet;
+        use std::sync::Arc;
+        use std::thread;
+        const N: usize = 8;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = Arc::new(tmp.path().to_path_buf());
+
+        // N threads race to reserve an oracle for the same project at once.
+        let mut handles = Vec::new();
+        for _ in 0..N {
+            let dir = Arc::clone(&dir);
+            handles.push(thread::spawn(move || {
+                OracleRegistry::reserve_oracle(dir.as_path(), "Race", None).unwrap()
+            }));
+        }
+        let names: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+
+        // The exclusive lock serializes name allocation, so every concurrent
+        // reservation gets a DISTINCT name (pre-fix they all read the same stale
+        // registry and collided on oracle-Race / -2 …).
+        let unique: HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), N, "concurrent reservations must be unique: {:?}", names);
+
+        // All N registrations survive (none clobbered by a racing save).
+        let reg = OracleRegistry::load(dir.as_path());
+        assert_eq!(reg.oracles.iter().filter(|e| e.project == "Race").count(), N);
     }
 
     #[test]

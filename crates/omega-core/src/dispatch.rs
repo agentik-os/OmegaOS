@@ -1,13 +1,9 @@
 use crate::config::OmegaConfig;
 use crate::done::DoneSignal;
-use crate::oracle_lifecycle::{
-    OraclePromptGenerator, OracleRegistryEntry, OracleRegistryStatus, OracleRegistry,
-    OracleState,
-};
+use crate::oracle_lifecycle::{OraclePromptGenerator, OracleRegistry, OracleState};
 use crate::routing;
 use crate::session::SessionManager;
 use anyhow::{bail, Result};
-use chrono::Utc;
 use std::path::Path;
 use std::time::Duration;
 
@@ -163,30 +159,19 @@ impl Dispatcher {
         };
         let work_path = std::path::PathBuf::from(&work_dir);
 
-        // Use oracle registry for naming + reuse of idle oracles.
-        // A registry entry alone is NOT proof of life — an idle oracle may
-        // have crashed or been killed in rmux. Extract the candidate name as
-        // an owned Option<String> (ends the immutable borrow of `registry`),
-        // verify liveness against rmux, and only reuse it if its session is
-        // actually present; otherwise fall through to a fresh name.
-        let mut registry = OracleRegistry::load(&self.config.state_dir);
-        let reuse_candidate: Option<String> = registry
+        // Oracle naming + idle-reuse. A registry entry is NOT proof of life — an
+        // idle oracle may have crashed or been killed in rmux — so verify the
+        // reuse candidate against live rmux sessions first (async). Then hand
+        // the verified candidate to reserve_oracle, which does the name pick +
+        // registration under an exclusive lock: two concurrent dispatches can no
+        // longer both compute the same next name and clobber each other's save.
+        let live_names = self.session_mgr.list_sessions().await.unwrap_or_default();
+        let preferred: Option<String> = OracleRegistry::load(&self.config.state_dir)
             .find_available(project)
-            .map(|idle| idle.oracle_name.clone());
-        let oracle_name = match reuse_candidate {
-            Some(name)
-                if self
-                    .session_mgr
-                    .list_sessions()
-                    .await
-                    .unwrap_or_default()
-                    .iter()
-                    .any(|s| s.name == name) =>
-            {
-                name
-            }
-            _ => registry.next_oracle_name(project),
-        };
+            .map(|idle| idle.oracle_name.clone())
+            .filter(|name| live_names.iter().any(|s| &s.name == name));
+        let oracle_name =
+            OracleRegistry::reserve_oracle(&self.config.state_dir, project, preferred.as_deref())?;
 
         // Classification + ship/god-mode detection run on the RAW message —
         // keyword signals ("ship", "god mode") must not be lost to
@@ -301,16 +286,9 @@ impl Dispatcher {
                 .await?;
         }
 
-        // Register in oracle registry
-        registry.register(OracleRegistryEntry {
-            oracle_name: oracle_name.clone(),
-            project: project.to_string(),
-            session_name: oracle_name.clone(),
-            status: OracleRegistryStatus::Active,
-            spawned_at: Utc::now(),
-            files_owned: Vec::new(),
-        });
-        let _ = registry.save(&self.config.state_dir);
+        // (The oracle was already registered Active under the lock by
+        // reserve_oracle above; a failed spawn self-heals via patrol cleanup,
+        // which marks registry entries with no live rmux session Dead.)
 
         tracing::info!(
             oracle = %oracle_name,
