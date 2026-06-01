@@ -296,6 +296,18 @@ impl Orchestrator {
             format!("{}-worker-{}", mission.project, task.name)
         };
 
+        // Clear any STALE done.json from a prior mission. Session names are
+        // deterministic per project (oracle-<project> / <project>-worker-<name>),
+        // so a leftover worker-<session>.done.json from a previous run would make
+        // wait_for_worker_done return that OLD result instantly — reporting the
+        // previous mission's outcome as this one's. Remove it before dispatch so
+        // the wait only ever observes a fresh signal from THIS mission.
+        let done_path = self
+            .config
+            .state_dir
+            .join(format!("worker-{}.done.json", session_name));
+        let _ = std::fs::remove_file(&done_path);
+
         // Claim file scope upfront — fail fast if conflict
         if !task.files_owned.is_empty() {
             scope::claim_or_reject(
