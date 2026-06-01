@@ -22,8 +22,13 @@ pub struct LaunchOptions {
     pub goal_condition: Option<String>,
 
     /// `--effort low|medium|high|xhigh|max` — model reasoning depth.
-    /// We map: SIMPLE→low, MEDIUM→medium, COMPLEX→high, EPIC→max.
+    /// We map (see dispatch.rs): SIMPLE→high, MEDIUM→xhigh, COMPLEX→xhigh, EPIC→max.
     pub effort: Option<String>,
+
+    /// `--model <name>` — explicit model pin (e.g. "claude-opus-4-8"). When
+    /// set, we emit `--model <name>` so the spawned session never silently
+    /// drifts onto the CLI's default model. Claude-only.
+    pub model: Option<String>,
 
     /// `--max-turns N` — hard cap on conversation turns. Bounds
     /// runaway oracles (rule R-28 cost tracking).
@@ -92,7 +97,7 @@ impl Agent {
             "pi" => Some(Agent::Pi),
             "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
-            "shell" | "bash" | "" => Some(Agent::Shell),
+            "shell" | "bash" => Some(Agent::Shell),
             _ => None,
         }
     }
@@ -166,6 +171,9 @@ impl Agent {
                 }
                 // Claude-only smart flags (2026-w20+). Silently ignored
                 // by older Claude Code installs.
+                if let Some(ref m) = opts.model {
+                    args.push_str(&format!(" --model {}", shell_quote(m)));
+                }
                 if let Some(ref e) = opts.effort {
                     args.push_str(&format!(" --effort {}", shell_quote(e)));
                 }

@@ -7,6 +7,21 @@ use anyhow::{bail, Result};
 use std::path::Path;
 use std::time::Duration;
 
+/// N20: Claude's `/goal` rejects conditions longer than ~4000 chars; an
+/// over-long goal silently aborts the whole dispatch. We cap at 4000.
+const MAX_GOAL_LEN: usize = 4000;
+
+/// Map a config `default_model` alias to the explicit model name Claude's CLI
+/// pins with `--model`. "opus" → "claude-opus-4-8"; any other value (including
+/// a full model name like "claude-opus-4-8" or a bare alias such as "sonnet")
+/// is passed through verbatim — the CLI accepts both aliases and full names.
+fn resolve_model_flag(default_model: &str) -> String {
+    match default_model {
+        "opus" => "claude-opus-4-8".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Structured context for worker dispatch — ensures every worker gets
 /// the information it needs to be fully autonomous (Third Law compliant).
 ///
@@ -169,7 +184,18 @@ impl Dispatcher {
         let preferred: Option<String> = OracleRegistry::load(&self.config.state_dir)
             .find_available(project)
             .map(|idle| idle.oracle_name.clone())
-            .filter(|name| live_names.iter().any(|s| &s.name == name));
+            .filter(|name| live_names.iter().any(|s| &s.name == name))
+            // N10: a registry-Idle oracle is only safe to REUSE once it has
+            // reached a real closeable done-state (is_closeable/has_done_signal
+            // on OracleState — strictly stronger than all_workers_terminal()).
+            // An Idle oracle still owing Verify/Report work must NOT be reused.
+            .filter(|name| {
+                OracleState::read(&self.config.state_dir, name)
+                    .ok()
+                    .flatten()
+                    .map(|st| st.is_closeable())
+                    .unwrap_or(false)
+            });
         let oracle_name =
             OracleRegistry::reserve_oracle(&self.config.state_dir, project, preferred.as_deref())?;
 
@@ -243,14 +269,13 @@ impl Dispatcher {
                 routing::Complexity::Complex => "xhigh".to_string(),
                 routing::Complexity::Epic => "max".to_string(),
             });
-            // Budget caps (rule R-28). Conservative defaults; can be
-            // overridden in config later.
-            opts.max_budget_usd = Some(match decision.complexity {
-                routing::Complexity::Simple => 2.0,
-                routing::Complexity::Medium => 8.0,
-                routing::Complexity::Complex => 25.0,
-                routing::Complexity::Epic => 80.0,
-            });
+            // Pin the model explicitly so the spawned oracle never silently
+            // drifts onto the CLI's default. "opus" → claude-opus-4-8.
+            opts.model = Some(resolve_model_flag(&self.config.default_model));
+            // N5: --max-budget-usd is a no-op for interactive spawned sessions
+            // (the flag only bounds non-interactive `-p` runs), so we do NOT
+            // set it here and make no cost guarantee. max_turns still bounds
+            // runaway loops. Real out-of-band budget enforcement is deferred.
             opts.max_turns = Some(match decision.complexity {
                 routing::Complexity::Simple => 15,
                 routing::Complexity::Medium => 50,
@@ -261,10 +286,25 @@ impl Dispatcher {
             // /goal — auto-derived success criteria. The oracle loops
             // until its own .done.json is written with status=done_clean
             // OR the build is green, depending on mission type.
-            opts.goal_condition = Some(format!(
+            let goal = format!(
                 "mission complete for project {} — .done.json written with status=done_clean and either no code changes OR `cd {} && npm run build` (or the project's build script) exits zero",
                 project, work_dir
-            ));
+            );
+            // N20: Claude's /goal rejects conditions over ~4000 chars and the
+            // whole dispatch silently fails (the 30638-char bug). Guard the
+            // length: drop the /goal injection rather than ship a body the
+            // CLI will reject. The oracle still has its full prompt + done.json
+            // contract; it just won't auto-loop on an over-long goal.
+            if goal.len() > MAX_GOAL_LEN {
+                tracing::warn!(
+                    oracle = %oracle_name,
+                    goal_len = goal.len(),
+                    max = MAX_GOAL_LEN,
+                    "goal_condition exceeds /goal length limit — dropping the /goal injection"
+                );
+            } else {
+                opts.goal_condition = Some(goal);
+            }
 
             self.session_mgr
                 .create_agent_session_with_opts(
@@ -335,11 +375,22 @@ impl Dispatcher {
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             opts.effort = Some("xhigh".to_string());
+            opts.model = Some(resolve_model_flag(&self.config.default_model));
             opts.session_name = Some(oracle_name.to_string());
-            opts.goal_condition = Some(format!(
+            let goal = format!(
                 "mission complete for project {} — .done.json written with status=done_clean",
                 state.project
-            ));
+            );
+            if goal.len() > MAX_GOAL_LEN {
+                tracing::warn!(
+                    oracle = %oracle_name,
+                    goal_len = goal.len(),
+                    max = MAX_GOAL_LEN,
+                    "goal_condition exceeds /goal length limit — dropping the /goal injection"
+                );
+            } else {
+                opts.goal_condition = Some(goal);
+            }
             self.session_mgr
                 .create_agent_session_with_opts(oracle_name, &work_dir, agent, Some(&prompt), opts)
                 .await?;
