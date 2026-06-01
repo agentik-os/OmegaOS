@@ -215,10 +215,11 @@ pub fn known_providers() -> Vec<&'static str> {
     ProvidersConfig::all_providers()
 }
 
+/// Delegates to the single canonical resolver (config::omega_dir) so credentials
+/// honor $OMEGA_DIR + the consolidated ~/OmegaOS/System layout, instead of
+/// hardcoding ~/.omega and diverging from where config.toml actually lives.
 fn omega_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join(".omega")
+    crate::config::omega_dir()
 }
 
 fn sanitize(name: &str) -> String {
@@ -243,6 +244,28 @@ mod tests {
     // parallel, so without this lock two tests clobber each other's HOME and a
     // legacy symlink can land in the wrong tmp dir. Serialize HOME-touching tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn omega_dir_override_relocates_credentials() {
+        // $OMEGA_DIR must relocate the WHOLE secret tree, not just config.toml.
+        // credentials now share config::omega_dir() (was: a hardcoded ~/.omega),
+        // so setting the override lands the credential store under it.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var("OMEGA_DIR").ok();
+        std::env::set_var("OMEGA_DIR", tmp.path());
+        let store = CredentialStore::new().unwrap();
+        assert!(
+            store.base_dir().starts_with(tmp.path()),
+            "credentials base {:?} must be under $OMEGA_DIR {:?}",
+            store.base_dir(),
+            tmp.path()
+        );
+        match prev {
+            Some(v) => std::env::set_var("OMEGA_DIR", v),
+            None => std::env::remove_var("OMEGA_DIR"),
+        }
+    }
 
     fn fresh_store(tmp: &Path) -> (CredentialStore, MutexGuard<'static, ()>) {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

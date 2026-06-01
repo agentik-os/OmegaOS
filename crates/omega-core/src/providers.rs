@@ -99,10 +99,7 @@ pub struct GlmConfig {
 
 impl ProvidersConfig {
     fn path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".omega")
-            .join("providers.toml")
+        crate::config::omega_dir().join("providers.toml")
     }
 
     pub fn load() -> Self {
@@ -262,9 +259,7 @@ impl Default for ActiveModel {
 
 impl ActiveModel {
     fn path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".omega")
+        crate::config::omega_dir()
             .join("state")
             .join("telegram-active-model.json")
     }

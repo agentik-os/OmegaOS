@@ -482,7 +482,7 @@ pub fn looks_like_oauth_code(s: &str) -> bool {
 /// after upgrade still works before migration runs.
 pub fn credentials_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let canonical = home.join(".omega").join("credentials").join("claude.json");
+    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
     if canonical.exists() {
         return canonical;
     }
