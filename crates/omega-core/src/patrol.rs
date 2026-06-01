@@ -51,7 +51,9 @@ impl Patrol {
         let _ = std::fs::create_dir_all(&self.config.state_dir);
         let _ = std::fs::write(&hb, Utc::now().to_rfc3339());
 
-        let mgr = SessionManager::connect().await?;
+        // connect_cached: the patrol daemon calls run_once every tick — reuse one
+        // process-wide rmux connection instead of opening a fresh socket per tick.
+        let mgr = SessionManager::connect_cached().await?;
         let sessions = mgr.list_sessions().await?;
 
         let mut report = PatrolReport {
@@ -70,6 +72,12 @@ impl Patrol {
             .iter()
             .filter(|s| s.role == SessionRole::Oracle)
             .collect();
+
+        // Read every oracle's persisted state ONCE per tick. find_parent_oracle
+        // needs it to resolve a worker -> its governing oracle, and it's called
+        // once per signaling worker; reading it per call was an O(W×O) disk scan +
+        // JSON parse every tick. Compute it here and pass the slice down.
+        let oracle_states = crate::oracle_lifecycle::OracleState::read_all(&self.config.state_dir);
 
         // ── Worker patrol: done signals ──
         for session in &sessions {
@@ -117,7 +125,7 @@ impl Patrol {
                         }
                     }
 
-                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions) {
+                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states) {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
                         let status_str = if contest_reason.is_some() {
                             "contested"
@@ -175,7 +183,7 @@ impl Patrol {
                     WorkerBlocked::read(&self.config.state_dir, &session.name)
                 {
                     report.blocked_workers.push(session.name.clone());
-                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions) {
+                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states) {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
                         let _ = inbox.push(&InboxEvent::worker_blocked(
                             &session.name,
@@ -205,7 +213,7 @@ impl Patrol {
                     if let Some(reason) = detect_fatal_agent_error(&content) {
                         report.blocked_workers.push(session.name.clone());
                         if let Some(oracle) =
-                            self.find_parent_oracle(&session.name, &oracle_sessions)
+                            self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
                         {
                             let inbox =
                                 Inbox::for_oracle(&self.config.state_dir, &oracle.name);
@@ -238,7 +246,7 @@ impl Patrol {
                         StallAction::Escalate { ref session, idle_secs } => {
                             report.stalled_workers.push(session.clone());
                             if let Some(oracle) =
-                                self.find_parent_oracle(session, &oracle_sessions)
+                                self.find_parent_oracle(session, &oracle_sessions, &oracle_states)
                             {
                                 let inbox =
                                     Inbox::for_oracle(&self.config.state_dir, &oracle.name);
@@ -280,7 +288,7 @@ impl Patrol {
                                 if !report.stalled_workers.contains(&session.name) {
                                     report.stalled_workers.push(session.name.clone());
                                     if let Some(oracle) =
-                                        self.find_parent_oracle(&session.name, &oracle_sessions)
+                                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
                                     {
                                         let inbox =
                                             Inbox::for_oracle(&self.config.state_dir, &oracle.name);
@@ -373,7 +381,7 @@ impl Patrol {
                                     );
                                     self.stall_detector.forget(&session.name);
                                     if let Some(oracle) =
-                                        self.find_parent_oracle(&session.name, &oracle_sessions)
+                                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
                                     {
                                         let inbox = Inbox::for_oracle(
                                             &self.config.state_dir,
@@ -519,8 +527,10 @@ impl Patrol {
     /// within 24h), and we have not already tried within the last 5 minutes. A
     /// finished, abandoned, or stale-stopped oracle stays dead.
     async fn resurrect_dead_oracles(&self, report: &mut PatrolReport) -> Result<()> {
-        let dispatcher =
-            crate::dispatch::Dispatcher::new(SessionManager::connect().await?, self.config.clone());
+        let dispatcher = crate::dispatch::Dispatcher::new(
+            SessionManager::connect_cached().await?,
+            self.config.clone(),
+        );
         for name in dispatcher.dead_oracles().await {
             let state = match OracleState::read(&self.config.state_dir, &name) {
                 Ok(Some(s)) => s,
@@ -640,10 +650,12 @@ impl Patrol {
         &self,
         worker_name: &str,
         oracles: &'a [&crate::session::OmegaSession],
+        states: &[crate::oracle_lifecycle::OracleState],
     ) -> Option<&'a crate::session::OmegaSession> {
         // Authoritative: the oracle whose OracleState registry actually lists
         // this worker. This is correct even with multiple oracles per project.
-        let states = crate::oracle_lifecycle::OracleState::read_all(&self.config.state_dir);
+        // `states` is read ONCE per tick by the caller (was an O(W×O) per-call
+        // disk scan before).
         if let Some(state) = states
             .iter()
             .find(|s| s.workers.iter().any(|w| w.session_name == worker_name))
