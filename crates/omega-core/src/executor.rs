@@ -24,6 +24,13 @@ pub trait WorkerRuntime {
     /// kill its session and release its file-scope claim so the next run starts
     /// clean. Default no-op (scripted test runtimes have nothing to clean).
     async fn cleanup_failed(&self, _session: &str) {}
+    /// Release a worker's file-scope claim after a TERMINAL verdict without
+    /// killing its session. A Pass-verdict worker has finished its job but its
+    /// claim must still be freed, or the next run that touches the same files is
+    /// rejected (claim_or_reject) and that step can never start. cleanup_failed
+    /// kills+releases (right for Retry/Fail); this releases only (right for a
+    /// successful worker we leave for inspection). Default no-op.
+    async fn release_scope(&self, _session: &str) {}
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +143,11 @@ pub async fn run<R: WorkerRuntime>(
                 Verdict::Pass => {
                     tracker.mark_done(&sid)?;
                     report.completed.push(sid.clone());
+                    // Free the file-scope claim from the finished attempt: the
+                    // worker succeeded, but the lock outlives it otherwise and
+                    // the next run touching these files is rejected. Leave the
+                    // session alive (release-only, no kill).
+                    runtime.release_scope(&session).await;
                 }
                 Verdict::Retry { feedback } => {
                     tracing::warn!(step = %sid, %feedback, "guardian: retry");
@@ -152,6 +164,9 @@ pub async fn run<R: WorkerRuntime>(
                     tracing::error!(step = %sid, %reason, "guardian: fail");
                     tracker.mark_failed(&sid)?;
                     report.failed.push(sid.clone());
+                    // Terminal failure: kill the worker + free its scope claim
+                    // (same cleanup as Retry), else the lock leaks forever.
+                    runtime.cleanup_failed(&session).await;
                 }
             }
             tracker.save(project_dir)?;
@@ -235,6 +250,11 @@ impl WorkerRuntime for RmuxRuntime<'_> {
         let _ = self.mgr.kill_session(session).await;
         let _ = scope::ScopeClaim::release(&self.state_dir, session);
     }
+
+    async fn release_scope(&self, session: &str) {
+        // Free the claim from a finished (Pass) worker; leave its session alive.
+        let _ = scope::ScopeClaim::release(&self.state_dir, session);
+    }
 }
 
 #[cfg(test)]
@@ -300,5 +320,64 @@ mod tests {
         assert!(!report.success);
         assert_eq!(report.failed, vec!["STEP-001"]);
         assert!(report.completed.is_empty());
+    }
+
+    use std::sync::Mutex;
+
+    /// Records the scope-lifecycle calls so the file-scope-leak regression is
+    /// guarded: a Pass must release its claim, a Fail must clean it up.
+    #[derive(Default)]
+    struct TrackingRuntime {
+        script: HashMap<String, DoneStatus>,
+        released: Mutex<Vec<String>>,
+        cleaned: Mutex<Vec<String>>,
+    }
+
+    impl WorkerRuntime for TrackingRuntime {
+        async fn spawn(&self, step: &PlanStep, _brief: &str, _cwd: &Path) -> Result<String> {
+            Ok(format!("fake-{}", step.step_id))
+        }
+        async fn wait_done(&self, session: &str, _t: Duration) -> Result<DoneSignal> {
+            let step_id = session.strip_prefix("fake-").unwrap_or(session);
+            let status = self.script.get(step_id).cloned().unwrap_or(DoneStatus::DoneClean);
+            Ok(DoneSignal::stub(step_id, status))
+        }
+        async fn cleanup_failed(&self, session: &str) {
+            self.cleaned.lock().unwrap().push(session.to_string());
+        }
+        async fn release_scope(&self, session: &str) {
+            self.released.lock().unwrap().push(session.to_string());
+        }
+    }
+
+    #[tokio::test]
+    async fn pass_releases_scope_claim() {
+        let dir = tempfile::tempdir().unwrap();
+        save_linear_plan(dir.path(), "true");
+        let rt = TrackingRuntime::default();
+        let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
+        assert!(report.success);
+        // Every completed step freed its file-scope claim (release-only)...
+        assert_eq!(
+            rt.released.lock().unwrap().clone(),
+            vec!["fake-STEP-001", "fake-STEP-002", "fake-STEP-003"]
+        );
+        // ...and no successful step needed the kill+release cleanup path.
+        assert!(rt.cleaned.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn fail_releases_scope_via_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        save_linear_plan(dir.path(), "false"); // verify fails -> Fail at max_attempts=1
+        let rt = TrackingRuntime::default();
+        let report =
+            run(dir.path(), &rt, RunOptions { max_attempts: 1, ..Default::default() }).await.unwrap();
+        assert!(!report.success);
+        // The failed step's claim was freed via cleanup_failed (kill+release);
+        // dependents stay blocked so only STEP-001 was cleaned.
+        assert_eq!(rt.cleaned.lock().unwrap().clone(), vec!["fake-STEP-001"]);
+        // A Fail is not a Pass: the release-only path was NOT taken.
+        assert!(rt.released.lock().unwrap().is_empty());
     }
 }
