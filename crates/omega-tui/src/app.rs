@@ -1543,3 +1543,72 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod nesting_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use omega_core::session::OmegaSession;
+
+    fn rows_of(app: &App) -> Vec<(String, String)> {
+        app.rows
+            .iter()
+            .filter_map(|r| match r {
+                SessionRow::Entry(e) => {
+                    Some((e.tree_prefix.clone(), e.session.name.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn single_oracle_nests_all_its_workers() {
+        // One oracle in the project → every worker hangs under it (├/└), even
+        // with no recorded link (single-oracle fallback). This is the live
+        // DentistryGPT case once only one oracle remains.
+        let mut app = App::new(OmegaConfig::default());
+        let sessions = vec![
+            OmegaSession::classify("oracle-DentistryGPT-2"),
+            OmegaSession::classify("DentistryGPT-worker-agent-actions"),
+            OmegaSession::classify("DentistryGPT-worker-e2e-agents"),
+        ];
+        let group: Vec<&OmegaSession> = sessions.iter().collect();
+        let map = std::collections::HashMap::new();
+        app.flush_group_rows(&group, &[], &map, Some("DentistryGPT"));
+        let rows = rows_of(&app);
+        assert_eq!(rows[0], (String::new(), "oracle-DentistryGPT-2".into()));
+        assert_eq!(rows[1].1, "DentistryGPT-worker-agent-actions");
+        assert!(rows[1].0.contains('├'), "expected ├, got {:?}", rows[1].0);
+        assert_eq!(rows[2].1, "DentistryGPT-worker-e2e-agents");
+        assert!(rows[2].0.contains('└'), "expected └, got {:?}", rows[2].0);
+    }
+
+    #[test]
+    fn recorded_links_nest_each_worker_under_its_own_oracle() {
+        // Two oracles in one project: the recorded worker→oracle map decides
+        // which worker nests under which oracle (no guessing).
+        let mut app = App::new(OmegaConfig::default());
+        let sessions = vec![
+            OmegaSession::classify("oracle-Causio-1"),
+            OmegaSession::classify("oracle-Causio-2"),
+            OmegaSession::classify("Causio-worker-a"),
+            OmegaSession::classify("Causio-worker-b"),
+        ];
+        let group: Vec<&OmegaSession> = sessions.iter().collect();
+        let mut map = std::collections::HashMap::new();
+        map.insert("Causio-worker-a".to_string(), "oracle-Causio-2".to_string());
+        map.insert("Causio-worker-b".to_string(), "oracle-Causio-1".to_string());
+        app.flush_group_rows(&group, &[], &map, Some("Causio"));
+        let order: Vec<String> = rows_of(&app).into_iter().map(|(_, n)| n).collect();
+        assert_eq!(
+            order,
+            vec![
+                "oracle-Causio-1",
+                "Causio-worker-b", // its recorded child
+                "oracle-Causio-2",
+                "Causio-worker-a", // its recorded child
+            ]
+        );
+    }
+}

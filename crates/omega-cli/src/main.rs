@@ -2331,6 +2331,27 @@ fn cmd_clock(full: bool) -> Result<()> {
     Ok(())
 }
 
+/// The rmux session NAME this process runs inside, or None if not in rmux.
+/// Resolved by asking rmux to expand `#{session_name}` for our pane
+/// (`$RMUX_PANE`). `$RMUX` only carries `socket,server_pid,session_id` — never
+/// the name — so parsing it for a name silently fails; this is the correct way.
+fn current_session_name() -> Option<String> {
+    let pane = std::env::var("RMUX_PANE").ok().filter(|p| !p.is_empty())?;
+    let out = std::process::Command::new("rmux")
+        .args(["display-message", "-p", "-t", &pane, "#{session_name}"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 /// Remove junk rmux sessions — ones omega could not have created (their rmux
 /// name isn't its own sanitized slug). Dry-run unless `force`. The current
 /// session is always kept so this never kills the shell you're running it from.
@@ -2632,12 +2653,15 @@ async fn cmd_spawn_worker(
     let mgr = SessionManager::connect().await?;
 
     // The current rmux session IS the oracle when spawn-worker runs inside one.
-    // Capture it to register the worker under it + derive the project via the
-    // canonical parser (not an ad-hoc trailing-digit strip).
-    let oracle_session = std::env::var("RMUX")
-        .ok()
-        .and_then(|v| v.split(',').next().map(|s| s.to_string()))
-        .filter(|s| s.starts_with("oracle-"));
+    // Capture it to register the worker under it + derive the project.
+    //
+    // NOTE: $RMUX is "socket,server_pid,session_id" — it does NOT carry the
+    // session NAME, so the old `RMUX.split(',').next()` read the socket PATH and
+    // never matched "oracle-*". Result: the worker→oracle link was silently
+    // dropped for EVERY worker, so the menu could never nest workers under their
+    // oracle. Resolve the real name by asking rmux to expand #{session_name} for
+    // our pane ($RMUX_PANE).
+    let oracle_session = current_session_name().filter(|s| s.starts_with("oracle-"));
 
     let project_name = match project {
         Some(p) => Some(p.to_string()),
