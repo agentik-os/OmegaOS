@@ -628,11 +628,27 @@ pub fn split_message(text: &str, max_len: usize) -> Vec<String> {
                 current.clear();
             }
             if line.len() > max_len {
-                // Force-split very long lines
+                // Force-split very long lines. Slice on a UTF-8 CHAR boundary —
+                // a raw byte index at max_len would panic mid-codepoint (emoji,
+                // accents) and kill the whole bridge process.
                 let mut remaining = line;
                 while remaining.len() > max_len {
-                    chunks.push(remaining[..max_len].to_string());
-                    remaining = &remaining[max_len..];
+                    // Largest char-boundary <= max_len (always >= 1 for non-empty).
+                    let mut cut = max_len;
+                    while cut > 0 && !remaining.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    if cut == 0 {
+                        // A single char wider than max_len — take one whole char
+                        // rather than loop forever.
+                        cut = remaining
+                            .char_indices()
+                            .nth(1)
+                            .map(|(i, _)| i)
+                            .unwrap_or(remaining.len());
+                    }
+                    chunks.push(remaining[..cut].to_string());
+                    remaining = &remaining[cut..];
                 }
                 current.push_str(remaining);
             } else {
@@ -718,6 +734,20 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.len() <= 4096);
         }
+    }
+
+    #[test]
+    fn split_message_multibyte_no_panic() {
+        // A single long line of multi-byte chars (emoji = 4 bytes) whose
+        // force-split boundary lands mid-codepoint — used to panic and kill the
+        // bridge process. Must split on char boundaries and round-trip exactly.
+        let line = "🚀".repeat(2000); // 8000 bytes, no '\n'
+        let chunks = split_message(&line, 100);
+        assert!(chunks.len() > 1);
+        for chunk in &chunks {
+            assert!(chunk.len() <= 100);
+        }
+        assert_eq!(chunks.concat(), line, "split must be lossless");
     }
 
     #[test]
