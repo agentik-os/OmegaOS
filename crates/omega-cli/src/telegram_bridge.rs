@@ -26,6 +26,20 @@ use tokio::sync::Mutex;
 const API_BASE: &str = "https://api.telegram.org";
 const TELEGRAM_MAX_MSG_LEN: usize = 4096;
 
+/// Redact the bot token from an error's Display before logging. reqwest's
+/// Error embeds the full request URL — which for the Telegram API contains
+/// `/bot<TOKEN>/` — so logging a raw network error on a long-poll loop would
+/// leak the master credential into the logs on every transient failure. This
+/// replaces the token (and, defensively, the `/bot.../"` segment) with a marker.
+fn redact_token(err: &impl std::fmt::Display, token: &str) -> String {
+    let s = err.to_string();
+    if !token.is_empty() {
+        s.replace(token, "<redacted-token>")
+    } else {
+        s
+    }
+}
+
 // ── Telegram API types ──
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4198,7 +4212,7 @@ impl TelegramBotEngine {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "sendMessage failed");
+                    tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "sendMessage failed");
                 }
             }
         }
@@ -4230,7 +4244,7 @@ impl TelegramBotEngine {
                 }
             }
             Err(e) => {
-                tracing::warn!(error = %e, "sendMessage with keyboard failed");
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "sendMessage with keyboard failed");
                 Ok(None)
             }
         }
@@ -4646,7 +4660,7 @@ impl TelegramBotEngine {
         let resp = match self.client.post(&url).json(&body).send().await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, thread_id = thread_id, "deleteForumTopic network error");
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), thread_id = thread_id, "deleteForumTopic network error");
                 return false;
             }
         };
@@ -4799,7 +4813,7 @@ impl TelegramBotEngine {
         match self.client.post(&url).json(&body).send().await {
             Ok(_) => Ok(()),
             Err(e) => {
-                tracing::warn!(error = %e, "editMessageText failed");
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "editMessageText failed");
                 Ok(())
             }
         }
@@ -5044,7 +5058,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         let resp = match engine.client.get(&url).send().await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!(error = %e, "getUpdates failed");
+                tracing::warn!(error = %redact_token(&e, &cfg.bot_token), "getUpdates failed");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
@@ -5053,7 +5067,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         let updates: GetUpdatesResp = match resp.json().await {
             Ok(u) => u,
             Err(e) => {
-                tracing::warn!(error = %e, "getUpdates parse failed");
+                tracing::warn!(error = %redact_token(&e, &cfg.bot_token), "getUpdates parse failed");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
