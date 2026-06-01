@@ -61,9 +61,21 @@ impl AccountsMeta {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, json)
             .with_context(|| format!("writing {}", path.display()))?;
+        chmod_600(&path);
         Ok(())
     }
 }
+
+/// Secrets-at-rest: best-effort chmod 0600 on a credential/account file. These
+/// files hold OAuth refresh tokens; on a multi-user host they must not be
+/// group/world readable (the default umask 0002 leaves them 0664 otherwise).
+#[cfg(unix)]
+fn chmod_600(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+#[cfg(not(unix))]
+fn chmod_600(_path: &std::path::Path) {}
 
 /// High-level view of an account for the Telegram UI.
 #[derive(Debug, Clone, Serialize)]
@@ -267,6 +279,7 @@ pub fn switch_account(name: &str) -> SwitchResult {
     if creds_path.exists() {
         let backup = creds_path.with_extension("json.previous");
         let _ = std::fs::copy(&creds_path, &backup);
+        chmod_600(&backup);
     }
     if let Err(e) = std::fs::copy(&profile_path, &creds_path) {
         return SwitchResult {
@@ -278,6 +291,7 @@ pub fn switch_account(name: &str) -> SwitchResult {
             error: Some(format!("copy failed: {}", e)),
         };
     }
+    chmod_600(&creds_path);
 
     // Best-effort refresh via the bundled helper script (if present).
     let helper = dirs::home_dir()
@@ -308,6 +322,7 @@ pub fn switch_account(name: &str) -> SwitchResult {
         let backup = creds_path.with_extension("json.previous");
         if backup.exists() {
             let _ = std::fs::copy(&backup, &creds_path);
+            chmod_600(&creds_path);
         }
         return SwitchResult {
             ok: false,
@@ -322,6 +337,7 @@ pub fn switch_account(name: &str) -> SwitchResult {
     // Refresh succeeded — copy refreshed creds back to the profile and update
     // accounts-meta.active.
     let _ = std::fs::copy(&creds_path, &profile_path);
+    chmod_600(&profile_path);
     let mut meta_mut = meta;
     meta_mut.active = Some(name.to_string());
     let _ = meta_mut.save();
@@ -347,6 +363,7 @@ pub fn logout() -> Result<()> {
     let backup = creds_path.with_extension("json.previous");
     std::fs::copy(&creds_path, &backup)
         .with_context(|| format!("backing up {}", creds_path.display()))?;
+    chmod_600(&backup);
     std::fs::remove_file(&creds_path)
         .with_context(|| format!("removing {}", creds_path.display()))?;
     Ok(())

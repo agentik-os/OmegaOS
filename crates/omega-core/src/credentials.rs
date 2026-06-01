@@ -17,6 +17,19 @@ use std::path::{Path, PathBuf};
 
 use crate::providers::ProvidersConfig;
 
+/// Secrets-at-rest: chmod a file to 0600 (owner read/write only). No-op target
+/// must already exist. Called before the atomic rename on every credential write
+/// so a multi-user host never sees another user's OAuth tokens / API keys.
+#[cfg(unix)]
+fn chmod_600(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+}
+#[cfg(not(unix))]
+fn chmod_600(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Manager for ~/.omega/credentials/ — every provider's creds + saved accounts.
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -28,6 +41,14 @@ impl CredentialStore {
         let base = omega_dir().join("credentials");
         std::fs::create_dir_all(base.join("accounts"))
             .with_context(|| format!("creating {}", base.display()))?;
+        // The credentials tree holds OAuth tokens + API keys — owner-only (0700)
+        // so a multi-user host can't traverse into another user's secrets.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
+            let _ = std::fs::set_permissions(base.join("accounts"), std::fs::Permissions::from_mode(0o700));
+        }
         Ok(Self { base_dir: base })
     }
 
@@ -62,6 +83,9 @@ impl CredentialStore {
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(data)?;
         std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
+        // Secrets at rest: 0600 on the tmp BEFORE rename (rename adopts the tmp's
+        // mode, so chmod-after-rename would still leave a world-readable window).
+        chmod_600(&tmp).with_context(|| format!("chmod 600 {}", tmp.display()))?;
         std::fs::rename(&tmp, &path)
             .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
         Ok(())
@@ -109,6 +133,7 @@ impl CredentialStore {
         let tmp = to.with_extension("json.switching");
         std::fs::copy(&from, &tmp)
             .with_context(|| format!("copy {} -> {}", from.display(), tmp.display()))?;
+        chmod_600(&tmp).with_context(|| format!("chmod 600 {}", tmp.display()))?;
         std::fs::rename(&tmp, &to)
             .with_context(|| format!("rename {} -> {}", tmp.display(), to.display()))?;
         Ok(())
@@ -130,6 +155,7 @@ impl CredentialStore {
         }
         std::fs::copy(&from, &to)
             .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+        chmod_600(&to).with_context(|| format!("chmod 600 {}", to.display()))?;
         Ok(())
     }
 
@@ -265,6 +291,27 @@ mod tests {
             Some(v) => std::env::set_var("OMEGA_DIR", v),
             None => std::env::remove_var("OMEGA_DIR"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_writes_are_owner_only_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _env) = fresh_store(tmp.path());
+        // write() — the active-creds path
+        store.write("codex", &json!({"refresh_token": "sk-secret-xyz"})).unwrap();
+        let mode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "active creds must be 0600, got {:o}", mode & 0o777);
+        // save_as_account() — the saved-profile copy
+        store.save_as_account("codex", "work").unwrap();
+        let amode = std::fs::metadata(store.account_path("codex", "work")).unwrap().permissions().mode();
+        assert_eq!(amode & 0o077, 0, "saved account must be 0600, got {:o}", amode & 0o777);
+        // switch_account() — the copy-over-active path
+        store.write("codex", &json!({"refresh_token": "v2"})).unwrap();
+        store.switch_account("codex", "work").unwrap();
+        let smode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
+        assert_eq!(smode & 0o077, 0, "switched creds must be 0600, got {:o}", smode & 0o777);
     }
 
     fn fresh_store(tmp: &Path) -> (CredentialStore, MutexGuard<'static, ()>) {
