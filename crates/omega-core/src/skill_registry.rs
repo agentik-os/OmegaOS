@@ -228,12 +228,14 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
     let mut in_frontmatter = false;
     let mut frontmatter_seen = false;
 
-    for line in &lines {
-        let trimmed = line.trim();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
         if trimmed == "---" {
             if !frontmatter_seen {
                 in_frontmatter = true;
                 frontmatter_seen = true;
+                i += 1;
                 continue;
             } else {
                 break;
@@ -243,7 +245,39 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
         if in_frontmatter {
             if let Some((key, val)) = trimmed.split_once(':') {
                 let key = key.trim();
-                let val = val.trim().trim_matches('"').trim_matches('\'');
+                let raw = val.trim();
+                if raw == ">" || raw == "|" || raw == ">-" || raw == "|-" {
+                    // YAML block scalar: the value is the following more-indented
+                    // lines (a bare split_once(':') would yield just ">"). Gather
+                    // them until a line that is not indented more than the key.
+                    let mut block = String::new();
+                    let mut j = i + 1;
+                    while j < lines.len() {
+                        let l = lines[j];
+                        if l.trim() == "---" {
+                            break;
+                        }
+                        // Continuation lines are indented (space/tab); a new key at
+                        // column 0 ends the block.
+                        if !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') {
+                            break;
+                        }
+                        if !block.is_empty() {
+                            block.push(' ');
+                        }
+                        block.push_str(l.trim());
+                        j += 1;
+                    }
+                    let block = block.trim().to_string();
+                    match key {
+                        "name" => name = block,
+                        "description" => description = block,
+                        _ => {}
+                    }
+                    i = j;
+                    continue;
+                }
+                let val = raw.trim_matches('"').trim_matches('\'');
                 match key {
                     "name" => name = val.to_string(),
                     "description" => description = val.to_string(),
@@ -254,6 +288,7 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
                 }
             }
         }
+        i += 1;
     }
 
     // If no frontmatter, try to extract name from first heading
@@ -508,6 +543,29 @@ mod tests {
         assert_eq!(skill.description, "A test skill");
         assert_eq!(skill.phases, Some(10));
         assert_eq!(skill.max_score, Some(200));
+    }
+
+    #[test]
+    fn parse_skill_block_scalar_description() {
+        // `description: >` (YAML folded block scalar) used to yield ">" because
+        // split_once(':') took the bare indicator. Now the indented continuation
+        // lines are folded into the real description.
+        let dir = tempfile::tempdir().unwrap();
+        let skill_dir = dir.path().join("blocky");
+        fs::create_dir_all(&skill_dir).unwrap();
+        let skill_file = skill_dir.join("SKILL.md");
+        fs::write(
+            &skill_file,
+            "---\nname: blocky\ndescription: >\n  First line of the folded\n  description spanning two lines.\nphases: 5\n---\n# Body\n",
+        )
+        .unwrap();
+        let skill = parse_skill_file(&skill_file).unwrap();
+        assert_eq!(skill.name, "blocky");
+        assert_eq!(
+            skill.description,
+            "First line of the folded description spanning two lines."
+        );
+        assert_eq!(skill.phases, Some(5));
     }
 
     #[test]
