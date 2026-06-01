@@ -1870,8 +1870,21 @@ impl TelegramBotEngine {
                 ).await.ok();
             }
             "spawn" => {
-                // arg = "project|oracle_name"
-                let (project, oracle_name) = arg.split_once('|').unwrap_or((arg, ""));
+                // arg is a short token → resolve to the "project|oracle_name"
+                // payload stashed when the button was built (the raw names exceed
+                // Telegram's 64-byte callback_data cap, so we never embed them raw).
+                let payload = self.session_name_by_token.lock().await.get(arg).cloned();
+                let Some(payload) = payload else {
+                    // Stale token (bridge restarted) → re-show the project menu.
+                    self.send_html(
+                        chat_id,
+                        "That spawn button expired. Open the project again to refresh.",
+                    )
+                    .await
+                    .ok();
+                    return;
+                };
+                let (project, oracle_name) = payload.split_once('|').unwrap_or((&payload, ""));
                 if oracle_name.is_empty() {
                     return;
                 }
