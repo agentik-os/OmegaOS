@@ -109,6 +109,17 @@ if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools
 # + CDP/DevTools automation: install.sh must provision Playwright AND its Chromium
 # (Chromium ships the DevTools Protocol, so one install covers both).
 if grep -q "playwright install chromium" install.sh && grep -q "OMEGA_SKIP_BROWSER" install.sh; then ok "Playwright + Chromium (CDP/DevTools) provisioned by install.sh"; else bad "install.sh does not install Playwright/Chromium — browser audits would fail on a fresh box"; fi
+# Quality Arsenal audit SKILLS shipped + wired (the registry is 23 audits; the
+# skill dirs must match so a fresh install can actually run them — excludes the
+# 3 non-audit dirs _shared / audit-orchestrator / audit-tracker).
+N_AUDITS=$(ls -d skills/audits/*/ 2>/dev/null | grep -vE '/(_shared|audit-orchestrator|audit-tracker)/$' | wc -l)
+if [ "$N_AUDITS" -ge 23 ] && grep -q "skills/audits" install.sh; then ok "Quality Arsenal audit skills shipped + wired ($N_AUDITS)"; else bad "audit skills missing or not wired in install.sh ($N_AUDITS dirs, need >=23)"; fi
+# PDF generator shipped + wired (all branded PDF output depends on it).
+if [ -d tools/pdfgen ] && grep -q "tools/pdfgen" install.sh; then ok "pdfgen shipped + wired in install.sh"; else bad "pdfgen not shipped/wired in install.sh"; fi
+# OAuth fallback helper shipped + wired (non-interactive token refresh).
+if [ -f docs/reference/oauth/claude-oauth.sh ] && grep -q "claude-oauth.sh" install.sh; then ok "OAuth helper shipped + wired in install.sh"; else bad "oauth helper not shipped/wired in install.sh"; fi
+# Reference docs tree shipped + wired (`omega docs` + $HOME Claude sessions read it).
+if [ -d docs ] && [ -f docs/ARCHITECTURE.md ] && grep -q "OMEGA_SRC/docs" install.sh; then ok "reference docs shipped + wired in install.sh"; else bad "docs tree not shipped/wired in install.sh"; fi
 
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
 # The checks above grep install.sh for the right STRINGS; these prove the system
