@@ -708,39 +708,117 @@ impl TelegramBotEngine {
                 .send_html_reply(chat_id, &placeholder, Some(user_msg_id))
                 .await?
                 .unwrap_or(0);
-            let started_for_progress = std::time::Instant::now();
 
-            // Typing+progress ticker — fire-and-forget; aborts when this
-            // scope ends. Every 3s it (a) refreshes the "typing" bubble
-            // and (b) edits the placeholder with an updated progress bar
-            // showing elapsed time (Pack PROGRESS).
-            let ticker = {
+            // ── Streaming renderer (Chunk 2) ───────────────────────────────
+            // Replaces the fake elapsed-time progress bar with REAL assistant
+            // deltas. A dedicated task owns the placeholder and edits it with
+            // the answer AS IT COMPOSES, THROTTLED to stay under Telegram's
+            // ~1 edit/sec/message limit (we coalesce to ~1 edit / 700ms, and
+            // only when the text actually changed). tool_use/tool_result events
+            // append a collapsed trace line ("🔧 running Bash…"). The renderer
+            // also keeps the "typing" bubble warm. It ends when the event
+            // channel closes (sink dropped after the brain turn returns).
+            //
+            // We use the verbose-stream `assistant` events as the delta unit
+            // (whole text blocks per turn step — not token-level), which is
+            // already a live, multi-step view vs the old one-shot edit.
+            let (evt_tx, mut evt_rx) =
+                tokio::sync::mpsc::channel::<crate::claude_stream::StreamEvent>(256);
+            let renderer = {
                 let client = self.client.clone();
                 let token = self.cfg.bot_token.clone();
                 let cid = chat_id;
-                let agent_label_owned = agent_label.to_string();
                 let pid = placeholder_id;
+                let agent_label_owned = agent_label.to_string();
                 tokio::spawn(async move {
-                    loop {
-                        // 1. Typing bubble
-                        let url = format!("{}/bot{}/sendChatAction", API_BASE, token);
-                        let body = serde_json::json!({"chat_id": cid, "action": "typing"});
-                        let _ = client.post(&url).json(&body).send().await;
-                        // 2. Live progress edit (only if we own a placeholder)
-                        if pid != 0 {
-                            let elapsed = started_for_progress.elapsed().as_secs_f32();
-                            let text = formatting::thinking_progress(&agent_label_owned, elapsed);
-                            let edit_url = format!("{}/bot{}/editMessageText", API_BASE, token);
-                            let edit_body = serde_json::json!({
+                    const EDIT_THROTTLE: std::time::Duration =
+                        std::time::Duration::from_millis(700);
+                    let mut answer = String::new();
+                    let mut tool_trace: Vec<String> = Vec::new();
+                    let mut last_edit = std::time::Instant::now()
+                        - std::time::Duration::from_secs(10);
+                    let mut last_rendered = String::new();
+                    let mut last_typing = std::time::Instant::now()
+                        - std::time::Duration::from_secs(10);
+
+                    // Render the in-flight view: streamed answer so far + an
+                    // optional collapsed tool-trace tail. Kept intentionally
+                    // light (no smart_wrap) — the FINAL message is the wrapped
+                    // one; this is the live preview.
+                    let compose = |answer: &str, trace: &[String]| -> String {
+                        let head =
+                            format!("Ω  <b>{}</b>\n{}\n", formatting::escape_html(&agent_label_owned), "─".repeat(20));
+                        let body = if answer.is_empty() {
+                            "<i>thinking…</i>".to_string()
+                        } else {
+                            formatting::smart_markdown_to_html(answer)
+                        };
+                        let trace_line = if trace.is_empty() {
+                            String::new()
+                        } else {
+                            let last = trace.last().cloned().unwrap_or_default();
+                            format!("\n\n<blockquote expandable><i>{}</i></blockquote>", formatting::escape_html(&last))
+                        };
+                        format!("{}<blockquote>{}</blockquote>{}", head, body, trace_line)
+                    };
+
+                    let do_edit = |client: &reqwest::Client,
+                                   token: &str,
+                                   text: String| {
+                        let url = format!("{}/bot{}/editMessageText", API_BASE, token);
+                        let client = client.clone();
+                        async move {
+                            let body = serde_json::json!({
                                 "chat_id": cid,
                                 "message_id": pid,
                                 "text": text,
                                 "parse_mode": "HTML",
                             });
-                            let _ = client.post(&edit_url).json(&edit_body).send().await;
+                            let _ = client.post(&url).json(&body).send().await;
                         }
-                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    };
+
+                    while let Some(evt) = evt_rx.recv().await {
+                        match evt {
+                            crate::claude_stream::StreamEvent::AssistantText(s) => {
+                                if !answer.is_empty() {
+                                    answer.push_str("\n\n");
+                                }
+                                answer.push_str(&s);
+                            }
+                            crate::claude_stream::StreamEvent::ToolUse { name } => {
+                                tool_trace.push(format!("🔧 running {}…", name));
+                            }
+                            crate::claude_stream::StreamEvent::ToolResult => {
+                                tool_trace.push("✓ tool returned".to_string());
+                            }
+                        }
+
+                        // Keep the typing bubble warm (cheap, no rate cost).
+                        if pid != 0
+                            && last_typing.elapsed() >= std::time::Duration::from_secs(4)
+                        {
+                            let url =
+                                format!("{}/bot{}/sendChatAction", API_BASE, token);
+                            let body = serde_json::json!({"chat_id": cid, "action": "typing"});
+                            let _ = client.post(&url).json(&body).send().await;
+                            last_typing = std::time::Instant::now();
+                        }
+
+                        // Throttled placeholder edit: at most 1 / EDIT_THROTTLE,
+                        // and only when the rendered text actually changed.
+                        if pid != 0 && last_edit.elapsed() >= EDIT_THROTTLE {
+                            let rendered = compose(&answer, &tool_trace);
+                            if rendered != last_rendered {
+                                do_edit(&client, &token, rendered.clone()).await;
+                                last_rendered = rendered;
+                                last_edit = std::time::Instant::now();
+                            }
+                        }
                     }
+                    // Channel closed (turn finished). The MAIN task renders the
+                    // final wrapped message; the renderer simply stops here so it
+                    // doesn't race the final edit.
                 })
             };
 
@@ -766,15 +844,22 @@ impl TelegramBotEngine {
             // (display-only) so the user can WATCH the conversation live
             // in the TUI. The mirror is best-effort and never blocks the
             // Telegram response.
-            let result: std::result::Result<String, String> = if provider == "claude"
-                || provider.is_empty()
+            // `BrainOutcome` (Chunk 2) carries the final text AND a classified
+            // `is_error` flag so a raw CLI error (session-limit, auth-expiry) is
+            // rendered as an error card, never delivered as the answer body.
+            let result: std::result::Result<crate::claude_stream::BrainOutcome, String> =
+                if provider == "claude" || provider.is_empty()
             {
-                // Enqueue onto the FIFO brain actor (Chunk 1). `try_send` never
-                // blocks; if the bounded queue is full we surface a "queued…"
-                // backpressure note on the placeholder, then WAIT for a slot so
-                // the message is never dropped.
-                match self.claude_stream.ask(&final_prompt, chat_id, user_msg_id).await {
-                    Ok(body) => Ok(body),
+                // Enqueue onto the FIFO brain actor (Chunk 1), STREAMING (Chunk 2):
+                // the renderer task edits the placeholder with real deltas via
+                // `evt_tx`. `try_send` never blocks; full queue → "queued…" note
+                // then WAIT for a slot so the message is never dropped.
+                match self
+                    .claude_stream
+                    .ask_streaming(&final_prompt, chat_id, user_msg_id, evt_tx.clone())
+                    .await
+                {
+                    Ok(outcome) => Ok(outcome),
                     Err(e) if e.downcast_ref::<crate::claude_stream::BrainQueueFull>().is_some() => {
                         if placeholder_id != 0 {
                             let _ = self
@@ -788,7 +873,12 @@ impl TelegramBotEngine {
                                 .await;
                         }
                         self.claude_stream
-                            .ask_waiting(&final_prompt, chat_id, user_msg_id)
+                            .ask_streaming_waiting(
+                                &final_prompt,
+                                chat_id,
+                                user_msg_id,
+                                evt_tx.clone(),
+                            )
                             .await
                             .map_err(|e| e.to_string())
                     }
@@ -796,7 +886,7 @@ impl TelegramBotEngine {
                 }
             } else {
                 // Non-Claude providers (Gemini/Codex/GLM/Pi) still use the
-                // one-shot CLI path.
+                // one-shot CLI path (no streaming). Wrap as a content outcome.
                 let prompt = final_prompt.clone();
                 let p = provider.clone();
                 let m = model.clone();
@@ -804,17 +894,54 @@ impl TelegramBotEngine {
                     .await
                     .map_err(|e| e.to_string())
                     .and_then(|r| r.map_err(|e| e.to_string()))
-                    .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                    .map(|out| crate::claude_stream::BrainOutcome {
+                        text: String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                        is_error: false,
+                    })
             };
 
-            ticker.abort();
+            // Close the event sink so the renderer task drains its last events
+            // and stops — the MAIN task now owns the FINAL (wrapped) edit, so we
+            // must not let the renderer race it.
+            drop(evt_tx);
+            let _ = renderer.await;
             let duration = started.elapsed().as_secs_f32();
 
             // Format + deliver. The user's original message is quoted
             // at the top of the bot's response (Pack QUOTE) so the chat
             // stays self-documenting when the user scrolls back.
             match result {
-                Ok(body) if !body.is_empty() => {
+                // Chunk 2: a CLASSIFIED CLI-error (session-limit, auth-expiry,
+                // overloaded) must render as an ERROR CARD, never as the answer
+                // body — today the raw `You've hit your session limit` string is
+                // delivered verbatim as the reply. Caught here BEFORE the content
+                // arm so the error text never reaches the answer path.
+                Ok(outcome) if outcome.is_error => {
+                    let body = if outcome.text.trim().is_empty() {
+                        "The model session returned an error (no detail).".to_string()
+                    } else {
+                        outcome.text.clone()
+                    };
+                    let err_html = formatting::smart_wrap_response(
+                        agent_label,
+                        &body,
+                        duration,
+                        &model_label,
+                        user_id,
+                        user_name.as_deref(),
+                        Some(text),
+                        formatting::ResponseTier::Error,
+                    );
+                    if placeholder_id != 0 {
+                        let _ = self.edit_message_html(chat_id, placeholder_id, &err_html).await;
+                    } else {
+                        let _ = self
+                            .send_html_reply(chat_id, &err_html, Some(user_msg_id))
+                            .await;
+                    }
+                }
+                Ok(outcome) if !outcome.text.is_empty() => {
+                    let body = outcome.text;
                     // OmegaTrace — append this turn to today's trajectory
                     // JSONL. Fire-and-forget; never blocks the response.
                     {

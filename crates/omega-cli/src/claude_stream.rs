@@ -20,6 +20,90 @@ pub struct PersistentClaude {
     stdout: BufReader<ChildStdout>,
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Streaming protocol (Chunk 2) — events yielded AS THEY ARRIVE.
+//
+// `PersistentClaude` historically `ask()`'d in a block: loop to the `result`
+// event, return one `String`. Chunk 2 adds an event-yielding path so the
+// Telegram bridge can edit the placeholder with REAL assistant text as the
+// turn composes (fixes N12/N13 on the master path) instead of a fake progress
+// bar, and so the FINAL result is CLASSIFIED (content vs CLI-error like the
+// `You've hit your session limit` string) before delivery.
+//
+// In `--output-format=stream-json --verbose`, the CLI emits one JSON object
+// per line. The relevant shapes:
+//   {"type":"assistant","message":{"content":[{"type":"text","text":"…"},
+//                                              {"type":"tool_use","name":"Bash",…}]}}
+//   {"type":"user","message":{"content":[{"type":"tool_result",…}]}}   (tool output)
+//   {"type":"result","subtype":"success"|"error_…","is_error":bool,"result":"…"}
+// Assistant events carry WHOLE content blocks (not token deltas) in this mode,
+// so the natural streaming granularity is per assistant text block / tool call
+// — already vastly better than one block at the very end for multi-step turns.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// One streamed event from a brain turn, delivered to the bridge as it arrives.
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// An assistant text block (the visible answer prose, possibly partial when
+    /// the turn is multi-step). The bridge accumulates these into the placeholder.
+    AssistantText(String),
+    /// The model invoked a tool (e.g. `Bash`, `Read`). Surfaced as an optional
+    /// collapsed trace line ("🔧 running Bash…").
+    ToolUse { name: String },
+    /// A tool returned. Surfaced as an optional collapsed trace line.
+    ToolResult,
+}
+
+/// Final outcome of a brain turn, classified. `is_error` true means the CLI
+/// surfaced an error (session-limit, auth-expiry, transport failure) — the
+/// bridge MUST render it as an error card, NOT as the answer body.
+#[derive(Debug, Clone)]
+pub struct BrainOutcome {
+    /// The final result text (answer body, or the error message when `is_error`).
+    pub text: String,
+    /// True when the `result` event was an error, OR the text matches a known
+    /// CLI-error signature even on a "success" subtype.
+    pub is_error: bool,
+}
+
+/// Classify a `result` event: an explicit `is_error`/error subtype is an error;
+/// a "success" subtype whose body still matches a known CLI-error signature
+/// (the model never produced an answer, the CLI surfaced its own failure
+/// string verbatim — e.g. `You've hit your session limit`) is ALSO an error.
+/// Returning a clean classification here is the whole point: today that raw
+/// string is delivered as the reply.
+pub fn classify_result(is_error_flag: bool, subtype: &str, result_text: &str) -> BrainOutcome {
+    let subtype_is_error = subtype.starts_with("error");
+    let signature_is_error = looks_like_cli_error(result_text);
+    BrainOutcome {
+        text: result_text.to_string(),
+        is_error: is_error_flag || subtype_is_error || signature_is_error,
+    }
+}
+
+/// Known CLI-error signatures that some claude builds emit on stdout as a
+/// `result` body even with a non-error subtype. Case-insensitive substring
+/// match — deliberately conservative (only unambiguous CLI failures) so a
+/// genuine answer that merely mentions one of these phrases isn't misflagged:
+/// we anchor on the CLI's own phrasing, not the topic.
+fn looks_like_cli_error(text: &str) -> bool {
+    let t = text.to_lowercase();
+    const SIGNATURES: &[&str] = &[
+        "you've hit your session limit",
+        "you have hit your session limit",
+        "session limit reached",
+        "credit balance is too low",
+        "please run /login",
+        "invalid api key",
+        "authentication_error",
+        "oauth token has expired",
+        "your authentication token has expired",
+        "rate limit exceeded",
+        "overloaded_error",
+    ];
+    SIGNATURES.iter().any(|s| t.contains(s))
+}
+
 impl PersistentClaude {
     /// Spawn the persistent claude subprocess as the AISB Master:
     /// - cwd = $HOME (full system access, not scoped to any project)
@@ -135,6 +219,118 @@ impl PersistentClaude {
             }
         }
     }
+
+    /// Streaming counterpart of `ask` (Chunk 2). Sends the prompt, then reads
+    /// events and FORWARDS them to `sink` as they arrive (assistant text blocks,
+    /// tool_use/tool_result), until the `result` event — which is CLASSIFIED and
+    /// returned as a `BrainOutcome`. Preserves the same 120s per-event timeout +
+    /// recoverable-error semantics as `ask` (so the caller can drop the corpse
+    /// and respawn). `sink` send errors are ignored — a dropped consumer (chat
+    /// went away) must not abort the turn.
+    pub async fn ask_streaming(
+        &mut self,
+        prompt: &str,
+        sink: &mpsc::Sender<StreamEvent>,
+    ) -> Result<BrainOutcome> {
+        let msg = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": prompt }
+        });
+        let mut line = serde_json::to_string(&msg)?;
+        line.push('\n');
+        self.stdin.write_all(line.as_bytes()).await?;
+        self.stdin.flush().await?;
+
+        loop {
+            let mut buf = String::new();
+            let n = match tokio::time::timeout(
+                std::time::Duration::from_secs(120),
+                self.stdout.read_line(&mut buf),
+            )
+            .await
+            {
+                Ok(r) => r?,
+                Err(_) => anyhow::bail!("claude subprocess timed out (no event in 120s)"),
+            };
+            if n == 0 {
+                anyhow::bail!("claude subprocess closed stdout");
+            }
+            let val: serde_json::Value = match serde_json::from_str(&buf) {
+                Ok(v) => v,
+                Err(_) => continue, // skip non-JSON lines
+            };
+            let t = val.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match t {
+                "assistant" => {
+                    // Forward each content block: text → AssistantText,
+                    // tool_use → ToolUse trace.
+                    if let Some(content) = val
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        for block in content {
+                            let bt = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                            match bt {
+                                "text" => {
+                                    if let Some(s) =
+                                        block.get("text").and_then(|v| v.as_str())
+                                    {
+                                        if !s.is_empty() {
+                                            let _ = sink
+                                                .send(StreamEvent::AssistantText(
+                                                    s.to_string(),
+                                                ))
+                                                .await;
+                                        }
+                                    }
+                                }
+                                "tool_use" => {
+                                    let name = block
+                                        .get("name")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("tool")
+                                        .to_string();
+                                    let _ = sink
+                                        .send(StreamEvent::ToolUse { name })
+                                        .await;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                "user" => {
+                    // tool_result lines come back as a `user` event whose content
+                    // carries `tool_result` blocks — surface a collapsed trace.
+                    if let Some(content) = val
+                        .get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        if content.iter().any(|b| {
+                            b.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+                        }) {
+                            let _ = sink.send(StreamEvent::ToolResult).await;
+                        }
+                    }
+                }
+                "result" => {
+                    let is_error_flag =
+                        val.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let subtype =
+                        val.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                    let result_text = val
+                        .get("result")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    return Ok(classify_result(is_error_flag, subtype, &result_text));
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Shared handle: lazy init on first use, kept alive for the bridge lifetime.
@@ -193,6 +389,45 @@ impl ClaudeStreamHandle {
         }
         Err(last_err.unwrap_or_else(|| anyhow::anyhow!("claude brain unavailable")))
     }
+
+    /// Streaming counterpart of `ask` (Chunk 2). Same lazy-spawn + self-heal
+    /// (respawn-and-retry-once) contract; forwards `StreamEvent`s to `sink` and
+    /// returns the classified `BrainOutcome`. The death-of-subprocess case
+    /// surfaces on the first stdin write (broken pipe) BEFORE any event reaches
+    /// `sink`, so the retry never double-emits partial text.
+    pub async fn ask_streaming(
+        &self,
+        prompt: &str,
+        sink: &mpsc::Sender<StreamEvent>,
+    ) -> Result<BrainOutcome> {
+        let mut guard = self.inner.lock().await;
+        let mut last_err: Option<anyhow::Error> = None;
+        for attempt in 0..2 {
+            if guard.is_none() {
+                match PersistentClaude::spawn(self.config_dir.clone()).await {
+                    Ok(c) => *guard = Some(c),
+                    Err(e) => {
+                        last_err = Some(e);
+                        continue;
+                    }
+                }
+            }
+            let claude = guard.as_mut().unwrap();
+            match claude.ask_streaming(prompt, sink).await {
+                Ok(outcome) => return Ok(outcome),
+                Err(e) => {
+                    *guard = None;
+                    last_err = Some(e);
+                    if attempt == 0 {
+                        tracing::warn!(
+                            "claude brain subprocess died (streaming) — respawning and retrying"
+                        );
+                    }
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("claude brain unavailable")))
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -226,8 +461,11 @@ struct BrainRequest {
     msg_id: i64,
     /// When the request was enqueued (loop side) — for the enqueue→start gap.
     enqueued_at: std::time::Instant,
-    /// Result is sent back to the originating chat's handler task.
-    reply_tx: oneshot::Sender<Result<String>>,
+    /// When `Some`, the consumer streams `StreamEvent`s here as the turn
+    /// composes (Chunk 2). When `None`, it uses the block-return path.
+    stream_sink: Option<mpsc::Sender<StreamEvent>>,
+    /// Classified outcome is sent back to the originating chat's handler task.
+    reply_tx: oneshot::Sender<Result<BrainOutcome>>,
 }
 
 /// Error returned when the bounded brain queue is full. The handler should edit
@@ -273,6 +511,7 @@ impl BrainActor {
                     chat_id,
                     msg_id,
                     enqueued_at,
+                    stream_sink,
                     reply_tx,
                 } = req;
                 // Chunk 0: brain-start (consumer dequeued + about to acquire the
@@ -287,14 +526,25 @@ impl BrainActor {
                     "brain turn start (dequeued)"
                 );
                 let started = std::time::Instant::now();
-                let result = consumer_handle.ask(&prompt).await;
+                let result: Result<BrainOutcome> = match &stream_sink {
+                    Some(sink) => consumer_handle.ask_streaming(&prompt, sink).await,
+                    None => consumer_handle
+                        .ask(&prompt)
+                        .await
+                        // Non-streaming callers don't classify; treat as content.
+                        .map(|text| BrainOutcome {
+                            text,
+                            is_error: false,
+                        }),
+                };
                 let elapsed_ms = started.elapsed().as_millis();
                 match &result {
-                    Ok(body) => tracing::info!(
+                    Ok(outcome) => tracing::info!(
                         chat_id,
                         msg_id,
                         elapsed_ms,
-                        len = body.len(),
+                        len = outcome.text.len(),
+                        is_error = outcome.is_error,
                         "brain turn done"
                     ),
                     Err(e) => tracing::warn!(
@@ -317,7 +567,37 @@ impl BrainActor {
     /// Enqueue a brain turn and await its result. Returns `BrainQueueFull` (via
     /// `try_send`) WITHOUT blocking the caller when the bounded queue is full,
     /// so the handler can show a "queued…" note instead of dropping the message.
+    /// Block-return enqueue (no streaming). Kept per the Chunk-2 brief as a
+    /// helper for non-streaming callers; the brain turn itself now streams.
+    #[allow(dead_code)]
     pub async fn ask(&self, prompt: &str, chat_id: i64, msg_id: i64) -> Result<String> {
+        self.ask_outcome(prompt, chat_id, msg_id, None)
+            .await
+            .map(|o| o.text)
+    }
+
+    /// Streaming enqueue (Chunk 2): hand the consumer a `StreamEvent` sink so the
+    /// caller watches the answer compose, and get back the CLASSIFIED outcome
+    /// (so a CLI-error result renders as an error card, not the answer body).
+    /// `try_send` semantics identical to `ask` — full queue → `BrainQueueFull`.
+    pub async fn ask_streaming(
+        &self,
+        prompt: &str,
+        chat_id: i64,
+        msg_id: i64,
+        sink: mpsc::Sender<StreamEvent>,
+    ) -> Result<BrainOutcome> {
+        self.ask_outcome(prompt, chat_id, msg_id, Some(sink)).await
+    }
+
+    /// Shared try_send enqueue used by both `ask` (no sink) and `ask_streaming`.
+    async fn ask_outcome(
+        &self,
+        prompt: &str,
+        chat_id: i64,
+        msg_id: i64,
+        stream_sink: Option<mpsc::Sender<StreamEvent>>,
+    ) -> Result<BrainOutcome> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let enqueued_at = std::time::Instant::now();
         // Chunk 0: enqueue time, keyed by chat. This lands instantly even when a
@@ -328,6 +608,7 @@ impl BrainActor {
             chat_id,
             msg_id,
             enqueued_at,
+            stream_sink,
             reply_tx,
         };
         // try_send → never blocks the loop/handler; full = explicit backpressure.
@@ -349,7 +630,38 @@ impl BrainActor {
     /// (`send().await` applies backpressure instead of erroring). The handler
     /// uses this after showing a "queued…" note so a burst message is never
     /// dropped — it just waits its turn behind the FIFO.
+    /// Block-return + backpressure-waiting enqueue (no streaming). Kept per the
+    /// Chunk-2 brief as a helper for non-streaming callers.
+    #[allow(dead_code)]
     pub async fn ask_waiting(&self, prompt: &str, chat_id: i64, msg_id: i64) -> Result<String> {
+        self.ask_outcome_waiting(prompt, chat_id, msg_id, None)
+            .await
+            .map(|o| o.text)
+    }
+
+    /// Streaming + backpressure-waiting enqueue (Chunk 2). Combines
+    /// `ask_streaming` (event sink + classified outcome) with `ask_waiting`'s
+    /// `send().await` so a burst message waits its FIFO turn instead of being
+    /// dropped when the bounded queue is full.
+    pub async fn ask_streaming_waiting(
+        &self,
+        prompt: &str,
+        chat_id: i64,
+        msg_id: i64,
+        sink: mpsc::Sender<StreamEvent>,
+    ) -> Result<BrainOutcome> {
+        self.ask_outcome_waiting(prompt, chat_id, msg_id, Some(sink))
+            .await
+    }
+
+    /// Shared `send().await` enqueue used by both waiting variants.
+    async fn ask_outcome_waiting(
+        &self,
+        prompt: &str,
+        chat_id: i64,
+        msg_id: i64,
+        stream_sink: Option<mpsc::Sender<StreamEvent>>,
+    ) -> Result<BrainOutcome> {
         let (reply_tx, reply_rx) = oneshot::channel();
         let enqueued_at = std::time::Instant::now();
         tracing::info!(chat_id, msg_id, "brain turn enqueued (waiting for slot)");
@@ -358,6 +670,7 @@ impl BrainActor {
             chat_id,
             msg_id,
             enqueued_at,
+            stream_sink,
             reply_tx,
         };
         self.tx
@@ -395,7 +708,10 @@ mod tests {
             while let Some(req) = rx.recv().await {
                 // Record arrival order, then answer with the prompt echoed.
                 order_c.lock().await.push(req.msg_id);
-                let _ = req.reply_tx.send(Ok(req.prompt.clone()));
+                let _ = req.reply_tx.send(Ok(BrainOutcome {
+                    text: req.prompt.clone(),
+                    is_error: false,
+                }));
             }
         });
 
@@ -408,6 +724,7 @@ mod tests {
                 chat_id: 100,
                 msg_id: i,
                 enqueued_at: std::time::Instant::now(),
+                stream_sink: None,
                 reply_tx,
             })
             .expect("queue not full");
@@ -415,10 +732,32 @@ mod tests {
         }
         drop(tx); // let the consumer finish
         for (i, reply_rx) in rxs {
-            let body = reply_rx.await.expect("reply").expect("ok");
-            assert_eq!(body, format!("msg-{i}"));
+            let outcome = reply_rx.await.expect("reply").expect("ok");
+            assert_eq!(outcome.text, format!("msg-{i}"));
         }
         consumer.await.unwrap();
         assert_eq!(*order.lock().await, vec![1, 2, 3], "FIFO order violated");
+    }
+
+    /// classify_result: explicit error flag, error subtype, and known CLI-error
+    /// signatures all classify as errors; a normal success body does not — and a
+    /// genuine answer that merely discusses limits isn't misflagged.
+    #[test]
+    fn classify_result_flags_cli_errors() {
+        assert!(classify_result(true, "success", "anything").is_error);
+        assert!(classify_result(false, "error_max_turns", "x").is_error);
+        assert!(
+            classify_result(false, "success", "You've hit your session limit · resets 2:30am")
+                .is_error
+        );
+        assert!(classify_result(false, "success", "Invalid API key · please run /login").is_error);
+        let ok = classify_result(false, "success", "Here is the answer you asked for.");
+        assert!(!ok.is_error);
+        assert_eq!(ok.text, "Here is the answer you asked for.");
+        // Topic mention without the CLI's own phrasing is NOT misflagged.
+        assert!(
+            !classify_result(false, "success", "Your plan has a generous usage allowance.")
+                .is_error
+        );
     }
 }
