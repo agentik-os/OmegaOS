@@ -34,6 +34,25 @@ if grep -q "omega-\*.md" install.sh; then ok "omega-* slash commands installed";
 # 4. Full-scrollback retention persisted in the sourced rmux config.
 if grep -q "history-limit" config/rmux.conf.omega 2>/dev/null; then ok "rmux history-limit persisted"; else bad "history-limit missing from rmux.conf.omega"; fi
 
+# 4b. Alt+Up/Down scroll bindings use the quoted-string if-shell form. rmux 0.3.1
+#     rejects the brace `{ … }` command-list form ("bind-key does not accept a
+#     parsed command-list argument") and silently drops the binding — so scroll
+#     never works on a fresh install. Guard against the brace form regressing.
+if grep -qE "bind-key -n M-Up .*\{ *send-keys" config/rmux.conf.omega 2>/dev/null; then
+  bad "rmux Alt+Up uses brace syntax rmux 0.3.1 rejects (use quoted if-shell args)"
+elif grep -qE "bind-key -n M-Up +if-shell .*'send-keys -X scroll-up'" config/rmux.conf.omega 2>/dev/null; then
+  ok "rmux scroll bindings use rmux-0.3-compatible quoted syntax"
+else
+  bad "rmux Alt+Up/Down scroll bindings missing from rmux.conf.omega"
+fi
+
+# 4c. Status-bar clock is localized via `omega clock` (not the rmux server's
+#     UTC strftime), so the bar shows the operator's wall time on a headless VPS.
+if grep -q "omega clock" config/rmux.conf.omega 2>/dev/null; then ok "rmux status clock localized via omega clock"; else bad "rmux status clock not wired to omega clock"; fi
+
+# 4d. timezone knob documented for the operator in the shipped config template.
+if grep -q "^# timezone" config/default.toml 2>/dev/null; then ok "timezone config documented in default.toml"; else bad "timezone knob missing from default.toml"; fi
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 

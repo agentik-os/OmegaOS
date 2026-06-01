@@ -25,6 +25,12 @@ pub struct OmegaConfig {
     pub auto_spawn_master: bool,
     #[serde(default = "default_auto_naming")]
     pub auto_naming: bool,
+    /// IANA timezone for the on-screen clock (e.g. "Europe/Paris", "America/New_York").
+    /// Persisted timestamps stay UTC — this localizes ONLY the displayed clock,
+    /// because a headless VPS runs in UTC and the operator usually does not.
+    /// `None`/empty → fall back to `$TZ`, then the system local zone.
+    #[serde(default)]
+    pub timezone: Option<String>,
     pub telegram: Option<TelegramConfig>,
 }
 
@@ -117,6 +123,7 @@ impl Default for OmegaConfig {
             aisb_agent: default_aisb_agent(),
             auto_spawn_master: default_auto_master(),
             auto_naming: default_auto_naming(),
+            timezone: None,
             telegram: None,
         }
     }

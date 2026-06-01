@@ -84,6 +84,15 @@ enum Commands {
     /// List supported agents and their availability
     Agents,
 
+    /// Print the localized wall-clock for the rmux status bar. Honors the
+    /// `timezone` config field (falls back to $TZ, then system local). One
+    /// source of truth shared with the TUI clock — see omega_core::clock.
+    Clock {
+        /// Append the date → "HH:MM DD-Mon-YY"
+        #[arg(long)]
+        full: bool,
+    },
+
     /// Auto-discover projects on this machine (walks $HOME)
     Projects,
 
@@ -450,6 +459,7 @@ async fn main() -> Result<()> {
             cmd_new_project(&name, &stack, &category, &group, resume, from.as_deref(), skip.as_deref(), budget, build, dry_run).await
         }
         Some(Commands::Agents) => cmd_agents(),
+        Some(Commands::Clock { full }) => cmd_clock(full),
         Some(Commands::Projects) => cmd_projects(),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
@@ -2295,6 +2305,18 @@ async fn cmd_master() -> Result<()> {
     if !status.success() {
         anyhow::bail!("Failed to attach to Master AISB");
     }
+    Ok(())
+}
+
+/// Print the display clock (rmux status bar calls this every status-interval).
+/// Single source of truth with the TUI clock: both read `config.timezone`.
+/// Always exits 0 with a sane string so a config error never breaks the bar.
+fn cmd_clock(full: bool) -> Result<()> {
+    let tz = omega_core::config::OmegaConfig::load()
+        .ok()
+        .and_then(|c| c.timezone);
+    let fmt = if full { "%H:%M %d-%b-%y" } else { "%H:%M" };
+    println!("{}", omega_core::clock::now_fmt(tz.as_deref(), fmt));
     Ok(())
 }
 

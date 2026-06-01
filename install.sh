@@ -230,6 +230,16 @@ else
     ok "Config already exists: $OMEGA_DIR/config.toml"
 fi
 
+# Clock timezone hint. The on-screen clock follows the system zone by default;
+# a headless VPS is usually UTC, so the operator (elsewhere) sees a wrong wall
+# time. We can't auto-detect where the human is — just flag it and show the knob.
+SYS_TZ="$( (timedatectl show -p Timezone --value 2>/dev/null) || cat /etc/timezone 2>/dev/null || echo "${TZ:-}" )"
+if [[ -z "$SYS_TZ" || "$SYS_TZ" == "Etc/UTC" || "$SYS_TZ" == "UTC" ]]; then
+    info "Clock is UTC. For your wall time, set 'timezone = \"Europe/Paris\"' (your IANA zone) in $OMEGA_DIR/config.toml"
+else
+    ok "Clock follows system timezone: $SYS_TZ (override with 'timezone =' in config.toml)"
+fi
+
 # Install agent templates (Master AISB system prompt + the 13 agent prompts)
 AGENTS_DIR="$OMEGA_DIR/agents"
 mkdir -p "$AGENTS_DIR/aisb"

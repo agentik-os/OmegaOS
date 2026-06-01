@@ -2738,8 +2738,10 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     // the real "before the hard stop" signal. None until the first check.
     let usage = omega_core::monitor::UsageSnapshot::read().ok().flatten();
 
-    let now = chrono::Local::now();
-    let time_str = now.format("%H:%M").to_string();
+    // Localized to `config.timezone` (IANA) so the headless-VPS UTC clock shows
+    // the operator's wall time; falls back to $TZ, then system local. See
+    // omega_core::clock.
+    let time_str = omega_core::clock::hm(app.config.timezone.as_deref());
 
     let session_info = app
         .selected_session()

@@ -10,6 +10,7 @@ pub mod backup;
 pub mod bootstrap;
 pub mod budget;
 pub mod cleanup;
+pub mod clock;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;

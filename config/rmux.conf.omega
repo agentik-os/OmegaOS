@@ -12,6 +12,15 @@
 # fallback for daemons that began before this config was sourced).
 set-option -g history-limit 100000
 
+# Localized status-bar clock. rmux's built-in `%H:%M` strftime uses the rmux
+# SERVER's timezone, which is UTC on a headless VPS — so the clock reads hours
+# off from the operator's wall time. Instead, render it via `omega clock`, which
+# honors the `timezone` field in ~/.omega/config.toml (one source of truth,
+# shared with the TUI clock). Refreshed every status-interval; falls back to
+# the system `date` if the omega binary isn't on the server's PATH.
+set-option -g status-interval 15
+set-option -g status-right "\"#{=21:pane_title}\" #(omega clock --full 2>/dev/null || date '+%H:%M %d-%b-%y')"
+
 # Option/Alt + Up/Down — scroll the pane's scrollback by one line (the
 # tmux-default user UX). If the pane is already in copy/view-mode, just
 # scroll. Otherwise, enter copy-mode with -e (auto-exits when you scroll
@@ -26,8 +35,13 @@ set-option -g history-limit 100000
 #
 # Mobile (Termius without rmux on top) is unaffected — rmux is not in the
 # pipeline there, so PageUp/Down super-scroll keeps working unchanged.
-bind-key -n M-Up   if-shell -F '#{pane_in_mode}' { send-keys -X scroll-up }   { copy-mode -e ; send-keys -X scroll-up }
-bind-key -n M-Down if-shell -F '#{pane_in_mode}' { send-keys -X scroll-down } { copy-mode -e ; send-keys -X scroll-down }
+#
+# NOTE: quoted-string if-shell form (cmd-true / cmd-false as quoted args), NOT
+# the brace `{ … }` command-list form — rmux 0.3.1 rejects braces here with
+# "bind-key does not accept a parsed command-list argument", which silently
+# drops the binding so Alt+Up/Down scroll never works on a fresh install.
+bind-key -n M-Up   if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-up'   'copy-mode -e ; send-keys -X scroll-up'
+bind-key -n M-Down if-shell -F '#{pane_in_mode}' 'send-keys -X scroll-down' 'copy-mode -e ; send-keys -X scroll-down'
 
 # Option+Z / Alt+Z → OmegaOS session manager popup (full-screen)
 bind-key -n M-z display-popup -E -w 100% -h 100% "omega menu"

@@ -16,6 +16,12 @@
 # auto_spawn_master = true
 # auto_naming = true
 
+# On-screen clock timezone (IANA name). A headless VPS usually runs in UTC, so
+# the status-bar clock would otherwise show UTC instead of your wall time. This
+# localizes ONLY the displayed clock — logs/state stay UTC. DST is automatic.
+# Leave commented to follow the system zone ($TZ, then the OS local zone).
+# timezone = "Europe/Paris"
+
 # Telegram bridge (optional — omit the whole section to disable).
 # [telegram]
 # bot_token = "..."
