@@ -2783,7 +2783,7 @@ impl TelegramBotEngine {
                 &InlineKeyboardMarkup { inline_keyboard: vec![] },
             )
             .await;
-            self.handle_dispatch_command(chat_id, None, &format!("{} run the full forensic audit (all 17 audits)", project)).await;
+            self.handle_dispatch_command(chat_id, None, &format!("{} run the full forensic audit (all {} audits)", project, omega_core::audit::all_audits().len())).await;
         }
     }
 

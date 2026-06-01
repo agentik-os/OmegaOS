@@ -32,7 +32,7 @@ bot for remote control.
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
 | AISB Master | Always-on Claude session with 13 Matrix agents |
 | Telegram Bridge | Long-poll bot, relays messages to AISB |
-| Quality Arsenal | 17 forensic audits (code, UX, perf, security, etc.) |
+| Quality Arsenal | 23 forensic audits (code, UX, perf, security, etc.) |
 
 ---
 
@@ -71,7 +71,7 @@ bot for remote control.
 │
 ├── skills/                        Cross-LLM skills
 │   ├── pdfgen/                    PDF generator (Next.js + Playwright)
-│   └── audits/                    17 Quality Arsenal audits
+│   └── audits/                    23 Quality Arsenal audits
 │
 ├── docs/                          Reference docs
 ├── projects/<slug>/               Per-project overrides

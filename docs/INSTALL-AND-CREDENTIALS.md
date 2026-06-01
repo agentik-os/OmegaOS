@@ -59,7 +59,7 @@ builds from the current directory.
   ├── rules/                 (15 rules, via `omega rules export`)
   ├── agents/                (19 agent prompts, copied)
   ├── skills/pdfgen/         (PDF generator, rsynced)
-  ├── skills/audits/         (17 audits, copied)
+  ├── skills/audits/         (23 audits, copied)
   ├── credentials/           (created empty, populated on first login)
   └── state/ logs/ locks/    (runtime dirs)
 ```

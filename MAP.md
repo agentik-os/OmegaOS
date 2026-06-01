@@ -34,7 +34,7 @@ OmegaOS/
 │   │   ├── agents.rs                  LLM agent registry
 │   │   ├── aisb.rs                    AISB Master spawning
 │   │   ├── aisb_agents.rs             13 Matrix agents
-│   │   ├── audit.rs                   17 Quality Arsenal audits
+│   │   ├── audit.rs                   23 Quality Arsenal audits
 │   │   ├── bootstrap.rs               Project bootstrap pipeline
 │   │   ├── credentials.rs             Multi-provider credential store
 │   │   ├── dispatch.rs                Worker dispatch
@@ -84,7 +84,7 @@ OmegaOS/
 │
 ├── skills/                            Bundled skills
 │   ├── pdfgen/                        PDF generator (Next.js — see below)
-│   └── audits/                        17 audit skills
+│   └── audits/                        23 audit skills
 │
 ├── docs/                              Documentation
 │   ├── ARCHITECTURE.md                ← READ THIS for the full system
@@ -128,7 +128,7 @@ OmegaOS/
 ├── agents/                            19 agent prompts
 ├── skills/
 │   ├── pdfgen/                        PDF generator
-│   └── audits/                        17 audits
+│   └── audits/                        23 audits
 │
 ├── state/                             Runtime state (sessions, locks, done.json)
 ├── logs/                              Session logs

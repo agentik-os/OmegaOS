@@ -168,7 +168,7 @@ impl SkillRegistry {
         self.skills.insert(skill.name.clone(), skill);
     }
 
-    /// Register all 17 Quality Arsenal audits from the audit registry.
+    /// Register all 23 Quality Arsenal audits from the audit registry.
     pub fn register_audits(&mut self) {
         for audit in crate::audit::all_audits() {
             let skill = Skill {

@@ -1,4 +1,4 @@
-//! Quality Arsenal audit registry — typed catalogue of the 17 Gestalt-Popper
+//! Quality Arsenal audit registry — typed catalogue of the 23 Gestalt-Popper
 //! forensic audits that form OmegaOS's quality infrastructure.
 
 use chrono::{DateTime, Utc};
@@ -396,7 +396,7 @@ pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str>
     let lower = mission_text.to_lowercase();
     let words = tokenize(mission_text);
 
-    // "full audit" / "audit complet" → all 17
+    // "full audit" / "audit complet" → every registered audit (all 23)
     if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
         return audits.iter().map(|a| a.id).collect();
     }

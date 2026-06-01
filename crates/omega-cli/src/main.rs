@@ -165,7 +165,7 @@ enum Commands {
         action: RulesAction,
     },
 
-    /// Manage Quality Arsenal audits (17 Gestalt-Popper forensic audits)
+    /// Manage Quality Arsenal audits (23 Gestalt-Popper forensic audits)
     Audit {
         #[command(subcommand)]
         action: AuditAction,
@@ -2029,7 +2029,7 @@ enum ProvisionAction {
 
 #[derive(Subcommand)]
 enum AuditAction {
-    /// List all 17 Quality Arsenal audits with metadata
+    /// List all 23 Quality Arsenal audits with metadata
     List,
     /// Show which audits would be selected for a mission
     Select {

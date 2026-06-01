@@ -50,13 +50,14 @@ All operational rules are in `~/.omega/rules/`. Key rules:
 
 ## Quality Arsenal (17 Forensic Audits)
 
-OmegaOS ships with 17 Gestalt-Popper forensic audits covering code, UX, flows, security,
-performance, accessibility, SEO, data, API, copy, DX, motion, automation, logic, and retention.
+OmegaOS ships with 23 Gestalt-Popper forensic audits covering code, UX, flows, security,
+performance, accessibility, SEO, data, API, copy, DX, motion, automation, logic, retention,
+observability, dependencies, i18n, releases, privacy, and dashboard redesign (refonte).
 
 Oracles auto-trigger relevant audits at end of mission based on what changed.
 
 ```bash
-omega audit list                    # Show all 17 audits
+omega audit list                    # Show all 23 audits
 omega audit run codeaudit --dir .   # Run a specific audit
 omega audit select "fix auth"       # Auto-select audits for a task
 ```

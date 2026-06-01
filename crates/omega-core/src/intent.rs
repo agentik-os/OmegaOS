@@ -263,12 +263,16 @@ fn detect_audit_names(lower: &str) -> Vec<String> {
         (&["retention", "retentionaudit", "feature opportunities", "make it sticky"], "retentionaudit"),
     ];
 
-    // "full audit" → all 17 Quality Arsenal audits (refontaudit is a separate tool, not included)
+    // "full audit" → EVERY Quality Arsenal audit. Delegate to the audit
+    // registry (crate::audit::all_audits — the single source of truth) rather
+    // than this local trigger table: the table had drifted to 17 while the
+    // registry grew to 23, so the two "full audit" paths disagreed on which
+    // audits run. The registry's own test (select_full_audit_returns_all) locks
+    // the count, so this path now always matches it.
     if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
-        return table
+        return crate::audit::all_audits()
             .iter()
-            .filter(|(_, name)| *name != "refontaudit")
-            .map(|(_, name)| name.to_string())
+            .map(|a| a.id.to_string())
             .collect();
     }
 
@@ -422,10 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn full_audit_returns_all_17() {
+    fn full_audit_returns_all_registry_audits() {
         let p = IntentParser::new();
         let intent = p.parse("lance un full audit");
-        assert_eq!(intent.detected_audits.len(), 17);
+        // Must equal the audit registry exactly (single source of truth), not a
+        // hardcoded count that drifts when audits are added. Pre-fix this path
+        // returned 17 (a stale local table) while the registry held 23.
+        assert_eq!(intent.detected_audits.len(), crate::audit::all_audits().len());
+        assert_eq!(intent.detected_audits.len(), 23);
     }
 
     #[test]
