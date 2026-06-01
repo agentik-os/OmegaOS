@@ -480,8 +480,11 @@ impl TelegramBotEngine {
         if let Some(reply_msg) = &msg.reply_to_message {
             let router = self.reply_router.lock().await;
             if let Some(project) = router.resolve(reply_msg.message_id) {
-                let oracle_session = format!("oracle-{}", project);
-                tracing::info!(project = %project, "reply-routed to oracle");
+                let oracle_session = self
+                    .resolve_live_oracle(project)
+                    .await
+                    .unwrap_or_else(|| format!("oracle-{}", project));
+                tracing::info!(project = %project, oracle = %oracle_session, "reply-routed to oracle");
                 let _ = self.mgr.send_text(&oracle_session, text).await;
                 let _ = self
                     .send_html(chat_id, &format!(" → <code>{}</code>", formatting::escape_html(&oracle_session)))
@@ -1256,9 +1259,16 @@ impl TelegramBotEngine {
                 if project.is_empty() {
                     " No project specified".to_string()
                 } else {
-                    let oracle_session = format!("oracle-{}", project);
-                    let _ = self.mgr.send_text(&oracle_session, "continue").await;
-                    format!(" Continuing oracle for <b>{}</b>", formatting::escape_html(project))
+                    match self.resolve_live_oracle(project).await {
+                        Some(oracle_session) => {
+                            let _ = self.mgr.send_text(&oracle_session, "continue").await;
+                            format!(" Continuing oracle for <b>{}</b>", formatting::escape_html(project))
+                        }
+                        None => format!(
+                            " No live oracle for <b>{}</b> — start one with Talk to oracle.",
+                            formatting::escape_html(project)
+                        ),
+                    }
                 }
             }
             _ => format!(" Unknown action: <code>{}</code>", formatting::escape_html(action)),
@@ -1535,14 +1545,8 @@ impl TelegramBotEngine {
         let group_id = cfg.group_id;
 
         // Find a live oracle for this project (oracle-<project> or
-        // oracle-<project>-N).
-        let sessions = self.mgr.list_sessions().await.unwrap_or_default();
-        let exact = format!("oracle-{}", project);
-        let prefix = format!("oracle-{}-", project);
-        let live = sessions
-            .iter()
-            .find(|s| s.name == exact || s.name.starts_with(&prefix))
-            .map(|s| s.name.clone());
+        // oracle-<project>-N) via the shared resolver.
+        let live = self.resolve_live_oracle(&project).await;
 
         match live {
             Some(session) => {
@@ -1564,6 +1568,24 @@ impl TelegramBotEngine {
             }
         }
         true
+    }
+
+    /// Resolve the live oracle session for a project, accepting either the
+    /// unindexed `oracle-<project>` or an indexed `oracle-<project>-N` name.
+    /// Oracles are spawned indexed (oracle-<project>-1, -2, …), so any send
+    /// site that hardcoded the unindexed `oracle-<project>` silently missed a
+    /// live indexed oracle — its message vanished into a non-existent session.
+    /// Every send/capture path resolves through here. None = no live oracle.
+    async fn resolve_live_oracle(&self, project: &str) -> Option<String> {
+        let exact = format!("oracle-{}", project);
+        let prefix = format!("oracle-{}-", project);
+        self.mgr
+            .list_sessions()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|s| s.name == exact || s.name.starts_with(&prefix))
+            .map(|s| s.name)
     }
 
     /// Spawn a fresh oracle for a project topic and hand it its first message.
@@ -1713,8 +1735,13 @@ impl TelegramBotEngine {
                 self.client.post(&url).json(&payload).send().await.ok();
             }
             "status" => {
-                // Tail the project's oracle pane.
-                let session = format!("oracle-{}", arg);
+                // Tail the project's oracle pane (resolve the real indexed name;
+                // fall back to the unindexed form so the Err arm still reports
+                // "no live oracle" when none exists).
+                let session = self
+                    .resolve_live_oracle(arg)
+                    .await
+                    .unwrap_or_else(|| format!("oracle-{}", arg));
                 let body = match self.mgr.capture_pane(&session).await {
                     Ok(content) => {
                         let tail: Vec<&str> = content.lines().rev().take(20).collect();
