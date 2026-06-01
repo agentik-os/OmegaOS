@@ -753,10 +753,17 @@ async fn run_tui_loop(
     use omega_tui::input::{handle_event, Action};
     use omega_tui::ui::draw;
 
-    // Frame rate: 60 FPS draw target (16ms tick). The previous 250ms
-    // budget left the panel feeling 4 FPS — agent output dripped in
-    // chunks instead of streaming naturally like a tmux attach.
-    let tick_rate = std::time::Duration::from_millis(16);
+    // Frame rate: ADAPTIVE. 60 FPS (16ms) while the user is actively interacting
+    // so typing/streaming feels like a live tmux attach; ~15 FPS (66ms) at rest.
+    // The loop redraws every tick, and on a small/oversubscribed box several idle
+    // TUIs each spinning a full widget rebuild at 60 FPS pegged the CPU (the rmux
+    // daemon + 5 idle menus saturated a 2-core VPS). At rest nothing needs 60 FPS:
+    // the status-bar clock only ticks once a second and agent output is throttled
+    // by the preview cadence below, so 66ms idle is visually identical at a
+    // fraction of the CPU. The active window keys off the SAME last_input_at as
+    // the preview cadence, so a keystroke instantly restores 60 FPS.
+    const TICK_ACTIVE: std::time::Duration = std::time::Duration::from_millis(16);
+    const TICK_IDLE: std::time::Duration = std::time::Duration::from_millis(66);
 
     // Preview capture: ADAPTIVE cadence. The only rmux daemon RPC per loop is
     // the capture, so we throttle it separately from the 60 FPS draw. Idle
@@ -939,13 +946,15 @@ async fn run_tui_loop(
         let event_pending = crossterm::event::poll(std::time::Duration::ZERO)?;
         // Faster echo for a short window right after the user interacts, then
         // back to the idle cadence so we don't hammer the daemon at rest.
-        let preview_refresh_interval = if last_input_at.elapsed()
-            < std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS)
-        {
+        let interacting = last_input_at.elapsed()
+            < std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS);
+        let preview_refresh_interval = if interacting {
             std::time::Duration::from_millis(PREVIEW_ACTIVE_MS)
         } else {
             std::time::Duration::from_millis(PREVIEW_IDLE_MS)
         };
+        // 60 FPS while interacting, ~15 FPS at rest (cuts idle render CPU ~4×).
+        let tick_rate = if interacting { TICK_ACTIVE } else { TICK_IDLE };
         if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
