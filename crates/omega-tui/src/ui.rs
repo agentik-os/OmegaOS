@@ -64,9 +64,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_status_bar(frame, app, chunks[2]);
 
     // Overlay modals — drawn LAST so they paint on top of everything
-    if let InputMode::NewSessionAgent(ref name) = app.input_mode {
-        draw_agent_picker(frame, app, name);
-    }
     match app.input_mode {
         InputMode::TelegramSetupToken
         | InputMode::TelegramSetupChatId(_)
@@ -78,13 +75,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             app,
             "Rename session",
             "New session name (Enter to confirm, Esc to cancel)",
-            false,
-        ),
-        InputMode::NewSession => draw_simple_input_modal(
-            frame,
-            app,
-            "New session",
-            "Session name (Enter to confirm, Esc to cancel)",
             false,
         ),
         InputMode::NewNamedSession(ref agent) => {
@@ -354,54 +344,6 @@ fn draw_simple_input_modal_owned(
         .border_style(Style::default().fg(Color::Yellow));
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
-}
-
-fn draw_agent_picker(frame: &mut Frame, app: &App, session_name: &str) {
-    let area = centered_rect(50, 70, frame.area());
-
-    frame.render_widget(Clear, area);
-
-    let items: Vec<ListItem> = omega_core::agents::Agent::all()
-        .iter()
-        .enumerate()
-        .map(|(i, agent)| {
-            let selected = i == app.agent_picker_index;
-            let prefix = if selected { "▶ " } else { "  " };
-            let availability = if agent.is_available() {
-                Span::styled(" [+] ", Style::default().fg(Color::Green))
-            } else {
-                Span::styled(" [x] ", Style::default().fg(Color::Red))
-            };
-            let label_style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                availability,
-                Span::styled(
-                    format!(" {:8}  ", agent.name()),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(agent.display_name(), label_style),
-            ]))
-        })
-        .collect();
-
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Choose agent for [{}] — ↑/↓, Enter, Esc ", session_name))
-            .border_style(Style::default().fg(Color::Cyan)),
-    );
-
-    frame.render_widget(list, area);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -2635,21 +2577,12 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     if !matches!(app.input_mode, InputMode::Normal) {
         let (prompt, value) = match &app.input_mode {
             InputMode::Normal => unreachable!(),
-            InputMode::NewSession => ("New session name", app.input_buffer.clone()),
             InputMode::NewNamedSession(agent) => (
                 "Session name",
                 format!("[{}] {}", agent, app.input_buffer),
             ),
             InputMode::NewSessionPromptDirect(name, agent) => (
                 "Initial prompt (optional, Esc to skip)",
-                format!("[{}/{}] {}", name, agent, app.input_buffer),
-            ),
-            InputMode::NewSessionAgent(name) => (
-                "Choose agent",
-                format!("[{}] (overlay open — ↑/↓)", name),
-            ),
-            InputMode::NewSessionPrompt(name, agent) => (
-                "Initial prompt (optional)",
                 format!("[{}/{}] {}", name, agent, app.input_buffer),
             ),
             InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),

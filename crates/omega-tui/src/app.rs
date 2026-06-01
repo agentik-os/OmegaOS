@@ -45,9 +45,6 @@ pub enum InputMode {
     Normal,
     NewNamedSession(String),
     NewSessionPromptDirect(String, String),
-    NewSession,
-    NewSessionAgent(String),
-    NewSessionPrompt(String, String),
     DispatchProject,
     DispatchMission(String),
     /// Renaming an existing session — holds the original name.
@@ -718,7 +715,6 @@ pub struct App {
     pub info_section_selected: usize,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
-    pub agent_picker_index: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub input_mode: InputMode,
@@ -829,7 +825,6 @@ impl App {
             new_project_cred_group: None,
             info_section_selected: 0,
             info_agent_selected: 0,
-            agent_picker_index: 0,
             should_quit: false,
             status_message: None,
             input_mode: InputMode::Normal,
@@ -1064,24 +1059,6 @@ impl App {
     pub fn scroll_preview_end(&mut self) {
         self.preview_scroll = 0;
         self.preview_follow_tail = true;
-    }
-
-    pub fn agent_picker_next(&mut self) {
-        let count = omega_core::agents::Agent::all().len();
-        self.agent_picker_index = (self.agent_picker_index + 1) % count;
-    }
-
-    pub fn agent_picker_prev(&mut self) {
-        let count = omega_core::agents::Agent::all().len();
-        self.agent_picker_index = if self.agent_picker_index == 0 {
-            count - 1
-        } else {
-            self.agent_picker_index - 1
-        };
-    }
-
-    pub fn selected_agent(&self) -> omega_core::agents::Agent {
-        omega_core::agents::Agent::all()[self.agent_picker_index]
     }
 
     pub fn select_menu_next(&mut self) {
