@@ -131,12 +131,44 @@ impl Default for OmegaConfig {
 
 impl OmegaConfig {
     pub fn load() -> Result<Self> {
-        let config_path = Self::config_path();
-        if config_path.exists() {
-            let content = std::fs::read_to_string(&config_path)?;
-            Ok(toml::from_str(&content)?)
-        } else {
-            Ok(Self::default())
+        Self::load_from(&Self::config_path())
+    }
+
+    /// Load from an explicit path (testable without touching $OMEGA_DIR).
+    ///
+    /// A malformed existing config.toml is NOT discarded silently: almost every
+    /// caller does `load().unwrap_or_default()`, so a parse error would quietly
+    /// revert to defaults — dropping the telegram token, project list, model,
+    /// timezone, etc. with no signal at all. On a parse failure we preserve the
+    /// offending file (single `.corrupt` copy so the operator can recover their
+    /// values) and log a loud error, then still return Err so the few callers
+    /// that propagate it fail loudly too.
+    fn load_from(config_path: &Path) -> Result<Self> {
+        if !config_path.exists() {
+            return Ok(Self::default());
+        }
+        let content = std::fs::read_to_string(config_path)?;
+        match toml::from_str(&content) {
+            Ok(cfg) => Ok(cfg),
+            Err(e) => {
+                let backup = config_path.with_file_name(format!(
+                    "{}.corrupt",
+                    config_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy())
+                        .unwrap_or_default()
+                ));
+                let _ = std::fs::copy(config_path, &backup);
+                tracing::error!(
+                    path = %config_path.display(),
+                    backup = %backup.display(),
+                    error = %e,
+                    "config.toml failed to parse — running on DEFAULTS; original preserved at \
+                     .corrupt. Fix or restore it: telegram token / projects / model are lost \
+                     until then."
+                );
+                Err(e.into())
+            }
         }
     }
 
@@ -296,6 +328,34 @@ mod tests {
         let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
         assert_eq!(cfg.default_model, "sonnet"); // overridden
         assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
+    }
+
+    #[test]
+    fn malformed_config_surfaces_error_and_preserves_original() {
+        // A corrupt config.toml must NOT be silently swallowed into defaults:
+        // load_from returns Err (so callers can choose) and copies the original
+        // to .corrupt so the operator can recover their telegram token / projects.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "default_model = \"opus\"\nbroken = = =\n[[[").unwrap();
+
+        let r = OmegaConfig::load_from(&path);
+        assert!(r.is_err(), "malformed config must surface an error, not default silently");
+
+        let backup = tmp.path().join("config.toml.corrupt");
+        assert!(backup.exists(), "the unparseable original must be preserved at .corrupt");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            std::fs::read_to_string(&path).unwrap(),
+            "the .corrupt backup must be a faithful copy of the original"
+        );
+    }
+
+    #[test]
+    fn absent_config_is_default_not_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = OmegaConfig::load_from(&tmp.path().join("nonexistent.toml")).unwrap();
+        assert_eq!(cfg.agent_command, "claude");
     }
 
     #[test]
