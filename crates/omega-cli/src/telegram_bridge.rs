@@ -392,9 +392,18 @@ pub struct TelegramBotEngine {
     /// 64 bytes, but oracle session names can be long sentences — so session
     /// buttons carry a token and we resolve it here. Repopulated on each list.
     session_name_by_token: Arc<Mutex<HashMap<String, String>>>,
-    /// Persistent claude subprocess for instant master-chat responses.
-    /// Lazy-spawned on first message; respawns on crash.
-    claude_stream: Arc<crate::claude_stream::ClaudeStreamHandle>,
+    /// Brain actor: a single FIFO consumer task owns the persistent claude
+    /// subprocess. Master-chat turns enqueue here (never block the update loop)
+    /// and stream back via a oneshot reply. Lazy-spawned subprocess; respawns on
+    /// crash. (Chunk 1 — replaces the inline `.await` on the shared handle.)
+    claude_stream: crate::claude_stream::BrainActor,
+    /// Per-session async locks guarding ALL pane writes (send_text + the
+    /// surrounding capture/poll) to a given rmux session. Now that the update
+    /// loop is concurrent (Chunk 1), two spawned handlers could otherwise
+    /// interleave keystrokes into the same pane (N14). Every pane-write site
+    /// acquires the lock for its target session name. The brain path is exempt
+    /// (it uses a stdin pipe, not a pane).
+    pane_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Bridge process start, surfaced as uptime in `/status`.
     start_time: std::time::Instant,
     /// Pending /dispatch confirmations: short token → (project, work_dir,
@@ -437,7 +446,8 @@ impl TelegramBotEngine {
             reply_chat_id,
             targeted_session: Arc::new(Mutex::new(None)),
             session_name_by_token: Arc::new(Mutex::new(HashMap::new())),
-            claude_stream: Arc::new(crate::claude_stream::ClaudeStreamHandle::new(bridge_cfg_dir)),
+            claude_stream: crate::claude_stream::BrainActor::spawn(bridge_cfg_dir),
+            pane_locks: Arc::new(Mutex::new(HashMap::new())),
             start_time: std::time::Instant::now(),
             pending_dispatches: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
@@ -452,6 +462,18 @@ impl TelegramBotEngine {
                 .to_string();
             let _ = omega_core::aisb::ensure_master(&self.mgr, agent, &cwd).await;
         }
+    }
+
+    /// Return the per-session pane lock for `session`, creating it on first
+    /// use. Acquiring the returned guard serializes every pane write (and its
+    /// surrounding capture/poll) to that one rmux session, so the now-concurrent
+    /// update loop (Chunk 1) can't interleave keystrokes (N14). Disjoint
+    /// sessions still proceed in parallel.
+    async fn pane_lock(&self, session: &str) -> Arc<Mutex<()>> {
+        let mut map = self.pane_locks.lock().await;
+        map.entry(session.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
     }
 
     /// Handle a text message through the full handler chain.
@@ -485,7 +507,11 @@ impl TelegramBotEngine {
                     .await
                     .unwrap_or_else(|| format!("oracle-{}", project));
                 tracing::info!(project = %project, oracle = %oracle_session, "reply-routed to oracle");
+                // N14 guard: serialize the pane write per target session.
+                let lock = self.pane_lock(&oracle_session).await;
+                let _g = lock.lock().await;
                 let _ = self.mgr.send_text(&oracle_session, text).await;
+                drop(_g);
                 let _ = self
                     .send_html(chat_id, &format!(" → <code>{}</code>", formatting::escape_html(&oracle_session)))
                     .await;
@@ -743,7 +769,31 @@ impl TelegramBotEngine {
             let result: std::result::Result<String, String> = if provider == "claude"
                 || provider.is_empty()
             {
-                self.claude_stream.ask(&final_prompt).await.map_err(|e| e.to_string())
+                // Enqueue onto the FIFO brain actor (Chunk 1). `try_send` never
+                // blocks; if the bounded queue is full we surface a "queued…"
+                // backpressure note on the placeholder, then WAIT for a slot so
+                // the message is never dropped.
+                match self.claude_stream.ask(&final_prompt, chat_id, user_msg_id).await {
+                    Ok(body) => Ok(body),
+                    Err(e) if e.downcast_ref::<crate::claude_stream::BrainQueueFull>().is_some() => {
+                        if placeholder_id != 0 {
+                            let _ = self
+                                .edit_message_html(
+                                    chat_id,
+                                    placeholder_id,
+                                    &formatting::thinking_placeholder(
+                                        "AISB Master · queued…",
+                                    ),
+                                )
+                                .await;
+                        }
+                        self.claude_stream
+                            .ask_waiting(&final_prompt, chat_id, user_msg_id)
+                            .await
+                            .map_err(|e| e.to_string())
+                    }
+                    Err(e) => Err(e.to_string()),
+                }
             } else {
                 // Non-Claude providers (Gemini/Codex/GLM/Pi) still use the
                 // one-shot CLI path.
@@ -861,6 +911,13 @@ impl TelegramBotEngine {
         }
 
         // Targeted session path — keep pane-based relay for now.
+        // N14 guard (Chunk 1): hold the per-session pane lock across the WHOLE
+        // capture→send→poll cycle. The update loop is now concurrent, so two
+        // handlers targeting the same rmux session must not interleave their
+        // keystrokes / captures. The guard lives until this function returns.
+        let _pane_guard_holder = self.pane_lock(&relay_target).await;
+        let _pane_guard = _pane_guard_holder.lock().await;
+
         let before = self
             .mgr
             .capture_pane(&relay_target)
@@ -1261,7 +1318,11 @@ impl TelegramBotEngine {
                 } else {
                     match self.resolve_live_oracle(project).await {
                         Some(oracle_session) => {
+                            // N14 guard: serialize the pane write per target session.
+                            let lock = self.pane_lock(&oracle_session).await;
+                            let _g = lock.lock().await;
                             let _ = self.mgr.send_text(&oracle_session, "continue").await;
+                            drop(_g);
                             format!(" Continuing oracle for <b>{}</b>", formatting::escape_html(project))
                         }
                         None => format!(
@@ -5107,8 +5168,30 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         }
 
         for upd in updates.result {
+            // Advance the offset SYNCHRONOUSLY before spawning so the next
+            // long-poll never re-fetches an update we've already handed off.
             offset = upd.update_id + 1;
+            // Chunk 1 — NON-BLOCKING dispatch. Previously this body ran inline
+            // with `.await`, so one 120s brain turn blocked ALL other Telegram
+            // traffic (the `(no response within 90s — check the bridge)` bug).
+            // Now each update is spawned: the loop returns instantly to the next
+            // poll, and the brain stays FIFO behind its actor.
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                engine.handle_update(upd).await;
+            });
+        }
+    }
+}
 
+impl TelegramBotEngine {
+    /// Handle one Telegram update end-to-end. Spawned per-update by the
+    /// dispatch loop (Chunk 1) so a long brain turn never blocks other traffic.
+    /// Returns early (the old `continue`s) on auth rejection / unhandled types.
+    async fn handle_update(self: Arc<Self>, upd: Update) {
+        let cfg = &self.cfg;
+        let engine = &self;
+        {
             // Auto-detect a project supergroup the moment the bot is added
             // or promoted to admin in a forum-enabled chat. Triggers full
             // auto-setup so the user never has to run /setupgroup manually.
@@ -5128,7 +5211,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                         actor_id = ?actor_id,
                         "rejected unauthorized my_chat_member auto-setup"
                     );
-                    continue;
+                    return;
                 }
                 if is_admin && chat_type == "supergroup" && is_forum {
                     engine
@@ -5138,7 +5221,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                         )
                         .await;
                 }
-                continue;
+                return;
             }
 
             // Handle callback queries (inline keyboard presses)
@@ -5152,11 +5235,11 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                 if cfg.is_authorized(chat_id, sender_id) {
                     let _ = engine.handle_callback(&cb).await;
                 }
-                continue;
+                return;
             }
 
             // Handle messages
-            let Some(msg) = upd.message else { continue };
+            let Some(msg) = upd.message else { return };
 
             let sender_id = msg.from.as_ref().map(|u| u.id);
             if !cfg.is_authorized(msg.chat.id, sender_id) {
@@ -5165,7 +5248,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                     sender_id = ?sender_id,
                     "rejected unauthorized message"
                 );
-                continue;
+                return;
             }
 
             // Route by message type
