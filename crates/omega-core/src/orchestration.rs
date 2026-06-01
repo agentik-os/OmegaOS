@@ -310,12 +310,30 @@ impl Orchestrator {
         }
 
         let agent = Agent::from_name(&task.agent).unwrap_or(Agent::Claude);
+
+        // THE FUNNEL — inject the role-scoped Laws + operational rules. The
+        // `omega orchestrate` dispatch path previously spawned oracles AND workers
+        // with NO doctrine (only executor.rs + cmd_spawn_worker had it), so every
+        // agent created here ran ungoverned. An "oracle" task gets Oracle scope;
+        // everything else gets Worker scope.
+        let scope = if task.name == "oracle" {
+            crate::rules::RuleScope::Oracle
+        } else {
+            crate::rules::RuleScope::Worker
+        };
+        let mut full_prompt = task.prompt.clone();
+        let ctx = crate::rules::agent_context_block(scope);
+        if !ctx.is_empty() {
+            full_prompt.push_str("\n\n");
+            full_prompt.push_str(&ctx);
+        }
+
         self.mgr
             .create_session_with_agent(
                 &session_name,
                 Some(&mission.working_dir.to_string_lossy()),
                 agent,
-                Some(&task.prompt),
+                Some(&full_prompt),
             )
             .await
             .with_context(|| format!("dispatching {}", session_name))?;
