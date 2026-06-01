@@ -120,6 +120,11 @@ impl ProvidersConfig {
         }
         let content = toml::to_string_pretty(self).context("serializing providers config")?;
         std::fs::write(&path, content).context("writing providers config")?;
+        // providers.toml holds per-provider api_key secrets — lock it to the
+        // owner (was written with the default umask, i.e. world/group-readable
+        // on a multi-user host). Shares credentials::chmod_600 (one impl).
+        crate::credentials::chmod_600(&path)
+            .with_context(|| format!("chmod 600 {}", path.display()))?;
         Ok(())
     }
 

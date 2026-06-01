@@ -30,13 +30,15 @@ use crate::providers::ProvidersConfig;
 /// Secrets-at-rest: chmod a file to 0600 (owner read/write only). No-op target
 /// must already exist. Called before the atomic rename on every credential write
 /// so a multi-user host never sees another user's OAuth tokens / API keys.
+/// `pub(crate)` so other secret-writers (e.g. providers.toml) share one impl
+/// instead of duplicating the unix/non-unix split.
 #[cfg(unix)]
-fn chmod_600(path: &Path) -> std::io::Result<()> {
+pub(crate) fn chmod_600(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
 }
 #[cfg(not(unix))]
-fn chmod_600(_path: &Path) -> std::io::Result<()> {
+pub(crate) fn chmod_600(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
