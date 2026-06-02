@@ -114,6 +114,11 @@ if grep -q "playwright install chromium" install.sh && grep -q "OMEGA_SKIP_BROWS
 # 3 non-audit dirs _shared / audit-orchestrator / audit-tracker).
 N_AUDITS=$(ls -d skills/audits/*/ 2>/dev/null | grep -vE '/(_shared|audit-orchestrator|audit-tracker)/$' | wc -l)
 if [ "$N_AUDITS" -ge 23 ] && grep -q "skills/audits" install.sh; then ok "Quality Arsenal audit skills shipped + wired ($N_AUDITS)"; else bad "audit skills missing or not wired in install.sh ($N_AUDITS dirs, need >=23)"; fi
+# Design skills (generative UI/UX) shipped + wired.
+N_DESIGN=$(ls -d skills/design/*/ 2>/dev/null | wc -l)
+if [ "$N_DESIGN" -ge 8 ] && grep -q "skills/design" install.sh; then ok "Design skills shipped + wired ($N_DESIGN)"; else bad "design skills missing or not wired in install.sh ($N_DESIGN dirs, need >=8)"; fi
+# Design skills must not leak the maintainer's identity/paths.
+if grep -rqE 'Gareth|/home/hacker' skills/design/ 2>/dev/null; then bad "design skills leak Gareth/home path"; else ok "design skills clean (no Gareth/home leak)"; fi
 # PDF generator shipped + wired (all branded PDF output depends on it).
 if [ -d tools/pdfgen ] && grep -q "tools/pdfgen" install.sh; then ok "pdfgen shipped + wired in install.sh"; else bad "pdfgen not shipped/wired in install.sh"; fi
 # OAuth fallback helper shipped + wired (non-interactive token refresh).

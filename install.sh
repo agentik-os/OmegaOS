@@ -338,6 +338,41 @@ else
     info "Audit skills not found — skipping"
 fi
 
+# Install the design skills (generative UI/UX, aesthetics, image-to-code).
+# Curated set: taste-skill, minimalist-ui, industrial-brutalist-ui,
+# high-end-visual-design, image-to-code, design-system, stitch-design-taste,
+# ui-ux-pro-max. Mirrors the audits loop: copy → ~/.omega/skills/design/ +
+# generate /<name> AND /omg-<name> slash stubs.
+DESIGN_SRC="$OMEGA_SRC/skills/design"
+DESIGN_DST="$OMEGA_DIR/skills/design"
+if [[ -d "$DESIGN_SRC" ]]; then
+    mkdir -p "$DESIGN_DST"
+    cp -r "$DESIGN_SRC"/* "$DESIGN_DST/"
+    find "$DESIGN_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    DESIGN_CMD_DST="$HOME/.claude/commands"
+    mkdir -p "$DESIGN_CMD_DST"
+    DESIGN_STUBS=0
+    for skill_md in "$DESIGN_DST"/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        name="$(basename "$(dirname "$skill_md")")"
+        for cmd in "$name" "omg-$name"; do
+            cat > "$DESIGN_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+Run the $name design skill. Read and follow the complete instructions in:
+
+\`$DESIGN_DST/$name/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        DESIGN_STUBS=$((DESIGN_STUBS + 1))
+    done
+    ok "Design skills installed ($DESIGN_STUBS → /<name> + /omg-<name> in $DESIGN_DST/)"
+else
+    info "Design skills not found — skipping"
+fi
+
 # Install the orchestration planner skill (engine-native).
 # OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
 # user's other commands (e.g. a pre-existing prose `/planner`).

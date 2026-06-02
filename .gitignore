@@ -16,3 +16,7 @@ tools/pdfgen/.next/
 tools/pdfgen/output/
 .claude/worktrees/
 audits/.*/
+
+# Python bytecode (never ship — embeds absolute source paths)
+__pycache__/
+*.pyc
