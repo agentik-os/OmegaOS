@@ -325,7 +325,7 @@ find . -type f \( -name "*.ts" -o -name "*.tsx" -o -name "*.py" -o -name "*.sh" 
 1. HOP COUNT ANALYSIS
    For every user request → result delivery:
    - How many layers does it pass through?
-   - Gareth → AISB → Oracle → Worker → Agent → Tool → Result → back
+   - the operator → AISB → Oracle → Worker → Agent → Tool → Result → back
    - Each hop = serialization + deserialization + context switch + latency
    
    Question: which hops are essential? Which are ceremony?

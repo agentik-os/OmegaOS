@@ -3,8 +3,8 @@
 # Claude OAuth Token Exchange — Headless VPS (v2 — No Cache)
 #
 # Philosophy: NEVER cache tokens. When 401 hits:
-#   1. Generate auth URL → send to Gareth on Telegram
-#   2. Gareth clicks → gets code
+#   1. Generate auth URL → send to the operator on Telegram
+#   2. the operator clicks → gets code
 #   3. Exchange code → write fresh tokens to .credentials.json
 #   4. All sessions auto-recover
 #

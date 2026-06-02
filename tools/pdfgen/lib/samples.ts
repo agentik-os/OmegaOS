@@ -221,7 +221,7 @@ export const sampleDoc: DocData = {
   eyebrow: "PROTOCOL",
   title: "OMAD protocol — clean rebuild",
   subtitle: "A one-meal-a-day discipline calibrated for O-negative metabolism.",
-  author: "Gareth Moison",
+  author: "OmegaOS",
   date: "May 2026",
   docId: "PROT-OMAD-04",
   brand: "ONE-LIFE",

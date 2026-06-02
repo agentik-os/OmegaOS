@@ -68,25 +68,25 @@ Already built and working:
 ### Oracle A: Intent & Routing
 Files: NEW `crates/omega-core/src/intent.rs`, `crates/omega-core/src/router.rs`
        MODIFY `crates/omega-core/src/routing.rs`
-Ref: VPS-ARCHITECTURE.md §Intent-Loop, §Message Flow, §Routing Table
+Ref: docs/ARCHITECTURE.md + docs/ORCHESTRATION.md
 
 ### Oracle B: Oracle Lifecycle & Workers  
 Files: MODIFY `crates/omega-core/src/dispatch.rs`, `crates/omega-core/src/patrol.rs`
        MODIFY `crates/omega-core/src/mission.rs`, `crates/omega-core/src/done.rs`
        NEW `crates/omega-core/src/oracle_lifecycle.rs`
-Ref: VPS-ARCHITECTURE.md §Level 2, §Oracle 5-Step, §God Mode
+Ref: docs/ARCHITECTURE.md + docs/ORCHESTRATION.md
 
 ### Oracle C: Quality Gates & Ship
 Files: MODIFY `crates/omega-core/src/gate.rs`, `crates/omega-core/src/ship.rs`
        NEW `crates/omega-core/src/rubric.rs`, `crates/omega-core/src/verifier.rs`
-Ref: VPS-ARCHITECTURE.md §Quality Gates, VPS-ORCHESTRATION.md §Ship Pipeline
+Ref: docs/ARCHITECTURE.md + docs/ORCHESTRATION.md
 
 ### Oracle D: Telegram Bot & Skills
 Files: MODIFY `crates/omega-cli/src/telegram_bridge.rs`
        MODIFY `crates/omega-core/src/audit.rs`
        NEW `crates/omega-core/src/skill_registry.rs`
        NEW `crates/omega-core/src/formatting.rs`
-Ref: VPS-ARCHITECTURE.md §Telegram Bot, §Report Pipeline
+Ref: docs/ARCHITECTURE.md + docs/ORCHESTRATION.md
 
 ## Verification
 

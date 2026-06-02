@@ -1428,7 +1428,14 @@ async fn run_tui_loop(
                     ));
                     match mgr.create_session(&name, None, Some(&cmd)).await {
                         Ok(_) => {
-                            app.status_message = Some(format!("Running '{}' in session '{}' — switching", label, name));
+                            // Drop the cached provider state so the [+]/[x] badge
+                            // re-evaluates (live `command -v`) when the user
+                            // returns to Settings after the install finishes.
+                            app.invalidate_providers();
+                            app.status_message = Some(format!(
+                                "▶ '{}' running in session '{}'. Watch it there; come back to Settings to see [+]/[x] update.",
+                                label.trim(), name
+                            ));
                             auto_focus_chat(app, &name).await;
                         }
                         Err(e) => {
@@ -3126,7 +3133,7 @@ fn risk_tags(repo: &omega_core::backup::RepoRisk) -> String {
 
 async fn cmd_team(
     project: &str,
-    _count: usize,
+    count: usize,
     dir: Option<&str>,
     member_specs: &[String],
 ) -> Result<()> {
@@ -3137,7 +3144,7 @@ async fn cmd_team(
     let work_dir = dir.unwrap_or(".").to_string();
     let session_name = format!("Team-{}", project);
 
-    let members: Vec<omega_core::team::TeamMember> = member_specs
+    let mut members: Vec<omega_core::team::TeamMember> = member_specs
         .iter()
         .map(|spec| {
             let parts: Vec<&str> = spec.splitn(2, ':').collect();
@@ -3152,8 +3159,21 @@ async fn cmd_team(
         })
         .collect();
 
+    // `--count N` (no explicit members) → spawn N generic workers. This is what
+    // the flag always meant; it was previously parsed and ignored.
+    if members.is_empty() && count > 0 {
+        members = (1..=count)
+            .map(|i| omega_core::team::TeamMember {
+                name: format!("worker-{}", i),
+                role: "worker".to_string(),
+                prompt: "Implement your assigned task".to_string(),
+                files_owned: Vec::new(),
+            })
+            .collect();
+    }
+
     if members.is_empty() {
-        anyhow::bail!("No team members specified. Use: omega team Project member1:prompt member2:prompt");
+        anyhow::bail!("No team members. Use: omega team Project member1:prompt member2:prompt  (or --count N for N generic workers)");
     }
 
     let team_config = omega_core::team::TeamConfig {

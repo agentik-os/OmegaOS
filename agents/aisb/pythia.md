@@ -127,7 +127,7 @@ primitive: **SKIP unless clear net win**. Conservation > adoption when:
 
 ---
 
-## Manual invocation (Gareth-only)
+## Manual invocation (owner-only)
 
 ```bash
 ~/.aisb/lib/pythia.sh                  # full run (cron does this)

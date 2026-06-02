@@ -107,10 +107,10 @@ OmegaOS doctor
   [+] rmux socket      /tmp/rmux-1000/default
   [+] doctrine         6 Laws + 20 Rules
   [+] agent CLI        claude available
-  [+] state dir        /home/hacker/.omega/state
+  [+] state dir        ~/.omega/state
   [!] telegram service omega-telegram.service inactive (start: systemctl --user start omega-telegram)
-  [!] hooks            hook scripts missing from /home/hacker/.omega/hooks
-  [+] secrets dir      /home/hacker/.omega present
+  [!] hooks            hook scripts missing from ~/.omega/hooks
+  [+] secrets dir      ~/.omega present
   [+] memory           18422MB available
 ```
 

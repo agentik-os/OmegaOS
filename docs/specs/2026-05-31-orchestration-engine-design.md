@@ -2,7 +2,7 @@
 
 **Status:** Design — approved direction, pending spec review
 **Date:** 2026-05-31
-**Author:** Oracle (brainstormed with Gareth)
+**Author:** Oracle (brainstormed with the operator)
 **Scope:** OmegaOS (`~/VibeCoding/work/OmegaOS`) — Rust core, Bun fallback, rmux workers
 **Supersedes:** the prose-only sequential-execution guarantee in the VPS `/planner` skill
 

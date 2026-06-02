@@ -140,7 +140,7 @@ What are people tired of that makes them need this?
 - `/prd` - Generate full documentation suite from VISION.md
 - `/build` - Full autonomous pipeline: /vision + /prd + /brand-identity + create a plan + execution
 - `/team` - Complete product development workflow
-- Skill file: `/home/hacker/.claude/skills/branding.md`
+- Skill file: `$HOME/.claude/skills/branding.md`
 
 **When to use which:**
 - `/vision` -> Quick internal alignment, outputs VISION.md text file

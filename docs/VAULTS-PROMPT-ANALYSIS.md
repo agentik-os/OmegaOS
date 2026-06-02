@@ -21,13 +21,13 @@ Vaults uses a **two-LLM-pass + 3-layer prompt** architecture.
 2. **Gather real project context** — `_gather_project_context()` (`intelligence.py:37`): recent git log (`git log --oneline -5 --since=24h`), branch + `git status --short`, last `.oracles/oracle-*.md` report, active tmux sessions for the project. Each section is independently fault-tolerant (`intelligence.py:52-121`).
 3. **Spawn a separate one-shot Claude** (`claude --print --max-turns 1 --model claude-opus-4-7 --allowedTools ""`, `ANTHROPIC_API_KEY` stripped, 60s timeout, 2 attempts) with a strict instruction template (`intelligence.py:184-218, 224-256`). The Brain is told to output EXACTLY: `## Mission / ## Context / ## Tasks / ## Success Criteria / ## Constraints`, ≤350 words, **no tools allowed**, "STRUCTURE the message, don't REWRITE it", "NEVER invent terminology", "Linear /project/ URL = spec not ticket list", "Google Drive link = read content".
 4. **Assemble final brief**: Brain output (or a deterministic fallback skeleton, `intelligence.py:262-268`) + appended `## Project State` (git/sessions) + `## Planner` status from `.planner/tracker.json` (`intelligence.py:270-286`).
-5. Returns an `EnhancedPrompt(str)` subclass carrying `.original_human` and `.was_enhanced` so the dispatch layer can show Gareth both the raw and enriched versions (`intelligence.py:295-299`).
+5. Returns an `EnhancedPrompt(str)` subclass carrying `.original_human` and `.was_enhanced` so the dispatch layer can show the operator both the raw and enriched versions (`intelligence.py:295-299`).
 
 ### Pass 2 — wrap the amplified brief in the dispatch template (Layer 3)
 `_build_oracle_dispatch_prompt()` — `prompts.py:365`. Critically, this is documented (`prompts.py:368-398`) as **Layer 3 of 3**:
 - **Layer 1** = `CLAUDE.md` + `~/.claude/rules/` (auto-loaded by Claude Code — Three Laws, Karpathy, audit-keyword tables). Never repeated.
 - **Layer 2** = oracle system prompt `~/.aisb/prompts/<Project>-oracle.md` via `--append-system-prompt-file` (identity, R-0..R-16, dispatch commands, worker template, Quality Arsenal). Loaded once at boot.
-- **Layer 3 (this f-string)** = ONLY the mission: `> **Gareth (original):** …` + enhanced brief + optional Linear protocol + a 1-line reminder. The docstring explicitly warns: "Repeating [rules] here wastes ~3000 tokens and creates confusion when versions drift between layers" (`prompts.py:393-397`).
+- **Layer 3 (this f-string)** = ONLY the mission: `> **the operator (original):** …` + enhanced brief + optional Linear protocol + a 1-line reminder. The docstring explicitly warns: "Repeating [rules] here wastes ~3000 tokens and creates confusion when versions drift between layers" (`prompts.py:393-397`).
 
 `build_oracle_dispatch_prompt_async()` (`prompts.py:456`) optionally probes a `/dispatch-oracle` skill for an even richer body, with a hard fallback to the legacy f-string if it returns `<80` chars or errors (`prompts.py:478-551`).
 

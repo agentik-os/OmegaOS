@@ -241,8 +241,8 @@ async def _request_reauth(app, reason: str = "Token expired", target_account: st
     1. Create tmux session 'aisb-reauth'
     2. Launch claude, run /login, select option 1
     3. Capture the auth URL from tmux pane
-    4. Send URL to Gareth on Telegram
-    5. Gareth clicks, gets code, pastes in Telegram DM
+    4. Send URL to the operator on Telegram
+    5. the operator clicks, gets code, pastes in Telegram DM
     6. Bot pastes code into the tmux session
     7. Auth done — kill session
     """
@@ -361,7 +361,7 @@ async def _request_reauth(app, reason: str = "Token expired", target_account: st
                     pass
             return
 
-        # 4. Send URL to Gareth on Telegram
+        # 4. Send URL to the operator on Telegram
         from aisb.config import CHAT_ID
         reauth_text = (
             f"<blockquote>"

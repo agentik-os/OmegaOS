@@ -394,8 +394,8 @@ A: Check AGENT-PLAYBOOK.md has concrete file paths and gotchas. Update and re-ru
 - `/build` - Full pipeline: /vision + /prd + /brand-identity + create a plan + execution
 - `/team` - Complete product workflow
 - `/team` - Implement from docs with parallel agent teams
-- Skill file: `/home/hacker/.claude/skills/prd.md`
-- Methodology: `/home/hacker/VibeCoding/work/team/docs/prdide.md`
+- Skill file: `$HOME/.claude/skills/prd.md`
+- Methodology: `~/projects/work/team/docs/prdide.md`
 
 ---
 

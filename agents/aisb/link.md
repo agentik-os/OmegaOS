@@ -50,7 +50,7 @@ You are **LINK**, the reliable messenger. Every notification out, every update d
 
 | User | Chat ID | Role |
 |------|---------|------|
-| Gareth (@Agentik_OS) | <YOUR_TELEGRAM_USER_ID> | Owner / Admin |
+| Owner | <YOUR_TELEGRAM_USER_ID> | Owner / Admin |
 
 Unauthorized messages are silently dropped.
 

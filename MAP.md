@@ -7,7 +7,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. SOURCE CODE (the repo)                                       │
-│    /home/hacker/VibeCoding/work/OmegaOS/                        │
+│    $HOME/VibeCoding/work/OmegaOS/                        │
 │    github.com/agentik-os/OmegaOS                                │
 │    → Edit code here, push to GitHub                             │
 ├─────────────────────────────────────────────────────────────────┤
@@ -24,7 +24,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Source Code Layout (`/home/hacker/VibeCoding/work/OmegaOS/`)
+## Source Code Layout (`$HOME/VibeCoding/work/OmegaOS/`)
 
 ```
 OmegaOS/
@@ -92,8 +92,6 @@ OmegaOS/
 │   ├── IMPLEMENTATION-PLAN.md
 │   ├── VERIFICATION-GATE.md
 │   └── reference/                     Reference materials
-│       ├── VPS-ARCHITECTURE.md        VPS Python system (1038 lines)
-│       ├── VPS-ORCHESTRATION.md       VPS orchestration (641 lines)
 │       └── oauth/                     Python source for OAuth reference
 │
 ├── tools/pdfgen/                      PDF generator (TypeScript + Next.js + Playwright)
