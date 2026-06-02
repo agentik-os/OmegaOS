@@ -109,6 +109,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::NewProjectCategory(..) | InputMode::NewProjectStack(..) => {
             draw_new_project_picker(frame, app);
         }
+        InputMode::SelectModel(..) => {
+            draw_model_picker(frame, app);
+        }
         InputMode::NewProjectCredGroup(..) => {
             let groups = omega_core::provisioning::list_groups().join(", ");
             draw_simple_input_modal(
@@ -199,6 +202,48 @@ fn draw_new_project_picker(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, area);
+}
+
+/// Arrow-key overlay to pick a model from a fixed list (NO typing). Mirrors
+/// `draw_new_project_picker`. Reads the option list + selection straight from
+/// the `SelectModel` InputMode variant.
+fn draw_model_picker(frame: &mut Frame, app: &App) {
+    let (config_key, options, sel): (&str, &[String], usize) = match &app.input_mode {
+        InputMode::SelectModel(key, opts, sel) => (key.as_str(), opts.as_slice(), *sel),
+        _ => return,
+    };
+
+    let area = centered_rect(50, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let selected = i == sel;
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(format!(" {} ", opt), style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Select {} — ↑/↓, Enter, Esc ", config_key))
             .border_style(Style::default().fg(Color::Cyan)),
     );
     frame.render_widget(list, area);
@@ -1982,6 +2027,31 @@ fn render_settings_detail(
                     )));
                 }
             }
+            SettingsField::Select { label, options, current_index, .. } => {
+                let display = options
+                    .get(*current_index)
+                    .cloned()
+                    .unwrap_or_else(|| "(not set)".to_string());
+                let label_style = if is_selected {
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(prefix.to_string()),
+                    Span::styled(format!("{:38}", label), label_style),
+                    Span::styled(display, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]));
+                if is_selected {
+                    lines.push(Line::from(Span::styled(
+                        "      → Enter to choose (↑/↓ selector, no typing)",
+                        Style::default().fg(Color::Gray),
+                    )));
+                }
+            }
             SettingsField::Info(text) => {
                 if text.is_empty() {
                     lines.push(Line::from(""));
@@ -2612,6 +2682,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             InputMode::NewProjectLaunchDocs(..) => {
                 ("New project — docs (optional)", app.input_buffer.clone())
+            }
+            InputMode::SelectModel(..) => {
+                ("Select model — ↑/↓, Enter, Esc", String::new())
             }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);

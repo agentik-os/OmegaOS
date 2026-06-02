@@ -562,6 +562,31 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
             })
         }
+        InputMode::SelectModel(config_key, options, sel) => {
+            let count = options.len().max(1);
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::SelectModel(config_key, options, (sel + 1) % count);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::SelectModel(config_key, options, next);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let value = options.get(sel).cloned().unwrap_or_default();
+                    app.input_mode = InputMode::Normal;
+                    Action::CommitSettingsEdit { config_key, value }
+                }
+                _ => Action::None,
+            }
+        }
 
         InputMode::TelegramSetupUserId(token, chat_id_str) => {
             let token = token.clone();
@@ -920,6 +945,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         Some(crate::app::SettingsField::EditText { config_key, current_value, masked, .. }) => {
                             app.settings_confirm_pending = None;
                             Action::EditSettingsField { config_key, current: current_value, masked }
+                        }
+                        Some(crate::app::SettingsField::Select { config_key, options, current_index, .. }) => {
+                            // Open the arrow-key overlay (no typing).
+                            app.settings_confirm_pending = None;
+                            app.input_mode = crate::app::InputMode::SelectModel(config_key, options, current_index);
+                            Action::None
                         }
                         Some(crate::app::SettingsField::Toggle { config_key, .. }) => {
                             app.settings_confirm_pending = None;

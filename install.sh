@@ -516,6 +516,12 @@ if [[ -d "$OMEGA_SRC/.claude/commands" ]]; then
         cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/dynamic.md"
         cp -f "$OMEGA_SRC/.claude/commands/dynamic.md" "$CLAUDE_CMD_DST/omg-dynamic.md"
     fi
+    # /projects — also expose the bare name the user reaches for (in addition to
+    # /omega-projects + /omg-projects shipped by the loop above). `omega projects`
+    # exists as a CLI subcommand; this makes the Claude slash command match it.
+    if [[ -f "$OMEGA_SRC/.claude/commands/omega-projects.md" ]]; then
+        cp -f "$OMEGA_SRC/.claude/commands/omega-projects.md" "$CLAUDE_CMD_DST/projects.md"
+    fi
     SHIPPED=$(ls "$CLAUDE_CMD_DST/"omg-*.md 2>/dev/null | wc -l)
     if [[ "$SHIPPED" -gt 0 ]]; then
         ok "OmegaOS slash commands installed (/omg-* canonical + /omega-* aliases — $SHIPPED /omg-* in $CLAUDE_CMD_DST/)"

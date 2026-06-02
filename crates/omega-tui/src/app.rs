@@ -91,6 +91,10 @@ pub enum InputMode {
         config_key: String,
         masked: bool,
     },
+    /// Picking a value from a fixed list via an arrow-key overlay (NO typing).
+    /// Holds (config_key, options, selected_index). Mirrors the new-project
+    /// category/stack pickers — Up/Down move, Enter commits, Esc cancels.
+    SelectModel(String, Vec<String>, usize),
 }
 
 /// New-project wizard option lists. `(id, label)` — `id` is the token passed to
@@ -305,6 +309,14 @@ pub enum SettingsField {
         config_key: String,
         current: bool,
     },
+    /// Pick one value from a fixed list via an arrow-key overlay (NO typing).
+    /// `current_index` points at the currently-saved value in `options`.
+    Select {
+        label: String,
+        config_key: String,
+        options: Vec<String>,
+        current_index: usize,
+    },
     /// Show informational text only (homepage link, status, etc.).
     Info(String),
 }
@@ -318,7 +330,45 @@ impl SettingsField {
             SettingsField::Action { label, .. } => label,
             SettingsField::EditText { label, .. } => label,
             SettingsField::Toggle { label, .. } => label,
+            SettingsField::Select { label, .. } => label,
             SettingsField::Info(s) => s,
+        }
+    }
+}
+
+/// Build a model field for a provider. When the provider has a known model
+/// list (`providers::models_for`), this is an arrow-key Select (NO typing);
+/// otherwise it falls back to a free-text field so providers without a curated
+/// list (e.g. pi/hermes) still work.
+fn model_field(provider: &str, config_key: &str, current: &str) -> SettingsField {
+    let opts: Vec<String> = omega_core::providers::ProvidersConfig::models_for(provider)
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    if opts.is_empty() {
+        SettingsField::EditText {
+            label: "Model".to_string(),
+            config_key: config_key.to_string(),
+            current_value: current.to_string(),
+            masked: false,
+        }
+    } else {
+        // Point at the saved value; if it isn't in the list, prepend it so the
+        // user never loses a custom value and index 0 stays valid.
+        let mut options = opts;
+        let current_index = match options.iter().position(|m| m == current) {
+            Some(i) => i,
+            None if current.is_empty() => 0,
+            None => {
+                options.insert(0, current.to_string());
+                0
+            }
+        };
+        SettingsField::Select {
+            label: "Model".to_string(),
+            config_key: config_key.to_string(),
+            options,
+            current_index,
         }
     }
 }
@@ -399,12 +449,7 @@ pub fn fields_for_section(
         }
         SettingsSection::Claude => {
             let c = &providers.claude;
-            out.push(SettingsField::EditText {
-                label: "Model (e.g. opus, sonnet, haiku)".to_string(),
-                config_key: "claude.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("claude", "claude.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "Effort (low/medium/high/max)".to_string(),
                 config_key: "claude.effort".to_string(),
@@ -426,12 +471,7 @@ pub fn fields_for_section(
         }
         SettingsSection::Codex => {
             let c = &providers.codex;
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "codex.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("codex", "codex.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "OpenAI API key".to_string(),
                 config_key: "codex.api_key".to_string(),
@@ -448,12 +488,7 @@ pub fn fields_for_section(
         }
         SettingsSection::Gemini => {
             let c = &providers.gemini;
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "gemini.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("gemini", "gemini.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "Google API key".to_string(),
                 config_key: "gemini.api_key".to_string(),
@@ -464,12 +499,7 @@ pub fn fields_for_section(
         }
         SettingsSection::Glm => {
             let c = &providers.glm;
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "glm.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("glm", "glm.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "GLM API key".to_string(),
                 config_key: "glm.api_key".to_string(),
@@ -486,22 +516,12 @@ pub fn fields_for_section(
                 current_value: c.provider.clone(),
                 masked: false,
             });
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "pi.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("pi", "pi.model", &c.model));
             out.extend(install_actions_for(Agent::Pi));
         }
         SettingsSection::Hermes => {
             let c = &providers.hermes;
-            out.push(SettingsField::EditText {
-                label: "Model".to_string(),
-                config_key: "hermes.model".to_string(),
-                current_value: c.model.clone(),
-                masked: false,
-            });
+            out.push(model_field("hermes", "hermes.model", &c.model));
             out.push(SettingsField::EditText {
                 label: "Hermes API key".to_string(),
                 config_key: "hermes.api_key".to_string(),

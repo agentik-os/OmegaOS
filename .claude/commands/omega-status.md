@@ -2,7 +2,7 @@
 description: Show OmegaOS runtime status — active oracles, workers, queued missions, recent done.json events
 ---
 
-Run `omega session list --json | jq -r '.[] | "\(.role) \(.name) \(.project // \"-\")"'` and summarize:
+Run `omega list` (live sessions + roles) and `omega status` (system overview), then summarize:
 
 - Active oracles (and which project each owns)
 - Active workers and their parent oracle
