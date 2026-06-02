@@ -221,7 +221,7 @@ migrate_creds() {
 
 migrate_creds "claude" "$HOME/.claude/.credentials.json"
 migrate_creds "codex"  "$HOME/.codex/auth.json"
-migrate_creds "gemini" "$HOME/.config/gemini/oauth_creds.json"
+migrate_creds "gemini" "$HOME/.gemini/oauth_creds.json"
 
 if [[ ! -f "$OMEGA_DIR/config.toml" ]]; then
     cp config/default.toml "$OMEGA_DIR/config.toml"
