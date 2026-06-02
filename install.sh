@@ -607,27 +607,34 @@ esac
 
 step "Phase 6: Shell Integration"
 
-# Detect shell
+# Detect shell + the files it ACTUALLY reads.
+# zsh can relocate its config via ZDOTDIR (e.g. "clean home" setups that point it
+# at ~/Linux/zsh). Writing to ~/.zshrc would then be silently ignored — so we ask
+# zsh itself for the effective ZDOTDIR. PATH goes in the env file (read by EVERY
+# zsh: login, interactive, and non-interactive/scripts); aliases go in the rc.
 SHELL_NAME="$(basename "${SHELL:-bash}")"
 case "$SHELL_NAME" in
-    zsh)  RC_FILE="$HOME/.zshrc" ;;
-    bash) RC_FILE="$HOME/.bashrc" ;;
-    fish) RC_FILE="$HOME/.config/fish/config.fish" ;;
-    *)    RC_FILE="$HOME/.profile" ;;
+    zsh)
+        ZSH_DIR="$(zsh -c 'print -r -- ${ZDOTDIR:-$HOME}' 2>/dev/null)"
+        [ -d "$ZSH_DIR" ] || ZSH_DIR="$HOME"
+        ENV_FILE="$ZSH_DIR/.zshenv"
+        RC_FILE="$ZSH_DIR/.zshrc"
+        ;;
+    bash) ENV_FILE="$HOME/.bashrc";                  RC_FILE="$HOME/.bashrc" ;;
+    fish) ENV_FILE="$HOME/.config/fish/config.fish"; RC_FILE="$ENV_FILE" ;;
+    *)    ENV_FILE="$HOME/.profile";                 RC_FILE="$HOME/.profile" ;;
 esac
 
-# Add to PATH if not already there
+# Add ~/.local/bin to PATH (in the env file so omega/omg resolve in every context)
 EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
-if ! grep -qF '.local/bin' "$RC_FILE" 2>/dev/null; then
-    echo "" >> "$RC_FILE"
-    echo "# OmegaOS" >> "$RC_FILE"
-    echo "$EXPORT_LINE" >> "$RC_FILE"
-    ok "Added $INSTALL_DIR to PATH in $RC_FILE"
+if ! grep -qF '.local/bin' "$ENV_FILE" 2>/dev/null; then
+    { echo ""; echo "# OmegaOS"; echo "$EXPORT_LINE"; } >> "$ENV_FILE"
+    ok "Added $INSTALL_DIR to PATH in $ENV_FILE"
 else
     ok "PATH already includes $INSTALL_DIR"
 fi
 
-# Add omega alias for session manager
+# Add omega alias for session manager (interactive rc)
 ALIAS_LINE='alias om="omega menu"'
 if ! grep -qF 'alias om=' "$RC_FILE" 2>/dev/null; then
     echo "$ALIAS_LINE" >> "$RC_FILE"
