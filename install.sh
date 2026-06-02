@@ -55,23 +55,32 @@ bootstrap_os_packages() {
     command -v curl >/dev/null 2>&1 || need+=("curl")
     { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; } || need+=("C-toolchain")
     command -v pkg-config >/dev/null 2>&1 || need+=("pkg-config")
+    # rsync is used in Phase 5 to install the PDF generator (and other asset
+    # copies). A bare VPS lacks it, and under `set -euo pipefail` the missing
+    # `rsync` aborts the whole install mid-way (proven: `line 255: rsync: command
+    # not found` → install rc=127, leaving skills/commands/shell-integration
+    # uninstalled). Bootstrap it here with the rest of the build prerequisites.
+    command -v rsync >/dev/null 2>&1 || need+=("rsync")
+    # jq registers the tracking/verify hooks into settings.json (Phase 6.5). Absent
+    # → doctor reports "hooks present but not registered". Cheap to include here.
+    command -v jq >/dev/null 2>&1 || need+=("jq")
     if [[ ${#need[@]} -eq 0 ]]; then
-        ok "Build prerequisites present (git, curl, cc, pkg-config)"
+        ok "Build prerequisites present (git, curl, cc, pkg-config, rsync, jq)"
         return 0
     fi
     info "Installing build prerequisites: ${need[*]}"
     local SUDO=""
     [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
     if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates build-essential pkg-config
+        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates build-essential pkg-config rsync jq
     elif command -v dnf >/dev/null 2>&1; then
-        $SUDO dnf install -y curl git ca-certificates gcc gcc-c++ make pkgconf-pkg-config
+        $SUDO dnf install -y curl git ca-certificates gcc gcc-c++ make pkgconf-pkg-config rsync jq
     elif command -v yum >/dev/null 2>&1; then
-        $SUDO yum install -y curl git ca-certificates gcc gcc-c++ make pkgconfig
+        $SUDO yum install -y curl git ca-certificates gcc gcc-c++ make pkgconfig rsync jq
     elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -Sy --noconfirm curl git ca-certificates base-devel pkgconf
+        $SUDO pacman -Sy --noconfirm curl git ca-certificates base-devel pkgconf rsync jq
     elif command -v apk >/dev/null 2>&1; then
-        $SUDO apk add --no-cache curl git ca-certificates build-base pkgconf
+        $SUDO apk add --no-cache curl git ca-certificates build-base pkgconf rsync jq
     else
         err "No supported package manager (apt/dnf/yum/pacman/apk)."
         err "Install these manually, then re-run ./install.sh: ${need[*]}"
@@ -252,7 +261,14 @@ PDFGEN_SRC="$OMEGA_SRC/tools/pdfgen"
 PDFGEN_DST="$OMEGA_DIR/pdfgen"
 if [[ -d "$PDFGEN_SRC" ]]; then
     mkdir -p "$PDFGEN_DST"
-    rsync -a --exclude='node_modules' --exclude='.next' --exclude='output' "$PDFGEN_SRC/" "$PDFGEN_DST/"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --exclude='node_modules' --exclude='.next' --exclude='output' "$PDFGEN_SRC/" "$PDFGEN_DST/"
+    else
+        # Defense in depth: rsync is bootstrapped in Phase 2, but never let its
+        # absence abort the whole install (set -e). cp + prune the heavy dirs.
+        cp -a "$PDFGEN_SRC/." "$PDFGEN_DST/"
+        rm -rf "$PDFGEN_DST/node_modules" "$PDFGEN_DST/.next" "$PDFGEN_DST/output"
+    fi
     ok "PDF generator installed to $PDFGEN_DST/ (deps auto-install on first 'omega pdf')"
 else
     info "PDF generator source not found — skipping (can be added later)"
