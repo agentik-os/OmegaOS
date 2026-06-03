@@ -1027,6 +1027,13 @@ if [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]]; then
         ln -sf "$OMEGA_DIR/bin/omega-tg-up.sh" "$INSTALL_DIR/omega-tg-up" 2>/dev/null || true
     fi
     BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
+    # The command bot needs Bun specifically (uses Bun.$/Bun.spawn). install_bun_optional
+    # may have skipped it when node/npx was already present, so ensure it here.
+    if [[ -z "$BUN_BIN" ]]; then
+        info "Installing bun (required by the Telegram command bot)…"
+        curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+        [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
+    fi
     if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
         SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
         cat > "$SD_DIR/omega-tg-bot.service" <<EOF
