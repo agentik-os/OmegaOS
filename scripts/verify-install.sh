@@ -35,7 +35,7 @@ if grep -q "omega-\*.md" install.sh; then ok "omega-* slash commands installed";
 #    deepened 500k default (guards against a regression to the old 100k).
 if grep -q "history-limit 500000" config/rmux.conf.omega 2>/dev/null; then ok "rmux history-limit persisted (500000)"; else bad "history-limit not 500000 in rmux.conf.omega"; fi
 # 4-bis. The two startup history-limit calls (omega binary) match the 500k default.
-if [ "$(grep -rc '"history-limit", "500000"' crates/omega-cli/src/ 2>/dev/null | paste -sd+ - | bc 2>/dev/null)" = "2" ]; then ok "omega startup history-limit = 500000 (main + telegram bridge)"; else bad "startup history-limit not 500000 in both main.rs and telegram_bridge.rs"; fi
+if [ "$(grep -ro '"history-limit", "500000"' crates/omega-cli/src/ 2>/dev/null | wc -l)" -ge 2 ]; then ok "omega startup history-limit = 500000 (main + telegram bridge)"; else bad "startup history-limit not 500000 in both main.rs and telegram_bridge.rs"; fi
 
 # 4b. Alt+Up/Down scroll bindings use the quoted-string if-shell form. rmux 0.3.1
 #     rejects the brace `{ … }` command-list form ("bind-key does not accept a
