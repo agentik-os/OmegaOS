@@ -11,7 +11,7 @@ fn preview_to_color(c: PreviewColor) -> Color {
     match c {
         PreviewColor::Rgb(r, g, b) => Color::Rgb(r, g, b),
         PreviewColor::Indexed(i) => match i {
-            0 => Color::Black,
+            0 => Color::Reset,
             1 => Color::Red,
             2 => Color::Green,
             3 => Color::Yellow,
@@ -26,7 +26,12 @@ fn preview_to_color(c: PreviewColor) -> Color {
             12 => Color::LightBlue,
             13 => Color::LightMagenta,
             14 => Color::LightCyan,
-            15 => Color::White,
+            // 0 (black) and 15 (white) → Reset (the terminal's own fg) instead of
+            // a fixed black/white, which goes invisible when the theme's bg is the
+            // same shade. This is the mirror passthrough for Claude's own output —
+            // critical now that Claude renders to the normal screen (the whole
+            // conversation, incl. the user's own messages, flows through here).
+            15 => Color::Reset,
             n => Color::Indexed(n),
         },
     }
