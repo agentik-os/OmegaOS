@@ -3785,7 +3785,6 @@ impl TelegramBotEngine {
                  /status — live system dashboard (oracles, workers, done signals, group)\n\
                  /status <code>&lt;session&gt;</code> — capture the last 20 lines of that pane\n\
                  /dispatch <code>&lt;Project&gt; &lt;mission&gt;</code> — preview brief + confirm button → oracle\n\
-                 /aisb <code>text</code> — send to AISB Master\n\
                  /relay <code>session text</code> — send to specific session\n\
                  /kill <code>session</code> — kill a session\n\
                  /killall — kill ALL sessions (keeps bridge + master); <code>/killall confirm</code> to execute\n\n\
@@ -3796,9 +3795,7 @@ impl TelegramBotEngine {
                  /account add <code>&lt;provider&gt; &lt;name&gt;</code> — save current creds as named account\n\
                  /model — show current provider/model + list available\n\
                  /model <code>&lt;provider&gt; [model]</code> — switch active provider/model\n\
-                 /login — start OAuth reauth flow\n\
-                 /logout — clear active credentials\n\
-                 /billing — current Claude usage\n\n\
+                 <i>Login, logout &amp; billing are buttons on the /account card.</i>\n\n\
                  <b>Skills &amp; Audits:</b>\n\
                  /skills — list available skills\n\
                  /audits — show Quality Arsenal status\n\n\
