@@ -886,6 +886,14 @@ pub struct App {
     /// Session name the cached preview/revision belongs to — reset the gate on
     /// a session switch so the new pane always gets a fresh capture.
     pub preview_session: Option<String>,
+    /// Consecutive pane-capture failures for the current session. A pane in
+    /// transition (a login pane swap, a zoom/terminal-resize reflow, a brief
+    /// daemon hiccup) errors for a frame or two — clobbering the last-good
+    /// preview with "(session has no pane content)" was the bug behind the
+    /// view sticking on that message until a manual Ctrl+R. We keep the last
+    /// good frame and force a recapture until this streak crosses a threshold,
+    /// so only a GENUINELY dead pane shows the message.
+    pub preview_fail_streak: u32,
     /// Scroll position measured as LINES UP FROM THE TAIL (0 = newest line).
     /// Bottom-anchored so the view stays stable when the capture buffer grows
     /// (visible-only → full scrollback history): "3 lines up from the tail"
@@ -993,6 +1001,7 @@ impl App {
             preview_styled: None,
             preview_revision: 0,
             preview_session: None,
+            preview_fail_streak: 0,
             preview_inner_width: 0,
             preview_inner_height: 0,
             session_meta: std::collections::HashMap::new(),
@@ -1401,7 +1410,9 @@ impl App {
             match mgr.capture_pane_styled(&name, since).await {
                 // Pane unchanged since last render — keep the cached preview,
                 // skip the ~10k-cell restyle + the text flatten entirely.
-                Ok(omega_core::session::StyledCapture::Unchanged) => {}
+                Ok(omega_core::session::StyledCapture::Unchanged) => {
+                    self.preview_fail_streak = 0;
+                }
                 Ok(omega_core::session::StyledCapture::Changed {
                     rows,
                     cursor_row,
@@ -1421,13 +1432,25 @@ impl App {
                     self.preview_cursor = Some((cursor_row, cursor_col, cursor_visible));
                     self.preview_revision = revision;
                     self.preview_session = Some(name.clone());
+                    self.preview_fail_streak = 0;
                 }
                 Err(_) => {
-                    self.preview_content = String::from("(session has no pane content)");
-                    self.preview_styled = None;
-                    self.preview_cursor = None;
-                    self.preview_revision = 0;
-                    self.preview_session = None;
+                    // A capture can fail transiently while a pane is in
+                    // transition: a claude-login pane swap, a zoom / terminal
+                    // resize reflow, or a brief daemon hiccup. Do NOT flash
+                    // "(session has no pane content)" and stick on it — keep the
+                    // last good frame and force a full recapture next tick
+                    // (revision=0). Only a SUSTAINED failure (≥3 ticks) — i.e. a
+                    // genuinely dead pane — replaces the view with the message.
+                    self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
+                    self.preview_revision = 0; // force fresh recapture next tick
+                    if self.preview_fail_streak >= 3 || self.preview_styled.is_none() {
+                        self.preview_content = String::from("(session has no pane content)");
+                        self.preview_styled = None;
+                        self.preview_cursor = None;
+                        self.preview_session = None;
+                    }
+                    // else: retain last-good preview_{content,styled,cursor,session}.
                 }
             }
         } else {
@@ -1446,9 +1469,15 @@ impl App {
                     Ok(content) => {
                         self.preview_content = content;
                         self.preview_history_for = Some(name.clone());
+                        self.preview_fail_streak = 0;
                     }
                     Err(_) => {
-                        self.preview_content = String::from("(session has no pane content)");
+                        // Same sticky-last-good policy as the tail path: a
+                        // transient capture error must not clobber the view.
+                        self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
+                        if self.preview_fail_streak >= 3 || self.preview_content.is_empty() {
+                            self.preview_content = String::from("(session has no pane content)");
+                        }
                         self.preview_history_for = None;
                     }
                 }

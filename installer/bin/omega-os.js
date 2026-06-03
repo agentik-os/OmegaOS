@@ -4,11 +4,21 @@
  * omega-os — one-command installer for OmegaOS.
  *   npx omega-os            install into ./OmegaOS (or $HOME/Station/OmegaOS if ~/Station exists)
  *   npx omega-os --dir DIR  install into DIR
+ *   npx omega-os --plain    disable the animation (simple single-line bar)
  *   npx omega-os --help
  *
  * Zero runtime deps (Node builtins only) so npx is fast + robust. Clones the
- * PUBLIC repo agentik-os/OmegaOS and runs its install.sh, showing the OMEGA
- * banner + a single progress bar driven by install.sh's `==> Phase N` markers.
+ * PUBLIC repo agentik-os/OmegaOS and runs its install.sh.
+ *
+ * While install.sh runs (~8 min on a fresh box) and we're on a real TTY, we
+ * take over the screen with a full-screen experience: Matrix rain by default
+ * (OmegaOS agents ARE Matrix characters) + a playable Snake mini-game, with
+ * the OMEGA progress bar pinned at the bottom. install.sh output is parsed for
+ * phase markers (to advance the bar) and buffered (for error reporting) but
+ * never printed onto the animated screen.
+ *
+ * Fallback: no TTY / --plain / CI / tiny terminal → the original simple
+ * single-line progress bar (code path kept fully intact).
  */
 const { spawn, spawnSync } = require('child_process');
 const os = require('os');
@@ -44,6 +54,20 @@ const STEPS = [
   { key: 'done',   label: 'Finalizing' },
 ];
 
+// Matrix-agent lore tips rotated in the HUD. OmegaOS agents ARE Matrix chars.
+const LORE = [
+  'Neo is compiling — there is no spoon, only cargo.',
+  'Morpheus offers two pipelines — you take the one that ships.',
+  'Oracle routes the task to the right agent.',
+  'Agent Smith is replicating across panes.',
+  'Following the white rabbit into ~/.omega ...',
+  'Seraph guards the quality gate.',
+  'Keymaker is cutting keys for every provider.',
+  'Trinity locked the daemon socket.',
+  'Niobe is steering the fleet.',
+  'Link keeps the operator console online.',
+];
+
 function banner() {
   process.stdout.write('\n');
   for (const l of OMEGA) process.stdout.write('  ' + mag(l) + '\n');
@@ -64,14 +88,510 @@ function die(msg) { process.stdout.write('\n  ' + red('✗ ' + msg) + '\n\n'); p
 
 function have(cmd) { return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0; }
 
+// --- success / failure summaries (normal screen) -------------------------
+
+function printSuccess(dir) {
+  process.stdout.write('\n  ' + grn('✓ OmegaOS installed') + '  →  ' + bold(dir) + '\n\n');
+  process.stdout.write('  Next:\n');
+  process.stdout.write('    ' + cyan('source ~/.zshrc') + gray('   # or reopen your shell') + '\n');
+  process.stdout.write('    ' + cyan('omega doctor') + gray('     # verify') + '\n');
+  process.stdout.write('    ' + cyan('omega') + gray('            # launch the TUI') + '\n\n');
+  process.stdout.write('  ' + gray('Set up Telegram / providers from the TUI — Enter on any panel opens a guided wizard.') + '\n\n');
+}
+
+function printFailure(dir, code, lastLines) {
+  process.stdout.write('\n  ' + red('✗ install.sh exited ' + code) + '\n');
+  process.stdout.write('  ' + gray('Re-run inside the clone to see full output:  cd ' + dir + ' && ./install.sh') + '\n');
+  if (lastLines && lastLines.length) {
+    process.stdout.write('\n  ' + gray('Last output lines:') + '\n');
+    for (const l of lastLines) process.stdout.write('  ' + gray('│ ') + l + '\n');
+  }
+  process.stdout.write('\n');
+}
+
+// --- clone (shared by both paths) ----------------------------------------
+
+function doClone(dir) {
+  const exists = fs.existsSync(path.join(dir, '.git'));
+  const cloneArgs = exists
+    ? ['-C', dir, 'pull', '--ff-only']
+    : ['clone', '--depth', '1', REPO, dir];
+  const clone = spawnSync('git', cloneArgs, { encoding: 'utf8' });
+  if (clone.status !== 0) die('git ' + (exists ? 'pull' : 'clone') + ' failed:\n  ' + gray((clone.stderr || '').trim()));
+}
+
+/* =========================================================================
+ * PLAIN path — original simple single-line progress bar. Kept intact.
+ * ========================================================================= */
+function runPlain(dir) {
+  const total = STEPS.length;
+  let step = 0;
+  bar(step, total, STEPS[0].label);
+
+  // 1) clone (or pull if present) — uses a spinner-less line here as before
+  doClone(dir);
+
+  // 2) run install.sh, parse phase markers to drive the bar
+  const sh = path.join(dir, 'install.sh');
+  if (!fs.existsSync(sh)) die('install.sh not found in ' + dir);
+  step = 1; bar(step, total, STEPS[1].label);
+
+  const child = spawn('bash', [sh], { cwd: dir, env: process.env });
+  let buf = '';
+  const lastLines = [];
+  const onData = (d) => {
+    buf += d.toString();
+    let nl;
+    while ((nl = buf.indexOf('\n')) !== -1) {
+      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      lastLines.push(line); if (lastLines.length > 50) lastLines.shift();
+      for (let i = step; i < STEPS.length; i++) {
+        if (STEPS[i].re && STEPS[i].re.test(line)) { step = i; bar(step, total, STEPS[i].label); break; }
+      }
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+
+  child.on('close', (code) => {
+    if (code === 0) {
+      step = total - 1; bar(step, total, 'Done');
+      process.stdout.write('\n');
+      printSuccess(dir);
+    } else {
+      process.stdout.write('\n');
+      printFailure(dir, code, lastLines.slice(-40));
+      process.exit(code || 1);
+    }
+  });
+}
+
+/* =========================================================================
+ * ANIMATED path — full-screen Matrix rain + Snake, OMEGA bar pinned bottom.
+ * ========================================================================= */
+function runAnimated(dir) {
+  const out = process.stdout;
+  const inp = process.stdin;
+
+  // --- clone first, on the NORMAL screen, with a tiny spinner -------------
+  const exists = fs.existsSync(path.join(dir, '.git'));
+  const spin = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  let si = 0;
+  out.write('  ' + mag('▸ OMEGA') + '  ' + cyan(exists ? 'Updating clone' : 'Fetching OmegaOS') + '  ' + spin[0]);
+  const spinTimer = setInterval(() => {
+    si = (si + 1) % spin.length;
+    out.write('\r\x1b[2K  ' + mag('▸ OMEGA') + '  ' + cyan(exists ? 'Updating clone' : 'Fetching OmegaOS') + '  ' + spin[si]);
+  }, 90);
+  doClone(dir); // synchronous (spawnSync). die() exits cleanly if it fails.
+  clearInterval(spinTimer);
+  out.write('\r\x1b[2K  ' + mag('▸ OMEGA') + '  ' + grn('✓') + ' clone ready\n');
+
+  const sh = path.join(dir, 'install.sh');
+  if (!fs.existsSync(sh)) die('install.sh not found in ' + dir);
+
+  // ---- terminal / scene state -------------------------------------------
+  let W = out.columns || 80;
+  let H = out.rows || 24;
+  let scene = 'matrix';          // 'matrix' | 'snake'
+  let rawEnabled = false;
+  let cleaned = false;
+  let child = null;
+  const startTime = Date.now();
+
+  // progress state (parsed from install.sh)
+  const total = STEPS.length;
+  let step = 1;                  // step 0 (clone) is done; now on Environment
+  const lastLines = [];          // ~50 buffered lines for error reporting
+  let parseBuf = '';
+
+  // matrix columns
+  let columns = [];
+  // lore rotation
+  let loreIdx = 0;
+  let frame = 0;
+
+  // snake state
+  let snake = null;
+  function initSnake() {
+    const cx = Math.floor(W / 2), cy = Math.floor((H - 3) / 2);
+    snake = {
+      body: [ { x: cx, y: cy }, { x: cx - 1, y: cy }, { x: cx - 2, y: cy }, { x: cx - 3, y: cy } ],
+      dir: { x: 1, y: 0 },
+      nextDir: { x: 1, y: 0 },
+      food: randFood([]),
+      score: 0,
+      stepEvery: 4,   // move every N frames (slower = bigger number)
+      tick: 0,
+    };
+    snake.food = randFood(snake.body);
+  }
+  function randFood(body) {
+    // play area is rows 0..H-4 (bottom 3 rows are HUD), cols 0..W-1
+    const maxY = Math.max(1, H - 4);
+    for (let tries = 0; tries < 200; tries++) {
+      const x = 1 + Math.floor(Math.random() * Math.max(1, W - 2));
+      const y = 1 + Math.floor(Math.random() * Math.max(1, maxY - 1));
+      if (!body.some((s) => s.x === x && s.y === y)) return { x, y };
+    }
+    return { x: 2, y: 2 };
+  }
+  function resetSnake() {
+    const s = snake.score; // unused on purpose; full reset per spec
+    initSnake();
+  }
+
+  // matrix glyphs: katakana U+30A0..U+30FF + latin + digits
+  const GLYPHS = (() => {
+    const g = [];
+    for (let c = 0x30a0; c <= 0x30ff; c++) g.push(String.fromCharCode(c));
+    const extra = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%&*<>=+';
+    for (const ch of extra) g.push(ch);
+    return g;
+  })();
+  const glyph = () => GLYPHS[(Math.random() * GLYPHS.length) | 0];
+
+  function buildColumns() {
+    columns = [];
+    for (let x = 0; x < W; x++) {
+      columns.push(makeColumn(x, true));
+    }
+  }
+  function makeColumn(x, randomStart) {
+    const len = 4 + ((Math.random() * Math.min(18, Math.max(4, H - 4))) | 0);
+    const chars = [];
+    for (let i = 0; i < len; i++) chars.push(glyph());
+    return {
+      x,
+      y: randomStart ? -Math.random() * H : -(Math.random() * 6),
+      speed: 0.2 + Math.random() * 0.8,
+      len,
+      chars,
+    };
+  }
+
+  // ---- rendering ---------------------------------------------------------
+  function pad(s, visibleLen) {
+    // pad a (possibly ansi-colored) string to W columns using visibleLen
+    const padN = Math.max(0, W - visibleLen);
+    return s + ' '.repeat(padN);
+  }
+
+  function render() {
+    frame++;
+    let s = '\x1b[H'; // home
+    const playRows = H - 3; // rows 1..playRows are the scene; last 3 are HUD
+
+    if (scene === 'matrix') {
+      stepMatrix();
+      s += renderMatrix(playRows);
+    } else {
+      stepSnake();
+      s += renderSnake(playRows);
+    }
+    s += renderHUD();
+    out.write(s);
+  }
+
+  function stepMatrix() {
+    for (const col of columns) {
+      col.y += col.speed;
+      // occasional glyph mutation
+      if ((Math.random() < 0.08)) {
+        const i = (Math.random() * col.len) | 0;
+        col.chars[i] = glyph();
+      }
+      const head = Math.floor(col.y);
+      if (head - col.len > H) {
+        // ran off the bottom → reset above the top
+        const fresh = makeColumn(col.x, false);
+        col.y = fresh.y; col.speed = fresh.speed; col.len = fresh.len; col.chars = fresh.chars;
+      }
+    }
+  }
+
+  function renderMatrix(playRows) {
+    // build a grid of cells (char + color code) for the scene area
+    const blank = ' ';
+    // grid[y] = array of strings (already colored) for each x
+    const grid = new Array(playRows);
+    for (let y = 0; y < playRows; y++) {
+      grid[y] = new Array(W).fill(null);
+    }
+    for (const col of columns) {
+      const head = Math.floor(col.y);
+      for (let k = 0; k < col.len; k++) {
+        const y = head - k;
+        if (y < 0 || y >= playRows) continue;
+        const ch = col.chars[(head - k + col.len * 4) % col.len] || glyph();
+        let colored;
+        if (k === 0) {
+          colored = '\x1b[97m' + ch + '\x1b[0m';           // bright near-white head
+        } else if (k === 1) {
+          colored = '\x1b[38;5;120m' + ch + '\x1b[0m';      // bright green
+        } else if (k < col.len * 0.5) {
+          colored = '\x1b[32m' + ch + '\x1b[0m';            // mid green
+        } else {
+          colored = '\x1b[38;5;28m' + ch + '\x1b[0m';       // dim green fade
+        }
+        if (col.x >= 0 && col.x < W) grid[y][col.x] = colored;
+      }
+    }
+    // emit rows (rows are 1-indexed on screen; scene starts at row 1)
+    let buf = '';
+    for (let y = 0; y < playRows; y++) {
+      buf += '\x1b[' + (y + 1) + ';1H';
+      let line = '';
+      for (let x = 0; x < W; x++) line += grid[y][x] || blank;
+      buf += line + '\x1b[K';
+    }
+    return buf;
+  }
+
+  function renderSnake(playRows) {
+    // draw blank rows then overlay snake + food. play area = rows 1..playRows.
+    let buf = '';
+    // clear scene region
+    for (let y = 0; y < playRows; y++) {
+      buf += '\x1b[' + (y + 1) + ';1H' + ' '.repeat(W) + '\x1b[K';
+    }
+    // border hint (simple): draw food
+    const f = snake.food;
+    if (f.y >= 1 && f.y <= playRows) {
+      buf += '\x1b[' + f.y + ';' + (f.x) + 'H' + '\x1b[38;5;208m◆\x1b[0m';
+    }
+    // body
+    for (let i = 0; i < snake.body.length; i++) {
+      const seg = snake.body[i];
+      if (seg.y < 1 || seg.y > playRows || seg.x < 1 || seg.x > W) continue;
+      const color = i === 0 ? '\x1b[97m' : '\x1b[38;5;120m';
+      buf += '\x1b[' + seg.y + ';' + seg.x + 'H' + color + '█\x1b[0m';
+    }
+    return buf;
+  }
+
+  function stepSnake() {
+    snake.tick++;
+    if (snake.tick < snake.stepEvery) return;
+    snake.tick = 0;
+
+    // apply queued direction (prevents 180° reversal applied below)
+    snake.dir = snake.nextDir;
+    const head = snake.body[0];
+    const nx = head.x + snake.dir.x;
+    const ny = head.y + snake.dir.y;
+    const playRows = H - 3;
+
+    // wall collision → reset (NEVER affects install)
+    if (nx < 1 || nx > W || ny < 1 || ny > playRows) { resetSnake(); return; }
+    // self collision → reset
+    if (snake.body.some((seg) => seg.x === nx && seg.y === ny)) { resetSnake(); return; }
+
+    snake.body.unshift({ x: nx, y: ny });
+    if (nx === snake.food.x && ny === snake.food.y) {
+      snake.score++;
+      snake.food = randFood(snake.body);
+      // step up speed slightly with score (lower bound 2 frames/move)
+      if (snake.score % 4 === 0 && snake.stepEvery > 2) snake.stepEvery--;
+    } else {
+      snake.body.pop();
+    }
+  }
+
+  function renderHUD() {
+    const rowBar = H - 2;
+    const rowMid = H - 1;
+    const rowBot = H;
+
+    // --- progress bar line ---
+    const pct = Math.min(100, Math.round((step / (total - 1)) * 100));
+    const label = STEPS[step] ? STEPS[step].label : 'Working';
+    // bar width adapts to terminal width, leaving room for prefix/suffix
+    const bw = Math.max(8, Math.min(40, W - 28));
+    const filled = Math.round((pct / 100) * bw);
+    const barStr = '\x1b[38;5;120m' + '█'.repeat(filled) + '\x1b[38;5;236m' + '░'.repeat(bw - filled) + '\x1b[0m';
+    const pctStr = '\x1b[1m' + (String(pct) + '%').padStart(4) + '\x1b[0m';
+    const barVisible = ('▸ OMEGA  [' + ' '.repeat(bw) + '] ' + (String(pct) + '%').padStart(4) + '  ' + label).length;
+    const barColored = '\x1b[35;1m▸ OMEGA\x1b[0m  [' + barStr + '] ' + pctStr + '  \x1b[36m' + label + '\x1b[0m';
+    let hud = '\x1b[' + rowBar + ';1H' + pad(barColored, barVisible) + '\x1b[K';
+
+    // --- middle line ---
+    let mid;
+    let midVisible;
+    if (scene === 'matrix') {
+      const tip = LORE[loreIdx % LORE.length];
+      // rotate lore roughly every ~4s (22fps * 4 ≈ 88 frames)
+      if (frame % 88 === 0) loreIdx++;
+      mid = '\x1b[2;32m' + tip + '\x1b[0m';
+      midVisible = tip.length;
+    } else {
+      const t = 'SNAKE  score: ' + snake.score;
+      mid = '\x1b[38;5;120m' + 'SNAKE\x1b[0m  score: \x1b[1m' + snake.score + '\x1b[0m';
+      midVisible = t.length;
+    }
+    hud += '\x1b[' + rowMid + ';1H' + pad(mid, midVisible) + '\x1b[K';
+
+    // --- bottom controls + timer ---
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
+    const ss = String(elapsed % 60).padStart(2, '0');
+    const ctrlPlain = '[g] snake  [m] matrix  [Ctrl-C] cancel';
+    const timerPlain = '⏱ ' + mm + ':' + ss;
+    const gap = Math.max(2, W - ctrlPlain.length - timerPlain.length);
+    const ctrlColored = '\x1b[90m[\x1b[0m\x1b[1mg\x1b[0m\x1b[90m] snake  [\x1b[0m\x1b[1mm\x1b[0m\x1b[90m] matrix  [\x1b[0m\x1b[1mCtrl-C\x1b[0m\x1b[90m] cancel\x1b[0m';
+    const timerColored = '\x1b[36m' + timerPlain + '\x1b[0m';
+    const botVisible = ctrlPlain.length + gap + timerPlain.length;
+    hud += '\x1b[' + rowBot + ';1H' + pad(ctrlColored + ' '.repeat(gap) + timerColored, botVisible) + '\x1b[K';
+
+    return hud;
+  }
+
+  // ---- cleanup (bulletproof, idempotent) ---------------------------------
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+    try { if (renderTimer) clearInterval(renderTimer); } catch (e) {}
+    try {
+      if (rawEnabled && inp.isTTY && typeof inp.setRawMode === 'function') {
+        inp.setRawMode(false);
+      }
+    } catch (e) {}
+    try { inp.pause(); } catch (e) {}
+    try { inp.removeListener('data', onKey); } catch (e) {}
+    try { out.write('\x1b[?25h'); } catch (e) {}      // show cursor
+    try { out.write('\x1b[?1049l'); } catch (e) {}    // leave alt screen
+  }
+
+  // ---- input handling ----------------------------------------------------
+  function onKey(data) {
+    const str = data.toString();
+    for (let i = 0; i < str.length; i++) {
+      const ch = str[i];
+      if (ch === '\x03') { // Ctrl-C
+        try { if (child) child.kill('SIGTERM'); } catch (e) {}
+        cleanup();
+        process.stdout.write('\n  ' + yel('✗ cancelled') + gray('  — install.sh stopped. Re-run: ') + cyan('npx omega-os') + '\n\n');
+        process.exit(130);
+        return;
+      }
+      if (ch === 'g' || ch === 'G') { if (scene !== 'snake') { initSnake(); scene = 'snake'; } continue; }
+      if (ch === 'm' || ch === 'M') { scene = 'matrix'; continue; }
+      // arrow keys: \x1b[A/B/C/D
+      if (ch === '\x1b' && str[i + 1] === '[') {
+        const code = str[i + 2];
+        steer(code);
+        i += 2;
+        continue;
+      }
+      // WASD
+      if (ch === 'w' || ch === 'W') steer('A');
+      else if (ch === 's' || ch === 'S') steer('B');
+      else if (ch === 'd' || ch === 'D') steer('C');
+      else if (ch === 'a' || ch === 'A') steer('D');
+    }
+  }
+  function steer(code) {
+    if (scene !== 'snake' || !snake) return;
+    let nd = null;
+    if (code === 'A') nd = { x: 0, y: -1 };       // up
+    else if (code === 'B') nd = { x: 0, y: 1 };   // down
+    else if (code === 'C') nd = { x: 1, y: 0 };   // right
+    else if (code === 'D') nd = { x: -1, y: 0 };  // left
+    if (!nd) return;
+    // prevent 180° reversal (compare against current committed dir)
+    if (nd.x === -snake.dir.x && nd.y === -snake.dir.y) return;
+    snake.nextDir = nd;
+  }
+
+  // ---- resize ------------------------------------------------------------
+  function onResize() {
+    W = out.columns || 80;
+    H = out.rows || 24;
+    buildColumns();
+    if (scene === 'snake') initSnake();
+  }
+
+  // ---- enter the experience ---------------------------------------------
+  out.write('\x1b[?1049h'); // enter alternate screen buffer
+  out.write('\x1b[?25l');   // hide cursor
+  out.write('\x1b[2J');     // clear
+
+  try {
+    if (inp.isTTY && typeof inp.setRawMode === 'function') {
+      inp.setRawMode(true);
+      rawEnabled = true;
+    }
+  } catch (e) {}
+  inp.resume();
+  inp.on('data', onKey);
+  out.on('resize', onResize);
+
+  buildColumns();
+
+  // register bulletproof cleanup on every exit path
+  process.on('exit', cleanup);
+  process.on('SIGINT', () => { try { if (child) child.kill('SIGTERM'); } catch (e) {} cleanup(); process.exit(130); });
+  process.on('SIGTERM', () => { try { if (child) child.kill('SIGTERM'); } catch (e) {} cleanup(); process.exit(143); });
+  process.on('uncaughtException', (err) => {
+    cleanup();
+    process.stderr.write('\n' + red('omega-os error: ') + (err && err.stack ? err.stack : String(err)) + '\n');
+    try { if (child) child.kill('SIGTERM'); } catch (e) {}
+    process.exit(1);
+  });
+
+  const renderTimer = setInterval(render, 45); // ~22fps
+
+  // ---- run install.sh; parse markers, buffer output (never printed) ------
+  child = spawn('bash', [sh], { cwd: dir, env: process.env });
+  const onData = (d) => {
+    parseBuf += d.toString();
+    let nl;
+    while ((nl = parseBuf.indexOf('\n')) !== -1) {
+      const line = parseBuf.slice(0, nl); parseBuf = parseBuf.slice(nl + 1);
+      lastLines.push(line); if (lastLines.length > 50) lastLines.shift();
+      for (let i = step; i < STEPS.length; i++) {
+        if (STEPS[i].re && STEPS[i].re.test(line)) { step = i; break; }
+      }
+    }
+  };
+  child.stdout.on('data', onData);
+  child.stderr.on('data', onData);
+
+  child.on('close', (code) => {
+    step = total - 1;            // finalize bar
+    cleanup();                   // back to normal screen
+    if (code === 0) {
+      banner();
+      printSuccess(dir);
+    } else {
+      banner();
+      printFailure(dir, code, lastLines.slice(-40));
+      process.exit(code || 1);
+    }
+  });
+}
+
+/* ========================================================================= */
+
+function shouldAnimate(args) {
+  if (args.includes('--plain')) return false;
+  if (!process.stdout.isTTY) return false;
+  if (process.env.CI) return false;
+  const rows = process.stdout.rows || 0;
+  const cols = process.stdout.columns || 0;
+  if (rows < 12 || cols < 40) return false;
+  return true;
+}
+
 function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     banner();
-    process.stdout.write('  Usage: npx omega-os [--dir <path>]\n\n');
+    process.stdout.write('  Usage: npx omega-os [--dir <path>] [--plain]\n\n');
     process.stdout.write('    --dir <path>   install location (default: ~/Station/OmegaOS if ~/Station exists, else ./OmegaOS)\n');
+    process.stdout.write('    --plain        disable the full-screen animation (simple progress bar only)\n');
     process.stdout.write('    --help         this help\n\n');
-    process.stdout.write('  Installs OmegaOS from ' + REPO + '\n  then runs its install.sh (builds rmux + omega, ~8 min on a fresh box).\n\n');
+    process.stdout.write('  Installs OmegaOS from ' + REPO + '\n  then runs its install.sh (builds rmux + omega, ~8 min on a fresh box).\n');
+    process.stdout.write('  ' + gray('While it builds, enjoy the Matrix rain — or press [g] to play Snake.') + '\n\n');
     return;
   }
 
@@ -90,53 +610,8 @@ function main() {
   }
   dir = path.resolve(dir);
 
-  const total = STEPS.length;
-  let step = 0;
-  bar(step, total, STEPS[0].label);
-
-  // 1) clone (or pull if present)
-  const exists = fs.existsSync(path.join(dir, '.git'));
-  const cloneArgs = exists
-    ? ['-C', dir, 'pull', '--ff-only']
-    : ['clone', '--depth', '1', REPO, dir];
-  const clone = spawnSync('git', cloneArgs, { encoding: 'utf8' });
-  if (clone.status !== 0) die('git ' + (exists ? 'pull' : 'clone') + ' failed:\n  ' + gray((clone.stderr || '').trim()));
-
-  // 2) run install.sh, parse phase markers to drive the bar
-  const sh = path.join(dir, 'install.sh');
-  if (!fs.existsSync(sh)) die('install.sh not found in ' + dir);
-  step = 1; bar(step, total, STEPS[1].label);
-
-  const child = spawn('bash', [sh], { cwd: dir, env: process.env });
-  let buf = '';
-  const onData = (d) => {
-    buf += d.toString();
-    let nl;
-    while ((nl = buf.indexOf('\n')) !== -1) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-      for (let i = step; i < STEPS.length; i++) {
-        if (STEPS[i].re && STEPS[i].re.test(line)) { step = i; bar(step, total, STEPS[i].label); break; }
-      }
-    }
-  };
-  child.stdout.on('data', onData);
-  child.stderr.on('data', onData);
-
-  child.on('close', (code) => {
-    if (code === 0) {
-      step = total - 1; bar(step, total, 'Done');
-      process.stdout.write('\n\n  ' + grn('✓ OmegaOS installed') + '  →  ' + bold(dir) + '\n\n');
-      process.stdout.write('  Next:\n');
-      process.stdout.write('    ' + cyan('source ~/.zshrc') + gray('   # or reopen your shell') + '\n');
-      process.stdout.write('    ' + cyan('omega doctor') + gray('     # verify') + '\n');
-      process.stdout.write('    ' + cyan('omega') + gray('            # launch the TUI') + '\n\n');
-      process.stdout.write('  ' + gray('Set up Telegram / providers from the TUI — Enter on any panel opens a guided wizard.') + '\n\n');
-    } else {
-      process.stdout.write('\n\n  ' + red('✗ install.sh exited ' + code) + '\n');
-      process.stdout.write('  ' + gray('Re-run inside the clone to see full output:  cd ' + dir + ' && ./install.sh') + '\n\n');
-      process.exit(code || 1);
-    }
-  });
+  if (shouldAnimate(args)) runAnimated(dir);
+  else runPlain(dir);
 }
 
 main();

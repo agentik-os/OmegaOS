@@ -732,8 +732,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
                     SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
-                    SessionFocus::Chat => "In session — Tab: back to list · Tab-Tab: hide/show menu".to_string(),
-                    SessionFocus::ChatFullscreen => "Session FULLSCREEN — Tab-Tab: show menu".to_string(),
+                    SessionFocus::Chat => "In session — Tab: back to list · Ctrl+X: close session · Tab-Tab: hide/show menu".to_string(),
+                    SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
             } else if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
@@ -1551,6 +1551,16 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     // Ctrl+R (reverse-search) inside the mirror — the user asked for ^R reload.
     if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
         return Action::Restart;
+    }
+
+    // Ctrl+X — CLOSE (kill) the session you're focused in, WITHOUT first Tabbing
+    // back to the list. Plain 'x' must stay typable into the agent, so the close
+    // action is the Ctrl+X chord (mnemonic: eXit; same deliberate override style
+    // as Ctrl+R above). Drop to the list first so the user lands on a live
+    // selection after the focused pane dies instead of a dead/empty chat.
+    if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        app.session_focus = SessionFocus::List;
+        return Action::KillSession(session);
     }
 
     // Super-scroll: PageUp/PageDown jump a FULL page (viewport height) so a

@@ -974,6 +974,7 @@ async fn run_tui_loop(
         let drain_start = std::time::Instant::now();
         let drain_budget = std::time::Duration::from_millis(8);
         let mut first_iter = true;
+        let mut saw_resize = false;
         while {
             let timeout = if first_iter {
                 tick_rate
@@ -984,6 +985,13 @@ async fn run_tui_loop(
         } {
             first_iter = false;
             let evt = crossterm::event::read()?;
+            // A terminal zoom / font-resize emits a Resize event. The pane
+            // capture can briefly fail mid-reflow; force a clear + fresh preview
+            // AFTER the drain so the view re-resolves immediately instead of
+            // waiting up to 2s for the housekeeping refresh (or a manual Ctrl+R).
+            if matches!(evt, crossterm::event::Event::Resize(_, _)) {
+                saw_resize = true;
+            }
             let selected_before = app.selected;
             let tab_before = app.tab;
             let detail_focused_before = app.detail_focused;
@@ -1373,11 +1381,21 @@ async fn run_tui_loop(
                             //    poller); kill any stale rmux bridge first so two
                             //    pollers never hit getUpdates → permanent HTTP 409.
                             //    Fall back to an rmux session only if systemd is absent.
+                            //    The `enable --now` is wrapped in a timeout so a
+                            //    slow/hung systemd can never FREEZE the wizard UI
+                            //    (the cause of the "had to refresh manually" bug).
                             let mgr = SessionManager::connect().await?;
                             let _ = mgr.kill_session("omega-telegram-bridge").await;
-                            let systemd_ok = tokio::process::Command::new("systemctl")
-                                .args(["--user", "enable", "--now", "omega-telegram.service"])
-                                .status().await.map(|s| s.success()).unwrap_or(false);
+                            let systemd_ok = matches!(
+                                tokio::time::timeout(
+                                    std::time::Duration::from_secs(8),
+                                    tokio::process::Command::new("systemctl")
+                                        .args(["--user", "enable", "--now", "omega-telegram.service"])
+                                        .status(),
+                                )
+                                .await,
+                                Ok(Ok(s)) if s.success()
+                            );
                             if systemd_ok {
                                 app.status_message = Some(
                                     "[+] Telegram setup done — bridge running as the persistent omega-telegram service".to_string(),
@@ -1396,6 +1414,22 @@ async fn run_tui_loop(
                                         ));
                                     }
                                 }
+                            }
+                            // The bridge creates the aisb-master mirror session
+                            // ASYNCHRONOUSLY on its own startup — racing the refresh
+                            // below, which left the Sessions view empty until the
+                            // user manually refreshed. Create the mirror SYNCHRONOUSLY
+                            // here so the auto-refresh at the end of the wizard
+                            // immediately shows the master (no manual refresh needed).
+                            let omega_cfg = OmegaConfig::load().unwrap_or_default();
+                            if let Some(agent) =
+                                omega_core::agents::Agent::from_name(&omega_cfg.aisb_agent)
+                            {
+                                let cwd = std::env::current_dir()
+                                    .ok()
+                                    .and_then(|p| p.to_str().map(String::from))
+                                    .unwrap_or_else(|| "/home".to_string());
+                                let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
                             }
                             let _ = app.refresh().await;
                             // Close the loop: drop the user onto the master's live
@@ -1743,6 +1777,15 @@ async fn run_tui_loop(
             if drain_start.elapsed() > drain_budget {
                 break;
             }
+        }
+
+        // Terminal was resized/zoomed this tick → clear the (now mis-sized)
+        // frame and re-resolve the preview so the session view recovers at once
+        // instead of getting stuck on "(session has no pane content)".
+        if saw_resize {
+            let _ = terminal.clear();
+            let _ = app.refresh_preview().await;
+            last_preview_refresh = std::time::Instant::now();
         }
 
         // First scroll-up out of tail mode: load scrollback NOW (this tick,

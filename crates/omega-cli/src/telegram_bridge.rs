@@ -966,11 +966,29 @@ impl TelegramBotEngine {
                 // delivered verbatim as the reply. Caught here BEFORE the content
                 // arm so the error text never reaches the answer path.
                 Ok(outcome) if outcome.is_error => {
-                    let body = if outcome.text.trim().is_empty() {
+                    let mut body = if outcome.text.trim().is_empty() {
                         "The model session returned an error (no detail).".to_string()
                     } else {
                         outcome.text.clone()
                     };
+                    // If the error is an AUTH failure (expired/absent Claude
+                    // login), make it actionable: a fresh user has no creds for
+                    // the brain to think with. Tell them exactly how to connect
+                    // Claude from Telegram (the /login OAuth-paste flow).
+                    let lc = body.to_lowercase();
+                    let is_auth_err = lc.contains("/login")
+                        || lc.contains("invalid api key")
+                        || lc.contains("authentication_error")
+                        || lc.contains("oauth token has expired")
+                        || lc.contains("authentication token has expired")
+                        || lc.contains("credit balance is too low");
+                    if is_auth_err {
+                        body.push_str(
+                            "\n\n🔑 Claude isn't connected. Send /login and I'll \
+                             give you a link — sign in, paste the code back here, \
+                             and the bot is live (reuses your Claude session login).",
+                        );
+                    }
                     let err_html = formatting::smart_wrap_response(
                         agent_label,
                         &body,
@@ -5398,6 +5416,17 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     println!("  Relay session: {}", cfg.relay_session);
     println!("  Chat ID:       {}", cfg.chat_id);
 
+    // Reuse the SAME Claude login as the interactive sessions. Claude's silent
+    // token auto-refresh atomic-writes ~/.claude/.credentials.json, which BREAKS
+    // the symlink to the omega canonical store the brain reads (via
+    // ~/.omega/claude-bridge-config/.credentials.json → ~/.omega/credentials/claude.json)
+    // — leaving the bridge thinking with a STALE token (often the reason the bot
+    // "receives but never answers"). Reconcile at startup (idempotent: a no-op
+    // when the symlink is still intact) so the brain boots on the freshest creds.
+    if let Err(e) = omega_core::oauth::sync_credentials_to_omega() {
+        tracing::warn!(error = %e, "startup credential sync skipped (login via Telegram /login)");
+    }
+
     // Keep full scrollback for the oracles this bridge spawns (default 2000
     // lines lost the top of long chats). Global rmux daemon option, set once
     // at startup so any session spawned later retains 100k lines. Best-effort.
@@ -5426,6 +5455,10 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         // Periodic healthcheck every 60s
         if last_healthcheck.elapsed() > Duration::from_secs(60) {
             last_healthcheck = std::time::Instant::now();
+            // Follow interactive-session token refreshes (see startup note):
+            // re-link the omega store to the freshest ~/.claude creds. Idempotent
+            // and cheap (a no-op while the symlink is intact).
+            let _ = omega_core::oauth::sync_credentials_to_omega();
             let sessions = engine.mgr.list_sessions().await.unwrap_or_default();
             if !sessions
                 .iter()
