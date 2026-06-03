@@ -60,3 +60,34 @@ bind-key L display-popup -E -w 80% -h 60% "omega list; read -p 'Press Enter to c
 
 # Prefix + P → omega patrol once
 bind-key P display-popup -E -w 80% -h 40% "omega patrol --once; read -p 'Press Enter to close...'"
+
+# ─── Terminal UX hardening ────────────────────────────────────────────────
+# Derived from a runtime crash-test of the session layer (input / scroll /
+# copy-paste / color). Each line fixes a behavior the rmux defaults get wrong
+# for an agent session you live in all day. Evidence in scripts/crash-test-session.sh.
+
+# Mouse: wheel-scroll the scrollback + drag-to-select. Combined with
+# set-clipboard=external (below), a drag-select copies straight to your LOCAL
+# clipboard over SSH via OSC 52. Tradeoff: the terminal's own native selection
+# now needs Shift+drag to bypass rmux — the one accepted side effect.
+set -g mouse on
+
+# OSC 52: let a yank inside the pane reach the operator's local clipboard, and
+# let apps running inside the pane drive the clipboard / emit passthrough
+# sequences (images, DCS). Default leaves copy stuck on the server.
+set -g set-clipboard external
+set -g allow-passthrough on
+
+# Escape-time: the rmux/tmux default is 500ms, which makes Alt/Meta keys (incl.
+# the Alt+Up/Down scroll bindings above) and a bare ESC feel laggy and
+# ambiguous. 10ms is the standard snappy value.
+set -g escape-time 10
+
+# Truecolor: advertise RGB to apps in the pane so Claude's syntax highlighting
+# and themes render in 24-bit instead of banded 256-color. terminal-features
+# is a server option (-s), appended (-a) so we don't clobber existing entries.
+set -sa terminal-features ",*:RGB"
+
+# Focus events: let editors / Claude know when the pane gains or loses focus
+# (autosave, pause-on-blur, etc.).
+set -g focus-events on

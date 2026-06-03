@@ -53,6 +53,22 @@ if grep -q "omega clock" config/rmux.conf.omega 2>/dev/null; then ok "rmux statu
 # 4d. timezone knob documented for the operator in the shipped config template.
 if grep -q "^# timezone" config/default.toml 2>/dev/null; then ok "timezone config documented in default.toml"; else bad "timezone knob missing from default.toml"; fi
 
+# 4e. Terminal UX hardening (crash-test findings) persisted in the sourced rmux
+#     config: mouse scroll/select, OSC52 clipboard, snappy escape-time, truecolor.
+#     These are the defaults rmux gets wrong for an all-day agent session.
+RC=config/rmux.conf.omega
+while IFS= read -r opt; do
+  [ -z "$opt" ] && continue
+  if grep -qF "$opt" "$RC" 2>/dev/null; then ok "rmux: '$opt' persisted"; else bad "rmux: '$opt' missing from rmux.conf.omega"; fi
+done <<'OPTS'
+set -g mouse on
+set -g set-clipboard external
+set -g allow-passthrough on
+set -g escape-time 10
+set -sa terminal-features ",*:RGB"
+set -g focus-events on
+OPTS
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 
