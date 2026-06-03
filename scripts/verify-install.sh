@@ -73,6 +73,14 @@ OPTS
 #     Predictive local echo + UDP diffs → lag-free typing/streaming on a far VPS.
 if grep -q "install_mosh_optional" install.sh; then ok "mosh (low-latency SSH) bootstrapped by install.sh"; else bad "mosh bootstrap step missing from install.sh"; fi
 
+# 4g. System-wide rmux config so EVERY user (root + future accounts) gets the
+#     hardened session via /etc/rmux.conf, not just the installing user.
+if grep -q "/etc/omega/rmux.conf.omega" install.sh && grep -q "/etc/rmux.conf" install.sh; then ok "system-wide rmux config (/etc/rmux.conf) wired for all users"; else bad "system-wide rmux config step missing from install.sh"; fi
+
+# 4h. UTF-8 locale guaranteed so mosh never degrades + TUI renders correctly,
+#     for root + future users (what the Termius mosh -l LANG=… relies on).
+if grep -q "ensure_utf8_locale" install.sh; then ok "UTF-8 locale guaranteed by install.sh"; else bad "UTF-8 locale guarantee missing from install.sh"; fi
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 
