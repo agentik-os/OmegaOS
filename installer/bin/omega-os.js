@@ -28,6 +28,18 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = 'https://github.com/agentik-os/OmegaOS.git';
+
+// install.sh runs behind the animation (TTY held), so any prompt would hang
+// invisibly. Force every child tool non-interactive: git fails fast instead of
+// asking for credentials, apt never prompts. (install.sh also exports these,
+// belt-and-suspenders.) NOTE: CI here only affects install.sh's children — the
+// animation decision already happened in main() against the real process.env.
+const CHILD_ENV = Object.assign({}, process.env, {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || 'ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new',
+  DEBIAN_FRONTEND: 'noninteractive',
+  CI: process.env.CI || '1',
+});
 const tty = process.stdout.isTTY;
 const C = (n, s) => (tty ? `\x1b[${n}m${s}\x1b[0m` : s);
 const cyan = (s) => C('36', s), mag = (s) => C('35;1', s), grn = (s) => C('32', s),
@@ -138,7 +150,7 @@ function runPlain(dir) {
   if (!fs.existsSync(sh)) die('install.sh not found in ' + dir);
   step = 1; bar(step, total, STEPS[1].label);
 
-  const child = spawn('bash', [sh], { cwd: dir, env: process.env });
+  const child = spawn('bash', [sh], { cwd: dir, env: CHILD_ENV });
   let buf = '';
   const lastLines = [];
   const onData = (d) => {
@@ -198,6 +210,12 @@ function runAnimated(dir) {
   let cleaned = false;
   let child = null;
   const startTime = Date.now();
+  // Stall watchdog: a hang must NEVER be invisible behind the animation. We
+  // track the last time install.sh emitted ANY output; if it goes quiet for too
+  // long the HUD surfaces a warning + the last line so the user knows it's
+  // waiting (and can Ctrl-C) instead of staring at a frozen bar.
+  let lastOutputAt = Date.now();
+  const STALL_MS = 90 * 1000;
 
   // progress state (parsed from install.sh)
   const total = STEPS.length;
@@ -412,12 +430,23 @@ function runAnimated(dir) {
     const barColored = '\x1b[35;1m▸ OMEGA\x1b[0m  [' + barStr + '] ' + pctStr + '  \x1b[36m' + label + '\x1b[0m';
     let hud = '\x1b[' + rowBar + ';1H' + pad(barColored, barVisible) + '\x1b[K';
 
-    // --- middle line ---
-    const tip = LORE[loreIdx % LORE.length];
-    // rotate lore roughly every ~4s (22fps * 4 ≈ 88 frames)
-    if (frame % 88 === 0) loreIdx++;
-    const mid = '\x1b[2;32m' + tip + '\x1b[0m';
-    const midVisible = tip.length;
+    // --- middle line: lore tip, OR a stall warning if install.sh went quiet ---
+    const quietMs = Date.now() - lastOutputAt;
+    let mid, midVisible;
+    if (quietMs > STALL_MS) {
+      const secs = Math.floor(quietMs / 1000);
+      let last = (lastLines[lastLines.length - 1] || '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+      if (last.length > Math.max(10, W - 34)) last = last.slice(0, Math.max(10, W - 34)) + '…';
+      const txt = '⚠ quiet ' + secs + 's — still working? last: ' + (last || '(no output)');
+      mid = '\x1b[33m' + txt + '\x1b[0m';
+      midVisible = txt.length;
+    } else {
+      const tip = LORE[loreIdx % LORE.length];
+      // rotate lore roughly every ~4s (22fps * 4 ≈ 88 frames)
+      if (frame % 88 === 0) loreIdx++;
+      mid = '\x1b[2;32m' + tip + '\x1b[0m';
+      midVisible = tip.length;
+    }
     hud += '\x1b[' + rowMid + ';1H' + pad(mid, midVisible) + '\x1b[K';
 
     // --- bottom controls + timer ---
@@ -513,8 +542,9 @@ function runAnimated(dir) {
   const renderTimer = setInterval(render, 45); // ~22fps
 
   // ---- run install.sh; parse markers, buffer output (never printed) ------
-  child = spawn('bash', [sh], { cwd: dir, env: process.env });
+  child = spawn('bash', [sh], { cwd: dir, env: CHILD_ENV });
   const onData = (d) => {
+    lastOutputAt = Date.now(); // feed the stall watchdog
     parseBuf += d.toString();
     let nl;
     while ((nl = parseBuf.indexOf('\n')) !== -1) {

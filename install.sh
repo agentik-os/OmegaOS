@@ -7,6 +7,22 @@
 
 set -euo pipefail
 
+# ── Prompt-proofing (NEVER hang on an invisible prompt) ──────────────────────
+# The npx installer runs this script behind a full-screen animation that holds
+# the TTY, so ANY interactive prompt (git asking for credentials on /dev/tty,
+# apt asking a question, a tool reading stdin) becomes an INVISIBLE infinite
+# hang — the progress bar just freezes. We make every step non-interactive:
+#   - git fails fast instead of prompting for credentials (private/missing repo)
+#   - apt/dpkg never ask questions
+#   - ssh never drops to an interactive auth prompt
+export GIT_TERMINAL_PROMPT=0
+export GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new}"
+export DEBIAN_FRONTEND=noninteractive
+export DEBIAN_PRIORITY=critical
+export NEEDRESTART_MODE=a
+export PIP_NO_INPUT=1
+export CI="${CI:-1}"   # many installers go non-interactive when CI is set
+
 OMEGA_VERSION="0.1.0"
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
@@ -1009,7 +1025,7 @@ fi
 # (d) Claude Code agent binary — omega needs it to spawn agents.
 if ! command -v claude >/dev/null 2>&1; then
     info "Claude Code CLI absent — omega needs it to spawn agents. Attempting install..."
-    "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
+    timeout 180 "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
 fi
 
 # (e+f) Browser stack (Xvfb + Playwright + Chromium) for PDF generation and the
@@ -1048,9 +1064,16 @@ fi
 # planning-with-files, higgsfield (CLI+skills), claude-mem, superpowers,
 # mempalace, remotion, + the best-practice reference. Sourced so its OK/WARN
 # lines fold into this install run; never fatal. Skip: OMEGA_SKIP_COMPANION=1.
-if [[ -f "$OMEGA_SRC/scripts/install-companion-tools.sh" ]]; then
+# DEFERRED BY DEFAULT (opt-in OMEGA_WITH_COMPANION=1). These are extra skill
+# packs that fetch over the network (bun/npm/git) — useful, but not core, and a
+# slow/stalled fetch here was a big chunk of install time. Core OmegaOS (omega,
+# rmux, the Quality Arsenal audits, agents, rules, doctrine) is fully installed
+# without them; add them anytime with OMEGA_WITH_COMPANION=1 ./install.sh.
+if [[ "${OMEGA_WITH_COMPANION:-0}" == "1" && "${OMEGA_SKIP_COMPANION:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-companion-tools.sh" ]]; then
     # shellcheck source=/dev/null
     source "$OMEGA_SRC/scripts/install-companion-tools.sh" || info "companion tools step had warnings (non-fatal)"
+else
+    info "Companion skill packs deferred (planning-with-files, claude-mem, superpowers, …). Add: OMEGA_WITH_COMPANION=1 ./install.sh"
 fi
 
 # ─── Phase 6.95: OmegaMC dashboard (optional, best-effort) ─────────────────────
@@ -1061,13 +1084,21 @@ fi
 # agents ship inside it as config/omega-aisb.yaml. The Monitor tab's "Open
 # Dashboard" action points here. Skip explicitly: OMEGA_SKIP_DASHBOARD=1.
 install_omegamc_optional() {
-    [[ "${OMEGA_SKIP_DASHBOARD:-0}" == "1" ]] && { info "OmegaMC dashboard skipped (OMEGA_SKIP_DASHBOARD=1)"; return 0; }
+    # DEFERRED BY DEFAULT (opt-in OMEGA_WITH_DASHBOARD=1). OmegaMC is a SEPARATE
+    # Go+Docker web app, not a core OmegaOS asset, and its repo may be private —
+    # a credentialed `git clone` previously hung the whole install on an invisible
+    # /dev/tty prompt. GIT_TERMINAL_PROMPT=0 (set globally above) now makes it fail
+    # fast even if opted in, but we don't fetch it at all unless asked.
+    [[ "${OMEGA_WITH_DASHBOARD:-0}" != "1" || "${OMEGA_SKIP_DASHBOARD:-0}" == "1" ]] && {
+        info "OmegaMC dashboard deferred (optional Telegram web UI). Add: OMEGA_WITH_DASHBOARD=1 ./install.sh"
+        return 0
+    }
     local dst="$OMEGA_DIR/repos/omega-mc"
     if [[ -d "$dst/.git" ]]; then
         ok "OmegaMC dashboard present ($dst — update: git -C $dst pull)"
         return 0
     fi
-    if git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$dst" >/dev/null 2>&1; then
+    if timeout 120 git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$dst" >/dev/null 2>&1; then
         ok "OmegaMC dashboard cloned → $dst  (start: cd $dst && docker compose up -d ; AISB agents: config/omega-aisb.yaml)"
     else
         rm -rf "$dst" 2>/dev/null || true
