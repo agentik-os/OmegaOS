@@ -624,7 +624,10 @@ fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
                 agent.display_name()
             ),
             command: cmd.to_string(),
-            confirm_first: true,
+            // Installing is NON-destructive → launch on the FIRST Enter (a
+            // double-Enter "confirm" made it feel like Enter did nothing). Only
+            // uninstall (below) keeps the confirm gate.
+            confirm_first: false,
         });
     }
     if installed {

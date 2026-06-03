@@ -158,14 +158,27 @@ impl Agent {
             // Claude Code pointed at Z.AI's Anthropic-compatible endpoint. So
             // "installing GLM" = ensuring the Claude Code binary is present; the
             // redirect happens at launch (see launch_command_with) + the key.
-            Agent::Glm => Some("npm install -g @anthropic-ai/claude-code"),
+            // npm-package CLIs: use npm when present, else fall back to bun
+            // (OmegaOS installs bun; reference it by absolute path so a
+            // non-interactive `bash -c` pane finds it even when ~/.bun/bin isn't
+            // on PATH). A node-less box was why these "Enter → install" actions
+            // appeared to do nothing.
+            Agent::Glm => Some(
+                "if command -v npm >/dev/null 2>&1; then npm install -g @anthropic-ai/claude-code; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @anthropic-ai/claude-code; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+            ),
             Agent::Claude => Some(
                 "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
             ),
-            Agent::Codex => Some("npm install -g @openai/codex"),
-            Agent::Gemini => Some("npm install -g @google/gemini-cli"),
+            Agent::Codex => Some(
+                "if command -v npm >/dev/null 2>&1; then npm install -g @openai/codex; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @openai/codex; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+            ),
+            Agent::Gemini => Some(
+                "if command -v npm >/dev/null 2>&1; then npm install -g @google/gemini-cli; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @google/gemini-cli; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+            ),
+            // Pi: install the npm package directly (the curl|sh installer runs a
+            // TTY animation that fails in a non-interactive pane → `pi` never landed).
             Agent::Pi => Some(
-                "T=$(mktemp) && curl -fsSL https://pi.dev/install.sh -o \"$T\" && sh \"$T\"; rm -f \"$T\"",
+                "if command -v npm >/dev/null 2>&1; then npm install -g @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Hermes => Some(
                 "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
