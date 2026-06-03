@@ -65,8 +65,16 @@ const back = (to = "menu"): Btn => ({ text: "« Back", callback_data: `nav:${to}
 function dashboardURL(): { url: string; pw: string } {
   const mc = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/);
   const host = mc.HOSTNAME?.trim();
-  const url = host ? `https://${host}` : `http://${process.env.OMEGA_PUBLIC_IP || "<server-ip>"}:8080`;
+  const ip = (process.env.OMEGA_PUBLIC_IP || "").trim();
+  // Only return a button-able URL when we actually have a host/IP (never http://:8080).
+  const url = host ? `https://${host}` : (ip ? `http://${ip}:8080` : "");
   return { url, pw: mc.OMEGA_MC_WEB_PASSWORD || "" };
+}
+async function resolvePublicIP(): Promise<void> {
+  if (process.env.OMEGA_PUBLIC_IP) return;
+  for (const u of ["https://ifconfig.me/ip", "https://icanhazip.com", "https://api.ipify.org"]) {
+    try { const ip = (await (await fetch(u, { signal: AbortSignal.timeout(5000) })).text()).trim(); if (/^\d+\.\d+\.\d+\.\d+$/.test(ip)) { process.env.OMEGA_PUBLIC_IP = ip; return; } } catch {}
+  }
 }
 async function projectNames(): Promise<string[]> {
   const out = await omega(["projects"]);
@@ -135,9 +143,16 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       return { text: `<b>🤖 AISB agents (${ags.length})</b>\nTap one for its role. To chat with an agent, use the agents bot (OmegaMC) — see /dashboard.`, markup: kb([...rows, [back()]]) };
     }
     case "dashboard": {
-      const { url, pw } = dashboardURL();
-      const t = `<b>🖥 Mission Control</b>\nOpen: ${url}\n${pw ? `Password: <code>${esc(pw)}</code>\n` : ""}${url.includes("<server-ip>") || url.startsWith("http://") ? "\n⚠️ For secure external access, enable Tailscale (no exposed port)." : ""}`;
-      return { text: t, markup: kb([[{ text: "🌐 Open dashboard", url: url.replace("<server-ip>", process.env.OMEGA_PUBLIC_IP || "") }], [back()]]) };
+      await resolvePublicIP();
+      const { url } = dashboardURL();
+      const rows: Btn[][] = [];
+      if (url) rows.push([{ text: "👉 Cliquez ici pour ouvrir", url }]);
+      rows.push([{ text: "🔑 Révéler le password", callback_data: "dash:pw" }]);
+      rows.push([back()]);
+      const t = `<b>🖥 Mission Control — Dashboard</b>\n` +
+        (url ? `${url}\n\nTape « 👉 Cliquez ici pour ouvrir » pour ouvrir le dashboard, puis « 🔑 Révéler le password » pour le mot de passe.`
+             : `⚠️ IP publique non résolue — réessaie, ou active Tailscale pour un accès sécurisé.`);
+      return { text: t, markup: kb(rows) };
     }
     case "status": return { text: pre("System status", await omega(["doctor"])), markup: kb([[{ text: "🔄 Refresh", callback_data: "nav:status" }, back()]]) };
     case "sessions": {
@@ -166,6 +181,14 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
 async function onCallback(data: string, chat: number, msgId: number) {
   const [ns, action, ...rest] = data.split(":"); const arg = rest.join(":");
   if (ns === "nav") { const v = await view(action); return edit(chat, msgId, v.text, v.markup); }
+  if (ns === "dash" && action === "pw") {
+    const { pw } = dashboardURL();
+    if (!pw) return;
+    // Reveal in a copyable code block, then auto-delete after 30s (so it never lingers in chat history).
+    const m = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", text: `🔑 <b>Password du dashboard</b>\n(tape dessus pour copier — s'efface dans 30s)\n\n<code>${esc(pw)}</code>` });
+    if (m.ok) setTimeout(() => tg("deleteMessage", { chat_id: chat, message_id: m.result.message_id }), 30000);
+    return;
+  }
   if (ns === "sess" && action === "status") return edit(chat, msgId, pre(`Session ${arg}`, await omega(["capture", arg])), kb([[{ text: "🔄 Refresh", callback_data: `sess:status:${arg}`.slice(0, 64) }, back("sessions")]]));
   if (ns === "sess" && action === "kill") return edit(chat, msgId, pre(`Kill ${arg}`, await omega(["kill", arg])), kb([[back("sessions")]]));
   if (ns === "proj" && action === "list") return edit(chat, msgId, pre("Projects", await omega(["projects"])), kb([[back("projects")]]));
@@ -216,7 +239,7 @@ async function main() {
   await tg("setMyCommands", { commands: cmds });
   await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
   await tg("deleteWebhook", { drop_pending_updates: false });
-  try { process.env.OMEGA_PUBLIC_IP ||= (await (await fetch("https://ifconfig.me")).text()).trim(); } catch {}
+  await resolvePublicIP();
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
   let offset = 0;
   while (true) {
