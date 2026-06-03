@@ -154,6 +154,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 format!("Provisioning keys — {}/{}: {}", step + 1, fields.len(), key);
             draw_simple_input_modal_owned(frame, app, &title, hint, masked);
         }
+        InputMode::GroupSetupId => draw_simple_input_modal(
+            frame,
+            app,
+            "Telegram project group",
+            "Supergroup id (negative, e.g. -1001234567890) — Enter to save, Esc to cancel",
+            false,
+        ),
+        InputMode::AddProjectPath => draw_simple_input_modal(
+            frame,
+            app,
+            "Add project — register an existing folder",
+            "Absolute path to the project folder (Enter to register, Esc to cancel)",
+            false,
+        ),
         _ => {}
     }
 }
@@ -536,18 +550,26 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         result
     };
 
+    // Context hint: when the highlighted row is the AISB Master and Telegram
+    // isn't connected yet, advertise the in-TUI Enter→setup path so a non-dev
+    // discovers it.
+    let master_cta = app
+        .selected_session()
+        .map(|e| {
+            omega_core::aisb::is_master(&e.session.name)
+                && !omega_core::monitor::OmegaTelegramConfig::exists()
+        })
+        .unwrap_or(false);
+    let list_hint = match app.session_focus {
+        crate::app::SessionFocus::List if master_cta => "LIST  ★ Enter: connect Telegram  x:kill",
+        crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
+        _ => "CHAT (Esc → list to manage)",
+    };
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(
-                    " Sessions ({}) — {} ",
-                    app.sessions.len(),
-                    match app.session_focus {
-                        crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
-                        _ => "CHAT (Esc → list to manage)",
-                    }
-                ))
+                .title(format!(" Sessions ({}) — {} ", app.sessions.len(), list_hint))
                 .border_style(list_border_style),
         )
         .highlight_style(Style::default());
@@ -1262,10 +1284,15 @@ fn render_monitor_account() -> Vec<Line<'static>> {
         ]));
     } else {
         lines.push(Line::from(Span::styled(
-            "    (no connected account — run `claude /login`)",
+            "    (no connected account)",
             Style::default().fg(Color::Gray),
         )));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "    ▶ Press Enter to log in / re-auth Claude (guided — opens the OAuth session)",
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+    )));
     lines
 }
 
@@ -1322,11 +1349,16 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "    (no ~/.omega/state/usage.json — run 'omega usage --check')",
+            "    (no usage snapshot yet)",
             Style::default().fg(Color::Gray),
         )));
     }
 
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "    ▶ Press Enter to refresh billing now (live OAuth usage check)",
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+    )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "    ── Usage cache (AISB legacy Python bot, separate from OmegaOS) ──",
@@ -1381,6 +1413,11 @@ fn render_monitor_accounts() -> Vec<Line<'static>> {
             ]));
         }
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "    ▶ Press Enter to add / re-auth a Claude account (opens the login flow)",
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+    )));
     lines
 }
 
@@ -1425,8 +1462,8 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
         lines.push(Line::from(format!("    Sender filter:  {}", sender)));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "    Run the bot:    omega telegram run",
-            Style::default().fg(Color::Yellow),
+            "    ▶ Press Enter to DISCONNECT the bot (two-press confirm)",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -1435,32 +1472,17 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "    Setup:",
-            Style::default().fg(Color::Cyan),
-        )));
-        lines.push(Line::from(Span::styled(
-            "      1. Create a bot via @BotFather on Telegram → save the BOT_TOKEN",
+            "    Before you start: create a bot via @BotFather (save the token) and",
             Style::default().fg(Color::Reset),
         )));
         lines.push(Line::from(Span::styled(
-            "      2. Get your CHAT_ID (e.g. send a msg to @userinfobot)",
+            "    get your chat id from @userinfobot. The wizard asks for them step by step.",
             Style::default().fg(Color::Reset),
         )));
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "      3. Run:",
-            Style::default().fg(Color::Reset),
-        )));
-        lines.push(Line::from(Span::styled(
-            "         omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>",
-            Style::default().fg(Color::Yellow),
-        )));
-        lines.push(Line::from(Span::styled(
-            "      4. Start the bot:",
-            Style::default().fg(Color::Reset),
-        )));
-        lines.push(Line::from(Span::styled(
-            "         omega telegram run",
-            Style::default().fg(Color::Yellow),
+            "    ▶ Press Enter to set up the bot (guided, no command needed)",
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
         )));
     }
     lines
@@ -1501,6 +1523,11 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
                 )));
             }
             lines.push(Line::from(format!("    Set up at:      {}", gcfg.setup_at)));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    ▶ Press Enter to change the group id",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
         }
         None => {
             lines.push(Line::from(Span::styled(
@@ -1530,8 +1557,8 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "    Manual fallback:  /setupgroup <group_id>  in the bot DM",
-                Style::default().fg(Color::Gray),
+                "    ▶ Press Enter to set the group id manually (guided, no command needed)",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             )));
         }
     }
@@ -1550,7 +1577,7 @@ fn render_monitor_actions(app: &App) -> (Vec<Line<'static>>, usize) {
         )));
     } else {
         lines.push(Line::from(Span::styled(
-            "  Tab → focus this panel to run actions (or press the letter shortcut)",
+            "  Tab → focus this panel to run actions (every section is also Enter-actionable)",
             Style::default().fg(Color::Gray),
         )));
     }
@@ -1645,7 +1672,7 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
     // Left: project list
     let items: Vec<ListItem> = if registry.projects.is_empty() {
         vec![ListItem::new(Line::from(Span::styled(
-            "  (no projects registered)",
+            "  (no projects — press n or Enter to add one)",
             Style::default().fg(Color::Gray),
         )))]
     } else {
@@ -1677,7 +1704,10 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let list_title = if list_focused {
-        format!(" ▶ FOCUSED Projects ({}) — ↑/↓ select, Tab → detail ", registry.projects.len())
+        format!(
+            " ▶ Projects ({}) — ↑/↓ select · n add · x remove · p plan · d dispatch · Enter open ",
+            registry.projects.len()
+        )
     } else {
         format!(" Projects ({}) — Tab to focus list ", registry.projects.len())
     };
@@ -1721,16 +1751,17 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                "  Add projects via CLI:",
-                Style::default().fg(Color::Cyan),
+                "  ▶ Press n to add a project (register an existing folder).",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
-                "    omega project add /path/to/project",
-                Style::default().fg(Color::Yellow),
+                "    Or press Enter on this empty list to do the same.",
+                Style::default().fg(Color::Gray),
             )),
+            Line::from(""),
             Line::from(Span::styled(
-                "    omega project scan ~/VibeCoding/work",
-                Style::default().fg(Color::Yellow),
+                "  For a brand-new project (scaffold + provision), use the Menu tab → New project.",
+                Style::default().fg(Color::Gray),
             )),
         ];
     };
@@ -2375,11 +2406,11 @@ fn render_info_master() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled("  Live session", Style::default().fg(Color::Cyan))),
         Line::from(format!("    {}  — live viewer of the Telegram conversation", master)),
-        Line::from(format!("    attach:  omega attach {}   (or: omega master)", master)),
+        Line::from("    Select it in the Sessions tab + Tab to watch the live conversation."),
         Line::from(""),
         Line::from(Span::styled("  Telegram bridge", Style::default().fg(Color::Cyan))),
-        Line::from("    Set up:  Monitor tab → 'T' (Set up Omega Telegram bot)"),
-        Line::from("             or CLI:  omega telegram setup"),
+        Line::from("    Set up:  select AISB Master in the Sessions tab and press Enter"),
+        Line::from("             to connect Telegram (guided wizard — no command needed)."),
         Line::from("    Once set, the bridge streams the brain's replies + accepts"),
         Line::from("    voice / documents / photos (transcribed + analysed)."),
         Line::from(""),
@@ -2846,6 +2877,8 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                     format!("[{}] {}", config_key, app.input_buffer)
                 },
             ),
+            InputMode::GroupSetupId => ("Telegram group id", app.input_buffer.clone()),
+            InputMode::AddProjectPath => ("Add project — folder path", app.input_buffer.clone()),
         };
 
         let status = Paragraph::new(Line::from(vec![

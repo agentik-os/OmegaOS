@@ -75,6 +75,14 @@ pub enum Action {
     OpenProject { name: String, path: String, oracle_session: Option<String> },
     /// Projects tab: dispatch `omega planner` for the selected project.
     RunPlannerForProject { name: String, path: String },
+    /// Projects tab: register an existing folder into the project registry
+    /// (reuses `project_manager::add_existing_project`).
+    RegisterProject { path: String },
+    /// Projects tab: remove a project from the registry (two-press confirmed).
+    RemoveProject { name: String },
+    /// Monitor → Project group: persist the Telegram supergroup id
+    /// (`TelegramGroupConfig`). The manual fallback to the bot's auto-detect.
+    GroupSetupCommit { group_id: i64 },
     /// Real-time keystroke forwarding to a rmux session (preview interactive
     /// mode). One key per Action — printable chars, special keys, Ctrl-combos
     /// all route through this so plan-mode / OAuth / choice menus work.
@@ -588,6 +596,34 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
+        // Monitor → Project group: single-field group_id capture (manual
+        // fallback to the bot's auto-detect). Numeric-validated like the
+        // Telegram chat_id step.
+        InputMode::GroupSetupId => handle_key_input(app, key, |app, value| {
+            app.input_mode = InputMode::Normal;
+            match value.trim().parse::<i64>() {
+                Ok(group_id) => Action::GroupSetupCommit { group_id },
+                Err(_) => {
+                    app.status_message =
+                        Some(format!("Invalid group_id '{}' — must be a numeric id", value.trim()));
+                    Action::None
+                }
+            }
+        }),
+
+        // Register-existing-folder: single-field path capture → register it
+        // (the folder name becomes the project name, per add_existing_project).
+        InputMode::AddProjectPath => handle_key_input(app, key, |app, value| {
+            app.input_mode = InputMode::Normal;
+            let path = value.trim().to_string();
+            if path.is_empty() {
+                app.status_message = Some("No path entered".to_string());
+                Action::None
+            } else {
+                Action::RegisterProject { path }
+            }
+        }),
+
         InputMode::TelegramSetupUserId(token, chat_id_str) => {
             let token = token.clone();
             let chat_id: i64 = chat_id_str.parse().unwrap_or(0);
@@ -890,7 +926,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // Once focused, Enter is forwarded to the rmux session below
                 // (interactive passthrough — see the SessionFocus::Chat branch
                 // earlier in this function).
-                if let Some(_entry) = app.selected_session() {
+                if let Some(entry) = app.selected_session() {
+                    // Master + Telegram-not-yet-configured → Enter opens the
+                    // existing 3-step Telegram setup wizard instead of focusing
+                    // the (empty) live mirror. Reuses the canonical wizard;
+                    // commit auto-attaches the master so the user watches the
+                    // confirmation stream in (see TelegramSetupCommit handler).
+                    if app.session_focus == SessionFocus::List
+                        && omega_core::aisb::is_master(&entry.session.name)
+                        && !omega_core::monitor::OmegaTelegramConfig::exists()
+                    {
+                        return Action::TelegramSetup;
+                    }
                     if app.session_focus == SessionFocus::List {
                         app.session_focus = SessionFocus::Chat;
                         app.cmd_capture = None;
@@ -927,7 +974,53 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         execute_monitor_action(action)
                     }
                 } else {
-                    Action::None
+                    // Every OTHER section is itself Enter-actionable: focused-Enter
+                    // routes the section straight to its existing primary
+                    // wizard/action (the same Action variants the Actions list
+                    // emits) — no command-line, no new wizard.
+                    use crate::app::MonitorSection;
+                    match app.selected_monitor_section() {
+                        // Account → the existing OAuth login flow (spawns a
+                        // `claude /login` session + focuses its chat for inline
+                        // code paste).
+                        MonitorSection::Account => Action::LoginClaude,
+                        // Billing → re-run `omega usage --check` (live OAuth %).
+                        MonitorSection::Billing => Action::RefreshBilling,
+                        // Telegram → context-sensitive: set up when absent, or a
+                        // two-press-confirmed disconnect when a config exists.
+                        MonitorSection::Telegram => {
+                            if omega_core::monitor::OmegaTelegramConfig::exists() {
+                                if app.monitor_disconnect_armed {
+                                    app.monitor_disconnect_armed = false;
+                                    Action::TelegramDisconnect
+                                } else {
+                                    app.monitor_disconnect_armed = true;
+                                    app.status_message = Some(
+                                        "Press Enter again to DISCONNECT the Telegram bot (Esc to cancel)".to_string(),
+                                    );
+                                    Action::None
+                                }
+                            } else {
+                                Action::TelegramSetup
+                            }
+                        }
+                        // Accounts → no core account-switch primitive exists yet;
+                        // the honest reusable flow is add/re-auth an account via
+                        // the same login flow as the Account section.
+                        MonitorSection::Accounts => Action::LoginClaude,
+                        // Project group → guided single-field group_id capture
+                        // modal (the bot's primary path is auto-detect; this is
+                        // the manual fallback, in-TUI, no `/setupgroup` to type).
+                        MonitorSection::Projects => {
+                            app.input_buffer = String::new();
+                            app.input_mode = crate::app::InputMode::GroupSetupId;
+                            app.status_message = Some(
+                                "Telegram group_id (negative, e.g. -1001234567890) — Enter to save, Esc to cancel".to_string(),
+                            );
+                            Action::None
+                        }
+                        MonitorSection::Actions => Action::None,
+                    }
                 }
             }
             Tab::Settings => {
@@ -997,7 +1090,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Projects => {
-                if !app.detail_focused {
+                if app.project_registry.projects.is_empty() {
+                    // Empty registry: Enter is free (no focus/open ambiguity) →
+                    // open the same add-project modal as 'n'. This gives a
+                    // non-dev the literal "Enter opens an add-project wizard"
+                    // exactly where they need it.
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::AddProjectPath;
+                    app.status_message = Some(
+                        "Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string(),
+                    );
+                    Action::None
+                } else if !app.detail_focused {
                     app.detail_focused = true;
                     app.detail_scroll = 0;
                     app.status_message = Some(
@@ -1041,6 +1145,41 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
         KeyCode::Char('O') if app.tab == Tab::Monitor => open_dashboard_action(app),
+
+        // Projects tab: 'n' opens a guided "register existing folder" modal
+        // (the in-TUI replacement for the `omega project add` CLI hint). For a
+        // green-field scaffold the Menu tab's New-project wizard still applies.
+        KeyCode::Char('n') if app.tab == Tab::Projects => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::AddProjectPath;
+            app.status_message =
+                Some("Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string());
+            app.project_confirm_pending = None;
+            Action::None
+        }
+        // Projects tab: 'x' removes the selected project (two-press confirm).
+        // First press arms it for that name; second 'x' on the same name fires.
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Projects => {
+            match app.selected_project().map(|p| p.name.clone()) {
+                Some(name) => {
+                    if app.project_confirm_pending.as_deref() == Some(name.as_str()) {
+                        app.project_confirm_pending = None;
+                        Action::RemoveProject { name }
+                    } else {
+                        app.project_confirm_pending = Some(name.clone());
+                        app.status_message = Some(format!(
+                            "Press x again to remove '{}' (Esc to cancel)",
+                            name
+                        ));
+                        Action::None
+                    }
+                }
+                None => {
+                    app.status_message = Some("No project selected".to_string());
+                    Action::None
+                }
+            }
+        }
 
         // Shortcut keys (work in any tab) — direct agent launchers
         KeyCode::Char('c') => {
@@ -1210,6 +1349,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Esc => {
             // Cancel any armed destructive-menu confirm first.
             if app.menu_confirm_pending.take().is_some() {
+                app.status_message = Some("Cancelled".to_string());
+                return Action::None;
+            }
+            // Cancel an armed project-remove or Telegram-disconnect confirm.
+            if app.project_confirm_pending.take().is_some()
+                || app.monitor_disconnect_armed
+            {
+                app.monitor_disconnect_armed = false;
                 app.status_message = Some("Cancelled".to_string());
                 return Action::None;
             }

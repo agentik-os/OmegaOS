@@ -98,6 +98,16 @@ pub enum InputMode {
     /// Holds (config_key, options, selected_index). Mirrors the new-project
     /// category/stack pickers — Up/Down move, Enter commits, Esc cancels.
     SelectModel(String, Vec<String>, usize),
+
+    /// Monitor → Project group: single-field capture of the Telegram supergroup
+    /// id (manual fallback to the bot's auto-detect). Persists via
+    /// `TelegramGroupConfig`. The in-progress value lives in `input_buffer`.
+    GroupSetupId,
+
+    /// Register-existing-folder wizard — step 1: project path (text input).
+    /// Distinct from `NewProjectName` (which CREATES a project on disk); this
+    /// only registers an already-existing folder into the project registry.
+    AddProjectPath,
 }
 
 /// New-project wizard option lists. `(id, label)` — `id` is the token passed to
@@ -733,11 +743,11 @@ impl MonitorAction {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            MonitorAction::Login => "Login / re-auth Claude   (opens session with `claude /login`)",
-            MonitorAction::TelegramSetup => "Set up Omega Telegram bot   (omega telegram setup …)",
-            MonitorAction::TelegramDisconnect => "Disconnect Telegram bot   (removes ~/.omega/telegram.toml)",
-            MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe → ~/.omega/provisioning)",
-            MonitorAction::RefreshBilling => "Refresh billing now   (re-runs usage-monitor.sh)",
+            MonitorAction::Login => "Login / re-auth Claude   (opens the guided OAuth session)",
+            MonitorAction::TelegramSetup => "Set up Omega Telegram bot   (guided 3-step wizard)",
+            MonitorAction::TelegramDisconnect => "Disconnect Telegram bot",
+            MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe)",
+            MonitorAction::RefreshBilling => "Refresh billing now   (live OAuth usage check)",
             MonitorAction::OpenDashboard => "Open Dashboard   (OmegaMC Telegram dashboard — replaces aisb-master)",
         }
     }
@@ -931,6 +941,12 @@ pub struct App {
     pub projects_selected: usize,
     /// Cached project registry for the Projects tab.
     pub project_registry: omega_core::project_manager::ProjectRegistry,
+    /// Two-press confirm for removing a project (Projects tab 'x'): holds the
+    /// project name armed by the first press; second 'x' on the same name fires.
+    pub project_confirm_pending: Option<String>,
+    /// Two-press confirm for the Monitor Telegram section's Enter→disconnect.
+    /// Armed by the first focused-Enter, fired by the second. Cleared on nav.
+    pub monitor_disconnect_armed: bool,
     /// Lazily-loaded providers config. Settings reads this on every keystroke,
     /// so we cache it here and only reload from disk after an edit/toggle
     /// commit (see `invalidate_providers`). Avoids per-keystroke disk I/O.
@@ -998,6 +1014,8 @@ impl App {
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
+            project_confirm_pending: None,
+            monitor_disconnect_armed: false,
             providers_cache: None,
         }
     }
@@ -1034,6 +1052,8 @@ impl App {
         if count > 0 {
             self.projects_selected = (self.projects_selected + 1) % count;
         }
+        // Moving the cursor disarms any pending remove-confirm.
+        self.project_confirm_pending = None;
     }
 
     pub fn select_project_prev(&mut self) {
@@ -1045,6 +1065,7 @@ impl App {
                 self.projects_selected - 1
             };
         }
+        self.project_confirm_pending = None;
     }
 
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
@@ -1247,6 +1268,8 @@ impl App {
         self.monitor_selected = (self.monitor_selected + 1) % count;
         self.monitor_action_selected = 0;
         self.detail_scroll = 0;
+        // Leaving the Telegram section drops any armed disconnect-confirm.
+        self.monitor_disconnect_armed = false;
     }
 
     pub fn select_monitor_prev(&mut self) {
@@ -1258,6 +1281,7 @@ impl App {
         };
         self.monitor_action_selected = 0;
         self.detail_scroll = 0;
+        self.monitor_disconnect_armed = false;
     }
 
     pub fn selected_monitor_section(&self) -> MonitorSection {
@@ -1336,6 +1360,23 @@ impl App {
                         .to_string();
                 return Ok(());
             }
+        }
+
+        // Master + Telegram unconfigured → replace the bare log-tail mirror
+        // with a guided call-to-action. Pressing Enter here opens the existing
+        // Telegram setup wizard (see the Sessions Enter hook in input.rs).
+        if omega_core::aisb::is_master(&name)
+            && !omega_core::monitor::OmegaTelegramConfig::exists()
+        {
+            self.preview_content = "\n  ★ AISB Master — your Telegram brain\n\n  \
+                Not yet connected. Once you link a Telegram bot, every message you\n  \
+                send it is classified and routed to the right oracle/agent, and the\n  \
+                replies stream here.\n\n  \
+                ▶ Press Enter to run the setup wizard (guided, no command needed).\n"
+                .to_string();
+            self.preview_styled = None;
+            self.preview_cursor = None;
+            return Ok(());
         }
 
         // Cached connection — avoid a fresh rmux daemon socket per refresh.

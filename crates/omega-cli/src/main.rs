@@ -1398,6 +1398,13 @@ async fn run_tui_loop(
                                 }
                             }
                             let _ = app.refresh().await;
+                            // Close the loop: drop the user onto the master's live
+                            // mirror so they immediately SEE the confirmation
+                            // message streaming in — all via Enter, no command.
+                            app.tab = omega_tui::app::Tab::Sessions;
+                            if app.select_by_name(omega_core::aisb::MASTER_SESSION_NAME) {
+                                app.session_focus = omega_tui::app::SessionFocus::Chat;
+                            }
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Telegram setup failed: {}", e));
@@ -1636,6 +1643,66 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::RegisterProject { path } => {
+                    let p = std::path::PathBuf::from(&path);
+                    match omega_core::project_manager::add_existing_project(&p) {
+                        Ok(proj) => {
+                            app.refresh_projects();
+                            // Select the freshly-added project.
+                            if let Some(idx) = app
+                                .project_registry
+                                .projects
+                                .iter()
+                                .position(|x| x.name == proj.name)
+                            {
+                                app.projects_selected = idx;
+                            }
+                            app.status_message =
+                                Some(format!("[+] Registered project '{}' ({})", proj.name, path));
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Could not register '{}': {}", path, e));
+                        }
+                    }
+                }
+                Action::RemoveProject { name } => {
+                    let mut registry = omega_core::project_manager::ProjectRegistry::load();
+                    if registry.remove(&name) {
+                        match registry.save() {
+                            Ok(()) => {
+                                app.refresh_projects();
+                                app.status_message =
+                                    Some(format!("[+] Removed project '{}' from the registry", name));
+                            }
+                            Err(e) => {
+                                app.status_message =
+                                    Some(format!("Removed '{}' but save failed: {}", name, e));
+                            }
+                        }
+                    } else {
+                        app.status_message = Some(format!("Project '{}' not found", name));
+                    }
+                }
+                Action::GroupSetupCommit { group_id } => {
+                    // Preserve any existing topic mappings / name when re-running.
+                    let mut cfg = omega_core::telegram_group::TelegramGroupConfig::load()
+                        .unwrap_or_default();
+                    cfg.group_id = group_id;
+                    cfg.setup_at = chrono::Utc::now().to_rfc3339();
+                    match cfg.save() {
+                        Ok(()) => {
+                            app.status_message = Some(format!(
+                                "[+] Telegram project group saved (group_id {}). The bot maps one topic per project on first dispatch.",
+                                group_id
+                            ));
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Group setup save failed: {}", e));
+                        }
+                    }
+                }
                 Action::None => {}
             }
 
@@ -1660,8 +1727,8 @@ async fn run_tui_loop(
                 app.status_message = Some(match app.tab {
                     Tab::Sessions => "↑/↓ select · Enter/Tab chat · c/C/g new agent · x kill · . lock · F5 refresh".to_string(),
                     Tab::Menu => "↑/↓ select · Enter run · or press the shortcut key shown".to_string(),
-                    Tab::Monitor => "↑/↓ select · Enter run · L login · T telegram · B billing".to_string(),
-                    Tab::Projects => "↑/↓ select · Enter focus detail · d dispatch · p planner".to_string(),
+                    Tab::Monitor => "↑/↓ select · Enter sets up the section · L login · T telegram · B billing".to_string(),
+                    Tab::Projects => "↑/↓ select · n add · x remove · p plan · d dispatch · Enter open".to_string(),
                     Tab::Settings => "↑/↓ section · Enter/Tab edit fields · Enter activate".to_string(),
                     Tab::Agentic => "↑/↓ or [ ] sub-sections · Tab focus detail".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
