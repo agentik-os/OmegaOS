@@ -623,27 +623,30 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     .map_or(false, |s| s.fg == Some(ACCENT));
 
                 if is_selected {
-                    // Highlight bar: ▶ marker, blue fill, bold bright text.
-                    let bar_bg = Color::Rgb(28, 52, 92);
+                    // Selected line: the same highlight every other selection in
+                    // the app uses — black on cyan. Named colors track the
+                    // terminal theme's palette, so it reads on light AND dark
+                    // themes, instead of the old hardcoded dark-navy Rgb bar that
+                    // looked like a black block on a light Termius theme.
+                    let bar_bg = Color::Cyan;
                     let mut spans: Vec<Span> = Vec::with_capacity(row.len() + 2);
                     let mut width = 0usize;
                     spans.push(Span::styled(
                         "▶ ",
                         Style::default()
-                            .fg(Color::Rgb(120, 180, 255))
+                            .fg(Color::Black)
                             .bg(bar_bg)
                             .add_modifier(Modifier::BOLD),
                     ));
                     width += 2;
                     for sp in row {
-                        let fg = match sp.fg {
-                            Some(ACCENT) | None => Color::Rgb(150, 200, 255),
-                            Some(c) => preview_to_color(c),
-                        };
                         width += sp.text.chars().count();
                         spans.push(Span::styled(
                             sp.text.clone(),
-                            Style::default().fg(fg).bg(bar_bg).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Black)
+                                .bg(bar_bg)
+                                .add_modifier(Modifier::BOLD),
                         ));
                     }
                     // Pad to full inner width so the bar spans the whole row.
