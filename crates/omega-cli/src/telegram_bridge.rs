@@ -5409,6 +5409,49 @@ async fn render_report_pdf(report: &OracleReport) -> Option<(Vec<u8>, String)> {
     Some((bytes, filename))
 }
 
+/// Keep the bridge brain's hookless config dir
+/// (`~/.omega/claude-bridge-config/.credentials.json`) carrying the FRESHEST
+/// Claude credentials. `install.sh` symlinks it to the canonical omega store,
+/// but a stray atomic write can replace that link with a now-stale real file —
+/// pinning the brain to old creds (the bot then "receives but never answers").
+/// We freshen it from the canonical store whenever the canonical is newer (or
+/// the bridge file is missing). A plain copy — not a symlink — so a future
+/// atomic write can't silently detach it again. Best-effort; never fatal.
+fn refresh_bridge_creds_from_canonical() {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return,
+    };
+    let canonical = omega_core::oauth::credentials_path();
+    let bridge = home.join(".omega/claude-bridge-config/.credentials.json");
+    let mtime = |p: &std::path::Path| {
+        std::fs::metadata(p)
+            .and_then(|m| m.modified())
+            .ok()
+    };
+    let canon_m = match mtime(&canonical) {
+        Some(m) => m,
+        None => return, // no canonical creds yet (fresh box pre-login)
+    };
+    let needs = match mtime(&bridge) {
+        Some(bm) => canon_m > bm, // canonical is fresher → propagate
+        None => true,             // bridge creds missing → seed
+    };
+    if needs {
+        if let Some(parent) = bridge.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // Replace a possibly-symlinked target with a real, fresh copy.
+        let _ = std::fs::remove_file(&bridge);
+        if std::fs::copy(&canonical, &bridge).is_ok() {
+            let _ = std::fs::set_permissions(
+                &bridge,
+                std::os::unix::fs::PermissionsExt::from_mode(0o600),
+            );
+        }
+    }
+}
+
 // ── Main entry point ──
 
 pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
@@ -5426,6 +5469,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     if let Err(e) = omega_core::oauth::sync_credentials_to_omega() {
         tracing::warn!(error = %e, "startup credential sync skipped (login via Telegram /login)");
     }
+    refresh_bridge_creds_from_canonical();
 
     // Keep full scrollback for the oracles this bridge spawns (default 2000
     // lines lost the top of long chats). Global rmux daemon option, set once
@@ -5456,9 +5500,10 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
         if last_healthcheck.elapsed() > Duration::from_secs(60) {
             last_healthcheck = std::time::Instant::now();
             // Follow interactive-session token refreshes (see startup note):
-            // re-link the omega store to the freshest ~/.claude creds. Idempotent
-            // and cheap (a no-op while the symlink is intact).
+            // re-link the omega store to the freshest ~/.claude creds, then
+            // propagate into the brain's bridge-config dir. Idempotent + cheap.
             let _ = omega_core::oauth::sync_credentials_to_omega();
+            refresh_bridge_creds_from_canonical();
             let sessions = engine.mgr.list_sessions().await.unwrap_or_default();
             if !sessions
                 .iter()
