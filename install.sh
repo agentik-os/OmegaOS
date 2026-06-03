@@ -1076,37 +1076,26 @@ else
     info "Companion skill packs deferred (planning-with-files, claude-mem, superpowers, …). Add: OMEGA_WITH_COMPANION=1 ./install.sh"
 fi
 
-# ─── Phase 6.95: OmegaMC dashboard (optional, best-effort) ─────────────────────
-# OmegaMC is the Telegram-controlled web dashboard — a SEPARATE repo
-# (agentik-os/agentik-telegram, Go + Docker, MIT fork of M. Tzanidakis). It is
-# NOT a core OmegaOS asset, so this is best-effort: clone it for operators who
-# have access, skip cleanly otherwise (the repo may be private). The 13 AISB
-# agents ship inside it as config/omega-aisb.yaml. The Monitor tab's "Open
-# Dashboard" action points here. Skip explicitly: OMEGA_SKIP_DASHBOARD=1.
-install_omegamc_optional() {
-    # DEFERRED BY DEFAULT (opt-in OMEGA_WITH_DASHBOARD=1). OmegaMC is a SEPARATE
-    # Go+Docker web app, not a core OmegaOS asset, and its repo may be private —
-    # a credentialed `git clone` previously hung the whole install on an invisible
-    # /dev/tty prompt. GIT_TERMINAL_PROMPT=0 (set globally above) now makes it fail
-    # fast even if opted in, but we don't fetch it at all unless asked.
-    [[ "${OMEGA_WITH_DASHBOARD:-0}" != "1" || "${OMEGA_SKIP_DASHBOARD:-0}" == "1" ]] && {
-        info "OmegaMC dashboard deferred (optional Telegram web UI). Add: OMEGA_WITH_DASHBOARD=1 ./install.sh"
-        return 0
-    }
-    local dst="$OMEGA_DIR/repos/omega-mc"
-    if [[ -d "$dst/.git" ]]; then
-        ok "OmegaMC dashboard present ($dst — update: git -C $dst pull)"
-        return 0
-    fi
-    if timeout 120 git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$dst" >/dev/null 2>&1; then
-        ok "OmegaMC dashboard cloned → $dst  (start: cd $dst && docker compose up -d ; AISB agents: config/omega-aisb.yaml)"
+# ─── Phase 6.95: Telegram bot (Bun + claude-agent-sdk) ─────────────────────────
+# The Telegram interface is now a light Bun bot (REPLACES the old Go+Docker
+# OmegaMC dashboard). Its Claude session IS the AISB Master: the 13 agents live
+# in its system prompt and it dispatches to per-project oracles via the `omega`
+# CLI. Copied into ~/.omega so it is self-contained (Law 0); JS deps install
+# lazily on first `omega telegram run` (~6s) so this stays fast.
+if [[ -d "$OMEGA_SRC/telegram" ]]; then
+    TG_DST="$OMEGA_DIR/telegram"
+    mkdir -p "$TG_DST"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude node_modules "$OMEGA_SRC/telegram/" "$TG_DST/"
     else
-        rm -rf "$dst" 2>/dev/null || true
-        info "OmegaMC dashboard skipped — repo not accessible (private / no git auth). Optional Telegram dashboard; install later: git clone https://github.com/agentik-os/agentik-telegram.git $dst"
+        rm -rf "$TG_DST" && mkdir -p "$TG_DST" && cp -r "$OMEGA_SRC/telegram/." "$TG_DST/"
+        rm -rf "$TG_DST/node_modules"
     fi
-    return 0
-}
-install_omegamc_optional
+    chmod +x "$TG_DST/run.sh" 2>/dev/null || true
+    ok "Telegram bot installed → $TG_DST  (setup: omega telegram setup <TOKEN> <CHAT_ID> ; run: omega telegram run)"
+else
+    info "Telegram bot source not found — skipping (optional phone interface)"
+fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 
