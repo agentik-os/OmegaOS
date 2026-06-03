@@ -251,7 +251,8 @@ maybe_install_prebuilt() {
     rm -rf "$tmp"
 
     # Sanity: the downloaded binaries actually run on THIS host (right libc/arch).
-    if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 && "$INSTALL_DIR/rmux" --version >/dev/null 2>&1; then
+    # rmux is tmux-style — its version flag is `-V` (NOT --version, which exits 1).
+    if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
         PREBUILT_OK=1
         ok "Prebuilt omega + rmux installed ($tag, $triple) — skipped the source build"
     else
