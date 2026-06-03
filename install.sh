@@ -907,6 +907,30 @@ if [[ -f "$OMEGA_SRC/scripts/install-companion-tools.sh" ]]; then
     source "$OMEGA_SRC/scripts/install-companion-tools.sh" || info "companion tools step had warnings (non-fatal)"
 fi
 
+# ─── Phase 6.95: OmegaMC dashboard (optional, best-effort) ─────────────────────
+# OmegaMC is the Telegram-controlled web dashboard — a SEPARATE repo
+# (agentik-os/agentik-telegram, Go + Docker, MIT fork of M. Tzanidakis). It is
+# NOT a core OmegaOS asset, so this is best-effort: clone it for operators who
+# have access, skip cleanly otherwise (the repo may be private). The 13 AISB
+# agents ship inside it as config/omega-aisb.yaml. The Monitor tab's "Open
+# Dashboard" action points here. Skip explicitly: OMEGA_SKIP_DASHBOARD=1.
+install_omegamc_optional() {
+    [[ "${OMEGA_SKIP_DASHBOARD:-0}" == "1" ]] && { info "OmegaMC dashboard skipped (OMEGA_SKIP_DASHBOARD=1)"; return 0; }
+    local dst="$OMEGA_DIR/omega-mc"
+    if [[ -d "$dst/.git" ]]; then
+        ok "OmegaMC dashboard present ($dst — update: git -C $dst pull)"
+        return 0
+    fi
+    if git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$dst" >/dev/null 2>&1; then
+        ok "OmegaMC dashboard cloned → $dst  (start: cd $dst && docker compose up -d ; AISB agents: config/omega-aisb.yaml)"
+    else
+        rm -rf "$dst" 2>/dev/null || true
+        info "OmegaMC dashboard skipped — repo not accessible (private / no git auth). Optional Telegram dashboard; install later: git clone https://github.com/agentik-os/agentik-telegram.git $dst"
+    fi
+    return 0
+}
+install_omegamc_optional
+
 # ─── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
