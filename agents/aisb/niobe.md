@@ -166,11 +166,11 @@ These invalidate a NIOBE output:
 *"Got it. And Niobe... I believe."*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **Audit selection** | Pick the right 4-12 audits per mission (codeaudit, debugaudit, etc.) | `~/.aisb/lib/audit-selector.py` |
+| **Audit selection** | Pick the right 4-12 audits per mission (codeaudit, debugaudit, etc.) | reason over the mission scope + file types and select the matching audit skills |
 | **Pythia gap-analysis collaboration** | Receive Pythia's weekly `pythia_diff_detected` event, classify SAFE_ADDITIVE / REQUIRES_REVIEW / SKIP, hand off to ARCHITECT | event-driven |
-| **Hinge analysis** | Identify load-bearing 10% of changes (auth gates, async/await, security, DB mutations) for SERAPH to scrutinize | `~/.aisb/lib/hinge-analyzer.sh` |
+| **Hinge analysis** | Identify load-bearing 10% of changes (auth gates, async/await, security, DB mutations) for SERAPH to scrutinize | `~/.omega/skills/audits/_shared/hinge-analyzer.sh` |
 
 ### Research workflow
 

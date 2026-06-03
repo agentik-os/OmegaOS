@@ -238,7 +238,7 @@ Agent(subagent_type="smith",    model="sonnet", prompt="extract patterns from la
 - R-39 effort tuning (conflicts with `46-no-time-panic`)
 - R-40 batch graders (cost optimization irrelevant)
 
-See: `~/.aisb/docs/SKIPPED-RULES.md`, `~/.claude/agents/AISB/CLAUDE.md`
+See: the authoritative skipped-rules list (maintained by ARCHITECT), `~/.claude/agents/AISB/CLAUDE.md`
 
 ---
 

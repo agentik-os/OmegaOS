@@ -172,11 +172,11 @@ These invalidate a SMITH output:
 *But the purpose of SMITH is to ensure that ending comes later, better, and smarter.*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-25 retroactive learning** | Append per-mission insights to `~/.aisb/memory/project/{P}/lessons-learned.md` | `~/.aisb/lib/outcomes/lessons.sh` |
-| **R-31 dreams (consolidation)** | Weekly Mon 9h UTC: merge duplicates, resolve contradictions, surface patterns. Writes `.dreamed.md`, never auto-applies | `~/.aisb/lib/outcomes/dream.sh` |
-| **R-27 registry analytics** | Read `~/.aisb/state/outcomes/outcomes.db` for cross-mission patterns | `~/.aisb/lib/outcomes/registry.py stats` |
+| **R-25 retroactive learning** | Append per-mission insights to `~/.omega/state/memory/project/{P}/lessons-learned.md` | write each mission's lessons into the project memory file |
+| **R-31 dreams (consolidation)** | Weekly: merge duplicates, resolve contradictions, surface patterns. Writes `.dreamed.md`, never auto-applies | run the consolidation ("dreams") pass over accumulated lessons |
+| **R-27 registry analytics** | Read the outcomes registry (`~/.omega/state/outcomes/outcomes.db`) for cross-mission patterns | query the outcomes registry directly |
 
 ### Dream pass workflow (R-31)
 

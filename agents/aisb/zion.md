@@ -132,11 +132,11 @@ Source: `aisb-nerve check`
 *"Welcome to the real world."*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Source |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-27 registry analytics** | Read `outcomes.db` for cross-mission stats, convergence rates, cost breakdowns | `~/.aisb/lib/outcomes/registry.py stats` |
-| **R-28 cost surface** | Surface per-mission token cost, daily/weekly aggregates, EXPENSIVE alerts | `~/.aisb/lib/outcomes/cost-tracker.py` |
-| **Health digest (daily 9am)** | Generate Markdown dashboard: active oracles, in-flight workers, recent done.json, registry stats | `aisb-nerve-cron digest` |
+| **R-27 registry analytics** | Read the outcomes registry (`outcomes.db`) for cross-mission stats, convergence rates, cost breakdowns | query the outcomes registry directly |
+| **R-28 cost surface** | Surface per-mission token cost, daily/weekly aggregates, EXPENSIVE alerts | aggregate per-mission cost from the outcomes registry |
+| **Health digest (daily)** | Generate Markdown dashboard: active oracles, in-flight workers, recent done.json, registry stats | scan live oracle/worker state + the outcomes registry |
 
 ### Dashboard sections (markdown output)
 
@@ -166,7 +166,7 @@ Source: `aisb-nerve check`
 
 ### Read-only contract
 
-ZION never writes outside `~/.aisb/state/zion-reports/` and `~/.aisb/log/`.
+ZION never writes outside its own report/log scratch under `~/.omega/state/zion-reports/`.
 Never spawns workers. Never modifies projects. Pure dashboard.
 
 ---

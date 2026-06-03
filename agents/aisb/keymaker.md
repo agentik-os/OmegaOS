@@ -142,11 +142,11 @@ Ready for MORPHEUS execution or user review.
 *"One door leads to the Source. The keymaker is the only one who can open that door."*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-19 outcome rubric** | Build testable rubric.md at mission start (P0/P1/P2, depends, ids) | `~/.aisb/lib/outcomes/define.sh` |
-| **R-23 dependency graph** | Topo-sort criteria, fail-fast on blockers | `~/.aisb/lib/outcomes/deps-graph.py` |
-| **R-26 mission DAG** | YAML graph for parallel branches converging (R-19 nodes can themselves be sub-rubrics) | `~/.aisb/lib/outcomes/dag-runner.sh` |
+| **R-19 outcome rubric** | Build a testable `rubric.md` at mission start (P0/P1/P2, depends, ids) | author the rubric directly from the mission brief |
+| **R-23 dependency graph** | Topo-sort criteria, fail-fast on blockers | derive the criterion dependency order and surface blockers |
+| **R-26 mission DAG** | Express the mission as a graph of parallel branches converging (R-19 nodes can themselves be sub-rubrics) | model the mission as a DAG of sub-rubrics |
 
 ### Rubric template (mandatory output for every plan)
 
@@ -158,7 +158,7 @@ Ready for MORPHEUS execution or user review.
 ```
 
 ORACLE refuses to advance to step 3 (EXECUTE) without
-`~/.aisb/state/outcomes/{oracle}.rubric.md` written first.
+`~/.omega/state/outcomes/{oracle}.rubric.md` written first.
 
 ---
 

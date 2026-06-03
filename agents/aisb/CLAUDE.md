@@ -129,18 +129,24 @@ Agent(subagent_type="zion",     model="claude-haiku-4-5-20251001", prompt="...")
 
 ---
 
-## Cron Schedules (proactive agents)
+## Scheduled automation
 
-| Agent | Schedule | Command | Purpose |
-|---|---|---|---|
-| **NEO** | `*/5 * * * *` | `aisb-nerve-cron stale` | Stale agent detection, kill+reroute |
-| **NEO** | `*/3 * * * *` | `~/.aisb/lib/worker-stall-detector.sh` | Worker stall escalation |
-| **ZION** | `0 9 * * *` | `aisb-nerve-cron digest` | Daily 9am UTC digest |
-| **ZION** | `0 * * * *` | `aisb-nerve-cron cost` | Hourly cost check |
-| **LINK** | continuous | systemd `aisb-webhook-bridge.service` | done.json event POSTs |
-| **LINK** | `* * * * *` | `aisb-nerve-cron alerts` | Alert dispatch |
-| **SMITH** | `0 9 * * 1` | `~/.aisb/lib/outcomes/dream.sh --all` | Weekly Mondays 9am UTC, lessons consolidation |
-| **PYTHIA** | `0 8 * * 1` (systemd timer) | `~/.aisb/lib/pythia.sh` + `pythia-github.sh` | Weekly Mondays 8am UTC, Anthropic docs + GitHub |
+OmegaOS wires two cron jobs at install (see `install.sh`):
+
+| Schedule | Command | Purpose |
+|---|---|---|
+| `* * * * *` | `omega patrol --once` | Self-improvement patrol — watches `~/.omega/state/oracle-*.done.json`, triggers the curator + trajectory pruning |
+| `*/10 * * * *` | `omega usage --check` | Token-budget check — 80%/90% Telegram alert |
+
+The proactive-agent behaviours below are conceptual roles those patrols (and on-demand agent runs) fulfil; they are not separate shipped cron entries:
+
+| Agent | Cadence | Behaviour |
+|---|---|---|
+| **NEO** | continuous / periodic | Stale-agent detection (kill + reroute) and worker-stall escalation |
+| **ZION** | daily / hourly | Daily digest and recurring cost check |
+| **LINK** | continuous | done.json event delivery (webhook POSTs) and alert dispatch |
+| **SMITH** | weekly | Lessons consolidation ("dreams" pass) |
+| **PYTHIA** | weekly | Watches the Claude Code / Anthropic docs + watched GitHub repos and proposes gaps |
 
 ### On-demand only
 
@@ -221,13 +227,13 @@ If any fails → `status: pending` with reason in `pending_actions[]`.
 ## Knowledge & Memory Layer (v7.0)
 
 ```
-~/.aisb/memory/project/{name}/
+~/.omega/state/memory/project/{name}/
   lessons-learned.md           # MEROVINGIAN curates, SMITH appends
   lessons-learned.dreamed.md   # SMITH dreams pass output (R-31), review-then-apply
   lessons-v{date}.md           # immutable snapshots before each dream pass
   lessons-pre-dream-{date}.md  # backup taken at --apply time
 
-~/.aisb/state/outcomes/
+~/.omega/state/outcomes/
   outcomes.db                  # R-27 sqlite: missions, criteria, graders, challenges
   {oracle}.rubric.md           # R-19 outcome contract
   {oracle}.iter-N.{grader}.json  # per-grader output (R-21)
@@ -237,13 +243,13 @@ If any fails → `status: pending` with reason in `pending_actions[]`.
 ```
 
 ZION reads `outcomes.db` for analytics dashboards.
-ARCHITECT reads `~/.aisb/docs/SKIPPED-RULES.md` before proposing new R-XX.
+ARCHITECT consults the authoritative skipped-rules list before proposing new R-XX.
 
 ---
 
 ## Skipped Rules (authoritative list)
 
-See `~/.aisb/docs/SKIPPED-RULES.md` for full rationale. Summary:
+See the authoritative skipped-rules list (maintained by ARCHITECT) for full rationale. Summary:
 
 | Rule | Status | Why |
 |---|---|---|
@@ -288,7 +294,7 @@ The real-time backbone. Every agent uses Nerve. v7.0 adds:
 | `ship_frozen` | LINK | ORACLE (require user unblock) |
 | `regression_flagged` | SERAPH (R-22) | ORACLE (refuse done_clean) |
 
-Backend: Convex (real-time). Config: `~/.aisb/config/nerve.json`.
+Backend: Convex (real-time). Config lives under `~/.omega/config/nerve.json` when configured.
 
 ---
 

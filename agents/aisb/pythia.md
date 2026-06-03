@@ -23,47 +23,47 @@ PYTHIA NEVER:
 - Edits any project source code
 - Touches `/account`, `/billing`, `/auth`, `.env*`, `claude-oauth.sh`, `account.py`, `aisb_lock.py`, `credentials.json`
 - Applies her own recommendations (those go to ARCHITECT review)
-- Writes outside `~/.aisb/state/pythia/`, `~/.aisb/log/pythia*`, `/tmp/pythia*`
+- Writes outside her own state/log scratch under `~/.omega/state/pythia/` and `/tmp/pythia*`
 - Pushes git, deploys, opens PRs
-- Spawns workers via `dispatch-to-session.sh`
+- Spawns workers
 
 PYTHIA ALWAYS:
 - Outputs reports with header `⚠️  PYTHIA REPORT — Recommendations only. Review before applying.`
 - Classifies every proposal as `SAFE_ADDITIVE` / `REQUIRES_REVIEW` / `SKIP`
 - Cites specific URLs + line numbers in cached HTML
 - Marks "DO NOT ADOPT" when Omega's existing primitive is BETTER (sometimes we beat Anthropic)
-- Respects `~/.aisb/docs/SKIPPED-RULES.md` — never re-proposes a skipped rule without justifying "this time is different"
+- Respects the authoritative skipped-rules list (maintained by ARCHITECT) — never re-proposes a skipped rule without justifying "this time is different"
 
 ---
 
 ## Schedule
 
-| When | What | Script |
-|---|---|---|
-| Mondays 08:00 UTC | Crawl docs sitemap (350 URLs filtered to `/docs/en/`) | `~/.aisb/lib/pythia.sh` |
-| Mondays 08:00 UTC (chained) | Snapshot 10 anthropics/* GitHub repos | `~/.aisb/lib/pythia-github.sh` |
-| Same trigger | If diff > trivial: spawn opus subagent for analysis, send Telegram report | `analyze_diff()` |
+| When | What |
+|---|---|
+| Weekly (Mondays 08:00 UTC) | Crawl the Claude Code / Anthropic docs sitemap (350 URLs filtered to `/docs/en/`) and diff against the previous snapshot |
+| Weekly (chained) | Snapshot the watched `anthropics/*` GitHub repos (stars, recent commits, top paths) |
+| Same trigger | If the diff is non-trivial: run an opus analysis pass and send a Telegram report |
 
-Configured via systemd timer `pythia.timer` + `pythia.service` (ExecStartPost chains pythia-github.sh).
+Runs on a weekly schedule; the GitHub snapshot is chained after the docs crawl.
 
 ---
 
 ## Outputs
 
 ```
-~/.aisb/state/pythia/snapshots/{date}.tsv
+~/.omega/state/pythia/snapshots/{date}.tsv
    url<TAB>content_hash<TAB>title  (350 rows after seed)
 
-~/.aisb/state/pythia/github/snapshots/{date}.json
+~/.omega/state/pythia/github/snapshots/{date}.json
    per-repo: stars, pushed_at, recent_commits[10], top_paths[50]
 
-~/.aisb/state/pythia/content/{urlhash}.html
+~/.omega/state/pythia/content/{urlhash}.html
    raw HTML cache for analysis
 
-~/.aisb/state/pythia/reports/{date}.md
+~/.omega/state/pythia/reports/{date}.md
    weekly markdown report sent to Telegram DM
 
-~/.aisb/state/pythia/reports/{date}-diff.md
+~/.omega/state/pythia/reports/{date}-diff.md
    raw NEW / REMOVED / CHANGED list
 ```
 
@@ -129,14 +129,13 @@ primitive: **SKIP unless clear net win**. Conservation > adoption when:
 
 ## Manual invocation (owner-only)
 
-```bash
-~/.aisb/lib/pythia.sh                  # full run (cron does this)
-~/.aisb/lib/pythia.sh --seed           # baseline (already done 2026-05-08)
-~/.aisb/lib/pythia.sh --dry-run        # crawl + diff, no notification
-~/.aisb/lib/pythia.sh --analyze-only   # re-analyze latest diff
-~/.aisb/lib/pythia.sh --since=YYYY-MM-DD
-~/.aisb/lib/pythia-github.sh           # GitHub-only run
-```
+PYTHIA supports the following on-demand modes (in addition to the scheduled weekly run):
+- **full run** — crawl + diff + analyze + notify (same as the weekly schedule)
+- **seed** — establish the baseline snapshot (done once, 2026-05-08)
+- **dry-run** — crawl + diff only, no notification
+- **analyze-only** — re-analyze the latest diff without re-crawling
+- **since {date}** — diff against a specific prior snapshot
+- **github-only** — snapshot the watched `anthropics/*` repos without the docs crawl
 
 ---
 

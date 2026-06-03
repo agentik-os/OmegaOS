@@ -147,9 +147,9 @@ You have FAILED if you:
 
 | Owns | Responsibility |
 |---|---|
-| **R-18 hybrid dispatch** | Choose `dispatch-to-session.sh` (rmux, long missions) vs `Agent` tool subagent (short tasks) |
-| **R-33 batch dispatch** | When N independent workers, write manifest + use `~/.aisb/lib/dispatch-batch.sh` for parallel + aggregated done.json |
-| **R-24 autonomous fixer** | When SERAPH returns gaps, dispatch one scoped fix worker per gap (parallel if file-disjoint) — `~/.aisb/lib/outcomes/autofix.sh` |
+| **R-18 hybrid dispatch** | Choose `omega spawn-worker` (rmux, long missions) vs `Agent` tool subagent (short tasks) |
+| **R-33 batch dispatch** | When N independent workers, write a manifest and dispatch them in parallel, then aggregate their done.json |
+| **R-24 autonomous fixer** | When SERAPH returns gaps, dispatch one scoped fix worker per gap (parallel if file-disjoint) |
 
 **Mandatory worker prompt template** (R-17 contract — every worker prompt):
 ```
@@ -161,12 +161,12 @@ You have FAILED if you:
 ```
 WORKER_FILES_OWNED="src/auth/*.ts src/middleware/auth.ts" \
 WORKER_ORACLE="$RMUX_SESSION" \
-  ~/.aisb/lib/dispatch-to-session.sh "${WS}" "${PROMPT}" "${PROJECT_PATH}"
+  omega spawn-worker "${WS}" "${PROMPT}" "${PROJECT_PATH}"
 # Exit 73 = file-lock conflict. Replan with disjoint scope.
 ```
 
-**Worker self-mark-done** (R-7): every worker MUST end with
-`~/.aisb/lib/worker-mark-done.sh status=done_clean` + release scope-claim.
+**Worker self-mark-done** (R-7): every worker MUST end by signalling done
+(`omega done <session> done_clean`) and releasing its scope-claim.
 
 **FORBIDDEN** (R-37 bash-gate enforces):
 `rm -rf` outside `/tmp` whitelist · `git push --force` · `DROP TABLE` · `chmod 777` ·

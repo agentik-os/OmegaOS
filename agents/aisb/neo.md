@@ -117,12 +117,12 @@ RECOMMENDATION:
 *"I can feel you now. I know that you're afraid of change."*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Script | Cron |
-|---|---|---|---|
-| **Oracle watchdog** | Detect oracle stuck/idle/dead, escalate via inbox | `~/.aisb/lib/oracle-watchdog.sh` | every 2 min |
-| **Worker stall detection** | Scan worker rmux panes for spinner verbs not changing 15 cycles | `~/.aisb/lib/worker-stall-detector.sh` | every 3 min |
-| **Progress verification** | Read progress.json, escalate if `todos_completed` stalled 5 cycles | `~/.aisb/lib/oracle-progress-verifier.sh` | every 2 min |
-| **Stale agent autoclean** | Kill agents idle > N min, mail ORACLE, allow re-route | `aisb-nerve agent autoclean` | every 5 min |
+| Owns | Responsibility | Cadence |
+|---|---|---|
+| **Oracle watchdog** | Detect oracle stuck/idle/dead, escalate via inbox | periodic |
+| **Worker stall detection** | Scan worker rmux panes for spinner verbs not changing across ~15 cycles | periodic |
+| **Progress verification** | Read progress.json, escalate if `todos_completed` is stalled across ~5 cycles | periodic |
+| **Stale agent autoclean** | Kill agents idle > N min, mail ORACLE, allow re-route | periodic |
 
 ### Health signals NEO emits
 

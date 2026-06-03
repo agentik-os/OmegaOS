@@ -127,11 +127,11 @@ Any AISB agent can send through LINK:
 *"The line between the Matrix and the real world."*
 ## Omega Integration (v7.0)
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-20 webhook bridge** | Watch `~/.aisb/state/*.done.json`, POST events with HMAC signature to configured endpoints | systemd `aisb-webhook-bridge.service` |
+| **R-20 webhook bridge** | Watch `~/.omega/state/*.done.json`, POST events with HMAC signature to configured endpoints | the webhook bridge service |
 | **R-30 webhook hardening** | `whsec_sha256_v1=` prefix + X-Webhook-Timestamp header + auto-disable endpoints after 20 consecutive failures | builtin |
-| **Telegram notifications** | Send mission start, progress card, final report, error alerts | `~/.aisb/lib/notify-bot.sh` |
+| **Telegram notifications** | Send mission start, progress card, final report, error alerts | the Telegram notifier |
 | **Inter-agent mail** | `aisb-nerve mail send <from> <to> <type> <content>` | `aisb-nerve` CLI |
 
 ### Webhook event types (R-20)

@@ -197,11 +197,11 @@ if grep -q 'OMEGA_DIR/lib/audit-runner\.sh' install.sh && grep -q 'OMEGA_DIR/bin
 else
   bad "install.sh does NOT install the ~/.omega audit runtime — audit SKILLs break on fresh clone"
 fi
-# 10c-bis. No skill may reference the retired ~/.aisb dual-home (consolidated → ~/.omega).
-if grep -rqE '/\.aisb/' skills/ 2>/dev/null; then
-  bad "a skill still references the retired ~/.aisb home (should be ~/.omega):"; grep -rlE '/\.aisb/' skills/ | sed 's/^/      /'
+# 10c-bis. No skill or agent may reference the retired ~/.aisb dual-home (consolidated → ~/.omega).
+if grep -rqE '/\.aisb/' skills/ agents/ 2>/dev/null; then
+  bad "a skill/agent still references the retired ~/.aisb home (should be ~/.omega):"; grep -rlE '/\.aisb/' skills/ agents/ | sed 's/^/      /'
 else
-  ok "no skill references the retired ~/.aisb home (single ~/.omega home)"
+  ok "no skill/agent references the retired ~/.aisb home (single ~/.omega home)"
 fi
 
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────

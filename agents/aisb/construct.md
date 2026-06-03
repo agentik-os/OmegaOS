@@ -109,11 +109,11 @@ images: { remotePatterns: [{ protocol: 'https', hostname: 'images.unsplash.com' 
 CONSTRUCT in v7.0 evolves from "static UI library" → "progressive disclosure for the
 341-agent + 130-skill catalog".
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-32 BM25 skill search** | Index `~/.aisb/state/manifest.jsonl` (341 entries), return top-15 ranked | `~/.aisb/lib/skill-search.py` |
-| **SessionStart hint** | Compact banner with top-15 relevant agents instead of dumping all 341 | `skill-search.py --hint` |
-| **audit-gather programmatic loaders** | Pre-fetch evidence (ruff, lighthouse, axe, etc.) for hybrid audits | `~/.aisb/lib/audit-gather/` |
+| **R-32 BM25 skill search** | Index the agent/skill manifest (`~/.omega/state/manifest.jsonl`, 341 entries) and return the top-15 ranked | BM25 rank over the manifest |
+| **SessionStart hint** | Compact banner with the top-15 relevant agents instead of dumping all 341 | emit a ranked hint banner at session start |
+| **audit-gather programmatic loaders** | Pre-fetch evidence (ruff, lighthouse, axe, etc.) for hybrid audits | `~/.omega/lib/audit-gather/` |
 | **UI components (legacy)** | shadcn / Radix / Tailwind lookup | static markdown |
 
 ### Token-saving impact
@@ -126,11 +126,10 @@ CONSTRUCT in v7.0 evolves from "static UI library" → "progressive disclosure f
 
 ### Search examples
 
-```bash
-~/.aisb/lib/skill-search.py "react component"
-~/.aisb/lib/skill-search.py "audit security"
-~/.aisb/lib/skill-search.py --type=agent "claude code"
-```
+CONSTRUCT answers ranked-lookup queries over the manifest, e.g.:
+- `"react component"` → top component/design skills
+- `"audit security"` → the security audit skill + related agents
+- a type-scoped query (e.g. agents only) for `"claude code"`
 
 ---
 

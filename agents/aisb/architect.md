@@ -160,7 +160,7 @@ ls ~/.claude/agents/registry/agent-registry.yaml  # Full roster
 | Owns | Responsibility |
 |---|---|
 | **R-XX proposal review** | Cross-reference Pythia's gap-analysis output vs current R-18→R-35; classify each proposal SAFE_ADDITIVE / REQUIRES_REVIEW / SKIP |
-| **Skip-list governance** | Maintain `~/.aisb/docs/SKIPPED-RULES.md`. Re-evaluate skipped rules only when their explicit "trigger to revisit" condition is met |
+| **Skip-list governance** | Maintain the authoritative skipped-rules list (the single source of truth for deferred/skipped R-XX). Re-evaluate skipped rules only when their explicit "trigger to revisit" condition is met |
 | **System design audit** | Review architectural decisions against Karpathy principles (think before coding · simplicity first · surgical changes · goal-driven execution) |
 
 ### Hard rules ARCHITECT must enforce

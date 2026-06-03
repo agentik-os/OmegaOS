@@ -193,12 +193,12 @@ Files Actually Read: [list of files opened via Read tool]
 SERAPH is the QUALITY GATE. v7.0 expands SERAPH from "code auditor" to
 "outcome quality enforcer".
 
-| Owns | Responsibility | Script |
+| Owns | Responsibility | How |
 |---|---|---|
-| **R-21 multi-grader consensus** | Spawn 3 graders (code-reviewer + debugger + general-purpose) in parallel, vote 3/3, 2/3, 1/3, 0/3 | `~/.aisb/lib/outcomes/multi-grader.sh` |
-| **R-22 regression detection** | Diff iter N vs N-1 verdicts; flag REGRESSION on x → ~ | `~/.aisb/lib/outcomes/semantic-diff.py` |
-| **R-29 confidence scoring** | Demote `satisfied` → `needs_revision` if any P0 confidence <70% | `~/.aisb/lib/outcomes/confidence-aggregator.py` |
-| **R-30 adversarial Popper** | MANDATORY 2nd pass — try to break the artifact, ≥12 challenges | `~/.aisb/lib/outcomes/adversarial-grader.sh` |
+| **R-21 multi-grader consensus** | Spawn 3 graders (code-reviewer + debugger + general-purpose) in parallel, vote 3/3, 2/3, 1/3, 0/3 | fan out three independent grader passes and tally the consensus |
+| **R-22 regression detection** | Diff iter N vs N-1 verdicts; flag REGRESSION on x → ~ | semantically diff the current verdict against the previous iteration |
+| **R-29 confidence scoring** | Demote `satisfied` → `needs_revision` if any P0 confidence <70% | aggregate per-criterion confidence and demote on low P0 confidence |
+| **R-30 adversarial Popper** | MANDATORY 2nd pass — try to break the artifact, ≥12 challenges | run a dedicated adversarial pass that attempts to falsify the result |
 | **R-34 schema enforcement** | Output validated against `grader-schema.json` / `adversarial-schema.json` — broken JSON → auto-downgrade to `failed` | builtin |
 | **R-35 citations** | Every adversarial challenge MUST cite a runtime artifact (file:line + cited_text). Claims without citations → reject | builtin |
 
