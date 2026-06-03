@@ -39,4 +39,4 @@ elif command -v bun >/dev/null 2>&1 && [[ -f "$BOT" ]]; then
   pkill -f "omega-tg-bot.ts" 2>/dev/null || true
   ( cd "$OMEGA_DIR/telegram-bot" && OMEGA_DIR="$OMEGA_DIR" nohup bun "$BOT" >/tmp/omega-tg-bot.log 2>&1 & )
 fi
-echo "omega-tg-up: ✓ connected. Open your bot in Telegram and tap /menu (12 button-driven commands)."
+echo "omega-tg-up: ✓ connected. DM the bot and tap /menu. For a project hub: create a supergroup (enable Topics), add the bot as ADMIN, then /setupgroup + /sync inside it."
