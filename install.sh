@@ -90,6 +90,29 @@ bootstrap_os_packages() {
 }
 bootstrap_os_packages
 
+# Optional fluidity dep: mosh. Plain SSH waits a full network round-trip before
+# echoing each keystroke and ships output as TCP segments — on a far VPS (tens
+# of ms RTT) typing feels laggy and agent streaming arrives in chunks, no matter
+# how fast the box is. mosh adds predictive LOCAL echo + a UDP diff protocol, so
+# typing is instant and streaming is smooth at any latency. Best-effort: a
+# missing package must NEVER abort the install (it is a comfort upgrade, not a
+# build requirement). Connect with: mosh <host> -- rmux attach
+install_mosh_optional() {
+    command -v mosh-server >/dev/null 2>&1 && { ok "mosh present (low-latency SSH available)"; return 0; }
+    local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y mosh 2>/dev/null
+    elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y mosh 2>/dev/null
+    elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y mosh 2>/dev/null
+    elif command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm mosh 2>/dev/null
+    elif command -v apk     >/dev/null 2>&1; then $SUDO apk add --no-cache mosh 2>/dev/null
+    fi
+    command -v mosh-server >/dev/null 2>&1 \
+        && ok "mosh installed — connect with 'mosh <host> -- rmux attach' for lag-free typing/streaming" \
+        || info "mosh not installed (optional) — plain SSH still works; install mosh for smoother remote typing"
+    return 0
+}
+install_mosh_optional
+
 # Check for Rust
 if ! command -v cargo &>/dev/null; then
     info "Rust not found. Installing via rustup..."

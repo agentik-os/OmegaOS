@@ -69,6 +69,10 @@ set -sa terminal-features ",*:RGB"
 set -g focus-events on
 OPTS
 
+# 4f. Optional low-latency SSH (mosh) bootstrapped best-effort by install.sh.
+#     Predictive local echo + UDP diffs → lag-free typing/streaming on a far VPS.
+if grep -q "install_mosh_optional" install.sh; then ok "mosh (low-latency SSH) bootstrapped by install.sh"; else bad "mosh bootstrap step missing from install.sh"; fi
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 
