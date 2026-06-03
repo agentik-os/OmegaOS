@@ -1548,15 +1548,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
                     _ => return Action::None,
                 };
                 Action::ForwardKeyToSession { session, key: key_str }
-            } else if c == '/' && app.chat_line_chars == 0 {
-                // A "/" at the start of a chat line opens OmegaOS command
-                // capture (shared with Telegram). Mid-line "/" (paths/URLs)
-                // types normally.
-                app.cmd_capture = Some("/".to_string());
-                app.status_message =
-                    Some("OmegaOS » /   (type a command · Enter run · Esc cancel)".to_string());
-                Action::None
             } else {
+                // Forward EVERY printable char to the agent — including a
+                // leading "/". We must NOT intercept "/" for OmegaOS command
+                // capture: doing so swallowed the keystrokes Claude Code needs
+                // for its OWN "/" slash-command menu, so the menu never opened,
+                // the selection was invisible, and the capture state could wedge
+                // the whole TUI. Claude's "/" now works natively; reach OmegaOS
+                // tabs via the menu (Tab out of chat) instead.
                 app.chat_line_chars += 1;
                 Action::ForwardCharToSession { session, ch: c }
             }
