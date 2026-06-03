@@ -1031,8 +1031,12 @@ if [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]]; then
     # may have skipped it when node/npx was already present, so ensure it here.
     if [[ -z "$BUN_BIN" ]]; then
         info "Installing bun (required by the Telegram command bot)…"
+        # bun.sh/install needs unzip — ensure it (the #1 reason bun bootstrap fails).
+        command -v unzip >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && sudo apt-get install -y unzip >/dev/null 2>&1 || true; }
         curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
         [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
+        # last resort: npm-provided bun (no unzip needed)
+        [[ -z "$BUN_BIN" ]] && command -v npm >/dev/null 2>&1 && { npm install -g bun >/dev/null 2>&1 || true; BUN_BIN="$(command -v bun || true)"; }
     fi
     if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
         SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
