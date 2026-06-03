@@ -3686,23 +3686,53 @@ impl TelegramBotEngine {
         }
 
         let billing = account::get_billing();
+
+        // Connected account: the user wants to see WHO is logged in, not just
+        // billing. Email comes from `claude auth status`; the active profile
+        // name comes from billing (or the accounts list as a fallback).
+        let email = account::email_from_claude_auth_status();
+        let active_profile = billing
+            .as_ref()
+            .map(|b| b.active_account.clone())
+            .or_else(|| {
+                account::list_accounts()
+                    .into_iter()
+                    .find(|a| a.is_active)
+                    .map(|a| a.name)
+            })
+            .unwrap_or_default();
+        let mut account_block = String::from("\n<b>Account:</b> ");
+        if email != "?" && !email.is_empty() {
+            account_block.push_str(&format!("<code>{}</code>", formatting::escape_html(&email)));
+        } else {
+            account_block.push_str("<i>not logged in — paste an OAuth code</i>");
+        }
+        if !active_profile.is_empty() && active_profile != email {
+            account_block.push_str(&format!(
+                "  ·  profile <code>{}</code>",
+                formatting::escape_html(&active_profile)
+            ));
+        }
+
         let billing_block = if let Some(b) = &billing {
             format!(
-                "\n\n<b>Billing:</b>\n  5h: <code>{:.1}%</code>  ·  Week: <code>{:.1}%</code>\n  Account: <code>{}</code>",
+                "\n\n<b>Billing:</b>  5h <code>{:.1}%</code>  ·  Week <code>{:.1}%</code>",
                 b.precise_5h(),
                 b.precise_week(),
-                formatting::escape_html(&b.active_account),
             )
         } else {
-            "\n\n<b>Billing:</b> <i>cache missing</i>".to_string()
+            // Cache not yet written by the `omega usage --check` cron — say so
+            // plainly + how to refresh, instead of a bare "cache missing".
+            "\n\n<b>Billing:</b> <i>refreshing… (run /status or wait for the usage cron)</i>"
+                .to_string()
         };
 
         let html = format!(
-            "<b>OmegaOS — Back Online</b>\n\n\
-             <b>Active Sessions:</b>\n{}{}\n\n\
+            "<b>OmegaOS — Back Online</b>\n{}\n<b>Active Sessions:</b>\n{}{}\n\n\
              <i>Type /help for commands. Reply to oracle reports to route \
              messages back to that project. Paste an OAuth code anytime — \
              auto-detected.</i>",
+            account_block,
             session_lines.join("\n"),
             billing_block,
         );
