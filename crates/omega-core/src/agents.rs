@@ -172,7 +172,16 @@ impl Agent {
 
         match self {
             Agent::Claude => {
-                let mut args = String::from("claude --dangerously-skip-permissions");
+                // CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1: render in the normal
+                // screen (not the alternate screen) so the full conversation
+                // flows into rmux's scrollback and scrolls in the panel. Set
+                // INLINE on the command because omega launches the agent via
+                // `bash -c`, which reads neither ~/.zshenv nor ~/.bashrc, and
+                // panes inherit the (older) rmux daemon env — so a shell-rc
+                // export never reaches it.
+                let mut args = String::from(
+                    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
+                );
                 if let Some(ref sys_file) = opts.system_prompt_file {
                     args.push_str(&format!(" --append-system-prompt-file {}", shell_quote(sys_file)));
                 }

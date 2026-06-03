@@ -1828,7 +1828,9 @@ impl TelegramBotEngine {
         // oracle — so it never planned or dispatched workers (and died
         // when the process exited, since there was no `exec bash`).
         let prompt_file = render_oracle_prompt(project, &cwd, oracle_name);
-        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        // Normal-screen (see agents.rs) so the oracle's full conversation scrolls
+        // in the rmux panel; set inline because this launches via `bash -c`.
+        let mut cmd = String::from("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions");
         if let Some(ref pf) = prompt_file {
             cmd.push_str(&format!(" --append-system-prompt-file '{}'", pf.replace('\'', r"'\''")));
         }
@@ -1953,7 +1955,9 @@ impl TelegramBotEngine {
         };
         let cwd = entry.path.display().to_string();
         let prompt_file = render_oracle_prompt(project, &cwd, oracle_name);
-        let mut cmd = String::from("claude --dangerously-skip-permissions");
+        // Normal-screen (see agents.rs) so the oracle's full conversation scrolls
+        // in the rmux panel; set inline because this launches via `bash -c`.
+        let mut cmd = String::from("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions");
         if let Some(ref pf) = prompt_file {
             cmd.push_str(&format!(
                 " --append-system-prompt-file '{}'",
