@@ -2183,6 +2183,7 @@ fn mask_key(key: &str) -> String {
 
 fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
     let (lines, scroll_target) = match app.selected_info_section() {
+        InfoSection::Master => { let l = render_info_master(); (l, 0) }
         InfoSection::AisbAgents => render_info_aisb_agents(app),
         InfoSection::Oracle => { let l = render_info_oracle(); (l, 0) }
         InfoSection::Workers => { let l = render_info_workers(); (l, 0) }
@@ -2356,6 +2357,45 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
         lines.push(Line::from(format!("    • {}", r)));
     }
     (lines, selected_agent_line)
+}
+
+fn render_info_master() -> Vec<Line<'static>> {
+    let master = omega_core::aisb::MASTER_SESSION_NAME;
+    vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Ω  AISB MASTER — the 13-agent brain hub",
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("  The AISB Master is the single brain reached over Telegram: you"),
+        Line::from("  message it, it classifies intent and routes to the right oracle,"),
+        Line::from("  agent or skill. The 13 Matrix agents (see 'AISB Agents') are its"),
+        Line::from("  faculties. One conversation, many agents, shared evolution."),
+        Line::from(""),
+        Line::from(Span::styled("  Live session", Style::default().fg(Color::Cyan))),
+        Line::from(format!("    {}  — live viewer of the Telegram conversation", master)),
+        Line::from(format!("    attach:  omega attach {}   (or: omega master)", master)),
+        Line::from(""),
+        Line::from(Span::styled("  Telegram bridge", Style::default().fg(Color::Cyan))),
+        Line::from("    Set up:  Monitor tab → 'T' (Set up Omega Telegram bot)"),
+        Line::from("             or CLI:  omega telegram setup"),
+        Line::from("    Once set, the bridge streams the brain's replies + accepts"),
+        Line::from("    voice / documents / photos (transcribed + analysed)."),
+        Line::from(""),
+        Line::from(Span::styled("  OmegaMC dashboard", Style::default().fg(Color::Cyan))),
+        Line::from("    The phone-side web control surface (agents, conversations,"),
+        Line::from("    tasks, swarms). Repo: agentik-os/agentik-telegram (MIT)."),
+        Line::from("    Open:  Monitor tab → 'O' (Open Dashboard) — launches it from"),
+        Line::from("           ~/.omega/repos/omega-mc when installed."),
+        Line::from("    The 13 AISB agents are mapped into its registry"),
+        Line::from("    (config/omega-aisb.yaml)."),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  One brain, one Telegram channel, one dashboard — all 13 agents.",
+            Style::default().fg(Color::Gray),
+        )),
+    ]
 }
 
 fn render_info_oracle() -> Vec<Line<'static>> {

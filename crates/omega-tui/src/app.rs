@@ -15,6 +15,7 @@ pub enum Tab {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoSection {
+    Master,
     AisbAgents,
     Oracle,
     Workers,
@@ -24,6 +25,7 @@ pub enum InfoSection {
 impl InfoSection {
     pub fn all() -> &'static [InfoSection] {
         &[
+            InfoSection::Master,
             InfoSection::AisbAgents,
             InfoSection::Oracle,
             InfoSection::Workers,
@@ -32,6 +34,7 @@ impl InfoSection {
     }
     pub fn label(&self) -> &'static str {
         match self {
+            InfoSection::Master => "AISB Master — the brain hub",
             InfoSection::AisbAgents => "AISB Agents (13)",
             InfoSection::Oracle => "Oracle — routing & coordination",
             InfoSection::Workers => "Workers — dispatch & lifecycle",
