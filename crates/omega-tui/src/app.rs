@@ -797,6 +797,16 @@ pub struct App {
     pub session_focus: SessionFocus,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
+    /// OmegaOS slash-command capture in chat focus. `Some(buf)` while the user
+    /// is typing a shared OmegaOS command (e.g. "/projects") at the start of a
+    /// chat line — keys are buffered by the TUI (not forwarded) until Enter
+    /// resolves it. The SAME command set works on Telegram, the TUI, and any
+    /// agent pane (one system, many brains).
+    pub cmd_capture: Option<String>,
+    /// Char count on the current chat line (reset on Enter) so a "/" only opens
+    /// command capture when it is the first character of the line — typing a
+    /// path/URL mid-line never triggers it. Best-effort.
+    pub chat_line_chars: usize,
     /// Generic right-panel focus for non-Sessions 2-column tabs (Settings/Info).
     /// false = list focused, true = detail focused.
     pub detail_focused: bool,
@@ -865,6 +875,8 @@ impl App {
             preview_needs_history: false,
             session_focus: SessionFocus::List,
             last_tab_press: None,
+            cmd_capture: None,
+            chat_line_chars: 0,
             detail_focused: false,
             detail_fullscreen: false,
             detail_scroll: 0,
@@ -987,6 +999,10 @@ impl App {
             (SessionFocus::List, true) => SessionFocus::ChatFullscreen,
             (_, _) => SessionFocus::List,
         };
+        // A Tab transition starts a fresh chat input line and drops any
+        // half-typed OmegaOS command, so the "/" trigger fires at line start.
+        self.cmd_capture = None;
+        self.chat_line_chars = 0;
         // When entering any chat focus, tail follow on
         if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;

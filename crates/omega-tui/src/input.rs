@@ -883,8 +883,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 if let Some(_entry) = app.selected_session() {
                     if app.session_focus == SessionFocus::List {
                         app.session_focus = SessionFocus::Chat;
+                        app.cmd_capture = None;
+                        app.chat_line_chars = 0;
                         app.status_message = Some(
-                            "Focus: preview — keys forward to session (Tab → list, Tab-Tab fullscreen, Esc release)".to_string(),
+                            "Focus: chat — keys forward to agent (Tab → agent, Tab-Tab → close to list, / = OmegaOS commands)".to_string(),
                         );
                     }
                     Action::None
@@ -1279,6 +1281,61 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         }
     };
 
+    // --- OmegaOS slash-command capture (shared command set) ---
+    // While capturing, keys build the command buffer locally instead of going
+    // to the agent. Enter resolves: a known OmegaOS command runs in the TUI;
+    // anything else is typed into the agent verbatim (its own slash commands
+    // still work — press Enter again to submit). Esc cancels. This is the TUI
+    // half of the command set the Telegram bridge also serves.
+    if let Some(mut buf) = app.cmd_capture.take() {
+        return match key.code {
+            KeyCode::Char(c)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                buf.push(c);
+                app.status_message = Some(format!("OmegaOS » {}   (Enter run · Esc cancel)", buf));
+                app.cmd_capture = Some(buf);
+                Action::None
+            }
+            KeyCode::Backspace => {
+                buf.pop();
+                if buf.is_empty() {
+                    app.status_message = Some("Command cancelled".to_string());
+                } else {
+                    app.status_message = Some(format!("OmegaOS » {}", buf));
+                    app.cmd_capture = Some(buf);
+                }
+                Action::None
+            }
+            KeyCode::Esc => {
+                app.status_message = Some("Command cancelled".to_string());
+                Action::None
+            }
+            KeyCode::Enter => {
+                if let Some(tab) = omega_chat_command(&buf) {
+                    app.tab = tab;
+                    if tab == Tab::Sessions {
+                        app.session_focus = SessionFocus::List;
+                    }
+                    app.reset_2col_focus();
+                    app.status_message = Some(format!("→ {}  (OmegaOS {})", tab_label(tab), buf));
+                    Action::None
+                } else {
+                    app.status_message = Some(format!(
+                        "'{}' isn't an OmegaOS command — typed to the agent (Enter to send)",
+                        buf
+                    ));
+                    Action::SendTextRawToSession { session, text: buf }
+                }
+            }
+            _ => {
+                app.cmd_capture = Some(buf);
+                Action::None
+            }
+        };
+    }
+
     // --- TUI-local (never forwarded) ---
 
     // Ctrl+R — hot-reload OmegaOS in place (re-exec the binary). Intercepted
@@ -1382,6 +1439,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             Action::ForwardKeyToSession { session, key: "C-w" }
         }
         KeyCode::Backspace => {
+            app.chat_line_chars = app.chat_line_chars.saturating_sub(1);
             Action::ForwardKeyToSession { session, key: "BSpace" }
         }
         // Forward-delete word:
@@ -1393,8 +1451,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         // Shift+Enter / Alt+Enter → insert a newline in the input (don't
         // submit), matching real Claude Code multi-line input. Plain Enter
         // still submits.
-        KeyCode::Enter if shift || alt => Action::InsertNewlineToSession { session },
-        KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
+        KeyCode::Enter if shift || alt => {
+            app.chat_line_chars = 0;
+            Action::InsertNewlineToSession { session }
+        }
+        KeyCode::Enter => {
+            app.chat_line_chars = 0;
+            Action::ForwardKeyToSession { session, key: "Enter" }
+        }
         KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
         KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
@@ -1442,11 +1506,54 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
                     _ => return Action::None,
                 };
                 Action::ForwardKeyToSession { session, key: key_str }
+            } else if c == '/' && app.chat_line_chars == 0 {
+                // A "/" at the start of a chat line opens OmegaOS command
+                // capture (shared with Telegram). Mid-line "/" (paths/URLs)
+                // types normally.
+                app.cmd_capture = Some("/".to_string());
+                app.status_message =
+                    Some("OmegaOS » /   (type a command · Enter run · Esc cancel)".to_string());
+                Action::None
             } else {
+                app.chat_line_chars += 1;
                 Action::ForwardCharToSession { session, ch: c }
             }
         }
         _ => Action::None,
+    }
+}
+
+/// Map an OmegaOS slash command typed in a chat to the tab it opens — the TUI
+/// half of the shared command set (the Telegram bridge accepts the same names).
+/// Returns None for anything that isn't an OmegaOS navigation command, so the
+/// caller hands it to the agent verbatim (the agent's own slash commands work).
+fn omega_chat_command(raw: &str) -> Option<Tab> {
+    match raw
+        .trim()
+        .trim_start_matches('/')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "projects" | "project" => Some(Tab::Projects),
+        "sessions" | "relay" => Some(Tab::Sessions),
+        "monitor" | "status" => Some(Tab::Monitor),
+        "settings" | "config" => Some(Tab::Settings),
+        "agents" | "agentic" | "aisb" => Some(Tab::Agentic),
+        "menu" => Some(Tab::Menu),
+        "help" => Some(Tab::Help),
+        _ => None,
+    }
+}
+
+fn tab_label(tab: Tab) -> &'static str {
+    match tab {
+        Tab::Sessions => "Sessions",
+        Tab::Menu => "Menu",
+        Tab::Monitor => "Monitor",
+        Tab::Projects => "Projects",
+        Tab::Settings => "Settings",
+        Tab::Agentic => "Agentic",
+        Tab::Help => "Help",
     }
 }
 
