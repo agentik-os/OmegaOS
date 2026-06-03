@@ -753,19 +753,15 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .collect();
                         Line::from(spans)
                     } else if is_task_dispatch {
-                        // Cyan bold + subtle blue bg — a worker is being
-                        // spawned, you want to see it.
+                        // Cyan bold — a worker is being spawned, you want to see
+                        // it. No forced bg (it became a dark bar on light themes).
                         let cyan = Color::Rgb(41, 184, 219);
-                        let tint = Color::Rgb(20, 36, 52);
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
                                 Span::styled(
                                     sp.text.clone(),
-                                    Style::default()
-                                        .fg(cyan)
-                                        .bg(tint)
-                                        .add_modifier(Modifier::BOLD),
+                                    Style::default().fg(cyan).add_modifier(Modifier::BOLD),
                                 )
                             })
                             .collect();
@@ -784,14 +780,14 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .collect();
                         Line::from(spans)
                     } else if is_user_input {
-                        // Bold + soft blue bg tint, preserving Claude's own
-                        // ANSI fg so coloring still reads.
-                        let tint = Color::Rgb(28, 40, 64);
+                        // Bold, preserving Claude's own ANSI fg. NO forced bg:
+                        // a hardcoded dark tint renders as an ugly black bar on
+                        // light terminal themes (Termius light schemes). BOLD +
+                        // the preserved fg distinguish the prompt on any theme.
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
-                                let mut style =
-                                    Style::default().bg(tint).add_modifier(Modifier::BOLD);
+                                let mut style = Style::default().add_modifier(Modifier::BOLD);
                                 if let Some(c) = sp.fg {
                                     style = style.fg(preview_to_color(c));
                                 }
@@ -800,19 +796,16 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .collect();
                         Line::from(spans)
                     } else if is_agent_reply {
-                        // AISB-master mirror: agent reply line. Soft green
-                        // tint + dim bg to distinguish from user lines.
-                        let tint = Color::Rgb(20, 44, 28);
+                        // AISB-master mirror: agent reply line. Soft green fg to
+                        // distinguish from user lines. No forced bg (dark bar on
+                        // light themes).
                         let green = Color::Rgb(120, 220, 160);
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
                                 Span::styled(
                                     sp.text.clone(),
-                                    Style::default()
-                                        .fg(green)
-                                        .bg(tint)
-                                        .add_modifier(Modifier::BOLD),
+                                    Style::default().fg(green).add_modifier(Modifier::BOLD),
                                 )
                             })
                             .collect();
