@@ -978,15 +978,14 @@ impl App {
             .unwrap_or(false);
         self.last_tab_press = Some(now);
 
+        // NOTE: this runs only in List focus — in Chat/Fullscreen, Tab is handled
+        // by handle_key_chat (single tap → forward to the agent, double tap →
+        // close to the list). From the list: single tap opens the chat, double
+        // tap opens it straight in fullscreen.
         self.session_focus = match (self.session_focus, is_double) {
-            // Double tap (tab-tab): quick-CLOSE back to the session List from
-            // anywhere — dismiss the open chat/fullscreen view.
-            (_, true) => SessionFocus::List,
-            // Single tap: progressive zoom cycle List → Chat → Fullscreen → List.
-            // Fullscreen stays reachable without the double-tap.
             (SessionFocus::List, false) => SessionFocus::Chat,
-            (SessionFocus::Chat, false) => SessionFocus::ChatFullscreen,
-            (SessionFocus::ChatFullscreen, false) => SessionFocus::List,
+            (SessionFocus::List, true) => SessionFocus::ChatFullscreen,
+            (_, _) => SessionFocus::List,
         };
         // When entering any chat focus, tail follow on
         if self.session_focus != SessionFocus::List {

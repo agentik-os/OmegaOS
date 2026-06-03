@@ -695,9 +695,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             } else if app.tab == Tab::Sessions {
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
-                    SessionFocus::List => "Focus: session list (Tab → chat → fullscreen)".to_string(),
-                    SessionFocus::Chat => "Focus: chat (Tab → fullscreen, Tab-Tab → close to list, Enter to send)".to_string(),
-                    SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab → list, Tab-Tab → close to list)".to_string(),
+                    SessionFocus::List => "Focus: session list (Tab → chat, Tab-Tab → fullscreen)".to_string(),
+                    SessionFocus::Chat => "Focus: chat (Tab → agent, Tab-Tab → close to list, Enter to send)".to_string(),
+                    SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab → agent, Tab-Tab → close to list)".to_string(),
                 });
             } else if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
@@ -1316,9 +1316,29 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         return Action::ForwardKeyToSession { session, key: "BTab" };
     }
     if key.code == KeyCode::Tab {
-        app.session_focus = SessionFocus::List;
-        app.status_message = Some("Focus: session list (Enter → chat, Shift+Tab → Claude modes)".to_string());
-        return Action::None;
+        // Tab-Tab to CLOSE: a deliberate double-tap (within 400ms) backs out to
+        // the session list. A single Tab is forwarded to the agent (Claude uses
+        // Tab), so one accidental Tab no longer yanks you out of the chat — only
+        // a real tab-tab closes. (Shift+Tab → BTab for Claude mode-cycling is
+        // handled above.)
+        const DOUBLE_TAP_MS: u128 = 400;
+        let now = std::time::Instant::now();
+        let is_double = app
+            .last_tab_press
+            .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
+            .unwrap_or(false);
+        app.last_tab_press = Some(now);
+        if is_double {
+            app.last_tab_press = None;
+            app.session_focus = SessionFocus::List;
+            app.status_message =
+                Some("Closed to session list (Tab-Tab). Tab → chat, Enter → open.".to_string());
+            return Action::None;
+        }
+        return Action::ForwardKeyToSession {
+            session,
+            key: "Tab",
+        };
     }
 
     // Alt+arrows = TUI scroll preview
