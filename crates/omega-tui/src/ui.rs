@@ -231,7 +231,7 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Reset)
             };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(Color::Cyan)),
@@ -312,7 +312,7 @@ fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(Color::Yellow)),
-            Span::styled(display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(display, Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
             Span::styled("█", Style::default().fg(Color::Yellow)),
         ]),
         Line::from(""),
@@ -373,7 +373,7 @@ fn draw_simple_input_modal_owned(
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(Color::Yellow)),
-            Span::styled(display, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(display, Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
             Span::styled("█", Style::default().fg(Color::Yellow)),
         ]),
         Line::from(""),
@@ -1004,7 +1004,7 @@ fn render_session_item(
     } else {
         // Brighter than the previous default — clearly visible on dark terminals
         Style::default()
-            .fg(Color::White)
+            .fg(Color::Reset)
             .add_modifier(Modifier::BOLD)
     };
 
@@ -1263,7 +1263,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
     } else {
         for acc in &accounts {
             let marker = if acc.is_active { "▶" } else { " " };
-            let color = if acc.is_active { Color::Green } else { Color::White };
+            let color = if acc.is_active { Color::Green } else { Color::Reset };
             lines.push(Line::from(vec![
                 Span::styled(format!("    {} ", marker), Style::default().fg(Color::Cyan)),
                 Span::styled(acc.label.clone(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
@@ -1285,19 +1285,19 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
     )));
     lines.push(Line::from(Span::styled(
         "      Omega's OWN Telegram bot (no Python, no AISB-Python dependency).",
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(Span::styled(
         "      Once configured, any text you send via Telegram is relayed to the",
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(Span::styled(
         "      AISB Master session (aisb-master) — the AI Super Brain.",
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(Span::styled(
         "      → you talk to all 13 Matrix agents through one chat, from your phone.",
-        Style::default().fg(Color::White),
+        Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(""));
     if let Some(cfg) = tg_config {
@@ -1338,15 +1338,15 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         lines.push(Line::from(Span::styled(
             "      1. Create a bot via @BotFather on Telegram → save the BOT_TOKEN",
-            Style::default().fg(Color::White),
+            Style::default().fg(Color::Reset),
         )));
         lines.push(Line::from(Span::styled(
             "      2. Get your CHAT_ID (e.g. send a msg to @userinfobot)",
-            Style::default().fg(Color::White),
+            Style::default().fg(Color::Reset),
         )));
         lines.push(Line::from(Span::styled(
             "      3. Run:",
-            Style::default().fg(Color::White),
+            Style::default().fg(Color::Reset),
         )));
         lines.push(Line::from(Span::styled(
             "         omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>",
@@ -1354,7 +1354,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         lines.push(Line::from(Span::styled(
             "      4. Start the bot:",
-            Style::default().fg(Color::White),
+            Style::default().fg(Color::Reset),
         )));
         lines.push(Line::from(Span::styled(
             "         omega telegram run",
@@ -1408,19 +1408,19 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             )));
             lines.push(Line::from(Span::styled(
                 "      1. Create a Telegram supergroup, enable Topics in its settings",
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             lines.push(Line::from(Span::styled(
                 "      2. Add the bot to the group and make it admin",
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             lines.push(Line::from(Span::styled(
                 "      3. That's it — the bot auto-detects the promotion, persists the",
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             lines.push(Line::from(Span::styled(
                 "         group, creates one topic per project, and DMs you a confirmation.",
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -1574,7 +1574,7 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
                         .bg(Color::Cyan)
                         .add_modifier(Modifier::BOLD)
                 } else if i == app.projects_selected {
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                    Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
@@ -1865,7 +1865,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD)
             } else if i == app.settings_selected {
                 // Selected but not focused — dim highlight
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -1990,7 +1990,7 @@ fn render_settings_detail(
                         .bg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2013,7 +2013,7 @@ fn render_settings_detail(
                         .bg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2038,7 +2038,7 @@ fn render_settings_detail(
                         .bg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::White)
+                    Style::default().fg(Color::Reset)
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2150,7 +2150,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
                     .bg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else if i == app.info_section_selected {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -2378,12 +2378,12 @@ fn render_info_rules() -> Vec<Line<'static>> {
                 ),
                 Span::styled(
                     r.title.to_string(),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD),
                 ),
             ]));
             lines.push(Line::from(Span::styled(
                 format!("    {}", r.description),
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             let applies = if r.applies_to.is_empty() {
                 "all agents".to_string()
@@ -2432,7 +2432,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
             ]));
             lines.push(Line::from(Span::styled(
                 format!("    {}", r.description),
-                Style::default().fg(Color::White),
+                Style::default().fg(Color::Reset),
             )));
             let applies = if r.applies_to.is_empty() {
                 "all agents".to_string()
@@ -2460,7 +2460,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let cy = Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD);
     let yl = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
-    let wh = Style::default().fg(Color::White);
+    let wh = Style::default().fg(Color::Reset);
     let gr = Style::default().fg(Color::Gray);
     let mg = Style::default().fg(Color::Magenta);
 
@@ -2478,7 +2478,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Ω  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::styled("OmegaOS", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("OmegaOS", Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
             Span::styled("  —  Agentic Terminal Operating System", gr),
             Span::styled(concat!("   v", env!("CARGO_PKG_VERSION")), cy),
         ]),
@@ -2772,14 +2772,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(
             " Ω ",
             Style::default()
-                .fg(Color::White)
+                .fg(Color::Reset)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
             session_info,
             Style::default()
-                .fg(Color::White)
+                .fg(Color::Reset)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -2847,7 +2847,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(
         n_sessions,
-        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD),
     ));
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(
