@@ -20,3 +20,6 @@ audits/.*/
 # Python bytecode (never ship — embeds absolute source paths)
 __pycache__/
 *.pyc
+
+# OmegaMC dashboard — separate repo (agentik-os/agentik-telegram), MIT (M. Tzanidakis)
+mission-control/

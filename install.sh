@@ -386,6 +386,29 @@ EOF
         AUDIT_STUBS=$((AUDIT_STUBS + 1))
     done
     ok "Audit slash commands installed ($AUDIT_STUBS audits → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
+
+    # Quality Arsenal RUNTIME. The audit SKILLs invoke the hybrid orchestrator
+    # by ABSOLUTE path: ~/.aisb/lib/audit-runner.sh (declared the "mandatory FIRST
+    # step"), its ~/.aisb/lib/audit-gather/<audit>.sh|-summarize.py gatherers, and
+    # ~/.aisb/bin/audit-notify.sh. These are vendored under _shared/ and MUST be
+    # placed where the skills expect them, or every audit breaks "no such file" on
+    # a fresh clone (Law 0 — install parity). Install from the just-copied _shared.
+    if [[ -d "$AUDITS_DST/_shared" ]]; then
+        mkdir -p "$HOME/.aisb/lib/audit-gather" "$HOME/.aisb/bin"
+        if [[ -f "$AUDITS_DST/_shared/audit-runner.sh" ]]; then
+            cp "$AUDITS_DST/_shared/audit-runner.sh" "$HOME/.aisb/lib/audit-runner.sh"
+            chmod +x "$HOME/.aisb/lib/audit-runner.sh"
+        fi
+        if [[ -d "$AUDITS_DST/_shared/audit-gather" ]]; then
+            cp -r "$AUDITS_DST/_shared/audit-gather/." "$HOME/.aisb/lib/audit-gather/"
+            chmod +x "$HOME/.aisb/lib/audit-gather/"*.sh 2>/dev/null || true
+        fi
+        if [[ -f "$AUDITS_DST/_shared/audit-notify.sh" ]]; then
+            cp "$AUDITS_DST/_shared/audit-notify.sh" "$HOME/.aisb/bin/audit-notify.sh"
+            chmod +x "$HOME/.aisb/bin/audit-notify.sh"
+        fi
+        ok "Audit runtime installed (~/.aisb/lib/audit-runner.sh + audit-gather/ + ~/.aisb/bin/audit-notify.sh)"
+    fi
 else
     info "Audit skills not found — skipping"
 fi

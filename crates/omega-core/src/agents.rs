@@ -106,7 +106,11 @@ impl Agent {
     /// comes pre-installed / not installable via a script.
     pub fn install_command(&self) -> Option<&'static str> {
         match self {
-            Agent::Glm => Some("npm install -g @z-ai/glm-cli"),
+            // GLM (Z.AI/Zhipu) has NO standalone CLI. The official method is to run
+            // Claude Code pointed at Z.AI's Anthropic-compatible endpoint. So
+            // "installing GLM" = ensuring the Claude Code binary is present; the
+            // redirect happens at launch (see launch_command_with) + the key.
+            Agent::Glm => Some("npm install -g @anthropic-ai/claude-code"),
             Agent::Claude => Some(
                 "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
             ),
@@ -127,12 +131,18 @@ impl Agent {
     /// turnkey uninstaller, so this is informational + best-effort.
     pub fn uninstall_command(&self) -> Option<&'static str> {
         match self {
-            Agent::Claude => Some("rm -f $(which claude) && rm -rf ~/.claude"),
+            // Binary ONLY. NEVER `rm -rf ~/.claude` — that directory holds the
+            // user's agents, slash commands, settings.json and credentials (and
+            // OmegaOS itself installs into it). Uninstalling the CLI must not wipe
+            // the user's whole config. Config can be removed by hand if desired.
+            Agent::Claude => Some("rm -f \"$(command -v claude)\""),
             Agent::Codex => Some("npm uninstall -g @openai/codex"),
             Agent::Gemini => Some("npm uninstall -g @google/gemini-cli"),
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
-            Agent::Glm => Some("npm uninstall -g @z-ai/glm-cli"),
+            // GLM shares the Claude Code binary — there is nothing GLM-specific to
+            // uninstall. Removing it would wrongly delete the user's Claude Code.
+            Agent::Glm => None,
             Agent::Shell => None,
         }
     }
@@ -243,16 +253,21 @@ impl Agent {
                 None => "bash -c \"hermes; exec bash\"".to_string(),
             },
             Agent::Glm => {
-                // GLM via z-ai cli — falls back to a helpful message if not installed
+                // GLM (Z.AI/Zhipu) = Claude Code redirected to Z.AI's Anthropic-
+                // compatible endpoint. The base URL is a constant; the auth token is
+                // taken from $ANTHROPIC_AUTH_TOKEN (or $GLM_API_KEY). Exported INLINE
+                // so only this pane is redirected — a sibling `claude` pane is
+                // untouched. Note: GLM uses ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY.
+                let pre = "export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic; export ANTHROPIC_AUTH_TOKEN=\"${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}\";";
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!(
-                            "if command -v glm >/dev/null 2>&1; then glm {}; else echo 'GLM CLI not installed. Install: npm install -g @z-ai/glm-cli'; fi; exec bash",
-                            shell_quote(p)
-                        ))
+                        shell_quote(&format!("{} claude {}; exec bash", pre, shell_quote(p)))
                     ),
-                    None => "bash -c \"if command -v glm >/dev/null 2>&1; then glm; else echo 'GLM CLI not installed. Install: npm install -g @z-ai/glm-cli'; fi; exec bash\"".to_string(),
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{} claude; exec bash", pre))
+                    ),
                 }
             }
             Agent::Shell => match initial_prompt {
@@ -279,7 +294,9 @@ impl Agent {
                     || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
             }
             Agent::Hermes => has_cmd("hermes"),
-            Agent::Glm => has_cmd("glm"),
+            // GLM runs on the Claude Code binary (redirected at launch) — available
+            // iff `claude` is present.
+            Agent::Glm => has_cmd("claude"),
             Agent::Shell => true,
         }
     }

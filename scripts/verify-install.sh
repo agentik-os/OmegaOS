@@ -172,6 +172,23 @@ else
   printf '%s\n' "$leaks" | sed 's/^/      /'
 fi
 
+# 10c. Quality Arsenal RUNTIME parity. The audit SKILLs hard-code the hybrid
+#      orchestrator by absolute path (~/.aisb/lib/audit-runner.sh + audit-gather/ +
+#      ~/.aisb/bin/audit-notify.sh). 10b is blind to the ~/.aisb namespace, so this
+#      gate proves both halves of parity: (a) the runtime is VENDORED in _shared/,
+#      and (b) install.sh actually SHIPS it to ~/.aisb. Either half missing = every
+#      audit breaks "no such file" on a fresh clone (Law 0).
+miss=""
+[ -f skills/audits/_shared/audit-runner.sh ] || miss="$miss audit-runner.sh"
+[ -d skills/audits/_shared/audit-gather ]    || miss="$miss audit-gather/"
+[ -f skills/audits/_shared/audit-notify.sh ] || miss="$miss audit-notify.sh"
+if [ -n "$miss" ]; then bad "audit runtime not vendored in _shared:$miss"; else ok "audit runtime vendored in _shared (runner + gather + notify)"; fi
+if grep -q '\.aisb/lib/audit-runner\.sh' install.sh && grep -q '\.aisb/bin/audit-notify\.sh' install.sh; then
+  ok "install.sh ships the ~/.aisb audit runtime (skills' absolute paths resolve)"
+else
+  bad "install.sh does NOT install the ~/.aisb audit runtime — audit SKILLs break on fresh clone"
+fi
+
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────
 # The checks above grep install.sh for the right STRINGS; these prove the system
 # actually builds and the shipped config actually parses. Skip with VERIFY_FAST=1
