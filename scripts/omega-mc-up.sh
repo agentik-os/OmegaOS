@@ -24,6 +24,10 @@
 # ═══════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
+# Some launch contexts (npx-spawned install, `docker exec`) have no USER var; set
+# -u would then abort on every "$USER". Default it from the real uid.
+: "${USER:=$(id -un)}"
+
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 MC_DIR="${OMEGA_MC_DIR:-$OMEGA_DIR/repos/omega-mc}"
 TG_TOML="$OMEGA_DIR/telegram.toml"
