@@ -56,12 +56,49 @@ EOF
     echo "omega-mc-up: bot token validated + saved to $TG_TOML"
 fi
 
-# docker may need the docker group in the CURRENT login; wrap so it works
-# whether or not the caller's shell already has the group active.
-dock() { if id -nG | grep -qw docker || [[ $EUID -eq 0 ]]; then docker "$@"; else sg docker -c "docker $(printf '%q ' "$@")"; fi; }
-
 [[ -d "$MC_DIR/.git" ]] || die "OmegaMC not cloned at $MC_DIR — run install.sh or: git clone https://github.com/agentik-os/agentik-telegram.git $MC_DIR"
-command -v docker >/dev/null 2>&1 || die "docker not installed"
+
+# ── Docker provisioning (so OmegaMC works for ANYONE, on a bare box) ────────
+# OmegaMC needs a working Docker engine and the invoking user able to reach the
+# socket. On a fresh VPS neither exists, so provision them here (connect-time),
+# keeping install.sh fast. sudo is used for the privileged bits only.
+SUDO=""; [[ $EUID -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+ensure_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo "omega-mc-up: Docker not found — installing (get.docker.com)…"
+        if command -v curl >/dev/null 2>&1; then curl -fsSL https://get.docker.com | $SUDO sh >/dev/null 2>&1 || true; fi
+        command -v docker >/dev/null 2>&1 || die "Docker install failed — install Docker manually, then re-run"
+    fi
+    # daemon up (systemd or sysv); harmless if already running
+    $SUDO systemctl enable --now docker >/dev/null 2>&1 || $SUDO service docker start >/dev/null 2>&1 || true
+    # current user in the docker group (applies to NEW logins; this run uses sg/sudo)
+    if [[ $EUID -ne 0 ]] && ! id -nG "$USER" | grep -qw docker; then
+        getent group docker >/dev/null 2>&1 || $SUDO groupadd docker >/dev/null 2>&1 || true
+        $SUDO usermod -aG docker "$USER" >/dev/null 2>&1 \
+            && echo "omega-mc-up: added $USER to the docker group (log out/in for it to apply to your shell)"
+    fi
+}
+ensure_docker
+
+# Pick a docker invocation that actually reaches the daemon in THIS process:
+# direct (group already active / root) → sg docker (group set but not in this
+# login) → sudo (last resort).
+DOCK_MODE=direct
+if ! docker version >/dev/null 2>&1; then
+    if command -v sg >/dev/null 2>&1 && id -nG "$USER" | grep -qw docker && sg docker -c "docker version" >/dev/null 2>&1; then
+        DOCK_MODE=sg
+    elif $SUDO docker version >/dev/null 2>&1; then
+        DOCK_MODE=sudo
+    fi
+fi
+dock() {
+    case "$DOCK_MODE" in
+        sg)   sg docker -c "docker $(printf '%q ' "$@")" ;;
+        sudo) $SUDO docker "$@" ;;
+        *)    docker "$@" ;;
+    esac
+}
+dock version >/dev/null 2>&1 || die "cannot reach the Docker daemon (tried direct, sg docker, sudo)"
 
 # ── 1. Gather secrets from live OmegaOS state ──────────────────────────────
 [[ -f "$TG_TOML" ]] || die "no $TG_TOML — connect Telegram first: omega telegram setup <TOKEN> <CHAT_ID>"
