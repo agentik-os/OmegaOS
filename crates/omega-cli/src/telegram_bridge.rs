@@ -5118,7 +5118,7 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     // lines lost the top of long chats). Global rmux daemon option, set once
     // at startup so any session spawned later retains 100k lines. Best-effort.
     let _ = tokio::process::Command::new("rmux")
-        .args(["set-option", "-g", "history-limit", "100000"])
+        .args(["set-option", "-g", "history-limit", "500000"])
         .output()
         .await;
 

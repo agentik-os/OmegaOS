@@ -847,6 +847,11 @@ pub struct App {
     /// until the next cadence tick, requiring a wasted double-press. The loop
     /// clears it after consuming.
     pub preview_needs_history: bool,
+    /// Session whose FULL scrollback is cached in `preview_content` while the
+    /// user browses history. Set after a one-time deep capture on entry to
+    /// history mode; reused on every subsequent frame so we don't re-capture
+    /// the whole buffer at the idle cadence. Cleared when we return to the tail.
+    pub preview_history_for: Option<String>,
     pub session_focus: SessionFocus,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
@@ -927,6 +932,7 @@ impl App {
             preview_max_scroll: 0,
             preview_follow_tail: true,
             preview_needs_history: false,
+            preview_history_for: None,
             session_focus: SessionFocus::List,
             last_tab_press: None,
             cmd_capture: None,
@@ -1271,6 +1277,9 @@ impl App {
         // scrollback capture, so there is real content above the screen to
         // scroll into instead of an empty void.
         if self.preview_follow_tail {
+            // Back on the tail: drop any cached scrollback so the next scroll-up
+            // re-captures fresh history (picking up lines added since).
+            self.preview_history_for = None;
             // Tail path: capture STYLED rows + text + REAL cursor together.
             // Styled rows carry the `/` selector highlight + Claude's
             // colored UI; plain text is kept as a fallback + for scroll math.
@@ -1316,17 +1325,23 @@ impl App {
             // History-browsing path: plain text (scrollback has no styling),
             // cursor meaningless when scrolled back.
             self.preview_styled = None;
-            // Capture the FULL retained scrollback (not a 1000-line slice) so
-            // the user can scroll all the way to the very top of the
-            // conversation. rmux clamps to whatever history-limit retains.
-            match mgr.capture_pane_history(&name, 100_000).await {
-                Ok(content) => {
-                    self.preview_content = content;
-                    self.preview_cursor = None;
-                }
-                Err(_) => {
-                    self.preview_content = String::from("(session has no pane content)");
-                    self.preview_cursor = None;
+            self.preview_cursor = None;
+            // Lazy history: capture the full retained scrollback ONCE on entry to
+            // history-browsing for this session, then reuse it while scrolling —
+            // instead of re-capturing the whole buffer every cadence tick (which
+            // pegged the daemon while browsing). The tail path clears the cache,
+            // so the next scroll-up gets a fresh deep capture. Depth matches the
+            // rmux history-limit so the user can scroll to the very top.
+            if self.preview_history_for.as_deref() != Some(name.as_str()) {
+                match mgr.capture_pane_history(&name, 500_000).await {
+                    Ok(content) => {
+                        self.preview_content = content;
+                        self.preview_history_for = Some(name.clone());
+                    }
+                    Err(_) => {
+                        self.preview_content = String::from("(session has no pane content)");
+                        self.preview_history_for = None;
+                    }
                 }
             }
         }

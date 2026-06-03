@@ -10,7 +10,7 @@
 # scroll all the way back, so retain a large history. Set here so it persists
 # across daemon restarts (the omega binary also sets it at startup as a
 # fallback for daemons that began before this config was sourced).
-set-option -g history-limit 100000
+set-option -g history-limit 500000
 
 # Localized status-bar clock. rmux's built-in `%H:%M` strftime uses the rmux
 # SERVER's timezone, which is UTC on a headless VPS — so the clock reads hours
