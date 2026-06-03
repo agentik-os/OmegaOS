@@ -53,8 +53,11 @@ bootstrap_os_packages() {
     local need=()
     command -v git >/dev/null 2>&1 || need+=("git")
     command -v curl >/dev/null 2>&1 || need+=("curl")
-    { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; } || need+=("C-toolchain")
-    command -v pkg-config >/dev/null 2>&1 || need+=("pkg-config")
+    # NOTE: the C toolchain + pkg-config are NOT bootstrapped here anymore — they
+    # are only needed to COMPILE rmux/omega, which the prebuilt fast path skips.
+    # `ensure_build_toolchain` (below) installs them lazily, only in the
+    # source-build branches of Phase 3/4. This keeps the common (prebuilt) install
+    # from pulling ~200MB of build-essential it never uses.
     # rsync is used in Phase 5 to install the PDF generator (and other asset
     # copies). A bare VPS lacks it, and under `set -euo pipefail` the missing
     # `rsync` aborts the whole install mid-way (proven: `line 255: rsync: command
@@ -65,30 +68,61 @@ bootstrap_os_packages() {
     # → doctor reports "hooks present but not registered". Cheap to include here.
     command -v jq >/dev/null 2>&1 || need+=("jq")
     if [[ ${#need[@]} -eq 0 ]]; then
-        ok "Build prerequisites present (git, curl, cc, pkg-config, rsync, jq)"
+        ok "Runtime prerequisites present (git, curl, rsync, jq)"
         return 0
     fi
-    info "Installing build prerequisites: ${need[*]}"
+    info "Installing runtime prerequisites: ${need[*]}"
     local SUDO=""
     [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
     if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates build-essential pkg-config rsync jq
+        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates rsync jq
     elif command -v dnf >/dev/null 2>&1; then
-        $SUDO dnf install -y curl git ca-certificates gcc gcc-c++ make pkgconf-pkg-config rsync jq
+        $SUDO dnf install -y curl git ca-certificates rsync jq
     elif command -v yum >/dev/null 2>&1; then
-        $SUDO yum install -y curl git ca-certificates gcc gcc-c++ make pkgconfig rsync jq
+        $SUDO yum install -y curl git ca-certificates rsync jq
     elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -Sy --noconfirm curl git ca-certificates base-devel pkgconf rsync jq
+        $SUDO pacman -Sy --noconfirm curl git ca-certificates rsync jq
     elif command -v apk >/dev/null 2>&1; then
-        $SUDO apk add --no-cache curl git ca-certificates build-base pkgconf rsync jq
+        $SUDO apk add --no-cache curl git ca-certificates rsync jq
     else
         err "No supported package manager (apt/dnf/yum/pacman/apk)."
         err "Install these manually, then re-run ./install.sh: ${need[*]}"
         exit 1
     fi
-    ok "Build prerequisites installed"
+    ok "Runtime prerequisites installed"
 }
 bootstrap_os_packages
+
+# The C toolchain + pkg-config are ONLY needed to compile rmux/omega from source
+# (the prebuilt fast path skips this entirely). Installed lazily, just-in-time,
+# from the source-build branches of Phase 3/4 — so a prebuilt install never pays
+# for build-essential. Idempotent: a no-op when a compiler is already present.
+ensure_build_toolchain() {
+    # (1) C toolchain + pkg-config
+    if { command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1; } && command -v pkg-config >/dev/null 2>&1; then
+        ok "Build toolchain present (cc + pkg-config)"
+    else
+        info "Installing build toolchain (compiling from source)..."
+        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+        if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y build-essential pkg-config
+        elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y gcc gcc-c++ make pkgconf-pkg-config
+        elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y gcc gcc-c++ make pkgconfig
+        elif command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm base-devel pkgconf
+        elif command -v apk     >/dev/null 2>&1; then $SUDO apk add --no-cache build-base pkgconf
+        else err "No supported package manager for the build toolchain — install a C compiler + pkg-config, then re-run."; exit 1
+        fi
+        ok "Build toolchain installed"
+    fi
+    # (2) Rust (rustup) — only reached on the source-build path.
+    if ! command -v cargo >/dev/null 2>&1; then
+        info "Rust not found. Installing via rustup..."
+        command -v curl >/dev/null 2>&1 || { err "curl is required to bootstrap Rust but is missing; install curl and re-run."; exit 1; }
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        # shellcheck disable=SC1091
+        source "$HOME/.cargo/env"
+        ok "Rust installed: $(rustc --version)"
+    fi
+}
 
 # Optional fluidity dep: mosh. Plain SSH waits a full network round-trip before
 # echoing each keystroke and ships output as TCP segments — on a far VPS (tens
@@ -166,15 +200,11 @@ install_bun_optional() {
 }
 install_bun_optional
 
-# Check for Rust
-if ! command -v cargo &>/dev/null; then
-    info "Rust not found. Installing via rustup..."
-    command -v curl >/dev/null 2>&1 || { err "curl is required to bootstrap Rust but is missing; install curl and re-run."; exit 1; }
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
-    ok "Rust installed: $(rustc --version)"
-else
-    ok "Rust found: $(rustc --version)"
+# Rust is needed ONLY to compile from source (the prebuilt fast path skips it).
+# `ensure_build_toolchain` installs rustup lazily in the Phase 3/4 source-build
+# branches if cargo is absent — so a prebuilt install never downloads a toolchain.
+if command -v cargo &>/dev/null; then
+    ok "Rust found: $(rustc --version 2>/dev/null || echo present)"
 fi
 
 # Check for git
@@ -274,6 +304,7 @@ else
     if [[ -d "$RMUX_BUILD_DIR" ]]; then
         rm -rf "$RMUX_BUILD_DIR"
     fi
+    ensure_build_toolchain
     info "Cloning rmux..."
     git clone --depth 1 "$RMUX_REPO" "$RMUX_BUILD_DIR"
     info "Building rmux (this may take a few minutes)..."
@@ -303,6 +334,7 @@ cd "$OMEGA_SRC"
 if [[ -n "${PREBUILT_OK:-}" ]]; then
     ok "omega CLI already installed from prebuilt — skipping source build"
 else
+    ensure_build_toolchain
     info "Building omega CLI..."
     # --locked: build against the committed Cargo.lock so a fresh clone resolves the
     # exact same transitive deps (reproducible builds). Falls back to an unlocked
@@ -980,43 +1012,36 @@ if ! command -v claude >/dev/null 2>&1; then
     "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
 fi
 
-# (e) Headless rendering for PDF generation / Playwright audits (best-effort).
-if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-    sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
-fi
-
-# (f) Playwright + Chromium — the browser engine the Quality Arsenal audits
-# (uiux/flow/a11y/perf, browser-tester) and any CDP/DevTools automation drive
-# via the Playwright CLI from Bash. Chromium ships the DevTools Protocol, so
-# this single install covers BOTH Playwright AND CDP/DevTools — there is no
-# separate package. Best-effort and opt-out (OMEGA_SKIP_BROWSER=1) because the
-# Chromium download is ~150MB; never fatal to the install.
-if [[ "${OMEGA_SKIP_BROWSER:-0}" != "1" ]]; then
+# (e+f) Browser stack (Xvfb + Playwright + Chromium) for PDF generation and the
+# visual Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester) + CDP.
+#
+# DEFERRED BY DEFAULT. The Chromium download (~150MB) + `playwright install-deps`
+# (dozens of apt libs) was the single biggest chunk of install time, yet it is
+# needed only when you actually generate a PDF or run a visual audit — not for
+# core omega, orchestration, agents, or Telegram. So we DON'T pull it at install
+# time. Opt in with OMEGA_WITH_BROWSER=1 (or run the one-liner below later); a
+# fresh box is usable in seconds instead of minutes.
+if [[ "${OMEGA_WITH_BROWSER:-0}" == "1" && "${OMEGA_SKIP_BROWSER:-0}" != "1" ]]; then
+    if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
+    fi
     if command -v npm >/dev/null 2>&1; then
+        command -v playwright >/dev/null 2>&1 || {
+            info "Installing Playwright CLI..."
+            npm install -g playwright >/dev/null 2>&1 && ok "Playwright CLI installed" || info "Playwright CLI install failed"
+        }
         if command -v playwright >/dev/null 2>&1; then
-            ok "Playwright CLI already present ($(playwright --version 2>/dev/null || echo installed))"
-        else
-            info "Installing Playwright CLI (browser automation for the audits)..."
-            npm install -g playwright >/dev/null 2>&1 \
-                && ok "Playwright CLI installed" \
-                || info "Playwright CLI install failed — run 'npm install -g playwright' manually"
-        fi
-        if command -v playwright >/dev/null 2>&1; then
-            # Idempotent: a no-op when the Chromium build is already cached.
-            playwright install chromium >/dev/null 2>&1 \
-                && ok "Chromium installed (Playwright + CDP/DevTools ready)" \
-                || info "Chromium download failed — run 'playwright install chromium' manually"
-            # System libraries Chromium needs (apt + sudo; preserve PATH so the
-            # root shell finds the global playwright bin). Non-fatal.
+            playwright install chromium >/dev/null 2>&1 && ok "Chromium installed (Playwright + CDP ready)" || info "Chromium download failed — run 'playwright install chromium'"
             if command -v apt-get >/dev/null 2>&1; then
-                sudo env "PATH=$PATH" playwright install-deps chromium >/dev/null 2>&1 \
-                    && ok "Chromium system deps installed" \
-                    || info "For Chromium libs: 'sudo playwright install-deps chromium'"
+                sudo env "PATH=$PATH" playwright install-deps chromium >/dev/null 2>&1 && ok "Chromium system deps installed" || info "For Chromium libs: 'sudo playwright install-deps chromium'"
             fi
         fi
     else
-        info "npm not found — skipping Playwright (install Node.js, then 'npm i -g playwright && playwright install chromium')"
+        info "npm not found — install Node.js, then 'npm i -g playwright && playwright install chromium'"
     fi
+else
+    info "Browser stack deferred (saves ~150MB + apt deps). PDF/visual audits need it:"
+    info "  re-run with OMEGA_WITH_BROWSER=1 ./install.sh  — or:  npm i -g playwright && playwright install --with-deps chromium"
 fi
 
 # ─── Phase 6.9: Companion tools + skills (SST multi-LLM, best-effort, opt-out) ──
