@@ -145,7 +145,7 @@ enum Commands {
         /// Render a demo PDF with sample data
         #[arg(long)]
         demo: bool,
-        /// Theme: omegaos (default), agentik, dafnck, one-life
+        /// Theme: agentik (the classic whitepaper theme — the only theme)
         #[arg(long, default_value = "agentik")]
         theme: String,
         /// Output PDF path
@@ -2229,7 +2229,7 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("gemini", "api_key") => cfg.gemini.api_key.clone(),
         ("pi", "provider") => cfg.pi.provider.clone(),
         ("pi", "model") => cfg.pi.model.clone(),
-        ("pi", "extension") => cfg.pi.extension.clone(),
+        ("pi", "api_key") => cfg.pi.api_key.clone(),
         ("glm", "model") => cfg.glm.model.clone(),
         ("glm", "api_key") => cfg.glm.api_key.clone(),
         ("hermes", "model") => cfg.hermes.model.clone(),
@@ -2261,7 +2261,7 @@ fn set_config_value(
         ("gemini", "api_key") => cfg.gemini.api_key = value.to_string(),
         ("pi", "provider") => cfg.pi.provider = value.to_string(),
         ("pi", "model") => cfg.pi.model = value.to_string(),
-        ("pi", "extension") => cfg.pi.extension = value.to_string(),
+        ("pi", "api_key") => cfg.pi.api_key = value.to_string(),
         ("glm", "model") => cfg.glm.model = value.to_string(),
         ("glm", "api_key") => cfg.glm.api_key = value.to_string(),
         ("hermes", "model") => cfg.hermes.model = value.to_string(),
@@ -2742,10 +2742,49 @@ async fn cmd_spawn_worker(
         full_prompt.push_str(&agent_ctx);
     }
 
-    if let Err(e) = mgr
-        .create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
-        .await
-    {
+    // Per-role LaunchOptions for the WORKER (Claude only — other providers
+    // ignore the Claude-only fields). A worker is a hermetic, trusted executor:
+    //   * permission-mode "acceptEdits" — auto-accept file edits (it owns its
+    //     scoped files) instead of blanket --dangerously-skip-permissions.
+    //   * disallowed_tools — deny the destructive/irreversible ops a worker must
+    //     never run autonomously (git push, rm, sudo). Oracles keep full access.
+    //   * mcp_config + --strict-mcp-config — ONLY the OmegaOS MCP servers, no
+    //     user/project .mcp.json (hermetic).
+    //   * --bare — minimal mode (skip hooks/LSP/plugin-sync); fine for a hermetic
+    //     worker, never for an oracle.
+    let agent = omega_core::agents::Agent::from_name(&config.agent_command)
+        .unwrap_or(omega_core::agents::Agent::Claude);
+    let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
+        let mut opts = omega_core::agents::LaunchOptions::default();
+        opts.permission_mode = Some("acceptEdits".to_string());
+        opts.disallowed_tools = Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string());
+        opts.bare = true;
+        match omega_core::mcp_servers::generate_mcp_config(&config, &worker_name) {
+            Ok(json) => {
+                let path = config.state_dir.join(format!("{}.mcp.json", worker_name));
+                match std::fs::write(&path, json) {
+                    Ok(()) => {
+                        opts.mcp_config = Some(vec![path.to_string_lossy().to_string()]);
+                        opts.strict_mcp_config = true;
+                    }
+                    Err(e) => tracing::warn!(
+                        worker = %worker_name, error = %e,
+                        "failed to write worker mcp-config — launching without it"
+                    ),
+                }
+            }
+            Err(e) => tracing::warn!(
+                worker = %worker_name, error = %e,
+                "failed to generate worker mcp-config — launching without it"
+            ),
+        }
+        mgr.create_agent_session_with_opts(&worker_name, work_dir, agent, Some(&full_prompt), opts)
+            .await
+    } else {
+        mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
+            .await
+    };
+    if let Err(e) = spawn_result {
         // Roll back the scope claim so a failed spawn doesn't lock files forever.
         let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
         return Err(e);

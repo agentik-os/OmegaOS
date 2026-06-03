@@ -7,7 +7,7 @@ export type RenderOptions = {
   /** Path to JSON file matching the template's schema, OR demo:true */
   dataFile?: string;
   demo?: boolean;
-  theme?: "agentik" | "dafnck" | "one-life";
+  theme?: "agentik";
   out: string;             // output PDF path
   baseUrl: string;         // e.g. http://localhost:4317
   /** Wait for selector before printing (defaults: body) */

@@ -32,10 +32,16 @@ pub struct PiConfig {
     pub provider: String,
     #[serde(default)]
     pub model: String,
+    /// Pi routes through OpenRouter; this key is injected as OPENROUTER_API_KEY
+    /// into the Pi pane (see agents.rs `provider_env_prefix`).
     #[serde(default)]
     pub api_key: String,
-    #[serde(default)]
-    pub extension: String,
+    // NOTE: a `pi.extension` field was removed (2026-06) — it was an orphan with
+    // get/set arms but NO consumer anywhere in the launch path, and the Pi CLI
+    // (pi.dev) exposes no documented `--extension` flag to wire it to. Per L2
+    // (no fabricated confidence) we removed the dead field rather than invent a
+    // consumer. `#[serde(default)]` on the struct means old providers.toml files
+    // carrying an `extension = "..."` line still deserialize (the key is ignored).
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

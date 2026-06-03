@@ -13,13 +13,13 @@
 #     SAFE_NPM_BUILD_TIMEOUT=1800   max seconds to wait for the lock (default 1800 = 30min)
 #     SAFE_NPM_BUILD_CMD="npm run build"  override the build command (rarely needed)
 #
-# Lock: /tmp/aisb-locks/global-next-build.lock (file lock, single flock fd)
+# Lock: /tmp/omega-locks/global-next-build.lock (file lock, single flock fd)
 # Log : ~/.omega/logs/safe-npm-build.log
 
 set -uo pipefail
 
 CWD="${1:-$PWD}"
-LOCK_DIR="/tmp/aisb-locks"
+LOCK_DIR="/tmp/omega-locks"
 LOCK_FILE="$LOCK_DIR/global-next-build.lock"
 LOG_FILE="$HOME/.omega/logs/safe-npm-build.log"
 TIMEOUT="${SAFE_NPM_BUILD_TIMEOUT:-1800}"

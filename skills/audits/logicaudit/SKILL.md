@@ -893,7 +893,7 @@ For every file this audit touches (moves, modifies, deletes), you MUST:
 1. **PRE-FIX BASELINE** — grep for ALL references system-wide, capture baseline state (syntax check, file-exists check, functional smoke test). Save to `audits/.logicaudit/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If anything that passed BEFORE now fails AFTER, revert immediately.
-4. **BREAKAGE SCAN** — `grep -rln "old_path" ~/.claude ~/.aisb ~/VibeCoding/work 2>/dev/null | grep -v .backup | grep -v /file-history/ | grep -v .jsonl | grep -v audits/.logicaudit/` — result MUST be 0 before claiming done.
+4. **BREAKAGE SCAN** — `grep -rln "old_path" . 2>/dev/null | grep -v .backup | grep -v /file-history/ | grep -v .jsonl | grep -v audits/.logicaudit/` — run from the project root; result MUST be 0 before claiming done.
 5. **BEFORE/AFTER MATRIX** — produce `audits/.logicaudit/before-after.md` with functional table (each affected item: status before | status after | verdict).
 
 **DO NOT claim "done" without the before-after.md file.** An audit that breaks 1 working thing is worse than no audit.

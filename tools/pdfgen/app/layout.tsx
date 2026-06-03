@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "../themes/agentik.css";
 
 export const metadata: Metadata = {
   title: "Agentik PDF",

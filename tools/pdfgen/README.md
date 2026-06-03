@@ -39,8 +39,6 @@ pdfgen --template=audit --data=./audit.json --send-topic=32 --send-group=-100358
 | Theme | Look |
 |---|---|
 | `agentik` | Cream + electric blue (default) |
-| `dafnck` | Newsprint + oxblood |
-| `one-life` | Warm sand + terracotta |
 
 ## Design language
 
@@ -63,9 +61,7 @@ agentik-pdf/
 │   ├── primitives/             # Cover, TOC, SectionTitle, KPI, ScoreGauge, BarChart, …
 │   └── templates/              # 1 file per template
 ├── themes/
-│   ├── agentik.css
-│   ├── dafnck.css
-│   └── one-life.css
+│   └── agentik.css
 ├── lib/
 │   ├── schemas.ts              # strict input shapes
 │   ├── samples.ts              # demo data for each template

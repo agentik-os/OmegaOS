@@ -3,7 +3,7 @@
  * The CLI validates against these before rendering.
  */
 
-export type Theme = "agentik" | "dafnck" | "one-life";
+export type Theme = "agentik";
 
 export type CommonMeta = {
   title: string;

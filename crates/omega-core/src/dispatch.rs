@@ -371,7 +371,47 @@ impl Dispatcher {
             // auth to API-key-only and disables CLAUDE.md autodiscovery — an
             // oracle depends on both, so bare is reserved for hermetic worker
             // roles (spawned elsewhere via spawn-worker), never the oracle.
-            opts.permission_mode = Some("auto".to_string());
+            // Complexity → permission routing (oracle): a Complex/Epic mission is
+            // plan-heavy, so the oracle opens in "plan" mode (it reasons + plans
+            // before mutating); Simple/Medium use "auto" (auto-approve safe ops on
+            // an interactive pane). Both replace blanket --dangerously-skip-perms.
+            opts.permission_mode = Some(
+                match decision.complexity {
+                    routing::Complexity::Complex | routing::Complexity::Epic => "plan",
+                    routing::Complexity::Simple | routing::Complexity::Medium => "auto",
+                }
+                .to_string(),
+            );
+            // --brief enables the SendUserMessage agent→user tool so the oracle can
+            // push a structured note to the human (oracle-only; workers stay silent).
+            opts.brief = true;
+            // --verbose: full tool/log visibility on the oracle's attachable pane.
+            opts.verbose = true;
+            // Wire OmegaOS tools as MCP servers for the oracle. NOT strict (the
+            // oracle keeps access to user/project .mcp.json too); strict_mcp_config
+            // is reserved for hermetic workers. Best-effort: a write failure logs
+            // and the oracle still launches without the extra servers.
+            match crate::mcp_servers::generate_mcp_config(&self.config, &oracle_name) {
+                Ok(json) => {
+                    let path = self
+                        .config
+                        .state_dir
+                        .join(format!("{}.mcp.json", oracle_name));
+                    match std::fs::write(&path, json) {
+                        Ok(()) => {
+                            opts.mcp_config = Some(vec![path.to_string_lossy().to_string()]);
+                        }
+                        Err(e) => tracing::warn!(
+                            oracle = %oracle_name, error = %e,
+                            "failed to write oracle mcp-config — launching without it"
+                        ),
+                    }
+                }
+                Err(e) => tracing::warn!(
+                    oracle = %oracle_name, error = %e,
+                    "failed to generate oracle mcp-config — launching without it"
+                ),
+            }
             opts.exclude_dynamic_prompt_sections = true;
             opts.session_id = Some(resolve_session_id(
                 &self.config.state_dir,

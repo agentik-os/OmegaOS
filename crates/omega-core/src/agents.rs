@@ -1,3 +1,4 @@
+use crate::providers::ProvidersConfig;
 use serde::{Deserialize, Serialize};
 
 /// Options for launching an agent — used by the Master AISB and other
@@ -213,9 +214,73 @@ impl Agent {
         self.launch_command_with(initial_prompt, LaunchOptions::default())
     }
 
+    /// Inline `export K='V'; …` prefix for the env vars this provider needs in
+    /// its pane, scoped to the LAUNCHED provider (never leak a sibling's key
+    /// into an unrelated pane). Pulled from `providers.toml` via
+    /// [`ProvidersConfig::env_vars`] — this is the wiring that makes the
+    /// previously-dead `env_vars()` actually reach the spawned session.
+    ///
+    /// Returns "" when the provider needs no injected key (Claude/Gemini use
+    /// OAuth; Shell needs nothing). The export is emitted INLINE on the command
+    /// (not via a shell rc) because panes are launched with `bash -c`, which
+    /// reads neither ~/.zshenv nor ~/.bashrc.
+    fn provider_env_prefix(&self, cfg: &ProvidersConfig) -> String {
+        // The full env map from providers.toml (ANTHROPIC_API_KEY, OPENAI_*,
+        // GLM_API_KEY, OPENROUTER_*, …). We pick only the keys relevant to the
+        // launched provider so a Codex pane never sees GLM's token, etc.
+        let all = cfg.env_vars();
+        let pick = |keys: &[&str]| -> String {
+            let mut s = String::new();
+            for (k, v) in &all {
+                if keys.contains(&k.as_str()) {
+                    s.push_str(&format!("export {}={}; ", k, shell_quote(v)));
+                }
+            }
+            s
+        };
+        match self {
+            Agent::Claude => pick(&["ANTHROPIC_API_KEY"]),
+            Agent::Codex => pick(&["OPENAI_API_KEY", "OPENAI_BASE_URL"]),
+            Agent::Gemini => pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
+            // GLM = Claude Code redirected to Z.AI; it reads ANTHROPIC_AUTH_TOKEN
+            // (falling back to GLM_API_KEY). Inject GLM_API_KEY so the GLM arm's
+            // `${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}` resolves to a real token.
+            Agent::Glm => pick(&["GLM_API_KEY"]),
+            // Pi and Hermes both route through OpenRouter — they need the
+            // OpenRouter key/base-url. Pi additionally honors its own api_key
+            // (stored as pi.api_key) as the OpenRouter key when set.
+            Agent::Pi => {
+                let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
+                if !cfg.pi.api_key.is_empty() {
+                    // pi.api_key wins as the OpenRouter credential for the Pi pane.
+                    s.push_str(&format!(
+                        "export OPENROUTER_API_KEY={}; ",
+                        shell_quote(&cfg.pi.api_key)
+                    ));
+                }
+                s
+            }
+            Agent::Hermes => {
+                let mut s = pick(&["OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"]);
+                if !cfg.hermes.api_key.is_empty() {
+                    s.push_str(&format!(
+                        "export OPENROUTER_API_KEY={}; ",
+                        shell_quote(&cfg.hermes.api_key)
+                    ));
+                }
+                s
+            }
+            Agent::Shell => String::new(),
+        }
+    }
+
     /// Returns the shell command with options (system prompt file, continue, etc.).
     pub fn launch_command_with(&self, initial_prompt: Option<&str>, opts: LaunchOptions) -> String {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        // Resolve provider credentials once — the env-var wiring (a) above + the
+        // configured model fallbacks (b/c/d) both read from providers.toml.
+        let providers = ProvidersConfig::load();
+        let env_prefix = self.provider_env_prefix(&providers);
 
         match self {
             Agent::Claude => {
@@ -233,11 +298,13 @@ impl Agent {
                 // keep the existing skip-perms behavior (unchanged default).
                 let mut args = match opts.permission_mode {
                     Some(ref mode) => format!(
-                        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
+                        "{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
+                        env_prefix,
                         shell_quote(mode)
                     ),
-                    None => String::from(
-                        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
+                    None => format!(
+                        "{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
+                        env_prefix,
                     ),
                 };
                 if let Some(ref sys_file) = opts.system_prompt_file {
@@ -323,9 +390,10 @@ impl Agent {
             Agent::Codex => match initial_prompt {
                 Some(p) => format!(
                     "bash -c {}",
-                    shell_quote(&format!("codex {}; exec bash", shell_quote(p)))
+                    shell_quote(&format!("{}codex {}; exec bash", env_prefix, shell_quote(p)))
                 ),
-                None => "codex".to_string(),
+                None if env_prefix.is_empty() => "codex".to_string(),
+                None => format!("bash -c {}", shell_quote(&format!("{}codex; exec bash", env_prefix))),
             },
             Agent::Gemini => {
                 // Try alias first, fall back to npm-global, fall back to plain gemini
@@ -334,46 +402,110 @@ impl Agent {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{} {}; exec bash",
+                            "{}{} {}; exec bash",
+                            env_prefix,
                             gemini_bin,
                             shell_quote(p)
                         ))
                     ),
-                    None => gemini_bin,
+                    None if env_prefix.is_empty() => gemini_bin,
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{}{}; exec bash", env_prefix, gemini_bin))
+                    ),
                 }
             }
             Agent::Pi => {
-                let pi_args = "--provider openrouter --model anthropic/claude-sonnet-4.6";
+                // (b) Use the CONFIGURED pi.provider + pi.model; fall back to the
+                // catalog defaults only when unset (was hardcoded
+                // `--provider openrouter --model anthropic/claude-sonnet-4.6`).
+                let provider = if providers.pi.provider.is_empty() {
+                    "openrouter"
+                } else {
+                    providers.pi.provider.as_str()
+                };
+                let model = if providers.pi.model.is_empty() {
+                    ProvidersConfig::default_model("pi").to_string()
+                } else {
+                    providers.pi.model.clone()
+                };
+                let pi_args = format!(
+                    "--provider {} --model {}",
+                    shell_quote(provider),
+                    shell_quote(&model)
+                );
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!("pi {} {}; exec bash", pi_args, shell_quote(p)))
+                        shell_quote(&format!(
+                            "{}pi {} {}; exec bash",
+                            env_prefix,
+                            pi_args,
+                            shell_quote(p)
+                        ))
                     ),
-                    None => format!("pi {}", pi_args),
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{}pi {}; exec bash", env_prefix, pi_args))
+                    ),
                 }
             }
-            Agent::Hermes => match initial_prompt {
-                Some(p) => format!(
-                    "bash -c {}",
-                    shell_quote(&format!("hermes {}; exec bash", shell_quote(p)))
-                ),
-                None => "bash -c \"hermes; exec bash\"".to_string(),
-            },
+            Agent::Hermes => {
+                // (c) Pass --model when hermes.model is configured (was ignored).
+                let hermes_args = if providers.hermes.model.is_empty() {
+                    String::new()
+                } else {
+                    format!(" --model {}", shell_quote(&providers.hermes.model))
+                };
+                match initial_prompt {
+                    Some(p) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!(
+                            "{}hermes{} {}; exec bash",
+                            env_prefix,
+                            hermes_args,
+                            shell_quote(p)
+                        ))
+                    ),
+                    None => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{}hermes{}; exec bash", env_prefix, hermes_args))
+                    ),
+                }
+            }
             Agent::Glm => {
                 // GLM (Z.AI/Zhipu) = Claude Code redirected to Z.AI's Anthropic-
                 // compatible endpoint. The base URL is a constant; the auth token is
                 // taken from $ANTHROPIC_AUTH_TOKEN (or $GLM_API_KEY). Exported INLINE
                 // so only this pane is redirected — a sibling `claude` pane is
                 // untouched. Note: GLM uses ANTHROPIC_AUTH_TOKEN, not ANTHROPIC_API_KEY.
-                let pre = "export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic; export ANTHROPIC_AUTH_TOKEN=\"${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}\";";
+                // env_prefix injects GLM_API_KEY (from providers.toml) so the
+                // `${ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}` fallback below resolves
+                // to a real token (fix d). The base-url + token-redirect stays
+                // inline so only this pane is redirected.
+                let pre = format!(
+                    "{}export ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic; export ANTHROPIC_AUTH_TOKEN=\"${{ANTHROPIC_AUTH_TOKEN:-$GLM_API_KEY}}\";",
+                    env_prefix
+                );
+                // (d) Pass --model when glm.model is configured.
+                let model_arg = if providers.glm.model.is_empty() {
+                    String::new()
+                } else {
+                    format!(" --model {}", shell_quote(&providers.glm.model))
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{} claude {}; exec bash", pre, shell_quote(p)))
+                        shell_quote(&format!(
+                            "{} claude{} {}; exec bash",
+                            pre,
+                            model_arg,
+                            shell_quote(p)
+                        ))
                     ),
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{} claude; exec bash", pre))
+                        shell_quote(&format!("{} claude{}; exec bash", pre, model_arg))
                     ),
                 }
             }

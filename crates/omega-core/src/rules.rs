@@ -597,7 +597,7 @@ mod tests {
     /// Locate the canonical markdown rules directory, if present. There is
     /// no vendored copy inside the repo (the only repo `rules/` dir is a
     /// gitignored stale worktree on an obsolete scheme), so the canonical
-    /// parity source is `$HOME/.aisb/rules`. An `OMEGA_RULES_DIR` override
+    /// parity source is `$HOME/.omega/rules`. An `OMEGA_RULES_DIR` override
     /// lets CI or a future vendored dir point the test elsewhere.
     /// Returns `None` (→ test skips) when no directory exists.
     fn markdown_rules_dir() -> Option<std::path::PathBuf> {
@@ -609,7 +609,7 @@ mod tests {
         }
         let home = dirs::home_dir()
             .or_else(|| std::env::var("HOME").ok().map(std::path::PathBuf::from))?;
-        let p = home.join(".aisb/rules");
+        let p = home.join(".omega/rules");
         p.is_dir().then_some(p)
     }
 
@@ -651,7 +651,7 @@ mod tests {
 
     /// Parity gate: the Rust registry (`all_rules()`) must not drift from the
     /// canonical markdown rule files. Skips gracefully when the markdown dir
-    /// is absent (e.g. a clean CI checkout without `$HOME/.aisb/rules`),
+    /// is absent (e.g. a clean CI checkout without `$HOME/.omega/rules`),
     /// rather than failing spuriously. When present, the set of registry ids
     /// must equal the set of markdown rule-file ids.
     #[test]
@@ -661,7 +661,7 @@ mod tests {
         let Some(dir) = markdown_rules_dir() else {
             eprintln!(
                 "registry_matches_markdown_rule_files: no markdown rules dir found \
-                 (set OMEGA_RULES_DIR or populate $HOME/.aisb/rules) — skipping parity check"
+                 (set OMEGA_RULES_DIR or populate $HOME/.omega/rules) — skipping parity check"
             );
             return;
         };

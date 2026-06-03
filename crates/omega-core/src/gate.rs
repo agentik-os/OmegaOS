@@ -136,7 +136,8 @@ impl GateResult {
         rubric: &Rubric,
         grades: Vec<GradeResult>,
         consensus_votes: Vec<ConsensusVote>,
-        adversarial_challenges: Vec<AdversarialChallenge>,
+        falsification: &FalsificationReport,
+        audit_results: Vec<crate::audit::AuditResult>,
         regression_pass: bool,
         token_budget_pass: bool,
         citation_pass: bool,
@@ -152,11 +153,12 @@ impl GateResult {
         let consensus_pass = consensus_votes.is_empty()
             || satisfied_votes * 3 >= consensus_votes.len() * 2;
 
-        let defects = adversarial_challenges
-            .iter()
-            .filter(|c| matches!(c.result, ChallengeResult::DefectFound))
-            .count();
-        let adversarial_pass = defects == 0;
+        // R-30: adversarial_pass is the REAL Popper falsification verdict —
+        // ≥12 challenges, zero defects, zero uncited (FalsificationReport::pass).
+        // Previously this only checked defects==0 on raw challenges, so a gate
+        // with 0 (or uncited) challenges still "passed" the adversarial check.
+        let adversarial_challenges = falsification.challenges.clone();
+        let adversarial_pass = falsification.pass;
 
         let total_weight: f32 = rubric.criteria.iter().map(|c| c.weight).sum();
         let earned_weight: f32 = grades
@@ -177,7 +179,13 @@ impl GateResult {
             0.0
         };
 
-        let audit_pass = true;
+        // R-AUDIT: audit_pass reflects the REAL audit results, not a hardcoded
+        // `true`. With no audits run it stays true (nothing to fail); once an
+        // audit chain ran, every audit must clear NeedsWork/Fail (verdict==Pass).
+        use crate::audit::AuditVerdict;
+        let audit_pass = audit_results
+            .iter()
+            .all(|a| a.verdict == AuditVerdict::Pass);
         let overall_pass = rubric_pass
             && consensus_pass
             && adversarial_pass
@@ -193,7 +201,7 @@ impl GateResult {
             consensus_pass,
             adversarial_pass,
             regression_pass,
-            audit_results: Vec::new(),
+            audit_results,
             audit_pass,
             token_budget_pass,
             citation_pass,
@@ -512,6 +520,7 @@ impl QualityGate {
         Self::new(state_dir, TokenBudget::DEFAULT_CAP)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         &self,
         oracle: &str,
@@ -523,8 +532,40 @@ impl QualityGate {
         tokens_spent: u64,
         claims: &[&str],
     ) -> GateResult {
+        self.run_with_audits(
+            oracle,
+            rubric,
+            grades,
+            grader_submissions,
+            challenges,
+            Vec::new(),
+            prior_gate,
+            tokens_spent,
+            claims,
+        )
+    }
+
+    /// Same as [`run`] but threads real audit results into the gate so
+    /// `audit_pass` reflects them (R-AUDIT). `run` delegates here with no
+    /// audits — keeping the existing call sites unchanged.
+    #[allow(clippy::too_many_arguments)]
+    pub fn run_with_audits(
+        &self,
+        oracle: &str,
+        rubric: &Rubric,
+        grades: Vec<GradeResult>,
+        grader_submissions: Vec<(GraderLens, GradeVerdict, f32, String)>,
+        challenges: Vec<AdversarialChallenge>,
+        audit_results: Vec<crate::audit::AuditResult>,
+        prior_gate: Option<&GateResult>,
+        tokens_spent: u64,
+        claims: &[&str],
+    ) -> GateResult {
         let (consensus_votes, _) = MultiGrader::evaluate(&grader_submissions);
-        let _popper = PopperFalsifier::validate(&challenges);
+        // R-30: the Popper falsification verdict actually drives the gate now —
+        // its `pass` becomes adversarial_pass inside GateResult::evaluate
+        // (previously the report was computed then discarded as `_popper`).
+        let falsification = PopperFalsifier::validate(&challenges);
         let regression = RegressionDetector::detect(prior_gate, &grades);
 
         let mut budget = TokenBudget::new(self.token_cap);
@@ -537,7 +578,8 @@ impl QualityGate {
             rubric,
             grades,
             consensus_votes,
-            challenges,
+            &falsification,
+            audit_results,
             regression.pass,
             budget.check(),
             citations.pass,
@@ -805,15 +847,54 @@ mod tests {
             }],
         );
         let grades = vec![make_grade("c1", GradeVerdict::Satisfied)];
-        let result = GateResult::evaluate(&rubric, grades, vec![], vec![], true, true, true);
+        // R-30: a passing gate needs a passing Popper report (≥12 cited, no defects).
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, grades, vec![], &falsification, vec![], true, true, true,
+        );
         assert!(result.overall_pass);
+        assert!(result.adversarial_pass);
         assert!((result.score - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn gate_adversarial_fail_blocks() {
+        // Fewer than 12 challenges → Popper fails → adversarial_pass false → gate blocks.
+        let rubric = Rubric::new("test", vec![]);
+        let challenges: Vec<_> = (0..5).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, vec![], true, true, true,
+        );
+        assert!(!result.overall_pass);
+        assert!(!result.adversarial_pass);
+    }
+
+    #[test]
+    fn gate_audit_fail_blocks() {
+        // A failing audit result must block the gate (audit_pass is real, not a stub).
+        use crate::audit::AuditResult;
+        let rubric = Rubric::new("test", vec![]);
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        // 40/100 → Fail verdict.
+        let audits = vec![AuditResult::new("codeaudit", 168.0, 420)];
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, audits, true, true, true,
+        );
+        assert!(!result.audit_pass);
+        assert!(!result.overall_pass);
     }
 
     #[test]
     fn gate_token_budget_fail_blocks() {
         let rubric = Rubric::new("test", vec![]);
-        let result = GateResult::evaluate(&rubric, vec![], vec![], vec![], true, false, true);
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, vec![], true, false, true,
+        );
         assert!(!result.overall_pass);
         assert!(!result.token_budget_pass);
     }
@@ -821,7 +902,11 @@ mod tests {
     #[test]
     fn gate_citation_fail_blocks() {
         let rubric = Rubric::new("test", vec![]);
-        let result = GateResult::evaluate(&rubric, vec![], vec![], vec![], true, true, false);
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, vec![], true, true, false,
+        );
         assert!(!result.overall_pass);
         assert!(!result.citation_pass);
     }
@@ -829,7 +914,11 @@ mod tests {
     #[test]
     fn gate_regression_fail_blocks() {
         let rubric = Rubric::new("test", vec![]);
-        let result = GateResult::evaluate(&rubric, vec![], vec![], vec![], false, true, true);
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, vec![], false, true, true,
+        );
         assert!(!result.overall_pass);
         assert!(!result.regression_pass);
     }
@@ -860,6 +949,7 @@ mod tests {
 
         let result = qg.run("test-oracle", &rubric, grades, submissions, challenges, None, 1000, claims);
         assert!(result.overall_pass);
+        assert!(result.adversarial_pass);
         assert!(dir.path().join("test-oracle.gate-result.json").exists());
         assert!(dir.path().join("test-oracle.token-budget.json").exists());
     }

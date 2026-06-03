@@ -21,9 +21,15 @@ AUDIT="${1:?Usage: audit-notify.sh <audit-name> <event> [details]}"
 EVENT="${2:?Usage: audit-notify.sh <audit-name> <event> [details]}"
 DETAILS="${3:-}"
 
-# Telegram target (Gareth DM)
-TG_USER="8626440209"
+# Telegram target — read from env, never hardcoded.
+# If unset, notifications are skipped entirely (no DM to anyone).
+TG_USER="${OMEGA_TELEGRAM_USER_ID:-}"
 TELEGRAM="${HOME}/.local/bin/telegram"
+
+# No target configured → skip silently (don't DM a maintainer, don't fail the audit)
+if [[ -z "$TG_USER" ]]; then
+    exit 0
+fi
 
 # Check telegram CLI exists
 if [[ ! -x "$TELEGRAM" ]]; then
@@ -57,7 +63,7 @@ case "$EVENT" in
 esac
 
 # Send notification (fire-and-forget, don't block the audit)
-"$TELEGRAM" notify "$MSG" 2>/dev/null || {
+"$TELEGRAM" notify --user "$TG_USER" "$MSG" 2>/dev/null || {
     echo "[audit-notify] WARNING: telegram send failed for /${AUDIT} ${EVENT}" >&2
 }
 

@@ -517,6 +517,12 @@ pub fn fields_for_section(
                 masked: false,
             });
             out.push(model_field("pi", "pi.model", &c.model));
+            out.push(SettingsField::EditText {
+                label: "Pi API key (OpenRouter)".to_string(),
+                config_key: "pi.api_key".to_string(),
+                current_value: c.api_key.clone(),
+                masked: true,
+            });
             out.extend(install_actions_for(Agent::Pi));
         }
         SettingsSection::Hermes => {
