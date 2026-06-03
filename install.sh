@@ -1002,21 +1002,62 @@ if [[ -f "$OMEGA_SRC/agents/identity/SOUL.template.md" && ! -f "$OMEGA_DIR/SOUL.
     ok "Identity template → $OMEGA_DIR/SOUL.md (customize it; keep private data in MEMORY.md)"
 fi
 
-# (c) Telegram interface → OmegaMC (set up in Phase 6.95, Docker). The legacy
-# native Rust bridge (omega-telegram.service) is deliberately NOT installed or
-# enabled: it polls the same bot token as OmegaMC, and Telegram allows only ONE
-# getUpdates poller per token — running both 409-conflicts. OmegaMC's container
-# (restart: unless-stopped) is the persistent supervisor, so no systemd --user
-# unit is needed. We still enable linger (so any other --user services survive
-# logout) and proactively remove a stale bridge unit from a prior install so it
-# can never reclaim the token out from under OmegaMC.
+# (c) Telegram interface → the OmegaOS command bot (button-driven, omega CLI).
+# This is the operator's phone control center: every command opens an inline
+# keyboard of sub-actions, each running an `omega` action (/status /sessions
+# /projects /audits /account /model /dispatch /killall /clean …). It is the
+# SINGLE Telegram poller (Telegram allows one getUpdates consumer per bot token),
+# shipped to ~/.omega and run as a persistent systemd --user service. Connect it
+# with:  omega-tg-up <BOT_TOKEN> <YOUR_TELEGRAM_USER_ID>
 loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
+# Retire the old native Rust bridge unit (would 409-conflict on the bot token).
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now omega-telegram.service 2>/dev/null || true
     rm -f "$HOME/.config/systemd/user/omega-telegram.service" \
           "$HOME/.config/systemd/user/default.target.wants/omega-telegram.service" 2>/dev/null || true
     systemctl --user daemon-reload 2>/dev/null || true
-    systemctl --user reset-failed omega-telegram.service 2>/dev/null || true
+fi
+if [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]]; then
+    mkdir -p "$OMEGA_DIR/telegram-bot"
+    cp -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" "$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
+    # connect helper on PATH
+    if [[ -f "$OMEGA_SRC/scripts/omega-tg-up.sh" ]]; then
+        cp -f "$OMEGA_SRC/scripts/omega-tg-up.sh" "$OMEGA_DIR/bin/omega-tg-up.sh"
+        chmod +x "$OMEGA_DIR/bin/omega-tg-up.sh"
+        ln -sf "$OMEGA_DIR/bin/omega-tg-up.sh" "$INSTALL_DIR/omega-tg-up" 2>/dev/null || true
+    fi
+    BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
+    if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
+        SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
+        cat > "$SD_DIR/omega-tg-bot.service" <<EOF
+[Unit]
+Description=OmegaOS Telegram command bot (omega CLI control center)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=OMEGA_DIR=%h/.omega
+WorkingDirectory=%h/.omega/telegram-bot
+ExecStart=$BUN_BIN %h/.omega/telegram-bot/omega-tg-bot.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload 2>/dev/null || true
+        if [[ -f "$OMEGA_DIR/telegram.toml" ]] && grep -q 'bot_token *= *"[0-9]' "$OMEGA_DIR/telegram.toml" 2>/dev/null; then
+            systemctl --user enable --now omega-tg-bot.service 2>/dev/null || true
+            ok "Telegram command bot enabled + started — open your bot, tap /menu (button-driven commands)"
+        else
+            systemctl --user enable omega-tg-bot.service 2>/dev/null || true
+            ok "Telegram command bot installed — connect it:  omega-tg-up <BOT_TOKEN> <YOUR_TELEGRAM_USER_ID>"
+        fi
+    else
+        info "Telegram command bot shipped, but bun is missing — install bun, then: omega-tg-up <BOT_TOKEN> <USER_ID>"
+    fi
+else
+    info "Telegram command bot source not found — skipping (optional phone interface)"
 fi
 
 # (d) Claude Code agent binary — omega needs it to spawn agents.
@@ -1109,11 +1150,11 @@ if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
         cp "$MC_DIR/config/omega-aisb.yaml" "$MC_DIR/config/omega-mc.yaml"
     fi
     if [[ -d "$MC_DIR/.git" ]]; then
-        if command -v docker >/dev/null 2>&1; then
-            ok "OmegaMC ready. Connect Telegram & go live (one command):  omega-mc-up <BOT_TOKEN> <CHAT_ID>"
-        else
-            info "OmegaMC needs Docker. Install Docker, then:  omega-mc-up <BOT_TOKEN> <CHAT_ID>"
-        fi
+        # OmegaMC is the OPTIONAL multi-agent backend (Claude-per-container + Mission
+        # Control web UI). It is NOT auto-started: it would poll the same bot token as
+        # the command bot (Phase c), and Telegram allows ONE poller per token. Run it
+        # on a SEPARATE bot token, or stop omega-tg-bot first, then: omega-mc-up.
+        info "OmegaMC (optional multi-agent backend) installed → $MC_DIR. It needs its OWN bot token (don't share the command bot's). Bring up: omega-mc-up <BOT_TOKEN> <CHAT_ID>  (needs Docker)"
     fi
 fi
 
