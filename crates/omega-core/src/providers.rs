@@ -193,7 +193,7 @@ impl ProvidersConfig {
             "codex" => "gpt-5-codex",
             "gemini" => "gemini-2.5-pro",
             "glm" => "glm-4.6",
-            "openrouter" => "anthropic/claude-sonnet-4.6",
+            "openrouter" | "pi" | "hermes" => "anthropic/claude-sonnet-4.6",
             _ => "",
         }
     }
@@ -205,11 +205,15 @@ impl ProvidersConfig {
             "codex" => vec!["gpt-5", "gpt-5-codex", "o3"],
             "gemini" => vec!["gemini-2.5-pro", "gemini-2.5-flash"],
             "glm" => vec!["glm-4.6", "glm-4.5"],
-            "openrouter" => vec![
+            // Pi and Hermes both route through OpenRouter, so they share the
+            // same curated OpenRouter model IDs — this gives them an arrow-key
+            // picker (no typing) instead of the free-text fallback.
+            "pi" | "hermes" | "openrouter" => vec![
                 "anthropic/claude-sonnet-4.6",
                 "anthropic/claude-opus-4.8",
                 "openai/gpt-5",
                 "google/gemini-2.5-pro",
+                "deepseek/deepseek-chat",
             ],
             _ => vec![],
         }
