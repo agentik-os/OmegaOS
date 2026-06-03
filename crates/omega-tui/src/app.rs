@@ -966,8 +966,9 @@ impl App {
         Some(self.sessions[idx].session.name.clone())
     }
 
-    /// Handle a Tab press in the Sessions tab. Detects double-tap (within
-    /// 400ms) for chat fullscreen mode.
+    /// Handle a Tab press in the Sessions tab. Single tap cycles the zoom
+    /// (List → Chat → Fullscreen → List); double tap (within 400ms) quick-closes
+    /// back to the session List from anywhere.
     pub fn handle_tab_in_sessions(&mut self) {
         const DOUBLE_TAP_MS: u128 = 400;
         let now = std::time::Instant::now();
@@ -978,16 +979,14 @@ impl App {
         self.last_tab_press = Some(now);
 
         self.session_focus = match (self.session_focus, is_double) {
-            // Single tap: cycle List → Chat → List
+            // Double tap (tab-tab): quick-CLOSE back to the session List from
+            // anywhere — dismiss the open chat/fullscreen view.
+            (_, true) => SessionFocus::List,
+            // Single tap: progressive zoom cycle List → Chat → Fullscreen → List.
+            // Fullscreen stays reachable without the double-tap.
             (SessionFocus::List, false) => SessionFocus::Chat,
-            (SessionFocus::Chat, false) => SessionFocus::List,
+            (SessionFocus::Chat, false) => SessionFocus::ChatFullscreen,
             (SessionFocus::ChatFullscreen, false) => SessionFocus::List,
-            // Double tap from Chat: expand to fullscreen
-            (SessionFocus::Chat, true) => SessionFocus::ChatFullscreen,
-            // Double tap from Fullscreen: back to List
-            (SessionFocus::ChatFullscreen, true) => SessionFocus::List,
-            // Double tap from List: go straight to fullscreen
-            (SessionFocus::List, true) => SessionFocus::ChatFullscreen,
         };
         // When entering any chat focus, tail follow on
         if self.session_focus != SessionFocus::List {

@@ -695,9 +695,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             } else if app.tab == Tab::Sessions {
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
-                    SessionFocus::List => "Focus: session list (Tab → chat, Tab-Tab → fullscreen)".to_string(),
-                    SessionFocus::Chat => "Focus: chat (Tab to list, Tab-Tab → fullscreen, Enter to send)".to_string(),
-                    SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab-Tab → back to list)".to_string(),
+                    SessionFocus::List => "Focus: session list (Tab → chat → fullscreen)".to_string(),
+                    SessionFocus::Chat => "Focus: chat (Tab → fullscreen, Tab-Tab → close to list, Enter to send)".to_string(),
+                    SessionFocus::ChatFullscreen => "Focus: chat FULLSCREEN (Tab → list, Tab-Tab → close to list)".to_string(),
                 });
             } else if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
