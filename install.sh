@@ -1165,7 +1165,7 @@ if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
         # Control web UI). It is NOT auto-started: it would poll the same bot token as
         # the command bot (Phase c), and Telegram allows ONE poller per token. Run it
         # on a SEPARATE bot token, or stop omega-tg-bot first, then: omega-mc-up.
-        info "OmegaMC (optional multi-agent backend) installed → $MC_DIR. It needs its OWN bot token (don't share the command bot's). Bring up: omega-mc-up <BOT_TOKEN> <CHAT_ID>  (needs Docker)"
+        info "OmegaMC (optional multi-agent backend) installed → $MC_DIR. It needs its OWN bot token (don't share the command bot's). Bring up the dashboard (no token needed — the command bot owns Telegram): omega-mc-up  (needs Docker)"
     fi
 fi
 
