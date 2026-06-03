@@ -107,11 +107,24 @@ rmux list-sessions       # see what's live
 
 Detach again with `Ctrl-b d` — the session and its agents keep running without you.
 
+`omega` wraps the entrypoints you actually reach for:
+
+```
+omega                       # open the TUI session manager (browse / launch / monitor)
+omega attach -t claude-1    # drop straight into one session to work in it
+omega master                # jump to the Master session
+omega list                  # list every live session
+```
+
+Use the menu (`omega`) to manage and launch; use a direct attach (`omega attach -t …`, or `rmux attach -t …`) when you want to type heads-down in a single session — the menu's preview *mirrors* the pane, while a direct attach is the lowest-latency path.
+
 Over SSH from a laptop, plain SSH waits a full network round-trip before echoing each keystroke, so on a distant box typing feels laggy and agent output arrives in chunks — no matter how fast the box is, because it's latency, not CPU. `install.sh` installs [`mosh`](https://mosh.org) for this: it echoes your keystrokes locally and ships screen diffs over UDP, so typing is instant and streaming is smooth at any latency. Connect straight into a session with:
 
 ```
-mosh user@host -- rmux attach
+mosh user@host -- omega attach -t claude-1
 ```
+
+In a client like **Termius**: set the host IP + port, turn the **mosh** toggle on, and add a startup snippet — `omega` for the menu, or `omega attach -t <session>` to land directly in a session.
 
 (Use rmux's `Alt+Up/Down` for scrollback, not mosh's PageUp.) The installer also wires `/etc/rmux.conf` and a UTF-8 locale system-wide, so every account — root and future users — gets the same hardened session (mouse scroll, drag-select to the local clipboard over SSH, snappy keys, truecolor) with no per-user setup.
 
