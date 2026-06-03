@@ -95,6 +95,26 @@ cd OmegaOS
 
 When it finishes, run the doctor.
 
+### Connecting remotely
+
+The rmux daemon owns every session, so your agents keep running after you disconnect. To get back to them, **attach** — reconnect your terminal to a session that's already running:
+
+```
+rmux attach              # re-attach to the last session
+rmux attach -t claude-1  # attach to a specific one
+rmux list-sessions       # see what's live
+```
+
+Detach again with `Ctrl-b d` — the session and its agents keep running without you.
+
+Over SSH from a laptop, plain SSH waits a full network round-trip before echoing each keystroke, so on a distant box typing feels laggy and agent output arrives in chunks — no matter how fast the box is, because it's latency, not CPU. `install.sh` installs [`mosh`](https://mosh.org) for this: it echoes your keystrokes locally and ships screen diffs over UDP, so typing is instant and streaming is smooth at any latency. Connect straight into a session with:
+
+```
+mosh user@host -- rmux attach
+```
+
+(Use rmux's `Alt+Up/Down` for scrollback, not mosh's PageUp.) The installer also wires `/etc/rmux.conf` and a UTF-8 locale system-wide, so every account — root and future users — gets the same hardened session (mouse scroll, drag-select to the local clipboard over SSH, snappy keys, truecolor) with no per-user setup.
+
 ## Usage
 
 `omega doctor` is the first thing to run, and the thing to run whenever something feels off. It checks the whole stack:
