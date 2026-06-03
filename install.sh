@@ -1101,7 +1101,8 @@ if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
     if [[ -f "$OMEGA_SRC/scripts/omega-mc-up.sh" ]]; then
         cp -f "$OMEGA_SRC/scripts/omega-mc-up.sh" "$OMEGA_DIR/bin/omega-mc-up.sh"
         chmod +x "$OMEGA_DIR/bin/omega-mc-up.sh"
-        ln -sf "$OMEGA_DIR/bin/omega-mc-up.sh" "$OMEGA_DIR/bin/omega-mc-up" 2>/dev/null || true
+        # symlink onto PATH ($INSTALL_DIR is added to PATH above) so `omega-mc-up` just works
+        ln -sf "$OMEGA_DIR/bin/omega-mc-up.sh" "$INSTALL_DIR/omega-mc-up" 2>/dev/null || true
     fi
     # Seed the AISB 13-agent roster as the active config if absent.
     if [[ -d "$MC_DIR/config" && ! -f "$MC_DIR/config/omega-mc.yaml" && -f "$MC_DIR/config/omega-aisb.yaml" ]]; then
