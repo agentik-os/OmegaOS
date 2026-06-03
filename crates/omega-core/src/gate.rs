@@ -213,6 +213,16 @@ impl GateResult {
         std::fs::write(&path, content)?;
         Ok(())
     }
+
+    /// Read a previously-persisted gate result for `oracle`, if any. Used by the
+    /// regression detector (R-22) to compare the current run against the prior one.
+    pub fn read(state_dir: &Path, oracle: &str) -> Result<Option<Self>> {
+        let path = state_dir.join(format!("{}.gate-result.json", oracle));
+        if !path.exists() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?))
+    }
 }
 
 // ── Multi-Grader (R-21) ──

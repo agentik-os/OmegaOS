@@ -918,9 +918,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     Action::None
                 } else if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
                     let action = app.selected_monitor_action();
-                    if let Some(hint) = action.status_hint() {
-                        app.status_message = Some(hint.to_string());
-                        Action::None
+                    // OpenDashboard resolves the real OmegaMC launch (or honest
+                    // not-installed message) against the filesystem; it needs
+                    // `&mut App`, so it routes through its own handler.
+                    if matches!(action, MonitorAction::OpenDashboard) {
+                        open_dashboard_action(app)
                     } else {
                         execute_monitor_action(action)
                     }
@@ -1038,13 +1040,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('P') if app.tab == Tab::Monitor => Action::ProvisioningSetup,
         KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
-        KeyCode::Char('O') if app.tab == Tab::Monitor => {
-            // Placeholder action — show the honest status hint (no binary yet).
-            if let Some(hint) = MonitorAction::OpenDashboard.status_hint() {
-                app.status_message = Some(hint.to_string());
-            }
-            Action::None
-        }
+        KeyCode::Char('O') if app.tab == Tab::Monitor => open_dashboard_action(app),
 
         // Shortcut keys (work in any tab) — direct agent launchers
         KeyCode::Char('c') => {
@@ -1291,9 +1287,32 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
         MonitorAction::TelegramDisconnect => Action::TelegramDisconnect,
         MonitorAction::ProvisioningSetup => Action::ProvisioningSetup,
         MonitorAction::RefreshBilling => Action::RefreshBilling,
-        // Placeholder — no wired binary yet. The Enter/letter handlers show the
-        // status hint instead of calling this; this arm keeps the match total.
+        // OpenDashboard needs the `&mut App` to surface the honest "not
+        // installed" status when OmegaMC is absent, so the Enter/letter
+        // handlers route through `open_dashboard_action(app)` directly. This
+        // arm is unreachable in practice but keeps the match total.
         MonitorAction::OpenDashboard => Action::None,
+    }
+}
+
+/// Resolve + dispatch the Monitor "Open Dashboard" action. When OmegaMC is
+/// installed (`$OMEGA_DIR/omega-mc/.git`), launch it via `Action::RunShellCommand`
+/// (`docker compose up -d`) — the same session-spawning mechanism the Settings
+/// install/uninstall actions use. When absent, set an honest install message
+/// and dispatch nothing.
+fn open_dashboard_action(app: &mut App) -> Action {
+    match MonitorAction::resolve_open_dashboard() {
+        crate::app::DashboardLaunch::Launch { command, message } => {
+            app.status_message = Some(message);
+            Action::RunShellCommand {
+                label: "OmegaMC dashboard".to_string(),
+                command,
+            }
+        }
+        crate::app::DashboardLaunch::NotInstalled { message } => {
+            app.status_message = Some(message);
+            Action::None
+        }
     }
 }
 

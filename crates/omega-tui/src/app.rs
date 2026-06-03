@@ -742,16 +742,57 @@ impl MonitorAction {
             MonitorAction::OpenDashboard => "O",
         }
     }
-    /// Status message shown when the action is activated but has no wired
-    /// command yet. `None` = the action dispatches a real `Action` instead.
-    pub fn status_hint(&self) -> Option<&'static str> {
-        match self {
-            MonitorAction::OpenDashboard => Some(
-                "Dashboard: run `omega dashboard` (OmegaMC) — coming once configured",
-            ),
-            _ => None,
+    /// Resolve the "Open Dashboard" action against the real filesystem.
+    ///
+    /// OmegaMC (the Telegram-controlled web dashboard, `agentik-os/agentik-telegram`)
+    /// is installed by `install.sh` Phase 6.95 into `$OMEGA_DIR/omega-mc` — a
+    /// best-effort clone that may be absent (private repo / `OMEGA_SKIP_DASHBOARD=1`).
+    ///
+    /// Present → return the real `docker compose up -d` launch in that dir (the
+    /// caller turns this into `Action::RunShellCommand`, the same mechanism the
+    /// Settings install/uninstall actions use). Absent → return the honest
+    /// install instructions so the operator can clone it.
+    pub fn resolve_open_dashboard() -> DashboardLaunch {
+        let dir = omega_core::config::omega_dir().join("omega-mc");
+        let dir_str = dir.to_string_lossy().to_string();
+        // The directory alone isn't proof of a usable clone; require the .git
+        // marker install.sh checks (a failed clone is `rm -rf`'d, but a partial
+        // manual copy could leave a bare dir). Runtime truth over assumption.
+        if dir.join(".git").is_dir() {
+            DashboardLaunch::Launch {
+                command: format!(
+                    "cd {dir} && echo '── Starting OmegaMC dashboard (docker compose up -d) ──' && docker compose up -d && echo && echo 'Dashboard up. Local URL: http://localhost:8080 (see {dir}/docker-compose.yml for the published port; AISB agents in config/omega-aisb.yaml).'",
+                    dir = shell_quote(&dir_str),
+                ),
+                message: format!(
+                    "▶ Starting OmegaMC dashboard via `docker compose up -d` in {dir_str} — watch the spawned session; URL printed there once containers are up."
+                ),
+            }
+        } else {
+            DashboardLaunch::NotInstalled {
+                message: format!(
+                    "OmegaMC dashboard not installed. Install it with: git clone https://github.com/agentik-os/agentik-telegram.git {dir_str} && cd {dir_str} && docker compose up -d"
+                ),
+            }
         }
     }
+}
+
+/// Result of resolving the Monitor "Open Dashboard" action against the
+/// filesystem. Mapped to an `Action` by the input layer (kept Action-free here
+/// so `app.rs` stays decoupled from `input.rs`).
+#[derive(Debug, Clone)]
+pub enum DashboardLaunch {
+    /// OmegaMC is installed — launch it in a session via the given shell command.
+    Launch { command: String, message: String },
+    /// OmegaMC is absent — show honest install instructions, no command run.
+    NotInstalled { message: String },
+}
+
+/// Single-quote a string for safe interpolation into a `bash -c` command. Wraps
+/// in single quotes and escapes embedded single quotes the POSIX way (`'\''`).
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 pub struct App {

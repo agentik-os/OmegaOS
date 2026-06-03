@@ -26,6 +26,12 @@ use tokio::sync::Mutex;
 const API_BASE: &str = "https://api.telegram.org";
 const TELEGRAM_MAX_MSG_LEN: usize = 4096;
 
+/// Media intake helpers (voice transcription, photo vision, document handling).
+/// Declared here (not in main.rs) so the whole modality feature stays within
+/// the telegram bridge's ownership — a sibling source file, one writer.
+#[path = "telegram_intake.rs"]
+mod telegram_intake;
+
 /// Redact the bot token from an error's Display before logging. reqwest's
 /// Error embeds the full request URL — which for the Telegram API contains
 /// `/bot<TOKEN>/` — so logging a raw network error on a long-poll loop would
@@ -1093,70 +1099,297 @@ impl TelegramBotEngine {
         Ok(())
     }
 
-    /// Handle voice messages.
+    /// Handle voice messages: download the OGG/Opus blob, transcribe it via
+    /// OpenAI Whisper (using the stored `codex`/OPENAI key), then route the
+    /// transcript exactly like a typed message so session routing is reused.
+    /// Degrades honestly when the key is missing or transcription fails.
     async fn handle_voice(&self, msg: &Message, voice: &Voice) -> Result<()> {
+        let chat_id = msg.chat.id;
         tracing::info!(
             file_id = %voice.file_id,
             duration = voice.duration,
             "received voice message"
         );
-        let _ = self
-            .send_html(
-                msg.chat.id,
-                &format!(
-                    " <i>Voice message received ({}s) — transcription not yet available in OmegaOS.\n\
-                     Send as text for now.</i>",
-                    voice.duration
-                ),
-            )
-            .await;
-        Ok(())
-    }
 
-    /// Handle document uploads.
-    async fn handle_document(&self, msg: &Message, doc: &Document) -> Result<()> {
-        let name = doc.file_name.as_deref().unwrap_or("unknown");
-        let mime = doc.mime_type.as_deref().unwrap_or("application/octet-stream");
-        tracing::info!(file_id = %doc.file_id, name = %name, mime = %mime, "received document");
-        let _ = self
-            .send_html(
-                msg.chat.id,
-                &format!(
-                    " <i>Document received: <code>{}</code> ({})\n\
-                     Document processing not yet available — describe what you need in text.</i>",
-                    formatting::escape_html(name),
-                    formatting::escape_html(mime)
-                ),
-            )
-            .await;
-        Ok(())
-    }
-
-    /// Handle photo messages.
-    async fn handle_photo(&self, msg: &Message, photos: &[PhotoSize]) -> Result<()> {
-        let largest = photos.iter().max_by_key(|p| p.width * p.height);
-        if let Some(photo) = largest {
-            tracing::info!(
-                file_id = %photo.file_id,
-                size = format!("{}x{}", photo.width, photo.height),
-                "received photo"
-            );
+        // No OpenAI key → download is pointless; name exactly what's missing.
+        let api_key = ProvidersConfig::load().codex.api_key.clone();
+        if api_key.is_empty() {
+            let _ = self
+                .send_html(
+                    chat_id,
+                    " <i>Voice message received — transcription needs an OpenAI API key \
+                     (provider <code>codex</code>). Add it via /connect, or send your message \
+                     as text.</i>",
+                )
+                .await;
+            return Ok(());
         }
-        let caption_note = msg
-            .caption
-            .as_deref()
-            .map(|c| format!("\nCaption: <i>{}</i>", formatting::escape_html(c)))
-            .unwrap_or_default();
-        let _ = self
-            .send_html(
-                msg.chat.id,
-                &format!(
-                    " <i>Photo received.{}\n\
-                     Image analysis not yet available — describe what you need in text.</i>",
-                    caption_note
-                ),
-            )
-            .await;
+
+        self.send_typing(chat_id).await;
+        let audio = match telegram_intake::download_file(
+            &self.client,
+            &self.cfg.bot_token,
+            &voice.file_id,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "voice download failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Voice download failed: {}</i>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+                return Ok(());
+            }
+        };
+
+        match telegram_intake::transcribe_voice(&self.client, &api_key, audio).await {
+            Ok(transcript) => {
+                // Echo the transcript so the user sees what we heard, then
+                // route it through the normal text pipeline.
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "🎙 <i>Transcribed ({}s):</i>\n<blockquote>{}</blockquote>",
+                            voice.duration,
+                            formatting::escape_html(&transcript)
+                        ),
+                    )
+                    .await;
+                let _ = self.handle_text(msg, &transcript).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "voice transcription failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Voice downloaded but transcription failed: {}</i>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle document uploads: download via getFile, then either inline the
+    /// content as text (text-like + small → routed through the normal text
+    /// pipeline with any caption) or persist binary/large files to the local
+    /// inbox and report the real path. No fake parsing.
+    async fn handle_document(&self, msg: &Message, doc: &Document) -> Result<()> {
+        let chat_id = msg.chat.id;
+        let name = doc.file_name.clone().unwrap_or_else(|| "unknown".to_string());
+        let mime = doc
+            .mime_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        tracing::info!(file_id = %doc.file_id, name = %name, mime = %mime, "received document");
+
+        self.send_typing(chat_id).await;
+        let bytes = match telegram_intake::download_file(
+            &self.client,
+            &self.cfg.bot_token,
+            &doc.file_id,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "document download failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Document <code>{}</code> download failed: {}</i>",
+                            formatting::escape_html(&name),
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+                return Ok(());
+            }
+        };
+
+        match telegram_intake::process_document(bytes, &name, &mime) {
+            Ok(telegram_intake::DocumentOutcome::Text(content)) => {
+                // Build a text turn: the file content, plus the caption as the
+                // user's instruction about it (if present). Routed through the
+                // standard text pipeline so it reaches the right session.
+                let caption = msg.caption.as_deref().unwrap_or("").trim();
+                let routed = if caption.is_empty() {
+                    format!(
+                        "The user uploaded a file `{}` ({}). Its content:\n\n```\n{}\n```",
+                        name, mime, content
+                    )
+                } else {
+                    format!(
+                        "{}\n\n(Attached file `{}` ({}), content below)\n\n```\n{}\n```",
+                        caption, name, mime, content
+                    )
+                };
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "📄 <i>Read <code>{}</code> ({} bytes) — passing to the assistant.</i>",
+                            formatting::escape_html(&name),
+                            routed.len()
+                        ),
+                    )
+                    .await;
+                let _ = self.handle_text(msg, &routed).await;
+            }
+            Ok(telegram_intake::DocumentOutcome::Saved { path, bytes }) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "📦 <i>Document <code>{}</code> ({}, {} bytes) saved to:</i>\n<code>{}</code>\n\
+                             <i>Binary/large files aren't parsed inline — reference this path in a text \
+                             instruction (e.g. ask an oracle to process it).</i>",
+                            formatting::escape_html(&name),
+                            formatting::escape_html(&mime),
+                            bytes,
+                            formatting::escape_html(&path)
+                        ),
+                    )
+                    .await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "document processing failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Document <code>{}</code> downloaded but could not be saved: {}</i>",
+                            formatting::escape_html(&name),
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle photo messages: download the largest JPEG via getFile, describe
+    /// it with the Anthropic vision API (using the stored `claude` key), then
+    /// route the description (plus caption) like a typed message. Degrades
+    /// honestly when the key is missing or vision fails.
+    async fn handle_photo(&self, msg: &Message, photos: &[PhotoSize]) -> Result<()> {
+        let chat_id = msg.chat.id;
+        let largest = match photos.iter().max_by_key(|p| p.width * p.height) {
+            Some(p) => p,
+            None => return Ok(()),
+        };
+        tracing::info!(
+            file_id = %largest.file_id,
+            size = format!("{}x{}", largest.width, largest.height),
+            "received photo"
+        );
+
+        let api_key = ProvidersConfig::load().claude.api_key.clone();
+        if api_key.is_empty() {
+            let caption_note = msg
+                .caption
+                .as_deref()
+                .map(|c| format!("\nCaption: <i>{}</i>", formatting::escape_html(c)))
+                .unwrap_or_default();
+            let _ = self
+                .send_html(
+                    chat_id,
+                    &format!(
+                        " <i>Photo received.{}\n\
+                         Image analysis needs an Anthropic API key (provider <code>claude</code>). \
+                         Add it via /connect, or describe what you need in text.</i>",
+                        caption_note
+                    ),
+                )
+                .await;
+            return Ok(());
+        }
+
+        self.send_typing(chat_id).await;
+        let image = match telegram_intake::download_file(
+            &self.client,
+            &self.cfg.bot_token,
+            &largest.file_id,
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(error = %redact_token(&e, &self.cfg.bot_token), "photo download failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Photo download failed: {}</i>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+                return Ok(());
+            }
+        };
+
+        // Telegram delivers photos as JPEG.
+        match telegram_intake::describe_image(
+            &self.client,
+            &api_key,
+            &image,
+            "image/jpeg",
+            msg.caption.as_deref(),
+        )
+        .await
+        {
+            Ok(description) => {
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            "🖼 <i>Image analysis:</i>\n<blockquote expandable>{}</blockquote>",
+                            formatting::escape_html(&description)
+                        ),
+                    )
+                    .await;
+                // Route as text so the assistant/oracle has the visual context.
+                let caption = msg.caption.as_deref().unwrap_or("").trim();
+                let routed = if caption.is_empty() {
+                    format!(
+                        "The user sent an image. Here is a description of it:\n\n{}",
+                        description
+                    )
+                } else {
+                    format!(
+                        "{}\n\n(The user sent an image with that caption. Image description:\n\n{})",
+                        caption, description
+                    )
+                };
+                let _ = self.handle_text(msg, &routed).await;
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "photo vision failed");
+                let _ = self
+                    .send_html(
+                        chat_id,
+                        &format!(
+                            " <i>Photo downloaded but image analysis failed: {}</i>",
+                            formatting::escape_html(&e.to_string())
+                        ),
+                    )
+                    .await;
+            }
+        }
         Ok(())
     }
 
@@ -4346,6 +4579,14 @@ impl TelegramBotEngine {
     }
 
     // ── Telegram API methods ──
+
+    /// Fire-and-forget "typing…" chat action, so the user sees the bot is
+    /// busy while a media download/transcription/vision call is in flight.
+    async fn send_typing(&self, chat_id: i64) {
+        let url = format!("{}/bot{}/sendChatAction", API_BASE, self.cfg.bot_token);
+        let body = serde_json::json!({ "chat_id": chat_id, "action": "typing" });
+        let _ = self.client.post(&url).json(&body).send().await;
+    }
 
     async fn send_html(&self, chat_id: i64, text: &str) -> Result<Option<i64>> {
         let chunks = formatting::split_message(text, TELEGRAM_MAX_MSG_LEN);
