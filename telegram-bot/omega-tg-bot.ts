@@ -189,7 +189,12 @@ async function cmdSync(chatId: number, thread?: number) {
 
 // ── poll loop ────────────────────────────────────────────────────────────────
 async function main() {
-  await tg("setMyCommands", { commands: MENU.map(([command, description]) => ({ command, description })) });
+  // Register the menu on BOTH default and all_private_chats scopes — some Telegram
+  // clients read the private-chat scope preferentially, so setting only default
+  // can leave a stale/empty menu in DMs.
+  const cmds = MENU.map(([command, description]) => ({ command, description }));
+  await tg("setMyCommands", { commands: cmds });
+  await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
   await tg("deleteWebhook", { drop_pending_updates: false });
   try { process.env.OMEGA_PUBLIC_IP ||= (await (await fetch("https://ifconfig.me")).text()).trim(); } catch {}
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
