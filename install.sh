@@ -8,6 +8,10 @@
 set -euo pipefail
 
 OMEGA_VERSION="0.1.0"
+# Install paths are env-overridable so a host can route them (XDG / clean-home setups,
+# shared multi-user installs, etc.) without forking this script. Defaults match the
+# standard single-user layout. Honored vars: OMEGA_DIR, INSTALL_DIR, OMEGA_SRC,
+# plus the standard CARGO_HOME / RUSTUP_HOME for the Rust toolchain.
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 REPO_URL="https://github.com/agentik-os/OmegaOS"
@@ -152,7 +156,7 @@ if ! command -v cargo &>/dev/null; then
     info "Rust not found. Installing via rustup..."
     command -v curl >/dev/null 2>&1 || { err "curl is required to bootstrap Rust but is missing; install curl and re-run."; exit 1; }
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
+    source "${CARGO_HOME:-$HOME/.cargo}/env"
     ok "Rust installed: $(rustc --version)"
 else
     ok "Rust found: $(rustc --version)"
