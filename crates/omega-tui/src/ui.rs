@@ -706,8 +706,9 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     // line that happens to contain "tokens" isn't mis-typed
                     // as activity. Activity is checked LAST as a fallback.
                     if is_todo_done {
-                        // Green bold across the row.
-                        let green = Color::Rgb(35, 209, 139);
+                        // Green bold across the row. Named color so the terminal
+                        // theme renders it readable on light AND dark backgrounds.
+                        let green = Color::Green;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
@@ -721,7 +722,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     } else if is_todo_failed {
                         // Red bold — same family as activity but distinct
                         // by anchor (line-start glyph).
-                        let red = Color::Rgb(241, 76, 76);
+                        let red = Color::Red;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
@@ -735,7 +736,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     } else if is_todo_progress {
                         // Magenta bold — actively-running todo stands out
                         // from the pending grey and the done green.
-                        let magenta = Color::Rgb(214, 112, 214);
+                        let magenta = Color::Magenta;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
@@ -747,9 +748,10 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .collect();
                         Line::from(spans)
                     } else if is_todo_pending {
-                        // Soft yellow, NOT bold — pending todos read as
-                        // backlog, not foreground action.
-                        let yellow = Color::Rgb(229, 229, 16);
+                        // Yellow, NOT bold — pending todos read as backlog. Named
+                        // color: the bright Rgb yellow was near-invisible on a
+                        // light background; the theme's yellow stays readable.
+                        let yellow = Color::Yellow;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| Span::styled(sp.text.clone(), Style::default().fg(yellow)))
@@ -758,7 +760,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     } else if is_task_dispatch {
                         // Cyan bold — a worker is being spawned, you want to see
                         // it. No forced bg (it became a dark bar on light themes).
-                        let cyan = Color::Rgb(41, 184, 219);
+                        let cyan = Color::Cyan;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
@@ -770,8 +772,8 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .collect();
                         Line::from(spans)
                     } else if is_activity {
-                        // Bold + bright red across the row.
-                        let red = Color::Rgb(241, 76, 76);
+                        // Bold red across the row.
+                        let red = Color::Red;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
@@ -802,7 +804,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                         // AISB-master mirror: agent reply line. Soft green fg to
                         // distinguish from user lines. No forced bg (dark bar on
                         // light themes).
-                        let green = Color::Rgb(120, 220, 160);
+                        let green = Color::Green;
                         let spans: Vec<Span> = row
                             .iter()
                             .map(|sp| {
