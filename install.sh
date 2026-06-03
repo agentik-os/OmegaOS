@@ -1010,7 +1010,7 @@ fi
 # unit is needed. We still enable linger (so any other --user services survive
 # logout) and proactively remove a stale bridge unit from a prior install so it
 # can never reclaim the token out from under OmegaMC.
-loginctl enable-linger "$USER" 2>/dev/null || true
+loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
 if command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now omega-telegram.service 2>/dev/null || true
     rm -f "$HOME/.config/systemd/user/omega-telegram.service" \
