@@ -10,7 +10,26 @@ OmegaOS is not a library you import. You install it on a Linux box. You get the 
 
 The default agent runtime is Claude Code. Lots of tools run agents in parallel. What's different here is that every agent, however deep in the tree, carries the same non-negotiable rules, injected as plain text into its prompt. That's the doctrine, and it's where to start.
 
+Install it in one command:
+
+```
+npx omega-os
+```
+
 Version 0.1.0. I run it daily; expect rough edges.
+
+## What's in the box
+
+- **Three ways in.** A `ratatui` TUI (7 tabs: sessions, monitor, projects, settings, agentic, menu, help), the `omega` CLI (40+ commands), and a Telegram bridge for your phone. An RPC mode (JSONL over stdin/stdout) drives it from other tools.
+- **Orchestration.** `omega orchestrate` runs a mission end to end: classify (SIMPLE/MEDIUM/COMPLEX/EPIC) → plan → dispatch a worker per task → monitor → quality gate. Plus `dispatch`, `spawn-worker`, `team` (N agents in split panes), `timeline` (replay a mission), `resurrect` (revive a crashed oracle from persisted state), and an `inbox` event queue.
+- **The doctrine.** A typed registry of 6 Laws + 20 Rules, compiled into the binary and injected into every agent's prompt at every level. See it with `omega rules list`.
+- **One writer per file.** Workers claim the files they touch with real advisory locks (`fs2`), so two agents physically cannot write the same file. Completion is a `done.json` with a status, not a vibe.
+- **Quality arsenal.** ~20 forensic Gestalt-Popper audits (`codeaudit`, `secaudit`, `perfaudit`, `a11yaudit`, …) that an oracle auto-selects for what changed, plus an adversarial 2-of-3 gate (rubric + Popper falsification + regression + citation enforcement) — the grader is never the writer.
+- **13 agents, many runtimes.** AISB Matrix-named templates (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Neo, Zion, Link, Construct, Merovingian, Architect, Pythia). Default runtime is Claude Code; Codex, Gemini, GLM, Pi, and Hermes install via `omega install` and run too.
+- **Ops you'll actually use.** `omega doctor` (whole-stack health), `patrol` (session watchdog), `usage` (token-budget + Telegram 80/90% alerts), `ship` (build→commit→push→deploy→verify), `backup` (irreproducible `~/.omega` state → one tgz), `cleanup` / `kill-all`, `provision` (per-client credential groups), and `plan-run` (drive a multi-step plan to completion).
+- **Phone control.** The Telegram bridge relays to a persistent Claude brain (streamed, classified replies), handles voice (Whisper), photos (vision), and documents, and exposes `/menu /account /model /projects /sessions /audits /skills /status /dispatch /login` — login is an OAuth-paste flow, so you can connect Claude from your phone.
+- **Integrations.** Linear ticket resolution (`/omg-linear` — fix → audit → comment → In Review), branded PDF reports (`omega pdf`), and a Telegram-driven mission console.
+- **Infra.** Runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer (no tmux dependency). Installs `mosh` for lag-free remote typing, a systemd `--user` service for the bridge, and a hardened system-wide terminal config.
 
 ## The doctrine
 
@@ -85,7 +104,13 @@ Bun and TypeScript do the PDF report rendering, through Next.js and Playwright. 
 
 ## Install
 
-You need a Linux box and a Rust toolchain. The installer builds `rmux` and `omega` from source, so the first run isn't instant.
+One command on a Linux box (macOS mostly works):
+
+```
+npx omega-os
+```
+
+It clones the repo and runs the installer behind an interactive Matrix-rain progress screen (type to inject glyphs, `space` to pulse; `npx omega-os --plain` for a plain bar). Prefer to do it by hand:
 
 ```
 git clone https://github.com/agentik-os/OmegaOS
@@ -93,7 +118,7 @@ cd OmegaOS
 ./install.sh
 ```
 
-When it finishes, run the doctor.
+Either way the installer builds `rmux` and `omega` from source, so the first run isn't instant. When it finishes, run the doctor.
 
 ### Connecting remotely
 
