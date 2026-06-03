@@ -1,4 +1,4 @@
-use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
+use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, MonitorSection, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
 use omega_core::done::DoneStatus;
 use omega_core::session::{PreviewColor, SessionRole};
 
@@ -1122,29 +1122,129 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
+    let section = app.selected_monitor_section();
+    let (lines, selected_line) = render_monitor_detail(app);
+
+    // Auto-scroll: keep the focused row visible (action cursor when the Actions
+    // section is focused, otherwise just track scroll on plain scrolling).
+    if app.detail_focused {
+        let panel_height = area.height.saturating_sub(2);
+        let field_line = selected_line as u16;
+        if field_line < app.detail_scroll {
+            app.detail_scroll = field_line.saturating_sub(1);
+        } else if field_line >= app.detail_scroll + panel_height {
+            app.detail_scroll = field_line.saturating_sub(panel_height.saturating_sub(2));
+        }
+    }
+
+    // Fullscreen detail mode: skip the left list, detail takes 100% width.
+    if app.detail_fullscreen {
+        let title = format!(
+            " Monitor — {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
+            section.label()
+        );
+        let paragraph = Paragraph::new(lines)
+            .scroll((app.detail_scroll, 0))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
+
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
+    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
+
+    // ── Left: section list ──────────────────────────────────────────────────
+    let items: Vec<ListItem> = MonitorSection::all()
+        .iter()
+        .enumerate()
+        .map(|(i, sec)| {
+            let selected = i == app.monitor_selected && list_focused;
+            let prefix = if i == app.monitor_selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if i == app.monitor_selected {
+                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(sec.label(), style),
+            ]))
+        })
+        .collect();
+
+    let list_title = if list_focused {
+        " ▶ FOCUSED Monitor — ↑/↓ select, Tab → detail "
+    } else {
+        " Monitor — Tab to focus list "
+    };
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+
+    let mut monitor_list_state = ListState::default().with_selected(Some(app.monitor_selected));
+    frame.render_stateful_widget(list, split[0], &mut monitor_list_state);
+
+    // ── Right: detail panel ───────────────────────────────────────────────
+    let detail_title = if app.detail_focused {
+        format!(
+            " {}  [FOCUSED — ↑/↓ navigate, Tab → list, Tab-Tab → fullscreen] ",
+            section.label()
+        )
+    } else {
+        format!(" {} ", section.label())
+    };
+
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
+    frame.render_widget(paragraph, split[1]);
+}
+
+/// Build the right-panel lines for the currently selected Monitor section.
+/// Returns (lines, selected_line) — `selected_line` is the line of the
+/// highlighted action (Actions section, focused); 0 otherwise.
+fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
+    match app.selected_monitor_section() {
+        MonitorSection::Account => (render_monitor_account(), 0),
+        MonitorSection::Billing => (render_monitor_billing(), 0),
+        MonitorSection::Telegram => (render_monitor_telegram(), 0),
+        MonitorSection::Accounts => (render_monitor_accounts(), 0),
+        MonitorSection::Projects => (render_monitor_projects(), 0),
+        MonitorSection::Actions => render_monitor_actions(app),
+    }
+}
+
+fn render_monitor_account() -> Vec<Line<'static>> {
     use omega_core::monitor;
-
-    let snap = monitor::UsageSnapshot::read().ok().flatten();
-    let cache_age = monitor::UsageSnapshot::cache_age_secs();
-    let bot_status = monitor::aisb_bot_status();
-    let accounts = monitor::list_accounts();
-    let tg_config = monitor::OmegaTelegramConfig::read();
-
-    let mut lines: Vec<Line> = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "  AISB Monitor — Claude Code billing, accounts, bots",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-    ];
-
-    // ── Connected account (live from `claude auth status`) ──────────────────
+    let mut lines: Vec<Line> = vec![Line::from("")];
     if let Some(acc) = monitor::connected_account() {
-        lines.push(Line::from(Span::styled(
-            "  ── Connected account ──",
-            Style::default().fg(Color::Yellow),
-        )));
         lines.push(Line::from(vec![
             Span::raw("    Email:          "),
             Span::styled(acc.email.clone(), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
@@ -1157,14 +1257,22 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             Span::raw(format!("   ({})", acc.auth_method)),
         ]));
-        lines.push(Line::from(""));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "    (no connected account — run `claude /login`)",
+            Style::default().fg(Color::Gray),
+        )));
     }
+    lines
+}
 
-    // ── Billing ─────────────────────────────────────────────────────────────
-    lines.push(Line::from(Span::styled(
-        "  ── Billing (live) ──",
-        Style::default().fg(Color::Yellow),
-    )));
+fn render_monitor_billing() -> Vec<Line<'static>> {
+    use omega_core::monitor;
+    let snap = monitor::UsageSnapshot::read().ok().flatten();
+    let cache_age = monitor::UsageSnapshot::cache_age_secs();
+    let bot_status = monitor::aisb_bot_status();
+    let mut lines: Vec<Line> = vec![Line::from("")];
+
     if let Some(snap) = &snap {
         let cache_label = match cache_age {
             Some(s) if s < 60 => format!("{}s ago", s),
@@ -1187,7 +1295,6 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         )));
         lines.push(Line::from(""));
 
-        // Progress bars
         for (label, pct, tokens, budget) in [
             ("5h session", snap.precise_5h(), snap.tokens_5h, snap.budget_5h),
             ("Week",       snap.precise_week(), snap.tokens_7d, snap.budget_week),
@@ -1218,15 +1325,9 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     lines.push(Line::from(""));
-
-    // ── AISB Telegram Bot (legacy, Python, on the VPS) ──────────────────────
     lines.push(Line::from(Span::styled(
-        "  ── AISB Telegram Bot (legacy Python bot, separate from OmegaOS) ──",
+        "    ── Usage cache (AISB legacy Python bot, separate from OmegaOS) ──",
         Style::default().fg(Color::Yellow),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    The original AISB bot running on this VPS — not part of OmegaOS.",
-        Style::default().fg(Color::Gray),
     )));
     lines.push(Line::from(Span::styled(
         "    Billing reads ~/.omega/state/usage.json (omega usage --check, native OAuth).",
@@ -1247,14 +1348,20 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         monitor::CacheStatus::Missing => "missing".to_string(),
     };
     lines.push(Line::from(format!("    Usage cache:    {}", cache_text)));
+    lines
+}
 
-    lines.push(Line::from(""));
-
-    // ── Accounts ────────────────────────────────────────────────────────────
-    lines.push(Line::from(Span::styled(
-        "  ── Claude Accounts (~/.claude/accounts) ──",
-        Style::default().fg(Color::Yellow),
-    )));
+fn render_monitor_accounts() -> Vec<Line<'static>> {
+    use omega_core::monitor;
+    let accounts = monitor::list_accounts();
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "    Saved Claude accounts (~/.claude/accounts):",
+            Style::default().fg(Color::Cyan),
+        )),
+        Line::from(""),
+    ];
     if accounts.is_empty() {
         lines.push(Line::from(Span::styled(
             "    (no saved accounts)",
@@ -1271,32 +1378,28 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             ]));
         }
     }
+    lines
+}
 
-    lines.push(Line::from(""));
+fn render_monitor_telegram() -> Vec<Line<'static>> {
+    use omega_core::monitor;
+    let tg_config = monitor::OmegaTelegramConfig::read();
+    let mut lines: Vec<Line> = vec![Line::from("")];
 
-    // ── Omega Telegram Bot (Rust, this system) ──────────────────────────────
     lines.push(Line::from(Span::styled(
-        "  ── Omega Telegram Bot (Rust — talk to AISB Master from anywhere) ──",
-        Style::default().fg(Color::Yellow),
-    )));
-    lines.push(Line::from(Span::styled(
-        "    What this is:",
-        Style::default().fg(Color::Cyan),
+        "    Omega Telegram Bot (Rust — this system)",
+        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         "      Omega's OWN Telegram bot (no Python, no AISB-Python dependency).",
         Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(Span::styled(
-        "      Once configured, any text you send via Telegram is relayed to the",
+        "      Once configured, text you send via Telegram reaches the OmegaMC",
         Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(Span::styled(
-        "      AISB Master session (aisb-master) — the AI Super Brain.",
-        Style::default().fg(Color::Reset),
-    )));
-    lines.push(Line::from(Span::styled(
-        "      → you talk to all 13 Matrix agents through one chat, from your phone.",
+        "      dashboard — your phone-side control surface for the system.",
         Style::default().fg(Color::Reset),
     )));
     lines.push(Line::from(""));
@@ -1310,10 +1413,6 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
         if !cfg.label.is_empty() {
             lines.push(Line::from(format!("    Label:          {}", cfg.label)));
         }
-        lines.push(Line::from(format!(
-            "    Relay session:  {}    (where messages go)",
-            cfg.relay_session
-        )));
         lines.push(Line::from(format!("    Chat ID:        {}", cfg.chat_id)));
         let sender = if cfg.allow_user_ids.is_empty() {
             "chat_id only (any user in this chat)".to_string()
@@ -1361,14 +1460,18 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::Yellow),
         )));
     }
+    lines
+}
 
-    lines.push(Line::from(""));
-
-    // ── Project group (Telegram supergroup + per-project topics) ───────────
-    lines.push(Line::from(Span::styled(
-        "  ── Project group (auto-detected) ──",
-        Style::default().fg(Color::Yellow),
-    )));
+fn render_monitor_projects() -> Vec<Line<'static>> {
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "    Project group (auto-detected)",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+    ];
     match omega_core::telegram_group::TelegramGroupConfig::load() {
         Some(gcfg) => {
             lines.push(Line::from(vec![
@@ -1377,7 +1480,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             ]));
             lines.push(Line::from(format!(
                 "    Group:          {}  ({})",
-                if gcfg.group_name.is_empty() { "—" } else { &gcfg.group_name },
+                if gcfg.group_name.is_empty() { "—".to_string() } else { gcfg.group_name.clone() },
                 gcfg.group_id
             )));
             lines.push(Line::from(format!(
@@ -1429,16 +1532,30 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
             )));
         }
     }
+    lines
+}
+
+fn render_monitor_actions(app: &App) -> (Vec<Line<'static>>, usize) {
+    let detail_active = app.detail_focused;
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    let mut selected_line: usize = 0;
+
+    if detail_active {
+        lines.push(Line::from(Span::styled(
+            "  ↑/↓ navigate · Enter runs · Tab → back to list",
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Tab → focus this panel to run actions (or press the letter shortcut)",
+            Style::default().fg(Color::Gray),
+        )));
+    }
     lines.push(Line::from(""));
 
-    // ── Actions (arrow-navigable + letter shortcuts) ───────────────────────
-    lines.push(Line::from(Span::styled(
-        "  ── Actions  (↑/↓ navigate, Enter to run, or press letter) ──",
-        Style::default().fg(Color::Yellow),
-    )));
-    let monitor_actions_start_line = lines.len();
     for (i, action) in MonitorAction::all().iter().enumerate() {
-        let selected = i == app.monitor_selected;
+        let selected = detail_active && i == app.monitor_action_selected;
+        if selected { selected_line = lines.len(); }
         let prefix = if selected { "  ▶ " } else { "    " };
         let label_style = if selected {
             Style::default()
@@ -1459,42 +1576,11 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  This tab refreshes every 5s. Use ↑/↓ + Enter or the letter shortcut.",
+        "  This tab refreshes every 5s.",
         Style::default().fg(Color::Gray),
     )));
 
-    // Auto-scroll to keep selected monitor action visible
-    if !app.detail_focused {
-        let action_line = (monitor_actions_start_line + app.monitor_selected) as u16;
-        let panel_h = area.height.saturating_sub(2);
-        if action_line < app.detail_scroll {
-            app.detail_scroll = action_line.saturating_sub(1);
-        } else if action_line >= app.detail_scroll + panel_h {
-            app.detail_scroll = action_line.saturating_sub(panel_h.saturating_sub(2));
-        }
-    }
-
-    let title = if app.detail_fullscreen {
-        " Monitor  [FULLSCREEN — Tab/Tab-Tab to exit] ".to_string()
-    } else if app.detail_focused {
-        " Monitor  [↑/↓ scroll, Tab back to actions] ".to_string()
-    } else {
-        " Monitor  [↑/↓ select action, Enter to run, Tab to scroll] ".to_string()
-    };
-    let border = if app.detail_focused || app.detail_fullscreen {
-        Color::Yellow
-    } else {
-        Color::Cyan
-    };
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(Style::default().fg(border)),
-        );
-    frame.render_widget(paragraph, area);
+    (lines, selected_line)
 }
 
 fn render_bar(pct: f32, width: usize) -> String {

@@ -665,6 +665,42 @@ impl SettingsSection {
     }
 }
 
+/// Left-hand sections of the Monitor tab. Mirrors `SettingsSection` /
+/// `InfoSection`: a section list on the left, the selected section's detail on
+/// the right. The `Actions` section hosts the interactive `MonitorAction` list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorSection {
+    Account,
+    Billing,
+    Telegram,
+    Accounts,
+    Projects,
+    Actions,
+}
+
+impl MonitorSection {
+    pub fn all() -> &'static [MonitorSection] {
+        &[
+            MonitorSection::Account,
+            MonitorSection::Billing,
+            MonitorSection::Telegram,
+            MonitorSection::Accounts,
+            MonitorSection::Projects,
+            MonitorSection::Actions,
+        ]
+    }
+    pub fn label(&self) -> &'static str {
+        match self {
+            MonitorSection::Account => "Connected account",
+            MonitorSection::Billing => "Billing (live)",
+            MonitorSection::Telegram => "Telegram bot & group",
+            MonitorSection::Accounts => "Claude accounts",
+            MonitorSection::Projects => "Project group",
+            MonitorSection::Actions => "Actions",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorAction {
     Login,
@@ -672,6 +708,7 @@ pub enum MonitorAction {
     TelegramDisconnect,
     ProvisioningSetup,
     RefreshBilling,
+    OpenDashboard,
 }
 
 impl MonitorAction {
@@ -682,6 +719,7 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect,
             MonitorAction::ProvisioningSetup,
             MonitorAction::RefreshBilling,
+            MonitorAction::OpenDashboard,
         ]
     }
     pub fn label(&self) -> &'static str {
@@ -691,6 +729,7 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect => "Disconnect Telegram bot   (removes ~/.omega/telegram.toml)",
             MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe → ~/.omega/provisioning)",
             MonitorAction::RefreshBilling => "Refresh billing now   (re-runs usage-monitor.sh)",
+            MonitorAction::OpenDashboard => "Open Dashboard   (OmegaMC Telegram dashboard — replaces aisb-master)",
         }
     }
     pub fn shortcut(&self) -> &'static str {
@@ -700,6 +739,17 @@ impl MonitorAction {
             MonitorAction::TelegramDisconnect => "D",
             MonitorAction::ProvisioningSetup => "P",
             MonitorAction::RefreshBilling => "B",
+            MonitorAction::OpenDashboard => "O",
+        }
+    }
+    /// Status message shown when the action is activated but has no wired
+    /// command yet. `None` = the action dispatches a real `Action` instead.
+    pub fn status_hint(&self) -> Option<&'static str> {
+        match self {
+            MonitorAction::OpenDashboard => Some(
+                "Dashboard: run `omega dashboard` (OmegaMC) — coming once configured",
+            ),
+            _ => None,
         }
     }
 }
@@ -712,7 +762,10 @@ pub struct App {
     pub rows: Vec<SessionRow>,
     pub selected: usize,
     pub menu_selected: usize,
+    /// Selected Monitor section (left list). Indexes `MonitorSection::all()`.
     pub monitor_selected: usize,
+    /// Cursor within the Monitor `Actions` section's `MonitorAction` list.
+    pub monitor_action_selected: usize,
     pub settings_selected: usize,
     /// Cursor within the focused Settings section's interactive field list.
     pub settings_field_selected: usize,
@@ -846,6 +899,7 @@ impl App {
             selected: 0,
             menu_selected: 0,
             monitor_selected: 0,
+            monitor_action_selected: 0,
             settings_selected: 0,
             settings_field_selected: 0,
             settings_confirm_pending: None,
@@ -1113,22 +1167,46 @@ impl App {
         MenuAction::all()[self.menu_selected]
     }
 
+    // ── Monitor section list (left panel) ───────────────────────────────────
     pub fn select_monitor_next(&mut self) {
-        let count = MonitorAction::all().len();
+        let count = MonitorSection::all().len();
         self.monitor_selected = (self.monitor_selected + 1) % count;
+        self.monitor_action_selected = 0;
+        self.detail_scroll = 0;
     }
 
     pub fn select_monitor_prev(&mut self) {
-        let count = MonitorAction::all().len();
+        let count = MonitorSection::all().len();
         self.monitor_selected = if self.monitor_selected == 0 {
             count - 1
         } else {
             self.monitor_selected - 1
         };
+        self.monitor_action_selected = 0;
+        self.detail_scroll = 0;
+    }
+
+    pub fn selected_monitor_section(&self) -> MonitorSection {
+        MonitorSection::all()[self.monitor_selected]
+    }
+
+    // ── Monitor action cursor (inside the Actions section) ───────────────────
+    pub fn select_monitor_action_next(&mut self) {
+        let count = MonitorAction::all().len();
+        self.monitor_action_selected = (self.monitor_action_selected + 1) % count;
+    }
+
+    pub fn select_monitor_action_prev(&mut self) {
+        let count = MonitorAction::all().len();
+        self.monitor_action_selected = if self.monitor_action_selected == 0 {
+            count - 1
+        } else {
+            self.monitor_action_selected - 1
+        };
     }
 
     pub fn selected_monitor_action(&self) -> MonitorAction {
-        MonitorAction::all()[self.monitor_selected]
+        MonitorAction::all()[self.monitor_action_selected]
     }
 
     pub fn select_settings_next(&mut self) {

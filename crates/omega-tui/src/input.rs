@@ -800,7 +800,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 return Action::None;
             }
             if app.tab == Tab::Monitor && app.detail_focused {
-                app.scroll_detail_down(1);
+                // Actions section → navigate the action cursor; other sections
+                // just scroll the detail panel.
+                if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                    app.select_monitor_action_next();
+                } else {
+                    app.scroll_detail_down(1);
+                }
                 return Action::None;
             }
             if app.tab == Tab::Projects && app.detail_focused {
@@ -840,7 +846,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 return Action::None;
             }
             if app.tab == Tab::Monitor && app.detail_focused {
-                app.scroll_detail_up(1);
+                if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                    app.select_monitor_action_prev();
+                } else {
+                    app.scroll_detail_up(1);
+                }
                 return Action::None;
             }
             if app.tab == Tab::Projects && app.detail_focused {
@@ -895,7 +905,29 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
-            Tab::Monitor => execute_monitor_action(app.selected_monitor_action()),
+            Tab::Monitor => {
+                // 2-column model: Enter on the section list focuses the detail
+                // panel. Once focused, Enter on the Actions section runs the
+                // selected action (or shows its status hint for placeholders).
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: detail (↑/↓ navigate, Enter run on Actions, Tab → list)".to_string(),
+                    );
+                    Action::None
+                } else if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                    let action = app.selected_monitor_action();
+                    if let Some(hint) = action.status_hint() {
+                        app.status_message = Some(hint.to_string());
+                        Action::None
+                    } else {
+                        execute_monitor_action(action)
+                    }
+                } else {
+                    Action::None
+                }
+            }
             Tab::Settings => {
                 // Enter on the section list → focus the right detail panel
                 // (same as Tab). Once focused, Enter activates the selected field.
@@ -1006,6 +1038,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('P') if app.tab == Tab::Monitor => Action::ProvisioningSetup,
         KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
+        KeyCode::Char('O') if app.tab == Tab::Monitor => {
+            // Placeholder action — show the honest status hint (no binary yet).
+            if let Some(hint) = MonitorAction::OpenDashboard.status_hint() {
+                app.status_message = Some(hint.to_string());
+            }
+            Action::None
+        }
 
         // Shortcut keys (work in any tab) — direct agent launchers
         KeyCode::Char('c') => {
@@ -1252,6 +1291,9 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
         MonitorAction::TelegramDisconnect => Action::TelegramDisconnect,
         MonitorAction::ProvisioningSetup => Action::ProvisioningSetup,
         MonitorAction::RefreshBilling => Action::RefreshBilling,
+        // Placeholder — no wired binary yet. The Enter/letter handlers show the
+        // status hint instead of calling this; this arm keeps the match total.
+        MonitorAction::OpenDashboard => Action::None,
     }
 }
 
