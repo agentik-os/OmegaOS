@@ -82,8 +82,19 @@ async function auditIds(): Promise<string[]> {
 }
 
 // ── command menu (setMyCommands list) ────────────────────────────────────────
+// OmegaMC dashboard API (read agents). Web password from omega-mc .env.
+const MC_PW = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/).OMEGA_MC_WEB_PASSWORD || "";
+async function mcAgents(): Promise<{ id: string; description?: string }[]> {
+  try {
+    const r = await fetch("http://localhost:8080/api/agents/definitions", { headers: { authorization: "Basic " + Buffer.from(":" + MC_PW).toString("base64") } });
+    const j = await r.json(); return Array.isArray(j) ? j : (j.agents || []);
+  } catch { return []; }
+}
+
 const MENU: [string, string][] = [
   ["menu", "Action hub — all commands as buttons"],
+  ["commands", "Show available commands"],
+  ["agents", "List the AISB agents (talk via the agents bot)"],
   ["dashboard", "Open the Mission Control dashboard (link)"],
   ["status", "Live system status"],
   ["sessions", "Active sessions — Status / Kill"],
@@ -101,12 +112,13 @@ const MENU: [string, string][] = [
 ];
 function menuKb() {
   return kb([
-    [{ text: "🖥 Dashboard", callback_data: "nav:dashboard" }, { text: "📊 Status", callback_data: "nav:status" }],
-    [{ text: "🗂 Sessions", callback_data: "nav:sessions" }, { text: "📁 Projects", callback_data: "nav:projects" }],
-    [{ text: "🔍 Audits", callback_data: "nav:audits" }, { text: "💳 Account", callback_data: "nav:account" }],
-    [{ text: "🧠 Model", callback_data: "nav:model" }, { text: "🧩 Skills", callback_data: "nav:skills" }],
-    [{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "👥 Group hub", callback_data: "nav:setupgroup" }],
-    [{ text: "🧹 Clean", callback_data: "nav:clean" }, { text: "🛑 Kill all", callback_data: "nav:killall" }],
+    [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
+    [{ text: "📊 Status", callback_data: "nav:status" }, { text: "🗂 Sessions", callback_data: "nav:sessions" }],
+    [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
+    [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
+    [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
+    [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
+    [{ text: "🛑 Kill all", callback_data: "nav:killall" }],
   ]);
 }
 const menuText = "<b>Ω OmegaOS — action hub</b>\nTap an action. Each runs on your server via the <code>omega</code> CLI.";
@@ -114,7 +126,14 @@ const menuText = "<b>Ω OmegaOS — action hub</b>\nTap an action. Each runs on 
 // ── views ────────────────────────────────────────────────────────────────────
 async function view(name: string): Promise<{ text: string; markup: any }> {
   switch (name) {
-    case "menu": case "help": return { text: menuText, markup: menuKb() };
+    case "menu": case "help": case "commands": return { text: menuText, markup: menuKb() };
+    case "agents": {
+      const ags = await mcAgents();
+      if (!ags.length) return { text: "<b>🤖 AISB agents</b>\nDashboard not reachable. Bring it up: <code>omega-mc-up</code>.", markup: kb([[back()]]) };
+      const rows: Btn[][] = [];
+      for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
+      return { text: `<b>🤖 AISB agents (${ags.length})</b>\nTap one for its role. To chat with an agent, use the agents bot (OmegaMC) — see /dashboard.`, markup: kb([...rows, [back()]]) };
+    }
     case "dashboard": {
       const { url, pw } = dashboardURL();
       const t = `<b>🖥 Mission Control</b>\nOpen: ${url}\n${pw ? `Password: <code>${esc(pw)}</code>\n` : ""}${url.includes("<server-ip>") || url.startsWith("http://") ? "\n⚠️ For secure external access, enable Tailscale (no exposed port)." : ""}`;
@@ -157,6 +176,7 @@ async function onCallback(data: string, chat: number, msgId: number) {
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, pre("Accounts", await omega(["provision", "groups"])), kb([[back("account")]]));
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("menu")]]));
   if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("menu")]]));
+  if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>To chat with this agent, use the OmegaMC agents bot.</i>`, kb([[back("agents")]])); }
   return edit(chat, msgId, menuText, menuKb());
 }
 
