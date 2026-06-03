@@ -13,9 +13,10 @@ Shows the OMEGA banner, then:
 2. Runs its `install.sh` — builds rmux + omega from source, sets up `~/.omega`,
    skills, the 13 AISB agents, rules, hooks, mosh, bun (~8 min on a fresh box)
 
-While it builds, enjoy the **Matrix rain** — or press **`g`** to play **Snake**
-(`m` returns to the rain). The OMEGA progress bar stays pinned at the bottom the
-whole time. `--plain` disables the animation and shows a simple progress bar.
+While it builds, the **Matrix rain is interactive**: type to inject bright
+glyph-drops into the rain, press **`space`** for a pulse, and watch each install
+phase name decode out of the katakana. The OMEGA progress bar stays pinned at the
+bottom the whole time. `--plain` disables the animation and shows a simple bar.
 
 ```bash
 npx omega-os --dir /opt/omega   # custom location

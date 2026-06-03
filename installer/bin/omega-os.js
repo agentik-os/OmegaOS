@@ -12,8 +12,10 @@
  *
  * While install.sh runs (~8 min on a fresh box) and we're on a real TTY, we
  * take over the screen with a full-screen experience: Matrix rain by default
- * (OmegaOS agents ARE Matrix characters) + a playable Snake mini-game, with
- * the OMEGA progress bar pinned at the bottom. install.sh output is parsed for
+ * (OmegaOS agents ARE Matrix characters): your keystrokes materialize as bright
+ * glyph-drops, [space] fires a pulse, and each install phase name decodes out of
+ * the katakana — with the OMEGA progress bar pinned at the bottom. install.sh
+ * output is parsed for
  * phase markers (to advance the bar) and buffered (for error reporting) but
  * never printed onto the animated screen.
  *
@@ -167,7 +169,7 @@ function runPlain(dir) {
 }
 
 /* =========================================================================
- * ANIMATED path — full-screen Matrix rain + Snake, OMEGA bar pinned bottom.
+ * ANIMATED path — full-screen interactive Matrix rain, OMEGA bar pinned bottom.
  * ========================================================================= */
 function runAnimated(dir) {
   const out = process.stdout;
@@ -192,7 +194,6 @@ function runAnimated(dir) {
   // ---- terminal / scene state -------------------------------------------
   let W = out.columns || 80;
   let H = out.rows || 24;
-  let scene = 'matrix';          // 'matrix' | 'snake'
   let rawEnabled = false;
   let cleaned = false;
   let child = null;
@@ -209,35 +210,35 @@ function runAnimated(dir) {
   // lore rotation
   let loreIdx = 0;
   let frame = 0;
+  // phase-decode banner: when install.sh advances a phase, the new label
+  // resolves out of random katakana, char by char, over ~1.2s (decodeDur frames).
+  let decode = null;     // { text, start }
+  let lastStep = -1;
+  const decodeDur = 26;  // frames (~1.2s at 22fps)
 
-  // snake state
-  let snake = null;
-  function initSnake() {
-    const cx = Math.floor(W / 2), cy = Math.floor((H - 3) / 2);
-    snake = {
-      body: [ { x: cx, y: cy }, { x: cx - 1, y: cy }, { x: cx - 2, y: cy }, { x: cx - 3, y: cy } ],
-      dir: { x: 1, y: 0 },
-      nextDir: { x: 1, y: 0 },
-      food: randFood([]),
-      score: 0,
-      stepEvery: 4,   // move every N frames (slower = bigger number)
-      tick: 0,
-    };
-    snake.food = randFood(snake.body);
+  // ── Interactive layer ───────────────────────────────────────────────────
+  // No game — YOU and the Matrix. Every printable key you press materializes
+  // as a BRIGHT glyph-drop falling down a column (your input, rendered in the
+  // rain). [space] fires a pulse: a band of columns flares white and fades.
+  let userDrops = []; // { x, y(float), speed, glyphs:[], len }
+  let pulses = [];    // { x, life }
+  let injectCol = 3;  // round-robin column so successive keys spread out
+  function injectGlyph(ch) {
+    const x = ((injectCol % Math.max(1, W)) + W) % Math.max(1, W);
+    injectCol += 11;
+    const len = 6 + ((Math.random() * 9) | 0);
+    const glyphs = [ch && ch.trim() ? ch : glyph()];
+    for (let i = 1; i < len; i++) glyphs.push(glyph());
+    userDrops.push({ x, y: 0, speed: 0.7 + Math.random() * 0.7, glyphs, len });
+    if (userDrops.length > 160) userDrops.shift();
   }
-  function randFood(body) {
-    // play area is rows 0..H-4 (bottom 3 rows are HUD), cols 0..W-1
-    const maxY = Math.max(1, H - 4);
-    for (let tries = 0; tries < 200; tries++) {
-      const x = 1 + Math.floor(Math.random() * Math.max(1, W - 2));
-      const y = 1 + Math.floor(Math.random() * Math.max(1, maxY - 1));
-      if (!body.some((s) => s.x === x && s.y === y)) return { x, y };
+  function firePulse() {
+    const x = (Math.random() * W) | 0;
+    for (let d = -3; d <= 3; d++) {
+      const px = x + d;
+      if (px >= 0 && px < W) pulses.push({ x: px, life: 14 - Math.abs(d) * 2 });
     }
-    return { x: 2, y: 2 };
-  }
-  function resetSnake() {
-    const s = snake.score; // unused on purpose; full reset per spec
-    initSnake();
+    if (pulses.length > 400) pulses.splice(0, pulses.length - 400);
   }
 
   // matrix glyphs: katakana U+30A0..U+30FF + latin + digits
@@ -278,18 +279,26 @@ function runAnimated(dir) {
 
   function render() {
     frame++;
-    let s = '\x1b[H'; // home
-    const playRows = H - 3; // rows 1..playRows are the scene; last 3 are HUD
-
-    if (scene === 'matrix') {
-      stepMatrix();
-      s += renderMatrix(playRows);
-    } else {
-      stepSnake();
-      s += renderSnake(playRows);
+    // Install advanced a phase → kick off the decode banner for the new label.
+    if (step !== lastStep) {
+      lastStep = step;
+      if (STEPS[step] && STEPS[step].label) decode = { text: STEPS[step].label, start: frame };
     }
+    let s = '\x1b[H'; // home
+    const playRows = H - 3; // rows 1..playRows are the rain; last 3 are HUD
+    stepMatrix();
+    stepInteractive(playRows);
+    s += renderMatrix(playRows);
+    s += renderDecodeBanner(playRows);
     s += renderHUD();
     out.write(s);
+  }
+
+  function stepInteractive(playRows) {
+    for (const d of userDrops) d.y += d.speed;
+    userDrops = userDrops.filter((d) => Math.floor(d.y) - d.len < playRows);
+    for (const p of pulses) p.life--;
+    pulses = pulses.filter((p) => p.life > 0);
   }
 
   function stepMatrix() {
@@ -336,6 +345,26 @@ function runAnimated(dir) {
         if (col.x >= 0 && col.x < W) grid[y][col.x] = colored;
       }
     }
+    // overlay [space] pulses: a column flares white→green and fades with life.
+    for (const p of pulses) {
+      if (p.x < 0 || p.x >= W) continue;
+      const c = p.life > 9 ? '\x1b[97m' : p.life > 5 ? '\x1b[38;5;120m' : '\x1b[32m';
+      for (let y = 0; y < playRows; y++) grid[y][p.x] = c + glyph() + '\x1b[0m';
+    }
+    // overlay user keystroke drops: bright white head, your typed glyph leading.
+    for (const d of userDrops) {
+      const head = Math.floor(d.y);
+      for (let k = 0; k < d.len; k++) {
+        const y = head - k;
+        if (y < 0 || y >= playRows || d.x < 0 || d.x >= W) continue;
+        const ch = d.glyphs[k] || glyph();
+        let colored;
+        if (k === 0) colored = '\x1b[97m' + ch + '\x1b[0m';          // white head (your key)
+        else if (k <= 2) colored = '\x1b[38;5;231m' + ch + '\x1b[0m'; // bright
+        else colored = '\x1b[38;5;120m' + ch + '\x1b[0m';            // bright green trail
+        grid[y][d.x] = colored;
+      }
+    }
     // emit rows (rows are 1-indexed on screen; scene starts at row 1)
     let buf = '';
     for (let y = 0; y < playRows; y++) {
@@ -347,54 +376,23 @@ function runAnimated(dir) {
     return buf;
   }
 
-  function renderSnake(playRows) {
-    // draw blank rows then overlay snake + food. play area = rows 1..playRows.
-    let buf = '';
-    // clear scene region
-    for (let y = 0; y < playRows; y++) {
-      buf += '\x1b[' + (y + 1) + ';1H' + ' '.repeat(W) + '\x1b[K';
+  // The current phase label resolves out of random katakana, char by char.
+  function renderDecodeBanner(playRows) {
+    if (!decode) return '';
+    const age = frame - decode.start;
+    if (age >= decodeDur) { decode = null; return ''; }
+    const text = decode.text;
+    const revealed = (text.length * age) / decodeDur; // chars resolved so far
+    let shown = '';
+    for (let i = 0; i < text.length; i++) {
+      shown += i < revealed
+        ? '\x1b[38;5;120m' + text[i] + '\x1b[0m'   // resolved (bright green)
+        : '\x1b[38;5;28m' + glyph() + '\x1b[0m';   // still scrambling (dim)
     }
-    // border hint (simple): draw food
-    const f = snake.food;
-    if (f.y >= 1 && f.y <= playRows) {
-      buf += '\x1b[' + f.y + ';' + (f.x) + 'H' + '\x1b[38;5;208m◆\x1b[0m';
-    }
-    // body
-    for (let i = 0; i < snake.body.length; i++) {
-      const seg = snake.body[i];
-      if (seg.y < 1 || seg.y > playRows || seg.x < 1 || seg.x > W) continue;
-      const color = i === 0 ? '\x1b[97m' : '\x1b[38;5;120m';
-      buf += '\x1b[' + seg.y + ';' + seg.x + 'H' + color + '█\x1b[0m';
-    }
-    return buf;
-  }
-
-  function stepSnake() {
-    snake.tick++;
-    if (snake.tick < snake.stepEvery) return;
-    snake.tick = 0;
-
-    // apply queued direction (prevents 180° reversal applied below)
-    snake.dir = snake.nextDir;
-    const head = snake.body[0];
-    const nx = head.x + snake.dir.x;
-    const ny = head.y + snake.dir.y;
-    const playRows = H - 3;
-
-    // wall collision → reset (NEVER affects install)
-    if (nx < 1 || nx > W || ny < 1 || ny > playRows) { resetSnake(); return; }
-    // self collision → reset
-    if (snake.body.some((seg) => seg.x === nx && seg.y === ny)) { resetSnake(); return; }
-
-    snake.body.unshift({ x: nx, y: ny });
-    if (nx === snake.food.x && ny === snake.food.y) {
-      snake.score++;
-      snake.food = randFood(snake.body);
-      // step up speed slightly with score (lower bound 2 frames/move)
-      if (snake.score % 4 === 0 && snake.stepEvery > 2) snake.stepEvery--;
-    } else {
-      snake.body.pop();
-    }
+    const visible = 2 + text.length; // "▸ " + text
+    const row = Math.max(1, Math.floor(playRows / 2));
+    const colStart = Math.max(1, Math.floor((W - visible) / 2));
+    return '\x1b[' + row + ';' + colStart + 'H\x1b[97m▸ \x1b[0m' + shown;
   }
 
   function renderHUD() {
@@ -415,29 +413,21 @@ function runAnimated(dir) {
     let hud = '\x1b[' + rowBar + ';1H' + pad(barColored, barVisible) + '\x1b[K';
 
     // --- middle line ---
-    let mid;
-    let midVisible;
-    if (scene === 'matrix') {
-      const tip = LORE[loreIdx % LORE.length];
-      // rotate lore roughly every ~4s (22fps * 4 ≈ 88 frames)
-      if (frame % 88 === 0) loreIdx++;
-      mid = '\x1b[2;32m' + tip + '\x1b[0m';
-      midVisible = tip.length;
-    } else {
-      const t = 'SNAKE  score: ' + snake.score;
-      mid = '\x1b[38;5;120m' + 'SNAKE\x1b[0m  score: \x1b[1m' + snake.score + '\x1b[0m';
-      midVisible = t.length;
-    }
+    const tip = LORE[loreIdx % LORE.length];
+    // rotate lore roughly every ~4s (22fps * 4 ≈ 88 frames)
+    if (frame % 88 === 0) loreIdx++;
+    const mid = '\x1b[2;32m' + tip + '\x1b[0m';
+    const midVisible = tip.length;
     hud += '\x1b[' + rowMid + ';1H' + pad(mid, midVisible) + '\x1b[K';
 
     // --- bottom controls + timer ---
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
     const mm = String(Math.floor(elapsed / 60)).padStart(2, '0');
     const ss = String(elapsed % 60).padStart(2, '0');
-    const ctrlPlain = '[g] snake  [m] matrix  [Ctrl-C] cancel';
+    const ctrlPlain = 'type to inject glyphs  ·  [space] pulse  ·  [Ctrl-C] cancel';
     const timerPlain = '⏱ ' + mm + ':' + ss;
     const gap = Math.max(2, W - ctrlPlain.length - timerPlain.length);
-    const ctrlColored = '\x1b[90m[\x1b[0m\x1b[1mg\x1b[0m\x1b[90m] snake  [\x1b[0m\x1b[1mm\x1b[0m\x1b[90m] matrix  [\x1b[0m\x1b[1mCtrl-C\x1b[0m\x1b[90m] cancel\x1b[0m';
+    const ctrlColored = '\x1b[90mtype to inject glyphs  ·  [\x1b[0m\x1b[1mspace\x1b[0m\x1b[90m] pulse  ·  [\x1b[0m\x1b[1mCtrl-C\x1b[0m\x1b[90m] cancel\x1b[0m';
     const timerColored = '\x1b[36m' + timerPlain + '\x1b[0m';
     const botVisible = ctrlPlain.length + gap + timerPlain.length;
     hud += '\x1b[' + rowBot + ';1H' + pad(ctrlColored + ' '.repeat(gap) + timerColored, botVisible) + '\x1b[K';
@@ -473,33 +463,16 @@ function runAnimated(dir) {
         process.exit(130);
         return;
       }
-      if (ch === 'g' || ch === 'G') { if (scene !== 'snake') { initSnake(); scene = 'snake'; } continue; }
-      if (ch === 'm' || ch === 'M') { scene = 'matrix'; continue; }
-      // arrow keys: \x1b[A/B/C/D
-      if (ch === '\x1b' && str[i + 1] === '[') {
-        const code = str[i + 2];
-        steer(code);
-        i += 2;
+      // Swallow escape sequences (arrow keys etc.) so they don't inject junk.
+      if (ch === '\x1b') {
+        if (str[i + 1] === '[') i += 2;
         continue;
       }
-      // WASD
-      if (ch === 'w' || ch === 'W') steer('A');
-      else if (ch === 's' || ch === 'S') steer('B');
-      else if (ch === 'd' || ch === 'D') steer('C');
-      else if (ch === 'a' || ch === 'A') steer('D');
+      if (ch === ' ') { firePulse(); continue; }        // [space] → pulse
+      // Any other printable key materializes as a bright drop in the rain.
+      const code = ch.charCodeAt(0);
+      if (code >= 0x20 && code !== 0x7f) injectGlyph(ch);
     }
-  }
-  function steer(code) {
-    if (scene !== 'snake' || !snake) return;
-    let nd = null;
-    if (code === 'A') nd = { x: 0, y: -1 };       // up
-    else if (code === 'B') nd = { x: 0, y: 1 };   // down
-    else if (code === 'C') nd = { x: 1, y: 0 };   // right
-    else if (code === 'D') nd = { x: -1, y: 0 };  // left
-    if (!nd) return;
-    // prevent 180° reversal (compare against current committed dir)
-    if (nd.x === -snake.dir.x && nd.y === -snake.dir.y) return;
-    snake.nextDir = nd;
   }
 
   // ---- resize ------------------------------------------------------------
@@ -507,7 +480,6 @@ function runAnimated(dir) {
     W = out.columns || 80;
     H = out.rows || 24;
     buildColumns();
-    if (scene === 'snake') initSnake();
   }
 
   // ---- enter the experience ---------------------------------------------
@@ -591,7 +563,7 @@ function main() {
     process.stdout.write('    --plain        disable the full-screen animation (simple progress bar only)\n');
     process.stdout.write('    --help         this help\n\n');
     process.stdout.write('  Installs OmegaOS from ' + REPO + '\n  then runs its install.sh (builds rmux + omega, ~8 min on a fresh box).\n');
-    process.stdout.write('  ' + gray('While it builds, enjoy the Matrix rain — or press [g] to play Snake.') + '\n\n');
+    process.stdout.write('  ' + gray('While it builds, the Matrix rain is interactive — type to inject glyphs, [space] to pulse.') + '\n\n');
     return;
   }
 
