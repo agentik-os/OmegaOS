@@ -84,6 +84,11 @@ if grep -q "/etc/omega/rmux.conf.omega" install.sh && grep -q "/etc/rmux.conf" i
 #     for root + future users (what the Termius mosh -l LANG=… relies on).
 if grep -q "ensure_utf8_locale" install.sh; then ok "UTF-8 locale guaranteed by install.sh"; else bad "UTF-8 locale guarantee missing from install.sh"; fi
 
+# 4i. Claude Code set to normal-screen so the full conversation scrolls in the
+#     rmux panel (flows into the 500k scrollback) instead of Claude's fullscreen
+#     buffer. Written to the shell env file by install.sh for every session.
+if grep -q "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" install.sh; then ok "Claude normal-screen (full scroll in rmux panel) wired by install.sh"; else bad "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN not set by install.sh"; fi
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 

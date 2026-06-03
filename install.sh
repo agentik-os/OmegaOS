@@ -794,6 +794,20 @@ else
     ok "PATH already includes $INSTALL_DIR"
 fi
 
+# Claude Code: render in the terminal's NORMAL screen, not the alternate screen.
+# Inside an rmux pane this lets the WHOLE conversation flow into rmux's scrollback
+# (history-limit 500000) so you can scroll the full session in the panel — instead
+# of Claude's fullscreen buffer capping the scrollback at ~one screen. Set in the
+# env file so EVERY Claude Code invocation (any pane, login or not) inherits it.
+# Tradeoff: no fixed-position fullscreen UI (Claude becomes a scrolling transcript).
+if ! grep -qF 'CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN' "$ENV_FILE" 2>/dev/null; then
+    { echo ""; echo "# OmegaOS — full conversation scrolls in the rmux panel"; \
+      echo "export CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1"; } >> "$ENV_FILE"
+    ok "Claude Code → normal-screen (full conversation scrolls in the rmux panel)"
+else
+    ok "Claude Code normal-screen already set"
+fi
+
 # Add omega alias for session manager (interactive rc)
 ALIAS_LINE='alias om="omega menu"'
 if ! grep -qF 'alias om=' "$RC_FILE" 2>/dev/null; then
