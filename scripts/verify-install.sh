@@ -112,7 +112,7 @@ else
 fi
 
 # 9. Self-containment assets (reset-survival): persistent service, hooks, identity.
-if [ -f config/systemd/omega-telegram.service ] && grep -q "omega-telegram.service" install.sh; then ok "persistent Telegram service shipped + installed"; else bad "omega-telegram.service not shipped/wired in install.sh"; fi
+if [ -f scripts/omega-mc-up.sh ] && grep -q "omega-mc-up.sh" install.sh && grep -q "agentik-telegram" install.sh; then ok "OmegaMC Telegram control plane shipped + wired (omega-mc-up + agentik-telegram clone)"; else bad "OmegaMC (omega-mc-up.sh / agentik-telegram clone) not shipped/wired in install.sh"; fi
 if ls scripts/hooks/*.sh >/dev/null 2>&1 && grep -q "scripts/hooks" install.sh; then ok "tracking + verify hooks shipped + installed"; else bad "hooks not shipped/wired"; fi
 if [ -f agents/identity/SOUL.template.md ] && grep -q "SOUL.template" install.sh; then ok "SOUL identity template shipped + installed"; else bad "SOUL template not shipped/wired"; fi
 if grep -q "usage --check" install.sh; then ok "native billing cron (omega usage --check) scheduled"; else bad "native billing cron missing from install.sh"; fi
