@@ -16,9 +16,9 @@ repository = "https://github.com/agentik-os/OmegaOS"
 omega-core = { path = "crates/omega-core" }
 omega-tui = { path = "crates/omega-tui" }
 
-rmux-sdk = { git = "https://github.com/agentik-os/rmux", rev = "6301d12", features = ["regex"] }
-rmux-proto = { git = "https://github.com/agentik-os/rmux", rev = "6301d12" }
-ratatui-rmux = { git = "https://github.com/agentik-os/rmux", rev = "6301d12" }
+rmux-sdk = { git = "https://github.com/agentik-os/rmux", rev = "0e4abb2", features = ["regex"] }
+rmux-proto = { git = "https://github.com/agentik-os/rmux", rev = "0e4abb2" }
+ratatui-rmux = { git = "https://github.com/agentik-os/rmux", rev = "0e4abb2" }
 
 tokio = { version = "1.48", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }

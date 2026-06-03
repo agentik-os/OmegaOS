@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "ratatui-rmux"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "ratatui",
  "rmux-sdk",
@@ -1394,7 +1394,7 @@ dependencies = [
 [[package]]
 name = "rmux-ipc"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "libc",
  "rmux-os",
@@ -1407,7 +1407,7 @@ dependencies = [
 [[package]]
 name = "rmux-os"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "libc",
  "rmux-types",
@@ -1418,7 +1418,7 @@ dependencies = [
 [[package]]
 name = "rmux-proto"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "bincode",
  "rmux-types",
@@ -1429,7 +1429,7 @@ dependencies = [
 [[package]]
 name = "rmux-sdk"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "libc",
  "regex",
@@ -1446,7 +1446,7 @@ dependencies = [
 [[package]]
 name = "rmux-types"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=6301d12#6301d12b7db85ebeea2277a19e43bda8675622a9"
+source = "git+https://github.com/agentik-os/rmux?rev=0e4abb2#0e4abb21f32274a9f2ade88c158d8f4b09414fe1"
 dependencies = [
  "serde",
 ]
