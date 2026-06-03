@@ -62,7 +62,7 @@ echo "[$(date -Iseconds)] audit-runner $AUDIT on $PROJECT_PATH" >> "$LOG"
 # ─────────────────────────────────────────────────────────────────
 # Phase 1 — Programmatic gather
 # ─────────────────────────────────────────────────────────────────
-GATHER_SCRIPT="$HOME/.aisb/lib/audit-gather/${AUDIT}.sh"
+GATHER_SCRIPT="$HOME/.omega/lib/audit-gather/${AUDIT}.sh"
 if [ -x "$GATHER_SCRIPT" ]; then
     echo "[$(date -Iseconds)] PHASE 1 gather: $GATHER_SCRIPT" >> "$LOG"
     "$GATHER_SCRIPT" "$ARTIFACTS/raw" "$PROJECT_PATH" "$FILES" "$URL" 2>&1 | tee -a "$LOG"
@@ -75,7 +75,7 @@ fi
 # ─────────────────────────────────────────────────────────────────
 # Phase 2 — Build evidence-summary.json from raw/
 # ─────────────────────────────────────────────────────────────────
-SUMMARY_SCRIPT="$HOME/.aisb/lib/audit-gather/${AUDIT}-summarize.py"
+SUMMARY_SCRIPT="$HOME/.omega/lib/audit-gather/${AUDIT}-summarize.py"
 SUMMARY_JSON="$ARTIFACTS/evidence-summary.json"
 if [ -x "$SUMMARY_SCRIPT" ]; then
     "$SUMMARY_SCRIPT" "$ARTIFACTS/raw" > "$SUMMARY_JSON" 2>>"$LOG" || {

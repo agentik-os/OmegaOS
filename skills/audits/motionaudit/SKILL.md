@@ -1155,7 +1155,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: ABORT for backend/library/CLI (no motion surface to audit).
 - ✅ **Output contract verification** — emits `audits/.motionaudit/verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `iterations.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Output gate runs at end; missing/malformed files = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.motionaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.motionaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings

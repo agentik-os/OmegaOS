@@ -82,8 +82,8 @@ EXAMPLES:
   → TARGETED: crontab + systemd timers only
   → Full depth on scheduling phases
 
-  "/automationaudit ~/.aisb/"
-  → SCOPED: only automations under ~/.aisb/
+  "/automationaudit ~/.omega/"
+  → SCOPED: only automations under ~/.omega/
   → Scripts, daemons, dispatchers in that tree
 
   "/automationaudit the deploy pipeline"
@@ -430,7 +430,7 @@ For EVERY .sh and .py script discovered:
 1. LOG EXISTENCE & QUALITY
    - Every automation must write to a log file. No exceptions.
    - Log format: timestamp + level + message (not just freeform echo)
-   - Log location: centralized or scattered? (/var/log, ~/.aisb/logs, project/logs)
+   - Log location: centralized or scattered? (/var/log, ~/.omega/logs, project/logs)
    - Are logs human-readable AND machine-parseable?
 
 2. LOG ROTATION
@@ -969,7 +969,7 @@ Each fix task:
 {
   "id": "FIX-001",
   "finding": "Secret API_KEY hardcoded in deploy-hook.sh line 42",
-  "file": "~/.aisb/lib/deploy-hook.sh",
+  "file": "~/.omega/lib/deploy-hook.sh",
   "line": 42,
   "fix": "Move to .env, source .env in script, add .env to .gitignore",
   "status": "pending",

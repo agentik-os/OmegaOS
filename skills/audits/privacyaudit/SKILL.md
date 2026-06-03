@@ -168,7 +168,7 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "file": "...", "line": 4
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh privacy "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh privacy "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
@@ -886,7 +886,7 @@ PRE-FIX ANALYSIS (before writing ANY code):
 POST-FIX VERIFICATION (after writing code, BEFORE commit):
   a. SYNTAX CHECK — `npx tsc --noEmit` / `bash -n` / `python3 -c "import ast; ast.parse(...)"`.
   b. IMPORT/LOAD CHECK — module loads without error.
-  c. RUNTIME SMOKE TEST — start the service briefly OR `~/.aisb/lib/safe-npm-build.sh`; verify no crash on init.
+  c. RUNTIME SMOKE TEST — start the service briefly OR `~/.omega/lib/safe-npm-build.sh`; verify no crash on init.
   d. BEHAVIORAL PROOF (privacy-specific) — re-run the falsification that found the issue:
      → tracker gated? load prod fresh, confirm it no longer fires pre-consent.
      → erasure added? run it on a test user, grep every store, confirm 0 PII remains.
@@ -975,7 +975,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (consent | erasure | sharing | cookies | encryption | minimization | policy | dsar).
 - ✅ **Non-UI context gate** — runs on web, API, backend, or data-only targets; cookie/tracking phases (6) auto-skip + excluded from denominator on headless/API-only targets.
 - ✅ **Output contract verification** — emits `verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `before-after.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Missing/malformed = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.aisb/bin/audit-notify.sh`.
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.omega/bin/audit-notify.sh`.
 - ✅ **Discovery drift check** — on resumed runs, if `discovery/` > 1h old, re-verify inventory or abort with user-confirm.
 - ✅ **Self-telemetry** — `telemetry.json` at completion (duration, tokens, phases, fixes, pii_fields_count, trackers_pre_consent, model, preamble_version).
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged.
@@ -995,7 +995,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 
 **Live-probe discipline:**
 - Rate-limit any live requests to the target (≤10 req/s). Abort on 3 consecutive 429/503.
-- Self-introspection guard: if target is `~/.claude/`, `~/.aisb/`, or system root → ABORT ("audit a product, not the agent infra").
+- Self-introspection guard: if target is `~/.claude/`, `~/.omega/`, or system root → ABORT ("audit a product, not the agent infra").
 
 ### /metaudit Compliance Badge
 

@@ -270,7 +270,7 @@ When two audits produce findings on the same file:line or same concern:
 
 ## 7. TELEGRAM PROGRESS CHANNEL (MANDATORY)
 
-Every audit sends structured notifications. Use helper: `~/.aisb/bin/audit-notify.sh <audit> <event> <details>`.
+Every audit sends structured notifications. Use helper: `~/.omega/bin/audit-notify.sh <audit> <event> <details>`.
 
 | Event | Timing | Content |
 |-------|--------|---------|

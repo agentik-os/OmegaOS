@@ -69,11 +69,20 @@ bot for remote control.
 │       ├── oracle.md / morpheus.md / seraph.md
 │       └── ... (13 total)
 │
-├── skills/                        Cross-LLM skills
+├── skills/                        OmegaOS-shipped skills (audits, design, planner…)
 │   ├── pdfgen/                    PDF generator (Next.js + Playwright)
-│   └── audits/                    23 Quality Arsenal audits
+│   └── audits/                    Quality Arsenal audits
 │
-├── docs/                          Reference docs
+├── lib/                          Audit runtime (consolidated — NO ~/.aisb)
+│   ├── audit-runner.sh           hybrid audit orchestrator
+│   ├── audit-gather/             per-audit gatherers (.sh + -summarize.py)
+│   └── safe-npm-build.sh         build mutex
+├── bin/                          audit-notify.sh + helper binaries
+├── repos/                        ← cloned GitHub repos (repos/omega-mc = dashboard)
+├── tools/                        ← third-party tools an agent installs
+├── prompts/                      runtime prompt scratch (oracle/worker dispatch)
+│
+├── docs/                          Reference docs (this file)
 ├── projects/<slug>/               Per-project overrides
 │
 ├── state/                         Runtime (not in git)
@@ -85,6 +94,24 @@ bot for remote control.
 ├── logs/                          Session logs
 └── audit/                         Audit results
 ```
+
+### Placement convention — where new things go
+
+One home, everything ordered. When an agent/LLM installs something, it lands here:
+
+| Installing… | Goes to | How |
+|---|---|---|
+| OmegaOS skill (ships w/ product) | `~/.omega/skills/<name>/` | add to repo `skills/`; install.sh copies + makes `/<name>` |
+| Global skill for every agent (SST) | `~/.claude/skills/<name>/` | `bunx skills add <repo> --skill <name> -g` |
+| A GitHub repo (service/dep) | `~/.omega/repos/<name>/` | `git clone … ~/.omega/repos/<name>` |
+| A third-party tool/binary | `~/.omega/tools/<name>/` + symlink in `~/.local/bin` | install there, link the entrypoint |
+| An LLM provider CLI | provider default (npm-global / `~/.local/bin`) | `omega install <provider>` (on-demand) |
+| Runtime scratch / state | `~/.omega/state` or `~/.omega/logs` | never the repo, never `~` root |
+
+**No `~/.aisb` dual-home** — the audit runtime + state were consolidated into
+`~/.omega/{lib,bin,state}`. Secrets live only in `~/.omega/credentials` /
+`~/.omega/provisioning` (gitignored). Install parity (Law 0): if a fresh
+`git clone && ./install.sh` wouldn't reproduce it, wire it into `install.sh`.
 
 ---
 

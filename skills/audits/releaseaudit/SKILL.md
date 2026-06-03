@@ -191,7 +191,7 @@ Format: `{"total": 31, "done": 9, "failed": 1, "skipped": 2, "remaining": 19, "c
 ### 0.1 Run the gather (or gather manually if no runner)
 
 ```bash
-~/.aisb/lib/audit-runner.sh release "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh release "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \

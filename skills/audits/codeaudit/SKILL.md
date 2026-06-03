@@ -190,14 +190,14 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "file": "...", "line": 4
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh code "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh code "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/code.sh` which runs:
+This invokes `~/.omega/lib/audit-gather/code.sh` which runs:
 ESLint, TypeScript --noEmit, ts-prune (unused exports), depcheck (unused/missing npm deps), madge (circular deps), ruff/flake8 (Python), vulture (Python dead code), large-file scanner
 
 Output is written to:
@@ -243,7 +243,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
-   `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
+   `~/.omega/state/hinge-points-<ticket>.json` (or computed via
    `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
@@ -352,7 +352,7 @@ Phantoms = references to entities that were deleted, moved, renamed, or never cr
    Every file path, URL, command, function name mentioned in docs/comments
    → Does it exist? Is it current? Was it renamed?
    → README says "run ./setup.sh" — does setup.sh exist?
-   → CLAUDE.md references ~/.aisb/lib/foo.sh — does foo.sh exist?
+   → CLAUDE.md references ~/.omega/lib/foo.sh — does foo.sh exist?
 
 7. PHANTOM TYPES (TypeScript/Python typing)
    Every type reference in annotations/generics
@@ -1028,7 +1028,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Any deleted files still open? (can't reclaim disk space)
 
 4. DISK FORENSICS
-   du -sh /tmp/aisb-* ~/.aisb/ .hunt/ → temp file accumulation
+   du -sh /tmp/aisb-* ~/.omega/ .hunt/ → temp file accumulation
    → Orphan temp files? (never cleaned up)
    → Log rotation working? (logs growing without bound?)
    → Backup files accumulating? (.backup, .bak, .old)
@@ -1283,7 +1283,7 @@ read:
 
 ```bash
 # If a hinge file already exists for this ticket, use it:
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=code --user-need="$USER_NEED_QUOTE" \
@@ -1785,7 +1785,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /codeaudit runs on ALL project types (primary owner of code-quality for CLIs, libraries, backends).
 - ✅ **Output contract verification** — emits `audits/.codeaudit/verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `iterations.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Output gate runs at end; missing/malformed files = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.codeaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.codeaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings

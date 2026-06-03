@@ -179,14 +179,14 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "file": "...", "line": 4
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh i18n "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh i18n "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/i18n.sh` which runs (gracefully skipping any tool absent):
+This invokes `~/.omega/lib/audit-gather/i18n.sh` which runs (gracefully skipping any tool absent):
 i18next-parser / formatjs extract (catalog key extraction), eslint-plugin-i18next or
 eslint-plugin-formatjs (`no-literal-string` rule for hardcoded strings), `jsonlint` on every
 catalog file, a key-diff across locale catalogs (missing/extra keys per locale), a grep census of

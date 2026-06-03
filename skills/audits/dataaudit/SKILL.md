@@ -143,14 +143,14 @@ audits/.dataaudit/
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh data "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh data "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/data.sh` which runs:
+This invokes `~/.omega/lib/audit-gather/data.sh` which runs:
 Convex schema parse, Prisma validate + format-check, Drizzle/TypeORM/Mongoose schema scanner, migration directory inventory, SQL file scanner with CREATE TABLE/INDEX counts, SQLite integrity_check, TypeScript type/interface inventory
 
 Output is written to:
@@ -196,7 +196,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
-   `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
+   `~/.omega/state/hinge-points-<ticket>.json` (or computed via
    `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
@@ -816,7 +816,7 @@ read:
 
 ```bash
 # If a hinge file already exists for this ticket, use it:
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=data --user-need="$USER_NEED_QUOTE" \
@@ -1209,7 +1209,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /dataaudit runs on any project with a DB. N/A for projects without data persistence.
 - ✅ **Output contract verification** — emits `audits/.dataaudit/verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `iterations.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Output gate runs at end; missing/malformed files = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.dataaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.dataaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings

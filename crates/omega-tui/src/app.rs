@@ -753,7 +753,7 @@ impl MonitorAction {
     /// Settings install/uninstall actions use). Absent → return the honest
     /// install instructions so the operator can clone it.
     pub fn resolve_open_dashboard() -> DashboardLaunch {
-        let dir = omega_core::config::omega_dir().join("omega-mc");
+        let dir = omega_core::config::omega_dir().join("repos").join("omega-mc");
         let dir_str = dir.to_string_lossy().to_string();
         // The directory alone isn't proof of a usable clone; require the .git
         // marker install.sh checks (a failed clone is `rm -rf`'d, but a partial

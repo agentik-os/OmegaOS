@@ -156,7 +156,7 @@ The confirmation step depends on WHO is running this:
   ```
 
   If the detected scope is genuinely ambiguous with no safe default, write the
-  block-file (`~/.aisb/state/worker-blocked-<session>.json`) with the candidate
+  block-file (`~/.omega/state/worker-blocked-<session>.json`) with the candidate
   plan as the fallback and execute that fallback — never idle at a prompt.
 
 ## Full Audit Mode

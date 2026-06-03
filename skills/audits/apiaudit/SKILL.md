@@ -146,14 +146,14 @@ audits/.apiaudit/
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh api "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh api "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/api.sh` which runs:
+This invokes `~/.omega/lib/audit-gather/api.sh` which runs:
 OpenAPI/Swagger discovery + swagger-cli validate, route discovery (Next.js app+pages, Express/Hono, FastAPI/Flask/Django), endpoint health probe (/, /health, /api), auth-import scanner (NextAuth/Clerk/JWT/passport/Convex)
 
 Output is written to:
@@ -199,7 +199,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
-   `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
+   `~/.omega/state/hinge-points-<ticket>.json` (or computed via
    `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
@@ -764,7 +764,7 @@ read:
 
 ```bash
 # If a hinge file already exists for this ticket, use it:
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=api --user-need="$USER_NEED_QUOTE" \
@@ -1160,7 +1160,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /apiaudit is PRIMARY audit for backend-only APIs. ABORT for pure frontend (no API surface).
 - ✅ **Output contract verification** — emits `audits/.apiaudit/verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `iterations.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Output gate runs at end; missing/malformed files = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.apiaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.apiaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings
@@ -1358,7 +1358,7 @@ After Phase 0 (programmatic gather) and Phase 0 RECONNAISSANCE complete (these s
 | **T4 — Ecosystem & Contract Hygiene** | 10 Versioning, 11 Documentation, 15 Webhooks, 17 Content Negotiation, 18 Deprecation | Spec/lifecycle concerns, no overlap with security or per-request ops | `versioning.md`, `documentation.md`, `webhooks.md`, `content-negotiation.md`, `deprecation.md` |
 
 Rules for the fan-out:
-- **Each track is a Workflow sub-task** with its own fresh context, handed: the path to `evidence-summary.json`, the hinge file (`~/.aisb/state/hinge-points-<ticket>.json`), the REST-vs-GraphQL mode (from the v1.2 mode-detection block), and its exact phase list + the report files it (and only it) may write.
+- **Each track is a Workflow sub-task** with its own fresh context, handed: the path to `evidence-summary.json`, the hinge file (`~/.omega/state/hinge-points-<ticket>.json`), the REST-vs-GraphQL mode (from the v1.2 mode-detection block), and its exact phase list + the report files it (and only it) may write.
 - **T1 always runs** even on the smallest scope — auth/authorization is the hinge; it is never collapsed into another track and never skipped.
 - Tracks sharing a file MUST serialize; here the table is engineered so they never do. If a scoped run (`--files=`/`--focus=`) makes two tracks target the same handler file, **merge them into one track** rather than letting two writers collide.
 - Fan-out is **bounded by budget** (R-BUDGET, default 500K) — if approaching the cap, run T1 first to completion, then the rest; never silently drop a track.

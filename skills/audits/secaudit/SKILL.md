@@ -157,14 +157,14 @@ audits/.secaudit/
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh sec "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh sec "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/sec.sh` which runs:
+This invokes `~/.omega/lib/audit-gather/sec.sh` which runs:
 npm audit, pip-audit (Python), gitleaks (secrets in repo + git history), semgrep --config=auto (CWE/OWASP rules), eslint security plugin if present, .env file inventory + git-tracked classification, HTTP security-header probe
 
 Output is written to:
@@ -210,7 +210,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
-   `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
+   `~/.omega/state/hinge-points-<ticket>.json` (or computed via
    `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
@@ -1244,7 +1244,7 @@ read:
 
 ```bash
 # If a hinge file already exists for this ticket, use it:
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=sec --user-need="$USER_NEED_QUOTE" \
@@ -1651,7 +1651,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /secaudit runs on any target (web, API, binary, library). Phase scoping adjusts per target type.
 - ✅ **Output contract verification** — emits `audits/.secaudit/verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `iterations.md`, `progress.json`, `telemetry.json`, `fix-log.md`. Output gate runs at end; missing/malformed files = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` events via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `audits/.secaudit/discovery/` > 1h old, re-verify inventory or abort with user-confirm
 - ✅ **Self-telemetry** — `audits/.secaudit/telemetry.json` emitted at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged as findings
@@ -1731,7 +1731,7 @@ Run `/metaudit --focus arsenal` to verify this audit against the 11-point preamb
 ```
 ABORT targets (hardcoded, no override):
   - ~/.claude/ (any subpath)
-  - ~/.aisb/ (any subpath)
+  - ~/.omega/ (any subpath)
   - ~/.godmode/ (any subpath)
   - file:// URLs pointing to system areas
   - localhost:0 - 1023 (privileged ports, likely system services)
@@ -1851,7 +1851,7 @@ whole fan-out, not per-track:** the global cap is 10 req/s against the target (a
 not become 40 req/s). Share a token-bucket / serialize the live-HTTP probing phases (T2 header probes,
 T3 auth replay, T4 SSRF/brute-force) if they target the same host; purely-static tracks (grep/AST over
 source) parallelize freely with no rate concern. Abort the whole fan-out on 3 consecutive 429/503
-(preamble §12). Self-pentest ABORT targets (the v1.2 hardcoded list — `~/.claude/`, `~/.aisb/`, the VPS)
+(preamble §12). Self-pentest ABORT targets (the v1.2 hardcoded list — `~/.claude/`, `~/.omega/`, the VPS)
 are checked **before** any track launches.
 
 ### 2. ADVERSARIALLY VERIFY every finding (≥2-of-3 independent lenses)

@@ -181,20 +181,27 @@ else
 fi
 
 # 10c. Quality Arsenal RUNTIME parity. The audit SKILLs hard-code the hybrid
-#      orchestrator by absolute path (~/.aisb/lib/audit-runner.sh + audit-gather/ +
-#      ~/.aisb/bin/audit-notify.sh). 10b is blind to the ~/.aisb namespace, so this
-#      gate proves both halves of parity: (a) the runtime is VENDORED in _shared/,
-#      and (b) install.sh actually SHIPS it to ~/.aisb. Either half missing = every
-#      audit breaks "no such file" on a fresh clone (Law 0).
+#      orchestrator by absolute path under the SINGLE home: ~/.omega/lib/audit-runner.sh
+#      + audit-gather/ + safe-npm-build.sh + ~/.omega/bin/audit-notify.sh. This gate
+#      proves both halves: (a) the runtime is VENDORED in _shared/, and (b) install.sh
+#      SHIPS it to ~/.omega. Either half missing = audits break on a fresh clone (Law 0).
+#      Also asserts the dual ~/.aisb home is gone (consolidated into ~/.omega).
 miss=""
-[ -f skills/audits/_shared/audit-runner.sh ] || miss="$miss audit-runner.sh"
-[ -d skills/audits/_shared/audit-gather ]    || miss="$miss audit-gather/"
-[ -f skills/audits/_shared/audit-notify.sh ] || miss="$miss audit-notify.sh"
-if [ -n "$miss" ]; then bad "audit runtime not vendored in _shared:$miss"; else ok "audit runtime vendored in _shared (runner + gather + notify)"; fi
-if grep -q '\.aisb/lib/audit-runner\.sh' install.sh && grep -q '\.aisb/bin/audit-notify\.sh' install.sh; then
-  ok "install.sh ships the ~/.aisb audit runtime (skills' absolute paths resolve)"
+[ -f skills/audits/_shared/audit-runner.sh ]   || miss="$miss audit-runner.sh"
+[ -d skills/audits/_shared/audit-gather ]      || miss="$miss audit-gather/"
+[ -f skills/audits/_shared/audit-notify.sh ]   || miss="$miss audit-notify.sh"
+[ -f skills/audits/_shared/safe-npm-build.sh ] || miss="$miss safe-npm-build.sh"
+if [ -n "$miss" ]; then bad "audit runtime not vendored in _shared:$miss"; else ok "audit runtime vendored in _shared (runner + gather + notify + safe-npm-build)"; fi
+if grep -q 'OMEGA_DIR/lib/audit-runner\.sh' install.sh && grep -q 'OMEGA_DIR/bin/audit-notify\.sh' install.sh; then
+  ok "install.sh ships the ~/.omega audit runtime (skills' absolute paths resolve)"
 else
-  bad "install.sh does NOT install the ~/.aisb audit runtime — audit SKILLs break on fresh clone"
+  bad "install.sh does NOT install the ~/.omega audit runtime — audit SKILLs break on fresh clone"
+fi
+# 10c-bis. No skill may reference the retired ~/.aisb dual-home (consolidated → ~/.omega).
+if grep -rqE '/\.aisb/' skills/ 2>/dev/null; then
+  bad "a skill still references the retired ~/.aisb home (should be ~/.omega):"; grep -rlE '/\.aisb/' skills/ | sed 's/^/      /'
+else
+  ok "no skill references the retired ~/.aisb home (single ~/.omega home)"
 fi
 
 # ── Behavioral gates (runtime truth, not text-greps) ─────────────────────────

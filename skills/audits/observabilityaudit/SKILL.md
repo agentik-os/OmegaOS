@@ -196,7 +196,7 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "file": "...", "line": 4
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh observability "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh observability "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
@@ -957,7 +957,7 @@ The OBSERVABILITY HINGE POINT is the user-critical path whose silent failure
 costs most. Compute or read:
 
 ```bash
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 # Otherwise compute on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=observability --user-need="$USER_NEED_QUOTE" \
   > "$HINGE_FILE"   # if the analyzer is unavailable, identify the hinge manually in Phase 0b and record it here
@@ -1195,7 +1195,7 @@ PRE-FIX ANALYSIS (before writing ANY code):
 
 POST-FIX VERIFICATION (after writing code, BEFORE commit):
   a. SYNTAX CHECK: TS `npx tsc --noEmit`; Rust `cargo check`; Python `python -c "import ast; ast.parse(open('FILE').read())"`.
-  b. BUILD: use `~/.aisb/lib/safe-npm-build.sh` (per project rule 12) or the project build.
+  b. BUILD: use `~/.omega/lib/safe-npm-build.sh` (per project rule 12) or the project build.
   c. EMITTED-OUTPUT CHECK (the key one for THIS audit): run the system / exercise the
      path and CAPTURE the new telemetry. Verify: the new log/metric/span ACTUALLY
      appears, is structured, carries the intended IDs, and leaks NO secret/PII.
@@ -1336,7 +1336,7 @@ This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (logs|traces|metrics|alerts|slo|runbooks)
 - ✅ **Non-UI context gate** — runs on any target (web, API, daemon, CLI, library). Phase scoping adjusts: a stateless CLI may exclude health-probes/SLO; document exclusions and renormalize.
 - ✅ **Output contract verification** — emits `verdict.json`, `verdict.md`, `fix-plan.json`, `fix-plan.md`, `progress.json`, `telemetry.json`, `before-after.md`, `fix-log.md`. Output gate at end; missing/malformed = audit did NOT succeed.
-- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.aisb/bin/audit-notify.sh`
+- ✅ **Telegram progress notifications** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos` via `~/.omega/bin/audit-notify.sh`
 - ✅ **Discovery drift check** — on resumed runs, if `discovery/` (esp. `emitted-samples/`) > 1h old, re-capture telemetry or abort with user-confirm (emitted telemetry is the ground truth — stale samples lie)
 - ✅ **Self-telemetry** — `telemetry.json` at completion (duration, tokens, phases, fixes, model, preamble_version)
 - ✅ **Deprecation registry** — cross-references checked against `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/DEPRECATED.md`; stale refs flagged

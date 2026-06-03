@@ -10,7 +10,7 @@ URL="${4:-}"
 mkdir -p "$RAW_DIR"
 
 # shellcheck disable=SC1091
-source "$HOME/.aisb/lib/audit-gather/_common.sh"
+source "$HOME/.omega/lib/audit-gather/_common.sh"
 
 gather_header "perf"
 

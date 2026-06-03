@@ -147,6 +147,25 @@ ensure_utf8_locale() {
 }
 ensure_utf8_locale
 
+# Bun runtime: the SST companion layer (Phase 6.9) installs global skills via the
+# `skills` CLI (bunx/npx) — planning-with-files, design packs, claude-mem,
+# superpowers. On a BARE VPS without bun/node those are skipped, so SST never
+# lands. Bootstrap bun (single static binary, fast) so SST works on any fresh
+# machine. Best-effort: never aborts the install if it fails.
+install_bun_optional() {
+    { command -v bun >/dev/null 2>&1 || command -v bunx >/dev/null 2>&1 \
+        || command -v npx >/dev/null 2>&1; } && { ok "JS runtime present (bun/npx — SST companion can install)"; return 0; }
+    info "Installing bun (for the SST companion skills layer)…"
+    curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+    # bun installs to ~/.bun/bin — make it visible to this run + future shells.
+    [[ -d "$HOME/.bun/bin" ]] && export PATH="$HOME/.bun/bin:$PATH"
+    command -v bun >/dev/null 2>&1 \
+        && ok "bun installed (SST companion skills will install)" \
+        || info "bun not installed (optional) — SST companion skills will be skipped; install bun/node later to enable them"
+    return 0
+}
+install_bun_optional
+
 # Check for Rust
 if ! command -v cargo &>/dev/null; then
     info "Rust not found. Installing via rustup..."
@@ -226,7 +245,11 @@ ok "omega CLI installed to $INSTALL_DIR/omega"
 
 step "Phase 5: Configuring OmegaOS"
 
-mkdir -p "$OMEGA_DIR"/{state,logs,locks}
+# Single OmegaOS home. Defined sub-dirs so future installs land in the RIGHT
+# place (see docs/ARCHITECTURE.md): repos/ = cloned github repos (e.g. omega-mc),
+# tools/ = third-party tools/binaries an agent installs, prompts/ = runtime
+# prompt scratch, lib/ + bin/ = audit runtime. No dual ~/.aisb home.
+mkdir -p "$OMEGA_DIR"/{state,logs,locks,repos,tools,prompts,lib,bin}
 mkdir -p "$OMEGA_DIR/credentials/accounts"
 
 # ─── Provisioning credential store (for /omega-new-project) ─────────────────
@@ -393,26 +416,31 @@ EOF
     ok "Audit slash commands installed ($AUDIT_STUBS audits → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
 
     # Quality Arsenal RUNTIME. The audit SKILLs invoke the hybrid orchestrator
-    # by ABSOLUTE path: ~/.aisb/lib/audit-runner.sh (declared the "mandatory FIRST
-    # step"), its ~/.aisb/lib/audit-gather/<audit>.sh|-summarize.py gatherers, and
-    # ~/.aisb/bin/audit-notify.sh. These are vendored under _shared/ and MUST be
-    # placed where the skills expect them, or every audit breaks "no such file" on
-    # a fresh clone (Law 0 — install parity). Install from the just-copied _shared.
+    # by ABSOLUTE path under the single OmegaOS home: ~/.omega/lib/audit-runner.sh
+    # (the "mandatory FIRST step"), its ~/.omega/lib/audit-gather/<audit>.sh|.py
+    # gatherers, ~/.omega/lib/safe-npm-build.sh (build mutex), and
+    # ~/.omega/bin/audit-notify.sh. Vendored under _shared/ and placed where the
+    # skills expect them, or every audit breaks on a fresh clone (Law 0). Single
+    # home — no dual ~/.aisb (consolidated). Runtime scratch goes to ~/.omega/state.
     if [[ -d "$AUDITS_DST/_shared" ]]; then
-        mkdir -p "$HOME/.aisb/lib/audit-gather" "$HOME/.aisb/bin"
+        mkdir -p "$OMEGA_DIR/lib/audit-gather" "$OMEGA_DIR/bin" "$OMEGA_DIR/state"
         if [[ -f "$AUDITS_DST/_shared/audit-runner.sh" ]]; then
-            cp "$AUDITS_DST/_shared/audit-runner.sh" "$HOME/.aisb/lib/audit-runner.sh"
-            chmod +x "$HOME/.aisb/lib/audit-runner.sh"
+            cp "$AUDITS_DST/_shared/audit-runner.sh" "$OMEGA_DIR/lib/audit-runner.sh"
+            chmod +x "$OMEGA_DIR/lib/audit-runner.sh"
+        fi
+        if [[ -f "$AUDITS_DST/_shared/safe-npm-build.sh" ]]; then
+            cp "$AUDITS_DST/_shared/safe-npm-build.sh" "$OMEGA_DIR/lib/safe-npm-build.sh"
+            chmod +x "$OMEGA_DIR/lib/safe-npm-build.sh"
         fi
         if [[ -d "$AUDITS_DST/_shared/audit-gather" ]]; then
-            cp -r "$AUDITS_DST/_shared/audit-gather/." "$HOME/.aisb/lib/audit-gather/"
-            chmod +x "$HOME/.aisb/lib/audit-gather/"*.sh 2>/dev/null || true
+            cp -r "$AUDITS_DST/_shared/audit-gather/." "$OMEGA_DIR/lib/audit-gather/"
+            chmod +x "$OMEGA_DIR/lib/audit-gather/"*.sh 2>/dev/null || true
         fi
         if [[ -f "$AUDITS_DST/_shared/audit-notify.sh" ]]; then
-            cp "$AUDITS_DST/_shared/audit-notify.sh" "$HOME/.aisb/bin/audit-notify.sh"
-            chmod +x "$HOME/.aisb/bin/audit-notify.sh"
+            cp "$AUDITS_DST/_shared/audit-notify.sh" "$OMEGA_DIR/bin/audit-notify.sh"
+            chmod +x "$OMEGA_DIR/bin/audit-notify.sh"
         fi
-        ok "Audit runtime installed (~/.aisb/lib/audit-runner.sh + audit-gather/ + ~/.aisb/bin/audit-notify.sh)"
+        ok "Audit runtime installed (~/.omega/lib/audit-runner.sh + audit-gather/ + safe-npm-build.sh + ~/.omega/bin/audit-notify.sh)"
     fi
 else
     info "Audit skills not found — skipping"
@@ -930,7 +958,7 @@ fi
 # Dashboard" action points here. Skip explicitly: OMEGA_SKIP_DASHBOARD=1.
 install_omegamc_optional() {
     [[ "${OMEGA_SKIP_DASHBOARD:-0}" == "1" ]] && { info "OmegaMC dashboard skipped (OMEGA_SKIP_DASHBOARD=1)"; return 0; }
-    local dst="$OMEGA_DIR/omega-mc"
+    local dst="$OMEGA_DIR/repos/omega-mc"
     if [[ -d "$dst/.git" ]]; then
         ok "OmegaMC dashboard present ($dst — update: git -C $dst pull)"
         return 0

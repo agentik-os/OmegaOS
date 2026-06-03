@@ -22,7 +22,7 @@
 #   4  — halt: worker died mid-loop
 #   1  — usage error
 #
-# halt_reason is written to ~/.aisb/state/grep-loop-<session>.halt.json
+# halt_reason is written to ~/.omega/state/grep-loop-<session>.halt.json
 # ═══════════════════════════════════════════════════════════════
 set -o pipefail
 
@@ -52,10 +52,10 @@ done
 [ -z "$SESSION" ]    && { echo "Usage: grep-loop.sh <session> <verify_cmd> [--max=N] [--max-diff=N]" >&2; exit 1; }
 [ -z "$VERIFY_CMD" ] && { echo "ERR: verify_cmd is required (objective gate)" >&2; exit 1; }
 
-STATE_DIR="$HOME/.aisb/state"
+STATE_DIR="$HOME/.omega/state"
 mkdir -p "$STATE_DIR"
 HALT_FILE="$STATE_DIR/grep-loop-${SESSION}.halt.json"
-LOG_FILE="$HOME/.aisb/logs/grep-loop.log"
+LOG_FILE="$HOME/.omega/logs/grep-loop.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() { printf '[%s] [%s] %s\n' "$(date -Iseconds)" "$SESSION" "$*" >> "$LOG_FILE"; }

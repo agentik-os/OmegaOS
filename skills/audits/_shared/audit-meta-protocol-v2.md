@@ -187,11 +187,11 @@ This catches confirmation bias — a single audit may rationalize a passing scor
 
 ## Cross-references
 
-- `~/.aisb/lib/audit-selector.py` — picks the audit set per mission
+- `~/.omega/lib/audit-selector.py` — picks the audit set per mission
 - `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` — picks the load-bearing 10% of the change (vendored; install-parity)
 - the Linear ticket gate (host-specific, only when a Linear integration is configured: `$OMEGA_DIR/lib/linear-ticket-gate.sh` if present) — enforces v2 schema at the gate
-- `~/.aisb/prompts/worker.md` — INTENT-DRIVEN AUDIT INVOCATION section
-- `~/.aisb/lib/oracle-prompt.sh` — R-6 dynamic dispatch
+- `~/.omega/prompts/worker.md` — INTENT-DRIVEN AUDIT INVOCATION section
+- `~/.omega/lib/oracle-prompt.sh` — R-6 dynamic dispatch
 - `~/.claude/commands/linear.md` — Step 8 dynamic audit set + Step 8c intent verification
 
 ---

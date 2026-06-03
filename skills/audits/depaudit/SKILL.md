@@ -191,7 +191,7 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "package": "lodash", "ec
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh dep "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh dep "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
@@ -973,7 +973,7 @@ Save to audits/.depaudit/fix-plan.json + fix-plan.md.
 
 PRE-FIX BASELINE:
   a. Capture the current resolved version of the target + its direct dependents.
-  b. Capture build/test green state: run `~/.aisb/lib/safe-npm-build.sh` (or the project build),
+  b. Capture build/test green state: run `~/.omega/lib/safe-npm-build.sh` (or the project build),
      record exit code. Run the test suite if present.
   c. Read the target dep's changelog between from→to — is the bump SemVer-minor/patch (safe)
      or major (breaking API)? Major bumps require reading every call site of the dep's API.
@@ -988,7 +988,7 @@ APPLY FIX (one dependency / group at a time):
 
 POST-FIX VERIFICATION (BEFORE commit):
   a. Re-resolve: `npm ci` (scratch) / lock update — must succeed WITHOUT errors or peer conflicts.
-  b. BUILD: `~/.aisb/lib/safe-npm-build.sh` (or project build) — exit 0.
+  b. BUILD: `~/.omega/lib/safe-npm-build.sh` (or project build) — exit 0.
   c. TESTS: run the relevant suite — must stay green.
   d. RE-SCAN the single fixed advisory: re-run the matching scanner scoped to the package → 0 advisories.
   e. Reproducibility: confirm the lockfile changed ONLY in the intended way (git diff the lockfile).
@@ -1126,7 +1126,7 @@ This audit implements `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 - ✅ **Telegram progress** — `start` / `progress` (every 3 phases) / `iteration` / `verdict` / `abort` / `sos`
 - ✅ **Score normalization** — raw / applicable-phase-max × 100; PASS threshold 70
 - ✅ **preamble_version** — `"1.0"` in verdict.json for `/metaudit` compliance scan
-- ✅ **Build-integrity safety gate** — every dependency change verified via `~/.aisb/lib/safe-npm-build.sh` + tests + scoped re-scan before commit; revert on any regression
+- ✅ **Build-integrity safety gate** — every dependency change verified via `~/.omega/lib/safe-npm-build.sh` + tests + scoped re-scan before commit; revert on any regression
 
 Run `/metaudit --focus arsenal --scope="depaudit only"` to verify the 11-point preamble checklist.
 

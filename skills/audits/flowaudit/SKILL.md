@@ -215,14 +215,14 @@ audits/.flowaudit/
 ### 0.1 Run the gather script (mandatory, FIRST step)
 
 ```bash
-~/.aisb/lib/audit-runner.sh flow "$PROJECT_PATH" \
+~/.omega/lib/audit-runner.sh flow "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
   --ticket="$TICKET_ID"
 ```
 
-This invokes `~/.aisb/lib/audit-gather/flow.sh` which runs:
+This invokes `~/.omega/lib/audit-gather/flow.sh` which runs:
 Internal route inventory (Next.js, React Router), homepage fetch + internal-link extraction + HEAD probing (up to 30 links), form/onSubmit inventory, button-onClick count, empty-state and ErrorBoundary heuristics
 
 Output is written to:
@@ -268,7 +268,7 @@ You now consume `evidence-summary.json` programmatically. You MUST:
 
 1. **Read `evidence-summary.json` in full.** This is your evidence base.
 2. **Read 3-5 critical files only** — the ones flagged as load-bearing in
-   `~/.aisb/state/hinge-points-<ticket>.json` (or computed via
+   `~/.omega/state/hinge-points-<ticket>.json` (or computed via
    `${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh` if no ticket).
 3. **DO NOT manually grep the codebase for what the gather already covered.**
    The tools have already exhaustively scanned every file. Re-running grep
@@ -1103,7 +1103,7 @@ read:
 
 ```bash
 # If a hinge file already exists for this ticket, use it:
-HINGE_FILE="$HOME/.aisb/state/hinge-points-${TICKET_ID:-default}.json"
+HINGE_FILE="$HOME/.omega/state/hinge-points-${TICKET_ID:-default}.json"
 
 # Otherwise compute it on the fly:
 ${OMEGA_DIR:-$HOME/.omega}/skills/audits/_shared/hinge-analyzer.sh "$PROJECT_PATH" --audit=flow --user-need="$USER_NEED_QUOTE" \
