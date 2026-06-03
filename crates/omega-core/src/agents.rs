@@ -39,6 +39,53 @@ pub struct LaunchOptions {
 
     /// `--name <name>` — deterministic session label for resume.
     pub session_name: Option<String>,
+
+    // ── Interactive-safe Claude flags (Lane A only) ────────────────────
+    // These all keep the TTY attachable (rmux pane). Emitted ONLY when
+    // set, in the Agent::Claude arm. Headless-only flags (stream-json /
+    // --print / --input-format / --include-partial-messages) are NOT here —
+    // they live on Lane B (claude_stream.rs) where there is no human attach.
+
+    /// `--session-id <uuid>` — deterministic session id for resume/dedupe.
+    /// Must be a valid UUID; we generate+persist one per oracle in ~/.omega/state.
+    pub session_id: Option<String>,
+    /// `--fork-session` — on resume, fork to a NEW id instead of mutating the
+    /// original (use with resume_conversation/--continue). Interactive-safe.
+    pub fork_session: bool,
+    /// `--permission-mode <mode>` — per-role: "plan" (oracle planning),
+    /// "acceptEdits" (trusted worker), "default"/"auto"/"dontAsk". Validated
+    /// against the CLI's 6 choices. NOTE: today Lane A passes
+    /// --dangerously-skip-permissions (agents.rs:183); a real permission-mode
+    /// policy means dropping skip-perms for roles that get a mode.
+    pub permission_mode: Option<String>,
+    /// `--allowedTools` — comma/space list (e.g. "Bash(git *) Edit Read").
+    pub allowed_tools: Option<String>,
+    /// `--disallowedTools` — comma/space deny list.
+    pub disallowed_tools: Option<String>,
+    /// `--mcp-config <path...>` — JSON file(s) wiring OmegaOS tools as MCP
+    /// servers. Binaries resolve under ~/.omega/bin; config under ~/.omega.
+    pub mcp_config: Option<Vec<String>>,
+    /// `--strict-mcp-config` — ONLY use servers from mcp_config, ignore
+    /// user/project .mcp.json. Pair with mcp_config for hermetic worker roles.
+    pub strict_mcp_config: bool,
+    /// `--debug-file <path>` — debug log to ~/.omega/state/<session>.debug.log
+    /// (implicitly enables debug mode). Interactive-safe (writes a file, keeps TTY).
+    pub debug_file: Option<String>,
+    /// `--verbose` — override verbose config. Interactive-safe on Lane A.
+    pub verbose: bool,
+    /// `--exclude-dynamic-system-prompt-sections` — move per-machine sections
+    /// out of the system prompt into the first user message for cross-session
+    /// prompt-cache reuse. Ignored when --system-prompt is set; we use
+    /// --append-system-prompt-file so the default prompt still applies → SAFE.
+    pub exclude_dynamic_prompt_sections: bool,
+    /// `--brief` — enable the SendUserMessage agent→user tool. Interactive-safe;
+    /// useful for oracles to push a structured note to the human.
+    pub brief: bool,
+    /// `--bare` — minimal mode (skip hooks/LSP/plugin-sync/CLAUDE.md auto-discovery,
+    /// sets CLAUDE_CODE_SIMPLE=1). Interactive-safe BUT changes auth to API-key-only
+    /// and disables CLAUDE.md autodiscovery → only for hermetic/perf worker roles,
+    /// never the default oracle. Off by default.
+    pub bare: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,9 +226,20 @@ impl Agent {
                 // `bash -c`, which reads neither ~/.zshenv nor ~/.bashrc, and
                 // panes inherit the (older) rmux daemon env — so a shell-rc
                 // export never reaches it.
-                let mut args = String::from(
-                    "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
-                );
+                // A real --permission-mode policy REPLACES blanket
+                // --dangerously-skip-permissions: when a role declares a mode
+                // (oracle→"plan", trusted worker→"acceptEdits", …) we honor it
+                // instead of skipping permissions entirely. With no mode set we
+                // keep the existing skip-perms behavior (unchanged default).
+                let mut args = match opts.permission_mode {
+                    Some(ref mode) => format!(
+                        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
+                        shell_quote(mode)
+                    ),
+                    None => String::from(
+                        "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
+                    ),
+                };
                 if let Some(ref sys_file) = opts.system_prompt_file {
                     args.push_str(&format!(" --append-system-prompt-file {}", shell_quote(sys_file)));
                 }
@@ -204,6 +262,46 @@ impl Agent {
                 }
                 if let Some(ref n) = opts.session_name {
                     args.push_str(&format!(" --name {}", shell_quote(n)));
+                }
+                // ── Interactive-safe flags (Lane A). All keep the TTY; emit
+                //    ONLY when set. NONE of these are headless-only (no --print
+                //    / --output-format / --input-format), so the rmux pane stays
+                //    attachable. permission_mode is handled above (it replaces
+                //    --dangerously-skip-permissions in the base command).
+                if let Some(ref sid) = opts.session_id {
+                    args.push_str(&format!(" --session-id {}", shell_quote(sid)));
+                }
+                if opts.fork_session {
+                    args.push_str(" --fork-session");
+                }
+                if let Some(ref tools) = opts.allowed_tools {
+                    args.push_str(&format!(" --allowedTools {}", shell_quote(tools)));
+                }
+                if let Some(ref tools) = opts.disallowed_tools {
+                    args.push_str(&format!(" --disallowedTools {}", shell_quote(tools)));
+                }
+                if let Some(ref configs) = opts.mcp_config {
+                    for cfg in configs {
+                        args.push_str(&format!(" --mcp-config {}", shell_quote(cfg)));
+                    }
+                }
+                if opts.strict_mcp_config {
+                    args.push_str(" --strict-mcp-config");
+                }
+                if let Some(ref dbg) = opts.debug_file {
+                    args.push_str(&format!(" --debug-file {}", shell_quote(dbg)));
+                }
+                if opts.verbose {
+                    args.push_str(" --verbose");
+                }
+                if opts.exclude_dynamic_prompt_sections {
+                    args.push_str(" --exclude-dynamic-system-prompt-sections");
+                }
+                if opts.brief {
+                    args.push_str(" --brief");
+                }
+                if opts.bare {
+                    args.push_str(" --bare");
                 }
                 // /goal is a slash command, not a flag — prepend to the
                 // initial prompt so Claude registers it as the first

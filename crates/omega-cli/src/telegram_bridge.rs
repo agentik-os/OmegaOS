@@ -796,11 +796,50 @@ impl TelegramBotEngine {
                                 }
                                 answer.push_str(&s);
                             }
+                            crate::claude_stream::StreamEvent::TextDelta(s) => {
+                                // Token-level streaming (partial-message mode):
+                                // append in place, no block separator.
+                                answer.push_str(&s);
+                            }
                             crate::claude_stream::StreamEvent::ToolUse { name } => {
                                 tool_trace.push(format!("🔧 running {}…", name));
                             }
                             crate::claude_stream::StreamEvent::ToolResult => {
                                 tool_trace.push("✓ tool returned".to_string());
+                            }
+                            crate::claude_stream::StreamEvent::UserMessage(m) => {
+                                // `--brief` agent→user push: a mid-task progress
+                                // note. Fire it as its OWN Telegram message (not
+                                // folded into the composing answer) so the human
+                                // sees it the moment the model pushes it.
+                                let url = format!(
+                                    "{}/bot{}/sendMessage",
+                                    API_BASE, token
+                                );
+                                let body = serde_json::json!({
+                                    "chat_id": cid,
+                                    "text": format!(
+                                        "🔔 <b>Update</b>\n{}",
+                                        formatting::escape_html(&m)
+                                    ),
+                                    "parse_mode": "HTML",
+                                });
+                                let _ = client.post(&url).json(&body).send().await;
+                            }
+                            crate::claude_stream::StreamEvent::MessageStop => {
+                                // Deterministic intra-turn boundary. Flush the
+                                // current view immediately so the completed
+                                // assistant message lands without waiting for the
+                                // next throttle tick; the final wrapped edit is
+                                // still owned by the MAIN task on `result`.
+                                if pid != 0 {
+                                    let rendered = compose(&answer, &tool_trace);
+                                    if rendered != last_rendered {
+                                        do_edit(&client, &token, rendered.clone()).await;
+                                        last_rendered = rendered;
+                                        last_edit = std::time::Instant::now();
+                                    }
+                                }
                             }
                         }
 

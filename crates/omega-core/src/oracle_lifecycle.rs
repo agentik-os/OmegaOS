@@ -77,6 +77,12 @@ pub struct OracleState {
     /// oracle is still live work, even if every worker is in a terminal status.
     #[serde(default)]
     pub closeable_since: Option<DateTime<Utc>>,
+    /// Claude `--session-id` UUID for this oracle. Generated once at first
+    /// dispatch and persisted so a resurrect (`--fork-session`) and any
+    /// cross-restart resume reuse the SAME id instead of orphaning the
+    /// conversation. `None` for states written before this field existed.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +131,7 @@ impl OracleState {
             phase_entered_at: now,
             phase_history: Vec::new(),
             closeable_since: None,
+            session_id: None,
         }
     }
 
@@ -149,6 +156,7 @@ impl OracleState {
             phase_entered_at: now,
             phase_history: Vec::new(),
             closeable_since: None,
+            session_id: None,
         }
     }
 

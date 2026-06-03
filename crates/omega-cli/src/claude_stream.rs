@@ -33,12 +33,26 @@ pub struct PersistentClaude {
 // In `--output-format=stream-json --verbose`, the CLI emits one JSON object
 // per line. The relevant shapes:
 //   {"type":"assistant","message":{"content":[{"type":"text","text":"…"},
-//                                              {"type":"tool_use","name":"Bash",…}]}}
+//                                              {"type":"tool_use","name":"Bash",…},
+//                                              {"type":"tool_use","name":"SendUserMessage",
+//                                               "input":{"message":"…"}}]}}
 //   {"type":"user","message":{"content":[{"type":"tool_result",…}]}}   (tool output)
 //   {"type":"result","subtype":"success"|"error_…","is_error":bool,"result":"…"}
 // Assistant events carry WHOLE content blocks (not token deltas) in this mode,
 // so the natural streaming granularity is per assistant text block / tool call
 // — already vastly better than one block at the very end for multi-step turns.
+//
+// When the session ALSO runs with `--include-partial-messages` (a headless /
+// structured worker — Lane B), the CLI ADDITIONALLY interleaves raw Anthropic
+// SSE partial events wrapped as a `stream_event` envelope:
+//   {"type":"stream_event","event":{"type":"content_block_delta",
+//                                    "delta":{"type":"text_delta","text":"…"}}}
+//   {"type":"stream_event","event":{"type":"message_stop"}}
+// We parse BOTH shapes from the SAME line-loop: the whole-envelope path always
+// works (today's behavior), and the partial path layers token-level deltas +
+// a deterministic message-stop boundary on top when the mode is enabled. A
+// session that never sets the flag simply never emits `stream_event` lines —
+// the parser falls through them harmlessly (honest fallback).
 // ─────────────────────────────────────────────────────────────────────────
 
 /// One streamed event from a brain turn, delivered to the bridge as it arrives.
@@ -46,12 +60,33 @@ pub struct PersistentClaude {
 pub enum StreamEvent {
     /// An assistant text block (the visible answer prose, possibly partial when
     /// the turn is multi-step). The bridge accumulates these into the placeholder.
+    /// Emitted from the WHOLE-envelope mode (`assistant` events) — one block per
+    /// turn step.
     AssistantText(String),
+    /// A token-level text delta. Emitted only when the session runs with
+    /// `--include-partial-messages` (the CLI then wraps raw Anthropic SSE
+    /// `content_block_delta` events as `{"type":"stream_event",...}`). The bridge
+    /// appends these in place so the answer composes character-by-character.
+    /// Honest fallback: a session WITHOUT partial messages never emits these and
+    /// keeps streaming whole `AssistantText` blocks — both paths render the same.
+    TextDelta(String),
     /// The model invoked a tool (e.g. `Bash`, `Read`). Surfaced as an optional
     /// collapsed trace line ("🔧 running Bash…").
     ToolUse { name: String },
     /// A tool returned. Surfaced as an optional collapsed trace line.
     ToolResult,
+    /// The `--brief` agent→user push: the model invoked the `SendUserMessage`
+    /// tool to surface a structured note to the human MID-TASK (not the final
+    /// answer). The bridge fires this as a distinct Telegram alert so a long
+    /// turn can report progress before it completes.
+    UserMessage(String),
+    /// A message-level stop marker. In partial-message mode the CLI emits a
+    /// `message_stop` stream event when one assistant message finishes; the
+    /// bridge uses it as a DETERMINISTIC turn-boundary signal (the assistant
+    /// block is complete) instead of scraping a pane for a settled prompt. The
+    /// authoritative turn END remains the `result` event (which carries the
+    /// classified outcome) — `message_stop` is only an intra-turn boundary.
+    MessageStop,
 }
 
 /// Final outcome of a brain turn, classified. `is_error` true means the CLI
@@ -291,9 +326,31 @@ impl PersistentClaude {
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("tool")
                                         .to_string();
-                                    let _ = sink
-                                        .send(StreamEvent::ToolUse { name })
-                                        .await;
+                                    // `--brief` SendUserMessage: an agent→user
+                                    // push, NOT a normal tool call. Surface its
+                                    // message text as a distinct mid-task alert
+                                    // so the bridge can ping the human before the
+                                    // turn finishes, instead of a tool-trace line.
+                                    if name == "SendUserMessage" {
+                                        let m = block
+                                            .get("input")
+                                            .and_then(|i| {
+                                                i.get("message")
+                                                    .or_else(|| i.get("text"))
+                                            })
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string();
+                                        if !m.is_empty() {
+                                            let _ = sink
+                                                .send(StreamEvent::UserMessage(m))
+                                                .await;
+                                        }
+                                    } else {
+                                        let _ = sink
+                                            .send(StreamEvent::ToolUse { name })
+                                            .await;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -313,6 +370,42 @@ impl PersistentClaude {
                         }) {
                             let _ = sink.send(StreamEvent::ToolResult).await;
                         }
+                    }
+                }
+                "stream_event" => {
+                    // Partial-message mode (`--include-partial-messages`): raw
+                    // Anthropic SSE wrapped in `event`. We care about two shapes;
+                    // any other inner event type falls through harmlessly.
+                    let inner = val.get("event");
+                    let inner_type = inner
+                        .and_then(|e| e.get("type"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    match inner_type {
+                        "content_block_delta" => {
+                            // text_delta → token-level streaming. A non-text
+                            // delta (e.g. input_json_delta on a tool call) has no
+                            // `delta.text` → skipped (honest fallback).
+                            if let Some(s) = inner
+                                .and_then(|e| e.get("delta"))
+                                .and_then(|d| d.get("text"))
+                                .and_then(|v| v.as_str())
+                            {
+                                if !s.is_empty() {
+                                    let _ = sink
+                                        .send(StreamEvent::TextDelta(s.to_string()))
+                                        .await;
+                                }
+                            }
+                        }
+                        "message_stop" => {
+                            // Deterministic intra-turn boundary: one assistant
+                            // message finished. NOT the turn end — the `result`
+                            // event below still terminates the loop and carries
+                            // the classified outcome.
+                            let _ = sink.send(StreamEvent::MessageStop).await;
+                        }
+                        _ => {}
                     }
                 }
                 "result" => {

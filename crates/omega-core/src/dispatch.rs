@@ -22,6 +22,77 @@ fn resolve_model_flag(default_model: &str) -> String {
     }
 }
 
+/// Generate a fresh RFC-4122 v4-formatted UUID string for Claude's
+/// `--session-id` flag (which validates the value as a UUID). We have no
+/// `uuid` crate dependency, so we mix two u64s of time + atomic-counter
+/// entropy (the same scheme as `MissionId`) into 128 bits and stamp the
+/// version (4) and variant (10xx) nibbles per the spec.
+fn gen_session_uuid() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64;
+    let pid = std::process::id() as u64;
+
+    let hi = nanos ^ counter.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let lo = (pid.wrapping_mul(0xA24B_AED4_963E_E407))
+        ^ nanos.rotate_left(32)
+        ^ counter.wrapping_mul(0xC2B2_AE3D_27D4_EB4F);
+
+    // 16 bytes from the two words.
+    let mut b = [0u8; 16];
+    b[..8].copy_from_slice(&hi.to_be_bytes());
+    b[8..].copy_from_slice(&lo.to_be_bytes());
+    // Version 4 (random): top nibble of byte 6.
+    b[6] = (b[6] & 0x0f) | 0x40;
+    // Variant 10xx: top bits of byte 8.
+    b[8] = (b[8] & 0x3f) | 0x80;
+
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]
+    )
+}
+
+/// Resolve the persisted `--session-id` for an oracle: reuse the one stored in
+/// its `OracleState` if present, otherwise mint a fresh UUID and persist it so
+/// a later resurrect / cross-restart resume reuses the SAME id. Best-effort —
+/// a persistence failure logs and still returns a usable (in-memory) id so the
+/// dispatch is never blocked on it.
+fn resolve_session_id(
+    state_dir: &Path,
+    oracle_name: &str,
+    project: &str,
+    working_dir: &Path,
+) -> String {
+    let existing = OracleState::read(state_dir, oracle_name)
+        .ok()
+        .flatten()
+        .and_then(|st| st.session_id.clone());
+    if let Some(id) = existing {
+        return id;
+    }
+    let id = gen_session_uuid();
+    // Persist onto a state record so resume across restarts reuses it. If a
+    // full state already exists we patch it; otherwise stamp a minimal one.
+    let mut state = OracleState::read(state_dir, oracle_name)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            OracleState::new_minimal(oracle_name, project, working_dir.to_path_buf())
+        });
+    state.session_id = Some(id.clone());
+    if let Err(e) = state.write(state_dir) {
+        tracing::warn!(oracle = %oracle_name, error = %e, "failed to persist session_id");
+    }
+    id
+}
+
 /// Structured context for worker dispatch — ensures every worker gets
 /// the information it needs to be fully autonomous (Third Law compliant).
 ///
@@ -283,6 +354,38 @@ impl Dispatcher {
                 routing::Complexity::Epic => 400,
             });
             opts.session_name = Some(oracle_name.clone());
+            // ── Oracle role (Lane A, interactive TTY) ────────────────────
+            // Per-role LaunchOptions: an oracle is the strategic brain on an
+            // ATTACHABLE pane, so every flag below is interactive-safe (no
+            // --print / stream-json). It gets the full interactive posture:
+            //   * permission-mode "auto" — auto-approve safe ops while keeping
+            //     the pane interactive (replaces blanket skip-perms; see
+            //     agents.rs:234). NOT a hermetic worker, so no disallowed_tools.
+            //   * a persisted --session-id UUID so a daemon restart / resurrect
+            //     resumes the SAME conversation instead of orphaning it.
+            //   * --debug-file under ~/.omega/state for post-mortem (keeps TTY).
+            //   * --exclude-dynamic-system-prompt-sections — cross-session
+            //     prompt-cache reuse; SAFE because we inject via
+            //     --append-system-prompt-file, not --system-prompt.
+            // NOTE on --bare: deliberately NOT set for oracles. --bare flips
+            // auth to API-key-only and disables CLAUDE.md autodiscovery — an
+            // oracle depends on both, so bare is reserved for hermetic worker
+            // roles (spawned elsewhere via spawn-worker), never the oracle.
+            opts.permission_mode = Some("auto".to_string());
+            opts.exclude_dynamic_prompt_sections = true;
+            opts.session_id = Some(resolve_session_id(
+                &self.config.state_dir,
+                &oracle_name,
+                project,
+                &work_path,
+            ));
+            opts.debug_file = Some(
+                self.config
+                    .state_dir
+                    .join(format!("{}.debug.log", oracle_name))
+                    .to_string_lossy()
+                    .to_string(),
+            );
             // /goal — auto-derived success criteria. The oracle loops
             // until its own .done.json is written with status=done_clean
             // OR the build is green, depending on mission type.
@@ -377,6 +480,27 @@ impl Dispatcher {
             opts.effort = Some("xhigh".to_string());
             opts.model = Some(resolve_model_flag(&self.config.default_model));
             opts.session_name = Some(oracle_name.to_string());
+            // Resurrect path: same interactive oracle posture as a fresh
+            // dispatch, plus --fork-session so the resumed run forks to a NEW
+            // session instead of mutating the crashed original. The base
+            // --session-id is the SAME persisted UUID (resolve_session_id reuses
+            // state.session_id), so the fork derives from the right lineage.
+            opts.permission_mode = Some("auto".to_string());
+            opts.exclude_dynamic_prompt_sections = true;
+            opts.fork_session = true;
+            opts.session_id = Some(resolve_session_id(
+                &self.config.state_dir,
+                oracle_name,
+                &state.project,
+                &state.working_dir,
+            ));
+            opts.debug_file = Some(
+                self.config
+                    .state_dir
+                    .join(format!("{}.debug.log", oracle_name))
+                    .to_string_lossy()
+                    .to_string(),
+            );
             let goal = format!(
                 "mission complete for project {} — .done.json written with status=done_clean",
                 state.project
