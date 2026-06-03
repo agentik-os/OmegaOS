@@ -60,6 +60,20 @@ async function omega(args: string[]): Promise<string> {
 }
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const pre = (title: string, body: string) => `<b>${esc(title)}</b>\n<pre>${esc(body).slice(0, MAXLEN)}</pre>`;
+
+// ── AISB Master: free text runs the always-on brain (it dispatches to oracles) ─
+const CLAUDE = process.env.CLAUDE_BIN || `${homedir()}/.local/bin/claude`;
+let MASTER_PROMPT = ""; try { MASTER_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {}
+async function master(text: string): Promise<string> {
+  // Headless Claude with the AISB Master persona + Bash, so it can `omega dispatch`
+  // to a project/internal oracle or answer directly. Bounded so the bot never hangs.
+  try {
+    const r = await $`${CLAUDE} -p ${text} --append-system-prompt ${MASTER_PROMPT} --allowedTools Bash --dangerously-skip-permissions`
+      .env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
+    const o = r.stdout.toString().trim();
+    return o || "(AISB n'a rien renvoyé — réessaie ou utilise /menu)";
+  } catch (e: any) { return "AISB error: " + (e?.message || e); }
+}
 const back = (to = "menu"): Btn => ({ text: "« Back", callback_data: `nav:${to}` });
 
 function dashboardURL(): { url: string; pw: string } {
@@ -270,8 +284,12 @@ async function main() {
             const proj = g.topics[String(thread)];
             await send(chatId, pre(`dispatch → ${proj}`, await omega(["dispatch", proj, text])), undefined, thread);
           } else {
-            await omega(["send", "aisb-master", text]);
-            await send(chatId, "🧠 Sent to the AISB Master. Use /menu for actions.", undefined, thread);
+            // Default: talk to the AISB Master — it understands every agent/skill/command
+            // and dispatches to oracles/agents. Acknowledge, run the brain, reply.
+            await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+            // Non-blocking: the Master (headless Claude) can take a while to think/dispatch;
+            // don't freeze the poll loop — reply when it returns.
+            master(text).then(r => send(chatId, r, undefined, thread)).catch(() => {});
           }
         }
       } catch (e: any) { console.error("update error:", e?.message || e); }
