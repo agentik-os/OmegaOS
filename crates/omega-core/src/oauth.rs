@@ -316,13 +316,19 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         .collect::<Vec<_>>()
         .join("\n");
 
-    // Success criteria:
-    // - mtime bumped + we have a token (preferred path)
-    // - OR pane explicitly confirms "Logged in as" (Claude already had valid token)
-    // - OR a token now exists at the native path and differs from before
-    let success = (updated && !after_token.is_empty())
-        || pane_tail.contains("Logged in as")
-        || (!after_token.is_empty() && after_token != before_token);
+    // Success criteria — a real refresh_token MUST exist on disk. The pane
+    // message ("Logged in as") is shown before/independently of the file write
+    // and is not proof on its own: trusting it lets callers assume a valid token
+    // when none was persisted. So every success path requires after_token.
+    let pane_says_ok = pane_tail.contains("Logged in as");
+    let success = !after_token.is_empty()
+        && (updated || pane_says_ok || after_token != before_token);
+    if pane_says_ok && after_token.is_empty() {
+        tracing::warn!(
+            "OAuth: pane reported 'Logged in as' but no refresh_token landed on disk — \
+             treating as failure"
+        );
+    }
 
     // On success, sync the fresh creds Claude wrote at its native path back
     // into the omega canonical store + re-establish the symlink.
@@ -483,11 +489,22 @@ pub fn looks_like_oauth_code(s: &str) -> bool {
 pub fn credentials_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
+    let legacy = home.join(".claude").join(".credentials.json");
+    // Prefer canonical ONLY if it actually holds a usable refresh_token. A
+    // present-but-stale/empty canonical (e.g. a truncated write) must not shadow
+    // a fresh legacy file Claude just wrote — otherwise reads return dead creds.
+    if canonical.exists() && !read_refresh_token(&canonical).is_empty() {
+        return canonical;
+    }
+    if legacy.exists() && !read_refresh_token(&legacy).is_empty() {
+        return legacy;
+    }
+    // Neither has a token — fall back to whichever path exists so the caller's
+    // error surfaces against a real path; default to canonical.
     if canonical.exists() {
         return canonical;
     }
-    let legacy = home.join(".claude").join(".credentials.json");
-    if legacy.exists() && !canonical.exists() {
+    if legacy.exists() {
         return legacy;
     }
     canonical
@@ -531,9 +548,18 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
         &canonical,
         std::os::unix::fs::PermissionsExt::from_mode(0o600),
     );
-    // Replace native with a symlink back to omega.
-    std::fs::remove_file(&native)?;
-    std::os::unix::fs::symlink(&canonical, &native)?;
+    // Replace native with a symlink back to omega — atomically, so a failure
+    // never leaves native deleted (which would let Claude recreate an
+    // unprotected regular file there). Create the symlink at a temp name first,
+    // then rename it over native: rename(2) is atomic and removes native in one
+    // step. If symlink creation fails, native is left untouched.
+    let tmp_link = native.with_extension("omega-relink.tmp");
+    let _ = std::fs::remove_file(&tmp_link); // clear any stale temp link
+    std::os::unix::fs::symlink(&canonical, &tmp_link)?;
+    if let Err(e) = std::fs::rename(&tmp_link, &native) {
+        let _ = std::fs::remove_file(&tmp_link); // don't leak the temp link
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -570,23 +596,36 @@ pub fn read_credentials(path: &std::path::Path) -> Result<CredentialsInfo> {
     let oauth = v
         .get("claudeAiOauth")
         .ok_or_else(|| anyhow::anyhow!("missing claudeAiOauth"))?;
+
+    let refresh_token = oauth.get("refreshToken").and_then(|e| e.as_str());
+    let access_token = oauth.get("accessToken").and_then(|e| e.as_str());
+    let expires_at = oauth.get("expiresAt").and_then(|e| e.as_i64());
+    // claudeAiOauth is present but the auth-bearing fields are missing/null →
+    // the file is malformed (truncated/corrupt write), NOT merely legacy. Don't
+    // silently default to empty/0, which is indistinguishable from "no creds";
+    // surface it so the caller can react instead of trusting dead credentials.
+    if refresh_token.is_none() || access_token.is_none() || expires_at.is_none() {
+        tracing::warn!(
+            path = %path.display(),
+            has_refresh = refresh_token.is_some(),
+            has_access = access_token.is_some(),
+            has_expires = expires_at.is_some(),
+            "credentials file is malformed: claudeAiOauth present but auth fields missing"
+        );
+        return Err(anyhow::anyhow!(
+            "credentials file is malformed (claudeAiOauth present but missing auth fields): {}",
+            path.display()
+        ));
+    }
+
     Ok(CredentialsInfo {
         email: oauth
             .get("email")
             .and_then(|e| e.as_str())
             .map(String::from),
-        refresh_token: oauth
-            .get("refreshToken")
-            .and_then(|e| e.as_str())
-            .map(String::from),
-        access_token: oauth
-            .get("accessToken")
-            .and_then(|e| e.as_str())
-            .map(String::from),
-        expires_at_ms: oauth
-            .get("expiresAt")
-            .and_then(|e| e.as_i64())
-            .unwrap_or(0),
+        refresh_token: refresh_token.map(String::from),
+        access_token: access_token.map(String::from),
+        expires_at_ms: expires_at.unwrap_or(0),
         subscription_type: oauth
             .get("subscriptionType")
             .and_then(|e| e.as_str())

@@ -113,6 +113,28 @@ impl ProvidersConfig {
         if !path.exists() {
             return Self::default();
         }
+        // providers.toml holds per-provider api_key secrets. save() writes it
+        // 0o600, but perms can drift (backup restore, manual copy, errant chmod).
+        // Before trusting the secrets, verify the file is owner-only; if it leaked
+        // group/world access, warn (observability) and best-effort re-tighten via
+        // the shared chmod_600 impl. Best-effort (not fatal): a recoverable perms
+        // drift shouldn't brick a running system — mirrors CredentialStore::new().
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&path) {
+                let mode = meta.permissions().mode();
+                if mode & 0o077 != 0 {
+                    tracing::warn!(
+                        "providers.toml ({}) has lax permissions ({:o}); contains \
+                         api_key secrets — re-tightening to 0600",
+                        path.display(),
+                        mode & 0o777
+                    );
+                    let _ = crate::credentials::chmod_600(&path);
+                }
+            }
+        }
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| toml::from_str(&s).ok())

@@ -86,7 +86,9 @@ impl SkillRegistry {
         let mut skills = HashMap::new();
 
         if !skills_dir.exists() {
-            tracing::debug!(path = %skills_dir.display(), "skills directory does not exist");
+            // A missing skills dir is a config/install gap, not a normal state:
+            // callers would run with zero skills and no other signal. Surface it.
+            tracing::warn!(path = %skills_dir.display(), "skills directory does not exist; registry is empty");
             return Ok(Self {
                 skills,
                 skills_dir: skills_dir.to_path_buf(),
@@ -100,7 +102,11 @@ impl SkillRegistry {
             let entry = entry?;
             let path = entry.path();
 
-            if !path.is_dir() {
+            // Deny symlinked entries: a symlink under skills_dir could point to
+            // ../../sensitive/path and pull skills from outside the intended tree
+            // (path traversal). file_type() does NOT follow the link, unlike
+            // path.is_dir(). Skip non-directories and symlinks alike.
+            if !is_plain_dir(&entry) {
                 continue;
             }
 
@@ -115,9 +121,9 @@ impl SkillRegistry {
                 continue;
             };
             for sub_entry in sub_entries.flatten() {
-                let sub_path = sub_entry.path();
-                if sub_path.is_dir() {
-                    try_register_skill(&sub_path, &mut skills);
+                // Same symlink denial at the nested level.
+                if is_plain_dir(&sub_entry) {
+                    try_register_skill(&sub_entry.path(), &mut skills);
                 }
             }
         }
@@ -187,6 +193,17 @@ impl SkillRegistry {
     }
 }
 
+/// True iff `entry` is a real directory and NOT a symlink. Used to deny
+/// symlinked skill dirs that could traverse outside `skills_dir`. Unlike
+/// `Path::is_dir()`, `DirEntry::file_type()` does not follow symlinks; on the
+/// rare metadata-read error we err on the side of skipping the entry.
+fn is_plain_dir(entry: &std::fs::DirEntry) -> bool {
+    match entry.file_type() {
+        Ok(ft) => ft.is_dir() && !ft.is_symlink(),
+        Err(_) => false,
+    }
+}
+
 /// Try to register a skill from `dir/SKILL.md`. Returns true if `dir` was a
 /// skill directory (had a SKILL.md), regardless of parse success.
 fn try_register_skill(dir: &Path, skills: &mut HashMap<String, Skill>) -> bool {
@@ -201,7 +218,9 @@ fn try_register_skill(dir: &Path, skills: &mut HashMap<String, Skill>) -> bool {
             skills.insert(skill.name.clone(), skill);
         }
         Err(e) => {
-            tracing::warn!(path = %skill_file.display(), error = %e, "failed to parse skill");
+            // A SKILL.md that exists but won't parse is a misconfiguration: the
+            // operator expects this skill to be present, so flag it loudly.
+            tracing::error!(path = %skill_file.display(), error = %e, "failed to parse skill; skill skipped");
         }
     }
     true

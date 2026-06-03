@@ -360,6 +360,9 @@ fi
 BRIDGE_CFG="$OMEGA_DIR/claude-bridge-config"
 mkdir -p "$BRIDGE_CFG"
 echo '{}' > "$BRIDGE_CFG/settings.json"
+# Ensure the symlink target exists so the bridge never reads through a dangling
+# link before `claude` login writes real creds (NEVER clobber an existing file).
+[[ -e "$OMEGA_DIR/credentials/claude.json" ]] || : > "$OMEGA_DIR/credentials/claude.json"
 ln -sf "$OMEGA_DIR/credentials/claude.json" "$BRIDGE_CFG/.credentials.json"
 ok "Bridge config dir created (fast hookless claude --print)"
 
@@ -700,16 +703,19 @@ ok "LLM configs synced (Claude, Gemini, Codex)"
 # The patrol watches ~/.omega/state/oracle-*.done.json and dispatches a
 # curator worker the first time each mission finishes.
 mkdir -p "$OMEGA_DIR/logs"
-PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega-patrol.log 2>&1   # OMEGA self-improvement patrol + curator"
-USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/omega-usage.log 2>&1   # OMEGA token-budget 80/90% alert"
+# Each cron line ends with a unique literal marker so the idempotency check is
+# exact (grep -qF on the marker, not a broad substring like "omega patrol" that
+# would also match "omega patrol-supervisor" or a renamed command).
+PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega-patrol.log 2>&1   # OMEGA-CRON-PATROL-v1"
+USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/omega-usage.log 2>&1   # OMEGA-CRON-USAGE-v1"
 if command -v crontab >/dev/null 2>&1; then
-    if crontab -l 2>/dev/null | grep -q "omega patrol"; then
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
         ok "Self-improvement patrol already scheduled"
     else
         ( crontab -l 2>/dev/null; echo "$PATROL_CRON" ) | crontab -
         ok "Self-improvement patrol scheduled (every minute → curator auto-trigger)"
     fi
-    if crontab -l 2>/dev/null | grep -q "omega usage"; then
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-USAGE-v1"; then
         ok "Token-budget usage alert already scheduled"
     else
         ( crontab -l 2>/dev/null; echo "$USAGE_CRON" ) | crontab -

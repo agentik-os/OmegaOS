@@ -166,14 +166,16 @@ impl IntentVerifier {
             };
         }
 
-        let all_pass = results.iter().all(|r| r.passed);
         let mut satisfied = 0u32;
         for criterion in &intent.success_criteria {
             let lower_crit = criterion.to_lowercase();
+            // Require explicit evidence per criterion: a passing command whose
+            // output actually mentions the criterion. Command success alone
+            // (all_pass) proves execution, not intent satisfaction.
             let matched = results
                 .iter()
                 .any(|r| r.passed && r.stdout.to_lowercase().contains(&lower_crit));
-            if matched || all_pass {
+            if matched {
                 satisfied += 1;
             }
         }
@@ -230,12 +232,34 @@ mod tests {
         }
     }
 
+    fn cmd_result_with_stdout(passed: bool, stdout: &str) -> CommandResult {
+        CommandResult {
+            command: "test".into(),
+            exit_code: if passed { 0 } else { 1 },
+            stdout: stdout.into(),
+            stderr: String::new(),
+            passed,
+            duration_ms: 10,
+        }
+    }
+
     #[test]
-    fn delta_all_pass_satisfies_all_criteria() {
+    fn delta_all_pass_without_evidence_satisfies_no_criteria() {
+        // Commands succeed but their output does not mention the criteria:
+        // success proves execution, not intent satisfaction.
         let intent = make_intent(vec!["login works", "no errors"], vec![]);
         let results = vec![cmd_result(true)];
         let score = IntentVerifier::assess_delta(&intent, &results);
-        assert!((score - 100.0).abs() < 0.1);
+        assert!(score.abs() < 0.1);
+    }
+
+    #[test]
+    fn delta_criterion_satisfied_only_with_matching_evidence() {
+        let intent = make_intent(vec!["login works", "no errors"], vec![]);
+        let results = vec![cmd_result_with_stdout(true, "login works fine")];
+        let score = IntentVerifier::assess_delta(&intent, &results);
+        // 1 of 2 criteria has evidence in output.
+        assert!((score - 50.0).abs() < 0.1);
     }
 
     #[test]

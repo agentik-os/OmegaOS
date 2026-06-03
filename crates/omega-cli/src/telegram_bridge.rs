@@ -747,6 +747,10 @@ impl TelegramBotEngine {
                     let mut tool_trace: Vec<String> = Vec::new();
                     let mut last_edit = std::time::Instant::now()
                         - std::time::Duration::from_secs(10);
+                    // Adaptive throttle: starts at EDIT_THROTTLE, grows on 429
+                    // (back off so the renderer stops feeding its own rate-limit)
+                    // and resets on a clean edit. Capped at 10s.
+                    let mut edit_throttle = EDIT_THROTTLE;
                     let mut last_rendered = String::new();
                     let mut last_typing = std::time::Instant::now()
                         - std::time::Duration::from_secs(10);
@@ -772,6 +776,8 @@ impl TelegramBotEngine {
                         format!("{}<blockquote>{}</blockquote>{}", head, body, trace_line)
                     };
 
+                    // Returns Some(retry_after_secs) when Telegram answered 429
+                    // (so the caller can back the throttle off), None otherwise.
                     let do_edit = |client: &reqwest::Client,
                                    token: &str,
                                    text: String| {
@@ -784,7 +790,25 @@ impl TelegramBotEngine {
                                 "text": text,
                                 "parse_mode": "HTML",
                             });
-                            let _ = client.post(&url).json(&body).send().await;
+                            match client.post(&url).json(&body).send().await {
+                                Ok(resp)
+                                    if resp.status()
+                                        == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                                {
+                                    let retry_after = resp
+                                        .headers()
+                                        .get("Retry-After")
+                                        .and_then(|v| v.to_str().ok())
+                                        .and_then(|s| s.trim().parse::<u64>().ok())
+                                        .unwrap_or(1);
+                                    tracing::warn!(
+                                        retry_after,
+                                        "renderer edit rate-limited (HTTP 429) — backing off"
+                                    );
+                                    Some(retry_after)
+                                }
+                                _ => None,
+                            }
                         }
                     };
 
@@ -835,9 +859,23 @@ impl TelegramBotEngine {
                                 if pid != 0 {
                                     let rendered = compose(&answer, &tool_trace);
                                     if rendered != last_rendered {
-                                        do_edit(&client, &token, rendered.clone()).await;
-                                        last_rendered = rendered;
-                                        last_edit = std::time::Instant::now();
+                                        match do_edit(&client, &token, rendered.clone()).await {
+                                            Some(retry_after) => {
+                                                // 429: don't advance last_rendered (retry
+                                                // next tick) and grow the throttle.
+                                                edit_throttle = std::cmp::min(
+                                                    edit_throttle * 2,
+                                                    std::time::Duration::from_secs(10),
+                                                );
+                                                last_edit = std::time::Instant::now()
+                                                    + std::time::Duration::from_secs(retry_after);
+                                            }
+                                            None => {
+                                                edit_throttle = EDIT_THROTTLE;
+                                                last_rendered = rendered;
+                                                last_edit = std::time::Instant::now();
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -854,14 +892,28 @@ impl TelegramBotEngine {
                             last_typing = std::time::Instant::now();
                         }
 
-                        // Throttled placeholder edit: at most 1 / EDIT_THROTTLE,
-                        // and only when the rendered text actually changed.
-                        if pid != 0 && last_edit.elapsed() >= EDIT_THROTTLE {
+                        // Throttled placeholder edit: at most 1 / edit_throttle
+                        // (adaptive — grows on 429), and only when the rendered
+                        // text actually changed.
+                        if pid != 0 && last_edit.elapsed() >= edit_throttle {
                             let rendered = compose(&answer, &tool_trace);
                             if rendered != last_rendered {
-                                do_edit(&client, &token, rendered.clone()).await;
-                                last_rendered = rendered;
-                                last_edit = std::time::Instant::now();
+                                match do_edit(&client, &token, rendered.clone()).await {
+                                    Some(retry_after) => {
+                                        // 429: back off, retry the same text next tick.
+                                        edit_throttle = std::cmp::min(
+                                            edit_throttle * 2,
+                                            std::time::Duration::from_secs(10),
+                                        );
+                                        last_edit = std::time::Instant::now()
+                                            + std::time::Duration::from_secs(retry_after);
+                                    }
+                                    None => {
+                                        edit_throttle = EDIT_THROTTLE;
+                                        last_rendered = rendered;
+                                        last_edit = std::time::Instant::now();
+                                    }
+                                }
                             }
                         }
                     }
@@ -1754,6 +1806,12 @@ impl TelegramBotEngine {
             "/relay" | "/sessions" => {
                 // Show active sessions as buttons; user clicks one to target it
                 self.send_sessions_menu(chat_id).await;
+                true
+            }
+            "/login" => {
+                // Auth-error guidance ("Send /login") points here; without this
+                // handler the literal "/login" fell through to the brain as text.
+                self.start_login_flow(chat_id, "User-initiated login").await;
                 true
             }
             _ => false,
@@ -2802,10 +2860,12 @@ impl TelegramBotEngine {
     /// Telegram hard-caps callback_data at 64 BYTES; an over-cap button makes
     /// Telegram reject the WHOLE message (BUTTON_DATA_INVALID), so the keyboard
     /// silently fails to send. This guard logs every offending button loudly
-    /// (with the fix hint: tokenize via session_name_by_token) so an overflow is
-    /// a VISIBLE error, not a dead button, at the single chokepoint both keyboard
-    /// send paths pass through.
-    fn assert_cb_cap(keyboard: &InlineKeyboardMarkup) {
+    /// (with the fix hint: tokenize via session_name_by_token) and returns an
+    /// Err so callers can FALL BACK to a visible "keyboard too large" message
+    /// instead of a dead, silently-rejected send — at the single chokepoint
+    /// both keyboard send paths pass through. Returns the first offending
+    /// button's label (for the fallback message) on overflow.
+    fn assert_cb_cap(keyboard: &InlineKeyboardMarkup) -> std::result::Result<(), String> {
         for row in &keyboard.inline_keyboard {
             for btn in row {
                 let bytes = btn.callback_data.len();
@@ -2816,10 +2876,11 @@ impl TelegramBotEngine {
                         button = %btn.text,
                         "callback_data exceeds Telegram's 64-byte cap — keyboard WILL be rejected; tokenize this payload via session_name_by_token"
                     );
-                    debug_assert!(false, "callback_data over 64 bytes ({bytes}): {}", btn.callback_data);
+                    return Err(btn.text.clone());
                 }
             }
         }
+        Ok(())
     }
 
     async fn edit_message_with_keyboard(
@@ -2829,7 +2890,21 @@ impl TelegramBotEngine {
         text: &str,
         keyboard: &InlineKeyboardMarkup,
     ) {
-        Self::assert_cb_cap(keyboard);
+        // Over-cap callback_data → Telegram rejects the whole edit silently.
+        // Surface it: edit to a visible error (no keyboard) instead of a no-op.
+        if let Err(button) = Self::assert_cb_cap(keyboard) {
+            let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
+            let body = serde_json::json!({
+                "chat_id": chat_id, "message_id": message_id,
+                "text": format!(
+                    "⚠️ Keyboard too large to send (button <code>{}</code> exceeds Telegram's 64-byte limit). This is a bug — please report it.",
+                    formatting::escape_html(&button)
+                ),
+                "parse_mode": "HTML",
+            });
+            let _ = self.client.post(&url).json(&body).send().await;
+            return;
+        }
         let url = format!("{}/bot{}/editMessageText", API_BASE, self.cfg.bot_token);
         let body = serde_json::json!({
             "chat_id": chat_id, "message_id": message_id,
@@ -4684,7 +4759,16 @@ impl TelegramBotEngine {
         text: &str,
         keyboard: &InlineKeyboardMarkup,
     ) -> Result<Option<i64>> {
-        Self::assert_cb_cap(keyboard);
+        // Over-cap callback_data → Telegram rejects the whole send silently.
+        // Surface it: send a visible error (no keyboard) so the user isn't left
+        // staring at a message that never arrives.
+        if let Err(button) = Self::assert_cb_cap(keyboard) {
+            let fallback = format!(
+                "⚠️ Keyboard too large to send (button <code>{}</code> exceeds Telegram's 64-byte limit). This is a bug — please report it.",
+                formatting::escape_html(&button)
+            );
+            return self.send_html(chat_id, &fallback).await;
+        }
         let url = format!("{}/bot{}/sendMessage", API_BASE, self.cfg.bot_token);
         let body = serde_json::json!({
             "chat_id": chat_id,
@@ -5454,10 +5538,57 @@ fn refresh_bridge_creds_from_canonical() {
 
 // ── Main entry point ──
 
+/// Single-instance guard for the getUpdates poller. Two concurrent pollers
+/// advance divergent offsets and trigger Telegram HTTP 409 / duplicate updates;
+/// this PID lock makes a second bridge refuse to start while the first is live.
+/// The lock file (`~/.omega/state/telegram-poller.lock`) holds the owner PID.
+/// Liveness is checked via `/proc/<pid>` (Linux) so a crashed bridge's stale
+/// lock is reclaimed automatically rather than wedging the bridge forever.
+/// Held for the lifetime of `run()`; removed on Drop (best-effort).
+struct PollerLock {
+    path: std::path::PathBuf,
+}
+
+impl PollerLock {
+    fn acquire() -> Result<Self> {
+        let path = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join(".omega/state/telegram-poller.lock");
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        // If a lock exists and its PID is still alive, refuse to start.
+        if let Ok(contents) = std::fs::read_to_string(&path) {
+            if let Ok(pid) = contents.trim().parse::<i32>() {
+                if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                    anyhow::bail!(
+                        "another telegram bridge poller is already running (pid {pid}); \
+                         refusing to start a second — kill it first or remove {}",
+                        path.display()
+                    );
+                }
+                tracing::warn!(stale_pid = pid, "reclaiming stale telegram-poller.lock");
+            }
+        }
+        std::fs::write(&path, std::process::id().to_string())?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for PollerLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
     println!("◆ Omega Telegram bot engine starting");
     println!("  Relay session: {}", cfg.relay_session);
     println!("  Chat ID:       {}", cfg.chat_id);
+
+    // Refuse to start a second poller (HTTP 409 / divergent-offset guard).
+    // Held for the lifetime of this function; released on return/panic.
+    let _poller_lock = PollerLock::acquire()?;
 
     // Reuse the SAME Claude login as the interactive sessions. Claude's silent
     // token auto-refresh atomic-writes ~/.claude/.credentials.json, which BREAKS
@@ -5534,6 +5665,22 @@ pub async fn run(cfg: OmegaTelegramConfig) -> Result<()> {
                 continue;
             }
         };
+
+        // HTTP 429: Telegram is explicitly telling us to back off for
+        // `Retry-After` seconds. Honour it instead of hammering on a fixed 3s
+        // tick (which only deepens the rate-limit). Parse the header, default
+        // to 60s when absent, and log so operators see the bridge is throttled.
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = resp
+                .headers()
+                .get("Retry-After")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.trim().parse::<u64>().ok())
+                .unwrap_or(60);
+            tracing::warn!(retry_after, "getUpdates rate-limited (HTTP 429) — backing off");
+            tokio::time::sleep(Duration::from_secs(retry_after)).await;
+            continue;
+        }
 
         let updates: GetUpdatesResp = match resp.json().await {
             Ok(u) => u,

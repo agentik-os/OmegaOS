@@ -667,7 +667,11 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     ));
                     width += 2;
                     for sp in row {
-                        width += sp.text.chars().count();
+                        // Display width (columns), not char count: emoji/CJK
+                        // render 2+ cols per char, so counting chars under-pads
+                        // and the bar bleeds past the panel. Span::width() uses
+                        // unicode-width internally (no new dep needed).
+                        width += Span::raw(sp.text.as_str()).width();
                         spans.push(Span::styled(
                             sp.text.clone(),
                             Style::default()
@@ -956,7 +960,12 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         // we prepended so the caret tracks the content down to the bottom.
         let viewport_row = (cur_row + bottom_pad).saturating_sub(scroll);
         if viewport_row < inner_h {
-            let cursor_x = area.x + 1 + cur_col.min(inner_w.saturating_sub(1));
+            // Saturating add: a large `area.x` near u16::MAX could otherwise
+            // wrap, falsifying the `cursor_x < area.x + area.width` bounds check.
+            let cursor_x = area
+                .x
+                .saturating_add(1)
+                .saturating_add(cur_col.min(inner_w.saturating_sub(1)));
             let cursor_y = area.y + 1 + viewport_row;
             if cursor_x < area.x + area.width && cursor_y < area.y + area.height {
                 // Layer 1: painted glyph (always visible).
@@ -2080,8 +2089,10 @@ fn render_settings_detail(
                     Span::styled(label.clone(), label_style),
                 ]));
                 if is_selected {
-                    let cmd_preview = if command.len() > 100 {
-                        format!("{}…", &command[..100])
+                    let cmd_preview = if command.chars().count() > 100 {
+                        // Truncate by chars, not bytes: `&command[..100]` panics
+                        // if byte 100 splits a multi-byte UTF-8 char.
+                        format!("{}…", command.chars().take(100).collect::<String>())
                     } else {
                         command.clone()
                     };
@@ -2195,20 +2206,31 @@ fn render_settings_detail(
 
 /// Mask sensitive characters in an inline input (show prefix/suffix only).
 fn mask_inline(s: &str) -> String {
-    if s.len() <= 6 {
-        "•".repeat(s.len())
+    // Count chars, not bytes: byte slicing/length panics or miscounts on
+    // multi-byte UTF-8 (emoji, accented, CJK).
+    let char_count = s.chars().count();
+    if char_count <= 6 {
+        "•".repeat(char_count)
     } else {
-        format!("{}…{}", &s[..3], "•".repeat(s.len() - 3))
+        // char-boundary-safe: `&s[..3]` panics if byte 3 splits a multi-byte
+        // char. Take 3 chars, not 3 bytes.
+        let prefix: String = s.chars().take(3).collect();
+        format!("{}…{}", prefix, "•".repeat(char_count - 3))
     }
 }
 
 fn mask_key(key: &str) -> String {
+    // Count/slice by chars, not bytes: `&key[..4]` and `&key[key.len()-4..]`
+    // panic if a byte index splits a multi-byte UTF-8 char (emoji, CJK).
+    let char_count = key.chars().count();
     if key.is_empty() {
         "(not set)".to_string()
-    } else if key.len() <= 8 {
-        "•".repeat(key.len())
+    } else if char_count <= 8 {
+        "•".repeat(char_count)
     } else {
-        format!("{}…{}", &key[..4], &key[key.len() - 4..])
+        let prefix: String = key.chars().take(4).collect();
+        let suffix: String = key.chars().skip(char_count - 4).collect();
+        format!("{}…{}", prefix, suffix)
     }
 }
 

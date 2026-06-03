@@ -150,8 +150,10 @@ impl GateResult {
             .iter()
             .filter(|v| v.verdict == GradeVerdict::Satisfied)
             .count();
-        let consensus_pass = consensus_votes.is_empty()
-            || satisfied_votes * 3 >= consensus_votes.len() * 2;
+        // R-21: ≥2/3 graders must agree SATISFIED. An empty vote list cannot meet
+        // quorum — `.max(1)` forces 0 >= 2/3 to be false (mirrors MultiGrader::evaluate),
+        // so a gate with no multi-grader input fails instead of silently passing.
+        let consensus_pass = satisfied_votes * 3 >= consensus_votes.len().max(1) * 2;
 
         // R-30: adversarial_pass is the REAL Popper falsification verdict —
         // ≥12 challenges, zero defects, zero uncited (FalsificationReport::pass).
@@ -377,6 +379,24 @@ impl RegressionDetector {
                         now: grade.verdict,
                     });
                 }
+            }
+        }
+
+        // R-22: a previously-satisfied criterion that DISAPPEARS from the current
+        // rubric is a structural regression — the criterion is no longer verified.
+        // The loop above only sees criteria present in BOTH runs, so removed ones
+        // would otherwise pass silently.
+        for prev in &prior_gate.details.grades {
+            if prev.verdict == GradeVerdict::Satisfied
+                && !current_grades
+                    .iter()
+                    .any(|g| g.criterion_id == prev.criterion_id)
+            {
+                regressions.push(RegressionItem {
+                    criterion_id: prev.criterion_id.clone(),
+                    was: prev.verdict,
+                    now: GradeVerdict::Unmet,
+                });
             }
         }
 
@@ -606,6 +626,18 @@ mod tests {
         }
     }
 
+    fn passing_votes() -> Vec<ConsensusVote> {
+        GraderLens::all()
+            .iter()
+            .map(|lens| ConsensusVote {
+                grader: lens.label().to_string(),
+                verdict: GradeVerdict::Satisfied,
+                confidence: 0.9,
+                reasoning: "ok".into(),
+            })
+            .collect()
+    }
+
     fn make_grade(id: &str, verdict: GradeVerdict) -> GradeResult {
         GradeResult {
             criterion_id: id.into(),
@@ -726,6 +758,25 @@ mod tests {
         assert!(!report.pass);
         assert_eq!(report.regressions.len(), 1);
         assert_eq!(report.regressions[0].criterion_id, "c1");
+    }
+
+    #[test]
+    fn regression_detected_when_satisfied_criterion_removed() {
+        // R-22 structural regression: a previously-satisfied criterion dropped from
+        // the rubric must be flagged, not silently passed.
+        let prior = make_gate(
+            vec![
+                make_grade("c1", GradeVerdict::Satisfied),
+                make_grade("c2", GradeVerdict::Satisfied),
+            ],
+            100.0,
+        );
+        let current = vec![make_grade("c1", GradeVerdict::Satisfied)];
+        let report = RegressionDetector::detect(Some(&prior), &current);
+        assert!(!report.pass);
+        assert_eq!(report.regressions.len(), 1);
+        assert_eq!(report.regressions[0].criterion_id, "c2");
+        assert_eq!(report.regressions[0].now, GradeVerdict::Unmet);
     }
 
     #[test]
@@ -850,12 +901,27 @@ mod tests {
         // R-30: a passing gate needs a passing Popper report (≥12 cited, no defects).
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
+        // R-21: a passing gate needs a quorum of SATISFIED consensus votes.
         let result = GateResult::evaluate(
-            &rubric, grades, vec![], &falsification, vec![], true, true, true,
+            &rubric, grades, passing_votes(), &falsification, vec![], true, true, true,
         );
         assert!(result.overall_pass);
         assert!(result.adversarial_pass);
+        assert!(result.consensus_pass);
         assert!((result.score - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn gate_empty_consensus_blocks() {
+        // R-21: zero multi-grader votes cannot meet ≥2/3 quorum, so the gate fails.
+        let rubric = Rubric::new("test", vec![]);
+        let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
+        let falsification = PopperFalsifier::validate(&challenges);
+        let result = GateResult::evaluate(
+            &rubric, vec![], vec![], &falsification, vec![], true, true, true,
+        );
+        assert!(!result.consensus_pass);
+        assert!(!result.overall_pass);
     }
 
     #[test]

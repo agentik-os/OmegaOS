@@ -102,7 +102,7 @@ impl ShipPipeline {
         let started_at = Utc::now();
         let mut steps = Vec::new();
 
-        // Step 1: Frozen check
+        // Step 1: Frozen check (fast-path before taking the lock; re-checked under lock below)
         if self.is_frozen(project) {
             return ShipResult {
                 result: ShipOutcome::Frozen,
@@ -115,19 +115,34 @@ impl ShipPipeline {
             };
         }
 
-        // Step 2: Build
+        // Step 2: Acquire ship lock BEFORE any build/commit so the entire
+        // critical section (build→commit→push→deploy) is serialized across
+        // oracles. Acquiring after the commit would leave an orphaned unpushed
+        // commit if the lock is contended, and let two oracles commit to the
+        // same branch before either serialized (racy rebase baseline).
+        if let Err(e) = self.acquire_lock(project) {
+            return self.fail(steps, &format!("Lock error: {}", e), started_at);
+        }
+
+        // From here on every early-return MUST release the lock first.
+
+        // Step 3: Build
         match self.run_step("build", &self.config.build_command).await {
             Ok(step) => {
                 let passed = step.passed;
                 steps.push(step);
                 if !passed {
+                    self.release_lock(project);
                     return self.fail(steps, "Build failed", started_at);
                 }
             }
-            Err(e) => return self.fail(steps, &format!("Build error: {}", e), started_at),
+            Err(e) => {
+                self.release_lock(project);
+                return self.fail(steps, &format!("Build error: {}", e), started_at);
+            }
         }
 
-        // Step 3: Stage files (whitelisted via files_owned, or all)
+        // Step 4: Stage files (whitelisted via files_owned, or all)
         let stage_cmd = if files_owned.is_empty() {
             "git add -A".to_string()
         } else {
@@ -139,35 +154,46 @@ impl ShipPipeline {
         };
         match self.run_step("stage", &stage_cmd).await {
             Ok(step) => steps.push(step),
-            Err(e) => return self.fail(steps, &format!("Stage error: {}", e), started_at),
+            Err(e) => {
+                self.release_lock(project);
+                return self.fail(steps, &format!("Stage error: {}", e), started_at);
+            }
         }
 
-        // Step 4: Secret scan (gitleaks)
+        // Step 5: Secret scan (gitleaks)
         let gitleaks_cmd = "if command -v gitleaks >/dev/null 2>&1; then gitleaks detect --staged --no-banner; else echo 'gitleaks not installed, skipping'; fi";
         match self.run_step("gitleaks", gitleaks_cmd).await {
             Ok(step) => {
                 let passed = step.passed;
                 steps.push(step);
                 if !passed {
+                    self.release_lock(project);
                     return self.fail(steps, "Secrets detected in staged files", started_at);
                 }
             }
-            Err(e) => return self.fail(steps, &format!("Gitleaks error: {}", e), started_at),
+            Err(e) => {
+                self.release_lock(project);
+                return self.fail(steps, &format!("Gitleaks error: {}", e), started_at);
+            }
         }
 
-        // Step 5: Whitespace sanity
+        // Step 6: Whitespace sanity
         match self.run_step("whitespace", "git diff --cached --check").await {
             Ok(step) => {
                 let passed = step.passed;
                 steps.push(step);
                 if !passed {
+                    self.release_lock(project);
                     return self.fail(steps, "Whitespace issues in staged files", started_at);
                 }
             }
-            Err(e) => return self.fail(steps, &format!("Whitespace check error: {}", e), started_at),
+            Err(e) => {
+                self.release_lock(project);
+                return self.fail(steps, &format!("Whitespace check error: {}", e), started_at);
+            }
         }
 
-        // Step 6: Commit
+        // Step 7: Commit
         let commit_cmd = format!("git commit -m '{}'", commit_msg.replace('\'', "'\\''"));
         let commit_hash = match self.run_step("commit", &commit_cmd).await {
             Ok(step) => {
@@ -179,15 +205,13 @@ impl ShipPipeline {
                     None
                 }
             }
-            Err(e) => return self.fail(steps, &format!("Commit error: {}", e), started_at),
+            Err(e) => {
+                self.release_lock(project);
+                return self.fail(steps, &format!("Commit error: {}", e), started_at);
+            }
         };
 
-        // Step 7: Acquire ship lock (serialize across oracles)
-        if let Err(e) = self.acquire_lock(project) {
-            return self.fail(steps, &format!("Lock error: {}", e), started_at);
-        }
-
-        // Step 8: Re-check frozen (after lock — another oracle may have frozen)
+        // Step 8: Re-check frozen (under lock — another oracle may have frozen)
         if self.is_frozen(project) {
             self.release_lock(project);
             return ShipResult {

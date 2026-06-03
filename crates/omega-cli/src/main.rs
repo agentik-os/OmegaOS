@@ -2903,6 +2903,29 @@ async fn cmd_spawn_worker(
     // Register the worker under its oracle so the patrol routes its done/blocked
     // events to the right parent and the TUI shows it under the oracle.
     if let Some(ref oracle_name) = oracle_session {
+        // Serialize the read-modify-write of the oracle state behind an exclusive
+        // advisory lock so two concurrent spawns can't both read the old state,
+        // both append their worker, and have the second write clobber the first's
+        // entry (the idempotent check in register_worker only dedups the SAME
+        // session, not concurrent different sessions). std-only mutex: an atomic
+        // create_dir on a per-oracle lock dir, bounded-spin then proceed best-effort.
+        let lock_dir = config
+            .state_dir
+            .join(format!(".oracle-{}.lock", oracle_name));
+        let mut held_lock = false;
+        for _ in 0..50 {
+            match std::fs::create_dir(&lock_dir) {
+                Ok(()) => {
+                    held_lock = true;
+                    break;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(_) => break, // unexpected IO error — proceed unlocked, best-effort
+            }
+        }
+
         // Upsert: if the oracle never wrote a full state, create a minimal one
         // so the worker→oracle link is ALWAYS persisted. Previously this only
         // updated an EXISTING state and silently dropped the link otherwise —
@@ -2925,7 +2948,42 @@ async fn cmd_spawn_worker(
             dispatched_at: chrono::Utc::now(),
             status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
         });
-        let _ = state.write(&config.state_dir);
+        // The worker is ALREADY spawned at this point, so a write failure cannot
+        // be rolled back by releasing the scope (that would free the files the
+        // running worker still owns and let another worker clobber them). Instead
+        // surface the failure loudly + retry a few times so the worker→oracle link
+        // isn't silently lost; patrol can still reconcile an orphan from the error.
+        let mut last_err = None;
+        for attempt in 0..3 {
+            match state.write(&config.state_dir) {
+                Ok(()) => {
+                    last_err = None;
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+        if let Some(e) = last_err {
+            tracing::error!(
+                worker = %worker_name, oracle = %oracle_name, error = %e,
+                "worker spawned but FAILED to persist worker→oracle registration after retries — \
+                 worker is running orphaned (not nested under oracle); patrol must reconcile"
+            );
+            eprintln!(
+                "[!] worker {} spawned but registration under oracle {} failed: {} \
+                 (worker is running; it will not show nested under its oracle until reconciled)",
+                worker_name, oracle_name, e
+            );
+        }
+
+        if held_lock {
+            let _ = std::fs::remove_dir(&lock_dir);
+        }
     }
 
     println!("● Worker spawned: {}", worker_name);
@@ -3437,8 +3495,12 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
     }
     signal.write(&config.state_dir)?;
 
-    // Release scope claim on done_clean
-    if signal.is_complete() {
+    // Release scope claim on done_clean. Gate ONLY on status, not is_complete():
+    // is_complete() also requires todos_completed >= todos_total, which a worker
+    // that never tracked todos trivially satisfies (0 >= 0) — that would release
+    // the scope on ANY done_clean signal even when the work isn't really finished.
+    // status == DoneClean is the authoritative completion signal here.
+    if signal.status == omega_core::done::DoneStatus::DoneClean {
         let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
     }
 

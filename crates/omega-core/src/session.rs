@@ -90,7 +90,11 @@ impl OmegaSession {
             "-challenger-", "-report-", "-verify-", "-build-", "-deploy-", "-team-",
         ];
         for suffix in &worker_suffixes {
-            if let Some(pos) = name.find(suffix) {
+            // rfind (RIGHTMOST match): the role suffix is the LAST component, so
+            // a suffix string that also appears inside the PROJECT name (e.g.
+            // project "my-fix" in "my-fix-worker-X") must not shadow the real
+            // role suffix and truncate the project to "my".
+            if let Some(pos) = name.rfind(suffix) {
                 let project = name[..pos].to_string();
                 return (SessionRole::Worker, Some(project), None);
             }
@@ -342,8 +346,11 @@ impl SessionManager {
         if !status.success() {
             anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
         }
-        // Old name is no longer addressable — drop its cached pane.
+        // Old name is no longer addressable — drop its cached pane. Also drop
+        // any entry under new_name: a stale cache slot left from a prior session
+        // of the same name would otherwise point at a now-different daemon pane.
         self.invalidate_pane(old_name).await;
+        self.invalidate_pane(new_name).await;
         Ok(())
     }
 

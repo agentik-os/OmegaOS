@@ -62,7 +62,7 @@ pub fn infrastructure_keep(sessions: &[OmegaSession]) -> HashSet<String> {
         .filter(|s| {
             matches!(s.role, SessionRole::Home | SessionRole::System)
                 || s.name.contains("telegram-bridge")
-                || s.name.to_lowercase().contains("master")
+                || crate::aisb::is_master(&s.name)
         })
         .map(|s| s.name.clone())
         .collect()

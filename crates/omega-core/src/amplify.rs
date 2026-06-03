@@ -90,6 +90,27 @@ fn should_skip(raw: &str) -> bool {
     false
 }
 
+/// Neutralize untrusted text (git output, user message) so it cannot
+/// masquerade as the Brain prompt's own structure. A commit message or user
+/// line that starts with a markdown heading (`## `) or a fence/HR (`---`) could
+/// otherwise be read as a new instruction section or break the `---` delimiter
+/// around the raw message. We defang only the structural markers at line start
+/// (prefixing a single leading space so a heading, HR, or fence no longer
+/// begins the line), preserving the text's meaning.
+fn defang_prompt_structure(s: &str) -> String {
+    s.lines()
+        .map(|line| {
+            let t = line.trim_start();
+            if t.starts_with("## ") || t == "---" || t.starts_with("---") || t.starts_with("```") {
+                format!(" {}", line)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Gather a small, fault-tolerant snapshot of the project's real git state so
 /// the Brain can write an accurate `## Context` section. Each piece degrades
 /// independently — a missing repo or git error just omits that line.
@@ -120,12 +141,21 @@ fn gather_project_context(work_dir: &str) -> String {
     if let Some(status) = git(&["status", "--short"]) {
         parts.push(format!("uncommitted changes:\n{}", status));
     }
-    parts.join("\n")
+    // Commit messages / filenames are user-controlled; defang any line that
+    // could be read as prompt structure before it reaches the Brain.
+    defang_prompt_structure(&parts.join("\n"))
 }
 
 /// The strict instruction template. The Brain receives the user's raw message
 /// plus the project context and must emit ONLY the five-section brief.
 fn build_brain_prompt(raw: &str, project: &str, ctx: &str) -> String {
+    // The user message is untrusted: a line like `## Mission` or a bare `---`
+    // could inject a fake section or break the `---{raw}---` delimiter and
+    // smuggle directives into the Brain's instruction set. Defang structural
+    // markers at line start before interpolation. (ctx is already defanged by
+    // gather_project_context.)
+    let raw = defang_prompt_structure(raw);
+    let raw = raw.as_str();
     let ctx_block = if ctx.is_empty() {
         String::new()
     } else {
@@ -207,7 +237,19 @@ fn run_brain(raw: &str, project: &str, ctx: &str) -> Option<String> {
     cmd.stderr(std::process::Stdio::null());
 
     // Bound the wall-clock so a hung Brain never stalls dispatch.
-    let mut child = cmd.spawn().ok()?;
+    // A spawn failure (most commonly: the `claude` CLI is not installed or not
+    // on PATH) is a hard dependency being unavailable — surface it instead of
+    // failing silently, then fall back so dispatch is never blocked.
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "amplify: failed to spawn `claude` Brain (CLI missing or not executable?) — using deterministic fallback brief"
+            );
+            return None;
+        }
+    };
     // Write the prompt to stdin, then close it so claude starts processing.
     {
         use std::io::Write;
@@ -228,7 +270,11 @@ fn run_brain(raw: &str, project: &str, ctx: &str) -> Option<String> {
             }
             Ok(None) => {
                 if start.elapsed() > timeout {
+                    // kill() sends SIGKILL on Unix; wait() reaps the process so
+                    // it can't accumulate as a zombie across repeated dispatch
+                    // calls. Best-effort: a kill failure still returns None.
                     let _ = child.kill();
+                    let _ = child.wait();
                     return None;
                 }
                 std::thread::sleep(Duration::from_millis(150));

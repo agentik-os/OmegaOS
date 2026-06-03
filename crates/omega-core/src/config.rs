@@ -50,7 +50,22 @@ fn default_auto_naming() -> bool {
 /// container under $HOME, else ~/projects. Cross-user — NO ~/VibeCoding
 /// hardcode, so a fresh install adapts to whatever layout the user has.
 fn default_projects_dir() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    // `home_dir()` already consults $HOME on Unix; if it still fails the home is
+    // genuinely unresolvable. Don't return the bare world-writable /tmp as a
+    // PERSISTENT projects root (collision + data-loss-on-reboot risk) — scope it
+    // to a per-user subdir under the temp dir as a last resort, and warn loudly
+    // so the operator knows their projects are not landing under $HOME.
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        let user = std::env::var("USER").unwrap_or_else(|_| "omega".to_string());
+        let fallback = std::env::temp_dir().join(format!("omega-projects-{user}"));
+        eprintln!(
+            "omega: could not resolve a home directory ($HOME unset) — falling back \
+             to a temp projects root at {}. This is EPHEMERAL; set $HOME or \
+             projects_dir in config.toml for persistent storage.",
+            fallback.display()
+        );
+        fallback
+    });
     for cand in ["VibeCoding", "projects", "Projects", "code", "dev", "work"] {
         let p = home.join(cand);
         if p.is_dir() {
@@ -159,6 +174,19 @@ impl OmegaConfig {
                         .unwrap_or_default()
                 ));
                 let _ = std::fs::copy(config_path, &backup);
+                // tracing is often not wired up in the TUI menu or the background
+                // daemon, so a parse failure would otherwise be invisible. Mirror
+                // the loud error to stderr so the operator always sees that their
+                // settings (telegram token / projects / model / timezone) are not
+                // being applied and where to recover them.
+                eprintln!(
+                    "omega: config parse FAILURE at {} — running on hardcoded \
+                     DEFAULTS; your settings there are not applied. Original \
+                     preserved at {} (fix or restore it): {}",
+                    config_path.display(),
+                    backup.display(),
+                    e
+                );
                 tracing::error!(
                     path = %config_path.display(),
                     backup = %backup.display(),

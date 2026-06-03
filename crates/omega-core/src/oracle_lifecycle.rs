@@ -148,7 +148,11 @@ impl OracleState {
             mission_id: MissionId(String::new()),
             mission_text: String::new(),
             working_dir,
-            phase: OraclePhase::Dispatch,
+            // A placeholder oracle has not declared a mission yet, so the only
+            // truthful initial phase is the first one (`Analyze`, matching
+            // `new()`). `Dispatch` falsely implies workers are already being
+            // dispatched; a later full `new()`/`transition()` sets the real phase.
+            phase: OraclePhase::Analyze,
             workers: Vec::new(),
             god_mode: None,
             ship_requested: false,

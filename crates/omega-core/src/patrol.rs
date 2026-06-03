@@ -406,7 +406,8 @@ impl Patrol {
                                 );
                                 signal.todos_total = progress.todos_total;
                                 signal.todos_completed = progress.todos_completed;
-                                if let Ok(()) = signal.write(&self.config.state_dir) {
+                                match signal.write(&self.config.state_dir) {
+                                    Ok(()) => {
                                     report.done_workers.push(session.name.clone());
                                     // Do NOT release scope here — the heuristic is
                                     // not proof of clean completion. Scope stays
@@ -448,6 +449,27 @@ impl Patrol {
                                         progress.todos_total,
                                         idle_secs,
                                     ));
+                                    }
+                                    Err(write_error) => {
+                                        // The worker was already killed above but the
+                                        // PENDING signal could not be persisted. Without
+                                        // a signal the worker is invisible: not in
+                                        // done_workers, no inbox event, no oracle-state
+                                        // update — yet its scope claim stays HELD,
+                                        // blocking re-dispatch. Surface it loudly (error
+                                        // log + report action) so the orphan is observable
+                                        // instead of failing silently.
+                                        tracing::error!(
+                                            worker = %session.name,
+                                            error = %write_error,
+                                            "Patrol auto-done FAILED to write PENDING signal — \
+                                             worker killed but scope HELD with no recorded signal"
+                                        );
+                                        report.actions_taken.push(format!(
+                                            "Auto-done FAILED to write signal for {}: {} (worker killed, scope HELD, no signal recorded)",
+                                            session.name, write_error
+                                        ));
+                                    }
                                 }
                             }
                         }

@@ -95,6 +95,30 @@ fn chmod_600(path: &std::path::Path) {
 #[cfg(not(unix))]
 fn chmod_600(_path: &std::path::Path) {}
 
+/// Copy a credential file to `dst` without ever exposing it group/world-readable.
+/// `std::fs::copy` creates the destination under the process umask (typically
+/// 0664) and only later chmods it, leaving a window where another local user can
+/// read the OAuth refresh token. On Unix we create the destination up-front with
+/// mode 0600 (O_CREAT|O_TRUNC) so the bytes are written into an already-locked
+/// file; on other platforms we fall back to the plain copy.
+#[cfg(unix)]
+fn secure_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut reader = std::fs::File::open(src)?;
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(dst)?;
+    std::io::copy(&mut reader, &mut writer)?;
+    Ok(())
+}
+#[cfg(not(unix))]
+fn secure_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::copy(src, dst).map(|_| ())
+}
+
 /// High-level view of an account for the Telegram UI.
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountSummary {
@@ -233,7 +257,17 @@ pub fn list_accounts() -> Vec<AccountSummary> {
 /// Compare current credentials' refreshToken against each saved profile to
 /// determine which one (if any) is the live account.
 fn detect_active_account(current: &CredentialsInfo) -> Option<String> {
-    let token = current.refresh_token.as_deref()?;
+    let Some(token) = current.refresh_token.as_deref() else {
+        // No live refresh token means the credentials file is missing, empty, or
+        // corrupt. Surface it instead of silently reporting "no active account"
+        // — callers (list_accounts / CurrentAccount::read) otherwise show every
+        // profile as inactive with no clue why a just-switched account vanished.
+        tracing::warn!(
+            "detect_active_account: active credentials have no refresh_token — \
+             cannot match any saved profile (credentials file missing/empty/corrupt)"
+        );
+        return None;
+    };
     let meta = AccountsMeta::load();
     for (name, entry) in &meta.accounts {
         if entry.credential_file.is_empty() {
@@ -296,10 +330,10 @@ pub fn switch_account(name: &str) -> SwitchResult {
     let creds_path = credentials_path();
     if creds_path.exists() {
         let backup = creds_path.with_extension("json.previous");
-        let _ = std::fs::copy(&creds_path, &backup);
+        let _ = secure_copy(&creds_path, &backup);
         chmod_600(&backup);
     }
-    if let Err(e) = std::fs::copy(&profile_path, &creds_path) {
+    if let Err(e) = secure_copy(&profile_path, &creds_path) {
         return SwitchResult {
             ok: false,
             method: "no_profile".to_string(),
@@ -337,25 +371,48 @@ pub fn switch_account(name: &str) -> SwitchResult {
     }
 
     if !refresh_ok {
-        // Restore previous credentials so we don't break the live session.
+        // Restore previous credentials so we don't break the live session. If the
+        // restore can't happen (no backup, or copy failed), creds_path now holds
+        // the new profile's creds while we report needs_reauth — that mismatch is
+        // a real system fault, not a normal expired-token case, so surface it.
         let backup = creds_path.with_extension("json.previous");
-        if backup.exists() {
-            let _ = std::fs::copy(&backup, &creds_path);
+        let restore_err: Option<String> = if !backup.exists() {
+            Some("no backup of previous credentials to restore".to_string())
+        } else if let Err(e) = secure_copy(&backup, &creds_path) {
+            Some(format!("restore copy failed: {}", e))
+        } else {
             chmod_600(&creds_path);
-        }
+            None
+        };
+        let error = match restore_err {
+            Some(why) => {
+                tracing::error!(
+                    "switch_account: refresh failed AND restore failed ({}); \
+                     active credentials may now hold the wrong account",
+                    why
+                );
+                Some(format!(
+                    "refresh token expired and previous credentials could not be \
+                     restored ({}) — credentials may be in an inconsistent state, \
+                     run /login to recover",
+                    why
+                ))
+            }
+            None => Some("refresh token expired — need full OAuth reauth".to_string()),
+        };
         return SwitchResult {
             ok: false,
             method: "needs_reauth".to_string(),
             label: entry.label.clone(),
             email: entry.email.clone(),
             expires_min: 0,
-            error: Some("refresh token expired — need full OAuth reauth".to_string()),
+            error,
         };
     }
 
     // Refresh succeeded — copy refreshed creds back to the profile and update
     // accounts-meta.active.
-    let _ = std::fs::copy(&creds_path, &profile_path);
+    let _ = secure_copy(&creds_path, &profile_path);
     chmod_600(&profile_path);
     let mut meta_mut = meta;
     meta_mut.active = Some(name.to_string());

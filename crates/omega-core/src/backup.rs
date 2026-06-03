@@ -98,16 +98,22 @@ pub fn scan_projects(config: &OmegaConfig) -> (Vec<RepoRisk>, usize) {
 }
 
 fn git_dirty(repo: &Path) -> bool {
+    // Fail-safe: if git can't be run (corrupt .git, perms, missing git), assume
+    // the repo IS dirty so a pre-reset report never tells the user "clean +
+    // pushed" about a repo we couldn't actually inspect.
     Command::new("git")
         .args(["-C"])
         .arg(repo)
         .args(["status", "--porcelain"])
         .output()
         .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 fn git_has_upstream(repo: &Path) -> bool {
+    // Fail-safe stays `false` here: the caller negates this into `no_upstream`,
+    // so an error → "no upstream" → treated as unpushed/at-risk. Flipping to
+    // `true` would instead claim a broken repo HAS an upstream (unsafe).
     Command::new("git")
         .args(["-C"])
         .arg(repo)
@@ -118,6 +124,8 @@ fn git_has_upstream(repo: &Path) -> bool {
 }
 
 fn git_ahead(repo: &Path) -> bool {
+    // Fail-safe: a git failure or unparseable count is treated as "ahead"
+    // (work not safely pushed) rather than silently reporting zero.
     Command::new("git")
         .args(["-C"])
         .arg(repo)
@@ -125,8 +133,8 @@ fn git_ahead(repo: &Path) -> bool {
         .output()
         .ok()
         .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().parse::<u64>().unwrap_or(0) > 0)
-        .unwrap_or(false)
+        .map(|s| s.trim().parse::<u64>().map(|n| n > 0).unwrap_or(true))
+        .unwrap_or(true)
 }
 
 /// Gather the read-only pre-reset readiness report.

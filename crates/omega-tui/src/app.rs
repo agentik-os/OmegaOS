@@ -1356,7 +1356,11 @@ impl App {
         let name = match self.selected_session() {
             Some(e) => e.session.name.clone(),
             None => {
+                // No session selected → nothing can fail. Zero the per-session
+                // failure counter so a dead session's streak can't poison the
+                // next session that becomes selected.
                 self.preview_content = String::new();
+                self.preview_fail_streak = 0;
                 return Ok(());
             }
         };
@@ -1406,6 +1410,14 @@ impl App {
             // switch so the new pane's content always loads.
             let cache_valid = self.preview_styled.is_some()
                 && self.preview_session.as_deref() == Some(name.as_str());
+            // preview_fail_streak is a PER-SESSION counter. On a session switch
+            // (the rendered session no longer matches `name`) the new pane's
+            // capture status is independent, so zero the streak — otherwise a
+            // stale streak from the previous session can trip the ≥3 "dead pane"
+            // threshold on the new session's very first transient failure.
+            if self.preview_session.as_deref() != Some(name.as_str()) {
+                self.preview_fail_streak = 0;
+            }
             let since = if cache_valid { self.preview_revision } else { 0 };
             match mgr.capture_pane_styled(&name, since).await {
                 // Pane unchanged since last render — keep the cached preview,
@@ -1465,6 +1477,10 @@ impl App {
             // so the next scroll-up gets a fresh deep capture. Depth matches the
             // rmux history-limit so the user can scroll to the very top.
             if self.preview_history_for.as_deref() != Some(name.as_str()) {
+                // Session switch in history-browse mode: same per-session reset
+                // as the tail path so a prior session's streak can't poison this
+                // one's ≥3 dead-pane threshold on the first transient failure.
+                self.preview_fail_streak = 0;
                 match mgr.capture_pane_history(&name, 500_000).await {
                     Ok(content) => {
                         self.preview_content = content;

@@ -319,12 +319,21 @@ impl PlanTracker {
         Ok(())
     }
 
-    /// Mark a step as failed.
+    /// Mark a step as failed. Only an in-progress step can fail (mirrors
+    /// `mark_done`'s guard) — a step cannot fail without having been attempted.
     pub fn mark_failed(&mut self, step_id: &str) -> Result<()> {
         let step = self
             .get_step_mut(step_id)
             .context("step not found")?;
+        if step.status != StepStatus::InProgress {
+            bail!(
+                "step {} is not in_progress (status: {})",
+                step_id,
+                step.status.label()
+            );
+        }
         step.status = StepStatus::Failed;
+        step.completed_at = Some(chrono::Utc::now().to_rfc3339());
         Ok(())
     }
 
@@ -336,8 +345,17 @@ impl PlanTracker {
     }
 
     /// Return an in-progress step to pending so it can be re-dispatched.
+    /// Only an in-progress step may be reset — guards against resetting a
+    /// Done/Failed step (which would re-run work without an audit trail).
     pub fn reset_to_pending(&mut self, step_id: &str) -> Result<()> {
         let step = self.get_step_mut(step_id).context("step not found")?;
+        if step.status != StepStatus::InProgress {
+            bail!(
+                "step {} is not in_progress (status: {}), cannot reset to pending",
+                step_id,
+                step.status.label()
+            );
+        }
         step.status = StepStatus::Pending;
         step.started_at = None;
         Ok(())

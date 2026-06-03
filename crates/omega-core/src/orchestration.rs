@@ -158,12 +158,25 @@ impl Orchestrator {
                     }
                 }
                 Err(e) => {
-                    tracing::warn!(worker = %session, error = %e, "Worker monitoring failed");
+                    // A timeout is a distinct, high-severity operational signal
+                    // (worker hung / daemon unresponsive), not a generic monitor
+                    // error — surface it at ERROR level and tag the result summary
+                    // so it is visible in the outcome, not buried per-worker.
+                    let summary = match &e {
+                        OrchestrationError::WorkerTimeout { seconds, .. } => {
+                            tracing::error!(worker = %session, seconds = %seconds, "Worker timed out");
+                            format!("TIMEOUT after {}s (worker hung or unresponsive)", seconds)
+                        }
+                        _ => {
+                            tracing::warn!(worker = %session, error = %e, "Worker monitoring failed");
+                            format!("Monitoring error: {}", e)
+                        }
+                    };
                     results.push(WorkerResult {
                         task_id: task.id.clone(),
                         session_name: session.clone(),
                         status: DoneStatus::Failed,
-                        summary: format!("Monitoring error: {}", e),
+                        summary,
                         commit: None,
                         duration_secs,
                     });
@@ -177,7 +190,12 @@ impl Orchestrator {
                 .iter()
                 .all(|r| r.status == DoneStatus::DoneClean);
         let any_failed = results.iter().any(|r| r.status == DoneStatus::Failed);
-        let status = if all_clean {
+        let status = if results.is_empty() {
+            // Zero workers dispatched means the mission was never executed.
+            // This is a hollow non-result, not a partial win — fail loudly so the
+            // orchestration breakage surfaces instead of masquerading as success.
+            OutcomeStatus::Failed
+        } else if all_clean {
             OutcomeStatus::Success
         } else if any_failed {
             OutcomeStatus::Failed
@@ -185,8 +203,19 @@ impl Orchestrator {
             OutcomeStatus::PartialSuccess
         };
 
-        // 6. Quality gate (if enforced and all clean so far)
-        let gate = if self.options.enforce_gate && status == OutcomeStatus::Success {
+        // 6. Quality gate. Always COMPUTE it when the run reached Success so the
+        // verdict is recorded in the Outcome for observability — even when the
+        // orchestrator is configured not to ENFORCE it (a misconfigured audit
+        // mission would otherwise ship with no gate and no warning). Enforcement
+        // (downgrading Success → PartialSuccess on a failing gate) is applied later
+        // only when `enforce_gate` is set.
+        let gate = if status == OutcomeStatus::Success {
+            if !self.options.enforce_gate {
+                tracing::warn!(
+                    mission_id = %mission.id.0,
+                    "enforce_gate=false; quality gate computed for observability but NOT enforced"
+                );
+            }
             Some(self.run_quality_gate(&mission, &rubric, &results))
         } else {
             None
@@ -209,9 +238,13 @@ impl Orchestrator {
             );
         }
 
-        // 7. Build final outcome
+        // 7. Build final outcome. A failing gate downgrades Success only when the
+        // gate is ENFORCED — when enforce_gate=false the gate is recorded for
+        // observability (above) but must not alter the outcome status.
         let final_status = match (&gate, status) {
-            (Some(g), OutcomeStatus::Success) if !g.overall_pass => OutcomeStatus::PartialSuccess,
+            (Some(g), OutcomeStatus::Success) if self.options.enforce_gate && !g.overall_pass => {
+                OutcomeStatus::PartialSuccess
+            }
             (_, s) => s,
         };
 
@@ -269,7 +302,10 @@ impl Orchestrator {
                         "[ORACLE] You decompose this mission into sub-tasks and dispatch workers via `omega spawn-worker`.\n\nMission: {}\n\nProject: {}\n\nWhen all sub-workers complete and you have verified outcomes, call: omega done {} done_clean \"<summary>\"",
                         mission.text,
                         mission.project,
-                        format!("oracle-{}", mission.project)
+                        // Must match the session name minted in dispatch_task
+                        // (oracle-<project>-<mission_id>) so the oracle signals
+                        // done against its OWN session, not a colliding name.
+                        format!("oracle-{}-{}", mission.project, mission.id.0)
                     ),
                     files_owned: Vec::new(),
                     depends_on: Vec::new(),
@@ -290,10 +326,14 @@ impl Orchestrator {
 
     /// Dispatch a single task as a worker session.
     async fn dispatch_task(&self, mission: &Mission, task: &Task) -> Result<String> {
+        // Include the mission id so session names are globally unique, not just
+        // per-project: two concurrent missions for the SAME project would otherwise
+        // collide on identical names (clobbering each other's panes + done.json).
+        // The id stays deterministic within a mission, so resumability is preserved.
         let session_name = if task.name == "oracle" {
-            format!("oracle-{}", mission.project)
+            format!("oracle-{}-{}", mission.project, mission.id.0)
         } else {
-            format!("{}-worker-{}", mission.project, task.name)
+            format!("{}-worker-{}-{}", mission.project, task.name, mission.id.0)
         };
 
         // Clear any STALE done.json from a prior mission. Session names are

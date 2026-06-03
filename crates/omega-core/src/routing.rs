@@ -49,7 +49,7 @@ pub struct RoutingDecision {
 }
 
 /// Maps audit keywords to specific forensic skill invocations.
-/// Mirrors the live system's 17-audit Quality Arsenal.
+/// Mirrors the live system's Quality Arsenal (see `crate::audit::all_audits`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AuditSkill {
     pub skill: String,
@@ -94,19 +94,16 @@ fn detect_audit_skills(text: &str) -> Vec<AuditSkill> {
         }
     }
 
-    if (lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits"))
-        && skills.len() < 5
+    // "full audit" is authoritative: it means run EVERY audit, regardless of
+    // any skills already detected above. Source the full list from the audit
+    // registry (single source of truth) so routing never drifts out of sync
+    // with the Quality Arsenal as audits are added or removed.
+    if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits")
     {
-        let all_skills = [
-            "codeaudit", "flowaudit", "uiuxaudit", "debugaudit", "featureaudit",
-            "perfaudit", "secaudit", "a11yaudit", "seoaudit", "dataaudit",
-            "apiaudit", "copyaudit", "dxaudit", "motionaudit", "automationaudit",
-            "logicaudit", "retentionaudit",
-        ];
         skills.clear();
-        for skill in all_skills {
+        for audit in crate::audit::all_audits() {
             skills.push(AuditSkill {
-                skill: skill.to_string(),
+                skill: audit.id.to_string(),
                 trigger: "full audit".to_string(),
             });
         }
@@ -116,6 +113,22 @@ fn detect_audit_skills(text: &str) -> Vec<AuditSkill> {
 }
 
 pub fn classify_mission(mission: &str) -> RoutingDecision {
+    // An empty or whitespace-only mission is a user/intake error (typo, empty
+    // API body). Reject it explicitly rather than scoring "" as a Simple task
+    // and wasting an agent on an empty objective. Signature stays infallible
+    // (8 call sites treat it as such); the rejection is surfaced via reasoning.
+    if mission.trim().is_empty() {
+        return RoutingDecision {
+            complexity: Complexity::Simple,
+            reasoning: vec!["INVALID: mission text is empty — nothing to route".to_string()],
+            suggested_agent: "morpheus".to_string(),
+            decompose: false,
+            use_team: false,
+            use_quality_gate: false,
+            audit_skills: Vec::new(),
+        };
+    }
+
     let lower = mission.to_lowercase();
     let mut reasoning = Vec::new();
     let mut score: i32 = 0;
@@ -248,5 +261,28 @@ mod tests {
     fn audit_triggers_quality_gate() {
         let d = classify_mission("audit the security of the API endpoints");
         assert!(d.use_quality_gate);
+    }
+
+    #[test]
+    fn empty_mission_is_rejected() {
+        let d = classify_mission("   ");
+        assert!(d.audit_skills.is_empty());
+        assert!(!d.use_quality_gate);
+        assert!(d.reasoning.iter().any(|r| r.contains("INVALID")));
+    }
+
+    #[test]
+    fn full_audit_runs_entire_registry() {
+        let d = classify_mission("please run a full audit on everything");
+        // "full audit" is authoritative and sourced from the registry.
+        assert_eq!(d.audit_skills.len(), crate::audit::all_audits().len());
+        assert!(d.audit_skills.iter().all(|a| a.trigger == "full audit"));
+    }
+
+    #[test]
+    fn full_audit_overrides_partial_detection() {
+        // Even when specific audits are named, "full audit" expands to all.
+        let d = classify_mission("do a security and seo full audit");
+        assert_eq!(d.audit_skills.len(), crate::audit::all_audits().len());
     }
 }

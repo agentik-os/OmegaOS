@@ -46,6 +46,13 @@ pub fn update_services_env(updates: &[(String, String)]) -> Result<()> {
 fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        // The directory holds secret tokens (and, for groups, leaks which client
+        // owns which credentials) — keep it owner-only (0700) on a multi-user host.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        }
     }
 
     // Only non-empty updates apply — a blank field leaves the existing value.
@@ -79,11 +86,26 @@ fn update_services_env_at(path: &std::path::Path, updates: &[(String, String)]) 
     }
 
     let tmp = path.with_extension("env.tmp");
-    std::fs::write(&tmp, &out)?;
+    // Create the temp file 0600 from the start so the secret is never world/group
+    // readable — even for the sub-ms window a write-then-chmod would otherwise leave
+    // open to a same-host attacker racing the file. `create_new` would reject a stale
+    // tmp from a crashed run, so drop it first, then create exclusively at 0600.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let _ = std::fs::remove_file(&tmp);
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)?;
+        f.write_all(out.as_bytes())?;
+        f.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp, &out)?;
     }
     std::fs::rename(&tmp, path)?;
     Ok(())

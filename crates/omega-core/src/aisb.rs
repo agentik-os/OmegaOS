@@ -32,16 +32,20 @@ pub async fn ensure_master(
     // Claude (that caused the "talks in the pane but not Telegram" split).
     let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
     let log = home.join(".omega/state/aisb-conversation.log");
+    // Surface filesystem errors instead of swallowing them: if the log can't be
+    // created the viewer pane would `tail -F` a path that never appears, with no
+    // diagnostic. A failed first call must error so the caller can retry; on a
+    // successful create the log is guaranteed to exist for the idempotent path.
     if let Some(parent) = log.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
     if !log.exists() {
-        let _ = std::fs::write(
+        std::fs::write(
             &log,
             "  Ω  AISB Master — live Telegram conversation viewer\n\
              ─────────────────────────────────────────────────\n\
              Talk to AISB from Telegram. Exchanges stream here.\n",
-        );
+        )?;
     }
     // The master pane is a PURE READ-ONLY MIRROR of the brain's
     // conversation: it tails the same `aisb-conversation.log` the brain

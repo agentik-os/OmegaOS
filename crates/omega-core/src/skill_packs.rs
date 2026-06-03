@@ -103,6 +103,13 @@ impl SkillPackRegistry {
     /// loaded packs in alphabetical order.
     pub fn all(&mut self) -> Result<Vec<SkillPack>> {
         if !self.dir.exists() {
+            // Surface the missing-dir condition so callers don't read an
+            // empty list as "zero packs installed" when the install is broken.
+            // std-only (no log dep — see module note on staying dependency-free).
+            eprintln!(
+                "omega: skill-packs dir {} does not exist — returning no packs",
+                self.dir.display()
+            );
             return Ok(Vec::new());
         }
         let mut paths: Vec<PathBuf> = std::fs::read_dir(&self.dir)?

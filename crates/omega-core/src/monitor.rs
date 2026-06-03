@@ -68,7 +68,7 @@ impl UsageSnapshot {
     /// over-reports (showed 89% when the real 5h was 36%).
     fn omega_usage_path() -> std::path::PathBuf {
         dirs::home_dir()
-            .unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")))
+            .unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/tmp")))
             .join(".omega/state/usage.json")
     }
 
