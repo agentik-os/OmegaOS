@@ -896,6 +896,10 @@ pub struct App {
     pub session_focus: SessionFocus,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
+    /// Focus state at the START of a Tab sequence, captured on the first tap so
+    /// a following double-tap can toggle the left menu cleanly (the single tap
+    /// already moved focus, so the double tap reverts to this and toggles).
+    pub tab_seq_start: Option<SessionFocus>,
     /// OmegaOS slash-command capture in chat focus. `Some(buf)` while the user
     /// is typing a shared OmegaOS command (e.g. "/projects") at the start of a
     /// chat line — keys are buffered by the TUI (not forwarded) until Enter
@@ -976,6 +980,7 @@ impl App {
             preview_history_for: None,
             session_focus: SessionFocus::List,
             last_tab_press: None,
+            tab_seq_start: None,
             cmd_capture: None,
             chat_line_chars: 0,
             detail_focused: false,
@@ -1079,9 +1084,15 @@ impl App {
         Some(self.sessions[idx].session.name.clone())
     }
 
-    /// Handle a Tab press in the Sessions tab. Single tap cycles the zoom
-    /// (List → Chat → Fullscreen → List); double tap (within 400ms) quick-closes
-    /// back to the session List from anywhere.
+    /// Handle a Tab press in the Sessions tab.
+    ///   • Single Tab  → NAVIGATE: toggle the session list ↔ the session itself
+    ///     (List ↔ Chat; from fullscreen → back to the list).
+    ///   • Tab-Tab (rapid, <400ms) → toggle the LEFT SESSION MENU: hide it so the
+    ///     Claude session takes the full width (great on small screens), or show
+    ///     it again. The toggle keys off the state the sequence STARTED in, so it
+    ///     is a clean hide↔show even though the first tap already moved focus.
+    /// Called from BOTH the list handler and the chat handler so the behavior is
+    /// identical wherever the sequence begins.
     pub fn handle_tab_in_sessions(&mut self) {
         const DOUBLE_TAP_MS: u128 = 400;
         let now = std::time::Instant::now();
@@ -1089,22 +1100,29 @@ impl App {
             .last_tab_press
             .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
             .unwrap_or(false);
-        self.last_tab_press = Some(now);
 
-        // NOTE: this runs only in List focus — in Chat/Fullscreen, Tab is handled
-        // by handle_key_chat (single tap → forward to the agent, double tap →
-        // close to the list). From the list: single tap opens the chat, double
-        // tap opens it straight in fullscreen.
-        self.session_focus = match (self.session_focus, is_double) {
-            (SessionFocus::List, false) => SessionFocus::Chat,
-            (SessionFocus::List, true) => SessionFocus::ChatFullscreen,
-            (_, _) => SessionFocus::List,
-        };
+        if is_double {
+            // Second tap: revert the first tap's navigation and toggle the menu.
+            self.last_tab_press = None;
+            let start = self.tab_seq_start.take().unwrap_or(self.session_focus);
+            self.session_focus = match start {
+                SessionFocus::ChatFullscreen => SessionFocus::List, // show the menu
+                _ => SessionFocus::ChatFullscreen,                  // hide the menu
+            };
+        } else {
+            // First tap: remember the starting state, then navigate.
+            self.tab_seq_start = Some(self.session_focus);
+            self.last_tab_press = Some(now);
+            self.session_focus = match self.session_focus {
+                SessionFocus::List => SessionFocus::Chat,
+                _ => SessionFocus::List,
+            };
+        }
+
         // A Tab transition starts a fresh chat input line and drops any
         // half-typed OmegaOS command, so the "/" trigger fires at line start.
         self.cmd_capture = None;
         self.chat_line_chars = 0;
-        // When entering any chat focus, tail follow on
         if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;
             self.preview_scroll = 0;
