@@ -1,0 +1,75 @@
+name: release
+
+# Cut prebuilt omega + rmux binaries per platform on a version tag, so
+# `npx omega-os` / install.sh can DOWNLOAD them instead of compiling from source
+# (~8 min → ~30 s). install.sh always falls back to the source build when no
+# matching asset exists, so this never breaks Law-0 reproducibility.
+#
+#   git tag v1.2.3 && git push origin v1.2.3
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false   # a macOS failure must not block the Linux release
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-14,         target: aarch64-apple-darwin }
+          - { os: macos-13,         target: x86_64-apple-darwin }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build omega (from this repo, pinned Cargo.lock)
+        run: cargo build --release --locked --bin omega
+
+      - name: Resolve the pinned rmux rev
+        id: rmux
+        shell: bash
+        run: |
+          rev="$(grep -m1 'rmux-sdk' Cargo.toml | sed -E 's/.*rev *= *"([0-9a-f]+)".*/\1/')"
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+          echo "rmux rev = $rev"
+
+      - name: Build rmux (same rev omega links against)
+        shell: bash
+        run: |
+          git clone https://github.com/agentik-os/rmux /tmp/rmux
+          if [ -n "${{ steps.rmux.outputs.rev }}" ]; then
+            git -C /tmp/rmux checkout "${{ steps.rmux.outputs.rev }}" || echo "rev checkout failed; using default branch"
+          fi
+          cargo build --release --manifest-path /tmp/rmux/Cargo.toml
+
+      - name: Package omega + rmux
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/omega dist/omega
+          cp /tmp/rmux/target/release/rmux dist/rmux
+          cd dist
+          tar czf "omega-${{ matrix.target }}.tar.gz" omega rmux
+          ( command -v sha256sum >/dev/null 2>&1 && sha256sum "omega-${{ matrix.target }}.tar.gz" \
+            || shasum -a 256 "omega-${{ matrix.target }}.tar.gz" ) > "omega-${{ matrix.target }}.tar.gz.sha256"
+          ls -la
+
+      - name: Upload to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/omega-${{ matrix.target }}.tar.gz
+            dist/omega-${{ matrix.target }}.tar.gz.sha256

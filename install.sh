@@ -194,6 +194,74 @@ else
     info "Set agent_command in ~/.omega/config.toml"
 fi
 
+# ─── Phase 2.5: Prebuilt binaries (fast path) ────────────────────────────────
+# Try to download prebuilt omega + rmux from GitHub Releases for THIS platform
+# and skip the ~8-minute source compile. Any miss (no release, no asset for this
+# arch, checksum/extract failure, binary won't run here) falls through to the
+# source build in Phases 3-4 — so a fresh clone always reproduces the system
+# (Law 0), just faster when a release exists. Force source with OMEGA_FROM_SOURCE=1.
+PREBUILT_OK=""
+maybe_install_prebuilt() {
+    [[ -n "${OMEGA_FROM_SOURCE:-}" ]] && { info "OMEGA_FROM_SOURCE set — building from source"; return 0; }
+    command -v curl >/dev/null 2>&1 || { info "curl absent — building from source"; return 0; }
+    command -v tar  >/dev/null 2>&1 || return 0
+
+    local os arch triple
+    os="$(uname -s)"; arch="$(uname -m)"
+    case "$os/$arch" in
+        Linux/x86_64)              triple="x86_64-unknown-linux-gnu" ;;
+        Linux/aarch64|Linux/arm64) triple="aarch64-unknown-linux-gnu" ;;
+        Darwin/arm64)              triple="aarch64-apple-darwin" ;;
+        Darwin/x86_64)             triple="x86_64-apple-darwin" ;;
+        *) info "No prebuilt for $os/$arch — building from source"; return 0 ;;
+    esac
+
+    local tag
+    tag="$(curl -fsSL "https://api.github.com/repos/agentik-os/OmegaOS/releases/latest" 2>/dev/null \
+            | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
+    [[ -n "$tag" ]] || { info "No published release yet — building from source"; return 0; }
+
+    local base tarball tmp
+    base="https://github.com/agentik-os/OmegaOS/releases/download/$tag"
+    tarball="omega-$triple.tar.gz"
+    tmp="$(mktemp -d)" || return 0
+
+    info "Fetching prebuilt $tarball ($tag)..."
+    if ! curl -fsSL "$base/$tarball" -o "$tmp/$tarball"; then
+        info "Prebuilt $tarball not in release $tag — building from source"; rm -rf "$tmp"; return 0
+    fi
+    # Checksum: if the .sha256 sidecar exists it MUST match (tamper/partial guard).
+    if curl -fsSL "$base/$tarball.sha256" -o "$tmp/$tarball.sha256" 2>/dev/null; then
+        local want got
+        want="$(awk '{print $1}' "$tmp/$tarball.sha256" 2>/dev/null)" || true
+        got="$( { sha256sum "$tmp/$tarball" 2>/dev/null || shasum -a 256 "$tmp/$tarball" 2>/dev/null; } | awk '{print $1}')" || true
+        if [[ -n "$want" && "$want" != "$got" ]]; then
+            err "Prebuilt checksum mismatch — refusing prebuilt, building from source"; rm -rf "$tmp"; return 0
+        fi
+    fi
+    if ! tar xzf "$tmp/$tarball" -C "$tmp" 2>/dev/null; then
+        info "Prebuilt extract failed — building from source"; rm -rf "$tmp"; return 0
+    fi
+    [[ -f "$tmp/omega" && -f "$tmp/rmux" ]] || { info "Prebuilt missing binaries — building from source"; rm -rf "$tmp"; return 0; }
+
+    mkdir -p "$INSTALL_DIR"
+    install -m 0755 "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
+    install -m 0755 "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
+    ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"
+    rm -rf "$tmp"
+
+    # Sanity: the downloaded binaries actually run on THIS host (right libc/arch).
+    if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 && "$INSTALL_DIR/rmux" --version >/dev/null 2>&1; then
+        PREBUILT_OK=1
+        ok "Prebuilt omega + rmux installed ($tag, $triple) — skipped the source build"
+    else
+        info "Prebuilt binaries did not run here — building from source"
+        rm -f "$INSTALL_DIR/omega" "$INSTALL_DIR/rmux"
+    fi
+    return 0
+}
+maybe_install_prebuilt
+
 # ─── Phase 3: Build rmux ─────────────────────────────────────────────────────
 
 step "Phase 3: Building rmux"
@@ -231,15 +299,19 @@ if [[ -z "$OMEGA_SRC" ]]; then
 fi
 
 cd "$OMEGA_SRC"
-info "Building omega CLI..."
-# --locked: build against the committed Cargo.lock so a fresh clone resolves the
-# exact same transitive deps (reproducible builds). Falls back to an unlocked
-# build only if the lockfile is somehow absent/out of sync.
-cargo build --release --locked 2>&1 | tail -3 || cargo build --release 2>&1 | tail -3
-mkdir -p "$INSTALL_DIR"
-cp target/release/omega "$INSTALL_DIR/omega"
-ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
-ok "omega CLI installed to $INSTALL_DIR/omega"
+if [[ -n "${PREBUILT_OK:-}" ]]; then
+    ok "omega CLI already installed from prebuilt — skipping source build"
+else
+    info "Building omega CLI..."
+    # --locked: build against the committed Cargo.lock so a fresh clone resolves the
+    # exact same transitive deps (reproducible builds). Falls back to an unlocked
+    # build only if the lockfile is somehow absent/out of sync.
+    cargo build --release --locked 2>&1 | tail -3 || cargo build --release 2>&1 | tail -3
+    mkdir -p "$INSTALL_DIR"
+    cp target/release/omega "$INSTALL_DIR/omega"
+    ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
+    ok "omega CLI installed to $INSTALL_DIR/omega"
+fi
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 

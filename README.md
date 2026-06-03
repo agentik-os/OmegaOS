@@ -118,7 +118,7 @@ cd OmegaOS
 ./install.sh
 ```
 
-Either way the installer builds `rmux` and `omega` from source, so the first run isn't instant. When it finishes, run the doctor.
+The installer downloads prebuilt `rmux` + `omega` binaries for your platform when a release is published (verified by checksum), and falls back to building from source otherwise — so a fresh clone always reproduces the system, just faster when a binary exists. Force a source build with `OMEGA_FROM_SOURCE=1 ./install.sh`. When it finishes, run the doctor.
 
 ### Connecting remotely
 
