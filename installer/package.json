@@ -1,0 +1,33 @@
+{
+  "name": "omega-os",
+  "version": "0.1.0",
+  "description": "One-command installer for OmegaOS — the agentic terminal OS (rmux + AI orchestration). Run: npx omega-os",
+  "bin": {
+    "omega-os": "bin/omega-os.js"
+  },
+  "files": [
+    "bin/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "omega",
+    "omegaos",
+    "rmux",
+    "agentic",
+    "terminal",
+    "installer",
+    "ai",
+    "claude"
+  ],
+  "homepage": "https://github.com/agentik-os/OmegaOS",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentik-os/OmegaOS.git",
+    "directory": "installer"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Agentik OS"
+}
