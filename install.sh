@@ -121,12 +121,17 @@ install_mosh_optional
 ensure_utf8_locale() {
     if locale -a 2>/dev/null | grep -qiE 'en_US\.utf-?8'; then ok "UTF-8 locale present (en_US.UTF-8)"; else
         local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+        # Every command here is best-effort: on a minimal image the `locales`
+        # package (and its en_US source) may be absent, so locale-gen/localedef
+        # can fail. Under `set -euo pipefail` an unguarded failure would ABORT
+        # the whole install (proven in a clean ubuntu:24.04 container) — so each
+        # is `|| true`. A missing UTF-8 locale degrades to C.UTF-8, never fatal.
         if command -v locale-gen >/dev/null 2>&1; then
-            $SUDO sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null
-            grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo 'en_US.UTF-8 UTF-8' | $SUDO tee -a /etc/locale.gen >/dev/null 2>&1
-            $SUDO locale-gen 2>/dev/null
+            $SUDO sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
+            grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo 'en_US.UTF-8 UTF-8' | $SUDO tee -a /etc/locale.gen >/dev/null 2>&1 || true
+            $SUDO locale-gen 2>/dev/null || true
         elif command -v localedef >/dev/null 2>&1; then
-            $SUDO localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null
+            $SUDO localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || true
         fi
         locale -a 2>/dev/null | grep -qiE 'en_US\.utf-?8' \
             && ok "UTF-8 locale generated (en_US.UTF-8)" \
@@ -135,8 +140,8 @@ ensure_utf8_locale() {
     # Make it the system default so root + future users get UTF-8 without per-shell setup.
     if [[ ! -s /etc/default/locale ]] || ! grep -q 'LANG=.*UTF-8' /etc/default/locale 2>/dev/null; then
         local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-        echo 'LANG=en_US.UTF-8' | $SUDO tee /etc/default/locale >/dev/null 2>&1 \
-            && ok "System default locale set (LANG=en_US.UTF-8 for all users)"
+        { echo 'LANG=en_US.UTF-8' | $SUDO tee /etc/default/locale >/dev/null 2>&1 \
+            && ok "System default locale set (LANG=en_US.UTF-8 for all users)"; } || true
     fi
     return 0
 }
