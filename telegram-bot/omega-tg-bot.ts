@@ -1118,27 +1118,27 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
 
 // ── group setup: verify the bot is admin, register the supergroup as hub ─────
 async function cmdSetupGroup(chat: any, chatId: number, thread?: number) {
-  if (chat.type !== "group" && chat.type !== "supergroup") return send(chatId, "⚠️ Lance <code>/setupgroup</code> <b>dans le groupe</b> (un supergroupe avec les Sujets/Topics activés).", undefined, thread);
+  if (chat.type !== "group" && chat.type !== "supergroup") return send(chatId, "⚠️ Run <code>/setupgroup</code> <b>in the group</b> (a supergroup with Topics enabled).", undefined, thread);
   // getChat to read the live is_forum (the message's chat object can be stale).
   const info = await tg("getChat", { chat_id: chatId });
   const isForum = info.ok ? !!info.result?.is_forum : !!chat.is_forum;
   const admins = await tg("getChatAdministrators", { chat_id: chatId });
   const me = admins.ok ? admins.result.find((a: any) => a.user?.id === BOT_ID) : null;
-  if (!me) return send(chatId, "⚠️ Je ne suis <b>pas admin</b> ici. Ajoute-moi <b>administrateur</b> avec la permission <b>« Gérer les sujets »</b> (Manage Topics), puis relance <code>/setupgroup</code>.", undefined, thread);
+  if (!me) return send(chatId, "⚠️ I'm <b>not admin</b> here. Add me as <b>administrator</b> with the <b>“Manage Topics”</b> permission, then re-run <code>/setupgroup</code>.", undefined, thread);
   const canTopics = me.status === "creator" || me.can_manage_topics === true;
   const g = loadGroups(); g.hub = chatId; g.isForum = isForum; g.topics ||= {}; saveGroups(g);
-  let msg = "✅ Groupe enregistré comme <b>hub projets</b>.";
-  if (!isForum) msg += "\n⚠️ Les <b>Sujets/Topics ne sont pas activés</b> — active-les dans les réglages du groupe, puis relance /setupgroup.";
-  else if (!canTopics) msg += "\n⚠️ Il me manque la permission <b>« Gérer les sujets »</b> : ouvre mes droits admin (toi → groupe → admins → ce bot) et active <b>Manage Topics</b>, puis lance <code>/sync</code>.";
-  else msg += "\n✅ Topics activés + droits OK — lance <code>/sync</code> pour créer un topic par projet.";
+  let msg = "✅ Group registered as the <b>project hub</b>.";
+  if (!isForum) msg += "\n⚠️ <b>Topics are not enabled</b> — enable them in the group settings, then re-run /setupgroup.";
+  else if (!canTopics) msg += "\n⚠️ I'm missing the <b>“Manage Topics”</b> permission: open my admin rights (you → group → admins → this bot) and enable <b>Manage Topics</b>, then run <code>/sync</code>.";
+  else msg += "\n✅ Topics enabled + rights OK — run <code>/sync</code> to create one topic per project.";
   return send(chatId, msg, undefined, thread);
 }
 
 // ── sync: one forum topic per project; route topic messages to its oracle ────
 async function cmdSync(chatId: number, thread?: number) {
   const g = loadGroups();
-  if (!g.hub) return send(chatId, "⚠️ Pas de hub — lance d'abord <code>/setupgroup</code> dans ton supergroupe.", undefined, thread);
-  if (!g.isForum) return send(chatId, "⚠️ Les Sujets/Topics ne sont pas activés — active-les, relance /setupgroup, puis /sync.", undefined, thread);
+  if (!g.hub) return send(chatId, "⚠️ No hub — first run <code>/setupgroup</code> in your supergroup.", undefined, thread);
+  if (!g.isForum) return send(chatId, "⚠️ Topics are not enabled — enable them, re-run /setupgroup, then /sync.", undefined, thread);
   g.topics ||= {};
   // Ensure the Atlas topic exists — where reports that don't belong to a project
   // (OmegaOS-self, cross-project) are posted instead of the operator DM.
@@ -1152,7 +1152,7 @@ async function cmdSync(chatId: number, thread?: number) {
   }
   const mp = loadProjects();
   const names = Object.keys(mp);
-  if (!names.length) return send(g.hub, "Aucun projet géré — ajoute (📁) ou crée (➕) un projet, puis /sync.", undefined, thread);
+  if (!names.length) return send(g.hub, "No managed project — add (📁) or create (➕) a project, then /sync.", undefined, thread);
   let made = 0; let recreated = 0; let err = "";
   for (const p of names) {
     // Reverse-lookup the project's currently-mapped topic id (if any).
@@ -1162,16 +1162,16 @@ async function cmdSync(chatId: number, thread?: number) {
       // was deleted in the group, recreate it (this is the resilience the operator wants).
       const probe = await tg("editForumTopic", { chat_id: g.hub, message_thread_id: Number(mappedTid), name: p.slice(0, 128) });
       if (probe.ok) continue; // topic alive → keep
-      if (/rights|manage/i.test(probe.description || "")) { err = probe.description || "droits"; break; }
+      if (/rights|manage/i.test(probe.description || "")) { err = probe.description || "rights"; break; }
       delete g.topics[mappedTid]; // stale mapping (topic deleted) → drop + recreate below
     }
     const r = await tg("createForumTopic", { chat_id: g.hub, name: p.slice(0, 128) });
     if (r.ok) { g.topics[String(r.result.message_thread_id)] = p; recordProject(p, mp[p].dir || "", undefined, r.result.message_thread_id); if (mappedTid) recreated++; else made++; }
-    else { err = r.description || "échec"; break; }
+    else { err = r.description || "failed"; break; }
   }
   saveGroups(g);
-  if (err) return send(g.hub, `⚠️ Sync interrompu : <i>${esc(err)}</i>.${/rights|manage/i.test(err) ? "\nActive la permission <b>« Gérer les sujets »</b> pour le bot (admin du groupe), puis relance /sync." : ""}\n(${made} créé(s), ${recreated} recréé(s) avant l'arrêt)`, undefined, thread);
-  return send(g.hub, `🔁 Sync OK. ${made} nouveau(x) topic(s)${recreated ? `, ${recreated} recréé(s) (topics supprimés détectés)` : ""} ; ${Object.keys(g.topics).length} topic(s) projet au total. Les messages dans le topic d'un projet sont routés vers son oracle.`, undefined, thread);
+  if (err) return send(g.hub, `⚠️ Sync interrupted: <i>${esc(err)}</i>.${/rights|manage/i.test(err) ? "\nEnable the <b>“Manage Topics”</b> permission for the bot (group admin), then re-run /sync." : ""}\n(${made} created, ${recreated} recreated before stopping)`, undefined, thread);
+  return send(g.hub, `🔁 Sync OK. ${made} new topic(s)${recreated ? `, ${recreated} recreated (deleted topics detected)` : ""}; ${Object.keys(g.topics).length} project topic(s) total. Messages in a project's topic are routed to its oracle.`, undefined, thread);
 }
 
 // ── AGENT MODE poll loop: a per-agent bot. Whitelisted to the operator; every
@@ -1179,7 +1179,7 @@ async function cmdSync(chatId: number, thread?: number) {
 async function agentBotMain(agentId: string) {
   while (!loadConfig()) { console.log(`agent-bot ${agentId}: waiting for token in ${AGENT_BOTS_FILE} …`); await Bun.sleep(5000); }
   const project = loadAgentBots()[agentId]?.project || agentId;
-  await tg("setMyCommands", { commands: [{ command: "start", description: `Parler à l'oracle du projet ${project}` }] });
+  await tg("setMyCommands", { commands: [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
   console.log(`agent-bot up: ${agentId} → project ${project}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
@@ -1194,7 +1194,7 @@ async function agentBotMain(agentId: string) {
         const msg = u.message; if (!msg?.text) continue;
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, text = msg.text.trim(), thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
-        if (text === "/start" || text === "/menu") { await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nÉcris ta mission : chaque message lance un <b>dispatch oracle</b> (session Claude Code dédiée sur le VPS) pour le projet <b>${esc(project)}</b>. Je te remonte le résultat.`, undefined, thread); continue; }
+        if (text === "/start" || text === "/menu") { await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread); continue; }
         // A message to a project agent-bot = a MISSION → dispatch a real oracle session.
         react(chatId, msg.message_id, "🚀");
         await send(chatId, await dispatchToOracle(project, text, chatId, thread), undefined, thread);
@@ -1257,10 +1257,10 @@ async function main() {
             const j = extractJson(await omega(["claude-login-code", text]));
             const ok = !!j?.ok;
             const body = ok
-              ? ` ✅ <b>Connecté</b>\n 📧 ${esc(j.email || "?")}\n ⏱ token frais — ${j.expires_min || "?"} min\n 🔗 credential partagé mis à jour (toutes les sessions).`
-              : ` ❌ <b>Échec de validation</b>\n ${esc(j?.error || "le code n'a pas été accepté")}\n\n <i>Le code expire vite — relance « Login » pour un lien frais.</i>`;
+              ? ` ✅ <b>Connected</b>\n 📧 ${esc(j.email || "?")}\n ⏱ fresh token — ${j.expires_min || "?"} min\n 🔗 shared credential updated (every session).`
+              : ` ❌ <b>Validation failed</b>\n ${esc(j?.error || "the code was not accepted")}\n\n <i>The code expires fast — re-run “Login” for a fresh link.</i>`;
             await send(chatId, card("LOGIN", body),
-              kb([[{ text: "💳 Account", callback_data: "nav:account" }, ...(ok ? [] : [{ text: "🔁 Relancer Login", callback_data: "acct:login" }])]]), thread);
+              kb([[{ text: "💳 Account", callback_data: "nav:account" }, ...(ok ? [] : [{ text: "🔁 Restart Login", callback_data: "acct:login" }])]]), thread);
             continue;
           }
           if (p.kind === "new-project") {
@@ -1273,7 +1273,7 @@ async function main() {
             await send(chatId, report, undefined, thread);
             // Launch the project's scoped oracle on the description to start working now.
             const safe = name.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "project";
-            await brainReply(chatId, msg.message_id, thread, `Nouveau projet "${safe}" (dossier ~/Station/${category}/${safe}). Description opérateur : ${desc}. Initialise le projet en conséquence (scaffolding de base adapté à la description), puis propose un plan de démarrage concret et les prochaines étapes.`, (t) => projectOracle(safe, t), safe);
+            await brainReply(chatId, msg.message_id, thread, `New project "${safe}" (folder ~/Station/${category}/${safe}). Operator description: ${desc}. Initialize the project accordingly (basic scaffolding suited to the description), then propose a concrete startup plan and the next steps.`, (t) => projectOracle(safe, t), safe);
             continue;
           }
           if (p.kind === "add-project") {
@@ -1294,7 +1294,7 @@ async function main() {
             // Validate the token via getMe before wiring anything.
             let botInfo: any = {};
             try { botInfo = await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json(); } catch {}
-            if (!/^\d+:/.test(token) || !botInfo.ok) { await send(chatId, "❌ Token invalide (vérifie le format <code>123456:ABC…</code> et que le bot existe).", kb([[{ text: "🔁 Réessayer", callback_data: `agent:tglink:${agentId}`.slice(0, 64) }]]), thread); continue; }
+            if (!/^\d+:/.test(token) || !botInfo.ok) { await send(chatId, "❌ Invalid token (check the format <code>123456:ABC…</code> and that the bot exists).", kb([[{ text: "🔁 Retry", callback_data: `agent:tglink:${agentId}`.slice(0, 64) }]]), thread); continue; }
             // Project = the agent id if it's a known project, else the agent id itself.
             const project = (repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId;
             const bots = loadAgentBots();
@@ -1304,8 +1304,8 @@ async function main() {
             const spawn = spawnAgentBot(agentId);
             const me = `@${botInfo.result?.username || "?"}`;
             await send(chatId, spawn === "ok"
-              ? `<b>✅ Bot associé à « ${esc(agentId)} »</b>\nBot ${esc(me)} démarré, whitelisté à toi seul.\nParle-lui : tu t'adresses à l'<b>oracle ${esc(project)}</b> (scopé à ce projet — team, workers, workflows).`
-              : `<b>⚠️ Bot enregistré mais service KO</b>\n${esc(spawn)}\nVérifie : <code>systemctl --user status omega-tg-agent-${esc(agentId)}</code>`,
+              ? `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`
+              : `<b>⚠️ Bot registered but service down</b>\n${esc(spawn)}\nCheck: <code>systemctl --user status omega-tg-agent-${esc(agentId)}</code>`,
               kb([[{ text: "🤖 Agents", callback_data: "nav:agents" }]]), thread);
             continue;
           }
@@ -1333,9 +1333,9 @@ async function main() {
           // reply (if any) + the new message. Persist the operator turn (also mirrored
           // to the MC dashboard) so Atlas / the oracle has FULL conversation access.
           const ctx = histContext(chatId, thread);
-          const quoted = replyTo ? `## L'opérateur répond à ce message :\n«${replyTo}»\n\n` : "";
+          const quoted = replyTo ? `## The operator is replying to this message:\n«${replyTo}»\n\n` : "";
           const extra = `${ctx}${quoted}`;
-          histAppend(chatId, thread, "operator", replyTo ? `(en réponse à: ${replyTo.slice(0, 120)}) ${text}` : text, proj || "atlas");
+          histAppend(chatId, thread, "operator", replyTo ? `(in reply to: ${replyTo.slice(0, 120)}) ${text}` : text, proj || "atlas");
           if (proj) { react(chatId, msg.message_id, "🚀"); const r = await dispatchToOracle(proj, text, chatId, thread, extra); if (r) await send(chatId, r, undefined, thread); }
           else await brainReply(chatId, msg.message_id, thread, `${extra}${text}`);
         }
