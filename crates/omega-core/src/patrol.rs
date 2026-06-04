@@ -652,6 +652,16 @@ impl Patrol {
             if state.all_workers_terminal() {
                 continue;
             }
+            // Never started → leave it dead. An oracle that registered ZERO
+            // workers never decomposed a mission, so there is nothing to resume:
+            // resurrecting it only replays the original (often malformed) dispatch
+            // and spawns an empty oracle shell, which patrol then resurrects again
+            // every 5 min — an infinite "empty session keeps reopening" loop.
+            // (all_workers_terminal() is false for an empty worker list, so this
+            // case is NOT caught above.)
+            if state.workers.is_empty() {
+                continue;
+            }
             if let Ok(Some(done)) = OracleDoneSignal::read(&self.config.state_dir, &name) {
                 if done.is_closeable() {
                     continue;
