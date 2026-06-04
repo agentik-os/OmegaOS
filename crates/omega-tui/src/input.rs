@@ -741,9 +741,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::ForceRedraw
         }
-        // Ctrl+R — hot-reload OmegaOS in place (re-exec the updated binary).
+        // Ctrl+R — refresh the session list + preview in place (same as F5).
+        // Hot-reload of the binary lives on the menu's "R" item (MenuAction::Restart),
+        // so ^R no longer tears down the screen.
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::Restart
+            Action::Refresh
         }
 
         // Quit
@@ -1583,11 +1585,11 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     // --- TUI-local (never forwarded) ---
 
-    // Ctrl+R — hot-reload OmegaOS in place (re-exec the binary). Intercepted
-    // even in chat focus so it always works, at the cost of Claude's own
-    // Ctrl+R (reverse-search) inside the mirror — the user asked for ^R reload.
+    // Ctrl+R — refresh the session list + preview in place, even in chat focus,
+    // so the binding is consistent everywhere and never tears down the screen.
+    // Hot-reload of the binary lives on the menu's "R" item (MenuAction::Restart).
     if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::Restart;
+        return Action::Refresh;
     }
 
     // Ctrl+X — CLOSE (kill) the session you're focused in, WITHOUT first Tabbing

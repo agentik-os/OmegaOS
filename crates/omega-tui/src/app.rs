@@ -1475,7 +1475,7 @@ impl App {
                     // genuinely dead pane — replaces the view with the message.
                     self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
                     self.preview_revision = 0; // force fresh recapture next tick
-                    if self.preview_fail_streak >= 3 || self.preview_styled.is_none() {
+                    if self.preview_fail_streak >= 3 {
                         self.preview_content = String::from("(session has no pane content)");
                         self.preview_styled = None;
                         self.preview_cursor = None;
@@ -1510,7 +1510,7 @@ impl App {
                         // Same sticky-last-good policy as the tail path: a
                         // transient capture error must not clobber the view.
                         self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
-                        if self.preview_fail_streak >= 3 || self.preview_content.is_empty() {
+                        if self.preview_fail_streak >= 3 {
                             self.preview_content = String::from("(session has no pane content)");
                         }
                         self.preview_history_for = None;
