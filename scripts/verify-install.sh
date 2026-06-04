@@ -229,6 +229,7 @@ fi
 # 11. New self-healing assets shipped + wired (token-refresh, shared-credential, scrollback alias).
 if [ -f scripts/omega-token-refresh.sh ] && grep -q "omega-token-refresh.sh" install.sh; then ok "token-refresh helper shipped + wired in install.sh"; else bad "token-refresh helper not shipped/wired in install.sh"; fi
 if grep -q "OMEGA-CRON-TOKEN-REFRESH-v1" install.sh; then ok "token-refresh cron scheduled by install.sh"; else bad "token-refresh cron not in install.sh"; fi
+if [ -f scripts/omega-self-heal.sh ] && grep -q "omega-self-heal.sh" install.sh && grep -q "OMEGA-CRON-SELFHEAL-v1" install.sh; then ok "self-heal daemon shipped + wired + cron scheduled"; else bad "self-heal daemon (omega-self-heal.sh) not shipped/wired in install.sh"; fi
 if grep -q "OMEGA_CREDENTIALS_LINK" install.sh; then ok "shared-credential override (OMEGA_CREDENTIALS_LINK) wired in install.sh"; else bad "shared-credential override not in install.sh"; fi
 if grep -q "alias om=" install.sh && grep -q "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" install.sh; then ok "shell integration (om alias + scrollback) wired in install.sh"; else bad "shell integration not in install.sh"; fi
 

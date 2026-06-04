@@ -301,28 +301,15 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         }
     }
 
-    // 11. Single Telegram poller — two `omega-tg-bot.ts` processes mean
-    //     duplicate messages / getUpdates 409s. Only systemd should run it.
+    // 11. Single Telegram MAIN-bot poller — two main pollers mean duplicate
+    //     messages / getUpdates 409s; only systemd should run it. Agent bots
+    //     (omega-tg-agent-*) run the SAME script but are legitimate separate
+    //     services (own token, per-project) — `main_bot_pollers` excludes them
+    //     via /proc/<pid>/environ so they don't inflate the count into a false
+    //     "duplicate pollers" warning. A co-tenant's bot under another user is
+    //     also excluded (pgrep -u scopes to this user).
     {
-        // Scope to THIS user's bun bot: a co-tenant's bot (a different token under
-        // another user) and the doctor's own shell must not inflate the count —
-        // only a genuine duplicate poller of this install should warn.
-        let uid = std::process::Command::new("id")
-            .arg("-u")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty());
-        let mut pgrep = std::process::Command::new("pgrep");
-        if let Some(ref u) = uid {
-            pgrep.args(["-u", u]);
-        }
-        let count = pgrep
-            .args(["-fc", r"bun.*omega-tg-bot\.ts"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
-            .unwrap_or(0);
+        let count = main_bot_pollers(&current_uid()).len();
         if count > 1 {
             checks.push(Check::warn(
                 "telegram poller",
@@ -381,6 +368,147 @@ fn parse_export_kv(line: &str) -> Option<(String, String)> {
     }
     let val = v.trim().trim_matches('"').trim_matches('\'').to_string();
     Some((key, val))
+}
+
+// ───────── auto-fix (omega doctor --fix / the self-heal daemon) ─────────
+
+fn current_uid() -> String {
+    std::process::Command::new("id")
+        .arg("-u")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The systemd-managed main-bot PID (the ONE poller we must keep). 0/None if
+/// the unit isn't running under systemd.
+fn systemd_main_pid() -> Option<u32> {
+    let out = systemctl_user(&["show", "omega-tg-bot.service", "-p", "MainPID", "--value"])?;
+    out.trim().parse::<u32>().ok().filter(|p| *p != 0)
+}
+
+/// This user's `bun … omega-tg-bot.ts` PIDs that are NOT agent bots. Agent bots
+/// (omega-tg-agent-*.service) run the SAME script but carry OMEGA_AGENT_BOT in
+/// their environ — they are legitimate separate services and must NOT be killed.
+fn main_bot_pollers(uid: &str) -> Vec<u32> {
+    let Ok(out) = std::process::Command::new("pgrep")
+        .args(["-u", uid, "-f", r"bun.*omega-tg-bot\.ts"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .filter(|pid| {
+            // Skip agent bots: their /proc/<pid>/environ contains OMEGA_AGENT_BOT=.
+            let environ = std::fs::read(format!("/proc/{}/environ", pid)).unwrap_or_default();
+            !environ
+                .windows(b"OMEGA_AGENT_BOT=".len())
+                .any(|w| w == b"OMEGA_AGENT_BOT=")
+        })
+        .collect()
+}
+
+/// Kill orphan duplicate pollers of the MAIN bot, keeping the systemd one.
+fn fix_duplicate_pollers() -> Vec<String> {
+    let uid = current_uid();
+    let pollers = main_bot_pollers(&uid);
+    if pollers.len() <= 1 {
+        return Vec::new();
+    }
+    // SAFETY: only kill duplicates when we can positively identify the ONE to
+    // keep (the systemd-managed PID). If systemd can't tell us, do nothing rather
+    // than risk killing the live bot.
+    let Some(keep_pid) = systemd_main_pid() else {
+        return vec!["duplicate pollers found but systemd MainPID unknown — skipped (manual: keep only omega-tg-bot.service)".into()];
+    };
+    let keep = Some(keep_pid);
+    let mut log = Vec::new();
+    for pid in pollers {
+        if Some(pid) == keep {
+            continue; // the canonical, systemd-managed poller
+        }
+        let ok = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ok {
+            log.push(format!(
+                "killed duplicate Telegram poller pid {}{}",
+                pid,
+                keep.map(|k| format!(" (kept systemd {})", k)).unwrap_or_default()
+            ));
+        }
+    }
+    log
+}
+
+fn fix_restart_tg_service() -> Vec<String> {
+    let ok = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "omega-tg-bot.service"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        vec!["restarted omega-tg-bot.service".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn fix_refresh_usage() -> Vec<String> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("omega"));
+    let ok = std::process::Command::new(exe)
+        .args(["usage", "--check"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        vec!["refreshed usage cache (omega usage --check)".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+fn fix_refresh_oauth() -> Vec<String> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let script = home.join(".omega/bin/omega-token-refresh.sh");
+    if !script.exists() {
+        return Vec::new();
+    }
+    let ok = std::process::Command::new("bash")
+        .arg(&script)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if ok {
+        vec!["ran omega-token-refresh.sh (oauth)".into()]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Apply safe, mechanical fixes for the warnings/fails we know how to resolve
+/// (duplicate pollers, dead Telegram service, stale usage cache, expired oauth).
+/// Returns one log line per action taken. Never panics; anything it can't fix is
+/// left for an oracle (the /status "Fix it" button) or the operator.
+pub fn auto_fix(checks: &[Check]) -> Vec<String> {
+    let mut log = Vec::new();
+    for c in checks.iter().filter(|c| c.health != Health::Ok) {
+        match c.name.as_str() {
+            "telegram poller" => log.extend(fix_duplicate_pollers()),
+            "telegram service" => log.extend(fix_restart_tg_service()),
+            "usage cache" => log.extend(fix_refresh_usage()),
+            "claude oauth" => log.extend(fix_refresh_oauth()),
+            _ => {}
+        }
+    }
+    log
 }
 
 /// Worst health across all checks — drives the process exit code.

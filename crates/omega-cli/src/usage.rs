@@ -8,9 +8,10 @@
 //!   source when Anthropic serves it.
 //! - The alert metric is `max(session_5h%, week_7d%)` — whichever cap is
 //!   closest to being hit, exactly like the old monitor.
-//! - At 80% → yellow proactive alert. At 90% → red alert. Each threshold
-//!   has its own 30-minute cooldown file under `~/.omega/state/` so we
-//!   don't spam.
+//! - Proactive alerts at 80% / 85% / 90% / 95% — yellow under 90, red at/above.
+//!   Only the HIGHEST threshold crossed fires on a given tick, and each
+//!   threshold has its own 30-minute cooldown file under `~/.omega/state/`
+//!   so we don't spam.
 //! - Alerts go out through the SAME Telegram bot the bridge uses
 //!   (`~/.omega/telegram.toml`), formatted with a usage bar.
 //!
@@ -145,20 +146,28 @@ fn usage_bar(pct: u32) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(empty))
 }
 
-async fn send_alert(client: &reqwest::Client, snap: &UsageSnapshot, red: bool) -> Result<()> {
+/// Highest usage threshold crossed (95 → 90 → 85 → 80), or None below 80.
+/// The alert fires only on this one so a single tick never double-alerts.
+pub fn threshold_for(pct: u32) -> Option<u32> {
+    [95u32, 90, 85, 80].into_iter().find(|&t| pct >= t)
+}
+
+async fn send_alert(client: &reqwest::Client, snap: &UsageSnapshot, threshold: u32) -> Result<()> {
     let (token, chat_id) = telegram_creds().context("no telegram creds")?;
     let pct = snap.alert_pct();
+    let red = threshold >= 90;
     let icon = if red { "🔴" } else { "🟡" };
-    let level = if red { "USAGE 90%" } else { "USAGE 80%" };
     let bar = usage_bar(pct);
+    // Branded to match the Telegram bot's Ω card grammar (status / model views).
     let text = format!(
-        "{icon} <b>{level}</b> · <code>{pct}%</code>\n\
-         ────────────────────\n\
+        "━━━━━━━━━━━━━━━━━━━\n\
+         {icon} <b>USAGE {threshold}%</b> · <code>{pct}%</code>\n\
+         ━━━━━━━━━━━━━━━━━━━\n\
          <code>{bar}</code>\n\n\
          <b>5h:</b> {sess}%   <b>Week:</b> {week}%\n\n\
          <i>Approche de la limite. /clean ou switch de compte si besoin.</i>",
         icon = icon,
-        level = level,
+        threshold = threshold,
         pct = pct,
         bar = bar,
         sess = snap.session_pct,
@@ -190,15 +199,14 @@ pub async fn check_and_alert() -> Result<Option<UsageSnapshot>> {
 
     let pct = snap.alert_pct();
 
-    // 90% red (own cooldown)
-    if pct >= 90 && cooldown_elapsed("usage-alert-90-sent") >= COOLDOWN_SECS {
-        touch_cooldown("usage-alert-90-sent");
-        send_alert(&client, &snap, true).await?;
-    }
-    // 80% yellow (own cooldown, only when not already in 90 band)
-    else if pct >= 80 && pct < 90 && cooldown_elapsed("usage-alert-80-sent") >= COOLDOWN_SECS {
-        touch_cooldown("usage-alert-80-sent");
-        send_alert(&client, &snap, false).await?;
+    // Fire only the HIGHEST threshold crossed (95/90/85/80), each with its own
+    // 30-min cooldown so escalating usage still escalates the alert.
+    if let Some(threshold) = threshold_for(pct) {
+        let flag = format!("usage-alert-{}-sent", threshold);
+        if cooldown_elapsed(&flag) >= COOLDOWN_SECS {
+            touch_cooldown(&flag);
+            send_alert(&client, &snap, threshold).await?;
+        }
     }
 
     // Persist latest snapshot for `omega usage` (no --check) display.
@@ -226,6 +234,19 @@ mod tests {
     fn alert_pct_is_max() {
         let s = UsageSnapshot { session_pct: 72, week_pct: 81 };
         assert_eq!(s.alert_pct(), 81);
+    }
+
+    #[test]
+    fn threshold_picks_highest_crossed() {
+        assert_eq!(threshold_for(72), None);
+        assert_eq!(threshold_for(80), Some(80));
+        assert_eq!(threshold_for(84), Some(80));
+        assert_eq!(threshold_for(85), Some(85));
+        assert_eq!(threshold_for(89), Some(85));
+        assert_eq!(threshold_for(90), Some(90));
+        assert_eq!(threshold_for(94), Some(90));
+        assert_eq!(threshold_for(95), Some(95));
+        assert_eq!(threshold_for(100), Some(95));
     }
 
     #[test]

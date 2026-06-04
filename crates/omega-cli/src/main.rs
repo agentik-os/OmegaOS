@@ -329,6 +329,11 @@ enum Commands {
         /// Read-only — writes nothing.
         #[arg(long)]
         pre_reset: bool,
+        /// Apply safe mechanical fixes for the warnings it can resolve
+        /// (duplicate Telegram pollers, dead bot service, stale usage cache,
+        /// expired oauth), then re-run the checks. Used by the self-heal cron.
+        #[arg(long)]
+        fix: bool,
     },
 
     /// Back up the irreproducible OmegaOS state (`~/.omega` + crontab) to a
@@ -540,11 +545,11 @@ async fn main() -> Result<()> {
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
-        Some(Commands::Doctor { pre_reset }) => {
+        Some(Commands::Doctor { pre_reset, fix }) => {
             if pre_reset {
                 cmd_doctor_pre_reset()
             } else {
-                cmd_doctor().await
+                cmd_doctor(fix).await
             }
         }
         Some(Commands::Backup { out, include_memory }) => cmd_backup(out, include_memory),
@@ -3500,12 +3505,30 @@ async fn cmd_timeline(oracle: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_doctor() -> Result<()> {
+async fn cmd_doctor(fix: bool) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
-    let checks = omega_core::doctor::run_all(&config).await;
+    let mut checks = omega_core::doctor::run_all(&config).await;
     println!("OmegaOS doctor\n");
     for c in &checks {
         println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);
+    }
+    // --fix: apply safe mechanical fixes, then re-run the checks so the verdict
+    // below reflects the post-fix state.
+    if fix {
+        let actions = omega_core::doctor::auto_fix(&checks);
+        println!("\n── auto-fix ──");
+        if actions.is_empty() {
+            println!("  (nothing auto-fixable)");
+        } else {
+            for a in &actions {
+                println!("  [~] {}", a);
+            }
+            checks = omega_core::doctor::run_all(&config).await;
+            println!("\n── after fix ──");
+            for c in &checks {
+                println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);
+            }
+        }
     }
     println!();
     match omega_core::doctor::overall(&checks) {

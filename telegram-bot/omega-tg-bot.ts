@@ -665,6 +665,18 @@ function menuKb() {
 }
 const menuText = card("OMEGAOS — ACTION HUB", " Tape une action. Chacune tourne sur ton serveur via le CLI <code>omega</code>.");
 
+// Strip an appended remediation SHELL COMMAND that `omega doctor` packs into a
+// warning detail ("problem — T=$(mktemp) && curl … | bash"). Prose hints
+// ("duplicate messages; keep only systemd …") are kept — only literal commands
+// are dropped, so the card stays clean. The actual fix is the "Fix it" oracle.
+function cleanDetail(v: string): string {
+  const isCmd = (s: string) => /\$\(|&&|\bcurl\b|\bmktemp\b|https?:\/\/|\|\s*bash|bash\s+["']?\$/.test(s);
+  const parts = v.split(" — ");
+  const out = [parts[0]];
+  for (const p of parts.slice(1)) { if (isCmd(p)) break; out.push(p); }
+  return out.join(" — ").slice(0, 100);
+}
+
 // ── status card: parse `omega doctor` → branded health hero (design #6+#10) ───
 // Lines: `  [+] label   value` (ok) / `  [!] label   value` (warning), 2-space
 // indent; the verdict line is at column 0 (`[!] healthy, with warnings above`).
@@ -687,8 +699,8 @@ function statusCard(raw: string): string {
   const verdictTxt = (verdict || (warns.length ? `healthy · ${warns.length} warning(s)` : "all systems healthy")).toUpperCase();
   let body = ` ${hero} <b>${esc(verdictTxt)}</b>\n    <code>${bar(pct)}</code>  ${pct}%`;
   if (warns.length)
-    body += `\n\n ❗ <b>À CORRIGER</b>\n` + warns.map(w => `  ${dot(sev(w.value))} <b>${esc(w.label)}</b> — ${esc(w.value)}`).join("\n");
-  const details = checks.map(c => ` ${dot(c.ok ? "ok" : sev(c.value))} <b>${esc(c.label.toUpperCase())}</b>  ${esc(c.value)}`).join("\n");
+    body += `\n\n ❗ <b>À CORRIGER</b>\n` + warns.map(w => `  ${dot(sev(w.value))} <b>${esc(w.label)}</b> — ${esc(cleanDetail(w.value))}`).join("\n");
+  const details = checks.map(c => ` ${dot(c.ok ? "ok" : sev(c.value))} <b>${esc(c.label.toUpperCase())}</b>  ${esc(cleanDetail(c.value))}`).join("\n");
   body += `\n\n<blockquote expandable>▾ ${total} checks système\n${details}</blockquote>`;
   return `${RULE}\n   Ω  O M E G A O S\n${RULE}\n${body}\n${RULE}`;
 }
@@ -771,7 +783,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
         : ` ⚠️ IP publique non résolue — réessaie, ou active Tailscale pour un accès sécurisé.`;
       return { text: card("MISSION CONTROL", body), markup: kb(rows) };
     }
-    case "status": return { text: statusCard(await omega(["doctor"])), markup: kb([[{ text: "🔄 Refresh", callback_data: "nav:status" }, back()]]) };
+    case "status": return { text: statusCard(await omega(["doctor"])), markup: kb([[{ text: "🛠 Fix it", callback_data: "status:fix" }, { text: "🔄 Refresh", callback_data: "nav:status" }], [back()]]) };
     case "sessions": {
       const names = await sessionNames();
       const rows = names.slice(0, 12).map(s => [{ text: `📊 ${s}`.slice(0, 30), callback_data: `sess:status:${s}`.slice(0, 64) }, { text: "🛑 Kill", callback_data: `sess:kill:${s}`.slice(0, 64) }]);
@@ -822,6 +834,20 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
 async function onCallback(data: string, chat: number, msgId: number, from: number) {
   const [ns, action, ...rest] = data.split(":"); const arg = rest.join(":");
   if (ns === "nav") { const v = await view(action); return edit(chat, msgId, v.text, v.markup); }
+  if (ns === "status" && action === "fix") {
+    // Collect current doctor warnings/fails → dispatch an OmegaOS oracle to fix
+    // them (a real tracked session; the Monitor relays the result back here).
+    const raw = await omega(["doctor"]);
+    const warns = raw.split("\n").filter(l => /^\s*\[[!x]\]/.test(l)).map(l => l.replace(/^\s*\[[!x]\]\s*/, "").trim()).filter(Boolean);
+    if (!warns.length) return edit(chat, msgId, card("OMEGAOS — FIX IT", " ✅ Rien à corriger — tout est vert."), kb([[{ text: "« Status", callback_data: "nav:status" }]]));
+    const mission = `Auto-heal OmegaOS. \`omega doctor\` signale ces problèmes — diagnostique la cause racine et corrige chacun (tu peux t'appuyer sur \`omega doctor --fix\` pour les correctifs mécaniques), puis vérifie avec \`omega doctor\` que tout repasse au vert :\n` + warns.map(w => `- ${w}`).join("\n");
+    // Make `omega dispatch OmegaOS` resolve: the OS repo isn't auto-discovered
+    // (it's a sibling of the container dirs), so register it in the shared
+    // registry first (idempotent — recordProject upserts by path/name).
+    recordProject("OmegaOS", repoPath("OmegaOS") || `${homedir()}/Station/OmegaOS`);
+    const out = await dispatchToOracle("OmegaOS", mission, chat, undefined);
+    return edit(chat, msgId, out, kb([[{ text: "« Status", callback_data: "nav:status" }]]));
+  }
   if (ns === "model" && action === "prov") { const v = await modelProviderView(arg); return edit(chat, msgId, v.text, v.markup); }
   if (ns === "model" && action === "set") {
     // arg = "provider:model" — model may contain "/" (openrouter ids), never ":".
