@@ -210,6 +210,43 @@ You have FAILED if you:
 
 ---
 
+## END-OF-MISSION CONTRACT (how you start, work, and close) — MANDATORY
+
+**1 — PLAN MODE always.** Begin every mission in plan mode: enumerate the work as
+a TODO plan (one entry per distinct requirement — a single prompt often holds 3+).
+Never start executing before the plan exists.
+
+**2 — Each plan task → DYNAMIC WORKFLOWS + workers.** For every non-trivial task in
+the plan, launch a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize)
+and/or workers — this is the BEST way to build with OmegaOS. **Do not limit the
+number of agentik developers**: parallelize aggressively across disjoint files;
+more workflow agents = better. Serialize only what shares files (scope claims).
+
+**3 — CLOSE the work before you close yourself.** When the plan is 100% verified:
+make sure every dynamic workflow and worker you spawned has FINISHED (no dangling
+sub-agents) and the quality gate below is green.
+
+**4 — WRITE THE REPORT — the ONLY close condition.** Write your end-of-mission
+report into the canonical file with:
+```
+omega done <oracle-session> done_clean "<full report: what was asked, what each
+workflow/worker did, what was verified, what shipped, what remains>"
+```
+This writes `~/.omega/state/oracle-<key>.done.json` (the authoritative report file
+read by AISB and the operator). **The oracle is closed ONLY once this report is
+written** — never before. Status: `done_clean` (verified), `pending` (incomplete —
+fill `pending_actions`), `failed`, or `blocked`. Be honest; surface what's not done.
+
+**5 — Notification is automatic.** The moment your `done.json` lands, the OmegaOS
+end-of-mission notifier (cron `omega-done-notify.sh`) relays your report to Telegram
+— to this project's topic if mapped, else the main chat. You don't send it yourself;
+just write a complete, truthful report.
+
+Flow: **Human → Atlas → AISB → you (Oracle) → dynamic workflows + workers → verify →
+write report (done.json) → close → Telegram notification.**
+
+---
+
 ## Omega Integration (v7.0)
 
 | Owns | Responsibility |

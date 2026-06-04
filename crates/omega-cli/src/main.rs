@@ -2288,7 +2288,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                 anyhow::bail!("Bot is disabled. Run: omega telegram enable");
             }
             // The Telegram bot is the Bun bot (omega-tg-bot.ts): its Claude session
-            // IS the AISB Director, the 13 agents live in its system prompt, and it
+            // IS Atlas, the 13 agents live in its system prompt, and it
             // dispatches to per-project oracles via the `omega` CLI. We exec it so
             // this process becomes the bot — the SAME entry point the systemd
             // service uses. (The legacy native Rust bridge was removed: the Bun bot
@@ -2302,7 +2302,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                     bot_ts.display()
                 );
             }
-            println!("◆ Launching OmegaOS Telegram bot (Bun) — AISB Director + 13 agents");
+            println!("◆ Launching OmegaOS Telegram bot (Bun) — Atlas + 13 agents");
             // exec() replaces this process; it only returns on failure.
             let err = std::process::Command::new("bun").arg(&bot_ts).exec();
             anyhow::bail!("Failed to launch the Bun Telegram bot ({err}). Is `bun` installed and on PATH?");
@@ -4182,7 +4182,7 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
     match action {
         RulesAction::Context { scope } => {
             let s = match scope.to_lowercase().as_str() {
-                "master" | "director" => rules::RuleScope::Master,
+                "master" | "atlas" | "director" => rules::RuleScope::Master,
                 "worker" => rules::RuleScope::Worker,
                 _ => rules::RuleScope::Oracle,
             };

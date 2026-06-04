@@ -577,6 +577,16 @@ if [[ -f "$TOKREFRESH_SRC" ]]; then
     ok "Token-refresh helper installed: $OMEGA_DIR/bin/omega-token-refresh.sh"
 fi
 
+# Install the end-of-mission notifier (oracle done.json → Telegram report). The
+# single, restart-proof notification path: catches every finished oracle (Telegram,
+# TUI, or Atlas-dispatched) and relays its report to the project's topic / main chat.
+DONENOTIFY_SRC="$OMEGA_SRC/scripts/omega-done-notify.sh"
+if [[ -f "$DONENOTIFY_SRC" ]]; then
+    cp "$DONENOTIFY_SRC" "$OMEGA_DIR/bin/omega-done-notify.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-done-notify.sh"
+    ok "End-of-mission notifier installed: $OMEGA_DIR/bin/omega-done-notify.sh"
+fi
+
 # Install audit skills (Quality Arsenal)
 AUDITS_SRC="$OMEGA_SRC/skills/audits"
 AUDITS_DST="$OMEGA_DIR/skills/audits"
@@ -907,6 +917,7 @@ mkdir -p "$OMEGA_DIR/logs"
 PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega-patrol.log 2>&1   # OMEGA-CRON-PATROL-v1"
 USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/omega-usage.log 2>&1   # OMEGA-CRON-USAGE-v1"
 TOKREFRESH_CRON="*/30 * * * * $OMEGA_DIR/bin/omega-token-refresh.sh >> $OMEGA_DIR/logs/omega-token-refresh.log 2>&1   # OMEGA-CRON-TOKEN-REFRESH-v1"
+DONENOTIFY_CRON="* * * * * $OMEGA_DIR/bin/omega-done-notify.sh >> $OMEGA_DIR/logs/omega-done-notify.log 2>&1   # OMEGA-CRON-DONE-NOTIFY-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
         ok "Self-improvement patrol already scheduled"
@@ -925,6 +936,12 @@ if command -v crontab >/dev/null 2>&1; then
     elif [[ -f "$OMEGA_DIR/bin/omega-token-refresh.sh" ]]; then
         ( crontab -l 2>/dev/null; echo "$TOKREFRESH_CRON" ) | crontab -
         ok "Claude token-refresh scheduled (every 30 min → pre-empts agent 401s)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-DONE-NOTIFY-v1"; then
+        ok "End-of-mission notifier already scheduled"
+    elif [[ -f "$OMEGA_DIR/bin/omega-done-notify.sh" ]]; then
+        ( crontab -l 2>/dev/null; echo "$DONENOTIFY_CRON" ) | crontab -
+        ok "End-of-mission notifier scheduled (every minute → oracle done.json → Telegram)"
     fi
 else
     info "crontab not available — run 'omega patrol' + 'omega usage --check' manually or via your scheduler"
