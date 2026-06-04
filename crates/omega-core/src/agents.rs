@@ -562,7 +562,10 @@ impl Agent {
     pub fn is_available(&self) -> bool {
         let home = std::env::var("HOME").unwrap_or_default();
         match self {
-            Agent::Claude => has_cmd("claude"),
+            // PATH alone is unreliable under a reduced PATH (systemd/cron/non-login
+            // `bash -c` panes that omit ~/.local/bin) — fall back to canonical
+            // install locations so doctor doesn't falsely report "claude not on PATH".
+            Agent::Claude => claude_available(&home),
             Agent::Codex => has_cmd("codex"),
             Agent::Gemini => {
                 has_cmd("gemini")
@@ -574,8 +577,9 @@ impl Agent {
             }
             Agent::Hermes => has_cmd("hermes"),
             // GLM runs on the Claude Code binary (redirected at launch) — available
-            // iff `claude` is present.
-            Agent::Glm => has_cmd("claude"),
+            // iff `claude` is present. Shares Claude's reduced-PATH fallback so it
+            // resolves the canonical install locations too, not just $PATH.
+            Agent::Glm => claude_available(&home),
             Agent::Shell => true,
         }
     }
@@ -586,6 +590,16 @@ fn has_cmd(name: &str) -> bool {
     path.split(':').any(|dir| {
         std::path::Path::new(dir).join(name).exists()
     })
+}
+
+/// True iff the Claude Code binary is reachable — on $PATH, or at a canonical
+/// install location the official installer uses. The location fallback keeps
+/// detection correct when the caller's PATH is reduced (systemd, cron, non-login
+/// `bash -c` panes) and omits ~/.local/bin.
+fn claude_available(home: &str) -> bool {
+    has_cmd("claude")
+        || std::path::Path::new(&format!("{}/.local/bin/claude", home)).exists()
+        || std::path::Path::new(&format!("{}/.claude/local/claude", home)).exists()
 }
 
 fn shell_quote(s: &str) -> String {
