@@ -495,7 +495,7 @@ WantedBy=default.target
 }
 
 // ── Dispatch to a REAL oracle session (the canonical path for project work). A
-// message from a project topic / a project agent-bot / the "Parler à l'oracle"
+// message from a project topic / a project agent-bot / the "Talk to the oracle"
 // button is a MISSION for the VPS, not a chat: it spawns `omega dispatch <project>`
 // → a visible Claude Code oracle session (its own mission; it delegates to dynamic
 // workflows / workers / audit-review). The Monitor watches done.json and relays the
@@ -860,7 +860,7 @@ function statusCard(raw: string): string {
   if (warns.length)
     body += `\n\n ❗ <b>À CORRIGER</b>\n` + warns.map(w => `  ${dot(sev(w.value))} <b>${esc(w.label)}</b> — ${esc(cleanDetail(w.value))}`).join("\n");
   const details = checks.map(c => ` ${dot(c.ok ? "ok" : sev(c.value))} <b>${esc(c.label.toUpperCase())}</b>  ${esc(cleanDetail(c.value))}`).join("\n");
-  body += `\n\n<blockquote expandable>▾ ${total} checks système\n${details}</blockquote>`;
+  body += `\n\n<blockquote expandable>▾ ${total} system checks\n${details}</blockquote>`;
   return `${RULE}\n   Ω  O M E G A O S\n${RULE}\n${body}\n${RULE}`;
 }
 
