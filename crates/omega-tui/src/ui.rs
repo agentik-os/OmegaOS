@@ -563,9 +563,17 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
                 ),
             ])),
             SessionRow::Entry(entry) => {
+                // `selected` = focused selection bar (you're browsing the list).
+                // `active`   = this is the session whose Claude pane fills the
+                //              right panel right now — keep it visibly marked in
+                //              the left list even while you type in the chat
+                //              panel (list unfocused), so you always see WHICH
+                //              session you're inside.
+                let is_sel = entry_idx == app.selected;
                 let item = render_session_item(
                     entry,
-                    entry_idx == app.selected && list_focused,
+                    is_sel && list_focused,
+                    is_sel && !list_focused,
                     app.session_badges.get(&entry.session.name).copied(),
                 );
                 entry_idx += 1;
@@ -1032,6 +1040,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
 fn render_session_item(
     entry: &SessionEntry,
     selected: bool,
+    active: bool,
     badge: Option<DoneStatus>,
 ) -> ListItem<'static> {
     let is_master = omega_core::aisb::is_master(&entry.session.name);
@@ -1063,7 +1072,7 @@ fn render_session_item(
         None => String::new(),
     };
 
-    let prefix = if selected {
+    let prefix = if selected || active {
         "▶ ".to_string()
     } else {
         "  ".to_string()
@@ -1074,6 +1083,14 @@ fn render_session_item(
             .fg(Color::Black)
             .bg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
+    } else if active {
+        // Connected session, but the list isn't focused (you're typing in the
+        // chat panel). A softer cue than the solid selection bar — underlined
+        // cyan name + "▶" — so you can always tell WHICH session you're inside
+        // without implying the list has keyboard focus.
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
     } else if is_master {
         Style::default()
             .fg(Color::Magenta)
