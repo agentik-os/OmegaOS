@@ -245,14 +245,25 @@ impl Dispatcher {
         let work_dir = match self.config.find_project(project) {
             Some(pc) => pc.path.to_string_lossy().to_string(),
             None => {
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
                 let lower = project.to_lowercase();
-                crate::projects::discover(&home)
+                // SSOT: resolve from the shared ProjectRegistry (~/.omega/projects.json) —
+                // the SAME source the TUI Project menu + Telegram read — then fall back to
+                // a $HOME discovery walk. This is why a Telegram-added project dispatches.
+                let from_registry = crate::project_manager::ProjectRegistry::load()
+                    .projects
                     .into_iter()
                     .find(|p| p.name.to_lowercase() == lower)
-                    .map(|p| p.path.to_string_lossy().to_string())
+                    .map(|p| p.path.to_string_lossy().to_string());
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
+                from_registry
+                    .or_else(|| {
+                        crate::projects::discover(&home)
+                            .into_iter()
+                            .find(|p| p.name.to_lowercase() == lower)
+                            .map(|p| p.path.to_string_lossy().to_string())
+                    })
                     .ok_or_else(|| {
-                        anyhow::anyhow!("project '{}' not found in config", project)
+                        anyhow::anyhow!("project '{}' not found in registry or config", project)
                     })?
             }
         };
