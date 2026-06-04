@@ -661,6 +661,8 @@ async function mcAgents(): Promise<{ id: string; description?: string }[]> {
 }
 
 const MENU: [string, string][] = [
+  ["start", "Welcome + quick status"],
+  ["guide", "How OmegaOS works — full guide"],
   ["menu", "Action hub — all commands as buttons"],
   ["commands", "Show available commands"],
   ["agents", "List the AISB agents (talk via the agents bot)"],
@@ -684,6 +686,7 @@ const MENU: [string, string][] = [
 const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch"]);
 function menuKb() {
   return kb([
+    [{ text: "📖 Guide — comment ça marche", callback_data: "nav:guide" }],
     [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
     [{ text: "📊 Status", callback_data: "nav:status" }, { text: "🗂 Sessions", callback_data: "nav:sessions" }],
     [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
@@ -694,6 +697,39 @@ function menuKb() {
   ]);
 }
 const menuText = card("OMEGAOS — ACTION HUB", " Tape une action. Chacune tourne sur ton serveur via le CLI <code>omega</code>.");
+
+// /start — welcome + live status pulse. Greets the operator as Atlas, says what
+// they can do, and shows a one-line health snapshot. New users land here.
+async function welcomeCard(): Promise<string> {
+  let sessions = 0, health = "?";
+  try { sessions = (await omega(["list"])).split("\n").filter(l => /^\s*[⌂◆●]/.test(l)).length; } catch {}
+  try { const raw = await omega(["doctor"]); const w = (raw.match(/^\s*\[[!x]\]/gm) || []).length; health = w ? `🟡 ${w} alerte(s)` : "🟢 sain"; } catch {}
+  return card("OMEGAOS — ATLAS",
+    ` 👋 Salut ! Je suis <b>Atlas</b>, le cerveau de ton OmegaOS.\n` +
+    ` Je transforme ce serveur en plateforme d'agents : je dispatche des <b>oracles</b> (sessions Claude dédiées) qui délèguent à des <b>workers</b> en parallèle, avec gates qualité.\n\n` +
+    ` 💬 <b>Écris-moi en langage naturel</b> — je comprends, je planifie, je dispatche.\n` +
+    ` 📲 Ou tape une action dans le menu ci-dessous.`,
+    `📊 ${sessions} session(s) active(s) · doctor ${health}\n📖 Touche « Guide » pour tout comprendre.`);
+}
+
+// /guide — explains how OmegaOS works (Atlas → oracle → workers) + each menu action.
+function guideCard(): string {
+  return card("OMEGAOS — GUIDE",
+    ` <b>Atlas</b> est le cerveau — parle-lui normalement, il orchestre tout le reste.`,
+    `<blockquote expandable>▾ Comment ça marche\n` +
+    `🧠 <b>Atlas</b> — tu lui écris, il comprend ton intention, planifie et dispatche.\n` +
+    `🔮 <b>Oracle</b> — 1 par projet, le stratège : il découpe la mission et délègue.\n` +
+    `⚙️ <b>Workers</b> — agents éphémères en parallèle (scope fichier) : exécutent → vérifient → reportent.\n` +
+    `✅ <b>Gates qualité</b> — rubrique + consensus + vérif adversariale avant validation.\n\n` +
+    `<b>Le menu :</b>\n` +
+    `📊 Status — santé live (doctor).   🗂 Sessions — actives, Status/Kill.\n` +
+    `📁 Projects — liste / nouveau / ajouter.   🔍 Audits — Quality Arsenal (23 forensic).\n` +
+    `💳 Account — login Claude (credential partagé) + usage.   🧠 Model — provider + modèle.\n` +
+    `🤖 Agents — un bot Telegram dédié par oracle.   🖥 Dashboard — Mission Control (web).\n` +
+    `🚀 Dispatch — lance une mission sur un oracle.   👥 Group hub — 1 topic = 1 projet.\n\n` +
+    `💡 <b>Le plus simple :</b> écris juste ce que tu veux.\n` +
+    `Ex : « audit UX de DentistryGPT », « nouveau projet … », « déploie X et vérifie en prod ».</blockquote>`);
+}
 
 // Strip an appended remediation SHELL COMMAND that `omega doctor` packs into a
 // warning detail ("problem — T=$(mktemp) && curl … | bash"). Prose hints
@@ -794,6 +830,8 @@ async function modelProviderView(provider: string, banner = ""): Promise<{ text:
 async function view(name: string): Promise<{ text: string; markup: any }> {
   switch (name) {
     case "menu": case "help": case "commands": return { text: menuText, markup: menuKb() };
+    case "start": return { text: await welcomeCard(), markup: menuKb() };
+    case "guide": return { text: guideCard(), markup: kb([[{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "💳 Account", callback_data: "nav:account" }], [back("menu")]]) };
     case "agents": {
       const ags = await mcAgents();
       if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard injoignable. Démarre-le : <code>omega-mc-up</code>."), markup: kb([[back()]]) };
