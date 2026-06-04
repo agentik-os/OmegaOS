@@ -166,9 +166,11 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 const RULE = "━".repeat(12);
 const dot = (s: "ok" | "warn" | "err") => (s === "ok" ? "🟢" : s === "warn" ? "🟡" : "🔴");
 const bar = (pct: number, n = 10) => { const f = Math.max(0, Math.min(n, Math.round((pct / 100) * n))); return "█".repeat(f) + "░".repeat(n - f); };
-// Branded card: Ω-ruled header + body (+ optional ruled footer). `title` is plain text.
+// Branded card: Ω-ruled header + body (+ optional ruled footer). `title` is plain
+// text. A blank line after the header rule and around the footer rule gives every
+// card consistent breathing room (pro Telegram spacing).
 const card = (title: string, body: string, footer?: string) =>
-  `${RULE}\n<b>Ω  ${esc(title)}</b>\n${RULE}\n${body}` + (footer ? `\n${RULE}\n${footer}` : "");
+  `${RULE}\n<b>Ω  ${esc(title)}</b>\n${RULE}\n\n${body}` + (footer ? `\n\n${RULE}\n\n${footer}` : "");
 // Render a task checklist with status glyphs (✓ done · ✗ fail · ▸ doing · ☐ todo).
 type PTask = { t: string; s: string };
 function taskList(tasks: PTask[] | undefined): string {
@@ -800,29 +802,27 @@ async function guideCard(): Promise<string> {
   try { sessions = (await omega(["list"])).split("\n").filter(l => /^\s*[⌂◆●]/.test(l)).length; } catch {}
   try { const raw = await omega(["doctor"]); const w = (raw.match(/^\s*\[[!x]\]/gm) || []).length; health = w ? `🟡 ${w} warning(s)` : "🟢 healthy"; } catch {}
   return card("OMEGAOS — ATLAS",
-    ` 👋 Hi! I'm <b>Atlas</b>, the brain of your OmegaOS — an autonomous multi-agent dev platform running on your own server.\n\n` +
-    ` 💬 <b>Just talk to me in plain language.</b> I keep our conversation in context, work out what you want, and either answer or dispatch the work. Reply to any of my messages to keep a thread going.\n\n` +
-    ` <b>How it all works</b>\n` +
-    ` 🧠 <b>Atlas</b> (me) — your single point of contact. I plan and route everything.\n` +
-    ` 🔮 <b>Oracle</b> — one strategist per project. I hand it a mission; it breaks it down.\n` +
-    ` ⚙️ <b>Workers</b> — ephemeral agents running in parallel (file-scoped): execute → verify → report.\n` +
-    ` ✅ <b>Quality gates</b> — rubric + multi-grader consensus + adversarial verification before anything ships.\n` +
-    ` 📊 <b>Live progress</b> — long missions stream a progress card; you get the full report when it's done.`,
-    `📊 ${sessions} active session(s) · doctor ${health}\n` +
-    `<blockquote expandable>▾ Every menu action — tap “Open menu” to use them\n` +
-    `📊 <b>Status</b> — live system health (omega doctor) + one-tap Fix-it.\n` +
-    `🗂 <b>Sessions</b> — your active sessions; Status / Kill each one.\n` +
-    `📁 <b>Projects</b> — list / create / add. Each project gets its own oracle + Telegram topic.\n` +
-    `🔍 <b>Audits</b> — Quality Arsenal: 23 forensic audits (UX, code, security, SEO, a11y…).\n` +
-    `💳 <b>Account</b> — Claude login (ONE shared credential for every session) + token usage.\n` +
-    `🧠 <b>Model</b> — pick the AI provider + model for all sessions.\n` +
-    `🤖 <b>Agents</b> — a dedicated Telegram bot per project oracle (talk straight to that project).\n` +
-    `🖥 <b>Dashboard</b> — Mission Control (web link + password).\n` +
-    `🚀 <b>Dispatch</b> — fire a mission at a project's oracle.\n` +
-    `👥 <b>Group hub</b> — link a supergroup: 1 topic = 1 project; messages route to that oracle.\n\n` +
-    `💡 <b>Simplest path:</b> just tell me what you want —\n` +
-    `“UX audit of DentistryGPT”, “new project …”, “deploy X and verify in prod”.\n` +
-    `👇 Or tap <b>Open menu</b> for the buttons.</blockquote>`);
+    ` 👋 <b>Hi! I'm Atlas</b> — the brain of your OmegaOS, an autonomous multi-agent dev platform running on your own server.\n\n` +
+    ` 💬 <b>Just talk to me in plain language.</b> I keep our conversation in context, figure out what you want, and either answer or dispatch the work. Reply to any of my messages to keep a thread going.\n\n` +
+    ` <b>⚙️ How it works</b>\n` +
+    ` 🧠 <b>Atlas</b> — your single point of contact; I plan and route everything.\n` +
+    ` 🔮 <b>Oracle</b> — one strategist per project; it breaks the mission down.\n` +
+    ` ⚙️ <b>Workers</b> — ephemeral agents in parallel (file-scoped): execute → verify → report.\n` +
+    ` ✅ <b>Quality gates</b> — rubric + consensus + adversarial verification before anything ships.\n` +
+    ` 📊 <b>Live progress</b> — long missions stream a progress card; full report when done.\n\n` +
+    ` 💡 <b>Simplest path:</b> just tell me what you want — “UX audit of DentistryGPT”, “new project …”, “deploy X and verify in prod”. Or tap <b>Open menu</b> below.`,
+    ` 📡 <b>${sessions} active session${sessions === 1 ? "" : "s"}</b>  ·  doctor ${health}\n\n` +
+    `<blockquote expandable>📋 <b>Every menu action</b>\n\n` +
+    ` 📊 <b>Status</b> — live system health + one-tap Fix-it\n` +
+    ` 🗂 <b>Sessions</b> — your sessions; Status / Kill\n` +
+    ` 📁 <b>Projects</b> — list / create / add (oracle + topic each)\n` +
+    ` 🔍 <b>Audits</b> — Quality Arsenal: 23 forensic audits\n` +
+    ` 💳 <b>Account</b> — Claude login (one shared credential) + usage\n` +
+    ` 🧠 <b>Model</b> — pick the AI provider + model\n` +
+    ` 🤖 <b>Agents</b> — a dedicated bot per project oracle\n` +
+    ` 🖥 <b>Dashboard</b> — Mission Control (web)\n` +
+    ` 🚀 <b>Dispatch</b> — fire a mission at an oracle\n` +
+    ` 👥 <b>Group hub</b> — supergroup: 1 topic = 1 project</blockquote>`);
 }
 
 // Strip an appended remediation SHELL COMMAND that `omega doctor` packs into a
@@ -859,10 +859,10 @@ function statusCard(raw: string): string {
   const verdictTxt = (verdict || (warns.length ? `healthy · ${warns.length} warning(s)` : "all systems healthy")).toUpperCase();
   let body = ` ${hero} <b>${esc(verdictTxt)}</b>\n    <code>${bar(pct)}</code>  ${pct}%`;
   if (warns.length)
-    body += `\n\n ❗ <b>À CORRIGER</b>\n` + warns.map(w => `  ${dot(sev(w.value))} <b>${esc(w.label)}</b> — ${esc(cleanDetail(w.value))}`).join("\n");
+    body += `\n\n ❗ <b>TO FIX</b>\n` + warns.map(w => `  ${dot(sev(w.value))} <b>${esc(w.label)}</b> — ${esc(cleanDetail(w.value))}`).join("\n");
   const details = checks.map(c => ` ${dot(c.ok ? "ok" : sev(c.value))} <b>${esc(c.label.toUpperCase())}</b>  ${esc(cleanDetail(c.value))}`).join("\n");
   body += `\n\n<blockquote expandable>▾ ${total} system checks\n${details}</blockquote>`;
-  return `${RULE}\n   Ω  O M E G A O S\n${RULE}\n${body}\n${RULE}`;
+  return `${RULE}\n   Ω  O M E G A O S\n${RULE}\n\n${body}\n\n${RULE}`;
 }
 
 // ── model picker: provider → model, all clickable. Canonical lists come from the
