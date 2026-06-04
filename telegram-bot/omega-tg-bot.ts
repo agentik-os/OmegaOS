@@ -268,10 +268,12 @@ async function addProject(name: string): Promise<string> {
     else topicLine = `⚠️ Topic not created: <i>${esc(r.description || "error")}</i>.${/rights/i.test(r.description || "") ? " Enable the <b>“Manage Topics”</b> permission for the bot (group admin)." : ""}`;
   }
   const dashLine = dash === "added" ? "added ✅" : dash === "exists" ? "already present ✅" : "not written ⚠️ (omega-mc config not found)";
-  return `<b>📁 Project “${esc(name)}” managed</b>\n` +
+  return card("PROJECT MANAGED",
+    ` 📁 <b>${esc(name)}</b>\n\n` +
     `• Dedicated oracle (multi-session): <code>omega dispatch ${esc(name)}</code> ✅\n` +
     `• Mission Control dashboard: ${dashLine}\n` +
-    `• ${topicLine}\n\n<i>Talk about the project in its topic (or here) — Atlas knows the context and directs its oracle.</i>`;
+    `• ${topicLine}`,
+    `<i>Talk about the project in its topic (or here) — Atlas knows the context and directs its oracle.</i>`);
 }
 
 // ── Managed projects = the SHARED registry the OmegaOS TUI (Project menu / oracle
@@ -345,7 +347,7 @@ async function deleteProject(name: string, mode: "soft" | "full"): Promise<strin
     } else steps.push("🐙 GitHub: ⚠️ remote not found (nothing deleted)");
     steps.push("📁 Local folder: <b>kept</b> (delete it manually if needed).");
   }
-  return `<b>🗑 Project “${esc(name)}” deleted (${mode === "full" ? "full" : "OmegaOS only"})</b>\n${steps.join("\n")}`;
+  return card("PROJECT DELETED", ` 🗑 <b>${esc(name)}</b> · ${mode === "full" ? "full" : "OmegaOS only"}\n\n${steps.join("\n")}`);
 }
 
 // Project category folders under ~/Station (Partners, SideBusiness, CAIO, …), minus the OS itself.
@@ -371,7 +373,7 @@ async function createProject(category: string, name: string, desc: string): Prom
     if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = safe; saveGroups(g); recordProject(safe, dir, undefined, r.result.message_thread_id); steps.push("💬 Telegram topic: created ✅"); }
     else steps.push(`💬 Telegram topic: ⚠️ ${esc(r.description || "failed")}${/rights/i.test(r.description || "") ? " — enable “Manage Topics” for the bot" : ""}`);
   } else steps.push("💬 Telegram topic: pending (forum group + bot admin)");
-  return { dir, report: `<b>🚀 Project “${esc(safe)}” created in ${esc(category)}</b>\n${steps.join("\n")}` };
+  return { dir, report: card("PROJECT CREATED", ` 🚀 <b>${esc(safe)}</b> · ${esc(category)}\n\n${steps.join("\n")}`) };
 }
 
 // ── Git ops on projects: pull / add+commit+push / status, from Telegram ───────
@@ -1075,7 +1077,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
       [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
-  if (ns === "proj" && action === "delsoft") return edit(chat, msgId, await deleteProject(arg, "soft"), kb([[{ text: "📋 Projets", callback_data: "nav:projects" }]]));
+  if (ns === "proj" && action === "delsoft") return edit(chat, msgId, await deleteProject(arg, "soft"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "delfull") {
     // Extra confirmation for the irreversible GitHub deletion.
     return edit(chat, msgId, `<b>💥 FULL deletion of “${esc(arg)}”</b>\n⚠️ This <b>deletes the GitHub repo</b> (irreversible) on top of everything else. Sure?`, kb([
@@ -1083,7 +1085,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
       [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
-  if (ns === "proj" && action === "delfullgo") return edit(chat, msgId, await deleteProject(arg, "full"), kb([[{ text: "📋 Projets", callback_data: "nav:projects" }]]));
+  if (ns === "proj" && action === "delfullgo") return edit(chat, msgId, await deleteProject(arg, "full"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "oracle") {
     setPending(from, "oracle-prompt", arg);
     return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
