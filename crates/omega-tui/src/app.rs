@@ -866,6 +866,15 @@ pub struct App {
     pub rows: Vec<SessionRow>,
     pub selected: usize,
     pub menu_selected: usize,
+    /// Terminal mouse capture state. true → clickable menus + scroll; false →
+    /// native terminal text selection / copy-paste. Toggled with Ctrl-T.
+    pub mouse_capture: bool,
+    /// Last rendered Menu-tab list area + a rendered-row→action-index map, so a
+    /// mouse click can hit-test which action was clicked. `menu_fits` is false
+    /// when the list is taller than the area (scrolled) — clicks are then ignored.
+    pub menu_area: ratatui::layout::Rect,
+    pub menu_rendered_actions: Vec<Option<usize>>,
+    pub menu_fits: bool,
     /// Selected Monitor section (left list). Indexes `MonitorSection::all()`.
     pub monitor_selected: usize,
     /// Cursor within the Monitor `Actions` section's `MonitorAction` list.
@@ -1028,6 +1037,10 @@ impl App {
             rows: Vec::new(),
             selected: 0,
             menu_selected: 0,
+            mouse_capture: true,
+            menu_area: ratatui::layout::Rect::default(),
+            menu_rendered_actions: Vec::new(),
+            menu_fits: true,
             monitor_selected: 0,
             monitor_action_selected: 0,
             settings_selected: 0,
@@ -1568,7 +1581,10 @@ impl App {
         // Hide infrastructure daemons (Telegram bridge, reauth helper).
         // Same list as the Telegram bridge filters in /sessions — keep them
         // in sync if you add a new background process.
-        let hidden_prefixes = ["omega-telegram-bridge", "aisb-reauth"];
+        // aisb-reauth is intentionally VISIBLE: when the operator triggers a
+        // Claude login it must show up in the sessions table so they can see the
+        // login session open, run /login, and close on success.
+        let hidden_prefixes = ["omega-telegram-bridge"];
         let filter_lc = self.session_filter.as_ref().map(|q| q.to_lowercase());
         let sessions: Vec<_> = raw_sessions
             .into_iter()

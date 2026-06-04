@@ -1134,19 +1134,25 @@ fn menu_group(action: &MenuAction) -> &'static str {
 fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
     // Build items with section headers so the menu reads as grouped sections.
     let mut items: Vec<ListItem> = Vec::new();
+    // Parallel to `items`: rendered-row → action index (None for header/blank
+    // rows). Lets a mouse click hit-test which action was clicked.
+    let mut rendered_actions: Vec<Option<usize>> = Vec::new();
     let mut last_group: Option<&'static str> = None;
     for (i, action) in MenuAction::all().iter().enumerate() {
         let group = menu_group(action);
         if last_group != Some(group) {
             if last_group.is_some() {
                 items.push(ListItem::new(Line::from("")));
+                rendered_actions.push(None);
             }
             items.push(ListItem::new(Line::from(Span::styled(
                 format!("  ─── {} ───", group),
                 Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
             ))));
+            rendered_actions.push(None);
             last_group = Some(group);
         }
+        rendered_actions.push(Some(i));
         let selected = i == app.menu_selected;
         let prefix = if selected { "▶ " } else { "  " };
         let label_style = if selected {
@@ -1166,6 +1172,13 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(action.label(), label_style),
         ])));
     }
+
+    // Record layout for mouse hit-testing (input.rs handle_mouse). `menu_fits`
+    // is true only when the whole list shows without scrolling (inner height =
+    // area minus the 1-row top+bottom border) → click row maps 1:1 to a row.
+    app.menu_area = area;
+    app.menu_fits = items.len() <= area.height.saturating_sub(2) as usize;
+    app.menu_rendered_actions = rendered_actions;
 
     // Compute rendered row index for the selected action (accounting for
     // header rows + blank separator rows between groups).
@@ -1189,7 +1202,7 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" Actions — ↑/↓ navigate, Enter runs the highlighted action ")
+                .title(" Actions — ↑/↓ or click · Enter runs · Ctrl-T text-select/copy ")
                 .border_style(Style::default().fg(Color::Cyan)),
         )
         .highlight_style(Style::default()); // selection visual is already baked into items

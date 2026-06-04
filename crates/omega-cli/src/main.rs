@@ -1044,6 +1044,18 @@ async fn run_tui_loop(
             let status_before = app.status_message.clone();
             match handle_event(app, evt) {
                 Action::Quit => break,
+                Action::ToggleMouseCapture => {
+                    // Flip terminal mouse capture live. OFF → the terminal does
+                    // native drag-select + copy/paste; ON → clickable menus + scroll.
+                    app.mouse_capture = !app.mouse_capture;
+                    if app.mouse_capture {
+                        crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture).ok();
+                        app.status_message = Some("🖱  Mouse ON — click menus & scroll  ·  Ctrl-T for text selection".to_string());
+                    } else {
+                        crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture).ok();
+                        app.status_message = Some("📋 Selection mode — drag to select & copy/paste  ·  Ctrl-T to re-enable clicks".to_string());
+                    }
+                }
                 Action::Restart => {
                     // Tear down the terminal cleanly, then re-exec the
                     // current binary so a freshly-built `omega` is picked up
@@ -1344,7 +1356,7 @@ async fn run_tui_loop(
                     tokio::spawn(async move {
                         let result = match SessionManager::connect().await {
                             Ok(mgr) => {
-                                match omega_core::oauth::request_reauth(&mgr, "tui", None).await {
+                                match omega_core::oauth::request_reauth(&mgr, "tui", None, true).await {
                                     Ok(Some(req)) => ReauthStatus::ShowUrl(req.auth_url),
                                     Ok(None) => ReauthStatus::Error(
                                         "re-login already pending or on cooldown".to_string(),
@@ -2777,7 +2789,7 @@ async fn cmd_claude_login() -> Result<()> {
             std::process::exit(1);
         }
     };
-    match omega_core::oauth::request_reauth(&mgr, "cli", None).await {
+    match omega_core::oauth::request_reauth(&mgr, "cli", None, true).await {
         Ok(Some(req)) => {
             println!("{}", serde_json::json!({ "ok": true, "url": req.auth_url }));
             Ok(())

@@ -11,6 +11,9 @@ pub enum Action {
     /// Nuclear cleanup: kill all + prune stale state + clear scratch + drop cache.
     NuclearCleanup,
     Refresh,
+    /// Toggle terminal mouse capture. OFF → the terminal does native
+    /// click-drag text selection + copy/paste; ON → clickable menus + scroll.
+    ToggleMouseCapture,
     CreateSession(String),
     CreateSessionWithAgent {
         name: String,
@@ -150,6 +153,25 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
         }
         // Click in a panel = focus it (left = list, right = preview)
         MouseEventKind::Down(_) => {
+            // Menu tab: click an action row → select + run it (like Enter).
+            // Guarded to when the list fits on screen (offset 0) so a click never
+            // maps to the wrong row while scrolled — keyboard always works too.
+            if app.tab == Tab::Menu {
+                let a = app.menu_area;
+                if app.menu_fits
+                    && mouse.column > a.x
+                    && mouse.column < a.x + a.width.saturating_sub(1)
+                    && mouse.row > a.y
+                    && mouse.row < a.y + a.height.saturating_sub(1)
+                {
+                    let ridx = (mouse.row - a.y - 1) as usize; // rendered row (border-relative)
+                    if let Some(Some(act_idx)) = app.menu_rendered_actions.get(ridx).copied() {
+                        app.menu_selected = act_idx;
+                        return execute_menu_action(app, app.selected_menu_action());
+                    }
+                }
+                return Action::None;
+            }
             if app.tab == Tab::Sessions {
                 // Heuristic: list is on the left ~25-30% of screen width.
                 // If click is in the right portion, focus the preview/chat.
@@ -291,6 +313,11 @@ fn open_dispatch_picker(app: &mut App) {
 }
 
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
+    // Global: Ctrl-T toggles mouse capture. OFF lets you drag-select + copy/paste
+    // with the terminal's native selection; ON gives clickable menus + scroll.
+    if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        return Action::ToggleMouseCapture;
+    }
     let mode = app.input_mode.clone();
     match mode {
         InputMode::Normal => handle_key_normal(app, key),
