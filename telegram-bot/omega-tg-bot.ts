@@ -24,12 +24,19 @@ function readKV(path: string, re: RegExp): Record<string, string> {
   try { for (const l of readFileSync(path, "utf8").split("\n")) { const m = l.match(re); if (m) out[m[1]] = m[2].replace(/^"|"$/g, ""); } } catch {}
   return out;
 }
-const cfg = readKV(TG_TOML, /^\s*([a-z_]+)\s*=\s*(.+?)\s*$/i);
-const TOKEN = process.env.OMEGA_MC_TELEGRAM_TOKEN || cfg.bot_token;
-if (!TOKEN) { console.error("omega-tg-bot: no bot_token in " + TG_TOML); process.exit(1); }
-const API = `https://api.telegram.org/bot${TOKEN}`;
-const BOT_ID = Number(TOKEN.split(":")[0]);
-const ALLOW = (cfg.allow_user_ids?.match(/\d+/g) || []).map(Number);
+// Config is (re)loadable so the service can start WITHOUT a token and auto-connect
+// the moment one is written (by `omega telegram setup`, `omega-tg-up`, or editing
+// telegram.toml) — no manual restart needed.
+let TOKEN = "", API = "", BOT_ID = 0, ALLOW: number[] = [];
+function loadConfig(): boolean {
+  const cfg = readKV(TG_TOML, /^\s*([a-z_]+)\s*=\s*(.+?)\s*$/i);
+  TOKEN = process.env.OMEGA_MC_TELEGRAM_TOKEN || cfg.bot_token || "";
+  if (!/^\d+:/.test(TOKEN)) return false;
+  API = `https://api.telegram.org/bot${TOKEN}`;
+  BOT_ID = Number(TOKEN.split(":")[0]);
+  ALLOW = (cfg.allow_user_ids?.match(/\d+/g) || []).map(Number);
+  return true;
+}
 const allowed = (id: number) => ALLOW.length === 0 || ALLOW.includes(id);
 
 // group/topic registry (persisted)
@@ -246,6 +253,10 @@ async function cmdSync(chatId: number, thread?: number) {
 
 // ── poll loop ────────────────────────────────────────────────────────────────
 async function main() {
+  // Wait for a token so the systemd service can be enabled at install time and
+  // auto-connect whenever the operator sets the token (no manual restart).
+  while (!loadConfig()) { console.log(`omega-tg-bot: waiting for a bot token in ${TG_TOML} …`); await Bun.sleep(5000); }
+  console.log(`omega-tg-bot: token loaded, botId=${BOT_ID}`);
   // Register the menu on BOTH default and all_private_chats scopes — some Telegram
   // clients read the private-chat scope preferentially, so setting only default
   // can leave a stale/empty menu in DMs.

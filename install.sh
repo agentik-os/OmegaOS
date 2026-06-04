@@ -333,6 +333,62 @@ else
     ok "rmux installed to $INSTALL_DIR/rmux"
 fi
 
+# ─── Telegram command bot installer (invoked right after Phase 4) ────────────
+# Defined here, run BEFORE the long Phase 5. Phase 5 is set -e and ~556 lines;
+# any non-zero command there used to abort the whole install and silently skip
+# the bot. Installing the bot first makes it survive a later abort. Idempotent.
+install_command_bot() {
+    [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]] || { info "Telegram command bot source not found — skipping"; return 0; }
+    loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now omega-telegram.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/omega-telegram.service" \
+              "$HOME/.config/systemd/user/default.target.wants/omega-telegram.service" 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
+    mkdir -p "$OMEGA_DIR/telegram-bot"
+    cp -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" "$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
+    if [[ -f "$OMEGA_SRC/scripts/omega-tg-up.sh" ]]; then
+        cp -f "$OMEGA_SRC/scripts/omega-tg-up.sh" "$OMEGA_DIR/bin/omega-tg-up.sh"
+        chmod +x "$OMEGA_DIR/bin/omega-tg-up.sh"
+        ln -sf "$OMEGA_DIR/bin/omega-tg-up.sh" "$INSTALL_DIR/omega-tg-up" 2>/dev/null || true
+    fi
+    local BUN_BIN; BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
+    if [[ -z "$BUN_BIN" ]]; then
+        info "Installing bun (required by the Telegram command bot)…"
+        command -v unzip >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && sudo -n apt-get install -y unzip >/dev/null 2>&1 || true; }
+        curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
+        [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
+        [[ -z "$BUN_BIN" ]] && command -v npm >/dev/null 2>&1 && { npm install -g bun >/dev/null 2>&1 || true; BUN_BIN="$(command -v bun || true)"; }
+    fi
+    if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
+        local SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
+        cat > "$SD_DIR/omega-tg-bot.service" <<EOF
+[Unit]
+Description=OmegaOS Telegram command bot (omega CLI control center)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=OMEGA_DIR=%h/.omega
+WorkingDirectory=%h/.omega/telegram-bot
+ExecStart=$BUN_BIN %h/.omega/telegram-bot/omega-tg-bot.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload 2>/dev/null || true
+        # ALWAYS enable + start: the bot waits for a token and auto-connects the
+        # moment `omega telegram setup` / omega-tg-up writes telegram.toml.
+        systemctl --user enable --now omega-tg-bot.service 2>/dev/null || true
+        ok "Telegram command bot installed + running (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>  OR  omega-tg-up <TOKEN> <YOUR_USER_ID>"
+    else
+        info "Telegram command bot shipped, but bun/systemd missing — start later: omega-tg-up <BOT_TOKEN> <USER_ID>"
+    fi
+}
+
 # ─── Phase 4: Build OmegaOS ──────────────────────────────────────────────────
 
 step "Phase 4: Building OmegaOS"
@@ -361,6 +417,10 @@ else
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
+
+# Install the Telegram command bot NOW (before the long, fragile Phase 5) so a
+# set -e abort later can never skip the operator's phone interface.
+install_command_bot || info "command bot setup had warnings (non-fatal)"
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
@@ -1002,74 +1062,10 @@ if [[ -f "$OMEGA_SRC/agents/identity/SOUL.template.md" && ! -f "$OMEGA_DIR/SOUL.
     ok "Identity template → $OMEGA_DIR/SOUL.md (customize it; keep private data in MEMORY.md)"
 fi
 
-# (c) Telegram interface → the OmegaOS command bot (button-driven, omega CLI).
-# This is the operator's phone control center: every command opens an inline
-# keyboard of sub-actions, each running an `omega` action (/status /sessions
-# /projects /audits /account /model /dispatch /killall /clean …). It is the
-# SINGLE Telegram poller (Telegram allows one getUpdates consumer per bot token),
-# shipped to ~/.omega and run as a persistent systemd --user service. Connect it
-# with:  omega-tg-up <BOT_TOKEN> <YOUR_TELEGRAM_USER_ID>
-loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
-# Retire the old native Rust bridge unit (would 409-conflict on the bot token).
-if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user disable --now omega-telegram.service 2>/dev/null || true
-    rm -f "$HOME/.config/systemd/user/omega-telegram.service" \
-          "$HOME/.config/systemd/user/default.target.wants/omega-telegram.service" 2>/dev/null || true
-    systemctl --user daemon-reload 2>/dev/null || true
-fi
-if [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]]; then
-    mkdir -p "$OMEGA_DIR/telegram-bot"
-    cp -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" "$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
-    # connect helper on PATH
-    if [[ -f "$OMEGA_SRC/scripts/omega-tg-up.sh" ]]; then
-        cp -f "$OMEGA_SRC/scripts/omega-tg-up.sh" "$OMEGA_DIR/bin/omega-tg-up.sh"
-        chmod +x "$OMEGA_DIR/bin/omega-tg-up.sh"
-        ln -sf "$OMEGA_DIR/bin/omega-tg-up.sh" "$INSTALL_DIR/omega-tg-up" 2>/dev/null || true
-    fi
-    BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
-    # The command bot needs Bun specifically (uses Bun.$/Bun.spawn). install_bun_optional
-    # may have skipped it when node/npx was already present, so ensure it here.
-    if [[ -z "$BUN_BIN" ]]; then
-        info "Installing bun (required by the Telegram command bot)…"
-        # bun.sh/install needs unzip — ensure it (the #1 reason bun bootstrap fails).
-        command -v unzip >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && sudo apt-get install -y unzip >/dev/null 2>&1 || true; }
-        curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
-        [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
-        # last resort: npm-provided bun (no unzip needed)
-        [[ -z "$BUN_BIN" ]] && command -v npm >/dev/null 2>&1 && { npm install -g bun >/dev/null 2>&1 || true; BUN_BIN="$(command -v bun || true)"; }
-    fi
-    if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
-        SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
-        cat > "$SD_DIR/omega-tg-bot.service" <<EOF
-[Unit]
-Description=OmegaOS Telegram command bot (omega CLI control center)
-After=network-online.target
 
-[Service]
-Type=simple
-Environment=OMEGA_DIR=%h/.omega
-WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=$BUN_BIN %h/.omega/telegram-bot/omega-tg-bot.ts
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-EOF
-        systemctl --user daemon-reload 2>/dev/null || true
-        if [[ -f "$OMEGA_DIR/telegram.toml" ]] && grep -q 'bot_token *= *"[0-9]' "$OMEGA_DIR/telegram.toml" 2>/dev/null; then
-            systemctl --user enable --now omega-tg-bot.service 2>/dev/null || true
-            ok "Telegram command bot enabled + started — open your bot, tap /menu (button-driven commands)"
-        else
-            systemctl --user enable omega-tg-bot.service 2>/dev/null || true
-            ok "Telegram command bot installed — connect it:  omega-tg-up <BOT_TOKEN> <YOUR_TELEGRAM_USER_ID>"
-        fi
-    else
-        info "Telegram command bot shipped, but bun is missing — install bun, then: omega-tg-up <BOT_TOKEN> <USER_ID>"
-    fi
-else
-    info "Telegram command bot source not found — skipping (optional phone interface)"
-fi
+# (c) Telegram command bot — already installed right after Phase 4 (survives a
+# Phase 5 abort). Idempotent backstop: re-run (picks up bun if Phase 5 installed it).
+install_command_bot || true
 
 # (d) Claude Code agent binary — omega needs it to spawn agents.
 if ! command -v claude >/dev/null 2>&1; then
