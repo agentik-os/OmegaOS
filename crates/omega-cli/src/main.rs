@@ -263,17 +263,24 @@ enum Commands {
         commit: Option<String>,
     },
     /// Report live mission progress (oracles call this as they finish plan tasks).
-    /// Writes ~/.omega/state/oracle-<key>.progress.json; the Telegram bot renders a
-    /// progress bar in the project topic. Preserves the bot-written chat/thread/msg fields.
+    /// Writes ~/.omega/state/oracle-<key>.progress.json; the Telegram bot renders the
+    /// task checklist (✓/✗/▸/☐) + bar in the project topic. Preserves the bot's
+    /// chat/thread/msg fields. Two ways to drive it:
+    ///   omega progress <s> --plan "audit|fix N+1|merge"      (set the plan; all todo)
+    ///   omega progress <s> --task "audit" --status done       (mark one task)
+    /// status = done | fail | doing | todo.
     Progress {
         /// Session name (e.g. oracle-dentistrygpt-7)
         session: String,
-        /// Tasks done so far
-        done: u32,
-        /// Total tasks in the plan
-        total: u32,
-        /// Current task label (optional)
+        /// Set the full plan: a pipe-separated task list (each starts as todo).
+        #[arg(long)]
+        plan: Option<String>,
+        /// Upsert one task by title (use with --status).
+        #[arg(long)]
         task: Option<String>,
+        /// Status for --task: done | fail | doing | todo.
+        #[arg(long)]
+        status: Option<String>,
     },
 
     /// Read/drain oracle inbox events (JSONL event queue)
@@ -550,8 +557,8 @@ async fn main() -> Result<()> {
         Some(Commands::Done { session, status, summary, commit }) => {
             cmd_done(&session, &status, &summary, commit.as_deref()).await
         }
-        Some(Commands::Progress { session, done, total, task }) => {
-            cmd_progress(&session, done, total, task.as_deref())
+        Some(Commands::Progress { session, plan, task, status }) => {
+            cmd_progress(&session, plan.as_deref(), task.as_deref(), status.as_deref())
         }
         Some(Commands::Inbox { oracle, action }) => cmd_inbox(&oracle, &action).await,
         Some(Commands::Ship { project, message, unfreeze }) => {
@@ -3744,23 +3751,57 @@ async fn cmd_team(
 /// Live mission progress: merge-write ~/.omega/state/oracle-<key>.progress.json,
 /// preserving the bot-written chat/thread/msg fields so the Telegram bot can edit
 /// the progress card in place. Oracles call this as they complete plan tasks.
-fn cmd_progress(session: &str, done: u32, total: u32, task: Option<&str>) -> Result<()> {
+fn cmd_progress(
+    session: &str,
+    plan: Option<&str>,
+    task: Option<&str>,
+    status: Option<&str>,
+) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     let key = session.strip_prefix("oracle-").unwrap_or(session);
     let path = config.state_dir.join(format!("oracle-{}.progress.json", key));
-    // Preserve any existing fields (chat/thread/msg/mission written by the bot).
+    // Preserve existing fields (chat/thread/msg/mission written by the bot).
     let mut obj: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    if let Some(m) = obj.as_object_mut() {
-        m.insert("done".into(), serde_json::json!(done));
-        m.insert("total".into(), serde_json::json!(total));
-        if let Some(t) = task {
-            m.insert("task".into(), serde_json::json!(t));
-        }
-        m.insert("ts".into(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+    let m = obj.as_object_mut().unwrap();
+    // tasks: ordered [{t: title, s: status}]
+    let mut tasks: Vec<serde_json::Value> = m
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if let Some(p) = plan {
+        // Set the whole plan; each task starts todo.
+        tasks = p
+            .split('|')
+            .map(|t| t.trim())
+            .filter(|t| !t.is_empty())
+            .map(|t| serde_json::json!({ "t": t, "s": "todo" }))
+            .collect();
     }
+    if let Some(t) = task {
+        let st = status.unwrap_or("done");
+        // Upsert by title (case-insensitive).
+        if let Some(existing) = tasks
+            .iter_mut()
+            .find(|x| x.get("t").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case(t)) == Some(true))
+        {
+            existing["s"] = serde_json::json!(st);
+        } else {
+            tasks.push(serde_json::json!({ "t": t, "s": st }));
+        }
+    }
+    let total = tasks.len();
+    let done = tasks
+        .iter()
+        .filter(|x| x.get("s").and_then(|v| v.as_str()) == Some("done"))
+        .count();
+    m.insert("tasks".into(), serde_json::json!(tasks));
+    m.insert("done".into(), serde_json::json!(done));
+    m.insert("total".into(), serde_json::json!(total));
+    m.insert("ts".into(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
     std::fs::create_dir_all(&config.state_dir).ok();
     std::fs::write(&path, serde_json::to_string_pretty(&obj)?)?;
     println!("[+] progress {}/{} for oracle-{}", done, total, key);

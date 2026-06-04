@@ -101,14 +101,17 @@ exists. Then size the execution to the complexity:
   the fleet to the work.
 Prefer the dynamic-workflow + subagent approach at every tier where it fits.
 
-**1-bis — REPORT PROGRESS as you go.** The moment your plan exists, announce its size,
-then after EACH task completes, run:
+**1-bis — REPORT PROGRESS as you go (live checklist).** The moment your plan exists,
+publish it, then mark each task as you start/finish it:
 ```
-omega progress {{SESSION}} <tasks_done> <tasks_total> "<current task>"
+omega progress {{SESSION}} --plan "audit code|audit sécu|fix N+1|merge branches|push"
+omega progress {{SESSION}} --task "audit code" --status doing
+omega progress {{SESSION}} --task "audit code" --status done     # (or fail)
 ```
-This drives the live progress bar in the operator's Telegram topic (▰▰▰▱▱ %). Call it
-on every task transition — start (0/N), each completion, and the final (N/N) right
-before you write the report. It is cheap and keeps the operator informed in real time.
+status = `done | fail | doing | todo`. This drives the live checklist + bar in the
+operator's Telegram topic (✓/✗/▸/☐ per task). Set the `--plan` once right after you
+build it, then send a `--task … --status …` on EVERY task transition. Cheap, and the
+operator sees exactly what's done and what failed in real time.
 
 **2 — AUTONOMOUS. Plan, then EXECUTE — never wait for approval.** (L3.) You build the
 plan as a working method, not as a gate. You do NOT pause to ask the operator to

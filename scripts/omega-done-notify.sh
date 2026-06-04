@@ -83,32 +83,34 @@ PY
 )"
     [ "${OK:-0}" = "1" ] || continue
 
+    # Symbol aesthetic — no emoji.
     case "$STATUS" in
-        done_clean) icon="✅"; label="mission accomplie";;
-        failed)     icon="❌"; label="mission échouée";;
-        blocked)    icon="🚧"; label="mission bloquée";;
-        pending)    icon="⏳"; label="mission incomplète";;
-        *)          icon="⏹"; label="mission terminée";;
+        done_clean) sym="✓"; label="mission accomplie";;
+        failed)     sym="✗"; label="mission échouée";;
+        blocked)    sym="‖"; label="mission bloquée";;
+        pending)    sym="…"; label="mission incomplète";;
+        *)          sym="▪"; label="mission terminée";;
     esac
     esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
-    # ── Report card v3: header · summary (long → expandable blockquote, collapsed
-    #    by default so a long report stays tidy) · subtle meta footer. ───────────
+    # ── Report card v3: status glyph + full bar + summary (long → expandable
+    #    blockquote, collapsed by default) + subtle meta footer. Symbols only. ────
     sum_esc="$(esc "$SUMMARY")"
     if [ "${#SUMMARY}" -gt 280 ]; then
         body="<blockquote expandable>${sum_esc}</blockquote>"
     else
         body="${sum_esc}"
     fi
-    msg="${icon} <b>$(esc "$PROJECT")</b> — ${label}
+    msg="${sym} <b>$(esc "$PROJECT")</b> · ${label}
+<code>██████████</code> 100%
 
 ${body}"
     [ -n "$PENDING" ] && msg="${msg}
 
-⚠️ <b>Reste :</b> $(esc "$PENDING")"
+<b>Reste :</b> $(esc "$PENDING")"
     [ -n "$DEPLOY" ] && msg="${msg}
 
-🌐 $(esc "$DEPLOY")"
+$(esc "$DEPLOY")"
     foot="<i>$(esc "$ORACLE")"
     [ -n "$DUR" ]    && foot="${foot} · ${DUR}"
     foot="${foot}</i>"

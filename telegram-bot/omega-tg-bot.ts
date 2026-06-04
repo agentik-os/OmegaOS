@@ -19,6 +19,48 @@ const MC_ENV = `${OMEGA_DIR}/repos/omega-mc/.env`;
 const GROUPS_FILE = `${OMEGA_DIR}/telegram-groups.json`;
 const OMEGA = process.env.OMEGA_BIN || `${homedir()}/.local/bin/omega`;
 
+// ── Conversation history: persisted per chat+topic so Atlas, the project oracles,
+// and the agent-bots all have FULL access to the running conversation (not stateless
+// per-message). Stored as JSONL in ~/.omega/state/tg-history/ and mirrored to the
+// OmegaMC dashboard (mcMirror) so the dashboard stays in sync with Telegram.
+const HIST_DIR = `${OMEGA_DIR}/state/tg-history`;
+const histKey = (chat: number, thread?: number) => `${chat}${thread ? `-t${thread}` : ""}`;
+const histPath = (chat: number, thread?: number) => `${HIST_DIR}/${histKey(chat, thread)}.jsonl`;
+function histAppend(chat: number, thread: number | undefined, role: "operator" | "assistant", text: string, project?: string) {
+  try {
+    Bun.spawnSync(["mkdir", "-p", HIST_DIR]);
+    const line = JSON.stringify({ ts: new Date().toISOString(), role, text: String(text).slice(0, 8000) }) + "\n";
+    const p = histPath(chat, thread);
+    writeFileSync(p, (existsSync(p) ? readFileSync(p, "utf8") : "") + line);
+    mcMirror(project || "atlas", role, text).catch(() => {});
+  } catch {}
+}
+// Last N turns as a plain transcript, to prepend to a brain/dispatch prompt.
+function histContext(chat: number, thread?: number, n = 12): string {
+  try {
+    const lines = readFileSync(histPath(chat, thread), "utf8").trim().split("\n").filter(Boolean);
+    const turns = lines.slice(-n).map(l => { try { const o = JSON.parse(l); return `${o.role === "operator" ? "Opérateur" : "Toi"}: ${o.text}`; } catch { return ""; } }).filter(Boolean);
+    return turns.length ? `## Historique récent de cette conversation (pour contexte)\n${turns.join("\n")}\n\n` : "";
+  } catch { return ""; }
+}
+// Mirror a turn into the OmegaMC dashboard store (best-effort) so the dashboard's
+// per-agent conversation stays in sync with Telegram. Auto-disables after a failure
+// (e.g. the MC build has no message-ingest endpoint yet) so it never spams.
+let MC_MIRROR_OK = true;
+async function mcMirror(agent: string, role: string, text: string) {
+  if (!MC_MIRROR_OK) return;
+  try {
+    const pw = MC_PW; if (!pw) { MC_MIRROR_OK = false; return; }
+    const id = agent.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    const r = await fetch(`http://localhost:8080/api/agents/definitions/${id}/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Basic " + Buffer.from(":" + pw).toString("base64") },
+      body: JSON.stringify({ role: role === "operator" ? "user" : "assistant", content: String(text).slice(0, 8000), source: "telegram" }),
+    });
+    if (!r.ok) MC_MIRROR_OK = false; // endpoint absent (GET-only build) → stop trying
+  } catch { MC_MIRROR_OK = false; }
+}
+
 function readKV(path: string, re: RegExp): Record<string, string> {
   const out: Record<string, string> = {};
   try { for (const l of readFileSync(path, "utf8").split("\n")) { const m = l.match(re); if (m) out[m[1]] = m[2].replace(/^"|"$/g, ""); } } catch {}
@@ -126,16 +168,23 @@ const bar = (pct: number, n = 10) => { const f = Math.max(0, Math.min(n, Math.ro
 // Branded card: Ω-ruled header + body (+ optional ruled footer). `title` is plain text.
 const card = (title: string, body: string, footer?: string) =>
   `${RULE}\n<b>Ω  ${esc(title)}</b>\n${RULE}\n${body}` + (footer ? `\n${RULE}\n${footer}` : "");
+// Render a task checklist with status glyphs (✓ done · ✗ fail · ▸ doing · ☐ todo).
+type PTask = { t: string; s: string };
+function taskList(tasks: PTask[] | undefined): string {
+  if (!tasks || !tasks.length) return "";
+  const glyph = (s: string) => s === "done" ? "✓" : s === "fail" ? "✗" : s === "doing" ? "▸" : "☐";
+  return "\n" + tasks.slice(0, 20).map(t => `${glyph(t.s)} ${esc(String(t.t)).slice(0, 90)}`).join("\n");
+}
 // Live mission progress card (edited in place by pollProgress as the oracle calls
-// `omega progress`). Reuses the bar(pct) helper above.
-function progressCard(project: string, oracle: string, mission: string, p: { done?: number; total?: number; task?: string } | null): string {
+// `omega progress`). Symbol aesthetic only — no emoji. Bar in <code> for monospace.
+function progressCard(project: string, oracle: string, mission: string, p: { done?: number; total?: number; tasks?: PTask[] } | null): string {
   const total = p?.total || 0, done = p?.done || 0;
   const line = total > 0
-    ? `${bar(Math.round((done / total) * 100))} <b>${Math.round((done / total) * 100)}%</b> · ${done}/${total}`
-    : `${bar(0)} <i>démarrage…</i>`;
-  const task = p?.task ? `\n⏳ ${esc(String(p.task)).slice(0, 120)}` : "";
-  const mis = mission ? `\n🎯 <i>${esc(mission).slice(0, 160)}</i>` : "";
-  return `🚀 <b>${esc(project)}</b> — en cours\n${line}${task}${mis}\n\n<i>${esc(oracle)}</i>`;
+    ? `<code>${bar(Math.round((done / total) * 100))}</code> ${Math.round((done / total) * 100)}% · ${done}/${total}`
+    : `<code>${bar(0)}</code> <i>démarrage…</i>`;
+  const list = taskList(p?.tasks);
+  const mis = mission ? `\n<i>${esc(mission).slice(0, 160)}</i>` : "";
+  return `▸ <b>${esc(project)}</b> · en cours\n${line}${list}${mis}\n\n<i>${esc(oracle)}</i>`;
 }
 // Raw command output, branded (every dump shares the Ω header).
 const pre = (title: string, body: string) => `<b>Ω ${esc(title)}</b>\n<pre>${esc(body).slice(0, MAXLEN)}</pre>`;
@@ -451,20 +500,33 @@ WantedBy=default.target
 // → a visible Claude Code oracle session (its own mission; it delegates to dynamic
 // workflows / workers / audit-review). The Monitor watches done.json and relays the
 // result. The bot NEVER does project work itself (no headless brain).
-type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string };
+type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number };
 const watching: Watch[] = [];
 const reported = new Set<string>();
-async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined): Promise<string> {
-  const out = await omega(["dispatch", project, mission]);
-  // Detect SUCCESS by the dispatch confirmation line — NOT by scanning the whole
-  // output for "error"/"not found", because `omega dispatch` echoes the mission text
-  // (`Mission: <text>`) and a prompt like "fix the error" would false-trigger failure.
+// Dispatch a real oracle session AND post a live progress card (edited in place by
+// pollProgress as the oracle calls `omega progress`, finalized into the report by
+// pollReports). `extra` is dispatched to the oracle (history/reply context) but NOT
+// shown on the card. Returns "" because the card is sent here directly.
+async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined, extra = ""): Promise<string> {
+  const out = await omega(["dispatch", project, `${extra}${mission}`]);
   const m = out.match(/Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)/) || out.match(/oracle=(oracle-[A-Za-z0-9._-]+)/);
   if (!m) return card(`DISPATCH ${project.toUpperCase()} — ÉCHEC`, ` ❌ <pre>${esc(out).slice(0, 600)}</pre>`);
   const oracle = m[1];
-  watching.push({ chat, thread, mission, ts: Date.now(), oracle });
-  return card("🚀 ORACLE LANCÉ",
-    ` 🔮 <code>${esc(oracle)}</code>\n 🎯 ${esc(mission).slice(0, 220)}\n\n <i>La session tourne sur le VPS (menu Session / dashboard MC). Je remonte le résultat dès que c'est fini.</i>`);
+  const sent = await send(chat, progressCard(project, oracle, mission, null), undefined, thread);
+  const msgId = sent?.result?.message_id as number | undefined;
+  watching.push({ chat, thread, mission, ts: Date.now(), oracle, project, msgId });
+  try { writeFileSync(`${OMEGA_DIR}/state/${oracle}.progress.json`, JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, project, oracle, mission, done: 0, total: 0, tasks: [] })); } catch {}
+  return ""; // card already sent
+}
+// Live progress: read each tracked oracle's progress.json and EDIT its card.
+async function pollProgress() {
+  for (const w of watching) {
+    if (!w.msgId) continue;
+    let p: any = null;
+    try { p = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${w.oracle}.progress.json`, "utf8")); } catch {}
+    if (!p) continue;
+    await edit(w.chat, w.msgId, progressCard(w.project, w.oracle, w.mission, p), undefined, w.thread);
+  }
 }
 // Monitor: scan ~/.omega/state/oracle-*.done.json, relay each finished dispatch back
 // to the chat/topic that launched it.
@@ -481,12 +543,29 @@ async function pollReports() {
     if (idx < 0) continue;
     const w = watching[idx]; reported.add(f); watching.splice(idx, 1);
     const st = d.status || "done";
-    const icon = st === "done_clean" ? "✅" : st === "failed" ? "❌" : st === "blocked" ? "🚧" : "⏹";
-    const ship = d.ship?.commit ? `\n 📦 commit <code>${esc(d.ship.commit)}</code>` : "";
-    const url = d.ship?.deploy_url ? `\n 🌐 ${esc(d.ship.deploy_url)}` : "";
-    const head = ` ${icon} <code>${esc(d.oracle || w.oracle)}</code>\n 🎯 ${esc(w.mission).slice(0, 200)}`;
-    await send(w.chat, card(`ORACLE — ${String(d.project || "").toUpperCase() || "MISSION"}`,
-      `${head}\n\n${esc(d.summary || "(pas de résumé)").slice(0, 2500)}${ship}${url}`), undefined, w.thread);
+    // Symbol aesthetic — no emoji. Report v3: status glyph + full bar + summary
+    // (long → expandable) + subtle footer. Edits the live progress card in place.
+    const sym = st === "done_clean" ? "✓" : st === "failed" ? "✗" : st === "blocked" ? "‖" : st === "pending" ? "…" : "▪";
+    const label = st === "done_clean" ? "mission accomplie" : st === "failed" ? "mission échouée" : st === "blocked" ? "mission bloquée" : st === "pending" ? "mission incomplète" : "terminée";
+    const sum = esc(String(d.summary || "(pas de résumé)")).slice(0, 2600);
+    const body = (String(d.summary || "").length > 280) ? `<blockquote expandable>${sum}</blockquote>` : sum;
+    const dur = d.duration_secs ? ` · ${Math.floor(d.duration_secs / 60)}m${String(d.duration_secs % 60).padStart(2, "0")}s` : "";
+    const commit = d.ship?.commit ? ` · <code>${esc(String(d.ship.commit).slice(0, 12))}</code>` : "";
+    const deploy = d.ship?.deploy_url ? `\n${esc(d.ship.deploy_url)}` : "";
+    const pending = (Array.isArray(d.pending_actions) && d.pending_actions.length) ? `\n\n<b>Reste :</b> ${esc(d.pending_actions.join(" · ")).slice(0, 600)}` : "";
+    // Pull the final task checklist from the progress file (before it's removed).
+    let plist: PTask[] | undefined; let pdone = 0, ptot = 0;
+    try { const pj = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${d.oracle || w.oracle}.progress.json`, "utf8")); plist = pj.tasks; pdone = pj.done || 0; ptot = pj.total || 0; } catch {}
+    const checklist = taskList(plist);
+    const barLine = ptot > 0 ? `<code>${bar(Math.round((pdone / ptot) * 100))}</code> ${pdone}/${ptot}` : `<code>${bar(100)}</code> 100%`;
+    const report = `${sym} <b>${esc(d.project || w.project)}</b> · ${label}\n${barLine}${checklist}\n\n${body}${pending}${deploy}\n\n<i>${esc(d.oracle || w.oracle)}${dur}</i>${commit}`;
+    if (w.msgId) await edit(w.chat, w.msgId, report, undefined, w.thread);
+    else await send(w.chat, report, undefined, w.thread);
+    // Persist the oracle's report into the conversation history (+ MC mirror) so the
+    // next turn — to Atlas or the oracle — has the full thread.
+    histAppend(w.chat, w.thread, "assistant", `[${d.project || w.project}] ${d.summary || label}`, String(d.project || w.project));
+    try { writeFileSync(`${f}.notified`, ""); } catch {}
+    try { Bun.spawnSync(["rm", "-f", `${OMEGA_DIR}/state/${d.oracle || w.oracle}.progress.json`]); } catch {}
   }
 }
 
@@ -524,6 +603,7 @@ async function brainReply(chat: number, userMsgId: number, thread: number | unde
   brain(prompt)
     .then(out => {
       stop();
+      histAppend(chat, thread, "assistant", out, label.toLowerCase()); // persist the reply (+ MC mirror)
       let html: string; try { html = mdToHtml(out); } catch { html = out; } // bad markup → raw text
       return phId ? edit(chat, phId, html, undefined, thread) : send(chat, html, undefined, thread);
     })
@@ -1160,6 +1240,9 @@ async function main() {
         const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0, text = msg.text.trim();
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
+        // Reply-to-message: when the operator replies to a message, quote it as context
+        // so the brain knows exactly what they're reacting to (e.g. reply to a report).
+        const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").slice(0, 2000);
         // Stateful flows awaiting a typed reply (login code paste, new-project brief).
         // A slash command cancels the pending flow and is processed normally.
         const p = getPending(from);
@@ -1245,8 +1328,15 @@ async function main() {
           // Elsewhere (no topic) → ATLAS (converse / brainstorm / dispatch).
           const g = loadGroups();
           const proj = thread ? g.topics?.[String(thread)] : undefined;
-          if (proj) { react(chatId, msg.message_id, "🚀"); await send(chatId, await dispatchToOracle(proj, text, chatId, thread), undefined, thread); }
-          else await brainReply(chatId, msg.message_id, thread, text);
+          // Build the contextualized prompt: recent conversation history + the quoted
+          // reply (if any) + the new message. Persist the operator turn (also mirrored
+          // to the MC dashboard) so Atlas / the oracle has FULL conversation access.
+          const ctx = histContext(chatId, thread);
+          const quoted = replyTo ? `## L'opérateur répond à ce message :\n«${replyTo}»\n\n` : "";
+          const extra = `${ctx}${quoted}`;
+          histAppend(chatId, thread, "operator", replyTo ? `(en réponse à: ${replyTo.slice(0, 120)}) ${text}` : text, proj || "atlas");
+          if (proj) { react(chatId, msg.message_id, "🚀"); const r = await dispatchToOracle(proj, text, chatId, thread, extra); if (r) await send(chatId, r, undefined, thread); }
+          else await brainReply(chatId, msg.message_id, thread, `${extra}${text}`);
         }
       } catch (e: any) { console.error("update error:", e?.message || e); }
     }
