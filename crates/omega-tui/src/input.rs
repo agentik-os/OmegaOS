@@ -1986,6 +1986,45 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    // Dispatch step-1 is a PROJECT PICKER (no typing): ↑/↓ navigate the
+    // added-projects list, Enter selects → step-2 mission entry. (User ask:
+    // present the added projects instead of forcing the operator to type a name.)
+    #[test]
+    fn dispatch_picker_navigates_and_selects() {
+        let mut app = test_app();
+        let projects = vec!["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()];
+        app.input_mode = InputMode::DispatchProject(projects, 0);
+
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        // Down twice → index 2 (Gamma), Up once → index 1 (Beta).
+        handle_key(&mut app, down);
+        handle_key(&mut app, down);
+        handle_key(&mut app, up);
+        assert!(matches!(&app.input_mode, InputMode::DispatchProject(_, 1)));
+
+        // Enter commits the highlighted project and advances to mission entry.
+        let action = handle_key(&mut app, enter);
+        assert!(matches!(action, Action::None));
+        assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
+    }
+
+    // Up from the first item wraps to the last (matches the SelectModel picker).
+    #[test]
+    fn dispatch_picker_wraps_at_edges() {
+        let mut app = test_app();
+        app.input_mode =
+            InputMode::DispatchProject(vec!["A".into(), "B".into(), "C".into()], 0);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        handle_key(&mut app, up);
+        assert!(
+            matches!(&app.input_mode, InputMode::DispatchProject(_, 2)),
+            "Up from first item wraps to last"
+        );
+    }
+
     // Bug B: 'h' is advertised as the Hermes launcher; it must work from any
     // tab like the other global launchers (p/G/t), not be a dead key.
     #[test]

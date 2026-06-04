@@ -2873,7 +2873,10 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 "Initial prompt (optional, Esc to skip)",
                 format!("[{}/{}] {}", name, agent, app.input_buffer),
             ),
-            InputMode::DispatchProject => ("Dispatch — project", app.input_buffer.clone()),
+            InputMode::DispatchProject(projects, sel) => (
+                "Dispatch — pick project (↑/↓, Enter)",
+                projects.get(*sel).cloned().unwrap_or_default(),
+            ),
             InputMode::DispatchMission(p) => (
                 "Dispatch — mission",
                 format!("[{}] {}", p, app.input_buffer),
