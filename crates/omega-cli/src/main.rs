@@ -4,9 +4,7 @@ use omega_core::config::OmegaConfig;
 use omega_core::done::{DoneSignal, DoneStatus};
 use omega_core::session::SessionManager;
 
-mod claude_stream;
 mod forwarder;
-mod telegram_bridge;
 mod usage;
 
 #[derive(Parser)]
@@ -2289,25 +2287,25 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             if !cfg.enabled {
                 anyhow::bail!("Bot is disabled. Run: omega telegram enable");
             }
-            // New default: the light Bun bot (claude-agent-sdk). Its Claude session
-            // IS the AISB Master — the 13 agents live in its system prompt and it
+            // The Telegram bot is the Bun bot (omega-tg-bot.ts): its Claude session
+            // IS the AISB Director, the 13 agents live in its system prompt, and it
             // dispatches to per-project oracles via the `omega` CLI. We exec it so
-            // the systemd service (omega telegram run) becomes the bot itself.
-            // Falls back to the native Rust bridge if the bot isn't installed, its
-            // launcher fails, or OMEGA_TELEGRAM_NATIVE=1 is set.
+            // this process becomes the bot — the SAME entry point the systemd
+            // service uses. (The legacy native Rust bridge was removed: the Bun bot
+            // is the single canonical implementation, shipped by install.sh.)
+            use std::os::unix::process::CommandExt;
             let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-            let bot = home.join(".omega/telegram/run.sh");
-            let force_native = std::env::var("OMEGA_TELEGRAM_NATIVE")
-                .map(|v| v == "1")
-                .unwrap_or(false);
-            if bot.exists() && !force_native {
-                use std::os::unix::process::CommandExt;
-                println!("◆ Launching OmegaOS Telegram bot (Bun) — AISB Master + 13 agents");
-                let err = std::process::Command::new("bash").arg(&bot).exec();
-                // exec() only returns on failure → fall through to the native bridge.
-                eprintln!("Telegram bot launcher failed ({err}); falling back to the native bridge");
+            let bot_ts = home.join(".omega/telegram-bot/omega-tg-bot.ts");
+            if !bot_ts.exists() {
+                anyhow::bail!(
+                    "Telegram bot not found at {}. Reinstall OmegaOS (install.sh ships the Bun bot).",
+                    bot_ts.display()
+                );
             }
-            telegram_bridge::run(cfg).await
+            println!("◆ Launching OmegaOS Telegram bot (Bun) — AISB Director + 13 agents");
+            // exec() replaces this process; it only returns on failure.
+            let err = std::process::Command::new("bun").arg(&bot_ts).exec();
+            anyhow::bail!("Failed to launch the Bun Telegram bot ({err}). Is `bun` installed and on PATH?");
         }
     }
 }

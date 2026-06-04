@@ -293,7 +293,16 @@ impl Agent {
         // Resolve provider credentials once — the env-var wiring (a) above + the
         // configured model fallbacks (b/c/d) both read from providers.toml.
         let providers = ProvidersConfig::load();
-        let env_prefix = self.provider_env_prefix(&providers);
+        // PATH guard: panes launch via `bash -c`, which reads NO shell rc and
+        // inherits the rmux daemon's (possibly stale) PATH — so `claude`/`bun`/
+        // `omega` in ~/.local/bin or ~/.bun/bin can be "command not found", and a
+        // dispatched oracle drops to a bare shell instead of running its mission.
+        // Prepend the user bin dirs so every launched agent + tool always resolves.
+        let env_prefix = format!(
+            "export PATH=\"{home}/.local/bin:{home}/.bun/bin:$PATH\"; {}",
+            self.provider_env_prefix(&providers),
+            home = home
+        );
 
         match self {
             Agent::Claude => {
