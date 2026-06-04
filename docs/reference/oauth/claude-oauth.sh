@@ -54,8 +54,17 @@ EOF
             exit 1
         fi
 
-        # Extract code (before #)
-        AUTH_CODE=$(echo "$FULL_CODE" | cut -d'#' -f1)
+        # Extract the auth code, tolerant of how the operator pastes it:
+        #   • raw code                     → as-is
+        #   • code#state                   → drop the #state suffix
+        #   • full callback URL (?code=…)  → pull the code= query param
+        # Then strip any stray whitespace/newlines from copy-paste.
+        if echo "$FULL_CODE" | grep -q 'code='; then
+            AUTH_CODE=$(echo "$FULL_CODE" | sed -E 's/.*[?&]code=([^&#[:space:]]+).*/\1/')
+        else
+            AUTH_CODE=$(echo "$FULL_CODE" | cut -d'#' -f1)
+        fi
+        AUTH_CODE=$(echo "$AUTH_CODE" | tr -d '[:space:]')
 
         # Load PKCE state
         if [ ! -f "$PKCE_STATE" ]; then
