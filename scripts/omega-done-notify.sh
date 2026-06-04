@@ -84,31 +84,38 @@ PY
     [ "${OK:-0}" = "1" ] || continue
 
     case "$STATUS" in
-        done_clean) icon="✅"; label="Mission accomplie";;
-        failed)     icon="❌"; label="Mission échouée";;
-        blocked)    icon="🚧"; label="Mission bloquée";;
-        pending)    icon="⏳"; label="Mission incomplète";;
-        *)          icon="⏹"; label="Mission terminée";;
+        done_clean) icon="✅"; label="mission accomplie";;
+        failed)     icon="❌"; label="mission échouée";;
+        blocked)    icon="🚧"; label="mission bloquée";;
+        pending)    icon="⏳"; label="mission incomplète";;
+        *)          icon="⏹"; label="mission terminée";;
     esac
     esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
 
-    # ── Designed report card ──────────────────────────────────────────────
-    meta=""
-    [ -n "$DUR" ]    && meta="${meta}  ·  ⏱ ${DUR}"
-    [ -n "$COMMIT" ] && meta="${meta}  ·  <code>$(esc "$COMMIT")</code>"
-    msg="${icon} <b>${label}</b>
-🔮 <b>$(esc "$PROJECT")</b> · <i>$(esc "$ORACLE")</i>${meta}"
-    [ -n "$MISSION" ] && msg="${msg}
-<blockquote>$(esc "$MISSION")</blockquote>"
-    msg="${msg}
-━━━━━━━━━━━━━━━
-$(esc "$SUMMARY")"
+    # ── Report card v3: header · summary (long → expandable blockquote, collapsed
+    #    by default so a long report stays tidy) · subtle meta footer. ───────────
+    sum_esc="$(esc "$SUMMARY")"
+    if [ "${#SUMMARY}" -gt 280 ]; then
+        body="<blockquote expandable>${sum_esc}</blockquote>"
+    else
+        body="${sum_esc}"
+    fi
+    msg="${icon} <b>$(esc "$PROJECT")</b> — ${label}
+
+${body}"
     [ -n "$PENDING" ] && msg="${msg}
 
-⚠️ <b>Reste à faire :</b> $(esc "$PENDING")"
+⚠️ <b>Reste :</b> $(esc "$PENDING")"
     [ -n "$DEPLOY" ] && msg="${msg}
 
-🌐 <a href=\"$(esc "$DEPLOY")\">$(esc "$DEPLOY")</a>"
+🌐 $(esc "$DEPLOY")"
+    foot="<i>$(esc "$ORACLE")"
+    [ -n "$DUR" ]    && foot="${foot} · ${DUR}"
+    foot="${foot}</i>"
+    [ -n "$COMMIT" ] && foot="${foot} · <code>$(esc "$COMMIT")</code>"
+    msg="${msg}
+
+${foot}"
 
     # Route (3 levels): a mapped project TOPIC → hub+thread; else the ATLAS topic
     # (reports with no project, e.g. OmegaOS-self) → hub+atlas; else the operator DM.

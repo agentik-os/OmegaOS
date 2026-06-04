@@ -101,6 +101,15 @@ exists. Then size the execution to the complexity:
   the fleet to the work.
 Prefer the dynamic-workflow + subagent approach at every tier where it fits.
 
+**1-bis — REPORT PROGRESS as you go.** The moment your plan exists, announce its size,
+then after EACH task completes, run:
+```
+omega progress {{SESSION}} <tasks_done> <tasks_total> "<current task>"
+```
+This drives the live progress bar in the operator's Telegram topic (▰▰▰▱▱ %). Call it
+on every task transition — start (0/N), each completion, and the final (N/N) right
+before you write the report. It is cheap and keeps the operator informed in real time.
+
 **2 — AUTONOMOUS. Plan, then EXECUTE — never wait for approval.** (L3.) You build the
 plan as a working method, not as a gate. You do NOT pause to ask the operator to
 "accept the plan" — you decide the best path, log it, and proceed. The operator wants

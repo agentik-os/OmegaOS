@@ -126,6 +126,17 @@ const bar = (pct: number, n = 10) => { const f = Math.max(0, Math.min(n, Math.ro
 // Branded card: Ω-ruled header + body (+ optional ruled footer). `title` is plain text.
 const card = (title: string, body: string, footer?: string) =>
   `${RULE}\n<b>Ω  ${esc(title)}</b>\n${RULE}\n${body}` + (footer ? `\n${RULE}\n${footer}` : "");
+// Live mission progress card (edited in place by pollProgress as the oracle calls
+// `omega progress`). Reuses the bar(pct) helper above.
+function progressCard(project: string, oracle: string, mission: string, p: { done?: number; total?: number; task?: string } | null): string {
+  const total = p?.total || 0, done = p?.done || 0;
+  const line = total > 0
+    ? `${bar(Math.round((done / total) * 100))} <b>${Math.round((done / total) * 100)}%</b> · ${done}/${total}`
+    : `${bar(0)} <i>démarrage…</i>`;
+  const task = p?.task ? `\n⏳ ${esc(String(p.task)).slice(0, 120)}` : "";
+  const mis = mission ? `\n🎯 <i>${esc(mission).slice(0, 160)}</i>` : "";
+  return `🚀 <b>${esc(project)}</b> — en cours\n${line}${task}${mis}\n\n<i>${esc(oracle)}</i>`;
+}
 // Raw command output, branded (every dump shares the Ω header).
 const pre = (title: string, body: string) => `<b>Ω ${esc(title)}</b>\n<pre>${esc(body).slice(0, MAXLEN)}</pre>`;
 
@@ -1090,7 +1101,8 @@ async function agentBotMain(agentId: string) {
   await tg("setMyCommands", { commands: [{ command: "start", description: `Parler à l'oracle du projet ${project}` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
   console.log(`agent-bot up: ${agentId} → project ${project}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
-  setInterval(() => pollReports().catch(() => {}), 15000); // Monitor: relay oracle done.json
+  setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
+  setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
   let offset = 0;
   while (true) {
     const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: ["message"] });
@@ -1130,7 +1142,8 @@ async function main() {
   await tg("deleteWebhook", { drop_pending_updates: false });
   await resolvePublicIP();
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
-  setInterval(() => pollReports().catch(() => {}), 15000); // Monitor: relay oracle done.json reports
+  setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
+  setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json reports
   let offset = 0;
   while (true) {
     const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: ["message", "callback_query"] });
