@@ -390,17 +390,16 @@ impl Dispatcher {
             // auth to API-key-only and disables CLAUDE.md autodiscovery — an
             // oracle depends on both, so bare is reserved for hermetic worker
             // roles (spawned elsewhere via spawn-worker), never the oracle.
-            // Complexity → permission routing (oracle): a Complex/Epic mission is
-            // plan-heavy, so the oracle opens in "plan" mode (it reasons + plans
-            // before mutating); Simple/Medium use "auto" (auto-approve safe ops on
-            // an interactive pane). Both replace blanket --dangerously-skip-perms.
-            opts.permission_mode = Some(
-                match decision.complexity {
-                    routing::Complexity::Complex | routing::Complexity::Epic => "plan",
-                    routing::Complexity::Simple | routing::Complexity::Medium => "auto",
-                }
-                .to_string(),
-            );
+            // A dispatched oracle is AUTONOMOUS (L3: decide and proceed, never wait).
+            // It must BUILD a todo plan and then EXECUTE it without pausing for human
+            // approval — so we do NOT use `--permission-mode plan` (that gate stops on
+            // an interactive pane waiting for the operator to accept the plan, the exact
+            // friction the operator rejects). The "plan" is a working method enforced by
+            // the oracle doctrine (build the todo list, finish 100%), NOT a permission
+            // gate. Leave permission_mode unset → the base command keeps
+            // --dangerously-skip-permissions, so the oracle plans-and-proceeds fully
+            // autonomously across every complexity tier.
+            opts.permission_mode = None;
             // --brief enables the SendUserMessage agent→user tool so the oracle can
             // push a structured note to the human (oracle-only; workers stay silent).
             opts.brief = true;

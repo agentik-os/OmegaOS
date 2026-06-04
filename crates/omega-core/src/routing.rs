@@ -109,6 +109,23 @@ fn detect_audit_skills(text: &str) -> Vec<AuditSkill> {
         }
     }
 
+    // CODE-TOUCH BASELINE: any mission that changes code gets `/codeaudit` as the
+    // baseline floor — even when no audit keyword matched — so a code change is NEVER
+    // shipped without the quality gate. Skip for read-only/research missions and avoid
+    // duplicating an already-detected codeaudit (or a full-audit run that includes it).
+    let touches_code = ["fix", "implement", "build", "add", "create", "refactor", "feature",
+        "bug", "patch", "update", "change", "rewrite", "migrate", "corrige", "implémente",
+        "ajoute", "code", "develop", "développe", "ship", "deploy"]
+        .iter().any(|k| lower.contains(k));
+    let read_only = lower.contains("research") || lower.contains("recherche")
+        || lower.contains("read-only") || lower.contains("investigate") || lower.contains("explain");
+    if touches_code && !read_only && !skills.iter().any(|s| s.skill == "codeaudit") {
+        skills.push(AuditSkill {
+            skill: "codeaudit".to_string(),
+            trigger: "code-touch baseline".to_string(),
+        });
+    }
+
     skills
 }
 
