@@ -42,8 +42,8 @@ RULE="━━━━━━━━━━━━"
 MSG="${RULE}
 <b>Ω  AUTO-HEAL</b>
 ${RULE}
- 🩺 Pass exécuté — <b>${REMAIN}</b> alerte(s) restante(s).
- Tape /status → <b>🛠 Fix it</b> pour envoyer un oracle."
+ 🩺 Heal pass ran — <b>${REMAIN}</b> warning(s) remaining.
+ Tap /status → <b>🛠 Fix it</b> to send an oracle."
 
 curl -fsS --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
     --data-urlencode "chat_id=${CHAT}" \

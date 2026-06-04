@@ -42,7 +42,7 @@ CHAT=$(grep -E '^[[:space:]]*chat_id' "$OMEGA_DIR/telegram.toml" 2>/dev/null | h
 if [ -n "${TG:-}" ] && [ -n "${CHAT:-}" ]; then
     curl -s "https://api.telegram.org/bot${TG}/sendMessage" \
         --data-urlencode "chat_id=${CHAT}" \
-        --data-urlencode "text=⚠️ AISB : le refresh du token Claude a échoué. Ouvre /account → 🔐 Login pour te reconnecter (sinon les agents tomberont en 401)." >/dev/null 2>&1
+        --data-urlencode "text=⚠️ AISB: the Claude token refresh failed. Open /account → 🔐 Login to re-authenticate (otherwise the agents will start hitting 401)." >/dev/null 2>&1
     echo "$(stamp) refresh failed — operator alerted on Telegram"
 else
     echo "$(stamp) refresh failed — no telegram config to alert"

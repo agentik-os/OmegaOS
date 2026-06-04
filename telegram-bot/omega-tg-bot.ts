@@ -39,8 +39,8 @@ function histAppend(chat: number, thread: number | undefined, role: "operator" |
 function histContext(chat: number, thread?: number, n = 12): string {
   try {
     const lines = readFileSync(histPath(chat, thread), "utf8").trim().split("\n").filter(Boolean);
-    const turns = lines.slice(-n).map(l => { try { const o = JSON.parse(l); return `${o.role === "operator" ? "Opérateur" : "Toi"}: ${o.text}`; } catch { return ""; } }).filter(Boolean);
-    return turns.length ? `## Historique récent de cette conversation (pour contexte)\n${turns.join("\n")}\n\n` : "";
+    const turns = lines.slice(-n).map(l => { try { const o = JSON.parse(l); return `${o.role === "operator" ? "Operator" : "You"}: ${o.text}`; } catch { return ""; } }).filter(Boolean);
+    return turns.length ? `## Recent history of this conversation (for context)\n${turns.join("\n")}\n\n` : "";
   } catch { return ""; }
 }
 // Mirror a turn into the OmegaMC dashboard store (best-effort) so the dashboard's
@@ -181,10 +181,10 @@ function progressCard(project: string, oracle: string, mission: string, p: { don
   const total = p?.total || 0, done = p?.done || 0;
   const line = total > 0
     ? `<code>${bar(Math.round((done / total) * 100))}</code> ${Math.round((done / total) * 100)}% · ${done}/${total}`
-    : `<code>${bar(0)}</code> <i>démarrage…</i>`;
+    : `<code>${bar(0)}</code> <i>starting…</i>`;
   const list = taskList(p?.tasks);
   const mis = mission ? `\n<i>${esc(mission).slice(0, 160)}</i>` : "";
-  return `▸ <b>${esc(project)}</b> · en cours\n${line}${list}${mis}\n\n<i>${esc(oracle)}</i>`;
+  return `▸ <b>${esc(project)}</b> · in progress\n${line}${list}${mis}\n\n<i>${esc(oracle)}</i>`;
 }
 // Raw command output, branded (every dump shares the Ω header).
 const pre = (title: string, body: string) => `<b>Ω ${esc(title)}</b>\n<pre>${esc(body).slice(0, MAXLEN)}</pre>`;
@@ -258,17 +258,17 @@ async function addProject(name: string): Promise<string> {
   const pdir = repoPath(name) || "";
   recordProject(name, pdir, pdir.split("/Station/")[1]?.split("/")[0] || "");
   const g = loadGroups();
-  let topicLine = "⚠️ Topic en attente — passe le groupe en <b>supergroupe + Topics activés</b> et ajoute le bot <b>admin (Manage Topics)</b>, puis /setupgroup et /sync.";
+  let topicLine = "⚠️ Topic pending — switch the group to a <b>supergroup + Topics enabled</b> and add the bot as <b>admin (Manage Topics)</b>, then /setupgroup and /sync.";
   if (g.hub && g.isForum) {
     const r = await tg("createForumTopic", { chat_id: g.hub, name: name.slice(0, 128) });
-    if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = name; saveGroups(g); recordProject(name, pdir, undefined, r.result.message_thread_id); topicLine = "✅ Topic Telegram créé dans le groupe."; }
-    else topicLine = `⚠️ Topic non créé : <i>${esc(r.description || "erreur")}</i>.${/rights/i.test(r.description || "") ? " Active la permission <b>« Gérer les sujets »</b> pour le bot (admin du groupe)." : ""}`;
+    if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = name; saveGroups(g); recordProject(name, pdir, undefined, r.result.message_thread_id); topicLine = "✅ Telegram topic created in the group."; }
+    else topicLine = `⚠️ Topic not created: <i>${esc(r.description || "error")}</i>.${/rights/i.test(r.description || "") ? " Enable the <b>“Manage Topics”</b> permission for the bot (group admin)." : ""}`;
   }
-  const dashLine = dash === "added" ? "ajouté ✅" : dash === "exists" ? "déjà présent ✅" : "non écrit ⚠️ (omega-mc config introuvable)";
-  return `<b>📁 Projet « ${esc(name)} » géré</b>\n` +
-    `• Oracle dédié (multi-session) : <code>omega dispatch ${esc(name)}</code> ✅\n` +
-    `• Dashboard Mission Control : ${dashLine}\n` +
-    `• ${topicLine}\n\n<i>Parle du projet dans son topic (ou ici) — Atlas connaît le contexte et dirige son oracle.</i>`;
+  const dashLine = dash === "added" ? "added ✅" : dash === "exists" ? "already present ✅" : "not written ⚠️ (omega-mc config not found)";
+  return `<b>📁 Project “${esc(name)}” managed</b>\n` +
+    `• Dedicated oracle (multi-session): <code>omega dispatch ${esc(name)}</code> ✅\n` +
+    `• Mission Control dashboard: ${dashLine}\n` +
+    `• ${topicLine}\n\n<i>Talk about the project in its topic (or here) — Atlas knows the context and directs its oracle.</i>`;
 }
 
 // ── Managed projects = the SHARED registry the OmegaOS TUI (Project menu / oracle
@@ -316,21 +316,21 @@ async function deleteProject(name: string, mode: "soft" | "full"): Promise<strin
   if (tid != null) {
     const g = loadGroups();
     const r = await tg("deleteForumTopic", { chat_id: g.hub, message_thread_id: tid });
-    if (r.ok || /not found|thread not found/i.test(r.description || "")) { delete g.topics![String(tid)]; saveGroups(g); steps.push("💬 Topic Telegram : supprimé ✅"); }
-    else steps.push(`💬 Topic : ⚠️ ${esc(r.description || "échec")}`);
-  } else steps.push("💬 Topic : (aucun)");
+    if (r.ok || /not found|thread not found/i.test(r.description || "")) { delete g.topics![String(tid)]; saveGroups(g); steps.push("💬 Telegram topic: deleted ✅"); }
+    else steps.push(`💬 Topic: ⚠️ ${esc(r.description || "failed")}`);
+  } else steps.push("💬 Topic: (none)");
   // 2. Dashboard roster
-  steps.push(mcUnregister(name) ? "🤖 Agent dashboard : retiré ✅" : "🤖 Agent dashboard : (absent)");
+  steps.push(mcUnregister(name) ? "🤖 Dashboard agent: removed ✅" : "🤖 Dashboard agent: (absent)");
   // 3. Agent-bot service (if one was associated)
   const bots = loadAgentBots();
   if (bots[id] || bots[name]) {
     delete bots[id]; delete bots[name]; saveAgentBots(bots);
     Bun.spawnSync(["systemctl", "--user", "disable", "--now", `omega-tg-agent-${id}.service`]);
-    steps.push("🔗 Bot agent dédié : arrêté + retiré ✅");
+    steps.push("🔗 Dedicated agent bot: stopped + removed ✅");
   }
   // 4. Shared registry (TUI menu stops seeing it too)
   removeProject(name);
-  steps.push("📋 Registre projets (TUI + Telegram) : retiré ✅");
+  steps.push("📋 Project registry (TUI + Telegram): removed ✅");
   // 5. GitHub repo (full only — irreversible)
   if (mode === "full") {
     const dir = repoPath(name) || loadProjects()[name]?.dir;
@@ -338,11 +338,11 @@ async function deleteProject(name: string, mode: "soft" | "full"): Promise<strin
     if (dir) { const r = Bun.spawnSync(["bash", "-lc", `git -C ${dir} remote get-url origin 2>/dev/null`]).stdout.toString().trim(); slug = (r.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/) || [])[1] || ""; }
     if (slug) {
       const del = Bun.spawnSync(["bash", "-lc", `gh repo delete ${slug} --yes 2>&1`]);
-      steps.push(del.exitCode === 0 ? `🐙 Repo GitHub <code>${esc(slug)}</code> : SUPPRIMÉ ✅` : `🐙 GitHub : ⚠️ ${esc((del.stdout.toString() + del.stderr.toString()).trim().slice(0, 120))}`);
-    } else steps.push("🐙 GitHub : ⚠️ remote introuvable (rien supprimé)");
-    steps.push("📁 Dossier local : <b>conservé</b> (supprime-le à la main si besoin).");
+      steps.push(del.exitCode === 0 ? `🐙 GitHub repo <code>${esc(slug)}</code>: DELETED ✅` : `🐙 GitHub: ⚠️ ${esc((del.stdout.toString() + del.stderr.toString()).trim().slice(0, 120))}`);
+    } else steps.push("🐙 GitHub: ⚠️ remote not found (nothing deleted)");
+    steps.push("📁 Local folder: <b>kept</b> (delete it manually if needed).");
   }
-  return `<b>🗑 Projet « ${esc(name)} » supprimé (${mode === "full" ? "complet" : "OmegaOS only"})</b>\n${steps.join("\n")}`;
+  return `<b>🗑 Project “${esc(name)}” deleted (${mode === "full" ? "full" : "OmegaOS only"})</b>\n${steps.join("\n")}`;
 }
 
 // Project category folders under ~/Station (Partners, SideBusiness, CAIO, …), minus the OS itself.
@@ -358,17 +358,17 @@ async function createProject(category: string, name: string, desc: string): Prom
   const dir = `${homedir()}/Station/${category}/${safe}`;
   const steps: string[] = [];
   const mk = Bun.spawnSync(["bash", "-lc", `mkdir -p ${dir} && cd ${dir} && (git rev-parse --git-dir >/dev/null 2>&1 || git init -q) && printf '# %s\\n\\n%s\\n' ${JSON.stringify(safe)} ${JSON.stringify(desc)} > README.md && git add -A 2>/dev/null; echo ok`]);
-  steps.push(mk.stdout.toString().includes("ok") ? `📁 Dossier + git : <code>${dir}</code>` : `📁 Dossier : ⚠️ ${esc(mk.stderr.toString().slice(0, 120))}`);
+  steps.push(mk.stdout.toString().includes("ok") ? `📁 Folder + git: <code>${dir}</code>` : `📁 Folder: ⚠️ ${esc(mk.stderr.toString().slice(0, 120))}`);
   const dash = mcRegister(safe);
   recordProject(safe, dir, category);
-  steps.push(`🤖 Agent oracle (dashboard) : ${dash === "added" ? "créé ✅" : dash === "exists" ? "déjà là ✅" : "⚠️"}`);
+  steps.push(`🤖 Oracle agent (dashboard): ${dash === "added" ? "created ✅" : dash === "exists" ? "already there ✅" : "⚠️"}`);
   const g = loadGroups();
   if (g.hub && g.isForum) {
     const r = await tg("createForumTopic", { chat_id: g.hub, name: safe.slice(0, 128) });
-    if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = safe; saveGroups(g); recordProject(safe, dir, undefined, r.result.message_thread_id); steps.push("💬 Topic Telegram : créé ✅"); }
-    else steps.push(`💬 Topic Telegram : ⚠️ ${esc(r.description || "échec")}${/rights/i.test(r.description || "") ? " — active « Gérer les sujets » pour le bot" : ""}`);
-  } else steps.push("💬 Topic Telegram : en attente (groupe forum + bot admin)");
-  return { dir, report: `<b>🚀 Projet « ${esc(safe)} » créé dans ${esc(category)}</b>\n${steps.join("\n")}` };
+    if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = safe; saveGroups(g); recordProject(safe, dir, undefined, r.result.message_thread_id); steps.push("💬 Telegram topic: created ✅"); }
+    else steps.push(`💬 Telegram topic: ⚠️ ${esc(r.description || "failed")}${/rights/i.test(r.description || "") ? " — enable “Manage Topics” for the bot" : ""}`);
+  } else steps.push("💬 Telegram topic: pending (forum group + bot admin)");
+  return { dir, report: `<b>🚀 Project “${esc(safe)}” created in ${esc(category)}</b>\n${steps.join("\n")}` };
 }
 
 // ── Git ops on projects: pull / add+commit+push / status, from Telegram ───────
@@ -390,21 +390,21 @@ function gitOp(path: string, args: string[]): string {
   return (r.stdout.toString() + r.stderr.toString()).trim() || "(ok)";
 }
 function gitPull(name: string): string {
-  const path = repoPath(name); if (!path) return `repo introuvable: ${name}`;
+  const path = repoPath(name); if (!path) return `repo not found: ${name}`;
   return gitOp(path, ["pull", "--ff-only"]);
 }
 function gitStatus(name: string): string {
-  const path = repoPath(name); if (!path) return `repo introuvable: ${name}`;
+  const path = repoPath(name); if (!path) return `repo not found: ${name}`;
   const branch = gitOp(path, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return `branch: ${branch}\n` + gitOp(path, ["status", "-sb"]);
 }
 // add -A → commit → push. Safe when there's nothing to commit (push still runs).
 function gitPush(name: string): string {
-  const path = repoPath(name); if (!path) return `repo introuvable: ${name}`;
+  const path = repoPath(name); if (!path) return `repo not found: ${name}`;
   gitOp(path, ["add", "-A"]);
   const commit = gitOp(path, ["commit", "-m", "update from Telegram (Atlas)"]);
   const push = gitOp(path, ["push"]);
-  const cLine = /nothing to commit/.test(commit) ? "rien à committer" : (commit.split("\n").pop() || "commit ok");
+  const cLine = /nothing to commit/.test(commit) ? "nothing to commit" : (commit.split("\n").pop() || "commit ok");
   return `add: ✓\ncommit: ${cLine}\npush: ${push.split("\n").slice(-2).join(" ")}`;
 }
 function gitMenuKb(name: string) {
@@ -443,7 +443,7 @@ async function master(text: string): Promise<string> {
     const r = await $`timeout 900 ${CLAUDE} -p ${text} --append-system-prompt ${IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE} --add-dir / --dangerously-skip-permissions`
       .env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
     const o = r.stdout.toString().trim();
-    return o || "(Atlas n'a rien renvoyé — réessaie ou utilise /menu)";
+    return o || "(Atlas returned nothing — try again or use /menu)";
   } catch (e: any) { return "Atlas error: " + (e?.message || e); }
 }
 
@@ -462,7 +462,7 @@ async function projectOracle(project: string, text: string): Promise<string> {
     const r = await $`timeout 900 ${CLAUDE} -p ${text} --append-system-prompt ${scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE} --add-dir ${dir} --dangerously-skip-permissions`
       .cwd(dir).env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
     const o = r.stdout.toString().trim();
-    return o || `(L'oracle ${project} n'a rien renvoyé — réessaie.)`;
+    return o || `(The ${project} oracle returned nothing — try again.)`;
   } catch (e: any) { return `Oracle ${project} error: ${e?.message || e}`; }
 }
 
@@ -510,7 +510,7 @@ const reported = new Set<string>();
 async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined, extra = ""): Promise<string> {
   const out = await omega(["dispatch", project, `${extra}${mission}`]);
   const m = out.match(/Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)/) || out.match(/oracle=(oracle-[A-Za-z0-9._-]+)/);
-  if (!m) return card(`DISPATCH ${project.toUpperCase()} — ÉCHEC`, ` ❌ <pre>${esc(out).slice(0, 600)}</pre>`);
+  if (!m) return card(`DISPATCH ${project.toUpperCase()} — FAILED`, ` ❌ <pre>${esc(out).slice(0, 600)}</pre>`);
   const oracle = m[1];
   const sent = await send(chat, progressCard(project, oracle, mission, null), undefined, thread);
   const msgId = sent?.result?.message_id as number | undefined;
@@ -546,13 +546,13 @@ async function pollReports() {
     // Symbol aesthetic — no emoji. Report v3: status glyph + full bar + summary
     // (long → expandable) + subtle footer. Edits the live progress card in place.
     const sym = st === "done_clean" ? "✓" : st === "failed" ? "✗" : st === "blocked" ? "‖" : st === "pending" ? "…" : "▪";
-    const label = st === "done_clean" ? "mission accomplie" : st === "failed" ? "mission échouée" : st === "blocked" ? "mission bloquée" : st === "pending" ? "mission incomplète" : "terminée";
-    const sum = esc(String(d.summary || "(pas de résumé)")).slice(0, 2600);
+    const label = st === "done_clean" ? "mission complete" : st === "failed" ? "mission failed" : st === "blocked" ? "mission blocked" : st === "pending" ? "mission incomplete" : "finished";
+    const sum = esc(String(d.summary || "(no summary)")).slice(0, 2600);
     const body = (String(d.summary || "").length > 280) ? `<blockquote expandable>${sum}</blockquote>` : sum;
     const dur = d.duration_secs ? ` · ${Math.floor(d.duration_secs / 60)}m${String(d.duration_secs % 60).padStart(2, "0")}s` : "";
     const commit = d.ship?.commit ? ` · <code>${esc(String(d.ship.commit).slice(0, 12))}</code>` : "";
     const deploy = d.ship?.deploy_url ? `\n${esc(d.ship.deploy_url)}` : "";
-    const pending = (Array.isArray(d.pending_actions) && d.pending_actions.length) ? `\n\n<b>Reste :</b> ${esc(d.pending_actions.join(" · ")).slice(0, 600)}` : "";
+    const pending = (Array.isArray(d.pending_actions) && d.pending_actions.length) ? `\n\n<b>Remaining:</b> ${esc(d.pending_actions.join(" · ")).slice(0, 600)}` : "";
     // Pull the final task checklist from the progress file (before it's removed).
     let plist: PTask[] | undefined; let pdone = 0, ptot = 0;
     try { const pj = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${d.oracle || w.oracle}.progress.json`, "utf8")); plist = pj.tasks; pdone = pj.done || 0; ptot = pj.total || 0; } catch {}
@@ -578,7 +578,7 @@ async function react(chat: number, msgId: number, emoji: string) {
 async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas") {
   react(chat, userMsgId, "🤔");
   await tg("sendChatAction", { chat_id: chat, action: "typing", message_thread_id: thread });
-  const ph = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", message_thread_id: thread, text: `🧠 <i>${label} réfléchit…</i>` });
+  const ph = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", message_thread_id: thread, text: `🧠 <i>${label} thinking…</i>` });
   const phId = ph?.result?.message_id as number | undefined;
   // LIVE "really working" feedback: keep the typing… indicator alive (Telegram
   // expires it after ~5s) AND animate the placeholder (rotating glyph + growing
@@ -593,7 +593,7 @@ async function brainReply(chat: number, userMsgId: number, thread: number | unde
     if (phId) {
       const secs = Math.round((Date.now() - t0) / 1000);
       const dots = ".".repeat((tick % 3) + 1);
-      edit(chat, phId, `${frames[tick % frames.length]} <i>${label} réfléchit${dots}</i>  <code>${secs}s</code>`, undefined, thread);
+      edit(chat, phId, `${frames[tick % frames.length]} <i>${label} thinking${dots}</i>  <code>${secs}s</code>`, undefined, thread);
     }
     tick++;
   }, 3000);
@@ -611,7 +611,7 @@ async function brainReply(chat: number, userMsgId: number, thread: number | unde
     .catch(async () => {
       stop();
       react(chat, userMsgId, "⚠️");
-      const m = "⚠️ AISB a rencontré une erreur — réessaie.";
+      const m = "⚠️ AISB hit an error — try again.";
       if (phId) await edit(chat, phId, m, undefined, thread); else await send(chat, m, undefined, thread);
     });
 }
@@ -664,26 +664,26 @@ async function accountStatus(): Promise<string> {
   const email = raw.match(/"email"\s*:\s*"([^"]+)"/)?.[1] || "?";
   const sub = raw.match(/"subscriptionType"\s*:\s*"([^"]+)"/)?.[1] || "?";
   let token = "?";
-  try { const c = JSON.parse(await oauth(["check"])); token = c.valid ? `valide (${c.remaining_min} min restantes)` : "⚠️ EXPIRÉ — clique « Login »"; } catch {}
+  try { const c = JSON.parse(await oauth(["check"])); token = c.valid ? `valid (${c.remaining_min} min left)` : "⚠️ EXPIRED — tap “Login”"; } catch {}
   const usage = await omega(["usage"]);
-  const tokenOk = /valide/i.test(token);
-  return card("COMPTE CLAUDE (AISB)",
-    ` 📧 ${esc(email)}\n 🎫 abo : ${esc(sub)}\n ${tokenOk ? "🟢" : "🔴"} token : ${esc(token)}`,
-    `📊 <b>USAGE TOKENS</b>\n<pre>${esc(usage).slice(0, 1500)}</pre>`);
+  const tokenOk = /valid/i.test(token);
+  return card("CLAUDE ACCOUNT (AISB)",
+    ` 📧 ${esc(email)}\n 🎫 plan: ${esc(sub)}\n ${tokenOk ? "🟢" : "🔴"} token: ${esc(token)}`,
+    `📊 <b>TOKEN USAGE</b>\n<pre>${esc(usage).slice(0, 1500)}</pre>`);
 }
 
 async function serviceAccounts(): Promise<string> {
   const env = readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/);
-  const row = (label: string, key: string) => `${env[key] ? "✅" : "❌"} ${label}${env[key] ? "" : " — token manquant"}`;
-  const staticTable = `<b>👤 Comptes de services (provisioning)</b>\n` +
+  const row = (label: string, key: string) => `${env[key] ? "✅" : "❌"} ${label}${env[key] ? "" : " — token missing"}`;
+  const staticTable = `<b>👤 Service accounts (provisioning)</b>\n` +
     `${row("Vercel", "VERCEL_TOKEN")}\n${row("Convex", "CONVEX_TEAM_TOKEN")}\n${row("GitHub", "GITHUB_TOKEN")}\n` +
     `${row("Stripe", "STRIPE_SECRET_KEY")}\nClerk: ${esc(env.CLERK_PROVISION_MODE || "?")}\n\n` +
-    `<i>Les ❌ requièrent ton token. Renseigne-les via le wizard Provisioning (TUI) ou édite ~/.omega/provisioning/services.env.</i>`;
+    `<i>The ❌ ones need your token. Fill them via the Provisioning wizard (TUI) or edit ~/.omega/provisioning/services.env.</i>`;
   // Live probe of which accounts actually authenticate, when the CLI supports it
   // (graceful no-op on older binaries without `omega provision verify`).
   const probe = await omega(["provision", "verify", "default"]);
   const hasProbe = probe && !/error|unrecognized|unexpected argument|USAGE:|no output|not found/i.test(probe);
-  return hasProbe ? `<b>🔎 Vérification live des comptes</b>\n<pre>${esc(probe).slice(0, 1400)}</pre>\n\n${staticTable}` : staticTable;
+  return hasProbe ? `<b>🔎 Live account verification</b>\n<pre>${esc(probe).slice(0, 1400)}</pre>\n\n${staticTable}` : staticTable;
 }
 
 // Login / Re-auth — drives the real `claude /login` via the shared `omega
@@ -692,26 +692,26 @@ async function serviceAccounts(): Promise<string> {
 // OAuth, not instant), then the SAME message is replaced by a designed card with
 // the link as a tappable button. Pasting the callback code back runs
 // `omega claude-login-code`, which writes fresh creds to the SHARED store.
-const TITLE_LOGIN = (s: boolean) => (s ? "CHANGER DE COMPTE" : "LOGIN / RE-AUTH");
+const TITLE_LOGIN = (s: boolean) => (s ? "SWITCH ACCOUNT" : "LOGIN / RE-AUTH");
 async function startLogin(chat: number, msgId: number, from: number, switchAcct: boolean) {
   // 1) Waiting card (the wait is normal — house OAuth, browser-less).
   await edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
-    " ⏳ <b>Connexion en cours…</b>\n Génération du lien d'autorisation Claude.\n <i>~15 s — c'est l'auth OAuth, c'est normal.</i>"),
+    " ⏳ <b>Connecting…</b>\n Generating the Claude authorization link.\n <i>~15 s — it's the OAuth auth, this is normal.</i>"),
     kb([[back("account")]]));
   // 2) Drive the engine, pull the URL out of its JSON.
   const j = extractJson(await omega(["claude-login"]));
   const url: string = j?.url || "";
   if (!j?.ok || !/^https?:\/\//.test(url))
     return edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
-      ` ❌ <b>Lien non généré.</b>\n <i>Réessaie dans un instant.</i>`),
-      kb([[{ text: "🔄 Réessayer", callback_data: "acct:login" }], [back("account")]]));
+      ` ❌ <b>Link not generated.</b>\n <i>Try again in a moment.</i>`),
+      kb([[{ text: "🔄 Retry", callback_data: "acct:login" }], [back("account")]]));
   // 3) Replace the waiting card with the designed link card + button.
   setPending(from, "login-code");
   await edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
-    ` 🔗 <b>1.</b> Ouvre le lien et autorise${switchAcct ? " <b>avec l'autre compte</b>" : " avec ton compte Max"}.\n` +
-    ` 🔑 <b>2.</b> Copie le <b>code</b> de la page de callback et <b>colle-le ici</b> (prochain message).`,
-    "<i>Un seul login pour tout OmegaOS — le credential est partagé entre toutes les sessions.</i>"),
-    kb([[{ text: "🔐 Ouvrir & autoriser", url }], [{ text: "✖ Annuler", callback_data: "acct:cancel" }]]));
+    ` 🔗 <b>1.</b> Open the link and authorize${switchAcct ? " <b>with the other account</b>" : " with your Max account"}.\n` +
+    ` 🔑 <b>2.</b> Copy the <b>code</b> from the callback page and <b>paste it here</b> (next message).`,
+    "<i>One login for all of OmegaOS — the credential is shared across every session.</i>"),
+    kb([[{ text: "🔐 Open & authorize", url }], [{ text: "✖ Cancel", callback_data: "acct:cancel" }]]));
 }
 
 function dashboardURL(): { url: string; pw: string } {
@@ -777,7 +777,7 @@ const MENU: [string, string][] = [
 const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch"]);
 function menuKb() {
   return kb([
-    [{ text: "📖 Guide — comment ça marche", callback_data: "nav:guide" }],
+    [{ text: "📖 Guide — how it works", callback_data: "nav:guide" }],
     [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
     [{ text: "📊 Status", callback_data: "nav:status" }, { text: "🗂 Sessions", callback_data: "nav:sessions" }],
     [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
@@ -787,39 +787,41 @@ function menuKb() {
     [{ text: "🛑 Kill all", callback_data: "nav:killall" }],
   ]);
 }
-const menuText = card("OMEGAOS — ACTION HUB", " Tape une action. Chacune tourne sur ton serveur via le CLI <code>omega</code>.");
+const menuText = card("OMEGAOS — ACTION HUB", " Tap an action. Each one runs on your server via the <code>omega</code> CLI.");
 
 // /start — welcome + live status pulse. Greets the operator as Atlas, says what
 // they can do, and shows a one-line health snapshot. New users land here.
-async function welcomeCard(): Promise<string> {
+// /start AND /guide — the full operator guide. Greets as Atlas, explains the
+// whole OmegaOS workflow in detail with a live health pulse, and a button to open
+// the action menu. The guide is the landing screen; /menu is the buttons.
+async function guideCard(): Promise<string> {
   let sessions = 0, health = "?";
   try { sessions = (await omega(["list"])).split("\n").filter(l => /^\s*[⌂◆●]/.test(l)).length; } catch {}
-  try { const raw = await omega(["doctor"]); const w = (raw.match(/^\s*\[[!x]\]/gm) || []).length; health = w ? `🟡 ${w} alerte(s)` : "🟢 sain"; } catch {}
+  try { const raw = await omega(["doctor"]); const w = (raw.match(/^\s*\[[!x]\]/gm) || []).length; health = w ? `🟡 ${w} warning(s)` : "🟢 healthy"; } catch {}
   return card("OMEGAOS — ATLAS",
-    ` 👋 Salut ! Je suis <b>Atlas</b>, le cerveau de ton OmegaOS.\n` +
-    ` Je transforme ce serveur en plateforme d'agents : je dispatche des <b>oracles</b> (sessions Claude dédiées) qui délèguent à des <b>workers</b> en parallèle, avec gates qualité.\n\n` +
-    ` 💬 <b>Écris-moi en langage naturel</b> — je comprends, je planifie, je dispatche.\n` +
-    ` 📲 Ou tape une action dans le menu ci-dessous.`,
-    `📊 ${sessions} session(s) active(s) · doctor ${health}\n📖 Touche « Guide » pour tout comprendre.`);
-}
-
-// /guide — explains how OmegaOS works (Atlas → oracle → workers) + each menu action.
-function guideCard(): string {
-  return card("OMEGAOS — GUIDE",
-    ` <b>Atlas</b> est le cerveau — parle-lui normalement, il orchestre tout le reste.`,
-    `<blockquote expandable>▾ Comment ça marche\n` +
-    `🧠 <b>Atlas</b> — tu lui écris, il comprend ton intention, planifie et dispatche.\n` +
-    `🔮 <b>Oracle</b> — 1 par projet, le stratège : il découpe la mission et délègue.\n` +
-    `⚙️ <b>Workers</b> — agents éphémères en parallèle (scope fichier) : exécutent → vérifient → reportent.\n` +
-    `✅ <b>Gates qualité</b> — rubrique + consensus + vérif adversariale avant validation.\n\n` +
-    `<b>Le menu :</b>\n` +
-    `📊 Status — santé live (doctor).   🗂 Sessions — actives, Status/Kill.\n` +
-    `📁 Projects — liste / nouveau / ajouter.   🔍 Audits — Quality Arsenal (23 forensic).\n` +
-    `💳 Account — login Claude (credential partagé) + usage.   🧠 Model — provider + modèle.\n` +
-    `🤖 Agents — un bot Telegram dédié par oracle.   🖥 Dashboard — Mission Control (web).\n` +
-    `🚀 Dispatch — lance une mission sur un oracle.   👥 Group hub — 1 topic = 1 projet.\n\n` +
-    `💡 <b>Le plus simple :</b> écris juste ce que tu veux.\n` +
-    `Ex : « audit UX de DentistryGPT », « nouveau projet … », « déploie X et vérifie en prod ».</blockquote>`);
+    ` 👋 Hi! I'm <b>Atlas</b>, the brain of your OmegaOS — an autonomous multi-agent dev platform running on your own server.\n\n` +
+    ` 💬 <b>Just talk to me in plain language.</b> I keep our conversation in context, work out what you want, and either answer or dispatch the work. Reply to any of my messages to keep a thread going.\n\n` +
+    ` <b>How it all works</b>\n` +
+    ` 🧠 <b>Atlas</b> (me) — your single point of contact. I plan and route everything.\n` +
+    ` 🔮 <b>Oracle</b> — one strategist per project. I hand it a mission; it breaks it down.\n` +
+    ` ⚙️ <b>Workers</b> — ephemeral agents running in parallel (file-scoped): execute → verify → report.\n` +
+    ` ✅ <b>Quality gates</b> — rubric + multi-grader consensus + adversarial verification before anything ships.\n` +
+    ` 📊 <b>Live progress</b> — long missions stream a progress card; you get the full report when it's done.`,
+    `📊 ${sessions} active session(s) · doctor ${health}\n` +
+    `<blockquote expandable>▾ Every menu action — tap “Open menu” to use them\n` +
+    `📊 <b>Status</b> — live system health (omega doctor) + one-tap Fix-it.\n` +
+    `🗂 <b>Sessions</b> — your active sessions; Status / Kill each one.\n` +
+    `📁 <b>Projects</b> — list / create / add. Each project gets its own oracle + Telegram topic.\n` +
+    `🔍 <b>Audits</b> — Quality Arsenal: 23 forensic audits (UX, code, security, SEO, a11y…).\n` +
+    `💳 <b>Account</b> — Claude login (ONE shared credential for every session) + token usage.\n` +
+    `🧠 <b>Model</b> — pick the AI provider + model for all sessions.\n` +
+    `🤖 <b>Agents</b> — a dedicated Telegram bot per project oracle (talk straight to that project).\n` +
+    `🖥 <b>Dashboard</b> — Mission Control (web link + password).\n` +
+    `🚀 <b>Dispatch</b> — fire a mission at a project's oracle.\n` +
+    `👥 <b>Group hub</b> — link a supergroup: 1 topic = 1 project; messages route to that oracle.\n\n` +
+    `💡 <b>Simplest path:</b> just tell me what you want —\n` +
+    `“UX audit of DentistryGPT”, “new project …”, “deploy X and verify in prod”.\n` +
+    `👇 Or tap <b>Open menu</b> for the buttons.</blockquote>`);
 }
 
 // Strip an appended remediation SHELL COMMAND that `omega doctor` packs into a
@@ -912,41 +914,40 @@ async function modelProviderView(provider: string, banner = ""): Promise<{ text:
   for (let i = 0; i < models.length; i += 2)
     rows.push(models.slice(i, i + 2).map(m => ({ text: `${m === cur ? "✓ " : ""}${m}`.slice(0, 28), callback_data: `model:set:${provider}:${m}`.slice(0, 64) })));
   const body = (banner ? banner + "\n\n" : "") + (models.length
-    ? ` Actuel : <code>${esc(cur || "défaut")}</code>\n Tape un modèle pour l'activer.`
-    : ` Aucun modèle catalogué. Configure : <code>omega config set ${esc(provider)}.model …</code>`);
-  return { text: card(`MODÈLE — ${provider.toUpperCase()}`, body), markup: kb([...rows, [{ text: "« Providers", callback_data: "nav:model" }]]) };
+    ? ` Current: <code>${esc(cur || "default")}</code>\n Tap a model to activate it.`
+    : ` No catalogued models. Configure: <code>omega config set ${esc(provider)}.model …</code>`);
+  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, [{ text: "« Providers", callback_data: "nav:model" }]]) };
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
 async function view(name: string): Promise<{ text: string; markup: any }> {
   switch (name) {
     case "menu": case "help": case "commands": return { text: menuText, markup: menuKb() };
-    case "start": return { text: await welcomeCard(), markup: menuKb() };
-    case "guide": return { text: guideCard(), markup: kb([[{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "💳 Account", callback_data: "nav:account" }], [back("menu")]]) };
+    case "start": case "guide": return { text: await guideCard(), markup: kb([[{ text: "📋 Open menu", callback_data: "nav:menu" }], [{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "💳 Account", callback_data: "nav:account" }]]) };
     case "agents": {
       const ags = await mcAgents();
-      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard injoignable. Démarre-le : <code>omega-mc-up</code>."), markup: kb([[back()]]) };
+      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>."), markup: kb([[back()]]) };
       const rows: Btn[][] = [];
       for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
-      return { text: card(`AISB AGENTS — ${ags.length}`, " Tape un agent pour son rôle. Pour lui parler, utilise son bot dédié (voir /dashboard)."), markup: kb([...rows, [back()]]) };
+      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard)."), markup: kb([...rows, [back()]]) };
     }
     case "dashboard": {
       await resolvePublicIP();
       const { url } = dashboardURL();
       const rows: Btn[][] = [];
-      if (url) rows.push([{ text: "👉 Cliquez ici pour ouvrir", url }]);
-      rows.push([{ text: "🔑 Révéler le password", callback_data: "dash:pw" }]);
+      if (url) rows.push([{ text: "👉 Tap here to open", url }]);
+      rows.push([{ text: "🔑 Reveal the password", callback_data: "dash:pw" }]);
       rows.push([back()]);
       const body = url
-        ? ` <code>${esc(url)}</code>\n\n Tape « 👉 Ouvrir » pour le dashboard, puis « 🔑 Révéler » pour le mot de passe.`
-        : ` ⚠️ IP publique non résolue — réessaie, ou active Tailscale pour un accès sécurisé.`;
+        ? ` <code>${esc(url)}</code>\n\n Tap “👉 Open” for the dashboard, then “🔑 Reveal” for the password.`
+        : ` ⚠️ Public IP not resolved — try again, or enable Tailscale for secure access.`;
       return { text: card("MISSION CONTROL", body), markup: kb(rows) };
     }
     case "status": return { text: statusCard(await omega(["doctor"])), markup: kb([[{ text: "🛠 Fix it", callback_data: "status:fix" }, { text: "🔄 Refresh", callback_data: "nav:status" }], [back()]]) };
     case "sessions": {
       const names = await sessionNames();
       const rows = names.slice(0, 12).map(s => [{ text: `📊 ${s}`.slice(0, 30), callback_data: `sess:status:${s}`.slice(0, 64) }, { text: "🛑 Kill", callback_data: `sess:kill:${s}`.slice(0, 64) }]);
-      const list = names.length ? names.map(s => ` 🟢 <code>${esc(s)}</code>`).join("\n") : " <i>Aucune session active.</i>";
+      const list = names.length ? names.map(s => ` 🟢 <code>${esc(s)}</code>`).join("\n") : " <i>No active session.</i>";
       return { text: card(`SESSIONS — ${names.length}`, list), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:sessions" }, back()]]) };
     }
     case "projects": {
@@ -954,15 +955,15 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       const names = Object.keys(mp).sort();
       const list = names.length
         ? names.map(n => `• <b>${esc(n)}</b> <i>(${esc(mp[n].category || "?")})</i>`).join("\n")
-        : "<i>Aucun projet géré pour l'instant — ajoute-en un (📁) ou crée-en un (➕).</i>";
+        : "<i>No managed project yet — add one (📁) or create one (➕).</i>";
       const rows: Btn[][] = [];
       for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2).map(n => ({ text: `📦 ${n}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
-      return { text: card(`PROJETS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
+      return { text: card(`PROJECTS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
     }
     case "audits": {
       const ids = await auditIds(); const rows: Btn[][] = [];
       for (let i = 0; i < ids.length; i += 2) rows.push(ids.slice(i, i + 2).map(a => ({ text: a.slice(0, 28), callback_data: `aud:run:${a}`.slice(0, 64) })));
-      return { text: card("QUALITY ARSENAL", ` ${ids.length} audits disponibles — tape-en un pour le lancer.`), markup: kb([...rows, [back()]]) };
+      return { text: card("QUALITY ARSENAL", ` ${ids.length} audits available — tap one to run it.`), markup: kb([...rows, [back()]]) };
     }
     // Account: the two actions the operator actually needs — Login (re-auth) and
     // Usage — plus Refresh/Back. (Switch / email / billing / service-accounts were
@@ -977,15 +978,15 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       const rows: Btn[][] = [];
       for (let i = 0; i < provs.length; i += 2)
         rows.push(provs.slice(i, i + 2).map(p => ({ text: `${PROVIDER_ICON[p] || "•"} ${p}`.slice(0, 28), callback_data: `model:prov:${p}`.slice(0, 64) })));
-      const body = ` Sessions omega tournent sur :\n <b>claude</b> · <code>${esc(active || "défaut")}</code>\n\n Choisis un provider pour voir et changer son modèle.`;
-      return { text: card("MODÈLE / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
+      const body = ` omega sessions run on:\n <b>claude</b> · <code>${esc(active || "default")}</code>\n\n Pick a provider to view and change its model.`;
+      return { text: card("MODEL / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     }
     case "skills": return { text: pre("Skills", Bun.spawnSync(["ls", "-1", `${OMEGA_DIR}/skills`]).stdout.toString().trim() || "(none)"), markup: kb([[back()]]) };
-    case "dispatch": return { text: card("DISPATCH", " Envoie : <code>/dispatch &lt;projet&gt; &lt;mission&gt;</code>\n Lance un oracle dédié sur le VPS."), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
-    case "setupgroup": return { text: card("GROUP HUB", " Lance <code>/setupgroup</code> <b>dans un supergroupe</b> où ce bot est <b>admin</b> (Topics activés). Ça enregistre le groupe comme hub projets, puis <code>/sync</code> mappe chaque projet sur un topic."), markup: kb([[back()]]) };
-    case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub enregistré. Lance <code>/sync</code> dedans pour mapper projets → topics." : " Pas encore de hub — lance <code>/setupgroup</code> dans ton supergroupe d'abord."), markup: kb([[back()]]) }; }
-    case "killall": return { text: card("KILL ALL SESSIONS ?", " 🛑 Tue toutes les sessions.\n <i>Garde l'infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Oui", callback_data: "do:killall" }], [{ text: "✖ Annuler", callback_data: "nav:menu" }]]) };
-    case "clean": return { text: card("CLEANUP ?", " 🧹 Tue les sessions orphelines + purge le state.\n <i>Ne touche jamais à l'infra.</i>"), markup: kb([[{ text: "✅ Oui", callback_data: "do:clean" }], [{ text: "✖ Annuler", callback_data: "nav:menu" }]]) };
+    case "dispatch": return { text: card("DISPATCH", " Send: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>\n Launches a dedicated oracle on the VPS."), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
+    case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
+    case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub registered. Run <code>/sync</code> in it to map projects → topics." : " No hub yet — run <code>/setupgroup</code> in your supergroup first."), markup: kb([[back()]]) }; }
+    case "killall": return { text: card("KILL ALL SESSIONS?", " 🛑 Kills every session.\n <i>Keeps the infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:killall" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
+    case "clean": return { text: card("CLEANUP?", " 🧹 Kills orphan sessions + purges the state.\n <i>Never touches the infra.</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:clean" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
     default: return { text: menuText, markup: menuKb() };
   }
 }
@@ -998,8 +999,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     // them (a real tracked session; the Monitor relays the result back here).
     const raw = await omega(["doctor"]);
     const warns = raw.split("\n").filter(l => /^\s*\[[!x]\]/.test(l)).map(l => l.replace(/^\s*\[[!x]\]\s*/, "").trim()).filter(Boolean);
-    if (!warns.length) return edit(chat, msgId, card("OMEGAOS — FIX IT", " ✅ Rien à corriger — tout est vert."), kb([[{ text: "« Status", callback_data: "nav:status" }]]));
-    const mission = `Auto-heal OmegaOS. \`omega doctor\` signale ces problèmes — diagnostique la cause racine et corrige chacun (tu peux t'appuyer sur \`omega doctor --fix\` pour les correctifs mécaniques), puis vérifie avec \`omega doctor\` que tout repasse au vert :\n` + warns.map(w => `- ${w}`).join("\n");
+    if (!warns.length) return edit(chat, msgId, card("OMEGAOS — FIX IT", " ✅ Nothing to fix — all green."), kb([[{ text: "« Status", callback_data: "nav:status" }]]));
+    const mission = `Auto-heal OmegaOS. \`omega doctor\` reports these problems — diagnose the root cause and fix each one (you can lean on \`omega doctor --fix\` for the mechanical fixes), then verify with \`omega doctor\` that everything turns green again:\n` + warns.map(w => `- ${w}`).join("\n");
     // Make `omega dispatch OmegaOS` resolve: the OS repo isn't auto-discovered
     // (it's a sibling of the container dirs), so register it in the shared
     // registry first (idempotent — recordProject upserts by path/name).
@@ -1017,9 +1018,9 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     if (provider === "claude") {
       const full = CLAUDE_FULL_ID[model] || model;
       const wrote = mcSetDefaultModel(full);
-      dash = `\n 🖥 Dashboard defaults : ${wrote ? `<code>${esc(full)}</code> ✅ <i>(hot-reload ~3s)</i>` : "inchangé"}`;
+      dash = `\n 🖥 Dashboard defaults: ${wrote ? `<code>${esc(full)}</code> ✅ <i>(hot-reload ~3s)</i>` : "unchanged"}`;
     }
-    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ Sessions omega : ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
+    const banner = ` ${okOmega ? "✅" : "⚠️"} <b>${esc(provider)}</b> → <code>${esc(model)}</code>\n ⚙️ omega sessions: ${okOmega ? "✅" : "⚠️ " + esc(res.slice(0, 80))}${dash}`;
     const v = await modelProviderView(provider, banner);
     return edit(chat, msgId, v.text, v.markup);
   }
@@ -1027,7 +1028,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const { pw } = dashboardURL();
     if (!pw) return;
     // Reveal in a copyable code block, then auto-delete after 30s (so it never lingers in chat history).
-    const m = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", text: `🔑 <b>Password du dashboard</b>\n(tape dessus pour copier — s'efface dans 30s)\n\n<code>${esc(pw)}</code>` });
+    const m = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", text: `🔑 <b>Dashboard password</b>\n(tap it to copy — disappears in 30s)\n\n<code>${esc(pw)}</code>` });
     if (m.ok) setTimeout(() => tg("deleteMessage", { chat_id: chat, message_id: m.result.message_id }), 30000);
     return;
   }
@@ -1038,11 +1039,11 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const cats = stationCategories();
     const rows: Btn[][] = [];
     for (let i = 0; i < cats.length; i += 2) rows.push(cats.slice(i, i + 2).map(c => ({ text: `📂 ${c}`.slice(0, 28), callback_data: `proj:newcat:${c}`.slice(0, 64) })));
-    return edit(chat, msgId, "<b>➕ Nouveau projet</b>\nDans quel dossier (catégorie) sous Station ?", kb([...rows, [back("projects")]]));
+    return edit(chat, msgId, "<b>➕ New project</b>\nWhich folder (category) under Station?", kb([...rows, [back("projects")]]));
   }
   if (ns === "proj" && action === "newcat") {
     setPending(from, "new-project", arg);
-    return edit(chat, msgId, `<b>➕ Nouveau projet — ${esc(arg)}</b>\nEnvoie en <b>un message</b> :\n• <b>1ère ligne</b> = nom du projet\n• <b>lignes suivantes</b> = description (ce que c'est, ce qu'on veut faire)\n\nJe crée le dossier + git, l'oracle dédié, le topic, puis je <b>lance l'oracle</b> sur ta description pour démarrer direct.`, kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [back("projects")]]));
+    return edit(chat, msgId, `<b>➕ New project — ${esc(arg)}</b>\nSend in <b>one message</b>:\n• <b>1st line</b> = project name\n• <b>following lines</b> = description (what it is, what we want to do)\n\nI create the folder + git, the dedicated oracle, the topic, then I <b>launch the oracle</b> on your description to start right away.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
   }
   if (ns === "proj" && action === "add") {
     // Auto-detect projects (top-level git repos under Station) and offer one button each.
