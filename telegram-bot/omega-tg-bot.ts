@@ -83,6 +83,49 @@ async function master(text: string): Promise<string> {
 }
 const back = (to = "menu"): Btn => ({ text: "« Back", callback_data: `nav:${to}` });
 
+// ── Claude account / OAuth (login flow, switch, email, usage) ────────────────
+// Wraps the shipped headless-VPS OAuth helper. `generate` prints an auth URL the
+// operator opens; pasting the callback code back runs `exchange` → fresh tokens.
+const OAUTH = `${OMEGA_DIR}/bin/claude-oauth.sh`;
+async function oauth(args: string[]): Promise<string> {
+  try { const r = await $`bash ${OAUTH} ${args}`.quiet().nothrow(); return (r.stdout.toString() + r.stderr.toString()).trim(); }
+  catch (e: any) { return `error: ${e?.message || e}`; }
+}
+// Transient per-user flows awaiting a typed reply (login code paste, new-project brief).
+const pending = new Map<number, { kind: "login-code" | "new-project" }>();
+
+async function accountStatus(): Promise<string> {
+  const raw = await oauth(["status"]);
+  const email = raw.match(/"email"\s*:\s*"([^"]+)"/)?.[1] || "?";
+  const sub = raw.match(/"subscriptionType"\s*:\s*"([^"]+)"/)?.[1] || "?";
+  let token = "?";
+  try { const c = JSON.parse(await oauth(["check"])); token = c.valid ? `valide (${c.remaining_min} min restantes)` : "⚠️ EXPIRÉ — clique « Login »"; } catch {}
+  const usage = await omega(["usage"]);
+  return `<b>💳 Compte Claude (AISB)</b>\n📧 ${esc(email)}\n🎫 abo: ${esc(sub)}\n🔑 token: ${esc(token)}\n\n<b>📊 Usage tokens</b>\n<pre>${esc(usage).slice(0, 1500)}</pre>`;
+}
+
+async function serviceAccounts(): Promise<string> {
+  const env = readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/);
+  const row = (label: string, key: string) => `${env[key] ? "✅" : "❌"} ${label}${env[key] ? "" : " — token manquant"}`;
+  const staticTable = `<b>👤 Comptes de services (provisioning)</b>\n` +
+    `${row("Vercel", "VERCEL_TOKEN")}\n${row("Convex", "CONVEX_TEAM_TOKEN")}\n${row("GitHub", "GITHUB_TOKEN")}\n` +
+    `${row("Stripe", "STRIPE_SECRET_KEY")}\nClerk: ${esc(env.CLERK_PROVISION_MODE || "?")}\n\n` +
+    `<i>Les ❌ requièrent ton token. Renseigne-les via le wizard Provisioning (TUI) ou édite ~/.omega/provisioning/services.env.</i>`;
+  // Live probe of which accounts actually authenticate, when the CLI supports it
+  // (graceful no-op on older binaries without `omega provision verify`).
+  const probe = await omega(["provision", "verify", "default"]);
+  const hasProbe = probe && !/error|unrecognized|unexpected argument|USAGE:|no output|not found/i.test(probe);
+  return hasProbe ? `<b>🔎 Vérification live des comptes</b>\n<pre>${esc(probe).slice(0, 1400)}</pre>\n\n${staticTable}` : staticTable;
+}
+
+async function startLogin(chat: number, msgId: number, from: number, switchAcct: boolean) {
+  await edit(chat, msgId, "<b>🔐 Login Claude</b>\nGénération du lien d'autorisation…", kb([[back("account")]]));
+  const url = (await oauth(["generate"])).split("\n").map(s => s.trim()).filter(Boolean).pop() || "";
+  if (!/^https?:\/\//.test(url)) return edit(chat, msgId, pre("Login — erreur", url || "pas d'URL générée"), kb([[back("account")]]));
+  pending.set(from, { kind: "login-code" });
+  await send(chat, `<b>🔐 ${switchAcct ? "Changer de compte" : "Login / Re-auth"}</b>\n1) Ouvre le lien et autorise${switchAcct ? " <b>avec l'autre compte</b>" : ""}.\n2) Copie le <b>code</b> de l'URL de callback et <b>colle-le ici</b> (prochain message).`, kb([[{ text: "🌐 Ouvrir le lien d'auth", url }], [{ text: "✖ Annuler", callback_data: "acct:cancel" }]]));
+}
+
 function dashboardURL(): { url: string; pw: string } {
   const mc = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/);
   const host = mc.HOSTNAME?.trim();
@@ -139,6 +182,9 @@ const MENU: [string, string][] = [
   ["clean", "Cleanup stray sessions + state"],
   ["help", "Show the action hub"],
 ];
+// Commands with a dedicated button view/handler. Anything NOT here is routed to
+// the AISB Master brain instead of falling back to the menu (intelligent commands).
+const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch"]);
 function menuKb() {
   return kb([
     [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
@@ -187,7 +233,12 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       for (let i = 0; i < ids.length; i += 2) rows.push(ids.slice(i, i + 2).map(a => ({ text: a.slice(0, 28), callback_data: `aud:run:${a}`.slice(0, 64) })));
       return { text: `<b>Quality Arsenal</b>\nTap an audit (${ids.length} available).`, markup: kb([...rows, [back()]]) };
     }
-    case "account": return { text: pre("Account / billing", await omega(["monitor"])), markup: kb([[{ text: "💳 Billing", callback_data: "acct:billing" }, { text: "👤 Accounts", callback_data: "acct:accounts" }], [{ text: "🔄 Refresh", callback_data: "nav:account" }, back()]]) };
+    case "account": return { text: await accountStatus(), markup: kb([
+      [{ text: "🔐 Login / Re-auth", callback_data: "acct:login" }, { text: "🔄 Switch account", callback_data: "acct:switch" }],
+      [{ text: "📧 Compte / email", callback_data: "acct:email" }, { text: "📊 Usage tokens", callback_data: "acct:usage" }],
+      [{ text: "💳 Billing", callback_data: "acct:billing" }, { text: "👤 Service accounts", callback_data: "acct:accounts" }],
+      [{ text: "🔄 Refresh", callback_data: "nav:account" }, back()],
+    ]) };
     case "model": return { text: pre("Model / providers", await omega(["config", "show"])), markup: kb([[{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     case "skills": return { text: pre("Skills", Bun.spawnSync(["ls", "-1", `${OMEGA_DIR}/skills`]).stdout.toString().trim() || "(none)"), markup: kb([[back()]]) };
     case "dispatch": return { text: "<b>🚀 Dispatch</b>\nSend: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>", markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
@@ -199,7 +250,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
   }
 }
 
-async function onCallback(data: string, chat: number, msgId: number) {
+async function onCallback(data: string, chat: number, msgId: number, from: number) {
   const [ns, action, ...rest] = data.split(":"); const arg = rest.join(":");
   if (ns === "nav") { const v = await view(action); return edit(chat, msgId, v.text, v.markup); }
   if (ns === "dash" && action === "pw") {
@@ -213,11 +264,19 @@ async function onCallback(data: string, chat: number, msgId: number) {
   if (ns === "sess" && action === "status") return edit(chat, msgId, pre(`Session ${arg}`, await omega(["capture", arg])), kb([[{ text: "🔄 Refresh", callback_data: `sess:status:${arg}`.slice(0, 64) }, back("sessions")]]));
   if (ns === "sess" && action === "kill") return edit(chat, msgId, pre(`Kill ${arg}`, await omega(["kill", arg])), kb([[back("sessions")]]));
   if (ns === "proj" && action === "list") return edit(chat, msgId, pre("Projects", await omega(["projects"])), kb([[back("projects")]]));
-  if (ns === "proj" && action === "new") return edit(chat, msgId, "<b>➕ New project</b>\nOn the server: <code>omega new-project</code> (guided).", kb([[back("projects")]]));
+  if (ns === "proj" && action === "new") {
+    pending.set(from, { kind: "new-project" });
+    return edit(chat, msgId, "<b>➕ Nouveau projet</b>\nEnvoie en <b>un message</b> : nom + description du projet\n(ex: « LandingX — landing page SaaS pour cabinet dentaire »).\n\nAISB lancera le pipeline new-project (provisioning → scaffold → plan).", kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [back("projects")]]));
+  }
   if (ns === "proj" && action === "add") return edit(chat, msgId, "<b>📁 Add existing</b>\nClone/move the repo under your projects root; <code>omega projects</code> auto-discovers it.", kb([[back("projects")]]));
   if (ns === "aud" && action === "run") return edit(chat, msgId, pre(`Audit: ${arg}`, await omega(["audit", "run", arg])), kb([[back("audits")]]));
+  if (ns === "acct" && action === "login") return startLogin(chat, msgId, from, false);
+  if (ns === "acct" && action === "switch") return startLogin(chat, msgId, from, true);
+  if (ns === "acct" && action === "email") return edit(chat, msgId, await accountStatus(), kb([[{ text: "🔐 Login", callback_data: "acct:login" }, { text: "🔄 Switch", callback_data: "acct:switch" }], [back("account")]]));
+  if (ns === "acct" && action === "usage") return edit(chat, msgId, pre("Usage tokens", await omega(["usage"])), kb([[{ text: "🔄 Refresh", callback_data: "acct:usage" }, back("account")]]));
   if (ns === "acct" && action === "billing") return edit(chat, msgId, pre("Billing", await omega(["monitor"])), kb([[back("account")]]));
-  if (ns === "acct" && action === "accounts") return edit(chat, msgId, pre("Accounts", await omega(["provision", "groups"])), kb([[back("account")]]));
+  if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
+  if (ns === "acct" && action === "cancel") { pending.delete(from); return edit(chat, msgId, "Annulé.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("menu")]]));
   if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("menu")]]));
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>To chat with this agent, use the OmegaMC agents bot.</i>`, kb([[back("agents")]])); }
@@ -276,18 +335,43 @@ async function main() {
         if (u.callback_query) {
           const q = u.callback_query; await tg("answerCallbackQuery", { callback_query_id: q.id });
           if (!allowed(q.from?.id ?? 0)) continue;
-          await onCallback(q.data || "", q.message.chat.id, q.message.message_id); continue;
+          await onCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0); continue;
         }
         const msg = u.message; if (!msg?.text) continue;
         const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0, text = msg.text.trim();
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
+        // Stateful flows awaiting a typed reply (login code paste, new-project brief).
+        // A slash command cancels the pending flow and is processed normally.
+        const p = pending.get(from);
+        if (p && !text.startsWith("/")) {
+          pending.delete(from);
+          if (p.kind === "login-code") {
+            await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+            const res = await oauth(["exchange", text]);
+            let info = res; try { const j = JSON.parse(res); info = j.ok ? `✅ Connecté : ${j.email || "?"} (token ${j.expires_min || "?"} min)` : `❌ ${j.error || "échec de l'échange"}`; } catch {}
+            await send(chatId, `<b>🔐 Login</b>\n${esc(info)}`, kb([[{ text: "💳 Account", callback_data: "nav:account" }]]), thread);
+            continue;
+          }
+          if (p.kind === "new-project") {
+            await send(chatId, "🚀 Lancement du pipeline new-project… (je reviens avec le statut)", undefined, thread);
+            master(`Crée un nouveau projet OmegaOS. Brief opérateur : ${text}. Lance le pipeline new-project (omega dispatch / la skill new-project) et reporte l'avancement.`).then(r => send(chatId, r, undefined, thread)).catch(() => {});
+            continue;
+          }
+        }
         if (text.startsWith("/")) {
+          pending.delete(from);
           const [c, ...a] = text.slice(1).split(/\s+/); const cmd = c.split("@")[0].toLowerCase();
           if (cmd === "setupgroup") await cmdSetupGroup(chat, chatId, thread);
           else if (cmd === "sync") await cmdSync(chatId, thread);
           else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; await send(chatId, pre(`dispatch → ${p}`, await omega(["dispatch", p, m.join(" ")])), undefined, thread); }
-          else { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
+          else if (KNOWN.has(cmd)) { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
+          else {
+            // Unknown command → the AISB Master brain (commands gain intelligence:
+            // any /verb the operator types is understood + dispatched, not dropped to the menu).
+            await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+            master(text).then(r => send(chatId, r, undefined, thread)).catch(() => {});
+          }
         } else {
           // In a project topic → dispatch to that project's oracle; else → AISB Master.
           const g = loadGroups();

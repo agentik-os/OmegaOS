@@ -236,17 +236,26 @@ impl Dispatcher {
         project: &str,
         mission: &str,
     ) -> Result<String> {
-        // An oracle is scoped to a DECLARED project. A missing project (typo or
-        // an unregistered name) is a configuration error — fail loud instead of
-        // silently spawning in an arbitrary CWD, which would break scope
-        // isolation and let code run in an unexpected directory.
-        let work_dir = self
-            .config
-            .find_project(project)
-            .ok_or_else(|| anyhow::anyhow!("project '{}' not found in config", project))?
-            .path
-            .to_string_lossy()
-            .to_string();
+        // An oracle is scoped to a DECLARED project. A project not present in the
+        // config may still be auto-discovered under the user's projects root —
+        // `omega projects` lists those — so fall back to that same discovery walk
+        // before failing. A genuinely-unknown name (typo) is a configuration
+        // error: fail loud instead of silently spawning in an arbitrary CWD,
+        // which would break scope isolation and run code in an unexpected dir.
+        let work_dir = match self.config.find_project(project) {
+            Some(pc) => pc.path.to_string_lossy().to_string(),
+            None => {
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
+                let lower = project.to_lowercase();
+                crate::projects::discover(&home)
+                    .into_iter()
+                    .find(|p| p.name.to_lowercase() == lower)
+                    .map(|p| p.path.to_string_lossy().to_string())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("project '{}' not found in config", project)
+                    })?
+            }
+        };
         let work_path = std::path::PathBuf::from(&work_dir);
 
         // Oracle naming + idle-reuse. A registry entry is NOT proof of life — an

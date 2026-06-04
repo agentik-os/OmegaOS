@@ -186,13 +186,13 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     }
 
     // 6. Telegram service (systemd — soft if absent).
-    match systemctl_user(&["is-active", "omega-telegram.service"]) {
+    match systemctl_user(&["is-active", "omega-tg-bot.service"]) {
         Some(s) if s == "active" => {
-            checks.push(Check::ok("telegram service", "omega-telegram.service active"))
+            checks.push(Check::ok("telegram service", "omega-tg-bot.service active"))
         }
         Some(other) => checks.push(Check::warn(
             "telegram service",
-            format!("omega-telegram.service {} (start: systemctl --user start omega-telegram)", other),
+            format!("omega-tg-bot.service {} (start: systemctl --user start omega-tg-bot)", other),
         )),
         None => checks.push(Check::warn(
             "telegram service",
@@ -232,7 +232,155 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         checks.push(Check::ok("memory", format!("{}MB available", ram)));
     }
 
+    // 9. Usage cache (drives the TUI token toolbar; refreshed by the
+    //    `omega usage` cron). Soft — a blank toolbar is not a failure.
+    {
+        let usage = config.state_dir.join("usage.json");
+        match std::fs::metadata(&usage).and_then(|m| m.modified()) {
+            Ok(mtime) => {
+                let age = std::time::SystemTime::now()
+                    .duration_since(mtime)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let mins = age / 60;
+                if age > 900 {
+                    checks.push(Check::warn(
+                        "usage cache",
+                        format!("usage cache stale ({} min) — omega usage cron may be failing", mins),
+                    ));
+                } else {
+                    checks.push(Check::ok("usage cache", format!("usage cache {} min old", mins)));
+                }
+            }
+            Err(_) => checks.push(Check::warn(
+                "usage cache",
+                "usage.json missing — TUI token toolbar blank (cron not run)",
+            )),
+        }
+    }
+
+    // 10. Claude OAuth credential — the agent CLI needs a live token.
+    {
+        let omega_dir = config.state_dir.parent().map(|p| p.to_path_buf());
+        let cred = omega_dir.map(|d| d.join("credentials/claude.json"));
+        match cred.and_then(|p| std::fs::read_to_string(&p).ok()) {
+            Some(content) => {
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i128)
+                    .unwrap_or(0);
+                let expires = serde_json::from_str::<serde_json::Value>(&content)
+                    .ok()
+                    .and_then(|v| {
+                        // The Claude credential nests the token under `claudeAiOauth`;
+                        // fall back to a top-level field for older/alternate formats.
+                        v.get("claudeAiOauth")
+                            .and_then(|o| o.get("expiresAt"))
+                            .or_else(|| v.get("expiresAt"))
+                            .and_then(|e| e.as_i64())
+                            .map(|n| n as i128)
+                    });
+                match expires {
+                    Some(exp) if exp < now_ms => checks.push(Check::warn(
+                        "claude oauth",
+                        "Claude OAuth expired — refresh required",
+                    )),
+                    Some(_) => {
+                        checks.push(Check::ok("claude oauth", "Claude OAuth valid"))
+                    }
+                    None => checks.push(Check::warn(
+                        "claude oauth",
+                        "claude.json missing/unreadable — agent CLI will fail",
+                    )),
+                }
+            }
+            None => checks.push(Check::warn(
+                "claude oauth",
+                "claude.json missing/unreadable — agent CLI will fail",
+            )),
+        }
+    }
+
+    // 11. Single Telegram poller — two `omega-tg-bot.ts` processes mean
+    //     duplicate messages / getUpdates 409s. Only systemd should run it.
+    {
+        // Scope to THIS user's bun bot: a co-tenant's bot (a different token under
+        // another user) and the doctor's own shell must not inflate the count —
+        // only a genuine duplicate poller of this install should warn.
+        let uid = std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .filter(|s| !s.is_empty());
+        let mut pgrep = std::process::Command::new("pgrep");
+        if let Some(ref u) = uid {
+            pgrep.args(["-u", u]);
+        }
+        let count = pgrep
+            .args(["-fc", r"bun.*omega-tg-bot\.ts"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        if count > 1 {
+            checks.push(Check::warn(
+                "telegram poller",
+                format!("multiple Telegram pollers ({}) — duplicate messages; keep only systemd omega-tg-bot.service", count),
+            ));
+        } else {
+            checks.push(Check::ok("telegram poller", format!("{} poller", count)));
+        }
+    }
+
+    // 12. Provisioning tokens — warn only if the file exists but ALL deploy
+    //     tokens are blank (deploys will fail). Absent file → skip silently.
+    {
+        let omega_dir = config.state_dir.parent().map(|p| p.to_path_buf());
+        let svc = omega_dir.map(|d| d.join("provisioning/services.env"));
+        if let Some(content) = svc.and_then(|p| std::fs::read_to_string(&p).ok()) {
+            let pairs: std::collections::HashMap<String, bool> = content
+                .lines()
+                .filter_map(parse_export_kv)
+                .map(|(k, v)| (k, !v.is_empty()))
+                .collect();
+            let watched = ["VERCEL_TOKEN", "CONVEX_TEAM_TOKEN", "GITHUB_TOKEN", "STRIPE_SECRET_KEY"];
+            let set: Vec<&str> = watched
+                .iter()
+                .copied()
+                .filter(|k| *pairs.get(*k).unwrap_or(&false))
+                .collect();
+            if set.is_empty() {
+                checks.push(Check::warn(
+                    "provisioning",
+                    "provisioning tokens blank — fill via TUI Provisioning to enable deploys",
+                ));
+            } else {
+                checks.push(Check::ok(
+                    "provisioning",
+                    format!("provisioning: {}", set.join(", ")),
+                ));
+            }
+        }
+    }
+
     checks
+}
+
+/// Minimal `export KEY="value"` / `export KEY=value` parse → (KEY, value).
+/// Mirrors provisioning::parse_export; kept local to avoid a cross-module
+/// `pub` just for the doctor check.
+fn parse_export_kv(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix("export ")?;
+    let (k, v) = rest.split_once('=')?;
+    let key = k.trim().to_string();
+    if key.is_empty()
+        || !key.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+    {
+        return None;
+    }
+    let val = v.trim().trim_matches('"').trim_matches('\'').to_string();
+    Some((key, val))
 }
 
 /// Worst health across all checks — drives the process exit code.

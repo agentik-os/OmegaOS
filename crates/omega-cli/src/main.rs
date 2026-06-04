@@ -1376,21 +1376,22 @@ async fn run_tui_loop(
                             );
                             send_telegram_confirmation(&bot_token, chat_id, &confirm).await;
 
-                            // 2) Start the bridge as the SINGLE persistent poller.
-                            //    Prefer the systemd --user service (one canonical
-                            //    poller); kill any stale rmux bridge first so two
-                            //    pollers never hit getUpdates → permanent HTTP 409.
-                            //    Fall back to an rmux session only if systemd is absent.
-                            //    The `enable --now` is wrapped in a timeout so a
-                            //    slow/hung systemd can never FREEZE the wizard UI
-                            //    (the cause of the "had to refresh manually" bug).
+                            // 2) Ensure the SINGLE canonical poller is running.
+                            //    The real bridge is the Bun bot shipped as the
+                            //    systemd --user unit `omega-tg-bot.service`. We must
+                            //    NOT spawn a competing Rust bridge (that produced two
+                            //    pollers hitting getUpdates → permanent HTTP 409).
+                            //    Kill any stale rmux bridge first, then enable+start
+                            //    the canonical unit. The `enable --now` is wrapped in
+                            //    a timeout so a slow/hung systemd can never FREEZE the
+                            //    wizard UI (the "had to refresh manually" bug).
                             let mgr = SessionManager::connect().await?;
                             let _ = mgr.kill_session("omega-telegram-bridge").await;
                             let systemd_ok = matches!(
                                 tokio::time::timeout(
                                     std::time::Duration::from_secs(8),
                                     tokio::process::Command::new("systemctl")
-                                        .args(["--user", "enable", "--now", "omega-telegram.service"])
+                                        .args(["--user", "enable", "--now", "omega-tg-bot.service"])
                                         .status(),
                                 )
                                 .await,
@@ -1398,22 +1399,12 @@ async fn run_tui_loop(
                             );
                             if systemd_ok {
                                 app.status_message = Some(
-                                    "[+] Telegram setup done — bridge running as the persistent omega-telegram service".to_string(),
+                                    "[+] Telegram setup done — bridge running as the persistent omega-tg-bot.service".to_string(),
                                 );
                             } else {
-                                let cmd = "bash -c 'omega telegram run 2>&1 | tee /tmp/omega-telegram.log; exec bash'";
-                                match mgr.create_session("omega-telegram-bridge", None, Some(cmd)).await {
-                                    Ok(_) => {
-                                        app.status_message = Some(
-                                            "[+] Telegram setup done — bridge running in rmux session `omega-telegram-bridge` (no systemd)".to_string(),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        app.status_message = Some(format!(
-                                            "[+] Setup saved but bridge spawn failed: {}. Run `omega telegram run` manually.", e
-                                        ));
-                                    }
-                                }
+                                app.status_message = Some(
+                                    "[+] Telegram setup saved, but omega-tg-bot.service could not be started. Start it with: systemctl --user enable --now omega-tg-bot.service".to_string(),
+                                );
                             }
                             // The bridge creates the aisb-master mirror session
                             // ASYNCHRONOUSLY on its own startup — racing the refresh
@@ -2144,6 +2135,12 @@ enum ProvisionAction {
         /// One or more KEY=VALUE pairs.
         #[arg(required = true)]
         kv: Vec<String>,
+    },
+    /// Live-verify a group's tokens against each service API (curl).
+    Verify {
+        /// Group name (or `default`). Defaults to `default`.
+        #[arg(default_value = "default")]
+        group: String,
     },
 }
 
@@ -3160,8 +3157,93 @@ fn cmd_provision(action: ProvisionAction) -> Result<()> {
                 provisioning::group_env_path(&group).display()
             );
         }
+        ProvisionAction::Verify { group } => {
+            provision_verify(&group)?;
+        }
     }
     Ok(())
+}
+
+/// Live-verify a credential group's tokens by SHELLING OUT to `curl` (no new
+/// HTTP crate dep). Blank tokens are never invented — they print MISSING and
+/// the live call is skipped. Prints a clean per-service table.
+fn provision_verify(group: &str) -> Result<()> {
+    use omega_core::provisioning;
+
+    // Resolve a token from the group (None = blank/unset).
+    let tok = |key: &str| provisioning::read_value_in(group, key);
+
+    // One live HTTP status probe via curl. Returns the numeric status (or None
+    // on transport failure). `auth` is the full -H / -u argument list.
+    fn http_status(url: &str, auth: &[&str]) -> Option<u32> {
+        let mut cmd = std::process::Command::new("curl");
+        cmd.args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "15"]);
+        cmd.args(auth);
+        cmd.arg(url);
+        let out = cmd.output().ok()?;
+        String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().ok()
+    }
+
+    println!(
+        "Provision verify — group '{}' → {}",
+        group,
+        provisioning::group_env_path(group).display()
+    );
+    println!("  {:<10} {}", "SERVICE", "RESULT");
+
+    // GitHub.
+    match tok("GITHUB_TOKEN") {
+        Some(t) => {
+            let auth = format!("Authorization: Bearer {}", t);
+            let status = http_status("https://api.github.com/user", &["-H", &auth]);
+            println!("  {:<10} {}", "GitHub", fmt_status(status, 200));
+        }
+        None => println!("  {:<10} MISSING (needs operator input)", "GitHub"),
+    }
+
+    // Vercel.
+    match tok("VERCEL_TOKEN") {
+        Some(t) => {
+            let auth = format!("Authorization: Bearer {}", t);
+            let status = http_status("https://api.vercel.com/v2/user", &["-H", &auth]);
+            println!("  {:<10} {}", "Vercel", fmt_status(status, 200));
+        }
+        None => println!("  {:<10} MISSING (needs operator input)", "Vercel"),
+    }
+
+    // Convex — no simple public probe; presence check only.
+    match tok("CONVEX_TEAM_TOKEN") {
+        Some(_) => println!("  {:<10} set (presence only — no public probe)", "Convex"),
+        None => println!("  {:<10} MISSING (needs operator input)", "Convex"),
+    }
+
+    // Stripe.
+    match tok("STRIPE_SECRET_KEY") {
+        Some(t) => {
+            let userpass = format!("{}:", t);
+            let status = http_status("https://api.stripe.com/v1/balance", &["-u", &userpass]);
+            println!("  {:<10} {}", "Stripe", fmt_status(status, 200));
+        }
+        None => println!("  {:<10} MISSING (needs operator input)", "Stripe"),
+    }
+
+    // Clerk — report the configured provisioning mode, not a live call.
+    match tok("CLERK_PROVISION_MODE") {
+        Some(mode) => println!("  {:<10} mode={}", "Clerk", mode),
+        None => println!("  {:<10} mode=unset", "Clerk"),
+    }
+
+    Ok(())
+}
+
+/// Render an HTTP probe result: `OK (200)` on the expected code, `FAIL (<code>)`
+/// otherwise, or `ERROR (no response)` when curl gave no status.
+fn fmt_status(status: Option<u32>, expected: u32) -> String {
+    match status {
+        Some(c) if c == expected => format!("OK ({})", c),
+        Some(c) => format!("FAIL ({})", c),
+        None => "ERROR (no response)".to_string(),
+    }
 }
 
 async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {

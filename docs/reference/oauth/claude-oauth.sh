@@ -36,6 +36,7 @@ case "$cmd" in
         STATE=$(openssl rand -base64 32 | tr -d '=' | tr '+/' '-_')
 
         # Save PKCE state for exchange step (ephemeral, deleted after use)
+        mkdir -p "$(dirname "$PKCE_STATE")"
         cat > "$PKCE_STATE" << EOF
 {"code_verifier":"$CODE_VERIFIER","state":"$STATE","created":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
 EOF

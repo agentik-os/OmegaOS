@@ -264,7 +264,16 @@ fn parse_export(line: &str) -> Option<(String, String)> {
     {
         return None;
     }
-    let val = v.trim().trim_matches('"').trim_matches('\'').to_string();
+    // Take the quoted body when quoted (so a trailing `# comment` after the
+    // closing quote is dropped); otherwise the value ends at an inline `#`.
+    let v = v.trim();
+    let val = if let Some(rest) = v.strip_prefix('"') {
+        rest.split_once('"').map(|(inner, _)| inner).unwrap_or(rest).to_string()
+    } else if let Some(rest) = v.strip_prefix('\'') {
+        rest.split_once('\'').map(|(inner, _)| inner).unwrap_or(rest).to_string()
+    } else {
+        v.split('#').next().unwrap_or("").trim().to_string()
+    };
     Some((key, val))
 }
 

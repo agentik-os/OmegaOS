@@ -544,6 +544,14 @@ echo '{}' > "$BRIDGE_CFG/settings.json"
 # Ensure the symlink target exists so the bridge never reads through a dangling
 # link before `claude` login writes real creds (NEVER clobber an existing file).
 [[ -e "$OMEGA_DIR/credentials/claude.json" ]] || : > "$OMEGA_DIR/credentials/claude.json"
+# Optional shared-credential override (multi-operator / multi-machine setups):
+#   OMEGA_CREDENTIALS_LINK=/Shared/claude/credentials.json ./install.sh
+# points the local credential at a shared, auto-refreshed source instead of a
+# per-box file, so the Telegram bridge never drifts to a stale copy. No-op if unset.
+if [[ -n "${OMEGA_CREDENTIALS_LINK:-}" && -e "$OMEGA_CREDENTIALS_LINK" ]]; then
+    ln -sfn "$OMEGA_CREDENTIALS_LINK" "$OMEGA_DIR/credentials/claude.json"
+    ok "Claude credential linked to shared source: $OMEGA_CREDENTIALS_LINK"
+fi
 ln -sf "$OMEGA_DIR/credentials/claude.json" "$BRIDGE_CFG/.credentials.json"
 ok "Bridge config dir created (fast hookless claude --print)"
 
@@ -558,6 +566,15 @@ if [[ -f "$OAUTH_SRC" ]]; then
     ok "OAuth helper installed: $OAUTH_DST"
 else
     info "OAuth helper script not found — skipping (login via Telegram /login still works)"
+fi
+
+# Install proactive token-refresh helper (cron-driven; pre-empts agent 401s by
+# refreshing the Claude OAuth token before it expires, alerting via Telegram on failure).
+TOKREFRESH_SRC="$OMEGA_SRC/scripts/omega-token-refresh.sh"
+if [[ -f "$TOKREFRESH_SRC" ]]; then
+    cp "$TOKREFRESH_SRC" "$OMEGA_DIR/bin/omega-token-refresh.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-token-refresh.sh"
+    ok "Token-refresh helper installed: $OMEGA_DIR/bin/omega-token-refresh.sh"
 fi
 
 # Install audit skills (Quality Arsenal)
@@ -889,6 +906,7 @@ mkdir -p "$OMEGA_DIR/logs"
 # would also match "omega patrol-supervisor" or a renamed command).
 PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega-patrol.log 2>&1   # OMEGA-CRON-PATROL-v1"
 USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/omega-usage.log 2>&1   # OMEGA-CRON-USAGE-v1"
+TOKREFRESH_CRON="*/30 * * * * $OMEGA_DIR/bin/omega-token-refresh.sh >> $OMEGA_DIR/logs/omega-token-refresh.log 2>&1   # OMEGA-CRON-TOKEN-REFRESH-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
         ok "Self-improvement patrol already scheduled"
@@ -901,6 +919,12 @@ if command -v crontab >/dev/null 2>&1; then
     else
         ( crontab -l 2>/dev/null; echo "$USAGE_CRON" ) | crontab -
         ok "Token-budget usage alert scheduled (every 10 min → 80%/90% Telegram alert)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-TOKEN-REFRESH-v1"; then
+        ok "Claude token-refresh already scheduled"
+    elif [[ -f "$OMEGA_DIR/bin/omega-token-refresh.sh" ]]; then
+        ( crontab -l 2>/dev/null; echo "$TOKREFRESH_CRON" ) | crontab -
+        ok "Claude token-refresh scheduled (every 30 min → pre-empts agent 401s)"
     fi
 else
     info "crontab not available — run 'omega patrol' + 'omega usage --check' manually or via your scheduler"
