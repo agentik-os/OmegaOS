@@ -87,13 +87,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let hint = format!("Session name (Enter to launch, Esc to cancel)");
             draw_simple_input_modal_owned(frame, app, &title, &hint, false);
         }
-        InputMode::DispatchProject => draw_simple_input_modal(
-            frame,
-            app,
-            "Dispatch oracle — step 1/2",
-            "Project name (Enter to continue, Esc to cancel)",
-            false,
-        ),
+        InputMode::DispatchProject(..) => draw_dispatch_picker(frame, app),
         InputMode::DispatchMission(ref p) => {
             let title = format!("Dispatch oracle — step 2/2");
             let hint = format!("Mission for project '{}' (Enter to dispatch, Esc to cancel)", p);
@@ -263,6 +257,48 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(format!(" Select {} — ↑/↓, Enter, Esc ", config_key))
+            .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, area);
+}
+
+/// Dispatch oracle — step 1: project picker overlay (no typing). Lists the
+/// added projects from the shared ProjectRegistry; ↑/↓ move, Enter selects,
+/// Esc cancels. Mirrors `draw_model_picker`.
+fn draw_dispatch_picker(frame: &mut Frame, app: &App) {
+    let (projects, sel): (&[String], usize) = match &app.input_mode {
+        InputMode::DispatchProject(projects, sel) => (projects.as_slice(), *sel),
+        _ => return,
+    };
+
+    let area = centered_rect(50, 50, frame.area());
+    frame.render_widget(Clear, area);
+
+    let items: Vec<ListItem> = projects
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let selected = i == sel;
+            let prefix = if selected { "▶ " } else { "  " };
+            let style = if selected {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Reset)
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix, Style::default().fg(Color::Cyan)),
+                Span::styled(format!(" 🚀 {} ", p), style),
+            ]))
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Dispatch oracle — step 1/2: pick a project — ↑/↓, Enter, Esc ")
             .border_style(Style::default().fg(Color::Cyan)),
     );
     frame.render_widget(list, area);

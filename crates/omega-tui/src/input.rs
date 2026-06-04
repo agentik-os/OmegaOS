@@ -243,6 +243,24 @@ fn handle_paste(app: &mut App, text: String) -> Action {
     Action::None
 }
 
+/// Open the dispatch step-1 project picker over the shared `ProjectRegistry`
+/// (the SAME source the Telegram dispatch picker uses, so the added-projects list
+/// stays in sync). No project added yet → a status hint instead of an empty picker.
+fn open_dispatch_picker(app: &mut App) {
+    let names = crate::app::dispatch_project_names();
+    if names.is_empty() {
+        app.input_mode = InputMode::Normal;
+        app.status_message = Some(
+            "No projects yet — add one in the Projects tab ([n] new / register), then dispatch."
+                .to_string(),
+        );
+    } else {
+        app.input_buffer = String::new();
+        app.input_mode = InputMode::DispatchProject(names, 0);
+        app.status_message = Some("Pick a project — ↑/↓, Enter, Esc".to_string());
+    }
+}
+
 fn handle_key(app: &mut App, key: KeyEvent) -> Action {
     let mode = app.input_mode.clone();
     match mode {
@@ -293,11 +311,36 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
-        InputMode::DispatchProject => handle_key_input(app, key, |app, value| {
-            app.input_buffer = String::new();
-            app.input_mode = InputMode::DispatchMission(value);
-            Action::None
-        }),
+        InputMode::DispatchProject(projects, sel) => {
+            let count = projects.len().max(1);
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::DispatchProject(projects, (sel + 1) % count);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::DispatchProject(projects, next);
+                    Action::None
+                }
+                KeyCode::Enter => {
+                    let project = projects.get(sel).cloned().unwrap_or_default();
+                    app.input_buffer = String::new();
+                    app.status_message = Some(format!(
+                        "Dispatch to {} — type the mission (Enter to send)",
+                        project
+                    ));
+                    app.input_mode = InputMode::DispatchMission(project);
+                    Action::None
+                }
+                _ => Action::None,
+            }
+        }
         InputMode::DispatchMission(_) => {
             let project = match &app.input_mode {
                 InputMode::DispatchMission(p) => p.clone(),
@@ -1251,18 +1294,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     app.status_message =
                         Some(format!("Dispatch to {} — type the mission (Enter to send)", name));
                 }
-                None => {
-                    app.input_buffer = String::new();
-                    app.input_mode = InputMode::DispatchProject;
-                    app.status_message = Some("Project name (Enter to continue)".to_string());
-                }
+                None => open_dispatch_picker(app),
             }
             Action::None
         }
         KeyCode::Char('d') => {
-            app.input_buffer = String::new();
-            app.input_mode = InputMode::DispatchProject;
-            app.status_message = Some("Project name (Enter to continue)".to_string());
+            open_dispatch_picker(app);
             Action::None
         }
 
@@ -1824,9 +1861,7 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
 
     match action {
         MenuAction::DispatchOracle => {
-            app.input_buffer = String::new();
-            app.input_mode = InputMode::DispatchProject;
-            app.status_message = Some("Project name (Enter to continue)".to_string());
+            open_dispatch_picker(app);
             Action::None
         }
         MenuAction::NewProject => {

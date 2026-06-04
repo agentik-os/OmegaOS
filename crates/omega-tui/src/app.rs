@@ -48,7 +48,11 @@ pub enum InputMode {
     Normal,
     NewNamedSession(String),
     NewSessionPromptDirect(String, String),
-    DispatchProject,
+    /// Dispatch oracle — step 1: project PICKER (no typing). Holds the project
+    /// names + the selected index, mirroring `SelectModel`. The list comes from
+    /// the shared `ProjectRegistry` — the SAME source the Telegram dispatch
+    /// picker uses — so the added-projects list stays in sync across surfaces.
+    DispatchProject(Vec<String>, usize),
     DispatchMission(String),
     /// Renaming an existing session — holds the original name.
     RenameSession(String),
@@ -108,6 +112,18 @@ pub enum InputMode {
     /// Distinct from `NewProjectName` (which CREATES a project on disk); this
     /// only registers an already-existing folder into the project registry.
     AddProjectPath,
+}
+
+/// Added-project names from the shared `ProjectRegistry` — the SAME source the
+/// Telegram dispatch picker reads, so the dispatch project list is synced across
+/// the TUI menu, the Telegram bot, and the project menu. Empty when no project
+/// has been added/registered yet.
+pub fn dispatch_project_names() -> Vec<String> {
+    omega_core::project_manager::ProjectRegistry::load()
+        .projects
+        .iter()
+        .map(|p| p.name.clone())
+        .collect()
 }
 
 /// New-project wizard option lists. `(id, label)` — `id` is the token passed to
