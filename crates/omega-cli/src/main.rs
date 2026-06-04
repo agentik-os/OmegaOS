@@ -2117,6 +2117,13 @@ enum RulesAction {
     List,
     /// Export compiled rules to ~/.omega/rules/ as individual .md files
     Export,
+    /// Print the role-scoped doctrine block (Laws + Rules + orchestration) to inject
+    /// into any agent prompt. scope = master | oracle | worker.
+    Context {
+        /// Agent scope: master | oracle | worker (default: oracle)
+        #[arg(default_value = "oracle")]
+        scope: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -4175,6 +4182,15 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 fn cmd_rules(action: RulesAction) -> Result<()> {
     use omega_core::rules::{self, RuleKind};
     match action {
+        RulesAction::Context { scope } => {
+            let s = match scope.to_lowercase().as_str() {
+                "master" | "director" => rules::RuleScope::Master,
+                "worker" => rules::RuleScope::Worker,
+                _ => rules::RuleScope::Oracle,
+            };
+            print!("{}", rules::agent_context_block(s));
+            return Ok(());
+        }
         RulesAction::List => {
             let laws = rules::laws();
             let ops = rules::operational_rules();
