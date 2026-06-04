@@ -2,51 +2,52 @@
 # ═══════════════════════════════════════════════════════════════════════════
 # OmegaOS — end-of-mission notifier (done.json → Telegram)
 # ───────────────────────────────────────────────────────────────────────────
-# Watches ~/.omega/state/oracle-*.done.json. When an oracle finishes its mission
-# (it writes done.json via `omega done <session> <status> <summary>`), this relays
-# the report to Telegram — to the project's topic if one is mapped, else the main
-# chat. Idempotent: each done.json is notified once (tracked by a .notified marker
-# next to it). Runs on a 1-min cron (installed by install.sh, marker
-# OMEGA-CRON-DONE-NOTIFY-v1). This is the single, restart-proof notification path —
-# it catches EVERY oracle (dispatched from Telegram, the TUI, or Atlas).
-#
-# The oracle CLOSE is owned by the patrol/lifecycle (an ephemeral oracle is closed
-# once it has a real done-signal). This script only NOTIFIES; it never kills.
+# Watches ~/.omega/state/oracle-*.done.json. When an oracle finishes (it writes
+# done.json via `omega done <session> <status> <summary>`), this relays the report
+# to Telegram — to the project's forum TOPIC in the hub group if one is mapped, else
+# the operator DM. Idempotent: each done.json is notified once, marked ONLY on a
+# confirmed send (a failed send retries next tick). 1-min cron (OMEGA-CRON-DONE-
+# NOTIFY-v1). The single, restart-proof notification path — catches EVERY oracle
+# (Telegram-, TUI-, or Atlas-dispatched). Closing the oracle is owned by `omega done`.
 # ═══════════════════════════════════════════════════════════════════════════
 set -uo pipefail
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 STATE="$OMEGA_DIR/state"
 TG_TOML="$OMEGA_DIR/telegram.toml"
-GROUPS="$OMEGA_DIR/telegram-groups.json"
+GFILE="$OMEGA_DIR/telegram-groups.json"
 
 [ -d "$STATE" ] || exit 0
 TOKEN="$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)"
-CHAT="$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1)"
-[ -n "${TOKEN:-}" ] && [ -n "${CHAT:-}" ] || exit 0   # no telegram configured → nothing to do
+DM="$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1)"
+[ -n "${TOKEN:-}" ] && [ -n "${DM:-}" ] || exit 0   # no telegram configured → nothing to do
+# Forum hub group (topics live HERE, not in the DM).
+HUB="$(python3 -c "import json;print(json.load(open('$GFILE')).get('hub',''))" 2>/dev/null || true)"
 
-send_tg() { # $1=text  $2=thread(optional)
-    local args=(--data-urlencode "chat_id=${CHAT}" --data-urlencode "text=$1" --data-urlencode "parse_mode=HTML")
-    [ -n "${2:-}" ] && args+=(--data-urlencode "message_thread_id=$2")
-    local resp; resp="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${args[@]}")"
-    # If HTML parsing failed (unbalanced tag in a model-written summary), retry as
-    # plain text so the report is NEVER silently dropped.
-    if ! printf '%s' "$resp" | grep -q '"ok":true'; then
-        local plain=(--data-urlencode "chat_id=${CHAT}" --data-urlencode "text=$1")
-        [ -n "${2:-}" ] && plain+=(--data-urlencode "message_thread_id=$2")
-        resp="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${plain[@]}")"
+# Send to a chat (+optional topic thread). HTML, with a plain-text retry on parse
+# error so a report is never silently dropped. Returns success/failure.
+send_tg() { # $1=chat_id  $2=text  $3=thread(optional)
+    local a=(--data-urlencode "chat_id=$1" --data-urlencode "text=$2" --data-urlencode "parse_mode=HTML")
+    [ -n "${3:-}" ] && a+=(--data-urlencode "message_thread_id=$3")
+    local r; r="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${a[@]}")"
+    if ! printf '%s' "$r" | grep -q '"ok":true'; then
+        local p=(--data-urlencode "chat_id=$1" --data-urlencode "text=$2")
+        [ -n "${3:-}" ] && p+=(--data-urlencode "message_thread_id=$3")
+        r="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${p[@]}")"
     fi
-    printf '%s' "$resp" | grep -q '"ok":true'   # return success/failure for the caller
+    printf '%s' "$r" | grep -q '"ok":true'
 }
 
-# Topic id for a project, if the bot registered one (telegram-groups.json: {topics:{"<id>":"<proj>"}}).
+# Topic id in the hub for a project (telegram-groups.json: {topics:{"<id>":"<proj>"}}).
+# Tries the exact project, then the session-suffix-stripped name (oracle-<p>-<n>).
 topic_for() {
-    [ -f "$GROUPS" ] || return 0
-    python3 - "$GROUPS" "$1" <<'PY' 2>/dev/null
-import json,sys
+    [ -f "$GFILE" ] || return 0
+    python3 - "$GFILE" "$1" <<'PY' 2>/dev/null
+import json,sys,re
 try:
-    g=json.load(open(sys.argv[1])); proj=sys.argv[2].lower()
+    g=json.load(open(sys.argv[1])); want=sys.argv[2].lower()
+    cands=[want, re.sub(r'-[0-9]+$','',want)]
     for tid,name in (g.get("topics") or {}).items():
-        if str(name).lower()==proj: print(tid); break
+        if str(name).lower() in cands: print(tid); break
 except Exception: pass
 PY
 }
@@ -54,46 +55,52 @@ PY
 for f in "$STATE"/oracle-*.done.json; do
     [ -e "$f" ] || continue
     marker="${f}.notified"
-    [ -f "$marker" ] && continue                       # already notified
+    [ -f "$marker" ] && continue
 
-    read -r status oracle project summary commit deploy < <(python3 - "$f" <<'PY' 2>/dev/null
-import json,sys
+    # Extract every field robustly (one python read; NUL-safe, no fragile word-split).
+    eval "$(python3 - "$f" <<'PY' 2>/dev/null
+import json,sys,shlex
 try:
-    d=json.load(open(sys.argv[1]))
-    ship=d.get("ship") or {}
-    def one(s): return " ".join(str(s).split())
-    print(d.get("status","done"), d.get("oracle","?"), d.get("project","?"),
-          "\x1f"+one(d.get("summary",""))[:2500], (ship.get("commit") or "-"), (ship.get("deploy_url") or "-"))
+    d=json.load(open(sys.argv[1])); ship=d.get("ship") or {}
+    def q(k,v): print(f"{k}={shlex.quote(str(v))}")
+    q("STATUS", d.get("status","done"))
+    q("ORACLE", d.get("oracle","?"))
+    q("PROJECT", d.get("project","?"))
+    q("SUMMARY", " ".join(str(d.get("summary","")).split())[:2800])
+    q("COMMIT", ship.get("commit") or "")
+    q("DEPLOY", ship.get("deploy_url") or "")
+    print("OK=1")
 except Exception:
-    print("ERR")
+    print("OK=0")
 PY
-)
-    [ "${status:-ERR}" = "ERR" ] && continue
-    # summary was joined after \x1f to keep spaces; re-extract it properly.
-    summary="$(python3 -c "import json;d=json.load(open('$f'));print(' '.join(d.get('summary','').split())[:2500])" 2>/dev/null)"
+)"
+    [ "${OK:-0}" = "1" ] || continue
 
-    case "$status" in
+    case "$STATUS" in
         done_clean) icon="✅";; failed) icon="❌";; blocked) icon="🚧";; pending) icon="⏳";; *) icon="⏹";;
     esac
+    esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
     extra=""
-    [ "$commit" != "-" ] && [ -n "$commit" ] && extra="${extra}
-Commit: <code>${commit}</code>"
-    [ "$deploy" != "-" ] && [ -n "$deploy" ] && extra="${extra}
-🌐 ${deploy}"
+    [ -n "$COMMIT" ] && extra="${extra}
+Commit: <code>$(esc "$COMMIT")</code>"
+    [ -n "$DEPLOY" ] && extra="${extra}
+🌐 $(esc "$DEPLOY")"
+    msg="<b>${icon} Oracle $(esc "$ORACLE") — $(esc "$PROJECT")</b>
+Mission terminée (<b>${STATUS}</b>).
 
-    msg="<b>${icon} Oracle ${oracle} — ${project}</b>
-Mission terminée (<b>${status}</b>).
+$(esc "$SUMMARY")${extra}"
 
-${summary}${extra}"
-
-    # Route to the project topic. Fall back to the suffix-stripped name (oracle-<p>-<n>)
-    # so an older done.json whose project still carries the session index still routes.
-    thread="$(topic_for "$project")"
-    [ -z "$thread" ] && thread="$(topic_for "$(printf '%s' "$project" | sed -E 's/-[0-9]+$//')")"
-    if send_tg "$msg" "$thread"; then
-        : > "$marker"   # mark notified ONLY on a confirmed send (else retry next tick)
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${oracle} (${status}) thread=${thread:-main}"
+    # Route: a mapped project topic → the HUB group + that thread; else → the operator DM.
+    thread="$(topic_for "$PROJECT")"
+    if [ -n "$thread" ] && [ -n "${HUB:-}" ]; then
+        target="$HUB"; via="topic ${thread}"
     else
-        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SEND FAILED ${oracle} — will retry"
+        target="$DM"; thread=""; via="DM"
+    fi
+    if send_tg "$target" "$msg" "$thread"; then
+        : > "$marker"
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${ORACLE} (${STATUS}) → ${via}"
+    else
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SEND FAILED ${ORACLE} → ${via} — will retry"
     fi
 done

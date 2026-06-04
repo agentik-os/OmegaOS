@@ -169,6 +169,20 @@ pub async fn request_reauth(
     // Wait for claude to boot.
     tokio::time::sleep(Duration::from_secs(8)).await;
 
+    // Dismiss the "trust this folder" gate. claude shows it on first launch in an
+    // untrusted dir (e.g. $HOME) BEFORE the input box exists; if we send `/login`
+    // into that menu it lands on the wrong control and the URL never appears.
+    // Default-selected option is "Yes, I trust this folder", so a single Enter
+    // confirms it. Best-effort: only fires when the prompt is detected.
+    let boot_pane = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
+    if boot_pane.contains("trust this folder") || boot_pane.contains("Do you trust") {
+        if let Ok(p) = mgr.get_active_pane(REAUTH_SESSION).await {
+            let _ = p.send_key("Enter").await;
+            tracing::info!("reauth: dismissed 'trust this folder' prompt");
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+
     // Send /login.
     if let Err(e) = mgr.send_text(REAUTH_SESSION, "/login").await {
         let _ = mgr.kill_session(REAUTH_SESSION).await;
