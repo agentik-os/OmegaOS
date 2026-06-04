@@ -64,7 +64,8 @@ const STEPS = [
   { re: /Phase 5: Configuring/i,   label: 'Configuring (~/.omega, skills, agents, rules)' },
   { re: /Phase 6: Shell/i,         label: 'Shell integration' },
   { re: /Phase 6\.5/i,             label: 'Self-containment (hooks, identity, service)' },
-  { re: /Phase 6\.9/i,             label: 'Companion tools' },
+  { re: /Phase 6\.9:/i,            label: 'Companion tools (multi-LLM skills)' },
+  { re: /Phase 6\.95/i,            label: 'Telegram interface (OmegaMC)' },
   { key: 'done',   label: 'Finalizing' },
 ];
 
@@ -107,10 +108,11 @@ function have(cmd) { return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).s
 function printSuccess(dir) {
   process.stdout.write('\n  ' + grn('✓ OmegaOS installed') + '  →  ' + bold(dir) + '\n\n');
   process.stdout.write('  Next:\n');
-  process.stdout.write('    ' + cyan('source ~/.zshrc') + gray('   # or reopen your shell') + '\n');
-  process.stdout.write('    ' + cyan('omega doctor') + gray('     # verify') + '\n');
+  process.stdout.write('    ' + cyan('exec $SHELL -l') + gray('   # reload your shell so `omega` is on PATH (bash & zsh)') + '\n');
+  process.stdout.write('    ' + cyan('omega doctor') + gray('     # verify the install is healthy') + '\n');
   process.stdout.write('    ' + cyan('omega') + gray('            # launch the TUI') + '\n\n');
-  process.stdout.write('  ' + gray('Set up Telegram / providers from the TUI — Enter on any panel opens a guided wizard.') + '\n\n');
+  process.stdout.write('  ' + gray('First run: open the TUI Account panel to log into Claude, then set up') + '\n');
+  process.stdout.write('  ' + gray('Telegram / providers — Enter on any panel opens a guided wizard.') + '\n\n');
 }
 
 function printFailure(dir, code, lastLines) {

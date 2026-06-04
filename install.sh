@@ -587,6 +587,17 @@ if [[ -f "$DONENOTIFY_SRC" ]]; then
     ok "End-of-mission notifier installed: $OMEGA_DIR/bin/omega-done-notify.sh"
 fi
 
+# Install the git branch-per-worker orchestration helpers (oracles isolate parallel
+# workers on omega/* branches then merge them back — safe, never force/push). On PATH.
+for gh in omega-git-branch omega-git-merge; do
+    if [[ -f "$OMEGA_SRC/scripts/$gh.sh" ]]; then
+        cp "$OMEGA_SRC/scripts/$gh.sh" "$OMEGA_DIR/bin/$gh.sh"
+        chmod +x "$OMEGA_DIR/bin/$gh.sh"
+        ln -sf "$OMEGA_DIR/bin/$gh.sh" "$INSTALL_DIR/$gh" 2>/dev/null || true
+    fi
+done
+[[ -f "$OMEGA_DIR/bin/omega-git-merge.sh" ]] && ok "Git branch orchestration installed (omega-git-branch + omega-git-merge)"
+
 # Install audit skills (Quality Arsenal)
 AUDITS_SRC="$OMEGA_SRC/skills/audits"
 AUDITS_DST="$OMEGA_DIR/skills/audits"
@@ -1155,6 +1166,7 @@ fi
 # slow/stalled fetch here was a big chunk of install time. Core OmegaOS (omega,
 # rmux, the Quality Arsenal audits, agents, rules, doctrine) is fully installed
 # without them; add them anytime with OMEGA_WITH_COMPANION=1 ./install.sh.
+step "Phase 6.9: Companion tools"
 if [[ "${OMEGA_WITH_COMPANION:-0}" == "1" && "${OMEGA_SKIP_COMPANION:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-companion-tools.sh" ]]; then
     # shellcheck source=/dev/null
     source "$OMEGA_SRC/scripts/install-companion-tools.sh" || info "companion tools step had warnings (non-fatal)"
@@ -1178,6 +1190,7 @@ fi
 # Skills here mirror into ~/.omega/skills/<name>/ and `omega sync` symlinks them
 # into every LLM (Claude ~/.claude/skills, Gemini/Codex via OMEGA.md). Private repo
 # → needs gh/git auth; best-effort, like the dashboard.
+step "Phase 6.95: Telegram interface (OmegaMC)"
 SKILLS_REPO_DIR="$OMEGA_DIR/repos/Agentik-Skills"
 mkdir -p "$OMEGA_DIR/repos"
 if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
