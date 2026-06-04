@@ -181,17 +181,36 @@ pub async fn request_reauth(
     if let Err(e) = mgr.send_text(REAUTH_SESSION, "").await {
         tracing::warn!("reauth: confirm Enter failed: {}", e);
     }
-    tokio::time::sleep(Duration::from_secs(5)).await;
 
-    // Capture pane and extract URL.
-    let pane = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
-    let url = extract_auth_url(&pane);
+    // Poll the pane for the OAuth URL instead of a single fixed sleep. claude can
+    // boot slowly (cold cache, busy host) and miss a one-shot capture; poll every
+    // 500ms for up to 15s and return as soon as a real authorize URL appears.
+    // Also short-circuit to an error if the pane shows a known auth failure.
+    let mut pane = String::new();
+    let mut url = String::new();
+    for _ in 0..30 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        pane = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
+        url = extract_auth_url(&pane);
+        if !url.is_empty() {
+            break;
+        }
+        if let Some(marker) = detect_auth_failure(&pane) {
+            let _ = mgr.kill_session(REAUTH_SESSION).await;
+            PendingReauth::clear();
+            return Err(anyhow::anyhow!(
+                "auth failure during /login (marker: {}). Pane tail: {}",
+                marker,
+                pane.chars().rev().take(300).collect::<String>()
+            ));
+        }
+    }
 
     if url.is_empty() {
         let _ = mgr.kill_session(REAUTH_SESSION).await;
         PendingReauth::clear();
         return Err(anyhow::anyhow!(
-            "could not extract OAuth URL from /login output. Pane tail: {}",
+            "could not extract OAuth URL from /login output (15s timeout). Pane tail: {}",
             pane.chars().rev().take(300).collect::<String>()
         ));
     }

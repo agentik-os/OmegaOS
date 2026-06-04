@@ -27,7 +27,15 @@ CHAT="$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -
 send_tg() { # $1=text  $2=thread(optional)
     local args=(--data-urlencode "chat_id=${CHAT}" --data-urlencode "text=$1" --data-urlencode "parse_mode=HTML")
     [ -n "${2:-}" ] && args+=(--data-urlencode "message_thread_id=$2")
-    curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${args[@]}" >/dev/null 2>&1
+    local resp; resp="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${args[@]}")"
+    # If HTML parsing failed (unbalanced tag in a model-written summary), retry as
+    # plain text so the report is NEVER silently dropped.
+    if ! printf '%s' "$resp" | grep -q '"ok":true'; then
+        local plain=(--data-urlencode "chat_id=${CHAT}" --data-urlencode "text=$1")
+        [ -n "${2:-}" ] && plain+=(--data-urlencode "message_thread_id=$2")
+        resp="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${plain[@]}")"
+    fi
+    printf '%s' "$resp" | grep -q '"ok":true'   # return success/failure for the caller
 }
 
 # Topic id for a project, if the bot registered one (telegram-groups.json: {topics:{"<id>":"<proj>"}}).
@@ -78,8 +86,14 @@ Mission terminée (<b>${status}</b>).
 
 ${summary}${extra}"
 
+    # Route to the project topic. Fall back to the suffix-stripped name (oracle-<p>-<n>)
+    # so an older done.json whose project still carries the session index still routes.
     thread="$(topic_for "$project")"
-    send_tg "$msg" "$thread"
-    : > "$marker"   # mark notified (empty sentinel)
-    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${oracle} (${status})"
+    [ -z "$thread" ] && thread="$(topic_for "$(printf '%s' "$project" | sed -E 's/-[0-9]+$//')")"
+    if send_tg "$msg" "$thread"; then
+        : > "$marker"   # mark notified ONLY on a confirmed send (else retry next tick)
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${oracle} (${status}) thread=${thread:-main}"
+    else
+        echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SEND FAILED ${oracle} — will retry"
+    fi
 done

@@ -13,6 +13,26 @@ pub enum Tab {
     Help,
 }
 
+/// Claude OAuth re-login progress, surfaced in the Monitor → Account view.
+/// Driven asynchronously: the engine call runs off the event loop and writes
+/// the result back into `App::reauth_status` via a shared sink (see main.rs).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ReauthStatus {
+    /// No re-login in progress.
+    #[default]
+    Idle,
+    /// `request_reauth` is running (spawn session + /login + capture URL, ~16s).
+    Generating,
+    /// URL captured — show it and prompt the user to enter the returned code.
+    ShowUrl(String),
+    /// `handle_code` is running (paste code + watch credentials).
+    Validating,
+    /// Login finished successfully (human-readable summary, e.g. email + expiry).
+    Done(String),
+    /// Login failed (human-readable error).
+    Error(String),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoSection {
     Master,
@@ -112,6 +132,11 @@ pub enum InputMode {
     /// Distinct from `NewProjectName` (which CREATES a project on disk); this
     /// only registers an already-existing folder into the project registry.
     AddProjectPath,
+
+    /// Claude OAuth re-login — paste the authorize code returned by the browser.
+    /// Entered after the URL is shown (Monitor → Account); on submit the main
+    /// loop runs `oauth::handle_code` and renders the result.
+    ReauthCode,
 }
 
 /// Added-project names from the shared `ProjectRegistry` — the SAME source the
@@ -978,6 +1003,9 @@ pub struct App {
     /// so we cache it here and only reload from disk after an edit/toggle
     /// commit (see `invalidate_providers`). Avoids per-keystroke disk I/O.
     providers_cache: Option<omega_core::providers::ProvidersConfig>,
+    /// Claude OAuth re-login progress (Monitor → Account). Updated by the async
+    /// engine via a shared sink drained each tick in the main loop.
+    pub reauth_status: ReauthStatus,
 }
 
 impl App {
@@ -1045,6 +1073,7 @@ impl App {
             project_confirm_pending: None,
             monitor_disconnect_armed: false,
             providers_cache: None,
+            reauth_status: ReauthStatus::Idle,
         }
     }
 

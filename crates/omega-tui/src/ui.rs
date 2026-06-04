@@ -162,6 +162,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             "Absolute path to the project folder (Enter to register, Esc to cancel)",
             false,
         ),
+        InputMode::ReauthCode => draw_simple_input_modal(
+            frame,
+            app,
+            "Claude re-login — paste authorize code",
+            "Paste the code from your browser (Enter to submit, Esc to cancel)",
+            false,
+        ),
         _ => {}
     }
 }
@@ -1302,7 +1309,7 @@ fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
 /// highlighted action (Actions section, focused); 0 otherwise.
 fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
     match app.selected_monitor_section() {
-        MonitorSection::Account => (render_monitor_account(), 0),
+        MonitorSection::Account => (render_monitor_account(app), 0),
         MonitorSection::Billing => (render_monitor_billing(), 0),
         MonitorSection::Telegram => (render_monitor_telegram(), 0),
         MonitorSection::Accounts => (render_monitor_accounts(), 0),
@@ -1311,7 +1318,8 @@ fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
     }
 }
 
-fn render_monitor_account() -> Vec<Line<'static>> {
+fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
+    use crate::app::ReauthStatus;
     use omega_core::monitor;
     let mut lines: Vec<Line> = vec![Line::from("")];
     if let Some(acc) = monitor::connected_account() {
@@ -1334,10 +1342,66 @@ fn render_monitor_account() -> Vec<Line<'static>> {
         )));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "    ▶ Press Enter to log in / re-auth Claude (guided — opens the OAuth session)",
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-    )));
+
+    // OAuth re-login engine state — drives the guided flow in-place.
+    match &app.reauth_status {
+        ReauthStatus::Idle => {
+            lines.push(Line::from(Span::styled(
+                "    ▶ Press Enter to re-auth Claude (guided OAuth — captures the login URL)",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+        ReauthStatus::Generating => {
+            lines.push(Line::from(Span::styled(
+                "    ⏳ Starting login session and capturing the authorize URL… (~15s)",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+        }
+        ReauthStatus::ShowUrl(url) => {
+            lines.push(Line::from(Span::styled(
+                "    1) Open this URL in your browser and authorize:",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!("    {}", url),
+                Style::default().fg(Color::Blue).add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    2) Press Enter to paste the code you get back.",
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+        ReauthStatus::Validating => {
+            lines.push(Line::from(Span::styled(
+                "    ⏳ Submitting code and waiting for credentials to refresh… (~20s)",
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            )));
+        }
+        ReauthStatus::Done(msg) => {
+            lines.push(Line::from(Span::styled(
+                format!("    ✓ {}", msg),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    ▶ Press Enter to re-auth again.",
+                Style::default().fg(Color::Gray),
+            )));
+        }
+        ReauthStatus::Error(msg) => {
+            lines.push(Line::from(Span::styled(
+                format!("    ✗ {}", msg),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    ▶ Press Enter to retry.",
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
     lines
 }
 
@@ -2940,6 +3004,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             ),
             InputMode::GroupSetupId => ("Telegram group id", app.input_buffer.clone()),
             InputMode::AddProjectPath => ("Add project — folder path", app.input_buffer.clone()),
+            InputMode::ReauthCode => ("Claude re-login — authorize code", app.input_buffer.clone()),
         };
 
         let status = Paragraph::new(Line::from(vec![

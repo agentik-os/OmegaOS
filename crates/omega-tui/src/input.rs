@@ -37,8 +37,12 @@ pub enum Action {
     /// Commit the provisioning-keys wizard — (env_key, value) pairs; blanks are
     /// ignored by the writer (existing values preserved).
     ProvisioningCommit { values: Vec<(String, String)> },
-    /// Open Claude /login in a fresh session for OAuth re-auth.
+    /// Start the Claude OAuth re-login engine (request_reauth) — captures the
+    /// authorize URL and surfaces it in the Monitor → Account view.
     LoginClaude,
+    /// Submit the OAuth authorize code (Monitor → Account) — runs handle_code
+    /// against the waiting reauth session.
+    SubmitReauthCode { code: String },
     /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
     RefreshBilling,
     /// Open the Telegram bot setup flow.
@@ -97,6 +101,31 @@ pub enum Action {
     /// backslash followed by Enter as a newline-insert, so the main loop emits
     /// a `\` text write then an Enter key.
     InsertNewlineToSession { session: String },
+}
+
+/// Enter on the Monitor → Account section. Context-aware re-login driver: when
+/// the authorize URL is already captured (`ShowUrl`), Enter opens the code-input
+/// modal; otherwise it (re)starts the OAuth engine.
+fn account_enter_action(app: &mut App) -> Action {
+    use crate::app::{InputMode, ReauthStatus};
+    match &app.reauth_status {
+        ReauthStatus::ShowUrl(_) => {
+            app.input_buffer = String::new();
+            app.input_mode = InputMode::ReauthCode;
+            app.status_message = Some(
+                "Paste the authorize code from your browser — Enter to submit, Esc to cancel"
+                    .to_string(),
+            );
+            Action::None
+        }
+        // Generating / Validating — a step is in flight; ignore re-entry.
+        ReauthStatus::Generating | ReauthStatus::Validating => {
+            app.status_message = Some("Re-login already in progress…".to_string());
+            Action::None
+        }
+        // Idle / Done / Error — (re)start the flow.
+        _ => Action::LoginClaude,
+    }
 }
 
 pub fn handle_event(app: &mut App, event: Event) -> Action {
@@ -667,6 +696,18 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }),
 
+        // Claude OAuth re-login: paste the authorize code → handle_code.
+        InputMode::ReauthCode => handle_key_input(app, key, |app, value| {
+            app.input_mode = InputMode::Normal;
+            let code = value.trim().to_string();
+            if code.is_empty() {
+                app.status_message = Some("No code entered".to_string());
+                Action::None
+            } else {
+                Action::SubmitReauthCode { code }
+            }
+        }),
+
         InputMode::TelegramSetupUserId(token, chat_id_str) => {
             let token = token.clone();
             let chat_id: i64 = chat_id_str.parse().unwrap_or(0);
@@ -1025,10 +1066,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     // emits) — no command-line, no new wizard.
                     use crate::app::MonitorSection;
                     match app.selected_monitor_section() {
-                        // Account → the existing OAuth login flow (spawns a
-                        // `claude /login` session + focuses its chat for inline
-                        // code paste).
-                        MonitorSection::Account => Action::LoginClaude,
+                        // Account → the OAuth re-login engine. Context-aware:
+                        // once the authorize URL is captured, Enter opens the
+                        // code-input modal; otherwise it kicks off request_reauth.
+                        MonitorSection::Account => account_enter_action(app),
                         // Billing → re-run `omega usage --check` (live OAuth %).
                         MonitorSection::Billing => Action::RefreshBilling,
                         // Telegram → context-sensitive: set up when absent, or a

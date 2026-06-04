@@ -447,6 +447,22 @@ enum Commands {
         #[arg(default_value = ".")]
         path: String,
     },
+
+    /// Start a Claude OAuth re-login: spawn the reauth session, send /login, and
+    /// print the captured authorize URL as JSON (`{"ok":true,"url":"..."}`).
+    /// Headless — the shared engine for the TUI and the Telegram bridge. Open the
+    /// URL, authorize, then finish with `omega claude-login-code <code>`.
+    #[command(name = "claude-login")]
+    ClaudeLogin,
+
+    /// Finish a Claude OAuth re-login: paste the authorize code into the waiting
+    /// reauth session, wait for the credentials to refresh, and print the result
+    /// as JSON (`{"ok":bool,"email":...,"expires_min":...}`).
+    #[command(name = "claude-login-code")]
+    ClaudeLoginCode {
+        /// The OAuth code from the browser (may include a `#state` suffix).
+        code: String,
+    },
 }
 
 #[tokio::main]
@@ -460,6 +476,21 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+
+    // SSOT auto-heal: Claude's atomic write on /login replaces the native
+    // ~/.claude/.credentials.json symlink with a real file, diverging from the
+    // canonical ~/.omega/credentials/claude.json. Repair the symlink on every
+    // startup so reads stay funneled through the canonical store. Non-fatal.
+    match omega_core::credentials::CredentialStore::new() {
+        Ok(store) => {
+            if let Err(e) = store.ensure_legacy_symlink("claude") {
+                tracing::warn!(error = %e, "could not heal claude credential symlink");
+            } else {
+                tracing::debug!("claude credential symlink checked/healed");
+            }
+        }
+        Err(e) => tracing::warn!(error = %e, "could not open credential store for symlink heal"),
+    }
 
     match cli.command {
         Some(Commands::Menu) | None => run_menu().await,
@@ -561,6 +592,8 @@ async fn main() -> Result<()> {
         Some(Commands::Init) => cmd_init().await,
         Some(Commands::PlanStatus { path }) => cmd_plan_status(&path),
         Some(Commands::PlanRun { path }) => cmd_plan_run(&path).await,
+        Some(Commands::ClaudeLogin) => cmd_claude_login().await,
+        Some(Commands::ClaudeLoginCode { code }) => cmd_claude_login_code(&code).await,
     }
 }
 
@@ -795,6 +828,14 @@ async fn run_tui_loop(
     let async_status: std::sync::Arc<std::sync::Mutex<Option<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(None));
 
+    // OAuth re-login engine sink. request_reauth / handle_code block on internal
+    // sleeps (~16s / ~20s); we run them in a detached task so the UI never
+    // freezes, and the task writes the resulting ReauthStatus here. Drained into
+    // `app.reauth_status` at the top of each tick.
+    let reauth_sink: std::sync::Arc<
+        std::sync::Mutex<Option<omega_tui::app::ReauthStatus>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+
     // Single ordered keystroke forwarder. One consumer task drains a FIFO
     // mpsc channel and is the only task that reaches the SDK transport, so
     // delivery order is guaranteed (per-keystroke tokio::spawn raced on the
@@ -830,6 +871,13 @@ async fn run_tui_loop(
         if let Ok(mut guard) = async_status.lock() {
             if let Some(msg) = guard.take() {
                 app.status_message = Some(msg);
+            }
+        }
+
+        // Drain the OAuth re-login engine result (set by a detached task).
+        if let Ok(mut guard) = reauth_sink.lock() {
+            if let Some(status) = guard.take() {
+                app.reauth_status = status;
             }
         }
 
@@ -1284,17 +1332,60 @@ async fn run_tui_loop(
                     app.status_message = Some("Refreshed".to_string());
                 }
                 Action::LoginClaude => {
-                    let mgr = SessionManager::connect().await?;
-                    let name = "claude-login".to_string();
-                    let cmd = "bash -c 'claude /login; exec bash'";
-                    if let Err(e) = mgr.create_session(&name, None, Some(cmd)).await {
-                        app.status_message = Some(format!("Login spawn failed: {}", e));
-                    } else {
-                        // Switch to Sessions tab + chat-focus the new login session
-                        app.status_message =
-                            Some(format!("[+] {} opened — paste the code from your browser into the chat box.", name));
-                        auto_focus_chat(app, &name).await;
-                    }
+                    // Drive the real OAuth engine (oauth::request_reauth) instead
+                    // of spawning a raw `claude /login` pane. It blocks on ~16s of
+                    // internal sleeps, so run it in a detached task and surface the
+                    // result via the reauth_sink (drained into app.reauth_status).
+                    use omega_tui::app::ReauthStatus;
+                    app.reauth_status = ReauthStatus::Generating;
+                    app.status_message =
+                        Some("Starting Claude re-login — capturing authorize URL…".to_string());
+                    let sink = reauth_sink.clone();
+                    tokio::spawn(async move {
+                        let result = match SessionManager::connect().await {
+                            Ok(mgr) => {
+                                match omega_core::oauth::request_reauth(&mgr, "tui", None).await {
+                                    Ok(Some(req)) => ReauthStatus::ShowUrl(req.auth_url),
+                                    Ok(None) => ReauthStatus::Error(
+                                        "re-login already pending or on cooldown".to_string(),
+                                    ),
+                                    Err(e) => ReauthStatus::Error(e.to_string()),
+                                }
+                            }
+                            Err(e) => ReauthStatus::Error(format!("connect failed: {}", e)),
+                        };
+                        if let Ok(mut g) = sink.lock() {
+                            *g = Some(result);
+                        }
+                    });
+                }
+                Action::SubmitReauthCode { code } => {
+                    // Finish the re-login: paste the code into the waiting reauth
+                    // session and watch the credentials refresh. Detached (the
+                    // engine blocks ~20s); result lands in reauth_sink.
+                    use omega_tui::app::ReauthStatus;
+                    app.reauth_status = ReauthStatus::Validating;
+                    app.status_message = Some("Submitting code, validating login…".to_string());
+                    let sink = reauth_sink.clone();
+                    tokio::spawn(async move {
+                        let result = match SessionManager::connect().await {
+                            Ok(mgr) => match omega_core::oauth::handle_code(&mgr, &code).await {
+                                Ok(res) if res.success => ReauthStatus::Done(format!(
+                                    "Logged in as {} — expires in {} min",
+                                    res.email, res.expires_min
+                                )),
+                                Ok(res) => ReauthStatus::Error(format!(
+                                    "login did not refresh credentials. {}",
+                                    res.pane_tail.lines().last().unwrap_or("")
+                                )),
+                                Err(e) => ReauthStatus::Error(e.to_string()),
+                            },
+                            Err(e) => ReauthStatus::Error(format!("connect failed: {}", e)),
+                        };
+                        if let Ok(mut g) = sink.lock() {
+                            *g = Some(result);
+                        }
+                    });
                 }
                 Action::RefreshBilling => {
                     // Use the native `omega usage --check` which hits the REAL
@@ -2318,6 +2409,10 @@ enum ConfigAction {
     Set { key: String, value: String },
     /// Show all provider configs
     Show,
+    /// List the canonical providers (no arg) or a provider's known models (one per
+    /// line). SSOT for any UI building a model picker (TUI, Telegram) so the curated
+    /// lists live ONLY in providers.rs::models_for / all_providers.
+    Models { provider: Option<String> },
 }
 
 fn cmd_config(action: ConfigAction) -> Result<()> {
@@ -2339,6 +2434,21 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
             println!("[+] Set {} = {}", key, value);
             println!("Applies to all newly spawned sessions.");
         }
+        ConfigAction::Models { provider } => match provider {
+            // No provider → the canonical provider list. With one → its known models.
+            // Empty list (unknown provider) prints nothing and exits 0 so callers can
+            // fall back to a free-text field.
+            None => {
+                for p in ProvidersConfig::all_providers() {
+                    println!("{}", p);
+                }
+            }
+            Some(p) => {
+                for m in ProvidersConfig::models_for(&p) {
+                    println!("{}", m);
+                }
+            }
+        },
     }
     Ok(())
 }
@@ -2650,6 +2760,78 @@ async fn cmd_kill(name: &str) -> Result<()> {
     let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
     println!("Killed session: {}", name);
     Ok(())
+}
+
+/// `omega claude-login` — start the OAuth re-login engine and print the captured
+/// authorize URL as JSON. Headless (no TUI); shared by the TUI + Telegram bridge.
+/// Prints `{"ok":true,"url":"..."}` on success, `{"ok":false,"error":"..."}` and
+/// exits non-zero on failure.
+async fn cmd_claude_login() -> Result<()> {
+    let mgr = match SessionManager::connect().await {
+        Ok(m) => m,
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": format!("connect failed: {}", e) })
+            );
+            std::process::exit(1);
+        }
+    };
+    match omega_core::oauth::request_reauth(&mgr, "cli", None).await {
+        Ok(Some(req)) => {
+            println!("{}", serde_json::json!({ "ok": true, "url": req.auth_url }));
+            Ok(())
+        }
+        // A None result means a reauth is already pending or the cooldown is
+        // active — surface it as a non-fatal informational error for the caller.
+        Ok(None) => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": "reauth already pending or on cooldown" })
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `omega claude-login-code <code>` — finish the OAuth re-login by pasting the
+/// authorize code into the waiting reauth session. Prints
+/// `{"ok":bool,"email":...,"expires_min":...}`; exits non-zero on failure.
+async fn cmd_claude_login_code(code: &str) -> Result<()> {
+    let mgr = match SessionManager::connect().await {
+        Ok(m) => m,
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": format!("connect failed: {}", e) })
+            );
+            std::process::exit(1);
+        }
+    };
+    match omega_core::oauth::handle_code(&mgr, code).await {
+        Ok(res) => {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "ok": res.success,
+                    "email": res.email,
+                    "expires_min": res.expires_min,
+                })
+            );
+            if !res.success {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            std::process::exit(1);
+        }
+    }
 }
 
 async fn cmd_orchestrate(
@@ -3530,8 +3712,17 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         == omega_core::session::SessionRole::Oracle
     {
         let key = session.strip_prefix("oracle-").unwrap_or(session);
+        // The PROJECT is the oracle key minus its numeric session index
+        // (oracle-<project>-<n>): e.g. "dentistrygpt-8" → "dentistrygpt". Keeping the
+        // "-8" suffix broke Telegram topic routing (the report fell back to the main
+        // chat instead of the project's topic) and mislabelled the report.
+        let project = key
+            .rsplit_once('-')
+            .filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            .map(|(p, _)| p)
+            .unwrap_or(key);
         let mut osignal =
-            omega_core::done::OracleDoneSignal::new(key, key, done_status, summary);
+            omega_core::done::OracleDoneSignal::new(key, project, done_status, summary);
         osignal.summary = summary.to_string();
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
@@ -3549,6 +3740,25 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
             let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
         }
         println!("[+] Oracle done signal written: oracle-{}.done.json", key);
+        // AUTO-CLOSE: writing the report IS the close condition (operator contract).
+        // On a clean done, close the oracle's own session — detached + a short delay so
+        // THIS `omega done` returns cleanly and the done.json is on disk for the
+        // notifier cron before the pane is killed. (Non-clean statuses stay open so the
+        // operator can inspect a failed/blocked/pending oracle.)
+        if done_status == omega_core::done::DoneStatus::DoneClean {
+            if let Ok(exe) = std::env::current_exe() {
+                // Session names are sanitized to [A-Za-z0-9._-] (no shell metachars),
+                // so this format is injection-safe.
+                let _ = std::process::Command::new("bash")
+                    .arg("-c")
+                    .arg(format!(
+                        "sleep 3; '{}' kill '{}' >/dev/null 2>&1",
+                        exe.to_string_lossy(),
+                        session
+                    ))
+                    .spawn();
+            }
+        }
         return Ok(());
     }
 
