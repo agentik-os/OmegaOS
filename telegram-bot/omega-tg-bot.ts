@@ -51,7 +51,8 @@ async function mcMirror(agent: string, role: string, text: string) {
   if (!MC_MIRROR_OK) return;
   try {
     const pw = MC_PW; if (!pw) { MC_MIRROR_OK = false; return; }
-    const id = agent.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    // Atlas's dashboard agent is "director" (there is no "atlas" agent in MC).
+    const id = (agent.toLowerCase() === "atlas" ? "director" : agent.toLowerCase()).replace(/[^a-z0-9_-]/g, "-");
     const r = await fetch(`http://localhost:8080/api/agents/definitions/${id}/messages`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Basic " + Buffer.from(":" + pw).toString("base64") },

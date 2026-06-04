@@ -1833,10 +1833,14 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     Style::default()
                 };
+                // 🔕 marks a project whose Telegram toggle is OFF (no topic on
+                // sync, dimmed-but-listed in the Atlas bot). Default ON = no mark.
+                let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
                 ListItem::new(Line::from(vec![
                     Span::styled(prefix, Style::default().fg(Color::Cyan)),
                     Span::raw(format!("{} ", icon)),
                     Span::styled(project.name.clone(), style),
+                    Span::styled(tg_mark, Style::default().fg(Color::DarkGray)),
                 ]))
             })
             .collect()
@@ -1844,7 +1848,7 @@ fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
 
     let list_title = if list_focused {
         format!(
-            " ▶ Projects ({}) — ↑/↓ select · n add · x remove · p plan · d dispatch · Enter open ",
+            " ▶ Projects ({}) — ↑/↓ · n add · x remove · T telegram · D delete-forever · p plan · d dispatch · Enter open ",
             registry.projects.len()
         )
     } else {

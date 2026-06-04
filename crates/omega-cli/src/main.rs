@@ -1840,6 +1840,66 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Project '{}' not found", name));
                     }
                 }
+                Action::ToggleProjectTelegram { name } => {
+                    // Flip the per-project Telegram toggle in the shared registry.
+                    // The next `/sync` reconciles the forum topic (creates when ON,
+                    // removes when OFF); the Atlas bot marks OFF projects 🔕.
+                    let mut registry = omega_core::project_manager::ProjectRegistry::load();
+                    let now_on = registry
+                        .find(&name)
+                        .map(|p| p.telegram_enabled())
+                        .unwrap_or(true);
+                    if registry.set_telegram(&name, !now_on) {
+                        match registry.save() {
+                            Ok(()) => {
+                                app.refresh_projects();
+                                app.status_message = Some(format!(
+                                    "[+] Telegram {} for '{}' — run /sync in the bot to update its topic",
+                                    if now_on { "OFF 🔕" } else { "ON 🔔" },
+                                    name
+                                ));
+                            }
+                            Err(e) => {
+                                app.status_message =
+                                    Some(format!("Toggled '{}' but save failed: {}", name, e));
+                            }
+                        }
+                    } else {
+                        app.status_message = Some(format!("Project '{}' not found", name));
+                    }
+                }
+                Action::HardDeleteProject { name } => {
+                    // Delete forever: delegate to the bot's one-shot CLI (the ONE
+                    // canonical deletion impl) so the Telegram topic, dashboard
+                    // agent, agent-bot and registry are cleaned the same way as the
+                    // bot's own delete — plus the local folder (scope "forever").
+                    let omega_dir = std::env::var("OMEGA_DIR").unwrap_or_else(|_| {
+                        format!(
+                            "{}/.omega",
+                            dirs::home_dir().unwrap_or_default().display()
+                        )
+                    });
+                    let bot = format!("{}/telegram-bot/omega-tg-bot.ts", omega_dir);
+                    app.status_message = Some(format!("Deleting '{}' forever…", name));
+                    let out = std::process::Command::new("bun")
+                        .args([&bot, "project-delete", &name, "forever"])
+                        .output();
+                    app.refresh_projects();
+                    match out {
+                        Ok(o) => {
+                            let txt = String::from_utf8_lossy(&o.stdout);
+                            let last = txt.lines().last().unwrap_or("done").trim();
+                            app.status_message =
+                                Some(format!("[x] Deleted '{}' forever — {}", name, last));
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!(
+                                "Deleted from registry but cleanup failed (bun): {} — run `bun {} project-delete {} forever`",
+                                e, bot, name
+                            ));
+                        }
+                    }
+                }
                 Action::GroupSetupCommit { group_id } => {
                     // Preserve any existing topic mappings / name when re-running.
                     let mut cfg = omega_core::telegram_group::TelegramGroupConfig::load()

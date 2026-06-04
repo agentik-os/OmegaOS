@@ -1005,6 +1005,10 @@ pub struct App {
     /// Two-press confirm for removing a project (Projects tab 'x'): holds the
     /// project name armed by the first press; second 'x' on the same name fires.
     pub project_confirm_pending: Option<String>,
+    /// Two-press confirm for "Delete forever" (Projects tab 'D'): holds the
+    /// project name armed by the first press; second 'D' on the same name fires
+    /// the destructive HardDeleteProject. Cleared on cursor move / Esc.
+    pub project_delete_pending: Option<String>,
     /// Two-press confirm for the Monitor Telegram section's Enter→disconnect.
     /// Armed by the first focused-Enter, fired by the second. Cleared on nav.
     pub monitor_disconnect_armed: bool,
@@ -1084,6 +1088,7 @@ impl App {
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
             project_confirm_pending: None,
+            project_delete_pending: None,
             monitor_disconnect_armed: false,
             providers_cache: None,
             reauth_status: ReauthStatus::Idle,
@@ -1124,6 +1129,7 @@ impl App {
         }
         // Moving the cursor disarms any pending remove-confirm.
         self.project_confirm_pending = None;
+        self.project_delete_pending = None;
     }
 
     pub fn select_project_prev(&mut self) {
@@ -1136,6 +1142,7 @@ impl App {
             };
         }
         self.project_confirm_pending = None;
+        self.project_delete_pending = None;
     }
 
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {

@@ -13,6 +13,20 @@ pub struct ManagedProject {
     pub oracle_session: Option<String>,
     pub git_email: Option<String>,
     pub created_at: String,
+    /// Per-project Telegram visibility toggle. `None` or `Some(true)` = enabled
+    /// (the project gets a forum topic on `/sync` and shows normally in the Atlas
+    /// bot); `Some(false)` = disabled (sync skips/removes its topic, the bot marks
+    /// it 🔕 but keeps it listed). Default ON preserves existing behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telegram: Option<bool>,
+}
+
+impl ManagedProject {
+    /// Whether this project participates in Telegram (topic sync + Atlas display).
+    /// Enabled unless the toggle was explicitly set to `false`.
+    pub fn telegram_enabled(&self) -> bool {
+        self.telegram != Some(false)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -70,6 +84,22 @@ impl ProjectRegistry {
         let before = self.projects.len();
         self.projects.retain(|p| p.name.to_lowercase() != lower);
         self.projects.len() < before
+    }
+
+    /// Set a project's Telegram toggle (topic sync + Atlas visibility). Returns
+    /// `true` if a project with that name existed and was updated.
+    pub fn set_telegram(&mut self, name: &str, enabled: bool) -> bool {
+        let lower = name.to_lowercase();
+        if let Some(p) = self
+            .projects
+            .iter_mut()
+            .find(|p| p.name.to_lowercase() == lower)
+        {
+            p.telegram = Some(enabled);
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -195,6 +225,7 @@ pub fn create_project(name: &str, location: &Path, icon: Option<&str>) -> Result
         oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
         created_at: date,
+        telegram: None,
     };
 
     // Persist to the registry so /projects sees it.
@@ -222,6 +253,7 @@ pub fn add_existing_project(path: &Path) -> Result<ManagedProject> {
         oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
         created_at: chrono::Utc::now().to_rfc3339(),
+        telegram: None,
     };
 
     // Persist to the registry so /projects sees it next time.
@@ -265,6 +297,7 @@ pub fn scan_directory(root: &Path) -> Vec<ManagedProject> {
                 oracle_session: None,
                 git_email: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
+                telegram: None,
             });
         }
     }

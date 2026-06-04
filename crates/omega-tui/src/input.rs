@@ -87,6 +87,14 @@ pub enum Action {
     RegisterProject { path: String },
     /// Projects tab: remove a project from the registry (two-press confirmed).
     RemoveProject { name: String },
+    /// Projects tab: flip the selected project's Telegram toggle (topic sync +
+    /// Atlas bot visibility). Writes `ManagedProject.telegram`; the next `/sync`
+    /// reconciles the forum topic (creates when ON, removes when OFF).
+    ToggleProjectTelegram { name: String },
+    /// Projects tab: "Delete forever" (two-press confirmed) — runs the canonical
+    /// deletion (Telegram topic + dashboard agent + agent-bot + registry + the
+    /// local folder) via the bot's one-shot CLI so there is ONE implementation.
+    HardDeleteProject { name: String },
     /// Monitor → Project group: persist the Telegram supergroup id
     /// (`TelegramGroupConfig`). The manual fallback to the bot's auto-detect.
     GroupSetupCommit { group_id: i64 },
@@ -1282,6 +1290,41 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         app.project_confirm_pending = Some(name.clone());
                         app.status_message = Some(format!(
                             "Press x again to remove '{}' (Esc to cancel)",
+                            name
+                        ));
+                        Action::None
+                    }
+                }
+                None => {
+                    app.status_message = Some("No project selected".to_string());
+                    Action::None
+                }
+            }
+        }
+        // Projects tab: 'T' toggles the selected project's Telegram visibility
+        // (topic sync + Atlas bot). Marked 🔕 in the list when OFF.
+        KeyCode::Char('T') if app.tab == Tab::Projects => {
+            match app.selected_project().map(|p| p.name.clone()) {
+                Some(name) => Action::ToggleProjectTelegram { name },
+                None => {
+                    app.status_message = Some("No project selected".to_string());
+                    Action::None
+                }
+            }
+        }
+        // Projects tab: 'D' = Delete forever (two-press confirm) — removes the
+        // project from OmegaOS AND deletes its local folder. Distinct from 'x'
+        // (registry-only removal). First press arms it; second 'D' fires.
+        KeyCode::Char('D') if app.tab == Tab::Projects => {
+            match app.selected_project().map(|p| p.name.clone()) {
+                Some(name) => {
+                    if app.project_delete_pending.as_deref() == Some(name.as_str()) {
+                        app.project_delete_pending = None;
+                        Action::HardDeleteProject { name }
+                    } else {
+                        app.project_delete_pending = Some(name.clone());
+                        app.status_message = Some(format!(
+                            "Press D again to DELETE FOREVER '{}' (topic + agents + registry + LOCAL FOLDER) — Esc to cancel",
                             name
                         ));
                         Action::None
