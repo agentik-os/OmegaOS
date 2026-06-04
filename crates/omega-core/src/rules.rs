@@ -163,11 +163,11 @@ pub fn all_rules() -> Vec<Rule> {
             title: "Goal-sizing",
             kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
-            description: "`/goal` is a small-mission primitive only: one shell-verifiable condition, single-step, prompt under 4000 chars. Never wrap a manager, a workflow, or a multi-step mission in `/goal`. Goal-loops (loop-until-dry / -count / -budget) live inside workflows, not around them.",
+            description: "`/goal` is a small-mission primitive only: ONE shell-verifiable condition, single-step, and the WHOLE first message (`/goal <cond>` + any prompt that follows it) must stay under 4000 chars — Claude's /goal consumes the entire message as its condition, so a big prompt after `/goal` silently aborts the dispatch. Never wrap a manager, a workflow, or a multi-step mission in one `/goal`. Default pattern for anything non-trivial: a DYNAMIC WORKFLOW with several SMALL goals inside it (loop-until-dry / -count / -budget per stage) — never one giant goal around the whole mission. When a mission is too big to fit one tiny goal, split it into multiple small goals or run it as a workflow.",
             applies_to: &[],
             scopes: EXEC,
             added_at: "2026-05-29",
-            reason: "A 16k-char epic was passed to `/goal`; the engine rejects >4000 chars and stops mid-mission. A goal is a thermostat, not a campaign.",
+            reason: "A 16k-char epic was passed to `/goal`; the engine rejects >4000 chars and stops mid-mission (oracle-cli dispatched but never launched, got 27302). A goal is a thermostat, not a campaign — big work = a workflow of small goals.",
         },
         Rule {
             id: "R-MASTER",

@@ -383,11 +383,29 @@ impl Agent {
                 if opts.bare {
                     args.push_str(" --bare");
                 }
-                // /goal is a slash command, not a flag — prepend to the
-                // initial prompt so Claude registers it as the first
-                // turn's instruction (per docs: works in interactive + -p).
+                // /goal is a slash command that consumes the ENTIRE first message
+                // as its condition — so appending a large prompt after `/goal …`
+                // blows Claude's ~4000-char /goal limit and the dispatch silently
+                // aborts (the 27302-char bug: oracle dispatched but never launched).
+                // Only inline /goal when the combined message stays under the cap;
+                // otherwise ship the prompt alone. The oracle keeps its done.json
+                // contract and, per R-GOAL, runs small goals inside dynamic
+                // workflows rather than one giant /goal around the whole mission.
+                const GOAL_MSG_MAX: usize = 4000;
                 let final_prompt: Option<String> = match (&opts.goal_condition, initial_prompt) {
-                    (Some(goal), Some(p)) => Some(format!("/goal {}\n\n{}", goal, p)),
+                    (Some(goal), Some(p)) => {
+                        let combined = format!("/goal {}\n\n{}", goal, p);
+                        if combined.chars().count() <= GOAL_MSG_MAX {
+                            Some(combined)
+                        } else {
+                            tracing::warn!(
+                                combined_len = combined.chars().count(),
+                                max = GOAL_MSG_MAX,
+                                "/goal + prompt exceeds /goal limit — shipping prompt without /goal (oracle uses done.json + in-workflow small goals)"
+                            );
+                            Some(p.to_string())
+                        }
+                    }
                     (Some(goal), None) => Some(format!("/goal {}", goal)),
                     (None, Some(p)) => Some(p.to_string()),
                     (None, None) => None,
