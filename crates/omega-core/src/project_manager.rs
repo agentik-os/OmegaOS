@@ -335,6 +335,29 @@ mod tests {
     }
 
     #[test]
+    fn telegram_toggle_roundtrip() {
+        // Absent field → None → enabled (default ON, backward-compatible).
+        let legacy = r#"{"projects":[{"name":"A","path":"/p/a","icon":null,"telegram_topic_id":null,"oracle_session":null,"git_email":null,"created_at":"x"}]}"#;
+        let reg: ProjectRegistry = serde_json::from_str(legacy).unwrap();
+        assert!(reg.find("A").unwrap().telegram_enabled(), "absent telegram must default to enabled");
+
+        // Set OFF, serialize, and confirm it persists as `false` across a round-trip.
+        let mut reg2 = reg.clone();
+        assert!(reg2.set_telegram("a", false));
+        assert!(!reg2.find("A").unwrap().telegram_enabled());
+        let json = serde_json::to_string(&reg2).unwrap();
+        assert!(json.contains("\"telegram\":false"), "OFF must serialize: {json}");
+        let reg3: ProjectRegistry = serde_json::from_str(&json).unwrap();
+        assert!(!reg3.find("A").unwrap().telegram_enabled(), "OFF must survive round-trip");
+
+        // Flip back ON → enabled again, and the field is no longer `false`.
+        let mut reg4 = reg3.clone();
+        assert!(reg4.set_telegram("a", true));
+        assert!(reg4.find("A").unwrap().telegram_enabled());
+        assert!(!serde_json::to_string(&reg4).unwrap().contains("\"telegram\":false"));
+    }
+
+    #[test]
     fn scan_finds_projects() {
         let tmp = std::env::temp_dir().join("omega-scan-test");
         let _ = std::fs::remove_dir_all(&tmp);
