@@ -581,20 +581,41 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
         return Ok(());
     }
 
-    // Real file at native path → copy to omega canonical, then re-symlink.
+    // Native is a real file (Claude's atomic write replaced the symlink) holding
+    // the freshest creds. Resolve the canonical store to the REAL file it points
+    // at: `~/.omega/credentials/claude.json` is itself a symlink to the shared
+    // `/Shared/claude/credentials.json` on multi-user hosts. We must write THAT
+    // shared file — never clobber the omega→shared symlink.
     if let Some(parent) = canonical.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::copy(&native, &canonical)?;
+    let shared_target = std::fs::canonicalize(&canonical).unwrap_or_else(|_| canonical.clone());
+
+    // Atomic, EPERM-proof shared write. The old code did `std::fs::copy` straight
+    // onto the shared file, which (1) TRUNCATED it in place — a concurrent reader
+    // during the write saw a 0-byte file and every session 401'd — and (2) then
+    // tried to fchmod the (often root-owned) shared file, hitting EPERM, which
+    // aborted the whole sync and left native a stray regular file so the symlink
+    // chain was never restored. Instead: stage a temp we OWN in the target's dir,
+    // chmod the TEMP only, then rename(2) over the target. rename is atomic, so
+    // readers always see the old-or-new complete file — never a truncated one.
+    let bytes = std::fs::read(&native)?;
+    let staged = shared_target.with_extension("omega-sync.tmp");
+    let _ = std::fs::remove_file(&staged); // clear any stale temp
+    std::fs::write(&staged, &bytes)?;
     let _ = std::fs::set_permissions(
-        &canonical,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        &staged,
+        std::os::unix::fs::PermissionsExt::from_mode(0o660),
     );
-    // Replace native with a symlink back to omega — atomically, so a failure
-    // never leaves native deleted (which would let Claude recreate an
-    // unprotected regular file there). Create the symlink at a temp name first,
-    // then rename it over native: rename(2) is atomic and removes native in one
-    // step. If symlink creation fails, native is left untouched.
+    if let Err(e) = std::fs::rename(&staged, &shared_target) {
+        let _ = std::fs::remove_file(&staged); // don't leak the temp
+        return Err(e);
+    }
+
+    // Shared store now holds the fresh creds. Re-establish native → canonical so
+    // future reads route through omega again. Atomic (temp symlink + rename) so a
+    // failure never leaves native deleted (which would let Claude recreate an
+    // unprotected regular file there).
     let tmp_link = native.with_extension("omega-relink.tmp");
     let _ = std::fs::remove_file(&tmp_link); // clear any stale temp link
     std::os::unix::fs::symlink(&canonical, &tmp_link)?;

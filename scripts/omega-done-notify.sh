@@ -20,8 +20,10 @@ GFILE="$OMEGA_DIR/telegram-groups.json"
 TOKEN="$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)"
 DM="$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1)"
 [ -n "${TOKEN:-}" ] && [ -n "${DM:-}" ] || exit 0   # no telegram configured → nothing to do
-# Forum hub group (topics live HERE, not in the DM).
+# Forum hub group (topics live HERE, not in the DM) + the Atlas topic — where reports
+# that don't belong to any project (e.g. OmegaOS-self) are posted instead of the DM.
 HUB="$(python3 -c "import json;print(json.load(open('$GFILE')).get('hub',''))" 2>/dev/null || true)"
+ATLAS="$(python3 -c "import json;print(json.load(open('$GFILE')).get('atlas_topic','') or '')" 2>/dev/null || true)"
 
 # Send to a chat (+optional topic thread). HTML, with a plain-text retry on parse
 # error so a report is never silently dropped. Returns success/failure.
@@ -66,9 +68,14 @@ try:
     q("STATUS", d.get("status","done"))
     q("ORACLE", d.get("oracle","?"))
     q("PROJECT", d.get("project","?"))
-    q("SUMMARY", " ".join(str(d.get("summary","")).split())[:2800])
-    q("COMMIT", ship.get("commit") or "")
+    q("MISSION", " ".join(str(d.get("mission","")).split())[:300])
+    q("SUMMARY", " ".join(str(d.get("summary","")).split())[:2600])
+    q("COMMIT", (ship.get("commit") or "")[:12])
     q("DEPLOY", ship.get("deploy_url") or "")
+    dur=int(d.get("duration_secs") or 0)
+    q("DUR", f"{dur//60}m{dur%60:02d}s" if dur else "")
+    pa=d.get("pending_actions") or []
+    q("PENDING", " • ".join(str(x) for x in pa)[:600])
     print("OK=1")
 except Exception:
     print("OK=0")
@@ -77,23 +84,39 @@ PY
     [ "${OK:-0}" = "1" ] || continue
 
     case "$STATUS" in
-        done_clean) icon="✅";; failed) icon="❌";; blocked) icon="🚧";; pending) icon="⏳";; *) icon="⏹";;
+        done_clean) icon="✅"; label="Mission accomplie";;
+        failed)     icon="❌"; label="Mission échouée";;
+        blocked)    icon="🚧"; label="Mission bloquée";;
+        pending)    icon="⏳"; label="Mission incomplète";;
+        *)          icon="⏹"; label="Mission terminée";;
     esac
     esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
-    extra=""
-    [ -n "$COMMIT" ] && extra="${extra}
-Commit: <code>$(esc "$COMMIT")</code>"
-    [ -n "$DEPLOY" ] && extra="${extra}
-🌐 $(esc "$DEPLOY")"
-    msg="<b>${icon} Oracle $(esc "$ORACLE") — $(esc "$PROJECT")</b>
-Mission terminée (<b>${STATUS}</b>).
 
-$(esc "$SUMMARY")${extra}"
+    # ── Designed report card ──────────────────────────────────────────────
+    meta=""
+    [ -n "$DUR" ]    && meta="${meta}  ·  ⏱ ${DUR}"
+    [ -n "$COMMIT" ] && meta="${meta}  ·  <code>$(esc "$COMMIT")</code>"
+    msg="${icon} <b>${label}</b>
+🔮 <b>$(esc "$PROJECT")</b> · <i>$(esc "$ORACLE")</i>${meta}"
+    [ -n "$MISSION" ] && msg="${msg}
+<blockquote>$(esc "$MISSION")</blockquote>"
+    msg="${msg}
+━━━━━━━━━━━━━━━
+$(esc "$SUMMARY")"
+    [ -n "$PENDING" ] && msg="${msg}
 
-    # Route: a mapped project topic → the HUB group + that thread; else → the operator DM.
+⚠️ <b>Reste à faire :</b> $(esc "$PENDING")"
+    [ -n "$DEPLOY" ] && msg="${msg}
+
+🌐 <a href=\"$(esc "$DEPLOY")\">$(esc "$DEPLOY")</a>"
+
+    # Route (3 levels): a mapped project TOPIC → hub+thread; else the ATLAS topic
+    # (reports with no project, e.g. OmegaOS-self) → hub+atlas; else the operator DM.
     thread="$(topic_for "$PROJECT")"
     if [ -n "$thread" ] && [ -n "${HUB:-}" ]; then
         target="$HUB"; via="topic ${thread}"
+    elif [ -n "${ATLAS:-}" ] && [ -n "${HUB:-}" ]; then
+        target="$HUB"; thread="$ATLAS"; via="Atlas (${ATLAS})"
     else
         target="$DM"; thread=""; via="DM"
     fi

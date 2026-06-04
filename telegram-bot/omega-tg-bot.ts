@@ -67,7 +67,7 @@ function loadConfig(): boolean {
 const allowed = (id: number) => ALLOW.length > 0 && ALLOW.includes(id);
 
 // group/topic registry (persisted)
-type Groups = { hub?: number; isForum?: boolean; topics?: Record<string, string> };
+type Groups = { hub?: number; isForum?: boolean; topics?: Record<string, string>; atlas_topic?: number };
 function loadGroups(): Groups { try { return JSON.parse(readFileSync(GROUPS_FILE, "utf8")); } catch { return {}; } }
 function saveGroups(g: Groups) { try { writeFileSync(GROUPS_FILE, JSON.stringify(g, null, 2)); } catch {} }
 
@@ -534,6 +534,15 @@ async function oauth(args: string[]): Promise<string> {
   try { const r = await $`bash ${OAUTH} ${args}`.quiet().nothrow(); return (r.stdout.toString() + r.stderr.toString()).trim(); }
   catch (e: any) { return `error: ${e?.message || e}`; }
 }
+// `omega claude-login[-code]` prints tracing logs then a single JSON line
+// (`{"ok":true,"url":…}` / `{"ok":true,"email":…,"expires_min":…}`). Pull the
+// last well-formed {…} line out of the combined stdout+stderr.
+function extractJson(out: string): any {
+  const lines = out.split("\n").map(l => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--)
+    if (lines[i].startsWith("{") && lines[i].endsWith("}")) { try { return JSON.parse(lines[i]); } catch {} }
+  return null;
+}
 // Transient per-user flows awaiting a typed reply (login code paste, new-project
 // brief). PERSISTED to disk: the systemd service can restart at any moment, and an
 // in-memory-only Map dropped the operator's pasted OAuth code into the brain mid-login
@@ -586,12 +595,32 @@ async function serviceAccounts(): Promise<string> {
   return hasProbe ? `<b>🔎 Vérification live des comptes</b>\n<pre>${esc(probe).slice(0, 1400)}</pre>\n\n${staticTable}` : staticTable;
 }
 
+// Login / Re-auth — drives the real `claude /login` via the shared `omega
+// claude-login` engine (spawns the visible `aisb-reauth` session, captures the
+// authorize URL). UX: a "⏳ en cours" card while the URL generates (~15s — real
+// OAuth, not instant), then the SAME message is replaced by a designed card with
+// the link as a tappable button. Pasting the callback code back runs
+// `omega claude-login-code`, which writes fresh creds to the SHARED store.
+const TITLE_LOGIN = (s: boolean) => (s ? "CHANGER DE COMPTE" : "LOGIN / RE-AUTH");
 async function startLogin(chat: number, msgId: number, from: number, switchAcct: boolean) {
-  await edit(chat, msgId, "<b>🔐 Login Claude</b>\nGénération du lien d'autorisation…", kb([[back("account")]]));
-  const url = (await oauth(["generate"])).split("\n").map(s => s.trim()).filter(Boolean).pop() || "";
-  if (!/^https?:\/\//.test(url)) return edit(chat, msgId, pre("Login — erreur", url || "pas d'URL générée"), kb([[back("account")]]));
+  // 1) Waiting card (the wait is normal — house OAuth, browser-less).
+  await edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
+    " ⏳ <b>Connexion en cours…</b>\n Génération du lien d'autorisation Claude.\n <i>~15 s — c'est l'auth OAuth, c'est normal.</i>"),
+    kb([[back("account")]]));
+  // 2) Drive the engine, pull the URL out of its JSON.
+  const j = extractJson(await omega(["claude-login"]));
+  const url: string = j?.url || "";
+  if (!j?.ok || !/^https?:\/\//.test(url))
+    return edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
+      ` ❌ <b>Lien non généré.</b>\n <i>Réessaie dans un instant.</i>`),
+      kb([[{ text: "🔄 Réessayer", callback_data: "acct:login" }], [back("account")]]));
+  // 3) Replace the waiting card with the designed link card + button.
   setPending(from, "login-code");
-  await send(chat, `<b>🔐 ${switchAcct ? "Changer de compte" : "Login / Re-auth"}</b>\n1) Ouvre le lien et autorise${switchAcct ? " <b>avec l'autre compte</b>" : ""}.\n2) Copie le <b>code</b> de l'URL de callback et <b>colle-le ici</b> (prochain message).`, kb([[{ text: "🌐 Ouvrir le lien d'auth", url }], [{ text: "✖ Annuler", callback_data: "acct:cancel" }]]));
+  await edit(chat, msgId, card(TITLE_LOGIN(switchAcct),
+    ` 🔗 <b>1.</b> Ouvre le lien et autorise${switchAcct ? " <b>avec l'autre compte</b>" : " avec ton compte Max"}.\n` +
+    ` 🔑 <b>2.</b> Copie le <b>code</b> de la page de callback et <b>colle-le ici</b> (prochain message).`,
+    "<i>Un seul login pour tout OmegaOS — le credential est partagé entre toutes les sessions.</i>"),
+    kb([[{ text: "🔐 Ouvrir & autoriser", url }], [{ text: "✖ Annuler", callback_data: "acct:cancel" }]]));
 }
 
 function dashboardURL(): { url: string; pw: string } {
@@ -980,10 +1009,21 @@ async function cmdSync(chatId: number, thread?: number) {
   const g = loadGroups();
   if (!g.hub) return send(chatId, "⚠️ Pas de hub — lance d'abord <code>/setupgroup</code> dans ton supergroupe.", undefined, thread);
   if (!g.isForum) return send(chatId, "⚠️ Les Sujets/Topics ne sont pas activés — active-les, relance /setupgroup, puis /sync.", undefined, thread);
+  g.topics ||= {};
+  // Ensure the Atlas topic exists — where reports that don't belong to a project
+  // (OmegaOS-self, cross-project) are posted instead of the operator DM.
+  if (!g.atlas_topic || !Object.keys(g.topics).includes(String(g.atlas_topic))) {
+    const existing = Object.entries(g.topics).find(([, n]) => String(n).toLowerCase() === "atlas")?.[0];
+    if (existing) { g.atlas_topic = Number(existing); }
+    else {
+      const ar = await tg("createForumTopic", { chat_id: g.hub, name: "Atlas 🎩", icon_color: 7322096 });
+      if (ar.ok) { g.atlas_topic = ar.result.message_thread_id; g.topics[String(ar.result.message_thread_id)] = "atlas"; saveGroups(g); }
+    }
+  }
   const mp = loadProjects();
   const names = Object.keys(mp);
   if (!names.length) return send(g.hub, "Aucun projet géré — ajoute (📁) ou crée (➕) un projet, puis /sync.", undefined, thread);
-  g.topics ||= {}; let made = 0; let recreated = 0; let err = "";
+  let made = 0; let recreated = 0; let err = "";
   for (const p of names) {
     // Reverse-lookup the project's currently-mapped topic id (if any).
     const mappedTid = Object.entries(g.topics).find(([, n]) => String(n).toLowerCase() === p.toLowerCase())?.[0];
@@ -1076,9 +1116,16 @@ async function main() {
           clearPending(from);
           if (p.kind === "login-code") {
             await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
-            const res = await oauth(["exchange", text]);
-            let info = res; try { const j = JSON.parse(res); info = j.ok ? `✅ Connecté : ${j.email || "?"} (token ${j.expires_min || "?"} min)` : `❌ ${j.error || "échec de l'échange"}`; } catch {}
-            await send(chatId, `<b>🔐 Login</b>\n${esc(info)}`, kb([[{ text: "💳 Account", callback_data: "nav:account" }]]), thread);
+            // Paste the code into the waiting `aisb-reauth` session; the engine
+            // waits for Claude to write fresh creds, then syncs them to the SHARED
+            // store and re-establishes the symlink (atomic — no 0-byte truncation).
+            const j = extractJson(await omega(["claude-login-code", text]));
+            const ok = !!j?.ok;
+            const body = ok
+              ? ` ✅ <b>Connecté</b>\n 📧 ${esc(j.email || "?")}\n ⏱ token frais — ${j.expires_min || "?"} min\n 🔗 credential partagé mis à jour (toutes les sessions).`
+              : ` ❌ <b>Échec de validation</b>\n ${esc(j?.error || "le code n'a pas été accepté")}\n\n <i>Le code expire vite — relance « Login » pour un lien frais.</i>`;
+            await send(chatId, card("LOGIN", body),
+              kb([[{ text: "💳 Account", callback_data: "nav:account" }, ...(ok ? [] : [{ text: "🔁 Relancer Login", callback_data: "acct:login" }])]]), thread);
             continue;
           }
           if (p.kind === "new-project") {
