@@ -39,7 +39,9 @@ fn default_aisb_agent() -> String {
 }
 
 fn default_auto_master() -> bool {
-    true
+    // Retired: the brain is the Atlas Telegram bot (omega-tg-bot.ts), not the legacy
+    // `aisb-master` rmux session (a Telegram-conversation viewer). Don't auto-spawn it.
+    false
 }
 
 fn default_auto_naming() -> bool {

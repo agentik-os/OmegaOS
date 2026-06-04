@@ -1624,28 +1624,10 @@ impl App {
         self.sessions.clear();
         self.rows.clear();
 
-        // ── Section 1: Master AISB pinned at top ────────────────────────────
-        if let Some(master) = sessions
-            .iter()
-            .find(|s| omega_core::aisb::is_master(&s.name))
-        {
-            self.rows.push(SessionRow::Header("─ AISB Master ─".to_string()));
-            let entry = SessionEntry {
-                session: master.clone(),
-                progress: None,
-                is_current: false,
-                // Master is NOT protected anymore — killing it triggers an
-                // auto-respawn (see KillSession handler + bridge ensure_master
-                // path). The user can press 'x' freely; the daemon comes back
-                // on the next Telegram message OR on the next TUI refresh.
-                is_protected: false,
-                tree_prefix: "★ ".to_string(),
-            };
-            self.sessions.push(entry);
-            self.rows.push(SessionRow::Entry(
-                self.sessions.last().unwrap().clone_for_row(),
-            ));
-        }
+        // The retired `aisb-master` rmux session (a legacy Telegram-conversation
+        // viewer) is no longer pinned in the menu — the brain is the Atlas Telegram
+        // bot now. It is filtered out of the project sections below too, so it never
+        // appears in the session list.
 
         // ── Section 2: Project-grouped sessions (Oracles + Workers + Home) ──
         let mut last_section: Option<String> = None;

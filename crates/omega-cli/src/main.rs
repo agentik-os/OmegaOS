@@ -1158,7 +1158,7 @@ async fn run_tui_loop(
                             // a fresh process. The Telegram bridge is unaffected
                             // (its persistent claude_stream subprocess handles
                             // chat independently of the rmux session).
-                            if is_master {
+                            if is_master && cfg.auto_spawn_master {
                                 if let Some(agent) = omega_core::agents::Agent::from_name(&cfg.aisb_agent) {
                                     let cwd = std::env::current_dir()
                                         .ok()
@@ -1519,14 +1519,16 @@ async fn run_tui_loop(
                             // here so the auto-refresh at the end of the wizard
                             // immediately shows the master (no manual refresh needed).
                             let omega_cfg = OmegaConfig::load().unwrap_or_default();
-                            if let Some(agent) =
-                                omega_core::agents::Agent::from_name(&omega_cfg.aisb_agent)
-                            {
-                                let cwd = std::env::current_dir()
-                                    .ok()
-                                    .and_then(|p| p.to_str().map(String::from))
-                                    .unwrap_or_else(|| "/home".to_string());
-                                let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
+                            if omega_cfg.auto_spawn_master {
+                                if let Some(agent) =
+                                    omega_core::agents::Agent::from_name(&omega_cfg.aisb_agent)
+                                {
+                                    let cwd = std::env::current_dir()
+                                        .ok()
+                                        .and_then(|p| p.to_str().map(String::from))
+                                        .unwrap_or_else(|| "/home".to_string());
+                                    let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
+                                }
                             }
                             let _ = app.refresh().await;
                             // Close the loop: drop the user onto the master's live

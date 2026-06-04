@@ -117,9 +117,10 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 // ── Visual grammar: one branded look across every message. Telegram HTML supports
 // only b/i/u/s/code/pre/a/blockquote (+ <blockquote expandable>) — so the kit is an
 // Ω-ruled header, colored status dots, a block score-bar, and expandable detail.
-// Width kept ≤19 so the rule never wraps on a phone. Design = mix of "Health Hero"
-// (#6) + "Brutalist Ω" (#10).
-const RULE = "━".repeat(19);
+// Width kept ≤12 so the heavy ━ run never overflows the bubble on a narrow phone
+// (19 wrapped; the markdown normalizer's own rule width is 10). Design = mix of
+// "Health Hero" (#6) + "Brutalist Ω" (#10).
+const RULE = "━".repeat(12);
 const dot = (s: "ok" | "warn" | "err") => (s === "ok" ? "🟢" : s === "warn" ? "🟡" : "🔴");
 const bar = (pct: number, n = 10) => { const f = Math.max(0, Math.min(n, Math.round((pct / 100) * n))); return "█".repeat(f) + "░".repeat(n - f); };
 // Branded card: Ω-ruled header + body (+ optional ruled footer). `title` is plain text.

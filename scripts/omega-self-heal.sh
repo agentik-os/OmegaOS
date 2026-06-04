@@ -38,7 +38,7 @@ if [ -f "$FLAG" ]; then
 fi
 mkdir -p "$HOME/.omega/state" && : > "$FLAG"
 
-RULE="━━━━━━━━━━━━━━━━━━━"
+RULE="━━━━━━━━━━━━"
 MSG="${RULE}
 <b>Ω  AUTO-HEAL</b>
 ${RULE}

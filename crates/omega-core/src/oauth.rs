@@ -120,25 +120,34 @@ pub async fn request_reauth(
     mgr: &SessionManager,
     reason: &str,
     target_account: Option<&str>,
+    force: bool,
 ) -> Result<Option<ReauthRequest>> {
     let now = now_epoch_secs();
 
-    // Cooldown — 30s between attempts.
-    let last = REAUTH_COOLDOWN_TS.load(Ordering::Relaxed);
-    if last > 0 && now.saturating_sub(last) < COOLDOWN_SEC {
-        tracing::debug!("reauth skipped: cooldown active ({}s ago)", now - last);
-        return Ok(None);
-    }
+    // Cooldown + pending guards apply to AUTOMATIC reauth only (so a detected
+    // auth failure can't spam logins). An operator-initiated login (force=true)
+    // ALWAYS spawns a fresh session and returns a fresh URL — otherwise a stuck
+    // `pending` flag or the 30s cooldown makes the TUI/bridge keep showing the
+    // same stale link (the "le lien est générique / identique à chaque fois"
+    // symptom). The kill_session below then guarantees a clean fresh session.
+    if !force {
+        // Cooldown — 30s between attempts.
+        let last = REAUTH_COOLDOWN_TS.load(Ordering::Relaxed);
+        if last > 0 && now.saturating_sub(last) < COOLDOWN_SEC {
+            tracing::debug!("reauth skipped: cooldown active ({}s ago)", now - last);
+            return Ok(None);
+        }
 
-    // Stale check — clear if pending > TTL.
-    let mut state = PendingReauth::load();
-    if state.is_stale() {
-        tracing::warn!("reauth: stale pending flag — auto-clearing");
-        state.pending = false;
-    }
-    if state.pending {
-        tracing::debug!("reauth skipped: already pending");
-        return Ok(None);
+        // Stale check — clear if pending > TTL.
+        let mut state = PendingReauth::load();
+        if state.is_stale() {
+            tracing::warn!("reauth: stale pending flag — auto-clearing");
+            state.pending = false;
+        }
+        if state.pending {
+            tracing::debug!("reauth skipped: already pending");
+            return Ok(None);
+        }
     }
 
     // Kill any pre-existing reauth session before starting fresh.

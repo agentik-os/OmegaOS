@@ -13,7 +13,7 @@
 
 # Persistent AISB master + automatic session naming.
 # aisb_agent = "claude"
-# auto_spawn_master = true
+# auto_spawn_master = false   # retired aisb-master rmux viewer (brain = Atlas Telegram bot)
 # auto_naming = true
 
 # On-screen clock timezone (IANA name). A headless VPS usually runs in UTC, so
