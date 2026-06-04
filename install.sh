@@ -1157,6 +1157,23 @@ fi
 # the agent image bundles the Claude Code binary, so we build from source). The
 # bring-up reads the bot token from ~/.omega/telegram.toml and the Claude OAuth
 # token from ~/.omega/credentials/claude.json. Skip entirely: OMEGA_SKIP_DASHBOARD=1.
+# Agentik-Skills — the canonical SSOT skills library (agentik-os/Agentik-Skills).
+# Skills here mirror into ~/.omega/skills/<name>/ and `omega sync` symlinks them
+# into every LLM (Claude ~/.claude/skills, Gemini/Codex via OMEGA.md). Private repo
+# → needs gh/git auth; best-effort, like the dashboard.
+SKILLS_REPO_DIR="$OMEGA_DIR/repos/Agentik-Skills"
+mkdir -p "$OMEGA_DIR/repos"
+if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
+    ok "Agentik-Skills present ($SKILLS_REPO_DIR — update: git -C $SKILLS_REPO_DIR pull)"
+elif command -v gh >/dev/null 2>&1 && timeout 120 gh repo clone agentik-os/Agentik-Skills "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
+    ok "Agentik-Skills cloned → $SKILLS_REPO_DIR (canonical skills source)"
+elif timeout 120 git clone --depth 1 https://github.com/agentik-os/Agentik-Skills.git "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
+    ok "Agentik-Skills cloned → $SKILLS_REPO_DIR"
+else
+    rm -rf "$SKILLS_REPO_DIR" 2>/dev/null || true
+    info "Agentik-Skills clone skipped — private repo needs gh auth. Later: gh repo clone agentik-os/Agentik-Skills $SKILLS_REPO_DIR"
+fi
+
 if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
     MC_DIR="$OMEGA_DIR/repos/omega-mc"
     mkdir -p "$OMEGA_DIR/repos"
