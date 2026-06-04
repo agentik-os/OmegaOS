@@ -1048,13 +1048,13 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "add") {
     // Auto-detect projects (top-level git repos under Station) and offer one button each.
     const repos = gitRepos();
-    if (!repos.length) { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Gérer un projet</b>\nAucun projet auto-détecté — envoie le <b>nom</b> du projet à gérer.", kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [back("projects")]])); }
+    if (!repos.length) { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Manage a project</b>\nNo project auto-detected — send the <b>name</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }
     const rows: Btn[][] = [];
     for (let i = 0; i < repos.length; i += 2) rows.push(repos.slice(i, i + 2).map(r => ({ text: `➕ ${r.name}`.slice(0, 28), callback_data: `proj:reg:${r.name}`.slice(0, 64) })));
-    return edit(chat, msgId, `<b>📁 Ajouter un projet</b>\n${repos.length} projet(s) détecté(s) sous Station — tape un bouton pour le gérer (oracle dédié + dashboard + topic).`, kb([...rows, [{ text: "✍️ Autre (taper le nom)", callback_data: "proj:addname" }], [back("projects")]]));
+    return edit(chat, msgId, `<b>📁 Add a project</b>\n${repos.length} project(s) detected under Station — tap a button to manage it (dedicated oracle + dashboard + topic).`, kb([...rows, [{ text: "✍️ Other (type the name)", callback_data: "proj:addname" }], [back("projects")]]));
   }
-  if (ns === "proj" && action === "reg") return edit(chat, msgId, await addProject(arg), kb([[{ text: "📁 Ajouter un autre", callback_data: "proj:add" }, { text: "📋 Projets", callback_data: "nav:projects" }], [back("projects")]]));
-  if (ns === "proj" && action === "addname") { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Gérer un projet</b>\nEnvoie le <b>nom</b> du projet à gérer.", kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [back("projects")]])); }
+  if (ns === "proj" && action === "reg") return edit(chat, msgId, await addProject(arg), kb([[{ text: "📁 Add another", callback_data: "proj:add" }, { text: "📋 Projects", callback_data: "nav:projects" }], [back("projects")]]));
+  if (ns === "proj" && action === "addname") { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Manage a project</b>\nSend the <b>name</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }
   if (ns === "proj" && action === "open") {
     const mp = loadProjects()[arg];
     // One coherent primary action: dispatch a mission to the project's dedicated
@@ -1063,36 +1063,36 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     // a fire-and-track dispatch, not a live chat) and duplicated this exact button.
     return edit(chat, msgId, `<b>📦 ${esc(arg)}</b>${mp ? `\n<i>${esc(mp.category || "")}</i> · <code>${esc(mp.dir || "")}</code>` : ""}`, kb([
       [{ text: "🚀 Dispatch mission", callback_data: `proj:oracle:${arg}`.slice(0, 64) }],
-      [{ text: "🔧 Git", callback_data: `git:menu:${arg}`.slice(0, 64) }, { text: "🗑 Supprimer", callback_data: `proj:del:${arg}`.slice(0, 64) }],
+      [{ text: "🔧 Git", callback_data: `git:menu:${arg}`.slice(0, 64) }, { text: "🗑 Delete", callback_data: `proj:del:${arg}`.slice(0, 64) }],
       [back("projects")],
     ]));
   }
   if (ns === "proj" && action === "del") {
-    return edit(chat, msgId, `<b>🗑 Supprimer « ${esc(arg)} »</b>\nChoisis :\n• <b>OmegaOS only</b> — retire le topic Telegram, l'agent du dashboard et le registre. <i>Le code (GitHub + dossier) reste.</i>\n• <b>Complet</b> — tout ça <b>+ supprime le repo GitHub</b> (irréversible). Le dossier local est conservé.`, kb([
+    return edit(chat, msgId, `<b>🗑 Delete “${esc(arg)}”</b>\nChoose:\n• <b>OmegaOS only</b> — removes the Telegram topic, the dashboard agent and the registry. <i>The code (GitHub + folder) stays.</i>\n• <b>Full</b> — all that <b>+ deletes the GitHub repo</b> (irreversible). The local folder is kept.`, kb([
       [{ text: "🧹 OmegaOS only", callback_data: `proj:delsoft:${arg}`.slice(0, 64) }],
-      [{ text: "💥 Complet (+ GitHub)", callback_data: `proj:delfull:${arg}`.slice(0, 64) }],
-      [{ text: "✖ Annuler", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+      [{ text: "💥 Full (+ GitHub)", callback_data: `proj:delfull:${arg}`.slice(0, 64) }],
+      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
   if (ns === "proj" && action === "delsoft") return edit(chat, msgId, await deleteProject(arg, "soft"), kb([[{ text: "📋 Projets", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "delfull") {
     // Extra confirmation for the irreversible GitHub deletion.
-    return edit(chat, msgId, `<b>💥 Suppression COMPLÈTE de « ${esc(arg)} »</b>\n⚠️ Ça <b>supprime le repo GitHub</b> (irréversible) en plus du reste. Sûr ?`, kb([
-      [{ text: "💥 Oui, tout supprimer", callback_data: `proj:delfullgo:${arg}`.slice(0, 64) }],
-      [{ text: "✖ Annuler", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+    return edit(chat, msgId, `<b>💥 FULL deletion of “${esc(arg)}”</b>\n⚠️ This <b>deletes the GitHub repo</b> (irreversible) on top of everything else. Sure?`, kb([
+      [{ text: "💥 Yes, delete everything", callback_data: `proj:delfullgo:${arg}`.slice(0, 64) }],
+      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
   if (ns === "proj" && action === "delfullgo") return edit(chat, msgId, await deleteProject(arg, "full"), kb([[{ text: "📋 Projets", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "oracle") {
     setPending(from, "oracle-prompt", arg);
-    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nEnvoie ton <b>prompt / ta mission</b>. Je le donne à l'oracle dédié de <b>${esc(arg)}</b> (reprompting complet : connaissance projet + toute la doctrine OmegaOS — orchestration, dynamic workflows, workers, goals, audits) — scopé à ce projet.`, kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [{ text: "« Projet", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
   }
   if (ns === "git" && action === "list") {
     const repos = gitRepos();
-    if (!repos.length) return edit(chat, msgId, "<b>🔧 Git</b>\nAucun repo git trouvé sous la racine projets.", kb([[back("projects")]]));
+    if (!repos.length) return edit(chat, msgId, "<b>🔧 Git</b>\nNo git repo found under the projects root.", kb([[back("projects")]]));
     const rows: Btn[][] = [];
     for (let i = 0; i < repos.length; i += 2) rows.push(repos.slice(i, i + 2).map(r => ({ text: `📦 ${r.name}`.slice(0, 28), callback_data: `git:menu:${r.name}`.slice(0, 64) })));
-    return edit(chat, msgId, `<b>🔧 Git — ${repos.length} repo(s)</b>\nChoisis un projet pour pull / add+push / status.`, kb([...rows, [back("projects")]]));
+    return edit(chat, msgId, `<b>🔧 Git — ${repos.length} repo(s)</b>\nPick a project for pull / add+push / status.`, kb([...rows, [back("projects")]]));
   }
   if (ns === "git" && action === "menu") return edit(chat, msgId, `<b>🔧 Git — ${esc(arg)}</b>\nPull (ff-only) / Add+Commit+Push / Status.`, gitMenuKb(arg));
   if (ns === "git" && action === "pull") return edit(chat, msgId, pre(`🔄 Pull ${arg}`, gitPull(arg)), gitMenuKb(arg));
@@ -1105,7 +1105,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "usage") return edit(chat, msgId, pre("Usage tokens", await omega(["usage"])), kb([[{ text: "🔄 Refresh", callback_data: "acct:usage" }, back("account")]]));
   if (ns === "acct" && action === "billing") return edit(chat, msgId, pre("Billing", await omega(["monitor"])), kb([[back("account")]]));
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
-  if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Annulé.", kb([[back("account")]])); }
+  if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("menu")]]));
   if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("menu")]]));
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Associe un bot Telegram dédié à cet agent — tu lui parleras directement (scopé à son projet).</i>`, kb([[{ text: "🔗 Associer Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
