@@ -1108,10 +1108,10 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("menu")]]));
   if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("menu")]]));
-  if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Associe un bot Telegram dédié à cet agent — tu lui parleras directement (scopé à son projet).</i>`, kb([[{ text: "🔗 Associer Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
+  if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {
     setPending(from, "tg-link", arg);
-    return edit(chat, msgId, `<b>🔗 Associer un bot Telegram — ${esc(arg)}</b>\n1) Crée un bot via @BotFather (ou réutilises-en un).\n2) Envoie-moi son <b>token</b> ici (format <code>123456:ABC…</code>).\n\nLe bot sera <b>whitelisté à toi seul</b>, et quand tu lui parleras tu t'adresseras à l'oracle du projet <b>${esc(arg)}</b> (scopé à ce projet uniquement).`, kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }], [back("agents")]]));
+    return edit(chat, msgId, `<b>🔗 Link a Telegram bot — ${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nThe bot will be <b>whitelisted to you alone</b>, and when you talk to it you'll be addressing the oracle of project <b>${esc(arg)}</b> (scoped to this project only).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("agents")]]));
   }
   return edit(chat, msgId, menuText, menuKb());
 }
