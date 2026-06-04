@@ -59,27 +59,22 @@ fn gen_session_uuid() -> String {
     )
 }
 
-/// Resolve the persisted `--session-id` for an oracle: reuse the one stored in
-/// its `OracleState` if present, otherwise mint a fresh UUID and persist it so
-/// a later resurrect / cross-restart resume reuses the SAME id. Best-effort —
-/// a persistence failure logs and still returns a usable (in-memory) id so the
-/// dispatch is never blocked on it.
+/// Mint a FRESH `--session-id` for an oracle dispatch and persist it.
+///
+/// CRITICAL: `claude --session-id <uuid>` CREATES a session with that exact id and
+/// fails hard ("Session ID … is already in use") if one already exists. Reusing a
+/// persisted id on a re-dispatch / idle-reuse / resurrect therefore collides and the
+/// oracle pane never launches Claude (it drops to a bare shell with the error). A
+/// dispatch is a NEW mission = a NEW conversation, so we ALWAYS mint a fresh UUID
+/// (which `gen_session_uuid` guarantees is unique) and overwrite the persisted one
+/// for the record. Best-effort — a persistence failure still returns a usable id.
 fn resolve_session_id(
     state_dir: &Path,
     oracle_name: &str,
     project: &str,
     working_dir: &Path,
 ) -> String {
-    let existing = OracleState::read(state_dir, oracle_name)
-        .ok()
-        .flatten()
-        .and_then(|st| st.session_id.clone());
-    if let Some(id) = existing {
-        return id;
-    }
     let id = gen_session_uuid();
-    // Persist onto a state record so resume across restarts reuses it. If a
-    // full state already exists we patch it; otherwise stamp a minimal one.
     let mut state = OracleState::read(state_dir, oracle_name)
         .ok()
         .flatten()
