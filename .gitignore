@@ -15,6 +15,7 @@ tools/pdfgen/node_modules/
 tools/pdfgen/.next/
 tools/pdfgen/output/
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 audits/.*/
 
 # Python bytecode (never ship — embeds absolute source paths)
