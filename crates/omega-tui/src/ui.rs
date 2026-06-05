@@ -50,6 +50,19 @@ use ratatui::{
 use crate::theme as th;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // Theme background: paint the whole frame first so every widget sits on
+    // the active theme's canvas (None = keep the terminal's own background).
+    // This is what makes themes visually distinct at a glance -- accent
+    // colors alone read as near-identical between palettes.
+    if let Some(bg) = th::bg() {
+        // fg too: spans rendered without an explicit fg inherit this themed
+        // text color instead of the terminal default (which may be unreadable
+        // on the painted background -- e.g. white-on-white for Paper).
+        frame.render_widget(
+            Block::default().style(Style::default().fg(th::text()).bg(bg)),
+            frame.area(),
+        );
+    }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -257,7 +270,7 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
                     .bg(th::accent())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Reset)
+                Style::default().fg(th::text())
             };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(th::accent())),
@@ -346,7 +359,7 @@ fn draw_dispatch_picker(frame: &mut Frame, app: &App) {
                     .bg(th::accent())
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::Reset)
+                Style::default().fg(th::text())
             };
             ListItem::new(Line::from(vec![
                 Span::styled(prefix, Style::default().fg(th::accent())),
@@ -427,7 +440,7 @@ fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(th::accent2())),
-            Span::styled(display, Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
+            Span::styled(display, Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
             Span::styled("█", Style::default().fg(th::accent2())),
         ]),
         Line::from(""),
@@ -488,7 +501,7 @@ fn draw_simple_input_modal_owned(
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(th::accent2())),
-            Span::styled(display, Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
+            Span::styled(display, Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
             Span::styled("█", Style::default().fg(th::accent2())),
         ]),
         Line::from(""),
@@ -573,7 +586,7 @@ fn section_row(label: String, current: bool, focused_sel: bool) -> ListItem<'sta
             .bg(th::accent())
             .add_modifier(Modifier::BOLD)
     } else if current {
-        Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
+        Style::default().fg(th::text()).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -1180,7 +1193,7 @@ fn render_session_item(
     } else {
         // Brighter than the previous default — clearly visible on dark terminals
         Style::default()
-            .fg(Color::Reset)
+            .fg(th::text())
             .add_modifier(Modifier::BOLD)
     };
 
@@ -1192,7 +1205,7 @@ fn render_session_item(
         Some(DoneStatus::Pending) => ("~ ", th::accent2()),
         Some(DoneStatus::Failed) => ("x ", th::error()),
         Some(DoneStatus::Blocked) => ("! ", Color::Rgb(255, 165, 0)),
-        None => ("", Color::Reset),
+        None => ("", th::text()),
     };
 
     let line = Line::from(vec![
@@ -1568,15 +1581,15 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
     )));
     lines.push(Line::from(Span::styled(
         "      Omega's OWN Telegram bot (no Python, no AISB-Python dependency).",
-        Style::default().fg(Color::Reset),
+        Style::default().fg(th::text()),
     )));
     lines.push(Line::from(Span::styled(
         "      Once configured, text you send via Telegram reaches the OmegaMC",
-        Style::default().fg(Color::Reset),
+        Style::default().fg(th::text()),
     )));
     lines.push(Line::from(Span::styled(
         "      dashboard — your phone-side control surface for the system.",
-        Style::default().fg(Color::Reset),
+        Style::default().fg(th::text()),
     )));
     lines.push(Line::from(""));
     if let Some(cfg) = tg_config {
@@ -1609,11 +1622,11 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "    Before you start: create a bot via @BotFather (save the token) and",
-            Style::default().fg(Color::Reset),
+            Style::default().fg(th::text()),
         )));
         lines.push(Line::from(Span::styled(
             "    get your chat id from @userinfobot. The wizard asks for them step by step.",
-            Style::default().fg(Color::Reset),
+            Style::default().fg(th::text()),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -1677,19 +1690,19 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
             )));
             lines.push(Line::from(Span::styled(
                 "      1. Create a Telegram supergroup, enable Topics in its settings",
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             lines.push(Line::from(Span::styled(
                 "      2. Add the bot to the group and make it admin",
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             lines.push(Line::from(Span::styled(
                 "      3. That's it — the bot auto-detects the promotion, persists the",
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             lines.push(Line::from(Span::styled(
                 "         group, creates one topic per project, and DMs you a confirmation.",
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -2211,7 +2224,7 @@ fn render_settings_detail(
                         .bg(th::accent2())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Reset)
+                    Style::default().fg(th::text())
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2234,7 +2247,7 @@ fn render_settings_detail(
                         .bg(th::accent2())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Reset)
+                    Style::default().fg(th::text())
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2259,7 +2272,7 @@ fn render_settings_detail(
                         .bg(th::accent2())
                         .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().fg(Color::Reset)
+                    Style::default().fg(th::text())
                 };
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
@@ -2299,28 +2312,26 @@ fn render_settings_detail(
         let active = crate::theme::active();
         for id in crate::theme::ThemeId::all() {
             let p = id.palette();
+            // Paint each row on ITS OWN theme background so the gallery shows
+            // the real contrast between palettes, not just accent swaps.
+            let row_bg = p.bg.unwrap_or(Color::Reset);
+            let on = |c: Color| Style::default().fg(c).bg(row_bg);
             let marker = if *id == active { "  \u{25b6} " } else { "    " };
             let mut spans: Vec<Span> = vec![
-                Span::styled(
-                    marker.to_string(),
-                    Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-                ),
+                Span::styled(marker.to_string(), on(p.accent).add_modifier(Modifier::BOLD)),
                 Span::styled(
                     format!("{:28}", id.label()),
                     if *id == active {
-                        Style::default().fg(p.accent).add_modifier(Modifier::BOLD)
+                        on(p.accent).add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(p.bright)
+                        on(p.text)
                     },
                 ),
             ];
             for c in [p.accent, p.accent2, p.success, p.error, p.info, p.special, p.dim] {
-                spans.push(Span::styled("\u{2588}\u{2588}", Style::default().fg(c)));
+                spans.push(Span::styled("\u{2588}\u{2588}", on(c)));
             }
-            spans.push(Span::styled(
-                format!("  {}", id.blurb()),
-                Style::default().fg(p.dim),
-            ));
+            spans.push(Span::styled(format!("  {}", id.blurb()), on(p.dim)));
             lines.push(Line::from(spans));
         }
     }
@@ -2683,12 +2694,12 @@ fn render_info_rules() -> Vec<Line<'static>> {
                 ),
                 Span::styled(
                     r.title.to_string(),
-                    Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD),
+                    Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
                 ),
             ]));
             lines.push(Line::from(Span::styled(
                 format!("    {}", r.description),
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             let applies = if r.applies_to.is_empty() {
                 "all agents".to_string()
@@ -2737,7 +2748,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
             ]));
             lines.push(Line::from(Span::styled(
                 format!("    {}", r.description),
-                Style::default().fg(Color::Reset),
+                Style::default().fg(th::text()),
             )));
             let applies = if r.applies_to.is_empty() {
                 "all agents".to_string()
@@ -2765,7 +2776,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
 fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
     let cy = Style::default().fg(th::accent()).add_modifier(Modifier::BOLD);
     let yl = Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD);
-    let wh = Style::default().fg(Color::Reset);
+    let wh = Style::default().fg(th::text());
     let gr = Style::default().fg(th::dim());
     let mg = Style::default().fg(th::special());
 
@@ -2783,7 +2794,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
         Line::from(vec![
             Span::styled("  Ω  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::styled("OmegaOS", Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)),
+            Span::styled("OmegaOS", Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
             Span::styled("  —  Agentic Terminal Operating System", gr),
             Span::styled(concat!("   v", env!("CARGO_PKG_VERSION")), cy),
         ]),
@@ -3086,14 +3097,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(
             " Ω ",
             Style::default()
-                .fg(Color::Reset)
+                .fg(th::text())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
             session_info,
             Style::default()
-                .fg(Color::Reset)
+                .fg(th::text())
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -3161,7 +3172,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(
         n_sessions,
-        Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD),
+        Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
     ));
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(

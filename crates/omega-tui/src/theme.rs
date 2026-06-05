@@ -29,6 +29,14 @@ pub struct Theme {
     pub dim2: Color,
     pub bright: Color,
     pub sel_fg: Color,
+    /// Full-screen background. `None` = keep the terminal's own background
+    /// (the Omega default). `Some(..)` is what makes a theme unmistakably
+    /// different at a glance — Dracula's purple, Paper's white, etc.
+    pub bg: Option<Color>,
+    /// Body text color. `Color::Reset` (terminal default) for bg-less themes;
+    /// themes that paint a background MUST set an explicit readable text
+    /// color (the terminal's default fg may be invisible on the painted bg).
+    pub text: Color,
     // Bright variants (legacy Light* colors — rare call sites).
     pub accent_hi: Color,
     pub accent2_hi: Color,
@@ -64,6 +72,8 @@ const fn mk(
         dim2,
         bright,
         sel_fg,
+        bg: None,
+        text: Color::Reset,
         accent_hi: accent,
         accent2_hi: accent2,
         success_hi: success,
@@ -99,7 +109,10 @@ const OMEGA: Theme = Theme {
 };
 
 /// Matrix — neon digital-rain green.
-const MATRIX: Theme = mk(
+const MATRIX: Theme = Theme {
+    bg: Some(Color::Rgb(5, 15, 5)),
+    text: Color::Rgb(170, 255, 170),
+    ..mk(
     Color::Rgb(0, 255, 65),
     Color::Rgb(160, 255, 160),
     Color::Rgb(0, 230, 90),
@@ -110,10 +123,14 @@ const MATRIX: Theme = mk(
     Color::Rgb(0, 95, 30),
     Color::Rgb(200, 255, 200),
     Color::Black,
-);
+)
+};
 
 /// Terminal — soft VT220 green phosphor, calmer than Matrix.
-const TERMINAL: Theme = mk(
+const TERMINAL: Theme = Theme {
+    bg: Some(Color::Rgb(0, 18, 0)),
+    text: Color::Rgb(160, 230, 160),
+    ..mk(
     Color::Rgb(102, 255, 102),
     Color::Rgb(170, 255, 170),
     Color::Rgb(102, 255, 102),
@@ -124,10 +141,14 @@ const TERMINAL: Theme = mk(
     Color::Rgb(45, 100, 45),
     Color::Rgb(210, 255, 210),
     Color::Black,
-);
+)
+};
 
 /// Amber — retro amber phosphor (P3 CRT).
-const AMBER: Theme = mk(
+const AMBER: Theme = Theme {
+    bg: Some(Color::Rgb(22, 13, 0)),
+    text: Color::Rgb(255, 200, 120),
+    ..mk(
     Color::Rgb(255, 176, 0),
     Color::Rgb(255, 200, 80),
     Color::Rgb(255, 190, 60),
@@ -138,10 +159,14 @@ const AMBER: Theme = mk(
     Color::Rgb(110, 75, 10),
     Color::Rgb(255, 230, 160),
     Color::Black,
-);
+)
+};
 
 /// Noir — full black & white, pure grayscale on dark terminals.
-const NOIR: Theme = mk(
+const NOIR: Theme = Theme {
+    bg: Some(Color::Rgb(0, 0, 0)),
+    text: Color::Rgb(220, 220, 220),
+    ..mk(
     Color::White,
     Color::Rgb(200, 200, 200),
     Color::Rgb(190, 190, 190),
@@ -152,10 +177,14 @@ const NOIR: Theme = mk(
     Color::Rgb(75, 75, 75),
     Color::White,
     Color::Black,
-);
+)
+};
 
 /// Paper — full white: ink-on-paper for LIGHT terminal backgrounds.
-const PAPER: Theme = mk(
+const PAPER: Theme = Theme {
+    bg: Some(Color::Rgb(245, 245, 240)),
+    text: Color::Rgb(20, 20, 20),
+    ..mk(
     Color::Rgb(20, 20, 20),
     Color::Rgb(70, 70, 70),
     Color::Rgb(50, 50, 50),
@@ -166,10 +195,14 @@ const PAPER: Theme = mk(
     Color::Rgb(185, 185, 185),
     Color::Rgb(0, 0, 0),
     Color::Rgb(255, 255, 255),
-);
+)
+};
 
 /// Monogram — monochrome chrome with a single cyan accent.
-const MONOGRAM: Theme = mk(
+const MONOGRAM: Theme = Theme {
+    bg: Some(Color::Rgb(10, 10, 12)),
+    text: Color::Rgb(225, 225, 225),
+    ..mk(
     Color::Cyan,
     Color::Rgb(220, 220, 220),
     Color::Rgb(200, 200, 200),
@@ -180,10 +213,14 @@ const MONOGRAM: Theme = mk(
     Color::Rgb(70, 70, 70),
     Color::White,
     Color::Black,
-);
+)
+};
 
 /// Dracula — the classic purple/pink/cyan dark palette.
-const DRACULA: Theme = mk(
+const DRACULA: Theme = Theme {
+    bg: Some(Color::Rgb(40, 42, 54)),
+    text: Color::Rgb(248, 248, 242),
+    ..mk(
     Color::Rgb(189, 147, 249),
     Color::Rgb(241, 250, 140),
     Color::Rgb(80, 250, 123),
@@ -194,10 +231,14 @@ const DRACULA: Theme = mk(
     Color::Rgb(68, 71, 90),
     Color::Rgb(248, 248, 242),
     Color::Rgb(40, 42, 54),
-);
+)
+};
 
 /// Nord — cool arctic blues.
-const NORD: Theme = mk(
+const NORD: Theme = Theme {
+    bg: Some(Color::Rgb(46, 52, 64)),
+    text: Color::Rgb(216, 222, 233),
+    ..mk(
     Color::Rgb(136, 192, 208),
     Color::Rgb(235, 203, 139),
     Color::Rgb(163, 190, 140),
@@ -208,10 +249,14 @@ const NORD: Theme = mk(
     Color::Rgb(76, 86, 106),
     Color::Rgb(236, 239, 244),
     Color::Rgb(46, 52, 64),
-);
+)
+};
 
 /// Gruvbox — warm retro earth tones.
-const GRUVBOX: Theme = mk(
+const GRUVBOX: Theme = Theme {
+    bg: Some(Color::Rgb(40, 40, 40)),
+    text: Color::Rgb(235, 219, 178),
+    ..mk(
     Color::Rgb(254, 128, 25),
     Color::Rgb(250, 189, 47),
     Color::Rgb(184, 187, 38),
@@ -222,10 +267,14 @@ const GRUVBOX: Theme = mk(
     Color::Rgb(102, 92, 84),
     Color::Rgb(235, 219, 178),
     Color::Rgb(40, 40, 40),
-);
+)
+};
 
 /// Solarized Dark — the Ethan Schoonover classic.
-const SOLARIZED: Theme = mk(
+const SOLARIZED: Theme = Theme {
+    bg: Some(Color::Rgb(0, 43, 54)),
+    text: Color::Rgb(147, 161, 161),
+    ..mk(
     Color::Rgb(38, 139, 210),
     Color::Rgb(181, 137, 0),
     Color::Rgb(133, 153, 0),
@@ -236,10 +285,14 @@ const SOLARIZED: Theme = mk(
     Color::Rgb(88, 110, 117),
     Color::Rgb(238, 232, 213),
     Color::Rgb(0, 43, 54),
-);
+)
+};
 
 /// Tokyo Night — neon-soft blues and purples.
-const TOKYO_NIGHT: Theme = mk(
+const TOKYO_NIGHT: Theme = Theme {
+    bg: Some(Color::Rgb(26, 27, 38)),
+    text: Color::Rgb(192, 202, 245),
+    ..mk(
     Color::Rgb(122, 162, 247),
     Color::Rgb(224, 175, 104),
     Color::Rgb(158, 206, 106),
@@ -250,10 +303,14 @@ const TOKYO_NIGHT: Theme = mk(
     Color::Rgb(59, 66, 97),
     Color::Rgb(192, 202, 245),
     Color::Rgb(26, 27, 38),
-);
+)
+};
 
 /// Synthwave — cyberpunk neon pink/cyan.
-const SYNTHWAVE: Theme = mk(
+const SYNTHWAVE: Theme = Theme {
+    bg: Some(Color::Rgb(26, 11, 46)),
+    text: Color::Rgb(240, 230, 255),
+    ..mk(
     Color::Rgb(255, 113, 206),
     Color::Rgb(255, 251, 150),
     Color::Rgb(5, 255, 161),
@@ -264,10 +321,14 @@ const SYNTHWAVE: Theme = mk(
     Color::Rgb(90, 60, 110),
     Color::Rgb(240, 230, 255),
     Color::Rgb(20, 10, 35),
-);
+)
+};
 
 /// Ocean — deep sea blues.
-const OCEAN: Theme = mk(
+const OCEAN: Theme = Theme {
+    bg: Some(Color::Rgb(10, 25, 40)),
+    text: Color::Rgb(200, 225, 250),
+    ..mk(
     Color::Rgb(0, 170, 255),
     Color::Rgb(137, 221, 255),
     Color::Rgb(92, 207, 230),
@@ -278,10 +339,14 @@ const OCEAN: Theme = mk(
     Color::Rgb(52, 70, 90),
     Color::Rgb(214, 233, 252),
     Color::Rgb(10, 25, 40),
-);
+)
+};
 
 /// Crimson — red-alert command deck.
-const CRIMSON: Theme = mk(
+const CRIMSON: Theme = Theme {
+    bg: Some(Color::Rgb(26, 5, 8)),
+    text: Color::Rgb(255, 210, 210),
+    ..mk(
     Color::Rgb(255, 70, 85),
     Color::Rgb(255, 160, 110),
     Color::Rgb(255, 200, 120),
@@ -292,7 +357,8 @@ const CRIMSON: Theme = mk(
     Color::Rgb(100, 52, 58),
     Color::Rgb(255, 222, 222),
     Color::Black,
-);
+)
+};
 
 // ── Registry ────────────────────────────────────────────────────────────────
 
@@ -453,6 +519,14 @@ fn cur() -> &'static Theme {
 }
 
 // Semantic accessors — the only color API ui.rs should use for chrome.
+/// Full-screen background override; `None` keeps the terminal's own bg.
+pub fn bg() -> Option<Color> {
+    cur().bg
+}
+/// Body text color (Reset for bg-less themes, explicit otherwise).
+pub fn text() -> Color {
+    cur().text
+}
 pub fn accent() -> Color {
     cur().accent
 }
