@@ -1521,14 +1521,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.status_message = Some("Focus: section list".to_string());
                 Action::None
             } else if app.tab == Tab::Sessions {
-                if matches!(app.session_focus, SessionFocus::Chat | SessionFocus::ChatFullscreen) {
-                    app.session_focus = SessionFocus::List;
-                    app.status_message = Some("Focus: session list".to_string());
-                    Action::None
-                } else {
-                    app.should_quit = true;
-                    Action::Quit
-                }
+                // Chat/ChatFullscreen Esc never reaches here — the router
+                // short-circuits into handle_key_chat, which owns chat Esc.
+                app.should_quit = true;
+                Action::Quit
             } else {
                 app.tab = Tab::Sessions;
                 Action::None
@@ -1611,11 +1607,12 @@ fn open_dashboard_action(app: &mut App) -> Action {
 }
 
 /// Chat-input mode — REAL-TIME keystroke passthrough to the streamed rmux
-/// session. Every key (printable, Enter, Backspace, arrows, Ctrl-combos,
-/// Esc) is forwarded one-by-one so plan mode, OAuth code paste, and choice
+/// session. Every key (printable, Enter, Backspace, arrows, Ctrl-combos)
+/// is forwarded one-by-one so plan mode, OAuth code paste, and choice
 /// menus work natively inside the agent.
 ///
 /// TUI-local keys (never forwarded):
+///   Esc           → back to session list (F-2; interrupt agent = Ctrl+C)
 ///   Tab           → cycle focus (List → Chat → Fullscreen → List)
 ///   Alt+Up/Down   → scroll preview
 ///   PageUp/Down   → scroll preview
@@ -1811,7 +1808,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             app.chat_line_chars = 0;
             Action::ForwardKeyToSession { session, key: "Enter" }
         }
-        KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
+        KeyCode::Esc => {
+            // Esc = back to the session list — matches the title hint, the Help
+            // tab, and the layered-Esc pattern on every other tab (F-2). NOT
+            // forwarded: interrupting the agent stays available via Ctrl+C (C-c).
+            app.session_focus = SessionFocus::List;
+            app.status_message = Some("Focus: session list".to_string());
+            Action::None
+        }
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
         KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
         KeyCode::Left if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-b" },
