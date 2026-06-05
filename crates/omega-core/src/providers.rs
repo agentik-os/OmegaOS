@@ -218,9 +218,9 @@ impl ProvidersConfig {
     pub fn default_model(provider: &str) -> &'static str {
         match provider {
             "claude" => "opus",
-            "codex" => "gpt-5-codex",
-            "gemini" => "gemini-2.5-pro",
-            "glm" => "glm-4.6",
+            "codex" => "gpt-5.5-codex",
+            "gemini" => "gemini-3.1-pro",
+            "glm" => "glm-5.1",
             "openrouter" | "pi" | "hermes" => "anthropic/claude-sonnet-4.6",
             _ => "",
         }
@@ -230,17 +230,21 @@ impl ProvidersConfig {
     pub fn models_for(provider: &str) -> Vec<&'static str> {
         match provider {
             "claude" => vec!["opus", "sonnet", "haiku"],
-            "codex" => vec!["gpt-5", "gpt-5-codex", "o3"],
-            "gemini" => vec!["gemini-2.5-pro", "gemini-2.5-flash"],
-            "glm" => vec!["glm-4.6", "glm-4.5"],
+            // June 2026: gpt-5.5-codex = Codex default; gpt-5.2-codex stays the
+            // API-key-only fallback (5.5 needs ChatGPT sign-in).
+            "codex" => vec!["gpt-5.5-codex", "gpt-5.5", "gpt-5.2-codex"],
+            // 3.1+ line uses bare ids (no -preview); 2.5-pro kept as fallback.
+            "gemini" => vec!["gemini-3.1-pro", "gemini-3.1-flash", "gemini-3.5-flash", "gemini-2.5-pro"],
+            "glm" => vec!["glm-5.1", "glm-5", "glm-4.6"],
             // Pi and Hermes both route through OpenRouter, so they share the
             // same curated OpenRouter model IDs — this gives them an arrow-key
             // picker (no typing) instead of the free-text fallback.
             "pi" | "hermes" | "openrouter" => vec![
                 "anthropic/claude-sonnet-4.6",
                 "anthropic/claude-opus-4.8",
-                "openai/gpt-5",
-                "google/gemini-2.5-pro",
+                "openai/gpt-5.5",
+                "google/gemini-3.1-pro-preview",
+                "z-ai/glm-5.1",
                 "deepseek/deepseek-chat",
             ],
             _ => vec![],
