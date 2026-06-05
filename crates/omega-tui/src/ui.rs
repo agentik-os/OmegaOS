@@ -212,28 +212,33 @@ fn draw_new_project_picker(frame: &mut Frame, app: &App) {
     let area = centered_rect(60, 50, frame.area());
     frame.render_widget(Clear, area);
 
+    let inner_w = area.width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
         .map(|(i, (id, label))| {
             let selected = i == sel;
-            let prefix = if selected { "▶ " } else { "  " };
-            let label_style = if selected {
-                Style::default()
-                    .fg(th::sel_fg())
-                    .bg(th::accent())
-                    .add_modifier(Modifier::BOLD)
+            if selected {
+                // Full-width bar — consistent with the Select overlay.
+                let row = format!(" ▶ {:10} {}", id, label);
+                let pad = inner_w.saturating_sub(row.chars().count());
+                ListItem::new(Line::from(Span::styled(
+                    format!("{}{}", row, " ".repeat(pad)),
+                    Style::default()
+                        .fg(th::sel_fg())
+                        .bg(th::accent())
+                        .add_modifier(Modifier::BOLD),
+                )))
             } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(th::accent())),
-                Span::styled(
-                    format!(" {:10} ", id),
-                    Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(*label, label_style),
-            ]))
+                ListItem::new(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!(" {:10} ", id),
+                        Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(*label, Style::default().fg(th::text())),
+                ]))
+            }
         })
         .collect();
 
@@ -241,7 +246,8 @@ fn draw_new_project_picker(frame: &mut Frame, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .border_style(Style::default().fg(th::accent())),
+            .border_style(Style::default().fg(th::accent()))
+            .style(Style::default().fg(th::text()).bg(th::bg().unwrap_or(Color::Reset))),
     );
     frame.render_widget(list, area);
 }
@@ -255,15 +261,33 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
         _ => return,
     };
 
-    let area = centered_rect(50, 50, frame.area());
+    // Theme selector rows show the human label, not the raw slug.
+    let is_theme = config_key == "general.theme";
+    // Wider modal for themes: label + blurb need the room.
+    let area = centered_rect(if is_theme { 70 } else { 50 }, 50, frame.area());
     frame.render_widget(Clear, area);
+
+    let inner_w = area.width.saturating_sub(2) as usize;
 
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
         .map(|(i, opt)| {
             let selected = i == sel;
-            let prefix = if selected { "▶ " } else { "  " };
+            let text = if is_theme {
+                match crate::theme::ThemeId::from_slug(opt) {
+                    Some(id) => format!("{:26}{}", id.label(), id.blurb()),
+                    None => opt.clone(),
+                }
+            } else {
+                opt.clone()
+            };
+            // Pad to the full inner width: the highlight reads as a SOLID
+            // selection bar across the modal (the old text-chip highlight was
+            // easy to miss on several themes).
+            let row = format!(" {} {}", if selected { "▶" } else { " " }, text);
+            let pad = inner_w.saturating_sub(row.chars().count());
+            let row = format!("{}{}", row, " ".repeat(pad));
             let style = if selected {
                 Style::default()
                     .fg(th::sel_fg())
@@ -272,18 +296,21 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(th::text())
             };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(th::accent())),
-                Span::styled(format!(" {} ", opt), style),
-            ]))
+            ListItem::new(Line::from(Span::styled(row, style)))
         })
         .collect();
 
+    let title = if is_theme {
+        " Theme — ↑/↓ live preview, Enter saves, Esc reverts ".to_string()
+    } else {
+        format!(" Select {} — ↑/↓, Enter, Esc ", config_key)
+    };
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Select {} — ↑/↓, Enter, Esc ", config_key))
-            .border_style(Style::default().fg(th::accent())),
+            .title(title)
+            .border_style(Style::default().fg(th::accent()))
+            .style(Style::default().fg(th::text()).bg(th::bg().unwrap_or(Color::Reset))),
     );
     frame.render_widget(list, area);
 }
@@ -304,6 +331,7 @@ fn draw_project_delete_picker(frame: &mut Frame, app: &App) {
     ];
     let area = centered_rect(80, 30, frame.area());
     frame.render_widget(Clear, area);
+    let inner_w = area.width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
@@ -319,11 +347,13 @@ fn draw_project_delete_picker(frame: &mut Frame, app: &App) {
             } else {
                 Style::default().fg(th::bright())
             };
-            let prefix = if i == sel { "▶" } else { " " };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix.to_string(), Style::default().fg(th::error())),
-                Span::styled(format!(" {} ", opt), style),
-            ]))
+            // Full-width bar when selected — consistent with the other pickers.
+            let row = format!("{} {}", if i == sel { "▶" } else { " " }, opt);
+            let pad = if i == sel { inner_w.saturating_sub(row.chars().count()) } else { 0 };
+            ListItem::new(Line::from(Span::styled(
+                format!("{}{}", row, " ".repeat(pad)),
+                style,
+            )))
         })
         .collect();
     let list = List::new(items).block(
