@@ -83,6 +83,29 @@ const fn mk(
     }
 }
 
+/// The "Monogram model" (user-validated): a quiet grayscale chrome + ONE
+/// signature accent color. Every theme except Omega (terminal-native),
+/// Noir and Paper (pure mono by design) is built from this template — the
+/// palettes differ only by their accent, background and text tint.
+const fn mono(accent: Color, bg: Color, text: Color) -> Theme {
+    Theme {
+        bg: Some(bg),
+        text,
+        ..mk(
+            accent,
+            Color::Rgb(220, 220, 220), // accent2 — soft near-white highlight
+            Color::Rgb(200, 200, 200), // success
+            Color::White,              // error
+            Color::Rgb(180, 180, 180), // info
+            Color::Rgb(190, 190, 190), // special
+            Color::Rgb(115, 115, 115), // dim
+            Color::Rgb(70, 70, 70),    // dim2
+            Color::White,              // bright
+            Color::Black,              // sel_fg
+        )
+    }
+}
+
 // ── Palettes ────────────────────────────────────────────────────────────────
 
 /// Omega (default) — the classic cyan/yellow chrome, 16-color named ANSI so
@@ -108,59 +131,26 @@ const OMEGA: Theme = Theme {
     )
 };
 
-/// Matrix — neon digital-rain green.
-const MATRIX: Theme = Theme {
-    bg: Some(Color::Rgb(5, 15, 5)),
-    text: Color::Rgb(170, 255, 170),
-    ..mk(
+/// Matrix — mono chrome + neon Matrix green.
+const MATRIX: Theme = mono(
     Color::Rgb(0, 255, 65),
-    Color::Rgb(160, 255, 160),
-    Color::Rgb(0, 230, 90),
-    Color::Rgb(255, 110, 110),
-    Color::Rgb(0, 200, 120),
-    Color::Rgb(120, 255, 170),
-    Color::Rgb(0, 140, 40),
-    Color::Rgb(0, 95, 30),
-    Color::Rgb(200, 255, 200),
-    Color::Black,
-)
-};
+    Color::Rgb(5, 15, 5),
+    Color::Rgb(210, 230, 210),
+);
 
-/// Terminal — soft VT220 green phosphor, calmer than Matrix.
-const TERMINAL: Theme = Theme {
-    bg: Some(Color::Rgb(0, 18, 0)),
-    text: Color::Rgb(160, 230, 160),
-    ..mk(
+/// Terminal — mono chrome + soft phosphor green.
+const TERMINAL: Theme = mono(
     Color::Rgb(102, 255, 102),
-    Color::Rgb(170, 255, 170),
-    Color::Rgb(102, 255, 102),
-    Color::Rgb(255, 140, 110),
-    Color::Rgb(120, 220, 140),
-    Color::Rgb(150, 255, 180),
-    Color::Rgb(70, 150, 70),
-    Color::Rgb(45, 100, 45),
-    Color::Rgb(210, 255, 210),
-    Color::Black,
-)
-};
+    Color::Rgb(0, 18, 0),
+    Color::Rgb(200, 225, 200),
+);
 
-/// Amber — retro amber phosphor (P3 CRT).
-const AMBER: Theme = Theme {
-    bg: Some(Color::Rgb(22, 13, 0)),
-    text: Color::Rgb(255, 200, 120),
-    ..mk(
+/// Amber — mono chrome + retro amber phosphor.
+const AMBER: Theme = mono(
     Color::Rgb(255, 176, 0),
-    Color::Rgb(255, 200, 80),
-    Color::Rgb(255, 190, 60),
-    Color::Rgb(255, 110, 40),
-    Color::Rgb(230, 160, 30),
-    Color::Rgb(255, 210, 130),
-    Color::Rgb(165, 115, 20),
-    Color::Rgb(110, 75, 10),
-    Color::Rgb(255, 230, 160),
-    Color::Black,
-)
-};
+    Color::Rgb(22, 13, 0),
+    Color::Rgb(235, 220, 200),
+);
 
 /// Noir — full black & white, pure grayscale on dark terminals.
 const NOIR: Theme = Theme {
@@ -198,167 +188,68 @@ const PAPER: Theme = Theme {
 )
 };
 
-/// Monogram — monochrome chrome with a single cyan accent.
-const MONOGRAM: Theme = Theme {
-    bg: Some(Color::Rgb(10, 10, 12)),
-    text: Color::Rgb(225, 225, 225),
-    ..mk(
+/// Monogram — the original: mono chrome + cyan.
+const MONOGRAM: Theme = mono(
     Color::Cyan,
-    Color::Rgb(220, 220, 220),
-    Color::Rgb(200, 200, 200),
-    Color::White,
-    Color::Rgb(180, 180, 180),
-    Color::Rgb(190, 190, 190),
-    Color::Rgb(115, 115, 115),
-    Color::Rgb(70, 70, 70),
-    Color::White,
-    Color::Black,
-)
-};
+    Color::Rgb(10, 10, 12),
+    Color::Rgb(225, 225, 225),
+);
 
-/// Dracula — the classic purple/pink/cyan dark palette.
-const DRACULA: Theme = Theme {
-    bg: Some(Color::Rgb(40, 42, 54)),
-    text: Color::Rgb(248, 248, 242),
-    ..mk(
+/// Dracula — mono chrome + Dracula purple.
+const DRACULA: Theme = mono(
     Color::Rgb(189, 147, 249),
-    Color::Rgb(241, 250, 140),
-    Color::Rgb(80, 250, 123),
-    Color::Rgb(255, 85, 85),
-    Color::Rgb(139, 233, 253),
-    Color::Rgb(255, 121, 198),
-    Color::Rgb(98, 114, 164),
-    Color::Rgb(68, 71, 90),
-    Color::Rgb(248, 248, 242),
     Color::Rgb(40, 42, 54),
-)
-};
+    Color::Rgb(235, 235, 240),
+);
 
-/// Nord — cool arctic blues.
-const NORD: Theme = Theme {
-    bg: Some(Color::Rgb(46, 52, 64)),
-    text: Color::Rgb(216, 222, 233),
-    ..mk(
+/// Nord — mono chrome + arctic ice blue.
+const NORD: Theme = mono(
     Color::Rgb(136, 192, 208),
-    Color::Rgb(235, 203, 139),
-    Color::Rgb(163, 190, 140),
-    Color::Rgb(191, 97, 106),
-    Color::Rgb(129, 161, 193),
-    Color::Rgb(180, 142, 173),
-    Color::Rgb(124, 135, 156),
-    Color::Rgb(76, 86, 106),
-    Color::Rgb(236, 239, 244),
     Color::Rgb(46, 52, 64),
-)
-};
+    Color::Rgb(222, 228, 235),
+);
 
-/// Gruvbox — warm retro earth tones.
-const GRUVBOX: Theme = Theme {
-    bg: Some(Color::Rgb(40, 40, 40)),
-    text: Color::Rgb(235, 219, 178),
-    ..mk(
+/// Gruvbox — mono chrome + warm gruvbox orange.
+const GRUVBOX: Theme = mono(
     Color::Rgb(254, 128, 25),
-    Color::Rgb(250, 189, 47),
-    Color::Rgb(184, 187, 38),
-    Color::Rgb(251, 73, 52),
-    Color::Rgb(131, 165, 152),
-    Color::Rgb(211, 134, 155),
-    Color::Rgb(146, 131, 116),
-    Color::Rgb(102, 92, 84),
-    Color::Rgb(235, 219, 178),
     Color::Rgb(40, 40, 40),
-)
-};
+    Color::Rgb(230, 220, 200),
+);
 
-/// Solarized Dark — the Ethan Schoonover classic.
-const SOLARIZED: Theme = Theme {
-    bg: Some(Color::Rgb(0, 43, 54)),
-    text: Color::Rgb(147, 161, 161),
-    ..mk(
-    Color::Rgb(38, 139, 210),
-    Color::Rgb(181, 137, 0),
-    Color::Rgb(133, 153, 0),
-    Color::Rgb(220, 50, 47),
+/// Solarized — mono chrome + solarized teal.
+const SOLARIZED: Theme = mono(
     Color::Rgb(42, 161, 152),
-    Color::Rgb(211, 54, 130),
-    Color::Rgb(101, 123, 131),
-    Color::Rgb(88, 110, 117),
-    Color::Rgb(238, 232, 213),
     Color::Rgb(0, 43, 54),
-)
-};
+    Color::Rgb(200, 210, 205),
+);
 
-/// Tokyo Night — neon-soft blues and purples.
-const TOKYO_NIGHT: Theme = Theme {
-    bg: Some(Color::Rgb(26, 27, 38)),
-    text: Color::Rgb(192, 202, 245),
-    ..mk(
+/// Tokyo Night — mono chrome + Tokyo Night blue.
+const TOKYO_NIGHT: Theme = mono(
     Color::Rgb(122, 162, 247),
-    Color::Rgb(224, 175, 104),
-    Color::Rgb(158, 206, 106),
-    Color::Rgb(247, 118, 142),
-    Color::Rgb(125, 207, 255),
-    Color::Rgb(187, 154, 247),
-    Color::Rgb(86, 95, 137),
-    Color::Rgb(59, 66, 97),
-    Color::Rgb(192, 202, 245),
     Color::Rgb(26, 27, 38),
-)
-};
+    Color::Rgb(215, 220, 240),
+);
 
-/// Synthwave — cyberpunk neon pink/cyan.
-const SYNTHWAVE: Theme = Theme {
-    bg: Some(Color::Rgb(26, 11, 46)),
-    text: Color::Rgb(240, 230, 255),
-    ..mk(
+/// Synthwave — mono chrome + neon pink.
+const SYNTHWAVE: Theme = mono(
     Color::Rgb(255, 113, 206),
-    Color::Rgb(255, 251, 150),
-    Color::Rgb(5, 255, 161),
-    Color::Rgb(255, 71, 87),
-    Color::Rgb(1, 205, 254),
-    Color::Rgb(185, 103, 255),
-    Color::Rgb(140, 100, 160),
-    Color::Rgb(90, 60, 110),
-    Color::Rgb(240, 230, 255),
-    Color::Rgb(20, 10, 35),
-)
-};
+    Color::Rgb(26, 11, 46),
+    Color::Rgb(235, 225, 245),
+);
 
-/// Ocean — deep sea blues.
-const OCEAN: Theme = Theme {
-    bg: Some(Color::Rgb(10, 25, 40)),
-    text: Color::Rgb(200, 225, 250),
-    ..mk(
+/// Ocean — mono chrome + deep sea blue.
+const OCEAN: Theme = mono(
     Color::Rgb(0, 170, 255),
-    Color::Rgb(137, 221, 255),
-    Color::Rgb(92, 207, 230),
-    Color::Rgb(255, 107, 107),
-    Color::Rgb(72, 140, 255),
-    Color::Rgb(130, 170, 255),
-    Color::Rgb(84, 110, 140),
-    Color::Rgb(52, 70, 90),
-    Color::Rgb(214, 233, 252),
     Color::Rgb(10, 25, 40),
-)
-};
+    Color::Rgb(210, 225, 240),
+);
 
-/// Crimson — red-alert command deck.
-const CRIMSON: Theme = Theme {
-    bg: Some(Color::Rgb(26, 5, 8)),
-    text: Color::Rgb(255, 210, 210),
-    ..mk(
+/// Crimson — mono chrome + alert red.
+const CRIMSON: Theme = mono(
     Color::Rgb(255, 70, 85),
-    Color::Rgb(255, 160, 110),
-    Color::Rgb(255, 200, 120),
-    Color::Rgb(255, 40, 55),
-    Color::Rgb(255, 120, 140),
-    Color::Rgb(255, 90, 160),
-    Color::Rgb(160, 85, 90),
-    Color::Rgb(100, 52, 58),
-    Color::Rgb(255, 222, 222),
-    Color::Black,
-)
-};
+    Color::Rgb(26, 5, 8),
+    Color::Rgb(240, 215, 215),
+);
 
 // ── Registry ────────────────────────────────────────────────────────────────
 
@@ -447,20 +338,20 @@ impl ThemeId {
     pub fn blurb(self) -> &'static str {
         match self {
             ThemeId::Omega => "Classic cyan/yellow — adapts to your terminal's own scheme",
-            ThemeId::Matrix => "Neon digital-rain green",
-            ThemeId::Terminal => "Soft VT220 green phosphor",
-            ThemeId::Amber => "Warm amber CRT phosphor",
+            ThemeId::Matrix => "Mono chrome + neon Matrix green",
+            ThemeId::Terminal => "Mono chrome + soft phosphor green",
+            ThemeId::Amber => "Mono chrome + retro amber",
             ThemeId::Noir => "Pure grayscale for dark terminals",
             ThemeId::Paper => "Ink on paper — for LIGHT terminal backgrounds",
             ThemeId::Monogram => "Monochrome chrome, one cyan accent",
-            ThemeId::Dracula => "Purple, pink & cyan dark classic",
-            ThemeId::Nord => "Cool arctic blues",
-            ThemeId::Gruvbox => "Warm retro earth tones",
-            ThemeId::Solarized => "The Solarized Dark classic",
-            ThemeId::TokyoNight => "Neon-soft blues and purples",
-            ThemeId::Synthwave => "Cyberpunk neon pink & cyan",
-            ThemeId::Ocean => "Deep sea blues",
-            ThemeId::Crimson => "Red-alert command deck",
+            ThemeId::Dracula => "Mono chrome + Dracula purple",
+            ThemeId::Nord => "Mono chrome + arctic ice blue",
+            ThemeId::Gruvbox => "Mono chrome + warm gruvbox orange",
+            ThemeId::Solarized => "Mono chrome + solarized teal",
+            ThemeId::TokyoNight => "Mono chrome + Tokyo Night blue",
+            ThemeId::Synthwave => "Mono chrome + neon pink",
+            ThemeId::Ocean => "Mono chrome + deep sea blue",
+            ThemeId::Crimson => "Mono chrome + alert red",
         }
     }
 

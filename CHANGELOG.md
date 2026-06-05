@@ -12,9 +12,9 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   (default), Matrix, Terminal, Amber, Noir, Paper, Monogram, Dracula, Nord,
   Gruvbox, Solarized Dark, Tokyo Night, Synthwave, Ocean, Crimson. Every
   theme except Omega paints its own full-screen background and text color
-  (Dracula purple, Paper white, Matrix green-black, …), so palettes are
-  unmistakably different at a glance; Omega keeps the terminal's own
-  background. The selector live-previews each theme while arrowing through
+  and follows the "Monogram model": a quiet grayscale chrome plus ONE
+  signature accent per theme (Matrix green, Dracula purple, neon pink, …);
+  Omega keeps the terminal's own background and classic multicolor chrome. The selector live-previews each theme while arrowing through
   it, the gallery renders each row on that theme's background, the choice
   persists in `~/.omega/config.toml` (`theme = "..."`), and every chrome
   color in the TUI goes through semantic theme roles. The session-pane
