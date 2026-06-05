@@ -86,6 +86,27 @@ frontend, database, security and API all wired?" If a layer is unrepresented, th
 incomplete — add the steps. NEVER thin the plan to finish faster; the engine faithfully
 executes exactly what you give it, so a sparse plan ships a broken app.
 
+### 7. `verify_command` must prove it WORKS at RUNTIME — not just that it builds
+`npm run build` / `tsc` / `lint` passing means the code COMPILES — it says NOTHING about
+whether a page renders, a route exists, or a flow works. The classic failure: a real build
+that ships a **404 on `/sign-in`** and a broken login. So:
+- **Every page/route step's verify must hit the running app and assert it actually RENDERS** —
+  HTTP 200 + an expected substring, never a 404/500. Pattern (build once, serve, curl):
+  `curl -fsS http://127.0.0.1:$PORT/sign-in | grep -q "Sign in"` (a bare `curl` without `-f`
+  passes on a 404 — use `-f`/check the status). For interactive flows use a Playwright assert.
+- **ROUTE COMPLETENESS**: enumerate EVERY route the app references and give each its own step +
+  render-verify — the landing, every nav link, every CTA `href`, and **every auth route**
+  (`/sign-in`, `/sign-up`, the SSO/OAuth callback). A `*_URL` env that points somewhere
+  (`NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`) is a CONTRACT: the step that sets it MUST also
+  create the page it points to, or that route is a guaranteed 404. Trace each `redirect`,
+  `<Link href>`, and `*_URL` to a real page step.
+- **The final gate is a real END-TO-END browser sweep, not unit smokes that bypass the UI.**
+  A test that signs in with a Clerk *testing token* never opens `/sign-in`, so it can't catch
+  its 404. The plan's terminal step MUST be: build → serve the real build → a **Playwright
+  agent that NAVIGATES to every page AND walks the full golden path (real auth: click Sign in →
+  complete login → land in-app)** and FAILS on any 404 / console error / broken flow. That
+  step's `verify_command` runs that sweep and exits non-zero if any page/flow is broken.
+
 ---
 
 ## Output: `.planner/tracker.json` (EXACT schema — the engine parses this)

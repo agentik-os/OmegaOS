@@ -245,6 +245,12 @@ npm i convex @clerk/nextjs stripe @stripe/stripe-js
 Then create:
 - `src/app/providers.tsx` — ClerkProvider + ConvexProviderWithClerk wired together.
 - `src/middleware.ts` — Clerk middleware.
+- **Auth pages (NEVER skip — a missing one is a 404 on login):** the Clerk catch-all
+  routes `src/app/sign-in/[[...sign-in]]/page.tsx` (renders `<SignIn />`) and
+  `src/app/sign-up/[[...sign-up]]/page.tsx` (renders `<SignUp />`). These MUST exist
+  whenever `NEXT_PUBLIC_CLERK_SIGN_IN_URL`/`SIGN_UP_URL` point at `/sign-in`/`/sign-up`
+  (the default) — the env is a contract to a real page. Set those env vars + the matching
+  `*_FORCE_REDIRECT_URL` so the SSO/OAuth callback lands somewhere real, not a 404.
 - `convex/` schema stub + `convex/auth.config.ts` keyed to the Clerk issuer.
 - `src/app/api/stripe/webhook/route.ts` — signature-verified handler.
 - A `/chat` route mounting the chatbot-kit components end-to-end.
@@ -318,6 +324,20 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    Sequencing is enforced structurally (a step can NEVER be skipped) and no step is
    "done" without its verify proof. Watch progress with `omega plan-status .`.
    If `omega` is not on PATH, fall back to `bun ~/.omega/skills/planner/fallback/plan.ts run .`.
+7. **FUNCTIONAL ACCEPTANCE GATE — mandatory last step, by the agent (no shortcuts).**
+   "It builds" is NOT "it works". Before declaring the project done, an agent MUST
+   actually OPEN the running app in a real browser and exercise it end to end:
+   - `npm run build` → serve the real build (`next start` on a port).
+   - A **Playwright sweep** that NAVIGATES to **every route** (landing + each nav link +
+     each CTA target + **every auth page: `/sign-in`, `/sign-up`, the SSO/OAuth callback**)
+     and asserts each returns **200 and renders** (no 404, no 500, no blank).
+   - **Walk the real golden path**: click *Sign in* → complete a real login → land in-app →
+     do the core action (e.g. send a message, see it persist) → sign out. Fail on ANY
+     404 / console error / broken redirect / dead button.
+   The planner encodes this as the terminal step (rule 7); if its verify fails, the build is
+   NOT done — fix the missing route/flow and re-run. This is what stops a project shipping a
+   green build with a 404 login. (Provisioning/secrets missing → that step legitimately
+   blocks here, surfaced honestly — never faked.)
 
 Full pipeline order: **vision → (oracle presents it) → prd → [brand foundation;
 full brand book OPT-IN] → planner → build (plan-run)**. The heavy `/omg-brand-identity`
