@@ -791,6 +791,34 @@ else
     info "New-project skill not found — skipping"
 fi
 
+# Install the autonomous browser-acceptance + self-heal gate (the build's terminal
+# phase). Ships the SKILL protocol + the Playwright sweep harness (sweep.cjs) so a
+# fresh install can prove "it WORKS" (every route 200, clean console/network, authed
+# golden path persists) and auto-heal what it finds.
+ACCEPT_SRC="$OMEGA_SRC/skills/acceptance"
+ACCEPT_DST="$OMEGA_DIR/skills/acceptance"
+if [[ -d "$ACCEPT_SRC" ]]; then
+    mkdir -p "$ACCEPT_DST"
+    cp -r "$ACCEPT_SRC"/* "$ACCEPT_DST/"
+    cat > "$OMG_CMD_DST/omg-acceptance.md" <<EOF
+# /omg-acceptance
+
+Autonomous browser-acceptance + self-heal gate — the terminal phase of a build.
+Playwright-sweeps every route (200 + render), captures every console error and
+failed network request, walks the authenticated golden path with a real persisted
+write, then AUTONOMOUSLY fixes what it finds and re-runs until green. Read and
+follow the full protocol in:
+
+\`$ACCEPT_DST/SKILL.md\`
+
+Sweep harness: \`node $ACCEPT_DST/sweep.cjs\` (configured via BASE_URL / ROUTES /
+PROTECTED_ROUTES / GOLDEN_PATH / CLERK_* / TEST_* env).
+EOF
+    ok "Acceptance skill installed → $ACCEPT_DST/ (+ /omg-acceptance stub + sweep.cjs)"
+else
+    info "Acceptance skill not found — skipping"
+fi
+
 # Install the OmegaOS pipeline skills (vision, prd, brand-identity) the new-project
 # flow delegates to — shipped as /omg-* so a FRESH install is self-contained (the
 # pipeline no longer depends on the user's personal /vision /prd /brand-identity

@@ -357,7 +357,11 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    Sequencing is enforced structurally (a step can NEVER be skipped) and no step is
    "done" without its verify proof. Watch progress with `omega plan-status .`.
    If `omega` is not on PATH, fall back to `bun ~/.omega/skills/planner/fallback/plan.ts run .`.
-7. **FUNCTIONAL ACCEPTANCE GATE — mandatory last step, by the agent (no shortcuts).**
+7. **FUNCTIONAL ACCEPTANCE GATE — run `/omg-acceptance` (the shipped autonomous
+   test-and-heal loop). Mandatory last step, no shortcuts.** It Playwright-sweeps every
+   route + console + network + the authenticated golden path, then AUTONOMOUSLY fixes
+   what it finds and re-runs until green (Law L3 — the build resolves its own bugs, it
+   does not stop at "found one"). The gate it enforces:
    "It builds" is NOT "it works". Before declaring the project done, an agent MUST
    actually OPEN the running app in a real browser and exercise it end to end:
    - `npm run build` → serve the real build (`next start` on a port).

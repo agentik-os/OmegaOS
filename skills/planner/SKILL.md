@@ -105,9 +105,14 @@ that ships a **404 on `/sign-in`** and a broken login. So:
   matching `auth.config.ts` `applicationID`) — without it every authenticated mutation throws
   `Unauthenticated` while the build is green. Its `verify_command` mints a real token and asserts
   an authenticated backend call SUCCEEDS, never just that the file compiles.
-- **The final gate is a real END-TO-END browser sweep, not unit smokes that bypass the UI.**
-  A test that signs in with a Clerk *testing token* never opens `/sign-in`, so it can't catch
-  its 404. The plan's terminal step MUST be: build → serve the real build → a **Playwright
+- **The final gate is a real END-TO-END browser sweep + self-heal, not unit smokes that
+  bypass the UI.** The plan's terminal step MUST run the shipped autonomous gate
+  **`/omg-acceptance`** (harness: `node ~/.omega/skills/acceptance/sweep.cjs`): build → serve
+  on `127.0.0.1` → sweep every route + console + network + the authenticated golden path →
+  AUTONOMOUSLY fix any failure and re-run until green. Set that step's `verify_command` to the
+  sweep itself (`node ~/.omega/skills/acceptance/sweep.cjs` with the project's `ROUTES`/
+  `PROTECTED_ROUTES`/`GOLDEN_PATH`/`CLERK_*`/`TEST_*` env) so the Guardian independently
+  re-confirms green. Concretely the step is a **Playwright
   agent that NAVIGATES to every page AND walks the full golden path (real auth: click Sign in →
   complete login → land in-app → **do the core authenticated action and assert the write
   PERSISTED**)** and FAILS on any 404 / console error / **failed network request (status ≥400,
