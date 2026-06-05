@@ -155,23 +155,30 @@ async function tg(method: string, body: any, _retry = 0): Promise<any> {
 const MAXLEN = 3500;
 type Btn = { text: string; callback_data?: string; url?: string };
 const kb = (rows: Btn[][]) => ({ inline_keyboard: rows });
+// Strip HTML for plain-text fallbacks: NEVER show raw <b>/<code> tags to the operator.
+const plainText = (t: string) => t.replace(/<[^>]+>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 async function send(chat: number, text: string, markup?: any, thread?: number): Promise<any> {
   const body: any = { chat_id: chat, text: text.slice(0, 4096), parse_mode: "HTML", disable_web_page_preview: true, reply_markup: markup, message_thread_id: thread };
   const r = await tg("sendMessage", body);
-  // HTML parse error (unbalanced tag from model output) → retry as plain text so a
-  // message is NEVER silently dropped.
-  if (!r.ok) return tg("sendMessage", { ...body, parse_mode: undefined });
+  // HTML parse error (unbalanced tag from model output) → retry as CLEAN plain text
+  // (tags stripped) so a message is NEVER dropped and NEVER shows raw markup.
+  if (!r.ok) return tg("sendMessage", { ...body, text: plainText(text).slice(0, 4096), parse_mode: undefined });
   return r;
 }
 async function edit(chat: number, msgId: number, text: string, markup?: any, thread?: number): Promise<any> {
   const body: any = { chat_id: chat, message_id: msgId, text: text.slice(0, 4096), parse_mode: "HTML", disable_web_page_preview: true, reply_markup: markup };
   const r = await tg("editMessageText", body);
-  if (!r.ok) {
-    const r2 = await tg("editMessageText", { ...body, parse_mode: undefined });
-    // Last resort (e.g. placeholder deleted): post a fresh message, keeping topic context.
-    if (!r2.ok) await send(chat, text, markup, thread);
-  }
-  return r;
+  if (r.ok) return r;
+  const desc = (r.description || "").toLowerCase();
+  // No-op edit (identical content, e.g. pollProgress every 6s with no new step):
+  // the on-screen card is already correct. The old blind retry WITHOUT parse_mode
+  // "succeeded" here (raw text differs from rendered text) and replaced the clean
+  // card with literal <b>…</b> tags — never do that.
+  if (desc.includes("not modified")) return r;
+  // Malformed HTML from model output → edit as CLEAN plain text (tags stripped).
+  if (desc.includes("parse")) return tg("editMessageText", { ...body, text: plainText(text).slice(0, 4096), parse_mode: undefined });
+  // Message gone (e.g. placeholder deleted): post a fresh message, keeping topic context.
+  return send(chat, text, markup, thread);
 }
 
 // ── omega CLI ────────────────────────────────────────────────────────────────
@@ -299,6 +306,40 @@ async function addProject(name: string): Promise<string> {
     `• Mission Control dashboard: ${dashLine}\n` +
     `• ${topicLine}`,
     `<i>Talk about the project in its topic (or here) — Atlas knows the context and directs its oracle.</i>`);
+}
+
+// Import an existing GitHub repo as a managed project: clone it into
+// ~/Station/<category>/<name>, then wire the full OmegaOS setup (dashboard agent +
+// shared registry + Telegram topic + /{project} command) — same footprint as a New
+// project, minus the scaffold (the code comes from GitHub). `repoArg` accepts a full
+// URL (https/ssh) or an `owner/repo` slug; cloning uses `gh` (operator auth) so
+// private repos work too.
+async function importFromGithub(category: string, repoArg: string): Promise<string> {
+  const arg = repoArg.trim().replace(/\.git$/, "");
+  // owner/repo slug for gh; clone URL fallback for non-GitHub remotes.
+  const slug = (arg.match(/github\.com[:/]([^/]+\/[^/\s]+)/) || arg.match(/^([^/\s]+\/[^/\s]+)$/) || [])[1] || "";
+  const name = (slug ? slug.split("/")[1] : arg.split("/").pop() || "project").replace(/[^A-Za-z0-9._-]/g, "-").replace(/^-+|-+$/g, "") || "project";
+  const dir = `${homedir()}/Station/${category}/${name}`;
+  if (existsSync(dir)) return card("IMPORT", ` ⚠️ <b>${esc(name)}</b> already exists at <code>${esc(dir)}</code>. Use <b>📁 Add existing</b> to manage it.`);
+  Bun.spawnSync(["mkdir", "-p", `${homedir()}/Station/${category}`]);
+  // Clone: prefer gh (auth, handles private), fall back to git clone for raw URLs.
+  const cloneCmd = slug ? `gh repo clone ${slug} ${dir}` : `git clone ${arg} ${dir}`;
+  const cl = Bun.spawnSync(["bash", "-lc", `${cloneCmd} 2>&1`]);
+  if (cl.exitCode !== 0 || !existsSync(`${dir}/.git`)) {
+    return card("IMPORT — FAILED", ` ❌ <b>${esc(name)}</b>\nClone failed:\n<pre>${esc((cl.stdout.toString() + cl.stderr.toString()).trim().slice(0, 400))}</pre>\n\nGive a public URL, <code>owner/repo</code>, or ensure <code>gh</code> can access a private repo.`);
+  }
+  const steps: string[] = [`📁 Cloned <code>${esc(slug || arg)}</code> → <code>${esc(dir)}</code> ✅`];
+  const dash = mcRegister(name);
+  recordProject(name, dir, category);
+  steps.push(`🤖 Oracle agent (dashboard): ${dash === "added" ? "created ✅" : dash === "exists" ? "already there ✅" : "⚠️ (omega-mc config not found)"}`);
+  const g = loadGroups();
+  if (g.hub && g.isForum) {
+    const r = await tg("createForumTopic", { chat_id: g.hub, name: name.slice(0, 128) });
+    if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = name; saveGroups(g); recordProject(name, dir, undefined, r.result.message_thread_id); steps.push("💬 Telegram topic: created ✅"); }
+    else steps.push(`💬 Telegram topic: ⚠️ ${esc(r.description || "failed")}${/rights/i.test(r.description || "") ? " — enable “Manage Topics”" : ""}`);
+  } else steps.push("💬 Telegram topic: pending (forum group + bot admin, then /sync)");
+  await refreshCommands().catch(() => {}); // publish its /{project} command
+  return card("PROJECT IMPORTED", ` ⬇️ <b>${esc(name)}</b> · ${esc(category)}\n\n${steps.join("\n")}\n\n<i>Dispatch a mission via its topic, <code>/${esc(tgCmd(name))}</code>, or the menu.</i>`);
 }
 
 // ── Managed projects = the SHARED registry the OmegaOS TUI (Project menu / oracle
@@ -763,7 +804,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "tg-link" | "oracle-prompt"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -1083,7 +1124,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
         : "<i>No managed project yet — add one (📁) or create one (➕).</i>";
       const rows: Btn[][] = [];
       for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2).map(n => ({ text: `${mp[n].telegram ? "📦" : "🔕"} ${n}${hasBot(n) ? " 🤖" : ""}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
-      return { text: card(`PROJECTS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
+      return { text: card(`PROJECTS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "⬇️ Import from GitHub", callback_data: "proj:import" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
     }
     case "audits": {
       const ids = await auditIds(); const rows: Btn[][] = [];
@@ -1169,6 +1210,17 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "newcat") {
     setPending(from, "new-project", arg);
     return edit(chat, msgId, `<b>➕ New project — ${esc(arg)}</b>\nSend in <b>one message</b>:\n• <b>1st line</b> = project name\n• <b>following lines</b> = description (what it is, what we want to do)\n\nI create the folder + git, the dedicated oracle, the topic, then I <b>launch the oracle</b> on your description to start right away.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
+  }
+  // Import from GitHub: pick the Station category, then send the repo (URL or owner/repo).
+  if (ns === "proj" && action === "import") {
+    const cats = stationCategories();
+    const rows: Btn[][] = [];
+    for (let i = 0; i < cats.length; i += 2) rows.push(cats.slice(i, i + 2).map(c => ({ text: `📂 ${c}`.slice(0, 28), callback_data: `proj:importcat:${c}`.slice(0, 64) })));
+    return edit(chat, msgId, "<b>⬇️ Import from GitHub</b>\nWhich folder (category) under Station?", kb([...rows, [back("projects")]]));
+  }
+  if (ns === "proj" && action === "importcat") {
+    setPending(from, "import-project", arg);
+    return edit(chat, msgId, `<b>⬇️ Import from GitHub — ${esc(arg)}</b>\nSend the repo: a <b>URL</b> (<code>https://github.com/owner/repo</code>) or an <b>owner/repo</b> slug.\n\nI clone it into <code>~/Station/${esc(arg)}/</code>, then wire the full setup — dedicated oracle, dashboard agent, Telegram topic and a <code>/{project}</code> command (private repos work via <code>gh</code>).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
   }
   if (ns === "proj" && action === "add") {
     // Auto-detect projects (top-level git repos under Station) and offer one button each.
@@ -1494,6 +1546,11 @@ async function main() {
           if (p.kind === "add-project") {
             await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
             await send(chatId, await addProject(text), undefined, thread);
+            continue;
+          }
+          if (p.kind === "import-project") {
+            await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+            await send(chatId, await importFromGithub(p.arg || stationCategories()[0] || "SideBusiness", text), undefined, thread);
             continue;
           }
           if (p.kind === "oracle-prompt") {
