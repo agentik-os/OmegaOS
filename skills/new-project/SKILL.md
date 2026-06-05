@@ -189,6 +189,30 @@ blockers at the end (Law L4).
 
 ---
 
+## PHASE 3.0 — Claude Design import (optional — ask first)
+
+Before scaffolding the UI from scratch, **ask the operator** (AskUserQuestion):
+*"Did you design this on **Claude Design (claude.ai/design)**? If so I'll import your
+work instead of generating UI from zero."*
+- **No** → continue to the normal scaffold below.
+- **Yes** → collect the work, two ways:
+  - **Zip** — operator uploads/points to the export `.zip`; unzip into a temp dir.
+    From Telegram, accept the uploaded document; from the TUI/CLI, ask for the path.
+  - **Command** — give them the retrieval command to paste:
+    `npx @anthropic-ai/claude-design pull <share-id-or-url> -o ./_design` (or, if they
+    have the share URL, `curl -L <export-url> -o design.zip && unzip design.zip -d ./_design`).
+- **MATCH THE FRONTEND LANGUAGE before importing** — ask/detect and only import like-for-like:
+  - Claude Design output is **HTML/CSS** → import into an **HTML/static** or `doc`/landing
+    stack (don't paste raw HTML into a `.tsx` tree).
+  - Output is **React/Next (TypeScript)** → import components into the Next.js `src/`
+    (`.tsx`), reconciling Tailwind/oklch tokens with the project's `globals.css`.
+  - Mismatch (e.g. HTML design but Next.js project) → **convert** deliberately (port markup
+    to components, lift styles into the token system) — never drop raw mismatched files in.
+- Record the design source + language in `BRAND.md` / `CLAUDE.md` so later steps reuse it,
+  then let `/omg-brand-identity` (PHASE 5) build on the imported tokens rather than re-inventing.
+
+---
+
 ## PHASE 3 — Scaffold the stack (`nextstack`)
 
 Fetch latest versions first (don't hardcode): if Context7 MCP is available,
@@ -247,7 +271,17 @@ Then create:
    the scaffold. Push to origin if the repo was created.
 4. **Register** in `~/.omega/projects.json` (append an entry: name, path,
    category, created date) so it shows up in the TUI Projects tab immediately.
-5. Verify (Law L1): `npm run build` must pass before declaring scaffold done.
+5. **Telegram setup — propose it, don't force it (optional).** AskUserQuestion:
+   *"Set up Telegram for this project?"*
+   - **Topic** *(recommended)* — create its forum topic in the hub (`/sync`, or the
+     bot's `createForumTopic`) so a message in that topic = a mission to its oracle,
+     and publish its `/<project>` command. Default ON if a hub is configured.
+   - **+ Dedicated bot** *(optional)* — link a separate Telegram bot token
+     (BotFather) whitelisted to the operator (the bot's `proj:botlink` flow / the
+     `tg-link` pending). Talking to it = this project's oracle, scoped to it.
+   - **None** — skip; the project still works from the TUI/CLI.
+   Whatever is chosen, never block the pipeline on it.
+6. Verify (Law L1): `npm run build` must pass before declaring scaffold done.
 
 ---
 

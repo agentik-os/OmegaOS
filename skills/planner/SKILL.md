@@ -62,10 +62,29 @@ Do NOT write "do steps in order" instructions. Encode order in `depends_on`. The
 `ready_steps` selector will only ever hand a worker a step whose deps are all `done`. You
 cannot make it skip, and you don't need to.
 
-### 5. Audits are a terminal `wave`, not a final phase
-Quality-Arsenal audits belong in the plan as steps with `"wave": "audit"`, `depends_on` =
-all implementation steps, one audit per step (`verify_command` checks the audit verdict).
-The engine holds the audit wave until all implementation steps are `done`.
+### 5. One audit PER MODULE — not a single terminal audit
+Group steps into **modules** (`M01`, `M02`, … — a coherent slice: schema, auth, a feature,
+the API surface, security, deploy). **Every module ends with its own audit step** that
+`depends_on` all of that module's implementation steps and whose `verify_command` checks the
+audit verdict (`test -f audits/.<audit>/verdict.json` AND a score gate, e.g.
+`jq -e '.score>=85' audits/.codeaudit/verdict.json`). Pick the audit that fits the module
+(`/omg-codeaudit`, `/omg-secaudit`, `/omg-apiaudit`, `/omg-dataaudit`, `/omg-flowaudit`…).
+A module is NOT "done" until its audit passes — so a bug is caught at the module boundary,
+not discovered at the very end. The engine holds each module's audit until that module's
+steps are `done`; later modules `depends_on` the prior module's audit step. (A final
+cross-cutting audit wave on top is fine, but per-module gates are mandatory.)
+
+### 6. The plan must be COMPLETE and CONTIGUOUS — prod-ready, no gaps
+A plan that jumps between areas and declares "done" with whole layers missing is the #1
+failure (e.g. leaping `STEP-050` → `STEP-269`). The DAG MUST cover every layer the product
+needs to actually run in prod: **database/schema · backend/business logic · API surface ·
+frontend/UI · auth & security · integrations · tests · deploy**. Walk the PRD feature list
+AND the stack: each requirement maps to ≥1 step; each module ends with its audit (rule 5).
+Number `step_id`s densely and contiguously — no gaps. Before handoff, self-check: "if the
+engine runs every step to `done`, is the result a working, deployable app with backend,
+frontend, database, security and API all wired?" If a layer is unrepresented, the plan is
+incomplete — add the steps. NEVER thin the plan to finish faster; the engine faithfully
+executes exactly what you give it, so a sparse plan ships a broken app.
 
 ---
 
