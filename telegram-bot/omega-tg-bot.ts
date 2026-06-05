@@ -129,7 +129,12 @@ function loadConfig(): boolean {
 const allowed = (id: number) => ALLOW.length > 0 && ALLOW.includes(id);
 
 // group/topic registry (persisted)
-type Groups = { hub?: number; isForum?: boolean; topics?: Record<string, string>; atlas_topic?: number };
+type Groups = { hub?: number; isForum?: boolean; topics?: Record<string, string>; atlas_topic?: number; alerts_topic?: number };
+// Reserved (non-project) topics: "atlas" = master conversation + oracle reports for
+// off-project work; "alerts" = operational alerts (stuck oracle / self-heal / token).
+// Never dispatched as a project, never a /delete or /topic target, recreated by /sync.
+const RESERVED_TOPICS = new Set(["atlas", "alerts"]);
+const isReserved = (n?: string) => !!n && RESERVED_TOPICS.has(String(n).toLowerCase());
 function loadGroups(): Groups { try { return JSON.parse(readFileSync(GROUPS_FILE, "utf8")); } catch { return {}; } }
 function saveGroups(g: Groups) { try { writeFileSync(GROUPS_FILE, JSON.stringify(g, null, 2)); } catch {} }
 
@@ -1315,16 +1320,26 @@ async function cmdSync(chatId: number, thread?: number) {
   if (!g.hub) return send(chatId, "⚠️ No hub — first run <code>/setupgroup</code> in your supergroup.", undefined, thread);
   if (!g.isForum) return send(chatId, "⚠️ Topics are not enabled — enable them, re-run /setupgroup, then /sync.", undefined, thread);
   g.topics ||= {};
-  // Ensure the Atlas topic exists — where reports that don't belong to a project
-  // (OmegaOS-self, cross-project) are posted instead of the operator DM.
-  if (!g.atlas_topic || !Object.keys(g.topics).includes(String(g.atlas_topic))) {
-    const existing = Object.entries(g.topics).find(([, n]) => String(n).toLowerCase() === "atlas")?.[0];
-    if (existing) { g.atlas_topic = Number(existing); }
-    else {
-      const ar = await tg("createForumTopic", { chat_id: g.hub, name: "Atlas 🎩", icon_color: 7322096 });
-      if (ar.ok) { g.atlas_topic = ar.result.message_thread_id; g.topics[String(ar.result.message_thread_id)] = "atlas"; saveGroups(g); }
+  // Ensure the RESERVED topics exist and are ALIVE (recreate if deleted in the group):
+  //  • "atlas"  — Atlas conversation + oracle reports for off-project work.
+  //  • "alerts" — operational alerts (stuck oracle / self-heal / token refresh);
+  //               undeletable by design: /sync (and omega-alert-send.sh on send)
+  //               recreates it so alerts always have a home.
+  const ensureReserved = async (key: "atlas_topic" | "alerts_topic", name: string, title: string, color: number) => {
+    let tid = g[key] && Object.keys(g.topics!).includes(String(g[key])) ? g[key]
+      : Number(Object.entries(g.topics!).find(([, n]) => String(n).toLowerCase() === name)?.[0]) || undefined;
+    if (tid) {
+      // Liveness probe: same-name rename → ok/NOT_MODIFIED = alive; TOPIC_ID_INVALID = deleted.
+      const probe = await tg("editForumTopic", { chat_id: g.hub, message_thread_id: tid, name: title });
+      if (probe.ok || /not.?modified/i.test(probe.description || "")) { g[key] = tid; g.topics![String(tid)] = name; return; }
+      if (!/TOPIC_ID_INVALID|not found/i.test(probe.description || "")) { g[key] = tid; return; } // ambiguous → keep
+      delete g.topics![String(tid)]; // provably deleted → recreate below
     }
-  }
+    const r = await tg("createForumTopic", { chat_id: g.hub, name: title, icon_color: color });
+    if (r.ok) { g[key] = r.result.message_thread_id; g.topics![String(r.result.message_thread_id)] = name; saveGroups(g); }
+  };
+  await ensureReserved("atlas_topic", "atlas", "Atlas 🎩", 7322096);
+  await ensureReserved("alerts_topic", "alerts", "Alerts 🚨", 16478047);
   const mp = loadProjects();
   const names = Object.keys(mp);
   if (!names.length) return send(g.hub, "No managed project — add (📁) or create (➕) a project, then /sync.", undefined, thread);
@@ -1519,7 +1534,7 @@ async function main() {
           // project. Opens the soft/full/forever options menu (same as the bot menu).
           else if (cmd === "delete" || cmd === "del") {
             const topicProj = thread ? loadGroups().topics?.[String(thread)] : undefined;
-            const target = a[0] || (topicProj && topicProj !== "atlas" ? topicProj : undefined);
+            const target = a[0] || (topicProj && !isReserved(topicProj) ? topicProj : undefined);
             if (!target) await send(chatId, "Usage: <code>/delete &lt;project&gt;</code> (or run it inside a project's topic).", undefined, thread);
             else { const m = projDeleteMenu(target); await send(chatId, m.text, m.markup, thread); }
           }
@@ -1529,7 +1544,7 @@ async function main() {
             const topicProj = thread ? loadGroups().topics?.[String(thread)] : undefined;
             const st = (a.find(x => /^(on|off)$/i.test(x)) || "").toLowerCase();
             const nameArg = a.find(x => !/^(on|off)$/i.test(x));
-            const target = nameArg || (topicProj && topicProj !== "atlas" ? topicProj : undefined);
+            const target = nameArg || (topicProj && !isReserved(topicProj) ? topicProj : undefined);
             if (!target || !st) await send(chatId, "Usage: <code>/topic &lt;project&gt; on|off</code> (or <code>/topic on|off</code> inside its topic).", undefined, thread);
             else if (!setProjectTelegram(target, st === "on")) await send(chatId, `Project “${esc(target)}” not found.`, undefined, thread);
             else {
@@ -1564,7 +1579,7 @@ async function main() {
           // (same guard as /delete and /topic above).
           const g = loadGroups();
           const topicName = thread ? g.topics?.[String(thread)] : undefined;
-          const proj = topicName && topicName !== "atlas" ? topicName : undefined;
+          const proj = topicName && !isReserved(topicName) ? topicName : undefined;
           // Build the contextualized prompt: recent conversation history + the quoted
           // reply (if any) + the new message. Persist the operator turn (also mirrored
           // to the MC dashboard) so Atlas / the oracle has FULL conversation access.

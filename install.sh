@@ -594,6 +594,16 @@ if [[ -f "$STUCK_SRC" ]]; then
     ok "Stuck-oracle alert installed: $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh"
 fi
 
+# Canonical alert sender — ONE funnel to the Telegram "Alerts 🚨" topic for every
+# operational alert (stuck oracle / self-heal / token refresh). Auto-recreates the
+# topic if deleted (undeletable invariant), falls back to the operator DM.
+ALERTSEND_SRC="$OMEGA_SRC/scripts/omega-alert-send.sh"
+if [[ -f "$ALERTSEND_SRC" ]]; then
+    cp "$ALERTSEND_SRC" "$OMEGA_DIR/bin/omega-alert-send.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-alert-send.sh"
+    ok "Alert sender installed: $OMEGA_DIR/bin/omega-alert-send.sh"
+fi
+
 for hs in omega-atlas-brief omega-clean-projects; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"

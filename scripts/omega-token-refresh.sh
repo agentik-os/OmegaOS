@@ -22,6 +22,30 @@ exp=$(python3 -c "import json,sys;d=json.load(open('$CRED'));o=d.get('claudeAiOa
 [ -z "${exp:-}" ] && exit 0
 now=$(date +%s); left=$((exp - now))
 
+# ── omega-mc gateway token sync ──────────────────────────────────────────────
+# The Mission-Control gateway gets CLAUDE_CODE_OAUTH_TOKEN from its .env at
+# container-create time (baked env). Every /login or refresh ROTATES the access
+# token, leaving the gateway (and every agent it spawns) with a dead token →
+# dashboard agents show "Not logged in • Please run /login". Reconcile on every
+# cron pass: if the live token differs from .env, rewrite it and recreate the
+# gateway so the fleet follows the credential, hands-free.
+MC_DIR="$OMEGA_DIR/repos/omega-mc"
+sync_mc() {
+    [ -f "$MC_DIR/.env" ] || return 0
+    local live cur
+    live=$(python3 -c "import json;d=json.load(open('$CRED'));print(d.get('claudeAiOauth',d).get('accessToken',''))" 2>/dev/null) || return 0
+    [ -n "$live" ] || return 0
+    cur=$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$MC_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)
+    [ "$cur" = "$live" ] && return 0
+    sed -i "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=$live|" "$MC_DIR/.env"
+    if (cd "$MC_DIR" && sudo -n docker compose up -d --no-build >/dev/null 2>&1); then
+        echo "$(stamp) omega-mc: token rotated → .env synced + gateway recreated"
+    else
+        echo "$(stamp) omega-mc: .env synced (gateway recreate failed — retry next run)"
+    fi
+}
+sync_mc
+
 if [ "$left" -ge "$THRESHOLD" ]; then
     echo "$(stamp) token healthy (${left}s left) — no action"
     exit 0
@@ -33,16 +57,12 @@ echo "$(stamp) try-refresh: $res"
 
 if echo "$res" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
     echo "$(stamp) refresh OK"
+    sync_mc   # the refresh just rotated the token → follow it into omega-mc now
     exit 0
 fi
 
-# Refresh failed → alert the operator on Telegram to re-login via the bot.
-TG=$(grep -E '^[[:space:]]*bot_token' "$OMEGA_DIR/telegram.toml" 2>/dev/null | head -1 | cut -d'"' -f2)
-CHAT=$(grep -E '^[[:space:]]*chat_id' "$OMEGA_DIR/telegram.toml" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
-if [ -n "${TG:-}" ] && [ -n "${CHAT:-}" ]; then
-    curl -s "https://api.telegram.org/bot${TG}/sendMessage" \
-        --data-urlencode "chat_id=${CHAT}" \
-        --data-urlencode "text=⚠️ AISB: the Claude token refresh failed. Open /account → 🔐 Login to re-authenticate (otherwise the agents will start hitting 401)." >/dev/null 2>&1
+# Refresh failed → alert the operator (canonical Alerts-topic sender) to re-login.
+if bash "$OMEGA_DIR/bin/omega-alert-send.sh" "⚠️ AISB: the Claude token refresh failed. Open /account → 🔐 Login to re-authenticate (otherwise the agents will start hitting 401)." 2>/dev/null; then
     echo "$(stamp) refresh failed — operator alerted on Telegram"
 else
     echo "$(stamp) refresh failed — no telegram config to alert"

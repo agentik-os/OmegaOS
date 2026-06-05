@@ -66,10 +66,9 @@ for sf in "$STATE"/oracle-*.state.json; do
     msg="‖ <b>${project}</b> · oracle bloqué ?
 Pas d'activité depuis <b>${idle} min</b> (oracle-${key}).
 Inspecte : <code>omega capture oracle-${key}</code> · ferme : <code>omega kill oracle-${key}</code>"
-    thread="$(topic_for "$project")"
-    if [ -n "$thread" ] && [ -n "${HUB:-}" ]; then send_tg "$HUB" "$msg" "$thread"
-    elif [ -n "${ATLAS:-}" ] && [ -n "${HUB:-}" ]; then send_tg "$HUB" "$msg" "$ATLAS"
-    else send_tg "$DM" "$msg" ""; fi
+    # Operational alert → the dedicated Alerts topic via the canonical sender
+    # (auto-recreates the topic if deleted, DM fallback). NEVER the Atlas topic.
+    bash "$OMEGA_DIR/bin/omega-alert-send.sh" "$msg"
     : > "$marker"
     echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) stuck-alert ${base} (${idle}m idle)"
 done

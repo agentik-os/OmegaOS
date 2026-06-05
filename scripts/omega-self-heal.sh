@@ -45,8 +45,6 @@ ${RULE}
  🩺 Heal pass ran — <b>${REMAIN}</b> warning(s) remaining.
  Tap /status → <b>🛠 Fix it</b> to send an oracle."
 
-curl -fsS --max-time 15 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-    --data-urlencode "chat_id=${CHAT}" \
-    --data-urlencode "text=${MSG}" \
-    --data-urlencode "parse_mode=HTML" \
-    --data-urlencode "disable_web_page_preview=true" >/dev/null 2>&1 || true
+# Operational alert → the dedicated Alerts topic via the canonical sender
+# (auto-recreates the topic if deleted, DM fallback).
+bash "$HOME/.omega/bin/omega-alert-send.sh" "$MSG" || true
