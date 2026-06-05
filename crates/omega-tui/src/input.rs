@@ -1218,6 +1218,34 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.project_confirm_pending = None;
             Action::None
         }
+        // Settings group: 'x' clears the selected text field (e.g. unlink a saved
+        // API key) — two-press confirm, same affordance as destructive actions.
+        // Backspace can't work here: it's only meaningful inside the edit modal.
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if app.tab == Tab::Settings && app.detail_focused && !app.settings_on_monitor() =>
+        {
+            let section = app.selected_settings_section();
+            let providers = app.providers();
+            let fields = crate::app::fields_for_section(section, &providers, &app.config);
+            let idx = app.settings_field_selected.min(fields.len().saturating_sub(1));
+            match fields.into_iter().nth(idx) {
+                Some(crate::app::SettingsField::EditText { config_key, current_value, label, .. })
+                    if !current_value.is_empty() =>
+                {
+                    if app.settings_confirm_pending == Some(idx) {
+                        app.settings_confirm_pending = None;
+                        app.status_message = Some(format!("Cleared: {}", label.trim()));
+                        Action::CommitSettingsEdit { config_key, value: String::new() }
+                    } else {
+                        app.settings_confirm_pending = Some(idx);
+                        app.status_message =
+                            Some(format!("Press x again to clear: {}", label.trim()));
+                        Action::None
+                    }
+                }
+                _ => Action::None,
+            }
+        }
         // Projects tab: 'x' removes the selected project (two-press confirm).
         // First press arms it for that name; second 'x' on the same name fires.
         KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
