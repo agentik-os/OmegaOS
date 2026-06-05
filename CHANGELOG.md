@@ -57,6 +57,12 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   ASCII convention. Telegram messages keep their emoji.
 
 ### Fixed
+- Telegram bot never ran on macOS: the service install was systemd-only, so
+  `omega telegram setup` wrote the config but every message went unanswered.
+  `install.sh` now installs a launchd LaunchAgent on Darwin
+  (`~/Library/LaunchAgents/os.omega.tg-bot.plist`, RunAtLoad + KeepAlive,
+  logs in `~/.omega/logs/tg-bot.log`) with the same semantics as the Linux
+  unit: always running, waits for the token, auto-restarts.
 - macOS install hung at ~20% behind the npx Matrix animation: Phase 2 wrote
   the Debian-ism `/etc/default/locale` via `sudo`, whose password prompt was
   invisible behind the full-screen animation. `ensure_utf8_locale` now no-ops

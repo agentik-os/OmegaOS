@@ -412,6 +412,49 @@ EOF
         # moment `omega telegram setup` / omega-tg-up writes telegram.toml.
         systemctl --user enable --now omega-tg-bot.service 2>/dev/null || true
         ok "Telegram command bot installed + running (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>  OR  omega-tg-up <TOKEN> <YOUR_USER_ID>"
+    elif [[ "$(uname -s)" == "Darwin" && -n "$BUN_BIN" ]]; then
+        # macOS: no systemd — install a launchd LaunchAgent instead, same
+        # semantics (always running, waits for the token, auto-restarts).
+        # Without this the bot never runs on a Mac: telegram.toml gets written
+        # but every message goes unanswered (proven on a real Mac install).
+        local LA_DIR="$HOME/Library/LaunchAgents"
+        local LA_LABEL="os.omega.tg-bot"
+        local LA_PLIST="$LA_DIR/$LA_LABEL.plist"
+        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs"
+        cat > "$LA_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$LA_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$BUN_BIN</string>
+        <string>$HOME/.omega/telegram-bot/omega-tg-bot.ts</string>
+    </array>
+    <key>WorkingDirectory</key><string>$HOME/.omega/telegram-bot</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OMEGA_DIR</key><string>$HOME/.omega</string>
+        <key>PATH</key><string>$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>$HOME/.omega/logs/tg-bot.log</string>
+    <key>StandardErrorPath</key><string>$HOME/.omega/logs/tg-bot.log</string>
+</dict>
+</plist>
+EOF
+        # Idempotent (re)load: bootout any old instance, then bootstrap; fall
+        # back to legacy load -w on older macOS.
+        launchctl bootout "gui/$(id -u)/$LA_LABEL" 2>/dev/null || true
+        launchctl bootstrap "gui/$(id -u)" "$LA_PLIST" 2>/dev/null \
+            || launchctl load -w "$LA_PLIST" 2>/dev/null || true
+        if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
+            ok "Telegram command bot installed + running via launchd (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>"
+        else
+            info "Telegram command bot shipped but launchd did not start it — run in foreground: omega telegram run  (logs: ~/.omega/logs/tg-bot.log)"
+        fi
     else
         info "Telegram command bot shipped, but bun/systemd missing — start later: omega-tg-up <BOT_TOKEN> <USER_ID>"
     fi
