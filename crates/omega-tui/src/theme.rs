@@ -83,21 +83,43 @@ const fn mk(
     }
 }
 
+/// Pale tint of an RGB color (2/3 toward white) — used for the roles that
+/// must stand out from the gray chrome without competing with the accent
+/// itself (separators, selected-field background, hints).
+const fn lighten(c: Color) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            ((r as u16 + 2 * 255) / 3) as u8,
+            ((g as u16 + 2 * 255) / 3) as u8,
+            ((b as u16 + 2 * 255) / 3) as u8,
+        ),
+        other => other,
+    }
+}
+
 /// The "Monogram model" (user-validated): a quiet grayscale chrome + ONE
 /// signature accent color. Every theme except Omega (terminal-native),
 /// Noir and Paper (pure mono by design) is built from this template — the
 /// palettes differ only by their accent, background and text tint.
+///
+/// Visual hierarchy (mirrors what Omega's multicolor chrome conveys):
+/// - accent          → selection bars, focus, borders of the active panel
+/// - lighten(accent) → accent2: section separators (`─── x ───`), the
+///                     selected settings-field background, hints — clearly
+///                     NOT body gray, clearly NOT the full accent
+/// - accent          → success/active states (`● on`, running markers):
+///                     the signature color marks everything alive
 const fn mono(accent: Color, bg: Color, text: Color) -> Theme {
     Theme {
         bg: Some(bg),
         text,
         ..mk(
             accent,
-            Color::Rgb(220, 220, 220), // accent2 — soft near-white highlight
-            Color::Rgb(200, 200, 200), // success
+            lighten(accent),           // accent2 — separators / selected-field bg
+            accent,                    // success — active states wear the accent
             Color::White,              // error
             Color::Rgb(180, 180, 180), // info
-            Color::Rgb(190, 190, 190), // special
+            lighten(accent),           // special — subtle but themed
             Color::Rgb(115, 115, 115), // dim
             Color::Rgb(70, 70, 70),    // dim2
             Color::White,              // bright
@@ -158,8 +180,8 @@ const NOIR: Theme = Theme {
     text: Color::Rgb(220, 220, 220),
     ..mk(
     Color::White,
-    Color::Rgb(200, 200, 200),
-    Color::Rgb(190, 190, 190),
+    Color::White,              // accent2 — separators / selected-field bg pop above the 220 text
+    Color::Rgb(235, 235, 235), // success — actives brighter than body text
     Color::Rgb(255, 255, 255),
     Color::Rgb(170, 170, 170),
     Color::Rgb(215, 215, 215),
@@ -176,8 +198,8 @@ const PAPER: Theme = Theme {
     text: Color::Rgb(20, 20, 20),
     ..mk(
     Color::Rgb(20, 20, 20),
-    Color::Rgb(70, 70, 70),
-    Color::Rgb(50, 50, 50),
+    Color::Rgb(0, 0, 0),       // accent2 — separators / selected-field bg: pure ink
+    Color::Rgb(30, 30, 30),    // success — actives darker than body ink
     Color::Rgb(0, 0, 0),
     Color::Rgb(90, 90, 90),
     Color::Rgb(60, 60, 60),
@@ -190,7 +212,7 @@ const PAPER: Theme = Theme {
 
 /// Monogram — the original: mono chrome + cyan.
 const MONOGRAM: Theme = mono(
-    Color::Cyan,
+    Color::Rgb(0, 255, 255),
     Color::Rgb(10, 10, 12),
     Color::Rgb(225, 225, 225),
 );
