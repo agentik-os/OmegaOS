@@ -1869,10 +1869,11 @@ async fn run_tui_loop(
                     }
                 }
                 Action::HardDeleteProject { name } => {
-                    // Delete forever: delegate to the bot's one-shot CLI (the ONE
-                    // canonical deletion impl) so the Telegram topic, dashboard
-                    // agent, agent-bot and registry are cleaned the same way as the
-                    // bot's own delete — plus the local folder (scope "forever").
+                    // Delete local machine: delegate to the bot's one-shot CLI (the ONE
+                    // canonical deletion impl) so the Telegram topic, dashboard agent,
+                    // agent-bot and registry are cleaned the same way as the bot's own
+                    // delete — plus kill the oracle + rm -rf the local folder (scope
+                    // "local"). GitHub is kept.
                     let omega_dir = std::env::var("OMEGA_DIR").unwrap_or_else(|_| {
                         format!(
                             "{}/.omega",
@@ -1880,9 +1881,9 @@ async fn run_tui_loop(
                         )
                     });
                     let bot = format!("{}/telegram-bot/omega-tg-bot.ts", omega_dir);
-                    app.status_message = Some(format!("Deleting '{}' forever…", name));
+                    app.status_message = Some(format!("Deleting '{}' (local machine)…", name));
                     let out = std::process::Command::new("bun")
-                        .args([&bot, "project-delete", &name, "forever"])
+                        .args([&bot, "project-delete", &name, "local"])
                         .output();
                     app.refresh_projects();
                     match out {
@@ -1890,11 +1891,11 @@ async fn run_tui_loop(
                             let txt = String::from_utf8_lossy(&o.stdout);
                             let last = txt.lines().last().unwrap_or("done").trim();
                             app.status_message =
-                                Some(format!("[x] Deleted '{}' forever — {}", name, last));
+                                Some(format!("[x] Deleted '{}' (local machine) — {}", name, last));
                         }
                         Err(e) => {
                             app.status_message = Some(format!(
-                                "Deleted from registry but cleanup failed (bun): {} — run `bun {} project-delete {} forever`",
+                                "Deleted from registry but cleanup failed (bun): {} — run `bun {} project-delete {} local`",
                                 e, bot, name
                             ));
                         }

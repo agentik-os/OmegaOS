@@ -287,6 +287,7 @@ async function addProject(name: string): Promise<string> {
     else topicLine = `⚠️ Topic not created: <i>${esc(r.description || "error")}</i>.${/rights/i.test(r.description || "") ? " Enable the <b>“Manage Topics”</b> permission for the bot (group admin)." : ""}`;
   }
   const dashLine = dash === "added" ? "added ✅" : dash === "exists" ? "already present ✅" : "not written ⚠️ (omega-mc config not found)";
+  await refreshCommands().catch(() => {}); // publish its /{project} command
   return card("PROJECT MANAGED",
     ` 📁 <b>${esc(name)}</b>\n\n` +
     `• Dedicated oracle (multi-session): <code>omega dispatch ${esc(name)}</code> ✅\n` +
@@ -321,6 +322,38 @@ function setProjectTelegram(name: string, enabled: boolean): boolean {
   saveRegistry(reg);
   return true;
 }
+// Telegram-command-safe id for a project name: lowercase, only [a-z0-9_], ≤32 chars
+// (Telegram's rule for /commands). Used for the per-project /{project} command.
+const tgCmd = (name: string) => name.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+// Resolve a typed slash command to a managed project name (matches the project name,
+// its projId, or its telegram-safe command id). Returns the canonical name or undefined.
+function projectForCommand(cmd: string): string | undefined {
+  const c = cmd.toLowerCase();
+  for (const p of loadRegistry().projects) {
+    if (p.name.toLowerCase() === c || projId(p.name) === c || tgCmd(p.name) === c) return p.name;
+  }
+  return undefined;
+}
+// (Re)publish the bot's command menu: the static MENU + one /{project} command per
+// Telegram-enabled managed project (so /myproject talks to its oracle). Called at
+// startup and after add/create/delete/sync so the list stays current.
+async function refreshCommands() {
+  const base = MENU.map(([command, description]) => ({ command, description }));
+  const reserved = new Set(base.map(c => c.command));
+  const seen = new Set(reserved);
+  const projCmds: { command: string; description: string }[] = [];
+  for (const p of loadRegistry().projects) {
+    if (p.telegram === false) continue;            // hidden project → no command
+    const c = tgCmd(p.name);
+    if (!c || seen.has(c)) continue;               // skip empties + collisions
+    seen.add(c);
+    projCmds.push({ command: c, description: `Mission → ${p.name} oracle` });
+  }
+  const cmds = [...base, ...projCmds].slice(0, 100); // Telegram caps at 100 commands
+  await tg("setMyCommands", { commands: cmds });
+  await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
+  return projCmds.length;
+}
 // Upsert a project in the shared registry (matched by path or name). Optionally bind its Telegram topic.
 function recordProject(name: string, dir: string, _category?: string, topicId?: number | null) {
   const reg = loadRegistry();
@@ -350,18 +383,23 @@ async function removeProjectTopic(name: string): Promise<"deleted" | "none" | st
   if (r.ok || /not found|thread not found/i.test(r.description || "")) { delete g.topics![String(tid)]; saveGroups(g); return "deleted"; }
   return r.description || "failed";
 }
-// Delete a managed project. Three scopes:
-//   "soft"    — remove from OmegaOS (Telegram topic + dashboard roster + registry +
-//               agent-bot). The code (GitHub + local folder) stays.
-//   "full"    — soft + delete the GitHub repo (irreversible). Local folder kept.
-//   "forever" — soft + kill the oracle session + delete the LOCAL FOLDER (rm -rf).
-//               GitHub repo is NOT touched. "all + vps" — wipes it off the VPS disk.
-async function deleteProject(name: string, mode: "soft" | "full" | "forever"): Promise<string> {
+// Delete a managed project. Three CUMULATIVE scopes (escalating):
+//   "omega" — remove from OmegaOS view only: Telegram topic + dashboard roster +
+//             agent-bot + registry. The code (local folder + GitHub) stays.
+//   "local" — omega + kill the oracle session + delete the LOCAL FOLDER (rm -rf,
+//             off the VPS disk). GitHub repo is kept (your code stays on GitHub).
+//   "all"   — local + delete the GitHub repo (irreversible). Nothing remains.
+async function deleteProject(name: string, mode: "omega" | "local" | "all"): Promise<string> {
   const steps: string[] = [];
   const id = projId(name);
+  const wipeLocal = mode === "local" || mode === "all"; // local folder + oracle kill
+  const wipeGithub = mode === "all";                    // remote repo
   // Capture the project folder BEFORE we remove it from the registry (step 4),
-  // otherwise the "forever" lookup below would come back empty.
+  // otherwise the local-folder lookup below would come back empty.
   const dir = repoPath(name) || loadProjects()[name]?.dir || "";
+  // Resolve the GitHub slug now too (needs the folder's git remote).
+  let slug = "";
+  if (wipeGithub && dir) { const r = Bun.spawnSync(["bash", "-lc", `git -C ${dir} remote get-url origin 2>/dev/null`]).stdout.toString().trim(); slug = (r.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/) || [])[1] || ""; }
   // 1. Telegram topic
   const topic = await removeProjectTopic(name);
   steps.push(topic === "deleted" ? "💬 Telegram topic: deleted ✅" : topic === "none" ? "💬 Topic: (none)" : `💬 Topic: ⚠️ ${esc(topic)}`);
@@ -377,43 +415,40 @@ async function deleteProject(name: string, mode: "soft" | "full" | "forever"): P
   // 4. Shared registry (TUI menu stops seeing it too)
   removeProject(name);
   steps.push("📋 Project registry (TUI + Telegram): removed ✅");
-  // 5. GitHub repo (full only — irreversible)
-  if (mode === "full") {
-    let slug = "";
-    if (dir) { const r = Bun.spawnSync(["bash", "-lc", `git -C ${dir} remote get-url origin 2>/dev/null`]).stdout.toString().trim(); slug = (r.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/) || [])[1] || ""; }
-    if (slug) {
-      const del = Bun.spawnSync(["bash", "-lc", `gh repo delete ${slug} --yes 2>&1`]);
-      steps.push(del.exitCode === 0 ? `🐙 GitHub repo <code>${esc(slug)}</code>: DELETED ✅` : `🐙 GitHub: ⚠️ ${esc((del.stdout.toString() + del.stderr.toString()).trim().slice(0, 120))}`);
-    } else steps.push("🐙 GitHub: ⚠️ remote not found (nothing deleted)");
-    steps.push("📁 Local folder: <b>kept</b> (delete it manually if needed).");
-  }
-  // 6. Local folder (forever only — irreversible). Kill the oracle session first.
-  if (mode === "forever") {
+  // 5. Local folder (local + all) — kill the oracle session first, then rm -rf.
+  if (wipeLocal) {
     Bun.spawnSync(["bash", "-lc", `${OMEGA} kill oracle-${id} >/dev/null 2>&1; ${OMEGA} kill oracle-${name} >/dev/null 2>&1; true`]);
     steps.push("🔮 Oracle session: killed ✅");
     // Safety: only rm -rf a real project folder UNDER the operator's home, at least
-    // 3 dirs deep, no whitespace — never $HOME, "/", or a bare top-level dir.
+    // 2 dirs deep, no whitespace — never $HOME, "/", or a bare top-level dir.
     const home = homedir();
     const clean = dir.replace(/\/+$/, "");
     const safe = !!clean && clean.startsWith(home + "/") && clean.split("/").length > 4 && !/\s/.test(clean) && clean !== home;
     if (safe) {
       const rm = Bun.spawnSync(["rm", "-rf", clean]);
-      steps.push(rm.exitCode === 0 ? `📁 Local folder <code>${esc(clean)}</code>: DELETED ✅` : `📁 Local folder: ⚠️ ${esc((rm.stderr.toString()).trim().slice(0, 120))}`);
-    } else steps.push(`📁 Local folder: ⚠️ refused unsafe path <code>${esc(clean || "unknown")}</code> (delete manually).`);
-    steps.push("🐙 GitHub repo: <b>kept</b> (your code stays safe on GitHub).");
-  }
-  const label = mode === "full" ? "full · + GitHub" : mode === "forever" ? "forever · all + local folder" : "OmegaOS only";
+      steps.push(rm.exitCode === 0 ? `💻 Local folder <code>${esc(clean)}</code>: DELETED ✅` : `💻 Local folder: ⚠️ ${esc((rm.stderr.toString()).trim().slice(0, 120))}`);
+    } else steps.push(`💻 Local folder: ⚠️ refused unsafe path <code>${esc(clean || "unknown")}</code> (delete manually).`);
+  } else steps.push("💻 Local folder: <b>kept</b>.");
+  // 6. GitHub repo (all only — irreversible).
+  if (wipeGithub) {
+    if (slug) {
+      const del = Bun.spawnSync(["bash", "-lc", `gh repo delete ${slug} --yes 2>&1`]);
+      steps.push(del.exitCode === 0 ? `🐙 GitHub repo <code>${esc(slug)}</code>: DELETED ✅` : `🐙 GitHub: ⚠️ ${esc((del.stdout.toString() + del.stderr.toString()).trim().slice(0, 120))}`);
+    } else steps.push("🐙 GitHub: ⚠️ remote not found (nothing deleted)");
+  } else steps.push("🐙 GitHub repo: <b>kept</b> (your code stays on GitHub).");
+  await refreshCommands().catch(() => {}); // drop its /{project} command from the menu
+  const label = mode === "all" ? "all · OmegaOS + local + GitHub" : mode === "local" ? "local machine · OmegaOS + folder" : "OmegaOS view only";
   return card("PROJECT DELETED", ` 🗑 <b>${esc(name)}</b> · ${label}\n\n${steps.join("\n")}`);
 }
-// The delete-options menu (soft / full / forever) — shared by the project view
-// callback and the in-topic /delete command so both surfaces offer the same tiers.
+// The delete-options menu — shared by the project view callback and the in-topic
+// /delete command. Three escalating tiers, in order (omega → local → all).
 function projDeleteMenu(name: string): { text: string; markup: any } {
   return {
-    text: card("DELETE PROJECT", ` 🗑 <b>${esc(name)}</b> — choose a scope:\n\n• <b>OmegaOS only</b> — removes the Telegram topic, dashboard agent, agent-bot and registry. <i>Code (GitHub + folder) stays.</i>\n• <b>Full</b> — that <b>+ deletes the GitHub repo</b> (irreversible). Local folder kept.\n• <b>Forever</b> — that <b>+ deletes the local folder</b> off the VPS (irreversible). GitHub kept.`),
+    text: card("DELETE PROJECT", ` 🗑 <b>${esc(name)}</b> — choose how far to go:\n\n1️⃣ <b>Remove from OmegaOS</b> — Telegram topic, dashboard agent, agent-bot, registry. <i>Local folder + GitHub stay.</i>\n2️⃣ <b>Delete local machine</b> — that <b>+ deletes the local folder</b> off the VPS (irreversible). GitHub kept.\n3️⃣ <b>Delete all (+ GitHub)</b> — that <b>+ deletes the GitHub repo</b> (irreversible). Nothing remains.`),
     markup: kb([
-      [{ text: "🧹 OmegaOS only", callback_data: `proj:delsoft:${name}`.slice(0, 64) }],
-      [{ text: "💥 Full (+ GitHub)", callback_data: `proj:delfull:${name}`.slice(0, 64) }],
-      [{ text: "💀 Delete forever (+ local folder)", callback_data: `proj:delforever:${name}`.slice(0, 64) }],
+      [{ text: "1️⃣ Remove from OmegaOS", callback_data: `proj:delomega:${name}`.slice(0, 64) }],
+      [{ text: "2️⃣ Delete local machine", callback_data: `proj:dellocal:${name}`.slice(0, 64) }],
+      [{ text: "3️⃣ Delete all (+ GitHub)", callback_data: `proj:delall:${name}`.slice(0, 64) }],
       [{ text: "✖ Cancel", callback_data: `proj:open:${name}`.slice(0, 64) }],
     ]),
   };
@@ -442,6 +477,7 @@ async function createProject(category: string, name: string, desc: string): Prom
     if (r.ok) { g.topics ||= {}; g.topics[String(r.result.message_thread_id)] = safe; saveGroups(g); recordProject(safe, dir, undefined, r.result.message_thread_id); steps.push("💬 Telegram topic: created ✅"); }
     else steps.push(`💬 Telegram topic: ⚠️ ${esc(r.description || "failed")}${/rights/i.test(r.description || "") ? " — enable “Manage Topics” for the bot" : ""}`);
   } else steps.push("💬 Telegram topic: pending (forum group + bot admin)");
+  await refreshCommands().catch(() => {}); // publish its /{project} command
   return { dir, report: card("PROJECT CREATED", ` 🚀 <b>${esc(safe)}</b> · ${esc(category)}\n\n${steps.join("\n")}`) };
 }
 
@@ -1196,24 +1232,26 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     return edit(chat, msgId, card("DEDICATED BOT", ` 🛑 <b>${esc(arg)}</b> — bot unlinked + stopped ✅`), kb([[{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }, { text: "📋 Projects", callback_data: "nav:projects" }]]));
   }
   if (ns === "proj" && action === "del") { const m = projDeleteMenu(arg); return edit(chat, msgId, m.text, m.markup); }
-  if (ns === "proj" && action === "delsoft") return edit(chat, msgId, await deleteProject(arg, "soft"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
-  if (ns === "proj" && action === "delfull") {
-    // Extra confirmation for the irreversible GitHub deletion.
-    return edit(chat, msgId, card("FULL DELETE", ` 💥 <b>${esc(arg)}</b>\n⚠️ This <b>deletes the GitHub repo</b> (irreversible) on top of everything else. Sure?`), kb([
-      [{ text: "💥 Yes, delete everything", callback_data: `proj:delfullgo:${arg}`.slice(0, 64) }],
-      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
-    ]));
-  }
-  if (ns === "proj" && action === "delfullgo") return edit(chat, msgId, await deleteProject(arg, "full"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
-  if (ns === "proj" && action === "delforever") {
-    // Extra confirmation for the irreversible LOCAL FOLDER deletion.
+  // 1️⃣ Remove from OmegaOS — non-destructive to code, no extra confirm.
+  if (ns === "proj" && action === "delomega") return edit(chat, msgId, await deleteProject(arg, "omega"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
+  // 2️⃣ Delete local machine — extra confirm for the irreversible local-folder rm.
+  if (ns === "proj" && action === "dellocal") {
     const d = loadProjects()[arg]?.dir || "";
-    return edit(chat, msgId, card("DELETE FOREVER", ` 💀 <b>${esc(arg)}</b>\n⚠️ Wipes it from OmegaOS <b>and deletes the local folder</b>${d ? ` <code>${esc(d)}</code>` : ""} off the VPS (irreversible). GitHub is kept. Sure?`), kb([
-      [{ text: "💀 Yes, delete forever", callback_data: `proj:delforevergo:${arg}`.slice(0, 64) }],
+    return edit(chat, msgId, card("DELETE LOCAL MACHINE", ` 💻 <b>${esc(arg)}</b>\n⚠️ Removes it from OmegaOS <b>and deletes the local folder</b>${d ? ` <code>${esc(d)}</code>` : ""} off the VPS (irreversible). GitHub is kept. Sure?`), kb([
+      [{ text: "💻 Yes, delete local machine", callback_data: `proj:dellocalgo:${arg}`.slice(0, 64) }],
       [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
-  if (ns === "proj" && action === "delforevergo") return edit(chat, msgId, await deleteProject(arg, "forever"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
+  if (ns === "proj" && action === "dellocalgo") return edit(chat, msgId, await deleteProject(arg, "local"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
+  // 3️⃣ Delete all (+ GitHub) — extra confirm for the irreversible GitHub deletion.
+  if (ns === "proj" && action === "delall") {
+    const d = loadProjects()[arg]?.dir || "";
+    return edit(chat, msgId, card("DELETE EVERYTHING", ` 💥 <b>${esc(arg)}</b>\n⚠️ Removes it from OmegaOS, <b>deletes the local folder</b>${d ? ` <code>${esc(d)}</code>` : ""} <b>AND the GitHub repo</b> (both irreversible). Nothing remains. Sure?`), kb([
+      [{ text: "💥 Yes, delete EVERYTHING", callback_data: `proj:delallgo:${arg}`.slice(0, 64) }],
+      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+    ]));
+  }
+  if (ns === "proj" && action === "delallgo") return edit(chat, msgId, await deleteProject(arg, "all"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "oracle") {
     setPending(from, "oracle-prompt", arg);
     return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
@@ -1320,6 +1358,7 @@ async function cmdSync(chatId: number, thread?: number) {
   saveGroups(g);
   if (err) return send(g.hub, `⚠️ Sync interrupted: <i>${esc(err)}</i>.${/rights|manage/i.test(err) ? "\nEnable the <b>“Manage Topics”</b> permission for the bot (group admin), then re-run /sync." : ""}\n(${made} created, ${recreated} recreated before stopping)`, undefined, thread);
   const offNote = removed ? `, ${removed} removed (🔕 OFF)` : skipped ? `, ${skipped} skipped (🔕 OFF)` : "";
+  await refreshCommands().catch(() => {}); // refresh /{project} commands alongside topics
   return send(g.hub, `🔁 Sync OK. ${made} new topic(s)${recreated ? `, ${recreated} recreated (deleted topics detected)` : ""}${offNote}; ${Object.keys(g.topics).length} project topic(s) total. Messages in a project's topic are routed to its oracle.`, undefined, thread);
 }
 
@@ -1366,9 +1405,7 @@ async function main() {
   // Register the menu on BOTH default and all_private_chats scopes — some Telegram
   // clients read the private-chat scope preferentially, so setting only default
   // can leave a stale/empty menu in DMs.
-  const cmds = MENU.map(([command, description]) => ({ command, description }));
-  await tg("setMyCommands", { commands: cmds });
-  await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
+  await refreshCommands();
   await tg("deleteWebhook", { drop_pending_updates: false });
   await resolvePublicIP();
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
@@ -1499,6 +1536,15 @@ async function main() {
           }
           else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; await send(chatId, pre(`dispatch → ${p}`, await omega(["dispatch", p, m.join(" ")])), undefined, thread); }
           else if (KNOWN.has(cmd)) { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
+          else if (projectForCommand(cmd)) {
+            // /{project} <mission> — talk straight to that project's oracle from the
+            // main bot. `omega dispatch` gives it the full Atlas reprompting (project
+            // knowledge + OmegaOS doctrine); we prepend the conversation context.
+            const proj = projectForCommand(cmd)!;
+            const mission = a.join(" ").trim();
+            if (!mission) { setPending(from, "oracle-prompt", proj); await send(chatId, card(`ORACLE — ${proj.toUpperCase()}`, ` 🔮 Send your <b>mission</b> for <b>${esc(proj)}</b> — I hand it to its oracle with the full Atlas reprompting (project + doctrine).`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }]]), thread); }
+            else { react(chatId, msg.message_id, "🚀"); const ctx = histContext(chatId, thread); histAppend(chatId, thread, "operator", text, proj); const r = await dispatchToOracle(proj, mission, chatId, thread, ctx); if (r) await send(chatId, r, undefined, thread); }
+          }
           else {
             // Unknown command → the AISB Master brain (commands gain intelligence:
             // any /verb the operator types is understood + dispatched, not dropped to the menu).
@@ -1537,8 +1583,10 @@ const stripHtml = (s: string) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&"
 if (ARGV[0] === "project-delete") {
   loadConfig();
   const name = ARGV[1] || "";
-  const mode = (["soft", "full", "forever"].includes(ARGV[2]) ? ARGV[2] : "soft") as "soft" | "full" | "forever";
-  if (!name) { console.error("usage: project-delete <name> <soft|full|forever>"); process.exit(2); }
+  // Back-compat aliases: soft→omega, forever→local, full→all.
+  const alias: Record<string, "omega" | "local" | "all"> = { soft: "omega", forever: "local", full: "all", omega: "omega", local: "local", all: "all" };
+  const mode = alias[ARGV[2]] || "omega";
+  if (!name) { console.error("usage: project-delete <name> <omega|local|all>"); process.exit(2); }
   deleteProject(name, mode).then(r => { console.log(stripHtml(r)); process.exit(0); }).catch(e => { console.error(e?.message || e); process.exit(1); });
 } else if (ARGV[0] === "project-telegram") {
   loadConfig();

@@ -1264,7 +1264,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     } else {
                         app.project_delete_pending = Some(name.clone());
                         app.status_message = Some(format!(
-                            "Press D again to DELETE FOREVER '{}' (topic + agents + registry + LOCAL FOLDER) — Esc to cancel",
+                            "Press D again to DELETE LOCAL MACHINE '{}' (OmegaOS + kill oracle + rm -rf LOCAL FOLDER; GitHub kept) — Esc to cancel",
                             name
                         ));
                         Action::None
