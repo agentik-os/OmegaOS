@@ -9,14 +9,19 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ### Added
 - WCAG-AA contrast contract in the TUI theme engine, enforced by unit tests:
-  text/dim/info/error/warn vs background ≥ 4.5:1, accent/graphic roles ≥ 3.0:1,
-  selection text on the accent bar ≥ 4.5:1, and a contrast-vs-background
-  hierarchy `dim2 < dim < text` (the raw luminance order inverts on light
-  themes) — palettes can no longer regress below readable. New semantic
-  `warn` role (the blocked badge is now themed; it was hardcoded orange), a
-  distinct alert red in the mono themes, and per-theme dim/dim2 retuned to meet
-  AA while staying visually quieter than body text. Omega (terminal-native
-  ANSI) is exempt by design. Documented in `docs/THEMES.md`.
+  every text-bearing role (text/dim/info/error/warn/bright and the accent
+  family) ≥ 4.5:1 vs background, selection text ≥ 4.5:1 on both accent and
+  accent2 bars, a contrast-vs-background hierarchy `dim2 < dim < text` (the
+  raw luminance order inverts on light themes), and a role-vs-role
+  distinctness floor — warn and error vs the accent at CIE76 ΔE ≥ 30, so an
+  alert never blends into active text (Noir and Paper exempt, mono by
+  design) — palettes can no longer regress below readable. New semantic
+  `warn` role (the blocked badge is now themed; it was hardcoded orange);
+  orange-accent themes (Amber, Gruvbox) move warn to the alert-red family;
+  per-theme dim/dim2 retuned to meet AA while staying visually quieter than
+  body text. Omega stays 100% named ANSI — warn included, an adaptive light
+  red — so it keeps inheriting the terminal's own palette. Documented in
+  `docs/THEMES.md`.
 - TUI theme selector (Settings → Theme): 15 selectable palettes — Omega
   (default), Matrix, Terminal, Amber, Noir, Paper, Monogram, Dracula, Nord,
   Gruvbox, Solarized Dark, Tokyo Night, Synthwave, Ocean, Crimson. Every

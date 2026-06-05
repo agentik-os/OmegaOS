@@ -2,7 +2,8 @@
 
 > Pick a theme in 5 seconds: `omega` → Settings → **Theme**. Arrow through the
 > list to live-preview each palette on the full screen; **Enter** commits,
-> **Esc** reverts to what you had.
+> **Esc** reverts to what you had. The list scroll-follows your cursor, so
+> it stays usable even on a 24-row terminal.
 
 The TUI ships 15 palettes. Your choice persists in `~/.omega/config.toml`:
 
@@ -50,9 +51,15 @@ you've learned them all:
 | State | Rendering | Meaning |
 |---|---|---|
 | **Active** | accent + bold | The thing that's running / alive right now |
-| **Passive** | dim | Background info, idle items, secondary labels |
+| **Passive** | dim, never bold | Background info, idle items, secondary labels |
 | **Focus / selection** | inverted bar — `sel_fg` text on an accent background | Where your cursor is |
 | **Alert** | warn / error colors, distinct from both the background and the active accent | Something needs you: blocked, failed, stuck |
+
+The alert hue is per-theme: most themes warn in orange, but where the accent
+is itself orange (Amber, Gruvbox) warn moves to the alert-red family so the
+blocked badge never blends into active text — the distinctness floor below
+enforces it. And bold belongs to active alone: passive rows never carry it,
+so weight always means "running".
 
 ### The Monogram model
 
@@ -71,22 +78,28 @@ blocked badge, because an alert must read at a glance.
 Readability isn't a vibe — it's a unit-tested invariant. Tests in `theme.rs`
 enforce WCAG-AA contrast ratios for **every** palette:
 
-- **Text roles** (`text`, `dim`, `info`, `error`, `warn`) vs the theme
-  background: **≥ 4.5:1** (AA for normal text).
-- **Accent/graphic roles** (`accent`, `accent2`, `success`, `special`,
-  `dim2`) vs the background: **≥ 3.0:1** (AA for large text / UI components).
-- **Selection bar**: `sel_fg` on the accent background: **≥ 4.5:1** — the
-  inverted cursor bar is always readable.
+- **Text roles** (`text`, `dim`, `info`, `error`, `warn`, `bright`) vs the
+  theme background: **≥ 4.5:1** (AA for normal text).
+- **Accent roles** (`accent`, `accent2`, `success`, `special`) vs the
+  background: **≥ 4.5:1** as well — they paint readable text at dozens of UI
+  sites, so they carry the body-text floor. Only `dim2` (a pure hierarchy
+  anchor, never text) sits at the **≥ 3.0:1** graphical floor.
+- **Selection**: `sel_fg` on the accent bar AND on accent2-backed fields:
+  **≥ 4.5:1** — the inverted cursor is always readable.
+- **Alert distinctness**: `warn` vs accent and `error` vs accent:
+  **CIE76 ΔE ≥ 30** — an alert must read as a *different state* than the
+  active accent, not just clear the background. Noir and Paper are exempt
+  (mono by design; the badge glyphs `+ ~ x !` carry the state).
 - **Hierarchy**: contrast-vs-background ordering `dim2 < dim < text` (on a
   light theme like Paper the raw luminance order inverts — ink text is the
   *darkest* color) — quieter roles are measurably quieter, but never below
   the AA floor.
 
 A palette that regresses below any threshold fails the test suite, so no theme
-can ship unreadable. Omega is exempt by design: it uses ANSI named colors
-(every role but `warn`, which keeps the truecolor blocked-badge orange), so
-its actual contrast is whatever your terminal's palette delivers (and adapting
-to that palette is its whole point).
+can ship unreadable. Omega is exempt by design: every one of its roles is an
+ANSI named color (`warn` included — an adaptive light red), so its actual
+contrast is whatever your terminal's palette delivers (and adapting to that
+palette is its whole point).
 
 ---
 
@@ -112,9 +125,9 @@ between, like an old tmux/screen) is quantizing to 256 colors.
 
 ### Omega adapts to you
 
-Omega, the default, is built from ANSI *named* colors (red, green, blue, …;
-only its `warn` badge is truecolor orange), so it inherits your terminal/
-Termius color profile — background included.
+Omega, the default, is built entirely from ANSI *named* colors (red, green,
+blue, …), so it inherits your terminal/Termius color profile — background
+included.
 That's its feature, not a limitation: it follows your light/dark preference
 and matches whatever scheme you've tuned your terminal to. If you want the
 TUI to look like *your* terminal, use Omega; if you want it to look the same
