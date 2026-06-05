@@ -212,6 +212,23 @@ impl WorkerRuntime for RmuxRuntime<'_> {
         // plan-run/executor dispatch path previously spawned workers with NO
         // doctrine; mirror cmd_spawn_worker so every dispatched agent gets it.
         let mut full_brief = brief.to_string();
+        // CRITICAL: tell the worker HOW to signal completion. Without this the
+        // worker does the work, verifies, writes a "Resume:" line, then idles at the
+        // prompt — never emitting worker-<session>.done.json, so the executor's
+        // wait_done() blocks forever and the ENTIRE plan stalls at this step. The
+        // `omega done <session> …` invocation (with the exact session baked in) is the
+        // signal the engine polls for. This is the #1 reason a build "never finishes".
+        full_brief.push_str(&format!(
+            "\n\n## SIGNAL COMPLETION — REQUIRED (the build engine BLOCKS until you do this)\n\
+             This is an AUTOMATED build step. As your VERY LAST action, after your Verify \
+             command passes, you MUST run exactly:\n  \
+             omega done {session} done_clean \"<one-line summary of what you changed>\"\n\
+             That writes the done signal the engine waits for. If you genuinely cannot finish, run\n  \
+             omega done {session} blocked \"<what blocks you>\"   (or: failed)\n\
+             Do NOT stop at the prompt, ask a question, or write only a 'Resume:' line and idle — \
+             the whole plan halts on this step until `omega done {session} …` runs. No exceptions.",
+            session = session
+        ));
         let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
         if !ctx.is_empty() {
             full_brief.push_str("\n\n");
