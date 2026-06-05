@@ -16,6 +16,12 @@
 # auto_spawn_master = false   # retired aisb-master rmux viewer (brain = Atlas Telegram bot)
 # auto_naming = true
 
+# TUI color theme — pick interactively in the TUI (Settings → Theme, with live
+# preview) or set the slug here. One of: omega (default), matrix, terminal,
+# amber, noir, paper, monogram, dracula, nord, gruvbox, solarized, tokyo-night,
+# synthwave, ocean, crimson. Unknown slugs fall back to omega.
+# theme = "omega"
+
 # On-screen clock timezone (IANA name). A headless VPS usually runs in UTC, so
 # the status-bar clock would otherwise show UTC instead of your wall time. This
 # localizes ONLY the displayed clock — logs/state stay UTC. DST is automatic.
