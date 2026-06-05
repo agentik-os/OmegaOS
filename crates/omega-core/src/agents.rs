@@ -318,15 +318,23 @@ impl Agent {
                 // (oracle→"plan", trusted worker→"acceptEdits", …) we honor it
                 // instead of skipping permissions entirely. With no mode set we
                 // keep the existing skip-perms behavior (unchanged default).
+                // Pre-trust the pane's cwd in ~/.claude.json IMMEDIATELY before
+                // claude reads it (claude_trust.rs): with many concurrent
+                // sessions the shared config is last-writer-wins, so an earlier
+                // acceptance is routinely clobbered and the "trust this folder?"
+                // dialog re-appears — hanging dispatched oracles. Best-effort:
+                // an old omega binary without the subcommand just skips it.
+                let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
                 let mut args = match opts.permission_mode {
                     Some(ref mode) => format!(
-                        "{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
+                        "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --permission-mode {}",
                         env_prefix,
+                        trust_prefix,
                         shell_quote(mode)
                     ),
                     None => format!(
-                        "{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
-                        env_prefix,
+                        "{}{}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude --dangerously-skip-permissions",
+                        env_prefix, trust_prefix,
                     ),
                 };
                 if let Some(ref sys_file) = opts.system_prompt_file {

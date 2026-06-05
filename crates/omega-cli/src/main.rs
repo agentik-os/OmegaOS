@@ -110,6 +110,16 @@ enum Commands {
     /// Auto-discover projects on this machine (walks $HOME)
     Projects,
 
+    /// Mark a folder as trusted in ~/.claude.json so Claude Code skips the
+    /// "Do you trust the files in this folder?" dialog. Ran automatically by
+    /// every agent launch command right before `claude` starts (concurrent
+    /// sessions clobber the shared config, so trust must be written fresh).
+    #[command(name = "trust-dir", hide = true)]
+    TrustDir {
+        /// Folder to trust (defaults to the current directory)
+        dir: Option<String>,
+    },
+
     /// Run the official installer for an agent (pi, hermes, codex, gemini, glm, claude)
     Install {
         /// Name of the agent to install
@@ -535,6 +545,7 @@ async fn main() -> Result<()> {
         Some(Commands::CleanJunk { force }) => cmd_clean_junk(force).await,
         Some(Commands::Clock { full }) => cmd_clock(full),
         Some(Commands::Projects) => cmd_projects(),
+        Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
         Some(Commands::Config { action }) => cmd_config(action),
@@ -2277,6 +2288,24 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
     println!("\nSyncing OmegaOS config...");
     let _ = cmd_sync();
 
+    Ok(())
+}
+
+/// `omega trust-dir [dir]` — pre-trust a folder in ~/.claude.json (see
+/// omega_core::claude_trust). Called inline by every Claude launch command;
+/// exits 0 with a one-line status either way so the launch never breaks.
+fn cmd_trust_dir(dir: Option<&str>) -> Result<()> {
+    let dir = match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::current_dir()?,
+    };
+    // Canonicalize so "." / relative paths land on the same key claude uses.
+    let dir = dir.canonicalize().unwrap_or(dir);
+    match omega_core::claude_trust::trust_dir(&dir) {
+        Ok(true) => println!("trusted: {}", dir.display()),
+        Ok(false) => println!("already trusted: {}", dir.display()),
+        Err(e) => println!("trust-dir skipped ({}): {}", dir.display(), e),
+    }
     Ok(())
 }
 
