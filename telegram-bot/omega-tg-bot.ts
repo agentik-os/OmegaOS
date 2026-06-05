@@ -1344,11 +1344,16 @@ async function cmdSync(chatId: number, thread?: number) {
       continue;
     }
     if (mappedTid) {
-      // Verify the topic STILL EXISTS on Telegram — a no-op rename probes it. If it
-      // was deleted in the group, recreate it (this is the resilience the operator wants).
+      // Verify the topic STILL EXISTS on Telegram — a no-op rename probes it. On a
+      // LIVE topic the same-name rename returns 400 TOPIC_NOT_MODIFIED (an "error"
+      // that actually proves the topic is alive); a deleted topic returns
+      // TOPIC_ID_INVALID / "thread not found". One topic per project: recreate ONLY
+      // when the topic is provably gone — any other error keeps the mapping (never
+      // duplicate on an ambiguous probe).
       const probe = await tg("editForumTopic", { chat_id: g.hub, message_thread_id: Number(mappedTid), name: p.slice(0, 128) });
-      if (probe.ok) continue; // topic alive → keep
+      if (probe.ok || /not.?modified/i.test(probe.description || "")) continue; // topic alive → keep
       if (/rights|manage/i.test(probe.description || "")) { err = probe.description || "rights"; break; }
+      if (!/TOPIC_ID_INVALID|not found/i.test(probe.description || "")) { console.log(`sync: ambiguous probe on ${p} (${probe.description}) — keeping mapping`); continue; } // ambiguous → keep mapping, no duplicate
       delete g.topics[mappedTid]; // stale mapping (topic deleted) → drop + recreate below
     }
     const r = await tg("createForumTopic", { chat_id: g.hub, name: p.slice(0, 128) });
@@ -1554,9 +1559,12 @@ async function main() {
           // Free text in a project TOPIC = a MISSION → dispatch a REAL oracle session
           // (omega dispatch <project>): its own mission, visible on the VPS, it delegates
           // to dynamic workflows / workers / audit-review. Each message = a new mission.
-          // Elsewhere (no topic) → ATLAS (converse / brainstorm / dispatch).
+          // Elsewhere (no topic) OR in the ATLAS topic → ATLAS (converse / brainstorm /
+          // dispatch). "atlas" is the master, NOT a project — never `omega dispatch atlas`
+          // (same guard as /delete and /topic above).
           const g = loadGroups();
-          const proj = thread ? g.topics?.[String(thread)] : undefined;
+          const topicName = thread ? g.topics?.[String(thread)] : undefined;
+          const proj = topicName && topicName !== "atlas" ? topicName : undefined;
           // Build the contextualized prompt: recent conversation history + the quoted
           // reply (if any) + the new message. Persist the operator turn (also mirrored
           // to the MC dashboard) so Atlas / the oracle has FULL conversation access.
