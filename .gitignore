@@ -23,3 +23,11 @@ __pycache__/
 
 # OmegaMC dashboard — separate repo (agentik-os/agentik-telegram), MIT (M. Tzanidakis)
 mission-control/
+
+# OmegaOS hygiene — agent/test artifacts (auto-added)
+.audit/
+.orchestrator/
+playwright-report/
+test-results/
+.playwright-mcp/
+.planner-cache/
