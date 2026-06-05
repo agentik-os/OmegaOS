@@ -20,6 +20,7 @@
 //! | text, dim, info, error, warn           | 4.5 : 1       |
 //! | accent, accent2, success, special, dim2| 3.0 : 1       |
 //! | sel_fg on the accent (selection bars)  | 4.5 : 1       |
+//! | sel_fg on accent2 (selected fields)    | 4.5 : 1       |
 //!
 //! plus the gray hierarchy `ratio(dim2) < ratio(dim) < ratio(text)` so the
 //! three quiet levels stay visually ordered. A theme that fails is fixed by
@@ -657,6 +658,14 @@ mod tests {
             assert!(
                 sel >= 4.5,
                 "{}: sel_fg on accent is {sel:.2}:1, needs >= 4.5:1",
+                id.slug()
+            );
+            // sel_fg also renders on accent2 backgrounds (selected settings
+            // fields, AISB agent row, input-mode chip — `.bg(th::accent2())`).
+            let sel2 = contrast_ratio(t.sel_fg, t.accent2);
+            assert!(
+                sel2 >= 4.5,
+                "{}: sel_fg on accent2 is {sel2:.2}:1, needs >= 4.5:1",
                 id.slug()
             );
             // 3.0:1 — large/graphical roles.
