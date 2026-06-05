@@ -91,8 +91,12 @@ bootstrap_os_packages() {
         return 0
     fi
     info "Installing runtime prerequisites: ${need[*]}"
+    # sudo MUST be non-interactive (-n): the npx wrapper runs install.sh behind a
+    # full-screen animation, so a password prompt would be INVISIBLE and the
+    # install would hang forever (proven: macOS stuck at 20%). A failed sudo -n
+    # surfaces as a clear error below instead of a silent freeze.
     local SUDO=""
-    [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
     if command -v apt-get >/dev/null 2>&1; then
         $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates rsync jq
     elif command -v dnf >/dev/null 2>&1; then
@@ -103,8 +107,25 @@ bootstrap_os_packages() {
         $SUDO pacman -Sy --noconfirm curl git ca-certificates rsync jq
     elif command -v apk >/dev/null 2>&1; then
         $SUDO apk add --no-cache curl git ca-certificates rsync jq
+    elif command -v brew >/dev/null 2>&1; then
+        # macOS with Homebrew. brew is non-interactive and must not run as root.
+        brew install "${need[@]}"
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+        # macOS without Homebrew: git/curl are hard requirements (ship with the
+        # Xcode Command Line Tools); rsync/jq only degrade optional features
+        # (jq → hook auto-registration, reported by `omega doctor`) — warn and
+        # continue instead of killing the whole install.
+        local critical=()
+        command -v git  >/dev/null 2>&1 || critical+=("git")
+        command -v curl >/dev/null 2>&1 || critical+=("curl")
+        if [[ ${#critical[@]} -gt 0 ]]; then
+            err "Missing ${critical[*]} — install the Xcode Command Line Tools (xcode-select --install) or Homebrew, then re-run."
+            exit 1
+        fi
+        info "Optional tools missing (${need[*]}) — continuing; install later with: brew install ${need[*]}"
+        return 0
     else
-        err "No supported package manager (apt/dnf/yum/pacman/apk)."
+        err "No supported package manager (apt/dnf/yum/pacman/apk/brew)."
         err "Install these manually, then re-run ./install.sh: ${need[*]}"
         exit 1
     fi
@@ -122,7 +143,7 @@ ensure_build_toolchain() {
         ok "Build toolchain present (cc + pkg-config)"
     else
         info "Installing build toolchain (compiling from source)..."
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
         if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y build-essential pkg-config
         elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y gcc gcc-c++ make pkgconf-pkg-config
         elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y gcc gcc-c++ make pkgconfig
@@ -152,7 +173,7 @@ ensure_build_toolchain() {
 # build requirement). Connect with: mosh <host> -- rmux attach
 install_mosh_optional() {
     command -v mosh-server >/dev/null 2>&1 && { ok "mosh present (low-latency SSH available)"; return 0; }
-    local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+    local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
     if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y mosh 2>/dev/null
     elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y mosh 2>/dev/null
     elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y mosh 2>/dev/null
@@ -172,8 +193,12 @@ install_mosh_optional
 # session — root + future users — inherits UTF-8 (this is what the Termius mosh
 # command's `-l LANG=en_US.UTF-8` relies on). Best-effort; never aborts.
 ensure_utf8_locale() {
+    # macOS is natively UTF-8 and /etc/default/locale is a Debian-ism: writing it
+    # via sudo prompted for a password BEHIND the npx animation — an invisible,
+    # infinite hang at ~20% (proven on a real Mac install). Nothing to do here.
+    if [[ "$(uname -s)" == "Darwin" ]]; then ok "UTF-8 locale native (macOS)"; return 0; fi
     if locale -a 2>/dev/null | grep -qiE 'en_US\.utf-?8'; then ok "UTF-8 locale present (en_US.UTF-8)"; else
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
         # Every command here is best-effort: on a minimal image the `locales`
         # package (and its en_US source) may be absent, so locale-gen/localedef
         # can fail. Under `set -euo pipefail` an unguarded failure would ABORT
@@ -192,7 +217,7 @@ ensure_utf8_locale() {
     fi
     # Make it the system default so root + future users get UTF-8 without per-shell setup.
     if [[ ! -s /etc/default/locale ]] || ! grep -q 'LANG=.*UTF-8' /etc/default/locale 2>/dev/null; then
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
+        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
         { echo 'LANG=en_US.UTF-8' | $SUDO tee /etc/default/locale >/dev/null 2>&1 \
             && ok "System default locale set (LANG=en_US.UTF-8 for all users)"; } || true
     fi

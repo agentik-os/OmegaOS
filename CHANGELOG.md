@@ -48,6 +48,13 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   ASCII convention. Telegram messages keep their emoji.
 
 ### Fixed
+- macOS install hung at ~20% behind the npx Matrix animation: Phase 2 wrote
+  the Debian-ism `/etc/default/locale` via `sudo`, whose password prompt was
+  invisible behind the full-screen animation. `ensure_utf8_locale` now no-ops
+  on Darwin (natively UTF-8), every Phase-2 sudo is non-interactive
+  (`sudo -n` — fail loud, never prompt), and `bootstrap_os_packages` gains a
+  Homebrew branch plus a Darwin-without-brew soft path (missing rsync/jq
+  warn-and-continue; only git/curl are fatal).
 - Mouse-wheel scroll dead in every rmux pane (regression in rmux `0e4abb2`):
   the client-side paste heuristic wrapped a batched wheel burst (3+ SGR mouse
   reports ≥ 32 bytes, no newline) as a bracketed paste, so the server pasted
