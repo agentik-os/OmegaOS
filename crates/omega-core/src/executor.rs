@@ -78,6 +78,10 @@ pub async fn run<R: WorkerRuntime>(
     if !tracker.is_acyclic() {
         bail!("plan DAG contains a cycle — aborting");
     }
+    // Strict structural gate BEFORE any worker spawns: dangling deps, duplicate
+    // ids, and trivial verify_commands are refused here — so a malformed plan can
+    // never silently mis-sequence or fake-complete the build.
+    tracker.validate().context("plan failed strict validation — fix the tracker.json")?;
     let guardian = Guardian::new(opts.max_attempts);
     let mut report = RunReport::default();
 

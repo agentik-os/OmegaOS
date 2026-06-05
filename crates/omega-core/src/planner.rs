@@ -140,6 +140,61 @@ impl PlanTracker {
             .and_then(|s| serde_json::from_str(&s).ok())
     }
 
+    /// Strict structural validation of a loaded plan. The engine REFUSES to run a
+    /// plan that would silently mis-sequence or fake-complete — the exact failure
+    /// modes that let a "build" finish with nothing actually working:
+    ///   - **dangling `depends_on`** (a typo'd dep id → `deps_satisfied` is never
+    ///     true → that step blocks FOREVER, silently);
+    ///   - **duplicate `step_id`s** (mark_done/ready_steps act on the wrong step);
+    ///   - **empty or trivial `verify_command`** (`true` / `:` / bare `echo` →
+    ///     the Guardian's re-run passes unconditionally, so the step is marked Done
+    ///     without any proof — the #1 cause of "done but broken").
+    /// Returns every issue at once (don't make the operator fix one at a time).
+    pub fn validate(&self) -> Result<()> {
+        use std::collections::HashSet;
+        let ids: HashSet<&str> = self.steps.iter().map(|s| s.step_id.as_str()).collect();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut errs: Vec<String> = Vec::new();
+        if self.steps.is_empty() {
+            bail!("plan has zero steps — refusing to run an empty plan");
+        }
+        for s in &self.steps {
+            if !seen.insert(s.step_id.as_str()) {
+                errs.push(format!("duplicate step_id `{}`", s.step_id));
+            }
+            for dep in &s.depends_on {
+                if !ids.contains(dep.as_str()) {
+                    errs.push(format!(
+                        "step `{}` depends on unknown step `{}` — dangling dep, it would block forever",
+                        s.step_id, dep
+                    ));
+                }
+                if dep == &s.step_id {
+                    errs.push(format!("step `{}` depends on itself", s.step_id));
+                }
+            }
+            let v = s.verify_command.trim();
+            let trivial = v.is_empty()
+                || v == "true"
+                || v == ":"
+                || v.split_whitespace().next() == Some("echo");
+            if trivial {
+                errs.push(format!(
+                    "step `{}` has a trivial verify_command `{}` — it fake-passes; give a real check (build / test / typecheck / `jq -e .score>=N`)",
+                    s.step_id, v
+                ));
+            }
+        }
+        if !errs.is_empty() {
+            bail!(
+                "plan validation failed ({} issue(s)) — refusing to run:\n  - {}",
+                errs.len(),
+                errs.join("\n  - ")
+            );
+        }
+        Ok(())
+    }
+
     pub fn save(&self, project_dir: &Path) -> Result<()> {
         let dir = project_dir.join(".planner");
         std::fs::create_dir_all(&dir)?;
@@ -666,6 +721,33 @@ mod tests {
             .unwrap();
 
         tracker
+    }
+
+    #[test]
+    fn validate_catches_malformed_plans() {
+        // A well-formed plan passes.
+        assert!(sample_tracker().validate().is_ok());
+
+        // Trivial verify_command (a loaded JSON can carry this; add_step can't catch
+        // a post-hoc mutation). It must be refused so the step can't fake-pass.
+        let mut t = sample_tracker();
+        t.steps[0].verify_command = "true".to_string();
+        assert!(t.validate().is_err(), "trivial `true` verify must be rejected");
+        t.steps[0].verify_command = "echo done".to_string();
+        assert!(t.validate().is_err(), "echo-only verify must be rejected");
+        t.steps[0].verify_command = String::new();
+        assert!(t.validate().is_err(), "empty verify must be rejected");
+
+        // Dangling dependency → would block forever; refuse it.
+        let mut t = sample_tracker();
+        t.steps[1].depends_on = vec!["STEP-999".to_string()];
+        assert!(t.validate().is_err(), "dangling dep must be rejected");
+
+        // Duplicate step_id.
+        let mut t = sample_tracker();
+        let dup = t.steps[0].clone();
+        t.steps.push(dup);
+        assert!(t.validate().is_err(), "duplicate step_id must be rejected");
     }
 
     #[test]

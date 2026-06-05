@@ -3047,6 +3047,12 @@ fn cmd_plan_status(path: &str) -> Result<()> {
     for s in &tracker.steps {
         println!("  {} {} {}", s.status.icon(), s.step_id, s.title);
     }
+    // Surface the same strict gate `plan-run` enforces — so the planner can fix the
+    // tracker BEFORE dispatching workers (dangling deps / trivial verifies / dups).
+    match tracker.validate() {
+        Ok(()) => println!("\n[+] plan validation: OK (no dangling deps, no trivial verify_commands, no dup ids)"),
+        Err(e) => println!("\n[!] plan validation FAILED — `omega plan-run` will refuse this plan:\n{e}"),
+    }
     Ok(())
 }
 
