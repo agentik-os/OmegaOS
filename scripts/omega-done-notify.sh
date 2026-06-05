@@ -5,7 +5,9 @@
 # Watches ~/.omega/state/oracle-*.done.json. When an oracle finishes (it writes
 # done.json via `omega done <session> <status> <summary>`), this relays the report
 # to Telegram — to the project's forum TOPIC in the hub group if one is mapped, else
-# the operator DM. Idempotent: each done.json is notified once, marked ONLY on a
+# the operator DM. Idempotent per STATUS: each done.json is notified once per status
+# (the marker stores the notified status, so a gate-pending upgrade pending→done_clean
+# re-arms exactly one corrected report), marked ONLY on a
 # confirmed send (a failed send retries next tick). 1-min cron (OMEGA-CRON-DONE-
 # NOTIFY-v1). The single, restart-proof notification path — catches EVERY oracle
 # (Telegram-, TUI-, or Atlas-dispatched). Closing the oracle is owned by `omega done`.
@@ -57,7 +59,6 @@ PY
 for f in "$STATE"/oracle-*.done.json; do
     [ -e "$f" ] || continue
     marker="${f}.notified"
-    [ -f "$marker" ] && continue
 
     # Extract every field robustly (one python read; NUL-safe, no fragile word-split).
     eval "$(python3 - "$f" <<'PY' 2>/dev/null
@@ -82,6 +83,19 @@ except Exception:
 PY
 )"
     [ "${OK:-0}" = "1" ] || continue
+
+    # Content-keyed skip: the marker records WHICH status was notified. An
+    # in-place rewrite of the signal (the L4 gate-pending upgrade flips
+    # pending → done_clean) changes the status and re-arms the notification —
+    # this closes the read→send→mark race that a marker delete alone cannot
+    # (a notifier mid-send could re-create the marker AFTER the upgrade's
+    # invalidation, permanently suppressing the corrected done_clean).
+    # Legacy empty markers (pre-content-key) count as matching so already-
+    # notified missions are not re-sent on deploy.
+    if [ -f "$marker" ]; then
+        sent="$(cat "$marker" 2>/dev/null || true)"
+        if [ -z "$sent" ] || [ "$sent" = "$STATUS" ]; then continue; fi
+    fi
 
     # Symbol aesthetic — no emoji.
     case "$STATUS" in
@@ -141,7 +155,7 @@ ${foot}"
         target="$DM"; thread=""; via="DM"
     fi
     if send_tg "$target" "$msg" "$thread"; then
-        : > "$marker"
+        printf '%s' "$STATUS" > "$marker"
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${ORACLE} (${STATUS}) → ${via}"
     else
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) SEND FAILED ${ORACLE} → ${via} — will retry"

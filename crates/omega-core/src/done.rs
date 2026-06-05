@@ -556,6 +556,63 @@ impl OracleDoneSignal {
         Ok(Some(serde_json::from_str(&content)?))
     }
 
+    /// The per-path "already notified" side-marker the done-notify cron writes
+    /// next to the signal (`oracle-<key>.done.json.notified`).
+    fn notified_path(state_dir: &Path, oracle: &str) -> std::path::PathBuf {
+        let key = Self::oracle_key(oracle);
+        state_dir.join(format!("oracle-{}.done.json.notified", key))
+    }
+
+    /// Clear a STALE signal before (re)launching a session under this name —
+    /// the oracle mirror of the worker-side stale-signal clear (c1f0858).
+    /// Oracle session names are deterministic per project and the done.json is
+    /// otherwise never deleted, so a leftover closeable signal from a PRIOR
+    /// mission would make patrol's reap kill the brand-new session within one
+    /// tick. Removes the signal AND its `.notified` marker (a surviving marker
+    /// would silently suppress the new mission's report).
+    ///
+    /// An UN-notified signal (no `.notified` marker — the cron marks only on a
+    /// confirmed send) is a report the operator never received: it is RETIRED,
+    /// not deleted — renamed to `oracle-<key>-prev<ts>.done.json`, which still
+    /// matches the notifier's `oracle-*.done.json` glob (delivered once under
+    /// its own marker path) but never collides with the new session's signal.
+    /// Returns whether a stale signal actually existed.
+    pub fn clear(state_dir: &Path, oracle: &str) -> bool {
+        let key = Self::oracle_key(oracle);
+        let path = state_dir.join(format!("oracle-{}.done.json", key));
+        if !path.exists() {
+            let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
+            return false;
+        }
+        if Self::notified_path(state_dir, oracle).exists() {
+            // Already delivered → safe to drop both.
+            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
+        } else {
+            // Not yet delivered → retire so the notifier still sends it.
+            let retired = state_dir.join(format!(
+                "oracle-{}-prev{}.done.json",
+                key,
+                Utc::now().timestamp()
+            ));
+            if std::fs::rename(&path, &retired).is_err() {
+                // Rename failed (cross-device/perms) — fall back to delete:
+                // losing one report beats reviving the stale-reap kill chain.
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        true
+    }
+
+    /// Invalidate the notified marker after an upgrade rewrites the signal
+    /// (Pending+gate_pending → DoneClean). The notifier cron may have already
+    /// reported the transient Pending state and written the per-path marker;
+    /// without this, the corrected done_clean would NEVER be sent and the
+    /// operator's record would permanently say the mission was incomplete.
+    pub fn invalidate_notified(state_dir: &Path, oracle: &str) {
+        let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
+    }
+
     pub fn is_closeable(&self) -> bool {
         self.status == DoneStatus::DoneClean && self.pending_actions.is_empty()
     }
@@ -603,5 +660,76 @@ mod oracle_done_tests {
         sig.write(dir).unwrap();
         assert!(dir.join("oracle-OmegaOS-2.done.json").exists());
         assert!(OracleDoneSignal::read(dir, "oracle-OmegaOS-2").unwrap().is_some());
+    }
+
+    #[test]
+    fn clear_removes_stale_signal_and_notified_marker() {
+        // dispatch_oracle / resurrect_oracle call this before launching a
+        // session: BOTH the stale done.json and its .notified marker must go,
+        // for either key form (bare key at dispatch, full session name at
+        // resurrect).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let sig = OracleDoneSignal::new("OmegaOS", "OmegaOS", DoneStatus::DoneClean, "mission");
+        sig.write(dir).unwrap();
+        std::fs::write(dir.join("oracle-OmegaOS.done.json.notified"), "").unwrap();
+
+        // Notified signal + full session name (resurrect path): both removed.
+        assert!(OracleDoneSignal::clear(dir, "oracle-OmegaOS"));
+        assert!(!dir.join("oracle-OmegaOS.done.json").exists());
+        assert!(!dir.join("oracle-OmegaOS.done.json.notified").exists());
+
+        // No stale signal → reports false, still a no-op success.
+        assert!(!OracleDoneSignal::clear(dir, "oracle-OmegaOS"));
+
+        // Bare key (dispatch path) clears too.
+        sig.write(dir).unwrap();
+        std::fs::write(dir.join("oracle-OmegaOS.done.json.notified"), "").unwrap();
+        assert!(OracleDoneSignal::clear(dir, "OmegaOS"));
+        assert!(!dir.join("oracle-OmegaOS.done.json").exists());
+    }
+
+    #[test]
+    fn clear_retires_unnotified_signal_instead_of_deleting() {
+        // An UN-notified signal (no .notified marker) is a report the operator
+        // never received: clear must RETIRE it (rename, still matching the
+        // notifier's oracle-*.done.json glob) rather than destroy it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let sig = OracleDoneSignal::new("OmegaOS", "OmegaOS", DoneStatus::DoneClean, "mission");
+        sig.write(dir).unwrap();
+
+        assert!(OracleDoneSignal::clear(dir, "oracle-OmegaOS"));
+        // The canonical path is free for the new session's signal…
+        assert!(!dir.join("oracle-OmegaOS.done.json").exists());
+        // …and the report survived under a retired name the notifier will scan.
+        let retired: Vec<_> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| {
+                n.starts_with("oracle-OmegaOS-prev") && n.ends_with(".done.json")
+            })
+            .collect();
+        assert_eq!(retired.len(), 1, "expected exactly one retired signal, got {:?}", retired);
+    }
+
+    #[test]
+    fn invalidate_notified_removes_only_the_marker() {
+        // The gate-pending upgrade rewrites the signal in place; the marker
+        // must be invalidated so the corrected done_clean is re-notified,
+        // while the signal itself stays on disk for the notifier to read.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let sig = OracleDoneSignal::new("OmegaOS", "OmegaOS", DoneStatus::DoneClean, "mission");
+        sig.write(dir).unwrap();
+        std::fs::write(dir.join("oracle-OmegaOS.done.json.notified"), "").unwrap();
+
+        OracleDoneSignal::invalidate_notified(dir, "oracle-OmegaOS");
+        assert!(!dir.join("oracle-OmegaOS.done.json.notified").exists());
+        assert!(dir.join("oracle-OmegaOS.done.json").exists());
+
+        // Idempotent when no marker exists.
+        OracleDoneSignal::invalidate_notified(dir, "OmegaOS");
     }
 }

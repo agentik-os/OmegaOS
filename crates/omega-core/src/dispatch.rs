@@ -289,6 +289,20 @@ impl Dispatcher {
         let oracle_name =
             OracleRegistry::reserve_oracle(&self.config.state_dir, project, preferred.as_deref())?;
 
+        // Clear any STALE done signal from a PRIOR mission under this name —
+        // the oracle mirror of the worker-side clear (c1f0858). Oracle names
+        // recycle (the registry entry of an auto-closed oracle is Dead-purged,
+        // so next_oracle_name re-issues the base name) and nothing else ever
+        // deletes oracle-<key>.done.json: a leftover closeable signal would
+        // make patrol's reap kill the brand-new oracle within one tick, and a
+        // leftover .notified marker would silently suppress its real report.
+        if crate::done::OracleDoneSignal::clear(&self.config.state_dir, &oracle_name) {
+            tracing::warn!(
+                oracle = %oracle_name,
+                "cleared stale done signal from a prior mission before dispatch"
+            );
+        }
+
         // Classification + ship/god-mode detection run on the RAW message —
         // keyword signals ("ship", "god mode") must not be lost to
         // restructuring.
@@ -540,6 +554,37 @@ impl Dispatcher {
             return Ok(ResurrectOutcome::AlreadyAlive);
         }
 
+        // A FINISHED oracle (closeable done signal) must not be resurrected —
+        // the mission is over and its record may still be awaiting the
+        // notifier. Same guard as patrol's auto-resurrect path.
+        if let Ok(Some(done)) =
+            crate::done::OracleDoneSignal::read(&self.config.state_dir, oracle_name)
+        {
+            if done.is_closeable() {
+                return Ok(ResurrectOutcome::Finished);
+            }
+        }
+
+        // Clear any STALE done signal left by the dead incarnation (same
+        // rationale as the dispatch-time clear above): a closeable signal with
+        // an old finished_at would make patrol's reap murder the resurrected
+        // session within 60-120s, and the name would stay bricked on every
+        // retry. The resurrected oracle writes its OWN fresh signal at the end.
+        if crate::done::OracleDoneSignal::clear(&self.config.state_dir, oracle_name) {
+            tracing::warn!(
+                oracle = %oracle_name,
+                "cleared stale done signal from the prior incarnation before resurrect"
+            );
+        }
+        // Re-register as Active with a fresh spawned_at — the dead entry was
+        // purged by registry cleanup, and patrol's freshness guard needs a
+        // spawn time to date this session's future done signal against.
+        let _ = OracleRegistry::register_resurrected(
+            &self.config.state_dir,
+            oracle_name,
+            &state.project,
+        );
+
         let mut prompt = build_resume_prompt(&state);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
         let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Oracle);
@@ -663,6 +708,12 @@ pub enum ResurrectOutcome {
     Resurrected,
     AlreadyAlive,
     NotFound,
+    /// The oracle already finished cleanly (closeable done signal) — nothing
+    /// to resume. Mirrors patrol's auto-resurrect guard; without it a no-arg
+    /// `omega resurrect` swept every finished oracle (OracleState is never
+    /// deleted), wiped its done record via the stale-signal clear, and
+    /// pointlessly re-ran completed missions.
+    Finished,
 }
 
 /// Build the resume prompt for a resurrected oracle from its persisted state —

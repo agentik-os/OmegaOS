@@ -3568,6 +3568,9 @@ async fn cmd_resurrect(oracle: Option<String>) -> Result<()> {
         match dispatcher.resurrect_oracle(&o).await {
             Ok(ResurrectOutcome::Resurrected) => println!("◆ resurrected {}", o),
             Ok(ResurrectOutcome::AlreadyAlive) => println!("• {} already alive — skipped", o),
+            Ok(ResurrectOutcome::Finished) => {
+                println!("• {} already finished (closeable done signal) — skipped", o)
+            }
             Ok(ResurrectOutcome::NotFound) => println!("[x] no OracleState for {}", o),
             Err(e) => println!("[x] {} failed: {}", o, e),
         }

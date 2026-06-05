@@ -974,6 +974,33 @@ impl OracleRegistry {
         self.oracles.push(entry);
     }
 
+    /// Re-register a resurrected oracle as Active with a FRESH `spawned_at`,
+    /// under the same exclusive lock as reserve_oracle. The resurrect path
+    /// previously never re-registered (the dead entry had been purged by
+    /// cleanup), so the resurrected oracle was invisible to the registry and —
+    /// critically — patrol had no `spawned_at` to date the session's done
+    /// signal against: its freshness guard then treats every signal as stale.
+    pub fn register_resurrected(
+        state_dir: &Path,
+        oracle_name: &str,
+        project: &str,
+    ) -> Result<()> {
+        std::fs::create_dir_all(state_dir)?;
+        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
+        lockfile.lock_exclusive()?;
+        let mut reg = Self::load(state_dir);
+        reg.register(OracleRegistryEntry {
+            oracle_name: oracle_name.to_string(),
+            project: project.to_string(),
+            session_name: oracle_name.to_string(),
+            status: OracleRegistryStatus::Active,
+            spawned_at: Utc::now(),
+            files_owned: Vec::new(),
+        });
+        reg.save(state_dir)
+        // lockfile drops here -> advisory lock released
+    }
+
     pub fn find_available(&self, project: &str) -> Option<&OracleRegistryEntry> {
         self.oracles
             .iter()

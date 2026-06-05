@@ -610,12 +610,42 @@ impl Patrol {
             if let Ok(Some(mut done)) =
                 OracleDoneSignal::read(&self.config.state_dir, &session.name)
             {
+                // ── Freshness guard (layered defense, stale-reap audit) ──
+                // Oracle names recycle (Dead-purged registry entries make
+                // next_oracle_name re-issue the base name) and the done.json
+                // survives its session, so the signal on disk can belong to a
+                // PREVIOUS mission. Acting on a stale signal killed brand-new
+                // oracles (reap) and forged completions (upgrade). Date the
+                // signal against the live session's registry spawned_at:
+                // signal older than the session → ignore + warn. Unknown spawn
+                // time (no registry entry) → ignore too: never act on a signal
+                // you cannot date — the inline auto-close in `omega done` /
+                // `omega progress` remains the primary close path.
+                let spawned_at = registry
+                    .oracles
+                    .iter()
+                    .find(|e| e.session_name == session.name)
+                    .map(|e| e.spawned_at);
+                let stale = signal_predates_session(done.finished_at, spawned_at);
+                if stale {
+                    tracing::warn!(
+                        oracle = %session.name,
+                        finished_at = %done.finished_at,
+                        spawned_at = ?spawned_at,
+                        "stale done signal predates session spawn — ignored (no upgrade, no reap)"
+                    );
+                    report.actions_taken.push(format!(
+                        "Ignored stale done signal for {} (predates session spawn)",
+                        session.name
+                    ));
+                }
+
                 // ── L4 gate-pending upgrade (backstop for a missed progress tick) ──
                 // `omega done` downgrades done_clean → Pending while the plan is
                 // <100% (gate_pending=true); `omega progress` upgrades it back when
                 // the final task lands. If that tick was missed, resolve it here:
                 // a 100%-done, no-failure plan satisfies the L4 gate.
-                if done.status == DoneStatus::Pending && done.gate_pending {
+                if !stale && done.status == DoneStatus::Pending && done.gate_pending {
                     let key = session
                         .name
                         .strip_prefix("oracle-")
@@ -647,6 +677,14 @@ impl Patrol {
                             done.duration_secs =
                                 (done.finished_at - done.started_at).num_seconds().max(0) as u64;
                             let _ = done.write(&self.config.state_dir);
+                            // The notifier may have already reported the
+                            // transient Pending state and written its per-path
+                            // marker — invalidate it so the corrected
+                            // done_clean is notified exactly once.
+                            OracleDoneSignal::invalidate_notified(
+                                &self.config.state_dir,
+                                &session.name,
+                            );
                             tracing::info!(
                                 oracle = %session.name,
                                 "L4 gate satisfied — pending upgraded to done_clean"
@@ -659,7 +697,7 @@ impl Patrol {
                     }
                 }
 
-                if done.is_closeable() {
+                if !stale && done.is_closeable() {
                     report.done_oracles.push(session.name.clone());
                     registry.mark_status(&session.name, OracleRegistryStatus::Done);
                     // Self-improvement: auto-dispatch the curator worker
@@ -676,6 +714,12 @@ impl Patrol {
                     let closeable_secs = (Utc::now() - done.finished_at).num_seconds();
                     if should_reap_oracle(done.is_closeable(), closeable_secs) {
                         let _ = mgr.kill_session(&session.name).await;
+                        // Release any scope claim the oracle still held —
+                        // parity with the worker reap above (a gate-pending
+                        // oracle skips the cmd_done-time release because its
+                        // signal was not closeable yet, so the claim would
+                        // otherwise leak until a manual cleanup).
+                        let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
                         tracing::info!(
                             oracle = %session.name,
                             closeable_secs,
@@ -1000,6 +1044,24 @@ fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
     closeable && secs >= ORACLE_CLOSE_GRACE_SECS
 }
 
+/// Freshness guard predicate (pure + testable). A done signal whose
+/// `finished_at` predates the live session's spawn belongs to a PREVIOUS
+/// mission that recycled the name — patrol must never upgrade or reap on it.
+/// Unknown spawn time (no registry entry for the session) is treated as stale
+/// too: never act on a signal you cannot date. Dispatch registers spawned_at
+/// via reserve_oracle and resurrect via register_resurrected, so a live
+/// OmegaOS-launched oracle always has one; the conservative default only
+/// affects hand-made sessions, where killing would be worse than lingering.
+fn signal_predates_session(
+    finished_at: chrono::DateTime<Utc>,
+    session_spawned_at: Option<chrono::DateTime<Utc>>,
+) -> bool {
+    match session_spawned_at {
+        Some(spawned_at) => finished_at < spawned_at,
+        None => true,
+    }
+}
+
 /// Detect a fatal, non-recoverable agent error in a session's pane output — the
 /// agent is stuck on an error rather than working or idle. Only the tail (the
 /// live error, not old scrollback) is inspected. A content-filter block and a
@@ -1063,6 +1125,21 @@ mod tests {
         // Closeable + grace elapsed → reap.
         assert!(should_reap_oracle(true, ORACLE_CLOSE_GRACE_SECS));
         assert!(should_reap_oracle(true, ORACLE_CLOSE_GRACE_SECS + 10));
+    }
+
+    #[test]
+    fn stale_signal_predates_session_guard() {
+        let spawn = Utc::now();
+        // Signal from a PRIOR mission (finished before this session spawned)
+        // → stale: no reap, no gate-pending upgrade.
+        assert!(signal_predates_session(spawn - chrono::Duration::hours(3), Some(spawn)));
+        assert!(signal_predates_session(spawn - chrono::Duration::seconds(1), Some(spawn)));
+        // Signal written BY this session (at or after spawn) → fresh.
+        assert!(!signal_predates_session(spawn, Some(spawn)));
+        assert!(!signal_predates_session(spawn + chrono::Duration::seconds(30), Some(spawn)));
+        // Unknown spawn time (no registry entry) → conservatively stale:
+        // never kill a session you cannot date.
+        assert!(signal_predates_session(Utc::now(), None));
     }
 
     #[test]
