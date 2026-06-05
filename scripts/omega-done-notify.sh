@@ -108,9 +108,19 @@ ${body}"
     [ -n "$PENDING" ] && msg="${msg}
 
 <b>Reste :</b> $(esc "$PENDING")"
-    [ -n "$DEPLOY" ] && msg="${msg}
+    # PROD VERIFY (R-PROD): probe the deploy URL before the report implies it's live.
+    if [ -n "$DEPLOY" ]; then
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$DEPLOY" 2>/dev/null || echo 000)"
+        if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+            msg="${msg}
 
-$(esc "$DEPLOY")"
+✓ <a href=\"$(esc "$DEPLOY")\">$(esc "$DEPLOY")</a> <code>${code}</code>"
+        else
+            msg="${msg}
+
+⚠️ deploy injoignable (<code>${code}</code>) — $(esc "$DEPLOY")"
+        fi
+    fi
     foot="<i>$(esc "$ORACLE")"
     [ -n "$DUR" ]    && foot="${foot} · ${DUR}"
     foot="${foot}</i>"
