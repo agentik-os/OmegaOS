@@ -152,6 +152,12 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
+    // Modal guard: while the SelectModel picker overlay is open, mouse events
+    // must not leak to the screen beneath it (scroll/clicks were mutating the
+    // panels under the modal). The picker is keyboard-driven.
+    if matches!(app.input_mode, InputMode::SelectModel(..)) {
+        return Action::None;
+    }
     match mouse.kind {
         MouseEventKind::ScrollDown => {
             scroll_active_panel_at(app, 3, true, mouse.column);

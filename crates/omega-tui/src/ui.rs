@@ -286,6 +286,13 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
             // selection bar across the modal (the old text-chip highlight was
             // easy to miss on several themes).
             let row = format!(" {} {}", if selected { "▶" } else { " " }, text);
+            // Char-safe ellipsis instead of a hard mid-word clip at the
+            // border (slicing by byte would also panic on multi-byte chars).
+            let row = if row.chars().count() > inner_w && inner_w > 1 {
+                format!("{}…", row.chars().take(inner_w - 1).collect::<String>())
+            } else {
+                row
+            };
             let pad = inner_w.saturating_sub(row.chars().count());
             let row = format!("{}{}", row, " ".repeat(pad));
             let style = if selected {
@@ -312,7 +319,13 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
             .border_style(Style::default().fg(th::accent()))
             .style(Style::default().fg(th::text()).bg(th::bg().unwrap_or(Color::Reset))),
     );
-    frame.render_widget(list, area);
+    // Scroll-follow: stateful render keeps the selected row visible when the
+    // list is taller than the modal (15 themes vs ~10 visible rows at 80x24 —
+    // arrowing below the fold was blind). Selection visuals stay baked into
+    // the items; the state only drives the offset window.
+    let mut state = ListState::default();
+    state.select(Some(sel));
+    frame.render_stateful_widget(list, area, &mut state);
 }
 
 /// Project delete menu — the SAME three escalating tiers as the Telegram bot
@@ -1227,10 +1240,10 @@ fn render_session_item(
             .fg(th::special())
             .add_modifier(Modifier::BOLD)
     } else {
-        // Brighter than the previous default — clearly visible on dark terminals
-        Style::default()
-            .fg(th::text())
-            .add_modifier(Modifier::BOLD)
+        // Passive: plain body text, NO bold — bold on every row carries zero
+        // hierarchy. Bold stays reserved for the active session and the
+        // selection bar (doctrine: actif = vif + gras, passif = normal).
+        Style::default().fg(th::text())
     };
 
     let protect_marker = if entry.is_protected { "§ " } else { "" };
@@ -2093,10 +2106,18 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     // group renders the provider fields.
     let on_monitor = app.settings_on_monitor();
     let providers = app.providers();
+    // Inner text width of the detail panel — gallery rows ellipsize their
+    // blurbs against it instead of hard-clipping mid-word at the border.
+    // (-2 borders, -1 margin for percentage-split rounding.)
+    let detail_inner_w = if app.detail_fullscreen {
+        area.width.saturating_sub(2)
+    } else {
+        (area.width.saturating_mul(75) / 100).saturating_sub(3)
+    } as usize;
     let (lines, selected_field_line) = if on_monitor {
         render_monitor_detail(app)
     } else {
-        render_settings_detail(app, &providers)
+        render_settings_detail(app, &providers, detail_inner_w)
     };
     let section_label: String = if on_monitor {
         app.selected_monitor_section().label().to_string()
@@ -2182,9 +2203,11 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// Returns (lines, selected_field_line) — the line index where the selected field starts.
+/// `inner_w` is the detail panel's inner text width (gallery blurb budget).
 fn render_settings_detail(
     app: &App,
     providers: &omega_core::providers::ProvidersConfig,
+    inner_w: usize,
 ) -> (Vec<Line<'static>>, usize) {
     use crate::app::{fields_for_section, SettingsField};
     let fields = fields_for_section(app.selected_settings_section(), providers, &app.config);
@@ -2364,10 +2387,20 @@ fn render_settings_detail(
                     },
                 ),
             ];
-            for c in [p.accent, p.accent2, p.success, p.error, p.info, p.special, p.dim] {
+            // warn replaces success in the strip: on mono themes success IS
+            // the accent (duplicate swatch), while warn is a real distinct role.
+            for c in [p.accent, p.accent2, p.warn, p.error, p.info, p.special, p.dim] {
                 spans.push(Span::styled("\u{2588}\u{2588}", on(c)));
             }
-            spans.push(Span::styled(format!("  {}", id.blurb()), on(p.dim)));
+            // Char-safe ellipsis on the blurb: 4 marker + 28 label +
+            // 14 swatches + 2 gap = 48 fixed columns before it.
+            let blurb_budget = inner_w.saturating_sub(48);
+            let blurb = if id.blurb().chars().count() > blurb_budget && blurb_budget > 1 {
+                format!("{}…", id.blurb().chars().take(blurb_budget - 1).collect::<String>())
+            } else {
+                id.blurb().to_string()
+            };
+            spans.push(Span::styled(format!("  {}", blurb), on(p.dim)));
             lines.push(Line::from(spans));
         }
     }
@@ -3038,8 +3071,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             InputMode::NewProjectLaunchDocs(..) => {
                 ("New project — docs (optional)", app.input_buffer.clone())
             }
-            InputMode::SelectModel(..) => {
-                ("Select model — ↑/↓, Enter, Esc", String::new())
+            InputMode::SelectModel(config_key, ..) => {
+                // The same overlay also drives the theme picker — don't tell
+                // the user they're selecting a "model" there.
+                if config_key == "general.theme" {
+                    ("Select theme — ↑/↓ live preview, Enter saves, Esc reverts", String::new())
+                } else {
+                    ("Select model — ↑/↓, Enter, Esc", String::new())
+                }
             }
             InputMode::ProjectDelete(..) => {
                 ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())

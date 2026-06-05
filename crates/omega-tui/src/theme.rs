@@ -17,11 +17,16 @@
 //!
 //! | roles                                            | minimum ratio |
 //! |---------------------------------------------------|---------------|
-//! | text, dim, info, error, warn                      | 4.5 : 1       |
+//! | text, dim, info, error, warn, bright              | 4.5 : 1       |
 //! | accent, accent2, success, special (text-bearing)  | 4.5 : 1       |
 //! | dim2 (dead role — hierarchy guard only)           | 3.0 : 1       |
 //! | sel_fg on the accent (selection bars)             | 4.5 : 1       |
 //! | sel_fg on accent2 (selected fields)               | 4.5 : 1       |
+//! | warn vs accent, error vs accent (distinctness)    | CIE76 ΔE ≥ 30 |
+//!
+//! The last row is the role-vs-role axis: an alert must read as a DIFFERENT
+//! state than the active accent, not just clear the bg. Noir and Paper are
+//! exempt — mono by design, the badge glyphs (`+ ~ x !`) carry the state.
 //!
 //! plus the gray hierarchy `ratio(dim2) < ratio(dim) < ratio(text)` so the
 //! three quiet levels stay visually ordered. A theme that fails is fixed by
@@ -212,13 +217,20 @@ const TERMINAL: Theme = mono(
 );
 
 /// Amber — mono chrome + retro amber phosphor.
-const AMBER: Theme = mono(
-    Color::Rgb(255, 176, 0),
-    Color::Rgb(22, 13, 0),
-    Color::Rgb(235, 220, 200),
-    Color::Rgb(123, 123, 123),
-    Color::Rgb(95, 95, 95),
-);
+/// Its accent IS orange — the mono warn orange would be the same state color
+/// (ΔE76 6.5), so warn moves to the alert-red family (glyphs disambiguate
+/// warn from error within the Alerte class).
+const AMBER: Theme = Theme {
+    warn: Color::Rgb(255, 90, 90),
+    warn_hi: Color::Rgb(255, 90, 90),
+    ..mono(
+        Color::Rgb(255, 176, 0),
+        Color::Rgb(22, 13, 0),
+        Color::Rgb(235, 220, 200),
+        Color::Rgb(123, 123, 123),
+        Color::Rgb(95, 95, 95),
+    )
+};
 
 /// Noir — full black & white, pure grayscale on dark terminals.
 const NOIR: Theme = Theme {
@@ -286,13 +298,19 @@ const NORD: Theme = mono(
 );
 
 /// Gruvbox — mono chrome + warm gruvbox orange.
-const GRUVBOX: Theme = mono(
-    Color::Rgb(254, 128, 25),
-    Color::Rgb(40, 40, 40),
-    Color::Rgb(230, 220, 200),
-    Color::Rgb(142, 142, 142),
-    Color::Rgb(113, 113, 113),
-);
+/// Like Amber, the orange accent collides with the mono warn orange
+/// (ΔE76 22.5) — warn moves to the alert-red family.
+const GRUVBOX: Theme = Theme {
+    warn: Color::Rgb(255, 90, 90),
+    warn_hi: Color::Rgb(255, 90, 90),
+    ..mono(
+        Color::Rgb(254, 128, 25),
+        Color::Rgb(40, 40, 40),
+        Color::Rgb(230, 220, 200),
+        Color::Rgb(142, 142, 142),
+        Color::Rgb(113, 113, 113),
+    )
+};
 
 /// Solarized — mono chrome + solarized teal.
 const SOLARIZED: Theme = mono(
@@ -607,18 +625,44 @@ mod tests {
         }
     }
 
-    /// WCAG 2.x relative luminance with sRGB linearization.
+    /// sRGB channel linearization (shared by luminance and Lab).
+    fn srgb_lin(v: u8) -> f64 {
+        let v = v as f64 / 255.0;
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    /// WCAG 2.x relative luminance.
     fn relative_luminance(c: Color) -> f64 {
-        fn lin(v: u8) -> f64 {
-            let v = v as f64 / 255.0;
-            if v <= 0.04045 {
-                v / 12.92
+        let (r, g, b) = rgb_of(c);
+        0.2126 * srgb_lin(r) + 0.7152 * srgb_lin(g) + 0.0722 * srgb_lin(b)
+    }
+
+    /// sRGB → CIE Lab (D65) — for the role-vs-role distinctness floor.
+    fn lab_of(c: Color) -> (f64, f64, f64) {
+        let (r, g, b) = rgb_of(c);
+        let (r, g, b) = (srgb_lin(r), srgb_lin(g), srgb_lin(b));
+        let x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+        let z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+        fn f(t: f64) -> f64 {
+            if t > 0.008856 {
+                t.cbrt()
             } else {
-                ((v + 0.055) / 1.055).powf(2.4)
+                7.787 * t + 16.0 / 116.0
             }
         }
-        let (r, g, b) = rgb_of(c);
-        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+        (116.0 * f(y) - 16.0, 500.0 * (f(x) - f(y)), 200.0 * (f(y) - f(z)))
+    }
+
+    /// CIE76 color difference — perceptual distance between two roles.
+    fn delta_e76(a: Color, b: Color) -> f64 {
+        let (l1, a1, b1) = lab_of(a);
+        let (l2, a2, b2) = lab_of(b);
+        ((l1 - l2).powi(2) + (a1 - a2).powi(2) + (b1 - b2).powi(2)).sqrt()
     }
 
     fn contrast_ratio(a: Color, b: Color) -> f64 {
@@ -657,6 +701,7 @@ mod tests {
             check("info", t.info, 4.5);
             check("error", t.error, 4.5);
             check("warn", t.warn, 4.5);
+            check("bright", t.bright, 4.5);
             // sel_fg renders on accent-colored selection bars, not on bg.
             let sel = contrast_ratio(t.sel_fg, t.accent);
             assert!(
@@ -682,6 +727,24 @@ mod tests {
             // 3.0:1 — dim2 has no text call sites; it only anchors the
             // gray hierarchy below.
             check("dim2", t.dim2, 3.0);
+            // Role-vs-role distinctness: an alert must read as a DIFFERENT
+            // state than the active accent, not just clear the bg (the axis
+            // that let 'Amber warn ≡ accent' ship green). Noir and Paper are
+            // exempt — mono by design, the badge glyphs (+ ~ x !) carry state.
+            if !matches!(*id, ThemeId::Noir | ThemeId::Paper) {
+                let dw = delta_e76(t.warn, t.accent);
+                assert!(
+                    dw >= 30.0,
+                    "{}: warn vs accent ΔE76 is {dw:.1}, needs >= 30",
+                    id.slug()
+                );
+                let de = delta_e76(t.error, t.accent);
+                assert!(
+                    de >= 30.0,
+                    "{}: error vs accent ΔE76 is {de:.1}, needs >= 30",
+                    id.slug()
+                );
+            }
             // Gray hierarchy: the three quiet levels stay visually ordered.
             let (r2, r1, rt) = (vs_bg(t.dim2), vs_bg(t.dim), vs_bg(t.text));
             assert!(
