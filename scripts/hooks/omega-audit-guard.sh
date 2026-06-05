@@ -118,32 +118,18 @@ jq -nc --arg ts "$TS" --arg sev "$SEV" --arg act "$ACTION" --arg sess "$SESSION"
    '{ts:$ts,event:"guard",severity:$sev,action:$act,session:$sess,reason:$reason,command:$cmd}' \
    >> "$AUDIT_DIR/guard.jsonl" 2>/dev/null
 
-# ── Catastrophic → alert the operator + block ────────────────────────────────
+# ── Catastrophic → alert (via the canonical Alerts funnel) + block ───────────
 if [ "$SEV" = "catastrophic" ]; then
-    TG_TOML="$HOME/.omega/telegram.toml"
-    GFILE="$HOME/.omega/telegram-groups.json"
-    TOKEN=$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)
-    if [ -n "$TOKEN" ]; then
-        # Alerts belong in the hub group's "alerts" TOPIC — never the Atlas topic (that's
-        # discussion only) and never a DM. Fall back to the operator DM only if no hub/alerts
-        # topic is configured.
-        HUB=$(jq -r '.hub // empty' "$GFILE" 2>/dev/null)
-        ALERTS=$(jq -r '.alerts_topic // empty' "$GFILE" 2>/dev/null)
-        if [ -n "$HUB" ] && [ -n "$ALERTS" ]; then
-            CHAT="$HUB"; THREAD="$ALERTS"
-        else
-            CHAT=$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1); THREAD=""
-        fi
-        if [ -n "$CHAT" ]; then
-            esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
-            MSG="‖ <b>Guard — opération bloquée</b>
+    # Route through the ONE alert funnel (omega-alert-send.sh): posts to the dedicated
+    # Alerts topic, auto-recreates it if deleted, DM fallback — NEVER the Atlas topic.
+    SENDER="$HOME/.omega/bin/omega-alert-send.sh"
+    if [ -x "$SENDER" ]; then
+        esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
+        MSG="‖ <b>Guard — opération bloquée</b>
 projet <b>$(esc "$PROJECT")</b> · <i>$(esc "$SESSION")</i>
 $(esc "$REASON")
 <code>$(esc "${CMD:0:300}")</code>"
-            a=(--data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "parse_mode=HTML")
-            [ -n "$THREAD" ] && a+=(--data-urlencode "message_thread_id=$THREAD")
-            curl -s --max-time 6 "https://api.telegram.org/bot${TOKEN}/sendMessage" "${a[@]}" >/dev/null 2>&1 &
-        fi
+        bash "$SENDER" "$MSG" >/dev/null 2>&1 &
     fi
     # PreToolUse: exit 2 refuses the tool call; stderr is fed back to the agent.
     printf '%s\n' "BLOCKED by OmegaOS audit-guard: $REASON. This op is irreversible and out-of-scope — if truly intended, run it yourself outside the agent, or narrow it to a project-scoped path." 1>&2
