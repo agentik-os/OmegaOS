@@ -22,6 +22,11 @@ const AUTO_DONE_IDLE_SECS: i64 = 120; // 2 minutes idle after 100% todos = patro
 // honest-done case (an honest worker used to linger as a zombie because the
 // primary path never killed it). Const, not a config.rs knob, by design.
 const WORKER_CLOSE_GRACE_SECS: i64 = 45;
+// Grace window before a closeable (done_clean, no pending actions) oracle is
+// deterministically reaped. Longer than the worker grace: the inline auto-close
+// in `omega done` / `omega progress` normally fires within seconds, so patrol's
+// reap is the backstop for a missed close, not the primary path.
+const ORACLE_CLOSE_GRACE_SECS: i64 = 120;
 
 #[derive(Debug)]
 pub struct PatrolReport {
@@ -586,7 +591,7 @@ impl Patrol {
     /// Patrol oracle sessions: check for done oracles, update registry, handle close.
     async fn patrol_oracles(
         &self,
-        _mgr: &SessionManager,
+        mgr: &SessionManager,
         sessions: &[crate::session::OmegaSession],
         report: &mut PatrolReport,
     ) -> Result<()> {
@@ -602,16 +607,85 @@ impl Patrol {
             }
 
             // Check oracle done signal
-            if let Ok(Some(done)) =
+            if let Ok(Some(mut done)) =
                 OracleDoneSignal::read(&self.config.state_dir, &session.name)
             {
+                // ── L4 gate-pending upgrade (backstop for a missed progress tick) ──
+                // `omega done` downgrades done_clean → Pending while the plan is
+                // <100% (gate_pending=true); `omega progress` upgrades it back when
+                // the final task lands. If that tick was missed, resolve it here:
+                // a 100%-done, no-failure plan satisfies the L4 gate.
+                if done.status == DoneStatus::Pending && done.gate_pending {
+                    let key = session
+                        .name
+                        .strip_prefix("oracle-")
+                        .unwrap_or(&session.name);
+                    let pp = self
+                        .config
+                        .state_dir
+                        .join(format!("oracle-{}.progress.json", key));
+                    if let Some(pj) = std::fs::read_to_string(&pp)
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    {
+                        let total = pj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let done_n = pj.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let any_fail = pj
+                            .get("tasks")
+                            .and_then(|v| v.as_array())
+                            .map(|ts| {
+                                ts.iter().any(|t| {
+                                    t.get("s").and_then(|v| v.as_str()) == Some("fail")
+                                })
+                            })
+                            .unwrap_or(false);
+                        if total > 0 && done_n == total && !any_fail {
+                            done.status = DoneStatus::DoneClean;
+                            done.pending_actions.clear();
+                            done.gate_pending = false;
+                            done.finished_at = Utc::now();
+                            done.duration_secs =
+                                (done.finished_at - done.started_at).num_seconds().max(0) as u64;
+                            let _ = done.write(&self.config.state_dir);
+                            tracing::info!(
+                                oracle = %session.name,
+                                "L4 gate satisfied — pending upgraded to done_clean"
+                            );
+                            report.actions_taken.push(format!(
+                                "L4 gate satisfied for {} — upgraded pending to done_clean",
+                                session.name
+                            ));
+                        }
+                    }
+                }
+
                 if done.is_closeable() {
                     report.done_oracles.push(session.name.clone());
                     registry.mark_status(&session.name, OracleRegistryStatus::Done);
                     // Self-improvement: auto-dispatch the curator worker
                     // ONCE per done oracle. The marker file prevents
-                    // re-triggering after the curator already ran.
+                    // re-triggering after the curator already ran. Must run
+                    // BEFORE the reap below — its flag file keeps it idempotent.
                     let _ = self.maybe_trigger_curator(&session.name);
+
+                    // ── Deterministic oracle reap (mirror of the worker reap) ──
+                    // The inline auto-close in `omega done` / `omega progress`
+                    // normally closes the session within seconds; if that was
+                    // missed, reap here once the grace window elapsed so an
+                    // honest-done oracle never lingers as a zombie.
+                    let closeable_secs = (Utc::now() - done.finished_at).num_seconds();
+                    if should_reap_oracle(done.is_closeable(), closeable_secs) {
+                        let _ = mgr.kill_session(&session.name).await;
+                        tracing::info!(
+                            oracle = %session.name,
+                            closeable_secs,
+                            "Deterministic reap: done_clean oracle closed"
+                        );
+                        report.actions_taken.push(format!(
+                            "Reaped done_clean oracle {} ({}s past finished_at)",
+                            session.name, closeable_secs
+                        ));
+                    }
                 }
             }
 
@@ -918,6 +992,14 @@ fn should_reap_closeable(oracle_acked: bool, closeable_secs: i64) -> bool {
     oracle_acked || closeable_secs >= WORKER_CLOSE_GRACE_SECS
 }
 
+/// Oracle reap predicate (pure + testable). An oracle is reaped only when its
+/// done signal is closeable (done_clean, no pending actions) AND the grace
+/// window since `finished_at` has elapsed — the grace gives the inline
+/// auto-close (and the done-notifier cron) time to act first.
+fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
+    closeable && secs >= ORACLE_CLOSE_GRACE_SECS
+}
+
 /// Detect a fatal, non-recoverable agent error in a session's pane output — the
 /// agent is stuck on an error rather than working or idle. Only the tail (the
 /// live error, not old scrollback) is inspected. A content-filter block and a
@@ -966,6 +1048,21 @@ mod tests {
         assert!(!should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS - 1));
         assert!(should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS));
         assert!(should_reap_closeable(false, WORKER_CLOSE_GRACE_SECS + 10));
+    }
+
+    #[test]
+    fn oracle_reap_fires_only_when_closeable_and_grace_elapsed() {
+        // Mirrors should_reap_closeable: a non-closeable oracle is NEVER reaped,
+        // no matter how long it has been finished.
+        assert!(!should_reap_oracle(false, 0));
+        assert!(!should_reap_oracle(false, ORACLE_CLOSE_GRACE_SECS + 600));
+        // Closeable but inside the grace window — give the inline auto-close
+        // a chance first.
+        assert!(!should_reap_oracle(true, 0));
+        assert!(!should_reap_oracle(true, ORACLE_CLOSE_GRACE_SECS - 1));
+        // Closeable + grace elapsed → reap.
+        assert!(should_reap_oracle(true, ORACLE_CLOSE_GRACE_SECS));
+        assert!(should_reap_oracle(true, ORACLE_CLOSE_GRACE_SECS + 10));
     }
 
     #[test]

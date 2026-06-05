@@ -470,6 +470,14 @@ pub struct OracleDoneSignal {
     pub pending_actions: Vec<String>,
     #[serde(default)]
     pub lifecycle: OracleLifecycle,
+    /// True when the L4 completeness gate downgraded a done_clean to Pending
+    /// ONLY because the progress plan was not yet 100% (the oracle's own final
+    /// "report" task is by contract still unfinished at `omega done` time —
+    /// chicken-and-egg). `omega progress` and patrol upgrade such a signal back
+    /// to DoneClean once the plan reaches 100% with no failed task. serde
+    /// default keeps pre-existing done.json files readable (false = no gate).
+    #[serde(default)]
+    pub gate_pending: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -510,6 +518,7 @@ impl OracleDoneSignal {
             ship: None,
             pending_actions: Vec::new(),
             lifecycle: OracleLifecycle::Ephemeral,
+            gate_pending: false,
         }
     }
 

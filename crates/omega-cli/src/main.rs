@@ -3868,6 +3868,49 @@ fn cmd_progress(
     std::fs::create_dir_all(&config.state_dir).ok();
     std::fs::write(&path, serde_json::to_string_pretty(&obj)?)?;
     println!("[+] progress {}/{} for oracle-{}", done, total, key);
+
+    // L4 GATE RESOLUTION: the `omega done` oracle path downgrades done_clean →
+    // pending while the plan is <100% (gate_pending=true) — but the oracle's own
+    // final task ("report done") is by contract still unfinished at omega-done
+    // time. When THIS progress tick completes the plan (100% done, no failure),
+    // upgrade the stuck signal back to done_clean and auto-close the session,
+    // mirroring the inline auto-close in cmd_done. Oracle sessions only.
+    if session.starts_with("oracle-")
+        && task.is_some()
+        && status.unwrap_or("done") == "done"
+        && total > 0
+        && done == total
+        && !tasks
+            .iter()
+            .any(|x| x.get("s").and_then(|v| v.as_str()) == Some("fail"))
+    {
+        if let Ok(Some(mut osignal)) =
+            omega_core::done::OracleDoneSignal::read(&config.state_dir, session)
+        {
+            if osignal.status == omega_core::done::DoneStatus::Pending && osignal.gate_pending {
+                osignal.status = omega_core::done::DoneStatus::DoneClean;
+                osignal.pending_actions.clear();
+                osignal.gate_pending = false;
+                osignal.finished_at = chrono::Utc::now();
+                osignal.duration_secs =
+                    (osignal.finished_at - osignal.started_at).num_seconds().max(0) as u64;
+                osignal.write(&config.state_dir)?;
+                println!("[+] L4 gate satisfied - done upgraded to done_clean, auto-closing session");
+                if let Ok(exe) = std::env::current_exe() {
+                    // Session names are sanitized to [A-Za-z0-9._-] (no shell
+                    // metachars), so this format is injection-safe.
+                    let _ = std::process::Command::new("bash")
+                        .arg("-c")
+                        .arg(format!(
+                            "sleep 3; '{}' kill '{}' >/dev/null 2>&1",
+                            exe.to_string_lossy(),
+                            session
+                        ))
+                        .spawn();
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3941,6 +3984,12 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         let mut osignal =
             omega_core::done::OracleDoneSignal::new(key, project, final_status, summary);
         osignal.summary = summary.to_string();
+        // Mark the L4-gate downgrade so `omega progress` / patrol can upgrade the
+        // signal back to done_clean once the plan hits 100% (the oracle's own
+        // final "report" task is unfinished at omega-done time by contract).
+        osignal.gate_pending =
+            done_status == omega_core::done::DoneStatus::DoneClean
+                && final_status == omega_core::done::DoneStatus::Pending;
         osignal.pending_actions = gate_pending;
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
