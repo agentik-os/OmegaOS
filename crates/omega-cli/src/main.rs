@@ -3901,9 +3901,44 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
             .filter(|(_, n)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
             .map(|(p, _)| p)
             .unwrap_or(key);
+        // L4 COMPLETENESS GATE: an oracle cannot claim done_clean while its plan is
+        // unfinished. If the live progress (oracle-<key>.progress.json) shows tasks not
+        // all done (or any failed), downgrade done_clean → pending and surface the
+        // remaining tasks — the report then honestly shows incomplete (no 92%-is-done).
+        let mut final_status = done_status;
+        let mut gate_pending: Vec<String> = Vec::new();
+        if final_status == omega_core::done::DoneStatus::DoneClean {
+            let pp = config.state_dir.join(format!("oracle-{}.progress.json", key));
+            if let Ok(pj) = std::fs::read_to_string(&pp)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .ok_or(())
+            {
+                let total = pj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                let done = pj.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
+                let tasks = pj.get("tasks").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let failed: Vec<String> = tasks.iter()
+                    .filter(|t| t.get("s").and_then(|v| v.as_str()) == Some("fail"))
+                    .filter_map(|t| t.get("t").and_then(|v| v.as_str()).map(|s| format!("échec: {}", s)))
+                    .collect();
+                let unfinished: Vec<String> = tasks.iter()
+                    .filter(|t| matches!(t.get("s").and_then(|v| v.as_str()), Some("todo") | Some("doing")))
+                    .filter_map(|t| t.get("t").and_then(|v| v.as_str()).map(|s| format!("non fait: {}", s)))
+                    .collect();
+                if total > 0 && (done < total || !failed.is_empty()) {
+                    final_status = omega_core::done::DoneStatus::Pending;
+                    gate_pending.extend(failed);
+                    gate_pending.extend(unfinished);
+                    if gate_pending.is_empty() {
+                        gate_pending.push(format!("plan {}/{} — pas 100% (L4)", done, total));
+                    }
+                }
+            }
+        }
         let mut osignal =
-            omega_core::done::OracleDoneSignal::new(key, project, done_status, summary);
+            omega_core::done::OracleDoneSignal::new(key, project, final_status, summary);
         osignal.summary = summary.to_string();
+        osignal.pending_actions = gate_pending;
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
                 requested: false,
@@ -3925,7 +3960,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // THIS `omega done` returns cleanly and the done.json is on disk for the
         // notifier cron before the pane is killed. (Non-clean statuses stay open so the
         // operator can inspect a failed/blocked/pending oracle.)
-        if done_status == omega_core::done::DoneStatus::DoneClean {
+        if final_status == omega_core::done::DoneStatus::DoneClean {
             if let Ok(exe) = std::env::current_exe() {
                 // Session names are sanitized to [A-Za-z0-9._-] (no shell metachars),
                 // so this format is injection-safe.

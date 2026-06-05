@@ -281,14 +281,26 @@ async function addProject(name: string): Promise<string> {
 // writes HERE so Telegram, the TUI menu, and sessions stay in sync (single source of
 // truth). Shape: { projects: [{ name, path, telegram_topic_id, oracle_session, … }] }.
 const PROJECTS_FILE = `${OMEGA_DIR}/projects.json`;
-type RegProject = { name: string; path: string; icon?: string | null; telegram_topic_id?: number | null; oracle_session?: string | null; git_email?: string | null; created_at: string };
+// `telegram` is the per-project visibility toggle (topic sync + Atlas display).
+// Absent or true = enabled (default); false = disabled (sync skips/removes its
+// topic, the bot marks it 🔕 but keeps it listed). Mirrors the Rust struct field.
+type RegProject = { name: string; path: string; icon?: string | null; telegram_topic_id?: number | null; oracle_session?: string | null; git_email?: string | null; created_at: string; telegram?: boolean | null };
 function loadRegistry(): { projects: RegProject[] } { try { const r = JSON.parse(readFileSync(PROJECTS_FILE, "utf8")); return Array.isArray(r?.projects) ? r : { projects: [] }; } catch { return { projects: [] }; } }
 function saveRegistry(r: { projects: RegProject[] }) { try { writeFileSync(PROJECTS_FILE, JSON.stringify(r, null, 2)); } catch {} }
-// View shape kept stable: { name: { dir, category(derived), topic } }.
-function loadProjects(): Record<string, { dir: string; category: string; topic?: number | null }> {
-  const out: Record<string, { dir: string; category: string; topic?: number | null }> = {};
-  for (const p of loadRegistry().projects) out[p.name] = { dir: p.path, category: p.path.split("/Station/")[1]?.split("/")[0] || "", topic: p.telegram_topic_id ?? null };
+// View shape kept stable: { name: { dir, category(derived), topic, telegram } }.
+function loadProjects(): Record<string, { dir: string; category: string; topic?: number | null; telegram: boolean }> {
+  const out: Record<string, { dir: string; category: string; topic?: number | null; telegram: boolean }> = {};
+  for (const p of loadRegistry().projects) out[p.name] = { dir: p.path, category: p.path.split("/Station/")[1]?.split("/")[0] || "", topic: p.telegram_topic_id ?? null, telegram: p.telegram !== false };
   return out;
+}
+// Flip a project's Telegram toggle in the shared registry (TUI + bot agree).
+function setProjectTelegram(name: string, enabled: boolean): boolean {
+  const reg = loadRegistry();
+  const p = reg.projects.find(x => x.name.toLowerCase() === name.toLowerCase());
+  if (!p) return false;
+  p.telegram = enabled;
+  saveRegistry(reg);
+  return true;
 }
 // Upsert a project in the shared registry (matched by path or name). Optionally bind its Telegram topic.
 function recordProject(name: string, dir: string, _category?: string, topicId?: number | null) {
@@ -309,21 +321,31 @@ function projTopicId(name: string): number | undefined {
   for (const [tid, n] of Object.entries(g.topics || {})) if (String(n).toLowerCase() === name.toLowerCase()) return Number(tid);
   return undefined;
 }
-// Delete a managed project. mode "soft" = remove from OmegaOS (Telegram topic +
-// dashboard roster + registry + agent-bot); the code (GitHub + local folder) stays.
-// mode "full" = soft + delete the GitHub repo (irreversible). Never touches local files
-// unless asked; the local folder is left in place (operator can rm manually).
-async function deleteProject(name: string, mode: "soft" | "full"): Promise<string> {
+// Delete a project's Telegram forum topic (if any) and drop its mapping. Shared by
+// deleteProject (step 1) and the toggle-OFF path so there is ONE topic-removal impl.
+async function removeProjectTopic(name: string): Promise<"deleted" | "none" | string> {
+  const tid = projTopicId(name);
+  if (tid == null) return "none";
+  const g = loadGroups();
+  const r = await tg("deleteForumTopic", { chat_id: g.hub, message_thread_id: tid });
+  if (r.ok || /not found|thread not found/i.test(r.description || "")) { delete g.topics![String(tid)]; saveGroups(g); return "deleted"; }
+  return r.description || "failed";
+}
+// Delete a managed project. Three scopes:
+//   "soft"    — remove from OmegaOS (Telegram topic + dashboard roster + registry +
+//               agent-bot). The code (GitHub + local folder) stays.
+//   "full"    — soft + delete the GitHub repo (irreversible). Local folder kept.
+//   "forever" — soft + kill the oracle session + delete the LOCAL FOLDER (rm -rf).
+//               GitHub repo is NOT touched. "all + vps" — wipes it off the VPS disk.
+async function deleteProject(name: string, mode: "soft" | "full" | "forever"): Promise<string> {
   const steps: string[] = [];
   const id = projId(name);
+  // Capture the project folder BEFORE we remove it from the registry (step 4),
+  // otherwise the "forever" lookup below would come back empty.
+  const dir = repoPath(name) || loadProjects()[name]?.dir || "";
   // 1. Telegram topic
-  const tid = projTopicId(name);
-  if (tid != null) {
-    const g = loadGroups();
-    const r = await tg("deleteForumTopic", { chat_id: g.hub, message_thread_id: tid });
-    if (r.ok || /not found|thread not found/i.test(r.description || "")) { delete g.topics![String(tid)]; saveGroups(g); steps.push("💬 Telegram topic: deleted ✅"); }
-    else steps.push(`💬 Topic: ⚠️ ${esc(r.description || "failed")}`);
-  } else steps.push("💬 Topic: (none)");
+  const topic = await removeProjectTopic(name);
+  steps.push(topic === "deleted" ? "💬 Telegram topic: deleted ✅" : topic === "none" ? "💬 Topic: (none)" : `💬 Topic: ⚠️ ${esc(topic)}`);
   // 2. Dashboard roster
   steps.push(mcUnregister(name) ? "🤖 Dashboard agent: removed ✅" : "🤖 Dashboard agent: (absent)");
   // 3. Agent-bot service (if one was associated)
@@ -338,7 +360,6 @@ async function deleteProject(name: string, mode: "soft" | "full"): Promise<strin
   steps.push("📋 Project registry (TUI + Telegram): removed ✅");
   // 5. GitHub repo (full only — irreversible)
   if (mode === "full") {
-    const dir = repoPath(name) || loadProjects()[name]?.dir;
     let slug = "";
     if (dir) { const r = Bun.spawnSync(["bash", "-lc", `git -C ${dir} remote get-url origin 2>/dev/null`]).stdout.toString().trim(); slug = (r.match(/[:/]([^/]+\/[^/]+?)(?:\.git)?$/) || [])[1] || ""; }
     if (slug) {
@@ -347,7 +368,36 @@ async function deleteProject(name: string, mode: "soft" | "full"): Promise<strin
     } else steps.push("🐙 GitHub: ⚠️ remote not found (nothing deleted)");
     steps.push("📁 Local folder: <b>kept</b> (delete it manually if needed).");
   }
-  return card("PROJECT DELETED", ` 🗑 <b>${esc(name)}</b> · ${mode === "full" ? "full" : "OmegaOS only"}\n\n${steps.join("\n")}`);
+  // 6. Local folder (forever only — irreversible). Kill the oracle session first.
+  if (mode === "forever") {
+    Bun.spawnSync(["bash", "-lc", `${OMEGA} kill oracle-${id} >/dev/null 2>&1; ${OMEGA} kill oracle-${name} >/dev/null 2>&1; true`]);
+    steps.push("🔮 Oracle session: killed ✅");
+    // Safety: only rm -rf a real project folder UNDER the operator's home, at least
+    // 3 dirs deep, no whitespace — never $HOME, "/", or a bare top-level dir.
+    const home = homedir();
+    const clean = dir.replace(/\/+$/, "");
+    const safe = !!clean && clean.startsWith(home + "/") && clean.split("/").length > 4 && !/\s/.test(clean) && clean !== home;
+    if (safe) {
+      const rm = Bun.spawnSync(["rm", "-rf", clean]);
+      steps.push(rm.exitCode === 0 ? `📁 Local folder <code>${esc(clean)}</code>: DELETED ✅` : `📁 Local folder: ⚠️ ${esc((rm.stderr.toString()).trim().slice(0, 120))}`);
+    } else steps.push(`📁 Local folder: ⚠️ refused unsafe path <code>${esc(clean || "unknown")}</code> (delete manually).`);
+    steps.push("🐙 GitHub repo: <b>kept</b> (your code stays safe on GitHub).");
+  }
+  const label = mode === "full" ? "full · + GitHub" : mode === "forever" ? "forever · all + local folder" : "OmegaOS only";
+  return card("PROJECT DELETED", ` 🗑 <b>${esc(name)}</b> · ${label}\n\n${steps.join("\n")}`);
+}
+// The delete-options menu (soft / full / forever) — shared by the project view
+// callback and the in-topic /delete command so both surfaces offer the same tiers.
+function projDeleteMenu(name: string): { text: string; markup: any } {
+  return {
+    text: card("DELETE PROJECT", ` 🗑 <b>${esc(name)}</b> — choose a scope:\n\n• <b>OmegaOS only</b> — removes the Telegram topic, dashboard agent, agent-bot and registry. <i>Code (GitHub + folder) stays.</i>\n• <b>Full</b> — that <b>+ deletes the GitHub repo</b> (irreversible). Local folder kept.\n• <b>Forever</b> — that <b>+ deletes the local folder</b> off the VPS (irreversible). GitHub kept.`),
+    markup: kb([
+      [{ text: "🧹 OmegaOS only", callback_data: `proj:delsoft:${name}`.slice(0, 64) }],
+      [{ text: "💥 Full (+ GitHub)", callback_data: `proj:delfull:${name}`.slice(0, 64) }],
+      [{ text: "💀 Delete forever (+ local folder)", callback_data: `proj:delforever:${name}`.slice(0, 64) }],
+      [{ text: "✖ Cancel", callback_data: `proj:open:${name}`.slice(0, 64) }],
+    ]),
+  };
 }
 
 // Project category folders under ~/Station (Partners, SideBusiness, CAIO, …), minus the OS itself.
@@ -653,7 +703,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "tg-link" | "oracle-prompt"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "tg-link" | "oracle-prompt" | "whitelist-id"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -780,6 +830,8 @@ const MENU: [string, string][] = [
   ["dispatch", "Dispatch a mission to an oracle"],
   ["setupgroup", "Register this group as the project hub"],
   ["sync", "Sync projects ↔ Telegram topics"],
+  ["topic", "Toggle a project's Telegram topic on/off"],
+  ["delete", "Delete a project (OmegaOS / full / forever)"],
   ["killall", "Kill all sessions (keeps infra)"],
   ["clean", "Cleanup stray sessions + state"],
   ["help", "Show the action hub"],
@@ -962,12 +1014,15 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     }
     case "projects": {
       const mp = loadProjects();
+      const abots = loadAgentBots();
+      const hasBot = (n: string) => !!(abots[projId(n)] || abots[n]);
       const names = Object.keys(mp).sort();
+      // 🔕 = Telegram topic OFF · 🤖 = a dedicated agent-bot is linked.
       const list = names.length
-        ? names.map(n => `• <b>${esc(n)}</b> <i>(${esc(mp[n].category || "?")})</i>`).join("\n")
+        ? names.map(n => `${mp[n].telegram ? "•" : "🔕"} <b>${esc(n)}</b> <i>(${esc(mp[n].category || "?")})</i>${hasBot(n) ? " 🤖" : ""}`).join("\n")
         : "<i>No managed project yet — add one (📁) or create one (➕).</i>";
       const rows: Btn[][] = [];
-      for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2).map(n => ({ text: `📦 ${n}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
+      for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2).map(n => ({ text: `${mp[n].telegram ? "📦" : "🔕"} ${n}${hasBot(n) ? " 🤖" : ""}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
       return { text: card(`PROJECTS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
     }
     case "audits": {
@@ -1067,32 +1122,78 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "addname") { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Manage a project</b>\nSend the <b>name</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }
   if (ns === "proj" && action === "open") {
     const mp = loadProjects()[arg];
-    // One coherent primary action: dispatch a mission to the project's dedicated
-    // oracle (proj:oracle → `omega dispatch <project>` — a real tracked oracle
-    // session whose result is relayed back). "Talk to oracle" was a misnomer (it's
-    // a fire-and-track dispatch, not a live chat) and duplicated this exact button.
-    return edit(chat, msgId, `<b>📦 ${esc(arg)}</b>${mp ? `\n<i>${esc(mp.category || "")}</i> · <code>${esc(mp.dir || "")}</code>` : ""}`, kb([
+    const tgOn = mp ? mp.telegram : true;
+    const abots = loadAgentBots();
+    const bot = abots[projId(arg)] || abots[arg];
+    const botLine = bot ? `\n🤖 Dedicated bot: <b>linked ✅</b> (whitelisted to you)` : `\n🤖 Dedicated bot: <i>none</i>`;
+    // Primary action: dispatch a mission to the project's dedicated oracle. Plus the
+    // Telegram toggle, the dedicated-bot link, Git, and Delete.
+    return edit(chat, msgId, `<b>${tgOn ? "📦" : "🔕"} ${esc(arg)}</b>${mp ? `\n<i>${esc(mp.category || "")}</i> · <code>${esc(mp.dir || "")}</code>\nTelegram: ${tgOn ? "🔔 <b>ON</b> (synced topic + shown)" : "🔕 <b>OFF</b> (no topic, dimmed)"}${botLine}` : ""}`, kb([
       [{ text: "🚀 Dispatch mission", callback_data: `proj:oracle:${arg}`.slice(0, 64) }],
+      [{ text: tgOn ? "🔕 Telegram: turn OFF" : "🔔 Telegram: turn ON", callback_data: `proj:tg${tgOn ? "off" : "on"}:${arg}`.slice(0, 64) }],
+      [{ text: bot ? "🤖 Dedicated bot — manage" : "🔗 Link a Telegram bot", callback_data: `proj:${bot ? "bot" : "botlink"}:${arg}`.slice(0, 64) }],
       [{ text: "🔧 Git", callback_data: `git:menu:${arg}`.slice(0, 64) }, { text: "🗑 Delete", callback_data: `proj:del:${arg}`.slice(0, 64) }],
       [back("projects")],
     ]));
   }
-  if (ns === "proj" && action === "del") {
-    return edit(chat, msgId, `<b>🗑 Delete “${esc(arg)}”</b>\nChoose:\n• <b>OmegaOS only</b> — removes the Telegram topic, the dashboard agent and the registry. <i>The code (GitHub + folder) stays.</i>\n• <b>Full</b> — all that <b>+ deletes the GitHub repo</b> (irreversible). The local folder is kept.`, kb([
-      [{ text: "🧹 OmegaOS only", callback_data: `proj:delsoft:${arg}`.slice(0, 64) }],
-      [{ text: "💥 Full (+ GitHub)", callback_data: `proj:delfull:${arg}`.slice(0, 64) }],
-      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+  if (ns === "proj" && (action === "tgon" || action === "tgoff")) {
+    const enable = action === "tgon";
+    setProjectTelegram(arg, enable);
+    // Reconcile the topic now: OFF deletes the existing topic; ON lets /sync recreate it.
+    let note = "";
+    if (!enable) { const r = await removeProjectTopic(arg); note = r === "deleted" ? "\n💬 Topic removed." : r === "none" ? "" : `\n💬 Topic: ⚠️ ${esc(r)}`; }
+    else note = "\nRun <code>/sync</code> in the hub to (re)create its topic.";
+    return edit(chat, msgId, card("TELEGRAM TOGGLE", ` ${enable ? "🔔" : "🔕"} <b>${esc(arg)}</b> — Telegram <b>${enable ? "ON" : "OFF"}</b>${note}`), kb([
+      [{ text: enable ? "🔕 Turn OFF" : "🔔 Turn ON", callback_data: `proj:tg${enable ? "off" : "on"}:${arg}`.slice(0, 64) }],
+      [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }, { text: "📋 Projects", callback_data: "nav:projects" }],
     ]));
   }
+  // Link a dedicated Telegram bot to a project. SECURITY: the agent bot is whitelisted
+  // to the operator's allow-list (ALLOW). Reaching here means the caller is already
+  // whitelisted; if the allow-list is somehow empty, we ask for the id first (never
+  // serve a VPS-controlling bot without a whitelist) — if present, we don't re-ask.
+  if (ns === "proj" && action === "botlink") {
+    if (ALLOW.length === 0) {
+      setPending(from, "whitelist-id", arg);
+      return edit(chat, msgId, card("WHITELIST FIRST", ` 🔒 No operator user id is whitelisted yet. For safety (this bot controls the VPS), send your <b>numeric Telegram user id</b> to whitelist before linking a bot.`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+    }
+    setPending(from, "tg-link", arg);
+    return edit(chat, msgId, card("LINK A TELEGRAM BOT", ` 🔗 <b>${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send its <b>token</b> here (<code>123456:ABC…</code>).\n\n🔒 It will be <b>whitelisted to you alone</b> (id ${esc(ALLOW.join(", "))}) — nobody else can use it. Talking to it = addressing this project's oracle, scoped to it.`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+  }
+  if (ns === "proj" && action === "bot") {
+    const abots = loadAgentBots();
+    const bot = abots[projId(arg)] || abots[arg];
+    if (!bot) return edit(chat, msgId, card("DEDICATED BOT", ` 🤖 <b>${esc(arg)}</b> — no bot linked.`), kb([[{ text: "🔗 Link a Telegram bot", callback_data: `proj:botlink:${arg}`.slice(0, 64) }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+    return edit(chat, msgId, card("DEDICATED BOT", ` 🤖 <b>${esc(arg)}</b> — bot <b>linked ✅</b>\n 🔒 Whitelisted to id ${esc((bot.allow || ALLOW).join(", ") || "?")} (you only).\n Talk to it = this project's oracle.`), kb([
+      [{ text: "🔁 Change token", callback_data: `proj:botlink:${arg}`.slice(0, 64) }, { text: "🛑 Unlink", callback_data: `proj:botunlink:${arg}`.slice(0, 64) }],
+      [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+    ]));
+  }
+  if (ns === "proj" && action === "botunlink") {
+    const id = projId(arg);
+    const abots = loadAgentBots();
+    if (abots[id] || abots[arg]) { delete abots[id]; delete abots[arg]; saveAgentBots(abots); Bun.spawnSync(["systemctl", "--user", "disable", "--now", `omega-tg-agent-${id}.service`]); }
+    return edit(chat, msgId, card("DEDICATED BOT", ` 🛑 <b>${esc(arg)}</b> — bot unlinked + stopped ✅`), kb([[{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }, { text: "📋 Projects", callback_data: "nav:projects" }]]));
+  }
+  if (ns === "proj" && action === "del") { const m = projDeleteMenu(arg); return edit(chat, msgId, m.text, m.markup); }
   if (ns === "proj" && action === "delsoft") return edit(chat, msgId, await deleteProject(arg, "soft"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "delfull") {
     // Extra confirmation for the irreversible GitHub deletion.
-    return edit(chat, msgId, `<b>💥 FULL deletion of “${esc(arg)}”</b>\n⚠️ This <b>deletes the GitHub repo</b> (irreversible) on top of everything else. Sure?`, kb([
+    return edit(chat, msgId, card("FULL DELETE", ` 💥 <b>${esc(arg)}</b>\n⚠️ This <b>deletes the GitHub repo</b> (irreversible) on top of everything else. Sure?`), kb([
       [{ text: "💥 Yes, delete everything", callback_data: `proj:delfullgo:${arg}`.slice(0, 64) }],
       [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
     ]));
   }
   if (ns === "proj" && action === "delfullgo") return edit(chat, msgId, await deleteProject(arg, "full"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
+  if (ns === "proj" && action === "delforever") {
+    // Extra confirmation for the irreversible LOCAL FOLDER deletion.
+    const d = loadProjects()[arg]?.dir || "";
+    return edit(chat, msgId, card("DELETE FOREVER", ` 💀 <b>${esc(arg)}</b>\n⚠️ Wipes it from OmegaOS <b>and deletes the local folder</b>${d ? ` <code>${esc(d)}</code>` : ""} off the VPS (irreversible). GitHub is kept. Sure?`), kb([
+      [{ text: "💀 Yes, delete forever", callback_data: `proj:delforevergo:${arg}`.slice(0, 64) }],
+      [{ text: "✖ Cancel", callback_data: `proj:open:${arg}`.slice(0, 64) }],
+    ]));
+  }
+  if (ns === "proj" && action === "delforevergo") return edit(chat, msgId, await deleteProject(arg, "forever"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
   if (ns === "proj" && action === "oracle") {
     setPending(from, "oracle-prompt", arg);
     return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
@@ -1169,10 +1270,21 @@ async function cmdSync(chatId: number, thread?: number) {
   const mp = loadProjects();
   const names = Object.keys(mp);
   if (!names.length) return send(g.hub, "No managed project — add (📁) or create (➕) a project, then /sync.", undefined, thread);
-  let made = 0; let recreated = 0; let err = "";
+  let made = 0; let recreated = 0; let removed = 0; let skipped = 0; let err = "";
   for (const p of names) {
     // Reverse-lookup the project's currently-mapped topic id (if any).
     const mappedTid = Object.entries(g.topics).find(([, n]) => String(n).toLowerCase() === p.toLowerCase())?.[0];
+    // Telegram toggle OFF → this project opts out of topics: delete its topic if it
+    // has one, and never create one. (The toggle is the desired state; sync reconciles.)
+    if (!mp[p].telegram) {
+      if (mappedTid) {
+        const d = await tg("deleteForumTopic", { chat_id: g.hub, message_thread_id: Number(mappedTid) });
+        if (d.ok || /not found|thread not found/i.test(d.description || "")) { delete g.topics[mappedTid]; removed++; }
+        else if (/rights|manage/i.test(d.description || "")) { err = d.description || "rights"; break; }
+      }
+      skipped++;
+      continue;
+    }
     if (mappedTid) {
       // Verify the topic STILL EXISTS on Telegram — a no-op rename probes it. If it
       // was deleted in the group, recreate it (this is the resilience the operator wants).
@@ -1187,7 +1299,8 @@ async function cmdSync(chatId: number, thread?: number) {
   }
   saveGroups(g);
   if (err) return send(g.hub, `⚠️ Sync interrupted: <i>${esc(err)}</i>.${/rights|manage/i.test(err) ? "\nEnable the <b>“Manage Topics”</b> permission for the bot (group admin), then re-run /sync." : ""}\n(${made} created, ${recreated} recreated before stopping)`, undefined, thread);
-  return send(g.hub, `🔁 Sync OK. ${made} new topic(s)${recreated ? `, ${recreated} recreated (deleted topics detected)` : ""}; ${Object.keys(g.topics).length} project topic(s) total. Messages in a project's topic are routed to its oracle.`, undefined, thread);
+  const offNote = removed ? `, ${removed} removed (🔕 OFF)` : skipped ? `, ${skipped} skipped (🔕 OFF)` : "";
+  return send(g.hub, `🔁 Sync OK. ${made} new topic(s)${recreated ? `, ${recreated} recreated (deleted topics detected)` : ""}${offNote}; ${Object.keys(g.topics).length} project topic(s) total. Messages in a project's topic are routed to its oracle.`, undefined, thread);
 }
 
 // ── AGENT MODE poll loop: a per-agent bot. Whitelisted to the operator; every
