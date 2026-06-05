@@ -23,7 +23,10 @@ export NEEDRESTART_MODE=a
 export PIP_NO_INPUT=1
 export CI="${CI:-1}"   # many installers go non-interactive when CI is set
 
-OMEGA_VERSION="0.1.0"
+# Single source of truth: the workspace Cargo.toml version (falls back to the
+# last known release if the parse ever fails).
+OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2)"
+[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="0.1.2"
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 REPO_URL="https://github.com/agentik-os/OmegaOS"
