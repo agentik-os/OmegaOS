@@ -40,6 +40,11 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   ASCII convention. Telegram messages keep their emoji.
 
 ### Fixed
+- Mouse-wheel scroll dead in every rmux pane (regression in rmux `0e4abb2`):
+  the client-side paste heuristic wrapped a batched wheel burst (3+ SGR mouse
+  reports ≥ 32 bytes, no newline) as a bracketed paste, so the server pasted
+  the sequences into the PTY instead of decoding scroll. rmux pin bumped to
+  `726d9e7`, which exempts ESC-initiated bursts from paste synthesis.
 - `credentials` test that was flaky under parallel runs (it mutated the global
   `HOME`); the HOME-touching tests are now serialized.
 - Dead code removed across the orchestration and TUI crates so the workspace

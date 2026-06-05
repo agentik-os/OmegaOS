@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "omega"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "omega-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "omega-tui"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "chrono",
