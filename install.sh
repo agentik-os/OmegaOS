@@ -970,6 +970,10 @@ DONENOTIFY_CRON="* * * * * $OMEGA_DIR/bin/omega-done-notify.sh >> $OMEGA_DIR/log
 STUCK_CRON="* * * * * $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh >> $OMEGA_DIR/logs/omega-stuck-alert.log 2>&1   # OMEGA-CRON-STUCK-ALERT-v1"
 BRIEF_CRON="0 8 * * * $OMEGA_DIR/bin/omega-atlas-brief.sh >> $OMEGA_DIR/logs/omega-atlas-brief.log 2>&1   # OMEGA-CRON-ATLAS-BRIEF-v1"
 SELFHEAL_CRON="0 */3 * * * $OMEGA_DIR/bin/omega-self-heal.sh >> $OMEGA_DIR/logs/omega-self-heal.log 2>&1   # OMEGA-CRON-SELFHEAL-v1"
+# Telegram media inbox purge: images received via the bot land in state/tg-media
+# for the dispatched oracle to Read; they are transient — purge anything older
+# than 7 days, daily. Strictly scoped to that one directory (cannot touch projects).
+TGMEDIA_CRON="30 4 * * * find $OMEGA_DIR/state/tg-media -type f -mtime +7 -delete 2>/dev/null   # OMEGA-CRON-TGMEDIA-PURGE-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
         ok "Self-improvement patrol already scheduled"
@@ -1012,6 +1016,12 @@ if command -v crontab >/dev/null 2>&1; then
     elif [[ -f "$OMEGA_DIR/bin/omega-self-heal.sh" ]]; then
         ( crontab -l 2>/dev/null; echo "$SELFHEAL_CRON" ) | crontab -
         ok "Self-heal daemon scheduled (every 3h → omega doctor --fix + alert)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-TGMEDIA-PURGE-v1"; then
+        ok "Telegram media purge already scheduled"
+    else
+        ( crontab -l 2>/dev/null; echo "$TGMEDIA_CRON" ) | crontab -
+        ok "Telegram media purge scheduled (daily 04:30 → state/tg-media files >7 days)"
     fi
 else
     info "crontab not available — run 'omega patrol' + 'omega usage --check' manually or via your scheduler"

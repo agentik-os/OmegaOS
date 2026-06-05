@@ -698,6 +698,55 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
   try { writeFileSync(`${OMEGA_DIR}/state/${oracle}.progress.json`, JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, project, oracle, mission, done: 0, total: 0, tasks: [] })); } catch {}
   return ""; // card already sent
 }
+
+// ── Fragment aggregation: collect the messages that belong to ONE operator ask ──
+// Telegram delivers an album as one message PER photo (caption on a single one)
+// and forces a prompt over the 1024-char caption limit into a separate text
+// message. Dispatching per message spawned N oracle missions for one ask (a
+// 2-photo album = 2 parallel oracles). Mission-bound fragments are buffered per
+// chat+thread and flushed AGGREGATE_MS after the LAST one, as a single mission
+// carrying every text + every image. Restart loss window = AGGREGATE_MS, acceptable.
+const AGGREGATE_MS = 8000;
+type Fragments = { texts: string[]; imgs: string[]; quoted: string; lastMsgId: number; timer?: ReturnType<typeof setTimeout> };
+const fragments = new Map<string, Fragments>();
+function queueMissionFragment(chat: number, thread: number | undefined, text: string, img: string, replyTo: string, msgId: number, fixedProject?: string) {
+  const key = `${chat}:${thread ?? 0}:${fixedProject || ""}`;
+  const f = fragments.get(key) || { texts: [], imgs: [], quoted: "", lastMsgId: msgId };
+  if (text) f.texts.push(text);
+  if (img) f.imgs.push(img);
+  if (replyTo && !f.quoted) f.quoted = replyTo;
+  f.lastMsgId = msgId;
+  react(chat, msgId, "👀"); // received & buffering — the 🚀 lands at flush time
+  if (f.timer) clearTimeout(f.timer);
+  f.timer = setTimeout(() => { fragments.delete(key); flushMission(chat, thread, f, fixedProject).catch((e: any) => console.error("flushMission:", e?.message || e)); }, AGGREGATE_MS);
+  fragments.set(key, f);
+}
+async function flushMission(chat: number, thread: number | undefined, f: Fragments, fixedProject?: string) {
+  let text = f.texts.join("\n\n");
+  if (f.imgs.length) {
+    const many = f.imgs.length > 1;
+    text = `${text || `Analyze the attached image${many ? "s" : ""} and act on ${many ? "them" : "it"}.`}\n\n## Attached image${many ? "s" : ""}\n${f.imgs.map((p) => `- ${p}`).join("\n")}\nOpen ${many ? "them" : "it"} with the Read tool and analyze ${many ? "them" : "it"} as part of this mission.`;
+  }
+  if (!text) return;
+  // AGENT MODE: fixed project — direct dispatch, no topic routing / history.
+  if (fixedProject) {
+    react(chat, f.lastMsgId, "🚀");
+    const r = await dispatchToOracle(fixedProject, text, chat, thread);
+    if (r) await send(chat, r, undefined, thread);
+    return;
+  }
+  // Hub mode: route by topic at FLUSH time (same rules as before aggregation):
+  // project topic → that project's oracle; atlas topic / DM → the Atlas brain.
+  const g = loadGroups();
+  const topicName = thread ? g.topics?.[String(thread)] : undefined;
+  const proj = topicName && !isReserved(topicName) ? topicName : undefined;
+  const ctx = histContext(chat, thread);
+  const quoted = f.quoted ? `## The operator is replying to this message:\n«${f.quoted}»\n\n` : "";
+  const extra = `${ctx}${quoted}`;
+  histAppend(chat, thread, "operator", f.quoted ? `(in reply to: ${f.quoted.slice(0, 120)}) ${text}` : text, proj || "atlas");
+  if (proj) { react(chat, f.lastMsgId, "🚀"); const r = await dispatchToOracle(proj, text, chat, thread, extra); if (r) await send(chat, r, undefined, thread); }
+  else await brainReply(chat, f.lastMsgId, thread, `${extra}${text}`);
+}
 // Live progress: read each tracked oracle's progress.json and EDIT its card.
 async function pollProgress() {
   for (const w of watching) {
@@ -1499,14 +1548,13 @@ async function agentBotMain(agentId: string) {
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         let text = (msg.text || msg.caption || "").trim();
-        // Photo / image document → download it locally; caption (or default) = mission.
+        // Photo / image document → download it locally; aggregated with the text below.
         const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
-        if (img) text = withImageNote(text, img);
-        if (!text) continue;
+        if (!text && !img) continue;
         if (text === "/start" || text === "/menu") { await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread); continue; }
-        // A message to a project agent-bot = a MISSION → dispatch a real oracle session.
-        react(chatId, msg.message_id, "🚀");
-        await send(chatId, await dispatchToOracle(project, text, chatId, thread), undefined, thread);
+        // A message to a project agent-bot = a MISSION → ONE real oracle session.
+        // Album / caption-split fragments are buffered and flushed together.
+        queueMissionFragment(chatId, thread, text, img, "", msg.message_id, project);
       } catch (e: any) { console.error("agent-bot update error:", e?.message || e); }
     }
   }
@@ -1556,12 +1604,12 @@ async function main() {
           if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
           await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
         }
-        // Photo / image document → download it locally; caption (or default) = the
-        // mission text. The image path travels INSIDE the text so every downstream
-        // path (topic→oracle dispatch, Atlas brain, pending flows) sees it.
+        // Photo / image document → download it locally. NOT baked into `text` here:
+        // mission-bound fragments (album photos, caption-split prompts) are
+        // aggregated by queueMissionFragment below; the command/pending paths
+        // attach the single image themselves via withImageNote.
         const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
-        if (img) text = withImageNote(text, img);
-        if (!text) continue;
+        if (!text && !img) continue;
         // Reply-to-message: when the operator replies to a message, quote it as context
         // so the brain knows exactly what they're reacting to (e.g. reply to a report).
         const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").slice(0, 2000);
@@ -1570,6 +1618,7 @@ async function main() {
         const p = getPending(from);
         if (p && !text.startsWith("/")) {
           clearPending(from);
+          if (img) text = withImageNote(text, img); // single-message form for flows
           if (p.kind === "login-code") {
             await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
             // Paste the code into the waiting `aisb-reauth` session; the engine
@@ -1672,34 +1721,22 @@ async function main() {
             // main bot. `omega dispatch` gives it the full Atlas reprompting (project
             // knowledge + OmegaOS doctrine); we prepend the conversation context.
             const proj = projectForCommand(cmd)!;
-            const mission = a.join(" ").trim();
+            const mission = img ? withImageNote(a.join(" ").trim(), img) : a.join(" ").trim();
             if (!mission) { setPending(from, "oracle-prompt", proj); await send(chatId, card(`ORACLE — ${proj.toUpperCase()}`, ` 🔮 Send your <b>mission</b> for <b>${esc(proj)}</b> — I hand it to its oracle with the full Atlas reprompting (project + doctrine).`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }]]), thread); }
             else { react(chatId, msg.message_id, "🚀"); const ctx = histContext(chatId, thread); histAppend(chatId, thread, "operator", text, proj); const r = await dispatchToOracle(proj, mission, chatId, thread, ctx); if (r) await send(chatId, r, undefined, thread); }
           }
           else {
             // Unknown command → the AISB Master brain (commands gain intelligence:
             // any /verb the operator types is understood + dispatched, not dropped to the menu).
-            await brainReply(chatId, msg.message_id, thread, text);
+            await brainReply(chatId, msg.message_id, thread, img ? withImageNote(text, img) : text);
           }
         } else {
-          // Free text in a project TOPIC = a MISSION → dispatch a REAL oracle session
-          // (omega dispatch <project>): its own mission, visible on the VPS, it delegates
-          // to dynamic workflows / workers / audit-review. Each message = a new mission.
-          // Elsewhere (no topic) OR in the ATLAS topic → ATLAS (converse / brainstorm /
-          // dispatch). "atlas" is the master, NOT a project — never `omega dispatch atlas`
-          // (same guard as /delete and /topic above).
-          const g = loadGroups();
-          const topicName = thread ? g.topics?.[String(thread)] : undefined;
-          const proj = topicName && !isReserved(topicName) ? topicName : undefined;
-          // Build the contextualized prompt: recent conversation history + the quoted
-          // reply (if any) + the new message. Persist the operator turn (also mirrored
-          // to the MC dashboard) so Atlas / the oracle has FULL conversation access.
-          const ctx = histContext(chatId, thread);
-          const quoted = replyTo ? `## The operator is replying to this message:\n«${replyTo}»\n\n` : "";
-          const extra = `${ctx}${quoted}`;
-          histAppend(chatId, thread, "operator", replyTo ? `(in reply to: ${replyTo.slice(0, 120)}) ${text}` : text, proj || "atlas");
-          if (proj) { react(chatId, msg.message_id, "🚀"); const r = await dispatchToOracle(proj, text, chatId, thread, extra); if (r) await send(chatId, r, undefined, thread); }
-          else await brainReply(chatId, msg.message_id, thread, `${extra}${text}`);
+          // Free text in a project TOPIC = a MISSION → ONE real oracle session
+          // (omega dispatch <project>); elsewhere / atlas topic → ATLAS. Fragments
+          // belonging to one ask (album photos, caption-split prompts) are buffered
+          // by queueMissionFragment and flushed together — routing, history and the
+          // contextualized prompt are built at flush time (see flushMission).
+          queueMissionFragment(chatId, thread, text, img, replyTo, msg.message_id);
         }
       } catch (e: any) { console.error("update error:", e?.message || e); }
     }
