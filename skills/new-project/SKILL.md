@@ -300,11 +300,16 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    This opens a persistent oracle so the operator can immediately discuss + steer
    the vision. (From the Telegram bot, `createProject` already auto-launches it.)
 3. `/omg-prd` — full doc suite from the vision → `docs/PRD.md`
-4. `/omg-brand-identity` — **visual identity** (Kapferer Brand Identity Prism,
-   design tokens, 2-3 switchable variants, typography/color/voice/logo direction,
-   AI prompts, an interactive **brand-book** Next.js sub-app) → `BRAND.md` +
-   `brand-book/`. Reuses the project's oklch tokens so brand + scaffold stay
-   consistent. Skippable for non-visual projects (`--skip=brand`).
+4. **Brand — OPT-IN, NOT auto-run in the bootstrap** (learned the hard way: the
+   full `/omg-brand-identity` is a 15-agent run that *builds a whole Next.js
+   brand-book sub-app* — ~1h / 1M+ tokens — and stalls a fresh bootstrap before it
+   ever reaches the planner). So by default the bootstrap does **only the
+   lightweight brand foundation**: the oklch tokens already laid down in PHASE 3 +
+   the `BRAND.md` summary. That's enough to plan + build a coherent product.
+   Then **ASK** the operator: *"Run the full brand book now (`/omg-brand-identity`,
+   long) or later?"* — default **later**. Only run the heavy brand-book when they
+   opt in (or `--brand`); never block the pipeline on it. (Keep `--skip=brand` to
+   skip even the foundation for non-visual projects.)
 5. `/omg-planner` — generate the **typed** `.planner/tracker.json` (a DAG of
    single-worker-dispatch steps; audits as a terminal `wave`). Verify it loads:
    `omega plan-status .` must print the steps with `ready N | blocked M`.
@@ -314,8 +319,11 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    "done" without its verify proof. Watch progress with `omega plan-status .`.
    If `omega` is not on PATH, fall back to `bun ~/.omega/skills/planner/fallback/plan.ts run .`.
 
-Full pipeline order: **vision → (oracle presents it) → prd → brand-identity →
-planner → build (plan-run)**. Offer to stop after `/omg-vision` so the user can
+Full pipeline order: **vision → (oracle presents it) → prd → [brand foundation;
+full brand book OPT-IN] → planner → build (plan-run)**. The heavy `/omg-brand-identity`
+is never auto-run in the bootstrap (it stalls the run before the planner) — only the
+lightweight oklch-tokens + BRAND.md foundation runs by default; the brand book is a
+later on-demand step. Offer to stop after `/omg-vision` so the user can
 review with the oracle, or — in a dispatched (non-interactive) context — proceed
 automatically through to `omega plan-run` (Law L3). The engine, not the LLM, owns
 the execution loop from `plan-run` on.
