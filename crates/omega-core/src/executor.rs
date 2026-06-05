@@ -147,10 +147,10 @@ pub async fn run<R: WorkerRuntime>(
                 Verdict::Pass => {
                     tracker.mark_done(&sid)?;
                     report.completed.push(sid.clone());
-                    // Free the file-scope claim from the finished attempt: the
-                    // worker succeeded, but the lock outlives it otherwise and
-                    // the next run touching these files is rejected. Leave the
-                    // session alive (release-only, no kill).
+                    // Worker announced done + Guardian re-verified → the engine has
+                    // advanced past this step, so CLOSE the worker: kill its session
+                    // and free the file-scope claim (otherwise finished workers pile
+                    // up as idle panes and the lock outlives them, blocking re-runs).
                     runtime.release_scope(&session).await;
                 }
                 Verdict::Retry { feedback } => {
@@ -273,7 +273,12 @@ impl WorkerRuntime for RmuxRuntime<'_> {
     }
 
     async fn release_scope(&self, session: &str) {
-        // Free the claim from a finished (Pass) worker; leave its session alive.
+        // A worker whose step is DONE has announced completion (its done.json was
+        // accepted and the Guardian re-verified) — so CLOSE it: kill the session
+        // and free its scope claim. Leaving Pass workers alive piled up dozens of
+        // idle `*-step-*` panes per build; the oracle/engine has already advanced
+        // past this step, so the worker has no reason to stay open.
+        let _ = self.mgr.kill_session(session).await;
         let _ = scope::ScopeClaim::release(&self.state_dir, session);
     }
 }

@@ -106,6 +106,10 @@ that ships a **404 on `/sign-in`** and a broken login. So:
   agent that NAVIGATES to every page AND walks the full golden path (real auth: click Sign in →
   complete login → land in-app)** and FAILS on any 404 / console error / broken flow. That
   step's `verify_command` runs that sweep and exits non-zero if any page/flow is broken.
+  **Serve + sweep on `http://127.0.0.1:$PORT` (a secure context), never `http://<IP>`** —
+  Clerk/WebCrypto auth only initialises on `localhost`/`127.0.0.1` or HTTPS; on a raw
+  `http://<IP>` origin it dies with `secure-context:false` / `undefined ... 'digest'`, so a
+  sweep there is a false pass that can't even reach the login crypto. Prod must be HTTPS.
 
 ---
 

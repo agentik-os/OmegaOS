@@ -244,13 +244,28 @@ npm i convex @clerk/nextjs stripe @stripe/stripe-js
 
 Then create:
 - `src/app/providers.tsx` — ClerkProvider + ConvexProviderWithClerk wired together.
-- `src/middleware.ts` — Clerk middleware.
+- `src/proxy.ts` — Clerk middleware. **Next 16 renamed `middleware.ts` → `proxy.ts`**;
+  shipping `src/middleware.ts` on Next 16 means the middleware never runs (auth.protect
+  silently no-ops). Use `proxy.ts` and verify the build log lists `ƒ Proxy (Middleware)`.
 - **Auth pages (NEVER skip — a missing one is a 404 on login):** the Clerk catch-all
-  routes `src/app/sign-in/[[...sign-in]]/page.tsx` (renders `<SignIn />`) and
-  `src/app/sign-up/[[...sign-up]]/page.tsx` (renders `<SignUp />`). These MUST exist
-  whenever `NEXT_PUBLIC_CLERK_SIGN_IN_URL`/`SIGN_UP_URL` point at `/sign-in`/`/sign-up`
-  (the default) — the env is a contract to a real page. Set those env vars + the matching
-  `*_FORCE_REDIRECT_URL` so the SSO/OAuth callback lands somewhere real, not a 404.
+  routes MUST exist whenever `NEXT_PUBLIC_CLERK_SIGN_IN_URL`/`SIGN_UP_URL` point at
+  `/sign-in`/`/sign-up` (the default) — the env is a contract to a real page, and a
+  *non-catch-all* page still 404s the `/sign-in/sso-callback` sub-path. Exact files:
+  ```tsx
+  // src/app/sign-in/[[...sign-in]]/page.tsx   (and the sign-up twin with <SignUp />)
+  import { SignIn } from "@clerk/nextjs";
+  export default function SignInPage() {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-background p-6">
+        <SignIn />
+      </main>
+    );
+  }
+  ```
+  The double-bracket `[[...sign-in]]` is mandatory — it is the catch-all that serves
+  `/sign-in` AND `/sign-in/sso-callback`, `/sign-in/factor-one`, etc. Set
+  `NEXT_PUBLIC_CLERK_SIGN_IN_URL`/`SIGN_UP_URL` + `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL`/
+  `AFTER_SIGN_UP_URL` (e.g. `/chat`) so the post-login redirect lands somewhere real, not a 404.
 - `convex/` schema stub + `convex/auth.config.ts` keyed to the Clerk issuer.
 - `src/app/api/stripe/webhook/route.ts` — signature-verified handler.
 - A `/chat` route mounting the chatbot-kit components end-to-end.
@@ -328,6 +343,14 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    "It builds" is NOT "it works". Before declaring the project done, an agent MUST
    actually OPEN the running app in a real browser and exercise it end to end:
    - `npm run build` → serve the real build (`next start` on a port).
+   - **Run the sweep against a SECURE CONTEXT — `http://127.0.0.1:$PORT` or HTTPS, NEVER
+     `http://<tailnet-or-LAN-IP>:port`.** Clerk (and any WebCrypto/`crypto.subtle` auth) only
+     initialises on a *secure context* = `localhost`/`127.0.0.1` OR `https://`. On a raw
+     `http://100.x.x.x` origin it silently fails with `Cannot read properties of undefined
+     (reading 'digest')` and `secure-context:false` — the page renders 200 but **login never
+     works**. So acceptance-test on `127.0.0.1`, and the real shareable/prod URL must be HTTPS
+     (Vercel, or `tailscale serve --https` when the tailnet supports certs). A green sweep on
+     `http://IP` is a false pass — it can't even reach the login form's crypto.
    - A **Playwright sweep** that NAVIGATES to **every route** (landing + each nav link +
      each CTA target + **every auth page: `/sign-in`, `/sign-up`, the SSO/OAuth callback**)
      and asserts each returns **200 and renders** (no 404, no 500, no blank).
