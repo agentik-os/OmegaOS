@@ -86,6 +86,30 @@ async function transcribeVoice(fileId: string): Promise<string> {
     return (j?.text || "").trim();
   } catch { return ""; }
 }
+// Image input: a photo (or image document) is downloaded to ${OMEGA_DIR}/state/tg-media/
+// so the dispatched oracle / Atlas can open it with the Read tool. Returns the local
+// path, or "" when the message carries no image / the download failed. Without this,
+// a photo+caption message has no `.text` and was silently DROPPED by both poll loops
+// (the operator's mission never reached any oracle).
+async function saveIncomingImage(msg: any): Promise<string> {
+  try {
+    const photo = Array.isArray(msg?.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : undefined; // last = largest size
+    const doc = /^image\//.test(msg?.document?.mime_type || "") ? msg.document : undefined;
+    const fileId = photo?.file_id || doc?.file_id; if (!fileId) return "";
+    const gf = await tg("getFile", { file_id: fileId });
+    const fp = gf?.result?.file_path; if (!fp) return "";
+    const ext = (fp.match(/\.[A-Za-z0-9]+$/) || [".jpg"])[0];
+    const dest = `${OMEGA_DIR}/state/tg-media/tg-${msg.chat?.id}-${msg.message_id}${ext}`;
+    const data = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`)).arrayBuffer();
+    await Bun.write(dest, data); // creates parent dirs
+    return dest;
+  } catch (e: any) { console.error("saveIncomingImage:", e?.message || e); return ""; }
+}
+// Mission text for a message that carries an image: caption (or a default) + where
+// the image lives on the VPS, so the receiving Claude session opens it with Read.
+function withImageNote(text: string, img: string): string {
+  return `${text || "Analyze the attached image and act on it."}\n\n## Attached image\nSaved on the VPS at: ${img}\nOpen it with the Read tool and analyze it as part of this mission.`;
+}
 // Config is (re)loadable so the service can start WITHOUT a token and auto-connect
 // the moment one is written (by `omega telegram setup`, `omega-tg-up`, or editing
 // telegram.toml) — no manual restart needed.
@@ -1471,9 +1495,14 @@ async function agentBotMain(agentId: string) {
     for (const u of r.result) {
       offset = u.update_id + 1;
       try {
-        const msg = u.message; if (!msg?.text) continue;
-        const chatId = msg.chat.id, from = msg.from?.id ?? 0, text = msg.text.trim(), thread = msg.message_thread_id;
+        const msg = u.message; if (!msg?.text && !msg?.photo && !msg?.document) continue;
+        const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
+        let text = (msg.text || msg.caption || "").trim();
+        // Photo / image document → download it locally; caption (or default) = mission.
+        const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
+        if (img) text = withImageNote(text, img);
+        if (!text) continue;
         if (text === "/start" || text === "/menu") { await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread); continue; }
         // A message to a project agent-bot = a MISSION → dispatch a real oracle session.
         react(chatId, msg.message_id, "🚀");
@@ -1515,18 +1544,23 @@ async function main() {
           if (!allowed(q.from?.id ?? 0)) continue;
           await onCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0); continue;
         }
-        const msg = u.message; if (!msg?.text && !msg?.voice) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document) continue;
         const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0;
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         // Voice → Whisper transcription, then handled exactly like a text message.
-        let text = (msg.text || "").trim();
+        let text = (msg.text || msg.caption || "").trim();
         if (!text && msg.voice) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
           text = await transcribeVoice(msg.voice.file_id);
           if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
           await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
         }
+        // Photo / image document → download it locally; caption (or default) = the
+        // mission text. The image path travels INSIDE the text so every downstream
+        // path (topic→oracle dispatch, Atlas brain, pending flows) sees it.
+        const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
+        if (img) text = withImageNote(text, img);
         if (!text) continue;
         // Reply-to-message: when the operator replies to a message, quote it as context
         // so the brain knows exactly what they're reacting to (e.g. reply to a report).
