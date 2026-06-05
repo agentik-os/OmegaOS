@@ -367,6 +367,17 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-05-29",
             reason: "Agents pushed to the wrong remote, used the wrong git identity, and guessed credential paths. One authoritative project record removes the guessing.",
         },
+        Rule {
+            id: "R-PDF",
+            title: "PDFs go through the OmegaOS pdfgen",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Reporting,
+            description: "Generate EVERY PDF with the shipped OmegaOS pdfgen — `omega pdf --template=<whitepaper|audit|marketing|doc> --data=<json> --out=<path> [--send]` (it auto-installs deps on first run and can send straight to Telegram). NEVER hand-roll a one-off generator (fpdf2/ReportLab/LaTeX/Chrome-HTML/@react-pdf) — pdfgen is the single, branded, themed stack and the SSOT. It lives in `tools/pdfgen/` (repo) → `~/.omega/skills/pdfgen/` (installed, user-updatable; `omega sync` re-links it). Improve the templates/themes THERE so every OmegaOS user inherits it.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-05",
+            reason: "A one-off fpdf2 venv was used instead of the bundled pdfgen, fragmenting PDF output and bypassing the branded SSOT that ships to every OmegaOS user.",
+        },
     ]
 }
 
