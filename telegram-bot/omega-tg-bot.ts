@@ -67,6 +67,25 @@ function readKV(path: string, re: RegExp): Record<string, string> {
   try { for (const l of readFileSync(path, "utf8").split("\n")) { const m = l.match(re); if (m) out[m[1]] = m[2].replace(/^"|"$/g, ""); } } catch {}
   return out;
 }
+// Voice input: an OpenAI key (provisioning/services.env or the MC .env) enables
+// Whisper transcription so you can TALK to Atlas. Empty → voice messages are ignored.
+const OPENAI_KEY =
+  readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/).OPENAI_API_KEY ||
+  readKV(MC_ENV, /^([A-Z_]+)=(.*)$/).OPENAI_API_KEY || "";
+async function transcribeVoice(fileId: string): Promise<string> {
+  if (!OPENAI_KEY) return "";
+  try {
+    const gf = await tg("getFile", { file_id: fileId });
+    const fp = gf?.result?.file_path; if (!fp) return "";
+    const audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`)).arrayBuffer();
+    const fd = new FormData();
+    fd.append("file", new Blob([audio]), "voice.ogg");
+    fd.append("model", "whisper-1");
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${OPENAI_KEY}` }, body: fd });
+    const j: any = await r.json();
+    return (j?.text || "").trim();
+  } catch { return ""; }
+}
 // Config is (re)loadable so the service can start WITHOUT a token and auto-connect
 // the moment one is written (by `omega telegram setup`, `omega-tg-up`, or editing
 // telegram.toml) — no manual restart needed.
@@ -1367,10 +1386,19 @@ async function main() {
           if (!allowed(q.from?.id ?? 0)) continue;
           await onCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0); continue;
         }
-        const msg = u.message; if (!msg?.text) continue;
-        const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0, text = msg.text.trim();
+        const msg = u.message; if (!msg?.text && !msg?.voice) continue;
+        const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0;
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
+        // Voice → Whisper transcription, then handled exactly like a text message.
+        let text = (msg.text || "").trim();
+        if (!text && msg.voice) {
+          await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+          text = await transcribeVoice(msg.voice.file_id);
+          if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
+        }
+        if (!text) continue;
         // Reply-to-message: when the operator replies to a message, quote it as context
         // so the brain knows exactly what they're reacting to (e.g. reply to a report).
         const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").slice(0, 2000);

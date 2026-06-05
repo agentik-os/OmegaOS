@@ -587,6 +587,13 @@ if [[ -f "$DONENOTIFY_SRC" ]]; then
     ok "End-of-mission notifier installed: $OMEGA_DIR/bin/omega-done-notify.sh"
 fi
 
+STUCK_SRC="$OMEGA_SRC/scripts/omega-stuck-oracle-alert.sh"
+if [[ -f "$STUCK_SRC" ]]; then
+    cp "$STUCK_SRC" "$OMEGA_DIR/bin/omega-stuck-oracle-alert.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-stuck-oracle-alert.sh"
+    ok "Stuck-oracle alert installed: $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh"
+fi
+
 # Install the self-heal daemon (cron → `omega doctor --fix`; alerts Telegram if
 # warnings remain so the operator can tap /status → Fix it). Keeps the system
 # green unattended (duplicate pollers, dead bot service, stale cache, oauth).
@@ -939,6 +946,7 @@ PATROL_CRON="* * * * * $INSTALL_DIR/omega patrol --once >> $OMEGA_DIR/logs/omega
 USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/omega-usage.log 2>&1   # OMEGA-CRON-USAGE-v1"
 TOKREFRESH_CRON="*/30 * * * * $OMEGA_DIR/bin/omega-token-refresh.sh >> $OMEGA_DIR/logs/omega-token-refresh.log 2>&1   # OMEGA-CRON-TOKEN-REFRESH-v1"
 DONENOTIFY_CRON="* * * * * $OMEGA_DIR/bin/omega-done-notify.sh >> $OMEGA_DIR/logs/omega-done-notify.log 2>&1   # OMEGA-CRON-DONE-NOTIFY-v1"
+STUCK_CRON="* * * * * $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh >> $OMEGA_DIR/logs/omega-stuck-alert.log 2>&1   # OMEGA-CRON-STUCK-ALERT-v1"
 SELFHEAL_CRON="0 */3 * * * $OMEGA_DIR/bin/omega-self-heal.sh >> $OMEGA_DIR/logs/omega-self-heal.log 2>&1   # OMEGA-CRON-SELFHEAL-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
@@ -964,6 +972,12 @@ if command -v crontab >/dev/null 2>&1; then
     elif [[ -f "$OMEGA_DIR/bin/omega-done-notify.sh" ]]; then
         ( crontab -l 2>/dev/null; echo "$DONENOTIFY_CRON" ) | crontab -
         ok "End-of-mission notifier scheduled (every minute → oracle done.json → Telegram)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-STUCK-ALERT-v1"; then
+        ok "Stuck-oracle alert already scheduled"
+    elif [[ -f "$OMEGA_DIR/bin/omega-stuck-oracle-alert.sh" ]]; then
+        ( crontab -l 2>/dev/null; echo "$STUCK_CRON" ) | crontab -
+        ok "Stuck-oracle alert scheduled (every minute)"
     fi
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-SELFHEAL-v1"; then
         ok "Self-heal daemon already scheduled"
