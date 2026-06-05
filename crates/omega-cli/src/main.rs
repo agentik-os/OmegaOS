@@ -784,6 +784,11 @@ fn toggle_bool_config(key: &str) -> Result<()> {
             c.auto_naming = !c.auto_naming;
             save_omega_config(&c)?;
         }
+        "general.session_shortcuts" => {
+            let mut c = OmegaConfig::load().unwrap_or_default();
+            c.session_shortcuts = !c.session_shortcuts;
+            save_omega_config(&c)?;
+        }
         "claude.dangerously_skip_permissions" => {
             let mut p = omega_core::providers::ProvidersConfig::load();
             p.claude.dangerously_skip_permissions = !p.claude.dangerously_skip_permissions;

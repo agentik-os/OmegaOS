@@ -955,6 +955,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             return Action::None;
         }
 
+        // Sessions tab: navigate with ARROWS ONLY — j/k must NOT move the cursor
+        // (operator preference). Catch bare j/k here first so they're ignored on
+        // Sessions; on every other tab j/k still navigate via the arms below.
+        KeyCode::Char('j') | KeyCode::Char('k') if app.tab == Tab::Sessions => Action::None,
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
             // Settings tab + detail focused: Monitor group → action cursor (on
@@ -1412,7 +1416,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Kill — both lowercase x and uppercase X work. Sessions tab only:
         // the list isn't visible elsewhere, so don't kill a hidden selection
         // from another tab.
-        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions => {
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
@@ -1426,7 +1430,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         // Rename selected session (Sessions tab only)
-        KeyCode::Char('r') | KeyCode::Char('R') if app.tab == Tab::Sessions => {
+        KeyCode::Char('r') | KeyCode::Char('R') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
             if let Some(entry) = app.selected_session() {
                 let old = entry.session.name.clone();
                 app.input_buffer = old.clone();
@@ -1440,14 +1444,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Refresh
         // Sessions tab: '/' filters the list; 'b' jumps to the next blocked/failed.
-        KeyCode::Char('/') if app.tab == Tab::Sessions => {
+        KeyCode::Char('/') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
             app.input_buffer = app.session_filter.clone().unwrap_or_default();
             app.input_mode = InputMode::SessionFilter;
             app.status_message =
                 Some("Filter: type a substring, Enter to apply, empty+Enter clears".to_string());
             Action::None
         }
-        KeyCode::Char('b') if app.tab == Tab::Sessions => {
+        KeyCode::Char('b') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
             match app.jump_to_next_flagged() {
                 Some(name) => app.status_message = Some(format!("→ {}", name)),
                 None => app.status_message = Some("No blocked/failed sessions".to_string()),
@@ -1457,7 +1461,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         KeyCode::F(5) => Action::Refresh,
 
-        KeyCode::Char('.') if app.tab == Tab::Sessions => {
+        KeyCode::Char('.') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
             // Toggle on the source entry, then return owned (name, state) so the
             // &mut borrow ends before we touch app.rows / app.status_message.
             let toggled = app.sessions.get_mut(app.selected).map(|entry| {

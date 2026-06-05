@@ -25,6 +25,12 @@ pub struct OmegaConfig {
     pub auto_spawn_master: bool,
     #[serde(default = "default_auto_naming")]
     pub auto_naming: bool,
+    /// Single-key rmux session shortcuts in the Sessions tab (x kill, r rename,
+    /// b background, . cleanup, …). Default ON. When OFF, the Sessions tab takes
+    /// only arrow navigation + Enter/Esc/Tab — so no action fires by accident.
+    /// (Arrow-only navigation is always enforced there; j/k never move the cursor.)
+    #[serde(default = "default_session_shortcuts")]
+    pub session_shortcuts: bool,
     /// IANA timezone for the on-screen clock (e.g. "Europe/Paris", "America/New_York").
     /// Persisted timestamps stay UTC — this localizes ONLY the displayed clock,
     /// because a headless VPS runs in UTC and the operator usually does not.
@@ -45,6 +51,10 @@ fn default_auto_master() -> bool {
 }
 
 fn default_auto_naming() -> bool {
+    true
+}
+
+fn default_session_shortcuts() -> bool {
     true
 }
 
@@ -140,6 +150,7 @@ impl Default for OmegaConfig {
             aisb_agent: default_aisb_agent(),
             auto_spawn_master: default_auto_master(),
             auto_naming: default_auto_naming(),
+            session_shortcuts: default_session_shortcuts(),
             timezone: None,
             telegram: None,
         }

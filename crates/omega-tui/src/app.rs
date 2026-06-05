@@ -489,6 +489,11 @@ pub fn fields_for_section(
                 config_key: "general.auto_naming".to_string(),
                 current: config.auto_naming,
             });
+            out.push(SettingsField::Toggle {
+                label: "Session-menu shortcuts (x/r/b/. — arrows always navigate)".to_string(),
+                config_key: "general.session_shortcuts".to_string(),
+                current: config.session_shortcuts,
+            });
         }
         SettingsSection::Install => {
             // Per-agent install / uninstall buttons
