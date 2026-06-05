@@ -170,6 +170,24 @@ blockers at the end (Law L4).
   with AskUserQuestion (free-text). Persist immediately so a re-run resumes.
 - State the reason plainly: "Clerk has no public app-creation API — this step is
   pool/pause by necessity, not by shortcut."
+- **Clerk↔Convex JWT template (MANDATORY when both Clerk + Convex are picked — FULL
+  auto).** Convex auth is a JWT bridge: `ConvexProviderWithClerk` calls
+  `getToken({ template: "convex" })`, and `convex/auth.config.ts` declares
+  `{ domain: <clerk-issuer>, applicationID: "convex" }`. If the Clerk instance has
+  **no JWT template named `convex`**, the token fetch 404s and EVERY authenticated
+  Convex call throws `Unauthenticated` — login renders fine, the app is just silently
+  read/write-dead. This template has a public Backend API, so CREATE it (idempotent):
+  ```bash
+  # skip if it already exists; aud MUST equal the auth.config applicationID ("convex")
+  curl -s https://api.clerk.com/v1/jwt_templates -H "Authorization: Bearer $CLERK_SECRET" \
+    | grep -q '"name":"convex"' || \
+  curl -s -X POST https://api.clerk.com/v1/jwt_templates \
+    -H "Authorization: Bearer $CLERK_SECRET" -H "Content-Type: application/json" \
+    -d '{"name":"convex","claims":{"aud":"convex"},"lifetime":60,"allowed_clock_skew":5}'
+  ```
+  Verify a real token carries `aud:"convex"` + `iss:<clerk-issuer>` matching
+  `auth.config.ts`. This is provisioning, not optional polish — skipping it ships a
+  dead authenticated backend that no build/typecheck can catch.
 
 ### 2e. Stripe
 - `STRIPE_MODE=single` + `CAN_STRIPE`: reuse the master account. Create a
@@ -354,13 +372,26 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
    - A **Playwright sweep** that NAVIGATES to **every route** (landing + each nav link +
      each CTA target + **every auth page: `/sign-in`, `/sign-up`, the SSO/OAuth callback**)
      and asserts each returns **200 and renders** (no 404, no 500, no blank).
-   - **Walk the real golden path**: click *Sign in* → complete a real login → land in-app →
-     do the core action (e.g. send a message, see it persist) → sign out. Fail on ANY
-     404 / console error / broken redirect / dead button.
+   - **Walk the real golden path AS A LOGGED-IN USER, and prove the AUTHENTICATED DATA
+     ROUND-TRIP** — not just "land in-app". Sign in with a real account (create a Clerk
+     test user via the Backend API; `…+clerk_test@example.com` accepts the dev code
+     `424242` for deterministic e2e), then DO the core action that hits the backend
+     (send a message) and **assert the write actually PERSISTED** (the row comes back on
+     reload / a follow-up query returns it). A login that renders but whose first
+     authenticated mutation throws `Unauthenticated` is the silent-dead-backend bug — and
+     the #1 cause is a missing Clerk `convex` JWT template (see Phase 2d): the token fetch
+     404s, Convex sees no identity. So this step MUST exercise a real authenticated call,
+     because build/typecheck/render-200 ALL pass while it's broken.
+   - **FAIL on ANY console error OR failed network request during the flow** (capture
+     `page.on('console', …)` + `page.on('response', r => r.status() >= 400)`). The
+     `tokens/convex` 404 and the Convex `Unauthenticated` mutation both surface here —
+     ignore only known third-party noise (wallet `evmAsk.js`, Clerk dev-key warning).
+     A green render with a red console is NOT shipped (rule R-PROD).
    The planner encodes this as the terminal step (rule 7); if its verify fails, the build is
-   NOT done — fix the missing route/flow and re-run. This is what stops a project shipping a
-   green build with a 404 login. (Provisioning/secrets missing → that step legitimately
-   blocks here, surfaced honestly — never faked.)
+   NOT done — fix the missing route/flow/wiring and re-run. This is what stops a project
+   shipping a green build with a 404 login or a dead authenticated backend.
+   (Provisioning/secrets missing → that step legitimately blocks here, surfaced honestly —
+   never faked.)
 
 Full pipeline order: **vision → (oracle presents it) → prd → [brand foundation;
 full brand book OPT-IN] → planner → build (plan-run)**. The heavy `/omg-brand-identity`

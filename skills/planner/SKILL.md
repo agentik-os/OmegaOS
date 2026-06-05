@@ -100,12 +100,21 @@ that ships a **404 on `/sign-in`** and a broken login. So:
   (`NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`) is a CONTRACT: the step that sets it MUST also
   create the page it points to, or that route is a guaranteed 404. Trace each `redirect`,
   `<Link href>`, and `*_URL` to a real page step.
+- **AUTH-BRIDGE WIRING is a real step, not an assumption.** For Clerk+Convex the plan MUST
+  include a step that creates/verifies the Clerk `convex` JWT template (token `aud:"convex"`
+  matching `auth.config.ts` `applicationID`) — without it every authenticated mutation throws
+  `Unauthenticated` while the build is green. Its `verify_command` mints a real token and asserts
+  an authenticated backend call SUCCEEDS, never just that the file compiles.
 - **The final gate is a real END-TO-END browser sweep, not unit smokes that bypass the UI.**
   A test that signs in with a Clerk *testing token* never opens `/sign-in`, so it can't catch
   its 404. The plan's terminal step MUST be: build → serve the real build → a **Playwright
   agent that NAVIGATES to every page AND walks the full golden path (real auth: click Sign in →
-  complete login → land in-app)** and FAILS on any 404 / console error / broken flow. That
-  step's `verify_command` runs that sweep and exits non-zero if any page/flow is broken.
+  complete login → land in-app → **do the core authenticated action and assert the write
+  PERSISTED**)** and FAILS on any 404 / console error / **failed network request (status ≥400,
+  e.g. a `tokens/convex` 404 or an `Unauthenticated` mutation)** / broken flow. "Renders 200"
+  ≠ "the authenticated backend works" — the sweep MUST exercise one real logged-in mutation
+  round-trip. That step's `verify_command` runs the sweep and exits non-zero if any page/flow
+  is broken.
   **Serve + sweep on `http://127.0.0.1:$PORT` (a secure context), never `http://<IP>`** —
   Clerk/WebCrypto auth only initialises on `localhost`/`127.0.0.1` or HTTPS; on a raw
   `http://<IP>` origin it dies with `secure-context:false` / `undefined ... 'digest'`, so a
