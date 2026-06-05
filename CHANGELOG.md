@@ -8,6 +8,15 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 ## [Unreleased]
 
 ### Added
+- Guided Telegram setup in the npx installer (`omega-os` 1.5.0): before the
+  Matrix animation takes the screen, an interactive wizard walks through
+  BotFather bot creation, validates the token live (`getMe`), auto-detects
+  your chat id from your first message to the bot (`getUpdates`), then wires
+  everything via `omega telegram setup` once install.sh succeeds. Skipped
+  when non-interactive (no TTY / CI), with `--no-telegram`, or when
+  `~/.omega/telegram.toml` already exists (re-installs keep the config).
+  Queue-based prompt input — multi-line pastes and scripted stdin are never
+  dropped; stdin EOF degrades to "skip", never a hang.
 - WCAG-AA contrast contract in the TUI theme engine, enforced by unit tests:
   every text-bearing role (text/dim/info/error/warn/bright and the accent
   family) ≥ 4.5:1 vs background, selection text ≥ 4.5:1 on both accent and

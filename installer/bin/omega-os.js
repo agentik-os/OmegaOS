@@ -2,10 +2,18 @@
 'use strict';
 /*
  * omega-os — one-command installer for OmegaOS.
- *   npx omega-os            install into ./OmegaOS (or $HOME/Station/OmegaOS if ~/Station exists)
- *   npx omega-os --dir DIR  install into DIR
- *   npx omega-os --plain    disable the animation (simple single-line bar)
+ *   npx omega-os                install into ./OmegaOS (or $HOME/Station/OmegaOS if ~/Station exists)
+ *   npx omega-os --dir DIR      install into DIR
+ *   npx omega-os --plain        disable the animation (simple single-line bar)
+ *   npx omega-os --no-telegram  skip the guided Telegram remote-control setup
  *   npx omega-os --help
+ *
+ * Before the animation starts (cooked input, normal screen), an interactive
+ * wizard offers the Telegram remote: BotFather walkthrough, live token
+ * validation (getMe), chat-id auto-detection (getUpdates after "send your bot
+ * a message"). The credentials are applied AFTER install.sh succeeds via
+ * `omega telegram setup` — never during the animation, where prompts are
+ * invisible.
  *
  * Zero runtime deps (Node builtins only) so npx is fast + robust. Clones the
  * PUBLIC repo agentik-os/OmegaOS and runs its install.sh.
@@ -26,6 +34,8 @@ const { spawn, spawnSync } = require('child_process');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
+const readline = require('readline');
 
 const REPO = 'https://github.com/agentik-os/OmegaOS.git';
 
@@ -103,6 +113,165 @@ function die(msg) { process.stdout.write('\n  ' + red('✗ ' + msg) + '\n\n'); p
 
 function have(cmd) { return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0; }
 
+/* =========================================================================
+ * TELEGRAM WIZARD — guided remote-control setup BEFORE the Matrix screen.
+ *
+ * Runs on the NORMAL screen with cooked input (the animation owns the TTY
+ * later, where any prompt would be invisible — the exact bug class we fixed
+ * in install.sh). The wizard only COLLECTS token + chat id here; the actual
+ * `omega telegram setup` runs AFTER install.sh succeeds (the binary exists
+ * then). Skipped silently when non-interactive (no TTY / CI / --no-telegram)
+ * or when ~/.omega/telegram.toml already exists (re-install keeps it).
+ * ========================================================================= */
+
+function tgApi(token, method, params) {
+  return new Promise((resolve) => {
+    const qs = params
+      ? '?' + Object.entries(params).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&')
+      : '';
+    const req = https.get(
+      { host: 'api.telegram.org', path: '/bot' + token + '/' + method + qs, timeout: 10000 },
+      (res) => {
+        let body = '';
+        res.on('data', (d) => { body += d; });
+        res.on('end', () => {
+          try { resolve(JSON.parse(body)); } catch (e) { resolve(null); }
+        });
+      }
+    );
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+  });
+}
+
+// Queue-based prompt over readline 'line' events instead of rl.question():
+// lines arriving while NO prompt is pending (multi-line paste, scripted stdin,
+// a fast typist during the getMe network call) are buffered, not dropped.
+// Resolves null once stdin closes (EOF / Ctrl-D) — callers treat null as
+// "skip Telegram", so a dead stdin can never hang the wizard.
+function makeAsker(rl) {
+  const lines = [];
+  const waiters = [];
+  let closed = false;
+  rl.on('line', (l) => {
+    const w = waiters.shift();
+    if (w) w(l.trim()); else lines.push(l.trim());
+  });
+  rl.on('close', () => {
+    closed = true;
+    while (waiters.length) waiters.shift()(null);
+  });
+  return (q) => {
+    process.stdout.write(q);
+    if (lines.length) { const l = lines.shift(); process.stdout.write(l + '\n'); return Promise.resolve(l); }
+    if (closed) { process.stdout.write('\n'); return Promise.resolve(null); }
+    return new Promise((resolve) => waiters.push(resolve));
+  };
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function telegramWizard() {
+  // Already configured (re-install) → keep it, stay quiet.
+  const tomlPath = path.join(os.homedir(), '.omega', 'telegram.toml');
+  if (fs.existsSync(tomlPath)) {
+    process.stdout.write('  ' + grn('✓') + gray(' Telegram already configured (~/.omega/telegram.toml) — keeping it') + '\n\n');
+    return null;
+  }
+
+  process.stdout.write('  ' + mag('▸ TELEGRAM REMOTE') + gray('  ·  pilot OmegaOS from your phone (recommended)') + '\n');
+  process.stdout.write('  ' + gray('Dispatch missions, get reports, approve gates — from anywhere.') + '\n\n');
+
+  const rl = readline.createInterface({ input: process.stdin });
+  const ask = makeAsker(rl);
+  try {
+    const go = await ask('  Set it up now? ' + gray('[Y/n] '));
+    if (go === null || /^n/i.test(go)) {
+      process.stdout.write('  ' + gray('Skipped — later: omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+      return null;
+    }
+
+    // --- Step 1/2: bot token (validated live against the Telegram API) ----
+    process.stdout.write('\n  ' + bold('Step 1/2 — create your bot') + '\n');
+    process.stdout.write('    1. Open Telegram and message ' + cyan('@BotFather') + '\n');
+    process.stdout.write('    2. Send ' + cyan('/newbot') + ' and follow the two questions (name, username)\n');
+    process.stdout.write('    3. Copy the ' + bold('HTTP API token') + ' it gives you\n\n');
+
+    let token = null, botUser = null;
+    for (let attempt = 0; attempt < 3 && !token; attempt++) {
+      const t = await ask('  Paste the bot token ' + gray('(Enter to skip): '));
+      if (!t) {
+        process.stdout.write('  ' + gray('Skipped — later: omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+        return null;
+      }
+      const me = await tgApi(t, 'getMe');
+      if (me && me.ok && me.result && me.result.username) {
+        token = t; botUser = me.result.username;
+        process.stdout.write('  ' + grn('✓') + ' bot found: ' + bold('@' + botUser) + '\n');
+      } else {
+        process.stdout.write('  ' + red('✗') + ' Telegram rejected that token' + gray(' — recheck the BotFather message (network ok?)') + '\n');
+      }
+    }
+    if (!token) {
+      process.stdout.write('  ' + yel('Token never validated — skipping Telegram.') + gray(' Later: omega telegram setup …') + '\n\n');
+      return null;
+    }
+
+    // --- Step 2/2: your chat id (auto-detected from your first message) ---
+    process.stdout.write('\n  ' + bold('Step 2/2 — identify you') + '\n');
+    process.stdout.write('    Open ' + cyan('t.me/' + botUser) + ' and send your bot any message (e.g. "hello").\n\n');
+
+    let chatId = null, who = '';
+    while (!chatId) {
+      const a = await ask('  Press Enter AFTER sending it ' + gray('(or type your numeric id, or "skip"): '));
+      if (a === null || /^skip$/i.test(a)) {
+        process.stdout.write('  ' + gray('Skipped — later: omega telegram setup ' + token.slice(0, 8) + '… <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+        return null;
+      }
+      if (/^-?\d{5,}$/.test(a)) { chatId = a; who = 'manual id'; break; }
+      // Poll getUpdates a few times — the just-created bot has no other consumer.
+      for (let i = 0; i < 5 && !chatId; i++) {
+        const up = await tgApi(token, 'getUpdates', { limit: 10 });
+        const msgs = up && up.ok && Array.isArray(up.result) ? up.result : [];
+        for (let k = msgs.length - 1; k >= 0; k--) {
+          const m = msgs[k].message;
+          if (m && m.chat && m.chat.id) {
+            chatId = String(m.chat.id);
+            who = (m.from && (m.from.first_name || m.from.username)) || 'you';
+            break;
+          }
+        }
+        if (!chatId) await sleep(1500);
+      }
+      if (!chatId) process.stdout.write('  ' + yel('No message seen yet') + gray(' — send it to t.me/' + botUser + ' then press Enter again') + '\n');
+    }
+    process.stdout.write('  ' + grn('✓') + ' detected: ' + bold(who) + gray(' (chat id ' + chatId + ')') + '\n\n');
+    process.stdout.write('  ' + grn('Telegram ready') + gray(' — it will be wired automatically after the install finishes.') + '\n\n');
+    return { token, chatId, botUser };
+  } finally {
+    rl.close();
+  }
+}
+
+// Wire the collected credentials AFTER install.sh succeeded: the omega binary
+// now exists at ~/.local/bin. Never throws — a failure prints the manual command.
+function configureTelegram(tg) {
+  if (!tg) return;
+  const omegaBin = path.join(os.homedir(), '.local', 'bin', 'omega');
+  const manual = 'omega telegram setup <token> ' + tg.chatId + ' --user-id ' + tg.chatId;
+  if (!fs.existsSync(omegaBin)) {
+    process.stdout.write('  ' + yel('⚠ omega binary not found — finish Telegram manually: ') + cyan(manual) + '\n\n');
+    return;
+  }
+  const r = spawnSync(omegaBin, ['telegram', 'setup', tg.token, tg.chatId, '--user-id', tg.chatId], { encoding: 'utf8' });
+  if (r.status === 0) {
+    process.stdout.write('  ' + grn('✓ Telegram connected') + ' — message ' + bold('@' + tg.botUser) + ' and try: ' + cyan('status') + '\n\n');
+  } else {
+    process.stdout.write('  ' + yel('⚠ Telegram setup did not finish: ') + gray(((r.stderr || r.stdout || '').trim() || 'unknown error').split('\n')[0]) + '\n');
+    process.stdout.write('    ' + gray('Run it manually: ') + cyan(manual) + '\n\n');
+  }
+}
+
 // --- success / failure summaries (normal screen) -------------------------
 
 function printSuccess(dir) {
@@ -139,7 +308,7 @@ function doClone(dir) {
 /* =========================================================================
  * PLAIN path — original simple single-line progress bar. Kept intact.
  * ========================================================================= */
-function runPlain(dir) {
+function runPlain(dir, tg) {
   const total = STEPS.length;
   let step = 0;
   bar(step, total, STEPS[0].label);
@@ -173,6 +342,7 @@ function runPlain(dir) {
     if (code === 0) {
       step = total - 1; bar(step, total, 'Done');
       process.stdout.write('\n');
+      configureTelegram(tg);
       printSuccess(dir);
     } else {
       process.stdout.write('\n');
@@ -185,7 +355,7 @@ function runPlain(dir) {
 /* =========================================================================
  * ANIMATED path — full-screen interactive Matrix rain, OMEGA bar pinned bottom.
  * ========================================================================= */
-function runAnimated(dir) {
+function runAnimated(dir, tg) {
   const out = process.stdout;
   const inp = process.stdin;
 
@@ -565,6 +735,7 @@ function runAnimated(dir) {
     cleanup();                   // back to normal screen
     if (code === 0) {
       banner();
+      configureTelegram(tg);
       printSuccess(dir);
     } else {
       banner();
@@ -586,13 +757,14 @@ function shouldAnimate(args) {
   return true;
 }
 
-function main() {
+async function main() {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.includes('-h')) {
     banner();
-    process.stdout.write('  Usage: npx omega-os [--dir <path>] [--plain]\n\n');
+    process.stdout.write('  Usage: npx omega-os [--dir <path>] [--plain] [--no-telegram]\n\n');
     process.stdout.write('    --dir <path>   install location (default: ~/Station/OmegaOS if ~/Station exists, else ./OmegaOS)\n');
     process.stdout.write('    --plain        disable the full-screen animation (simple progress bar only)\n');
+    process.stdout.write('    --no-telegram  skip the guided Telegram remote-control setup\n');
     process.stdout.write('    --help         this help\n\n');
     process.stdout.write('  Installs OmegaOS from ' + REPO + '\n  then runs its install.sh (builds rmux + omega, ~8 min on a fresh box).\n');
     process.stdout.write('  ' + gray('While it builds, the Matrix rain is interactive — type to inject glyphs, [space] to pulse.') + '\n\n');
@@ -614,8 +786,16 @@ function main() {
   }
   dir = path.resolve(dir);
 
-  if (shouldAnimate(args)) runAnimated(dir);
-  else runPlain(dir);
+  // Guided Telegram setup BEFORE the animation owns the screen (cooked input).
+  // Interactive sessions only: piped/CI runs skip silently, --no-telegram opts out.
+  let tg = null;
+  const interactive = process.stdin.isTTY && process.stdout.isTTY && !process.env.CI;
+  if (interactive && !args.includes('--no-telegram')) {
+    try { tg = await telegramWizard(); } catch (e) { tg = null; }
+  }
+
+  if (shouldAnimate(args)) runAnimated(dir, tg);
+  else runPlain(dir, tg);
 }
 
-main();
+main().catch((err) => die(err && err.message ? err.message : String(err)));
