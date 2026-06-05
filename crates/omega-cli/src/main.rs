@@ -655,6 +655,19 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Whether we pushed kitty keyboard-enhancement flags at TUI init
+/// (DESIGN-014) — every teardown path (quit + Ctrl+R restart) must pop
+/// exactly what was pushed, and nothing on legacy terminals.
+static KBD_ENHANCED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Pop the keyboard-enhancement flags if (and only if) init pushed them.
+fn pop_kbd_enhancement(out: &mut impl std::io::Write) {
+    if KBD_ENHANCED.load(std::sync::atomic::Ordering::Relaxed) {
+        crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags).ok();
+    }
+}
+
 async fn run_menu() -> Result<()> {
     use omega_tui::app::App;
 
@@ -716,6 +729,28 @@ async fn run_menu() -> Result<()> {
 
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
+    // DESIGN-014: make the chat Alt+Esc literal-ESC hatch deliverable. Legacy
+    // terminals emit Alt+Esc as an ESC ESC byte pair that crossterm parses as
+    // plain Esc — one press when the pair lands in a single read
+    // (parse.rs:77), two when delivery splits — so the `KeyCode::Esc if alt`
+    // arm never fires from real input. On terminals speaking the kitty
+    // keyboard protocol, pushing
+    // DISAMBIGUATE_ESCAPE_CODES delivers the real Alt modifier. Probe first
+    // (graceful fallback — the probe needs raw mode, enabled above): on
+    // unsupported terminals nothing is pushed and the Esc-Esc chord
+    // (input.rs) is the literal-ESC path; we only pop what we pushed.
+    let kbd_enhanced =
+        crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    KBD_ENHANCED.store(kbd_enhanced, std::sync::atomic::Ordering::Relaxed);
+    if kbd_enhanced {
+        crossterm::execute!(
+            stdout,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )
+        .ok();
+    }
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
@@ -730,6 +765,7 @@ async fn run_menu() -> Result<()> {
 
     let result = run_tui_loop(&mut terminal, &mut app).await;
 
+    pop_kbd_enhancement(terminal.backend_mut());
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
         terminal.backend_mut(),
@@ -928,9 +964,11 @@ async fn run_tui_loop(
 
     loop {
         // Drain any error reported by a backgrounded keystroke forwarder.
+        // Sticky (FIX-2/NR-4): the error targets a user mid-typing — their
+        // next in-flight keystroke must not consume it before they read it.
         if let Ok(mut guard) = async_status.lock() {
             if let Some(msg) = guard.take() {
-                app.status_message = Some(msg);
+                app.set_status_sticky(msg);
             }
         }
 
@@ -1097,15 +1135,27 @@ async fn run_tui_loop(
             let selected_before = app.selected;
             let tab_before = app.tab;
             let detail_focused_before = app.detail_focused;
-            // F-7: a status notice lives until the NEXT keypress. Clearing it
-            // here (before dispatch) lets the handler below set a fresh message
+            // F-7: a status notice lives until the NEXT keypress — or mouse
+            // click (FIX-6/NEW-6: a notice set during a mouse-only flow must
+            // not mask the Sessions git text forever). Clearing it here
+            // (before dispatch) lets the handler below set a fresh message
             // that then survives until the user types again — and on the
             // Sessions tab the bar falls back to the per-session git text once
-            // the notice is consumed (see draw_status_bar).
-            if matches!(&evt, crossterm::event::Event::Key(k)
-                if k.kind != crossterm::event::KeyEventKind::Release)
-            {
-                app.status_message = None;
+            // the notice is consumed (see draw_status_bar). The exemptions —
+            // an armed destructive-menu confirm (FIX-1) and async-origin
+            // sticky notices inside their minimum display (FIX-2) — live in
+            // consume_status_ttl.
+            let consumes_ttl = match &evt {
+                crossterm::event::Event::Key(k) => {
+                    k.kind != crossterm::event::KeyEventKind::Release
+                }
+                crossterm::event::Event::Mouse(m) => {
+                    matches!(m.kind, crossterm::event::MouseEventKind::Down(_))
+                }
+                _ => false,
+            };
+            if consumes_ttl {
+                app.consume_status_ttl();
             }
             let status_before = app.status_message.clone();
             match handle_event(app, evt) {
@@ -1126,6 +1176,7 @@ async fn run_tui_loop(
                     // Tear down the terminal cleanly, then re-exec the
                     // current binary so a freshly-built `omega` is picked up
                     // in place (same PID on Unix via exec).
+                    pop_kbd_enhancement(terminal.backend_mut());
                     crossterm::terminal::disable_raw_mode().ok();
                     crossterm::execute!(
                         terminal.backend_mut(),
@@ -1405,8 +1456,13 @@ async fn run_tui_loop(
                     // Ack BEFORE refreshing (KillSession-style ordering, CA-4):
                     // a notice produced inside refresh() — e.g. the "<name>
                     // ended — back to list" vanish message — must win over the
-                    // generic ack, not be clobbered by it.
-                    app.status_message = Some("Refreshed".to_string());
+                    // generic ack, not be clobbered by it. Only ack when no
+                    // handler message is pending (FIX-5/INFO-1): the TTL just
+                    // cleared stale text, so a Some here is the dispatching
+                    // handler's own ack (e.g. the filter message) — keep it.
+                    if app.status_message.is_none() {
+                        app.status_message = Some("Refreshed".to_string());
+                    }
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
                     if app.tab == omega_tui::app::Tab::Agentic {
@@ -1988,7 +2044,13 @@ async fn run_tui_loop(
             // user lands with guidance instead of an empty bar. Skip if the
             // action handler already set a meaningful message this iteration
             // (e.g. a dispatch/login that also switched to the Sessions tab).
-            if app.tab != tab_before && app.status_message == status_before {
+            if app.tab != tab_before
+                && app.status_message == status_before
+                // FIX-1 safety net: never overwrite an armed destructive-menu
+                // confirm warning with a per-tab hint (a direct tab writer —
+                // e.g. F1 → Help — bypasses the next/prev_tab disarm).
+                && app.menu_confirm_pending.is_none()
+            {
                 use omega_tui::app::Tab;
                 app.status_message = Some(match app.tab {
                     Tab::Sessions => "↑/↓ select · Enter/Tab chat · c/C/g new agent · x kill · . lock · F5 refresh".to_string(),

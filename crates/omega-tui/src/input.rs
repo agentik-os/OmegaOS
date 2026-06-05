@@ -201,7 +201,9 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                         app.enter_chat_focus();
                     }
                 } else {
-                    app.session_focus = SessionFocus::List;
+                    // Tab-less focus change — set_list_focus keeps the chord
+                    // contract (FIX-4): a click must not complete a Tab-Tab.
+                    app.set_list_focus();
                 }
             }
             Action::None
@@ -875,6 +877,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Quit
         KeyCode::Char('q') => {
+            // DESIGN-015: right after a non-deliberate focus drop (vanish,
+            // Esc-from-chat) an in-flight 'q' aimed at the agent must not
+            // quit the whole TUI.
+            if app.in_post_drop_grace() {
+                return Action::None;
+            }
             app.should_quit = true;
             Action::Quit
         }
@@ -988,6 +996,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('j') | KeyCode::Char('k') if app.tab == Tab::Sessions => Action::None,
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
+            // A deliberate navigation key ends the post-drop grace early
+            // (DESIGN-015) — the user is demonstrably driving the list.
+            app.end_post_drop_grace();
             // Settings tab + detail focused: Monitor group → action cursor (on
             // the Actions section) or scroll; Settings group → navigate fields.
             if app.tab == Tab::Settings && app.detail_focused {
@@ -1028,6 +1039,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::Up | KeyCode::Char('k') => {
+            // Same grace-ending semantics as Down above (DESIGN-015).
+            app.end_post_drop_grace();
             if app.tab == Tab::Settings && app.detail_focused {
                 if app.settings_on_monitor() {
                     if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
@@ -1080,6 +1093,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // from Omega.
         KeyCode::Enter => match app.tab {
             Tab::Sessions => {
+                // DESIGN-015: inside the post-drop grace an in-flight Enter
+                // must not re-enter chat on the clamped-to neighbor (the rest
+                // of the keystream would type into ITS PTY — NEW-3).
+                if app.in_post_drop_grace() {
+                    return Action::None;
+                }
                 // Two-panel default: Enter focuses the preview (acts like Tab).
                 // Once focused, Enter is forwarded to the rmux session below
                 // (interactive passthrough — see the SessionFocus::Chat branch
@@ -1097,11 +1116,16 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         return Action::TelegramSetup;
                     }
                     if app.session_focus == SessionFocus::List {
-                        app.session_focus = SessionFocus::Chat;
+                        // Canonical focus path (chord reset + follow tail,
+                        // FIX-4) — same as the mouse click.
+                        app.enter_chat_focus();
                         app.cmd_capture = None;
                         app.chat_line_chars = 0;
+                        // DESIGN-016: describe the REAL runtime bindings
+                        // (single Tab → list, Tab-Tab → fullscreen; "/" is
+                        // forwarded to the agent, not captured).
                         app.status_message = Some(
-                            "Focus: chat — keys forward to agent (Tab → agent, Tab-Tab → close to list, / = OmegaOS commands)".to_string(),
+                            "Focus: chat — keys forward to agent (Tab → list · Tab-Tab → fullscreen · Esc → list)".to_string(),
                         );
                     }
                     Action::None
@@ -1444,6 +1468,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // the list isn't visible elsewhere, so don't kill a hidden selection
         // from another tab.
         KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
+            // DESIGN-015: an in-flight 'x' right after a focus drop must not
+            // kill the (re-anchored or clamped-to) selection with no confirm.
+            if app.in_post_drop_grace() {
+                return Action::None;
+            }
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
@@ -1552,6 +1581,26 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // short-circuits into handle_key_chat, which owns chat Esc:
                 // it swallows the dead-session Esc too (AF-5) instead of
                 // re-dispatching it into this quit arm.
+                //
+                // Esc-Esc literal-ESC chord (DESIGN-014/FIX-11): a second Esc
+                // right after an Esc that dropped chat focus forwards a REAL
+                // ESC to the agent and returns to chat. This is the
+                // legacy-deliverable hatch: terminals without the kitty
+                // protocol deliver Alt+Esc as a split ESC ESC pair, which
+                // would otherwise land here and QUIT the whole TUI.
+                if app.take_esc_chord() {
+                    if let Some(entry) = app.selected_session() {
+                        let session = entry.session.name.clone();
+                        app.enter_chat_focus();
+                        app.status_message = Some("ESC → agent".to_string());
+                        return Action::ForwardKeyToSession { session, key: "Escape" };
+                    }
+                }
+                // DESIGN-015: inside the post-drop grace a stray Esc must not
+                // quit the TUI in one press.
+                if app.in_post_drop_grace() {
+                    return Action::None;
+                }
                 app.should_quit = true;
                 Action::Quit
             } else {
@@ -1642,7 +1691,7 @@ fn open_dashboard_action(app: &mut App) -> Action {
 ///
 /// TUI-local keys (never forwarded):
 ///   Esc           → back to session list (F-2; interrupt agent = Ctrl+C,
-///                    literal ESC to the agent = Alt+Esc)
+///                    literal ESC to the agent = Alt+Esc or Esc-Esc)
 ///   Tab           → cycle focus (List → Chat → Fullscreen → List)
 ///   Alt+Up/Down   → scroll preview
 ///   PageUp/Down   → scroll preview
@@ -1658,8 +1707,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // and re-dispatch this keystroke in normal mode so it still acts
             // (Tab, q, arrows all work again). No recursion: focus is now List,
             // so handle_key_normal won't route back into the chat handler.
-            app.session_focus = SessionFocus::List;
-            app.reset_tab_chord();
+            app.set_list_focus();
             // EXCEPT Esc (AF-5): chat Esc means "back to the list", and the
             // focus reset above already delivered that. Re-dispatching it would
             // hit the Sessions-tab quit arm and close the whole TUI in ONE press.
@@ -1743,11 +1791,13 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     // Same guard as the list-focus 'x' (F-12): a protected session never dies.
     if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
         if app.selected_session().is_some_and(|e| e.is_protected) {
-            app.status_message = Some("Session is protected (press . to unlock)".to_string());
+            // FIX-7/DESIGN-016: in chat focus '.' is forwarded to the PTY —
+            // the unlock toggle only exists in list focus, so say so.
+            app.status_message =
+                Some("Session is protected (Esc, then . to unlock)".to_string());
             return Action::None;
         }
-        app.session_focus = SessionFocus::List;
-        app.reset_tab_chord();
+        app.set_list_focus();
         return Action::KillSession(session);
     }
 
@@ -1860,12 +1910,24 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // Esc = back to the session list — matches the title hint, the Help
             // tab, and the layered-Esc pattern on every other tab (F-2). NOT
             // forwarded: interrupting the agent stays available via Ctrl+C (C-c),
-            // a literal ESC via Alt+Esc above. Clear the Tab-chord state so a Tab
-            // right after (inside the 400ms double-tap window) reads as a fresh
-            // first tap, not the second half of a Tab-Tab (AF-7).
-            app.session_focus = SessionFocus::List;
-            app.reset_tab_chord();
-            app.status_message = Some("Focus: session list".to_string());
+            // a literal ESC via Alt+Esc above or the Esc-Esc chord below.
+            // set_list_focus clears the Tab-chord state so a Tab right after
+            // (inside the 400ms double-tap window) reads as a fresh first tap,
+            // not the second half of a Tab-Tab (AF-7).
+            app.set_list_focus();
+            // Arm the Esc-Esc literal-ESC chord (DESIGN-014): a second Esc
+            // inside the window forwards a real ESC to this agent — the
+            // legacy-deliverable hatch for terminals whose Alt+Esc arrives as
+            // a split ESC ESC pair (which would otherwise quit the TUI via
+            // the Sessions quit arm). Also open the destructive-hotkey grace
+            // (DESIGN-015) so the rest of an in-flight keystream can't land
+            // on q/x/Enter in list mode.
+            app.chat_esc_at = Some(std::time::Instant::now());
+            app.focus_drop_at = Some(std::time::Instant::now());
+            // DESIGN-018: teach the recovery keys in-context, not Help-only.
+            app.status_message = Some(
+                "Focus: session list (Esc Esc = ESC to agent, Ctrl+C = interrupt)".to_string(),
+            );
             Action::None
         }
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
@@ -2354,5 +2416,179 @@ mod tests {
         assert!(matches!(act, Action::None), "Esc must be swallowed, not quit");
         assert!(!app.should_quit, "one Esc on a dead session must not quit the TUI");
         assert_eq!(app.session_focus, SessionFocus::List);
+    }
+
+    // FIX-1/NEW-1 regression: the clear-on-keypress TTL must NOT wipe the
+    // KillAll confirm warning while the armed state persists — arm → Down →
+    // Enter must either still show the warning or not fire the mass-kill.
+    #[test]
+    fn menu_confirm_warning_survives_ttl_and_navigation() {
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_selected = MenuAction::all()
+            .iter()
+            .position(|a| matches!(a, MenuAction::KillAll))
+            .unwrap();
+
+        // First Enter arms + shows the warning.
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None));
+        assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll));
+        assert!(app.status_message.as_deref().unwrap_or("").contains("CONFIRM"));
+
+        // The next keypress's TTL (runs BEFORE dispatch) must keep the warning.
+        app.consume_status_ttl();
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("CONFIRM"),
+            "TTL must not wipe the confirm warning while armed"
+        );
+
+        // Down (browse) keeps both state and indicator in lockstep.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        app.consume_status_ttl();
+        let visible = app.status_message.as_deref().unwrap_or("").contains("CONFIRM");
+
+        // Enter on the OTHER row must not fire the armed mass-kill.
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let fired = matches!(act, Action::KillAllSessions);
+        assert!(
+            visible && !fired,
+            "arm → Down → Enter must show the warning AND not fire (visible={visible}, fired={fired})"
+        );
+    }
+
+    // FIX-1 companion: the TTL must never DISARM — the second Enter on the
+    // same row still fires (a TTL-disarm would re-arm instead).
+    #[test]
+    fn menu_confirm_second_enter_still_fires_after_ttl() {
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_selected = MenuAction::all()
+            .iter()
+            .position(|a| matches!(a, MenuAction::KillAll))
+            .unwrap();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.consume_status_ttl(); // the confirming Enter's own TTL pass
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            matches!(act, Action::KillAllSessions),
+            "confirming Enter must fire — TTL must not have disarmed"
+        );
+        assert_eq!(app.menu_confirm_pending, None);
+    }
+
+    // FIX-1: leaving the tab cancels the armed confirm — the per-tab hint
+    // overwrites the warning, so the armed state must not outlive it.
+    #[test]
+    fn menu_confirm_disarmed_on_tab_switch() {
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_selected = MenuAction::all()
+            .iter()
+            .position(|a| matches!(a, MenuAction::KillAll))
+            .unwrap();
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.menu_confirm_pending, None, "tab switch must disarm");
+    }
+
+    // DESIGN-014/FIX-11: Esc-Esc inside the window = literal ESC to the agent
+    // (the legacy-deliverable Alt+Esc), NOT a TUI quit — and focus returns to
+    // chat so the gesture is "send ESC", not "leave then send".
+    #[test]
+    fn esc_esc_chord_forwards_literal_escape_not_quit() {
+        let mut app = chat_app("oracle-Demo-1");
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+        let act = handle_key(&mut app, esc);
+        assert!(matches!(act, Action::None));
+        assert_eq!(app.session_focus, SessionFocus::List);
+
+        // Second Esc right after (split ESC ESC delivery lands exactly here).
+        let act = handle_key(&mut app, esc);
+        assert!(
+            matches!(act, Action::ForwardKeyToSession { key, .. } if key == "Escape"),
+            "second Esc must forward rmux \"Escape\""
+        );
+        assert!(!app.should_quit, "Esc-Esc must never quit the TUI");
+        assert_eq!(app.session_focus, SessionFocus::Chat, "chord returns to chat");
+    }
+
+    // DESIGN-015/NR-2: Esc-then-type must not fall through to the destructive
+    // single-key list hotkeys (x kill / q quit / Enter re-target) inside the
+    // grace window; a deliberate navigation key re-enables them.
+    #[test]
+    fn esc_then_type_grace_blocks_destructive_hotkeys() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::List);
+
+        let act = handle_key(&mut app, press('x'));
+        assert!(matches!(act, Action::None), "in-flight 'x' must not kill");
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None), "in-flight Enter must not re-enter chat");
+        assert_eq!(app.session_focus, SessionFocus::List);
+        let act = handle_key(&mut app, press('q'));
+        assert!(matches!(act, Action::None) && !app.should_quit, "in-flight 'q' must not quit");
+
+        // A navigation key ends the grace — deliberate hotkeys work again.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let act = handle_key(&mut app, press('q'));
+        assert!(matches!(act, Action::Quit), "after navigation, q must quit again");
+    }
+
+    // DESIGN-015: the grace expires by time too (no navigation needed).
+    #[test]
+    fn post_drop_grace_expires_after_window() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        // Backdate the drop beyond the 300ms window.
+        app.focus_drop_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(400));
+        app.chat_esc_at = None;
+        let act = handle_key(&mut app, press('q'));
+        assert!(matches!(act, Action::Quit), "expired grace must restore q");
+    }
+
+    // FIX-4/NEW-4: Tab (arm) → Enter (enter chat) → Tab inside 400ms must
+    // navigate as a fresh first tap, not complete a stale chord into
+    // ChatFullscreen — enter_chat_focus() now owns the chord reset.
+    #[test]
+    fn tab_enter_tab_does_not_complete_stale_chord() {
+        let mut app = chat_app("oracle-Demo-1");
+        // Tab from chat → List (first tap, chord armed).
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::List);
+        // Enter → chat via the canonical path (must clear the chord).
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::Chat);
+        assert!(app.last_tab_press.is_none(), "Enter→chat must clear the chord");
+        // Tab right after → fresh first tap → List, NOT ChatFullscreen.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::List,
+            "post-Enter Tab must navigate, not land in ChatFullscreen"
+        );
+    }
+
+    // FIX-4 (2col leak): a Tab pressed on Sessions must not leak into the
+    // Settings tab's double-tap detection after a Left/Right tab switch.
+    #[test]
+    fn tab_chord_does_not_leak_across_tab_switch() {
+        let mut app = chat_app("oracle-Demo-1");
+        // Tab from chat → List: first tap, chord armed, list focus (so the
+        // following Right reaches the normal handler, not the chat handler).
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // arm
+        assert_eq!(app.session_focus, SessionFocus::List);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Menu
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Agentic
+        assert_eq!(app.tab, Tab::Agentic);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(
+            !app.detail_fullscreen,
+            "a leaked Sessions chord must not fullscreen the 2col detail"
+        );
+        assert!(app.detail_focused, "single Tab on a 2col tab focuses the detail");
     }
 }

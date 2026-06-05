@@ -1029,6 +1029,21 @@ pub struct App {
     /// the whole buffer at the idle cadence. Cleared when we return to the tail.
     pub preview_history_for: Option<String>,
     pub session_focus: SessionFocus,
+    /// Set when a chat Esc just dropped focus to the list — arms the Esc-Esc
+    /// literal-ESC chord (DESIGN-014): a second Esc inside the window forwards
+    /// a real ESC to the agent instead of falling through to the quit arm.
+    /// Legacy terminals deliver Alt+Esc as a split ESC ESC pair, so without
+    /// this chord the "literal ESC" gesture would QUIT the TUI.
+    pub chat_esc_at: Option<std::time::Instant>,
+    /// Set when chat focus was dropped without a deliberate navigation key
+    /// (session vanished mid-typing, or Esc-from-chat) — destructive single-key
+    /// hotkeys (q / x / Enter / Esc-quit) are ignored while inside the grace
+    /// window so an in-flight keystream can't kill/quit (DESIGN-015 / NEW-3).
+    pub focus_drop_at: Option<std::time::Instant>,
+    /// Async-origin status notices (vanish, forwarder errors) keep a minimum
+    /// display deadline: the keypress TTL must not clear them before this
+    /// instant, or the typist they're addressed to never sees them (FIX-2).
+    pub status_sticky_until: Option<std::time::Instant>,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
     /// Focus state at the START of a Tab sequence, captured on the first tap so
@@ -1134,6 +1149,9 @@ impl App {
             preview_needs_history: false,
             preview_history_for: None,
             session_focus: SessionFocus::List,
+            chat_esc_at: None,
+            focus_drop_at: None,
+            status_sticky_until: None,
             last_tab_press: None,
             tab_seq_start: None,
             cmd_capture: None,
@@ -1197,8 +1215,18 @@ impl App {
     /// Enter chat focus on the currently selected session.
     pub fn enter_chat_focus(&mut self) {
         self.session_focus = SessionFocus::Chat;
+        // Tab-less focus change — clear the chord so a Tab right after isn't
+        // misread as the second tap of a Tab-Tab (AF-7 contract, FIX-4).
+        self.reset_tab_chord();
         self.preview_follow_tail = true;
         self.preview_scroll = 0;
+    }
+
+    /// Tab-less return to the session list: focus + chord reset in one place
+    /// (FIX-4) so every non-Tab writer keeps the chord contract below true.
+    pub fn set_list_focus(&mut self) {
+        self.session_focus = SessionFocus::List;
+        self.reset_tab_chord();
     }
 
     /// Jump the selection to the next session flagged Blocked or Failed
@@ -1233,6 +1261,64 @@ impl App {
     pub fn reset_tab_chord(&mut self) {
         self.last_tab_press = None;
         self.tab_seq_start = None;
+    }
+
+    /// F-7 clear-on-input TTL — called by the event loop on every key press
+    /// and mouse Down (NEW-6) BEFORE dispatch. Exemptions:
+    /// - An armed destructive-menu confirm (FIX-1/NEW-1): the warning is the
+    ///   ONLY indicator of the armed state, so it persists until
+    ///   confirm/cancel/other-selection. Never disarm here — this runs before
+    ///   dispatch, so a TTL-disarm would turn the confirming Enter into a
+    ///   re-arm instead of a fire.
+    /// - Async-origin sticky notices (FIX-2/NEW-2): a vanish notice or
+    ///   forwarder error targets a user mid-typing; their in-flight keystroke
+    ///   must not consume the message addressed to them. Time-based minimum
+    ///   display instead of the keypress TTL.
+    pub fn consume_status_ttl(&mut self) {
+        if self.menu_confirm_pending.is_some() {
+            return;
+        }
+        if let Some(until) = self.status_sticky_until {
+            if std::time::Instant::now() < until {
+                return;
+            }
+            self.status_sticky_until = None;
+        }
+        self.status_message = None;
+    }
+
+    /// Set an async-origin status notice with a minimum display time so it
+    /// survives in-flight keystrokes (FIX-2). Nav hints and key-triggered
+    /// acks keep the plain keypress TTL (`status_message = Some(..)`).
+    pub fn set_status_sticky(&mut self, msg: String) {
+        self.status_message = Some(msg);
+        self.status_sticky_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(2000));
+    }
+
+    /// DESIGN-015: true while inside the ~300ms destructive-hotkey grace that
+    /// follows a non-deliberate focus drop (vanish, Esc-from-chat).
+    pub fn in_post_drop_grace(&self) -> bool {
+        self.focus_drop_at
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+            .unwrap_or(false)
+    }
+
+    /// A deliberate navigation key ends the grace window (and the Esc-Esc
+    /// chord arm) early — the user is demonstrably interacting with the list.
+    pub fn end_post_drop_grace(&mut self) {
+        self.focus_drop_at = None;
+        self.chat_esc_at = None;
+    }
+
+    /// DESIGN-014: consume the Esc-Esc chord arm. True when an Esc arrives
+    /// within the window after an Esc that dropped chat focus — the caller
+    /// forwards a literal ESC to the agent instead of quitting.
+    pub fn take_esc_chord(&mut self) -> bool {
+        self.chat_esc_at
+            .take()
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+            .unwrap_or(false)
     }
 
     /// Handle a Tab press in the Sessions tab.
@@ -1766,12 +1852,17 @@ impl App {
                 self.session_focus,
                 SessionFocus::Chat | SessionFocus::ChatFullscreen
             ) {
-                self.session_focus = SessionFocus::List;
-                // The forced focus change is Tab-less — clear the chord state
+                // Tab-less forced drop: set_list_focus clears the chord state
                 // so an immediate Tab isn't misread as a double-tap (AF-7).
-                self.reset_tab_chord();
+                self.set_list_focus();
+                // The user may still be typing at the dead session — open the
+                // destructive-hotkey grace so the in-flight keystream can't
+                // land on q/x/Enter in list mode (DESIGN-015 / NEW-3).
+                self.focus_drop_at = Some(std::time::Instant::now());
                 if let Some(name) = selected_name {
-                    self.status_message = Some(format!("{name} ended — back to list"));
+                    // Async-origin notice: minimum display time so the same
+                    // in-flight keystroke can't consume it (FIX-2 / NEW-2).
+                    self.set_status_sticky(format!("{name} ended — back to list"));
                 }
             }
             // Index fallback: keep `selected` in bounds when the anchor is gone.
@@ -1884,7 +1975,18 @@ impl App {
         self.sessions.get(self.selected)
     }
 
+    /// Shared tab-switch hygiene: leaving a tab cancels an armed
+    /// destructive-menu confirm (FIX-1 — the warning would otherwise be
+    /// overwritten by the per-tab hint while the armed state persists) and
+    /// clears the Tab chord so it can't leak into another tab's double-tap
+    /// detection (FIX-4 — `handle_tab_in_2col` shares `last_tab_press`).
+    fn leave_tab(&mut self) {
+        self.menu_confirm_pending = None;
+        self.reset_tab_chord();
+    }
+
     pub fn next_tab(&mut self) {
+        self.leave_tab();
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
             Tab::Menu => Tab::Agentic,
@@ -1895,6 +1997,7 @@ impl App {
     }
 
     pub fn prev_tab(&mut self) {
+        self.leave_tab();
         self.tab = match self.tab {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
@@ -2144,5 +2247,46 @@ mod reanchor_tests {
             "vanish notice must be set, got {:?}",
             app.status_message
         );
+    }
+
+    // DESIGN-015 + FIX-2: the forced vanish-drop must open the destructive-
+    // hotkey grace AND make its notice sticky (survive the keypress TTL).
+    #[test]
+    fn vanish_drop_opens_grace_and_sticky_notice() {
+        let mut app = app_with_sessions(&["a"]);
+        app.selected = 0;
+        app.session_focus = SessionFocus::Chat;
+        app.reanchor_selection(Some("gone"));
+        assert!(app.in_post_drop_grace(), "vanish drop must start the grace window");
+        // The in-flight keystroke's TTL must NOT consume the vanish notice.
+        app.consume_status_ttl();
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("gone ended"),
+            "sticky vanish notice must survive the keypress TTL, got {:?}",
+            app.status_message
+        );
+    }
+
+    // FIX-1 + FIX-2 TTL exemptions, plus normal-path clear and expiry.
+    #[test]
+    fn status_ttl_exempts_armed_confirm_and_unexpired_sticky() {
+        let mut app = app_with_sessions(&["a"]);
+        // Plain message → cleared by the TTL.
+        app.status_message = Some("hint".into());
+        app.consume_status_ttl();
+        assert!(app.status_message.is_none(), "plain hints keep the keypress TTL");
+        // Armed destructive-menu confirm → exempt, and NOT disarmed.
+        app.menu_confirm_pending = Some(MenuAction::KillAll);
+        app.status_message = Some("[!] KILL ALL".into());
+        app.consume_status_ttl();
+        assert!(app.status_message.is_some(), "armed confirm warning must persist");
+        assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll), "TTL must never disarm");
+        app.menu_confirm_pending = None;
+        // Expired sticky → cleared like a plain message.
+        app.set_status_sticky("async notice".into());
+        app.status_sticky_until =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.consume_status_ttl();
+        assert!(app.status_message.is_none(), "expired sticky must clear");
     }
 }

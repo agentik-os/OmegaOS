@@ -2905,7 +2905,9 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         Line::from(""),
 
         section("Sessions"),
-        key("↑ / ↓  or  j / k", "Navigate sessions"),
+        // DESIGN-016: j/k are deliberately swallowed on Sessions (operator
+        // preference) — only the arrows navigate; don't document dead keys.
+        key("↑ / ↓", "Navigate sessions"),
         key("Enter / Tab", "Focus chat (talk to agent)"),
         key("Tab-Tab", "Chat fullscreen (hide list)"),
         key("r  /  R", "Rename selected session"),
@@ -2966,7 +2968,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
         key("Shift+Tab", "Forward to Claude (cycle modes)"),
-        key("Alt+Esc", "Send a literal ESC to the agent (vim/less)"),
+        key("Esc Esc / Alt+Esc", "Send a literal ESC to the agent (vim/less)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
         key("Ctrl+W / Alt+Bksp", "Delete word backwards"),
         key("Shift+Del / Alt+Del", "Delete word forwards"),
