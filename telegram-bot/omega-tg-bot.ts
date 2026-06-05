@@ -564,8 +564,15 @@ async function pollReports() {
     const checklist = taskList(plist);
     const barLine = ptot > 0 ? `<code>${bar(Math.round((pdone / ptot) * 100))}</code> ${pdone}/${ptot}` : `<code>${bar(100)}</code> 100%`;
     const report = `${sym} <b>${esc(d.project || w.project)}</b> · ${label}\n${barLine}${checklist}\n\n${body}${pending}${deploy}\n\n<i>${esc(d.oracle || w.oracle)}${dur}</i>${commit}`;
-    if (w.msgId) await edit(w.chat, w.msgId, report, undefined, w.thread);
-    else await send(w.chat, report, undefined, w.thread);
+    // 4 intelligent buttons on the report: re-dispatch / reply to this oracle, and
+    // simple git (only shown when the project resolves to a local repo).
+    const pj = d.project || w.project;
+    const rk = kb([
+      [{ text: "▸ Relancer", callback_data: `proj:oracle:${pj}`.slice(0, 64) }, { text: "↩ Répondre", callback_data: `rep:reply:${pj}`.slice(0, 64) }],
+      ...(repoPath(pj) ? [[{ text: "↓ Pull", callback_data: `git:pull:${pj}`.slice(0, 64) }, { text: "↑ Push", callback_data: `git:push:${pj}`.slice(0, 64) }]] : []),
+    ]);
+    if (w.msgId) await edit(w.chat, w.msgId, report, rk, w.thread);
+    else await send(w.chat, report, rk, w.thread);
     // Persist the oracle's report into the conversation history (+ MC mirror) so the
     // next turn — to Atlas or the oracle — has the full thread.
     histAppend(w.chat, w.thread, "assistant", `[${d.project || w.project}] ${d.summary || label}`, String(d.project || w.project));
@@ -1089,6 +1096,12 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "oracle") {
     setPending(from, "oracle-prompt", arg);
     return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+  }
+  // Reply to a finished report: the next message continues this project's oracle, with
+  // the conversation history (incl. the report just sent) as context.
+  if (ns === "rep" && action === "reply") {
+    setPending(from, "oracle-prompt", arg);
+    return send(chat, `↩ <b>Réponse à ${esc(arg)}</b>\nÉcris ta suite — je la donne à l'oracle <b>${esc(arg)}</b> avec le contexte de la conversation (rapport inclus).`, kb([[{ text: "✖ Annuler", callback_data: "acct:cancel" }]]));
   }
   if (ns === "git" && action === "list") {
     const repos = gitRepos();

@@ -351,6 +351,39 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         }
     }
 
+    // 13. Telegram bot parity: the LIVE bot (~/.omega/telegram-bot/omega-tg-bot.ts,
+    //     run by the systemd service) must match the source in the OmegaOS repo. A
+    //     concurrent linter/edit can revert one side, silently dropping shipped
+    //     features. Warn if they diverge so the operator redeploys.
+    {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
+        let live = home.join(".omega/telegram-bot/omega-tg-bot.ts");
+        let candidates = [
+            home.join("Station/OmegaOS/telegram-bot/omega-tg-bot.ts"),
+            home.join("OmegaOS/telegram-bot/omega-tg-bot.ts"),
+            std::path::PathBuf::from("/tmp/omega-build/telegram-bot/omega-tg-bot.ts"),
+        ];
+        match std::fs::read(&live) {
+            Ok(live_bytes) => {
+                let repo = candidates.iter().find(|p| p.exists());
+                match repo.and_then(|p| std::fs::read(p).ok()) {
+                    Some(repo_bytes) if repo_bytes == live_bytes => {
+                        checks.push(Check::ok("telegram bot parity", "live bot == repo source"))
+                    }
+                    Some(_) => checks.push(Check::warn(
+                        "telegram bot parity",
+                        "live bot DIFFERS from repo — redeploy: cp <repo>/telegram-bot/omega-tg-bot.ts ~/.omega/telegram-bot/ && systemctl --user restart omega-tg-bot",
+                    )),
+                    None => checks.push(Check::ok(
+                        "telegram bot parity",
+                        "live bot present (repo source not found to compare)",
+                    )),
+                }
+            }
+            Err(_) => checks.push(Check::warn("telegram bot parity", "live bot missing from ~/.omega/telegram-bot")),
+        }
+    }
+
     checks
 }
 
