@@ -586,11 +586,17 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
                 .title(" OmegaOS "),
         )
         .select(selected)
-        // All tabs use the same color when inactive; active tab is cyan+bold.
+        // All tabs use the same color when inactive; active tab is
+        // accent+bold+underline — the underline is the non-color cue so
+        // focus survives bold-as-bright emulators (a11y: never hue-only).
         // No background fill — keeps the toolbar visually clean and avoids
         // any single tab looking "different" beyond just being highlighted.
         .style(Style::default().fg(th::dim()))
-        .highlight_style(Style::default().fg(th::accent()).add_modifier(Modifier::BOLD));
+        .highlight_style(
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        );
 
     frame.render_widget(tabs, area);
 }

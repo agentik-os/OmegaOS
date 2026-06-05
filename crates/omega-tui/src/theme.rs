@@ -15,12 +15,13 @@
 //! Every theme that paints its own background (`bg: Some(..)`) must hold,
 //! measured against that bg:
 //!
-//! | roles                                  | minimum ratio |
-//! |----------------------------------------|---------------|
-//! | text, dim, info, error, warn           | 4.5 : 1       |
-//! | accent, accent2, success, special, dim2| 3.0 : 1       |
-//! | sel_fg on the accent (selection bars)  | 4.5 : 1       |
-//! | sel_fg on accent2 (selected fields)    | 4.5 : 1       |
+//! | roles                                            | minimum ratio |
+//! |---------------------------------------------------|---------------|
+//! | text, dim, info, error, warn                      | 4.5 : 1       |
+//! | accent, accent2, success, special (text-bearing)  | 4.5 : 1       |
+//! | dim2 (dead role — hierarchy guard only)           | 3.0 : 1       |
+//! | sel_fg on the accent (selection bars)             | 4.5 : 1       |
+//! | sel_fg on accent2 (selected fields)               | 4.5 : 1       |
 //!
 //! plus the gray hierarchy `ratio(dim2) < ratio(dim) < ratio(text)` so the
 //! three quiet levels stay visually ordered. A theme that fails is fixed by
@@ -179,7 +180,10 @@ const OMEGA: Theme = Theme {
         Color::Yellow,
         Color::Green,
         Color::Red,
-        Color::Rgb(255, 165, 0), // warn — the historical blocked-badge orange
+        Color::LightRed, // warn — named ANSI like every other Omega role, so
+                         // it adapts to light terminal schemes (a fixed orange
+                         // went near-invisible there); red-orange alert family,
+                         // distinct from pending (Yellow) and error (Red)
         Color::Blue,
         Color::Magenta,
         Color::Gray,
@@ -668,11 +672,15 @@ mod tests {
                 "{}: sel_fg on accent2 is {sel2:.2}:1, needs >= 4.5:1",
                 id.slug()
             );
-            // 3.0:1 — large/graphical roles.
-            check("accent", t.accent, 3.0);
-            check("accent2", t.accent2, 3.0);
-            check("success", t.success, 3.0);
-            check("special", t.special, 3.0);
+            // 4.5:1 — these roles paint readable text at dozens of ui.rs
+            // sites (labels, separators, active states), so they carry the
+            // body-text floor, not the large/graphical 3.0.
+            check("accent", t.accent, 4.5);
+            check("accent2", t.accent2, 4.5);
+            check("success", t.success, 4.5);
+            check("special", t.special, 4.5);
+            // 3.0:1 — dim2 has no text call sites; it only anchors the
+            // gray hierarchy below.
             check("dim2", t.dim2, 3.0);
             // Gray hierarchy: the three quiet levels stay visually ordered.
             let (r2, r1, rt) = (vs_bg(t.dim2), vs_bg(t.dim), vs_bg(t.text));
