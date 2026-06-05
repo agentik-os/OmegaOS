@@ -109,6 +109,8 @@ Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) �
 - **More CLI agents**: `omega install codex|gemini|pi|hermes|glm` (or
   Settings → Install agents in the TUI). All install user-space, no root.
 - **Global keybindings**: `omega install-bindings` (Ctrl+Space popup).
+- **Themes**: 15 TUI palettes with live preview (Settings → Theme) — the full
+  gallery, slugs, and Termius guidance live in [docs/THEMES.md](THEMES.md).
 - **Remote use from a laptop**: `mosh user@host -- omega` (installed; instant
   typing over any latency). In Termius: enable the mosh toggle.
 
