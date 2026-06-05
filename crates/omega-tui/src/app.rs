@@ -1608,6 +1608,16 @@ impl App {
             .map(|e| e.session.name.clone())
             .collect();
 
+        // F-1 (critical): snapshot the selected session's NAME before the rebuild
+        // — `self.selected` is a bare index into a list any other actor can
+        // reshuffle (session create/kill between refreshes), so an index-only
+        // clamp silently retargets chat-focused keystrokes to whatever session
+        // lands on the old row.
+        let selected_name: Option<String> = self
+            .sessions
+            .get(self.selected)
+            .map(|e| e.session.name.clone());
+
         // Cached daemon socket — refresh runs every ~2s, so a fresh connect()
         // each time is wasteful. Matches refresh_preview()'s connect_cached().
         let mgr = SessionManager::connect_cached().await?;
@@ -1699,8 +1709,30 @@ impl App {
             }
         }
 
-        if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
-            self.selected = self.sessions.len() - 1;
+        // F-1: re-anchor the selection by NAME so a list mutation never moves
+        // it off the session the user is looking at (or chatting with).
+        let reanchored = match &selected_name {
+            Some(name) => self.select_by_name(name),
+            None => false,
+        };
+        if !reanchored {
+            // The selected session vanished (or nothing was selected). If the
+            // user was chat-focused, their keystream was aimed at the dead
+            // session — drop to the list instead of silently retargeting
+            // whatever session now occupies the old index.
+            if matches!(
+                self.session_focus,
+                SessionFocus::Chat | SessionFocus::ChatFullscreen
+            ) {
+                self.session_focus = SessionFocus::List;
+                if let Some(name) = &selected_name {
+                    self.status_message = Some(format!("{name} ended — back to list"));
+                }
+            }
+            // Index fallback: keep `selected` in bounds when the anchor is gone.
+            if self.selected >= self.sessions.len() && !self.sessions.is_empty() {
+                self.selected = self.sessions.len() - 1;
+            }
         }
 
         Ok(())
