@@ -26,6 +26,8 @@ mission-control/
 
 # OmegaOS hygiene — agent/test artifacts (auto-added)
 .audit/
+.code/
+.linear-fix/
 .orchestrator/
 playwright-report/
 test-results/

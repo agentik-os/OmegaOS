@@ -956,7 +956,9 @@ async fn run_tui_loop(
             if let Some(entry) = app.selected_session() {
                 let name = entry.session.name.clone();
                 let cols = app.preview_inner_width;
-                // 1:1 with the visible panel — ALWAYS. Hidden extra rows (the
+                // 1:1 with the visible panel — except the pre-existing
+                // .max(10) floor below: inner height <10 still gets rows=10
+                // (top 10−inner rows hidden on tiny terminals). Hidden extra rows (the
                 // old CHAT_INPUT_HEADROOM = 50 on chat focus) made every
                 // full-screen agent UI — e.g. the dynamic-workflow live view —
                 // lay out its header/status ~50 rows above the visible tail
@@ -965,8 +967,11 @@ async fn run_tui_loop(
                 // plain-text history mode where any keystroke snaps back to
                 // tail — watching a live workflow was impossible. Known
                 // tradeoff: a TYPED input taller than the panel clips its top
-                // inside Claude while composing (content intact; pastes are
-                // immune — they collapse to a [Pasted text #N] placeholder).
+                // inside Claude while composing (content intact; typed lines
+                // stay recoverable via Alt+Up history browse — only EDITS to
+                // clipped lines act on a stale view; the [Pasted text #N]
+                // collapse that makes pastes immune is Claude-Code-specific —
+                // other CLI agents may differ).
                 let rows = app.preview_inner_height.max(10);
                 if cols >= 20 {
                     let want = (name.clone(), cols, rows);
