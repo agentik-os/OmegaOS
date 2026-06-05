@@ -29,37 +29,10 @@ TOOL=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
 CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
 [ -z "$CMD" ] && exit 0
 
-# ── Resolve the owning project (for per-project journaling) ──────────────────
-# Prefer a projects.json path that prefixes $PWD, else the git toplevel basename,
-# else the dispatched session's project, else "global".
-PROJECTS_FILE="$HOME/.omega/projects.json"
-PROJECT=""
-if [ -f "$PROJECTS_FILE" ]; then
-    PROJECT=$(PWD_NOW="$PWD" python3 - "$PROJECTS_FILE" <<'PY' 2>/dev/null
-import json,os,sys
-pwd=os.environ.get("PWD_NOW","")
-try:
-    best=("",-1)
-    for p in json.load(open(sys.argv[1])).get("projects",[]):
-        path=p.get("path","")
-        if path and (pwd==path or pwd.startswith(path.rstrip("/")+"/")):
-            if len(path)>best[1]: best=(p.get("name",""),len(path))
-    if best[0]: print(best[0])
-except Exception: pass
-PY
-)
-fi
-if [ -z "$PROJECT" ]; then
-    TOP=$(git rev-parse --show-toplevel 2>/dev/null)
-    [ -n "$TOP" ] && PROJECT=$(basename "$TOP")
-fi
-if [ -z "$PROJECT" ]; then
-    S="${RMUX_SESSION:-$(rmux display-message -p '#S' 2>/dev/null)}"
-    case "$S" in oracle-*) PROJECT=$(printf '%s' "$S" | sed -E 's/^oracle-//; s/-[0-9]+$//');; esac
-fi
-[ -z "$PROJECT" ] && PROJECT="global"
-
 # ── Classify ─────────────────────────────────────────────────────────────────
+# Hot-path note: the benign case (the vast majority of Bash calls) does only sed
+# + a few greps below, then exits. Project resolution (python3) runs ONLY once a
+# destructive op is detected, so the guard adds ~no latency to normal commands.
 # CATASTROPHIC: irreversible, no reflog/undo, out-of-scope. Patterns are tight so
 # no legitimate dev command matches (a scoped `rm -rf ./build` is HIGH, not this).
 SEV=""; REASON=""
@@ -97,7 +70,37 @@ elif g "${BND}"'chmod[[:space:]]+-R[[:space:]]+777|chown[[:space:]]+-R[^|;]+[[:s
 elif printf '%s' "$SCAN" | grep -Eiq 'drop[[:space:]]+(database|schema|table)\b|truncate[[:space:]]+table\b'; then
     SEV="high"; REASON="SQL DROP/TRUNCATE — irreversible data loss if on prod"
 fi
-[ -z "$SEV" ] && exit 0   # nothing destructive — silent allow
+[ -z "$SEV" ] && exit 0   # nothing destructive — silent allow (hot path ends here)
+
+# ── Resolve the owning project (only now — a destructive op was found) ───────
+# Prefer a projects.json path that prefixes $PWD, else the git toplevel basename,
+# else the dispatched session's project, else "global".
+PROJECTS_FILE="$HOME/.omega/projects.json"
+PROJECT=""
+if [ -f "$PROJECTS_FILE" ]; then
+    PROJECT=$(PWD_NOW="$PWD" python3 - "$PROJECTS_FILE" <<'PY' 2>/dev/null
+import json,os,sys
+pwd=os.environ.get("PWD_NOW","")
+try:
+    best=("",-1)
+    for p in json.load(open(sys.argv[1])).get("projects",[]):
+        path=p.get("path","")
+        if path and (pwd==path or pwd.startswith(path.rstrip("/")+"/")):
+            if len(path)>best[1]: best=(p.get("name",""),len(path))
+    if best[0]: print(best[0])
+except Exception: pass
+PY
+)
+fi
+if [ -z "$PROJECT" ]; then
+    TOP=$(git rev-parse --show-toplevel 2>/dev/null)
+    [ -n "$TOP" ] && PROJECT=$(basename "$TOP")
+fi
+if [ -z "$PROJECT" ]; then
+    S="${RMUX_SESSION:-$(rmux display-message -p '#S' 2>/dev/null)}"
+    case "$S" in oracle-*) PROJECT=$(printf '%s' "$S" | sed -E 's/^oracle-//; s/-[0-9]+$//');; esac
+fi
+[ -z "$PROJECT" ] && PROJECT="global"
 
 # ── Journal (per project) ────────────────────────────────────────────────────
 AUDIT_DIR="$HOME/.omega/audit/$PROJECT"
