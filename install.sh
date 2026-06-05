@@ -1144,11 +1144,12 @@ if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
     [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
     if command -v jq >/dev/null 2>&1; then
         TMP="$(mktemp)"
-        jq --arg track "$HOOKS_DST/track-tool-use.sh" --arg verify "$HOOKS_DST/stop-verify-hook.sh" '
+        jq --arg track "$HOOKS_DST/track-tool-use.sh" --arg verify "$HOOKS_DST/stop-verify-hook.sh" --arg guard "$HOOKS_DST/omega-audit-guard.sh" '
           .hooks = (.hooks // {})
           | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(((.hooks[0].command // "") | test("track-tool-use")) | not)) + [{"matcher":"*","hooks":[{"type":"command","command":$track}]}])
           | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
-        ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null && mv "$TMP" "$CLAUDE_SETTINGS" && ok "Hooks installed + registered (PostToolUse track + Stop verify)" || { rm -f "$TMP"; info "Hook merge skipped (jq error) — hooks copied to $HOOKS_DST"; }
+          | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(((.hooks[0].command // "") | test("omega-audit-guard")) | not)) + [{"matcher":"Bash","hooks":[{"type":"command","command":$guard}]}])
+        ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null && mv "$TMP" "$CLAUDE_SETTINGS" && ok "Hooks installed + registered (PreToolUse guard + PostToolUse track + Stop verify)" || { rm -f "$TMP"; info "Hook merge skipped (jq error) — hooks copied to $HOOKS_DST"; }
     else
         info "jq not found — hooks copied to $HOOKS_DST; install jq to auto-register them in settings.json"
     fi
