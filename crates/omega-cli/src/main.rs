@@ -3164,15 +3164,18 @@ async fn cmd_spawn_worker(
     //     never run autonomously (git push, rm, sudo). Oracles keep full access.
     //   * mcp_config + --strict-mcp-config — ONLY the OmegaOS MCP servers, no
     //     user/project .mcp.json (hermetic).
-    //   * --bare — minimal mode (skip hooks/LSP/plugin-sync); fine for a hermetic
-    //     worker, never for an oracle.
+    //   * NO --bare — bare mode skips OAuth credential loading in Claude Code
+    //     >= 2.1.x, so a bare worker dies at the login screen (see below).
     let agent = omega_core::agents::Agent::from_name(&config.agent_command)
         .unwrap_or(omega_core::agents::Agent::Claude);
     let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
         let mut opts = omega_core::agents::LaunchOptions::default();
         opts.permission_mode = Some("acceptEdits".to_string());
         opts.disallowed_tools = Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string());
-        opts.bare = true;
+        // NOT bare: --bare skips OAuth credential loading in Claude Code >= 2.1.x
+        // (runtime-verified 2026-06-05: `claude --bare --print` -> "Not logged in"
+        // while plain `claude --print` succeeds on an OAuth-only host), so hermetic
+        // workers must NOT use bare mode until upstream fixes it.
         match omega_core::mcp_servers::generate_mcp_config(&config, &worker_name) {
             Ok(json) => {
                 let path = config.state_dir.join(format!("{}.mcp.json", worker_name));
