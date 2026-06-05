@@ -120,6 +120,18 @@ cd OmegaOS
 
 The installer downloads prebuilt `rmux` + `omega` binaries for your platform when a release is published (verified by checksum), and falls back to building from source otherwise — so a fresh clone always reproduces the system, just faster when a binary exists. Force a source build with `OMEGA_FROM_SOURCE=1 ./install.sh`. When it finishes, run the doctor.
 
+### First-run setup (5 minutes)
+
+The stack installs itself; only the personal pieces are left. **`omega guide`
+prints the full step-by-step** (also saved at `~/.omega/GETTING-STARTED.md`,
+and shown at the end of the install). In short:
+
+1. **Connect Claude** *(required)* — `claude` → `/login` → follow the URL. Check: `claude auth status`.
+2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `omega telegram setup <TOKEN> <ID> --user-id <ID>`. For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
+3. **Service keys** *(optional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI-for-voice) powers auto-provisioning of new apps.
+4. **Add a project** — `omega` → Projects → **[N] New Project**, Telegram → *Import from GitHub*, or just drop a repo under `~/Station/<Category>/`.
+5. **Verify** — `omega doctor`: every line `[+]`.
+
 ### Connecting remotely
 
 The rmux daemon owns every session, so your agents keep running after you disconnect. To get back to them, **attach** — reconnect your terminal to a session that's already running:

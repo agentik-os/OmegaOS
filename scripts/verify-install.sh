@@ -232,6 +232,8 @@ if grep -q "OMEGA-CRON-TOKEN-REFRESH-v1" install.sh; then ok "token-refresh cron
 if [ -f scripts/omega-self-heal.sh ] && grep -q "omega-self-heal.sh" install.sh && grep -q "OMEGA-CRON-SELFHEAL-v1" install.sh; then ok "self-heal daemon shipped + wired + cron scheduled"; else bad "self-heal daemon (omega-self-heal.sh) not shipped/wired in install.sh"; fi
 if grep -q "OMEGA_CREDENTIALS_LINK" install.sh; then ok "shared-credential override (OMEGA_CREDENTIALS_LINK) wired in install.sh"; else bad "shared-credential override not in install.sh"; fi
 if grep -q "alias om=" install.sh && grep -q "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" install.sh; then ok "shell integration (om alias + scrollback) wired in install.sh"; else bad "shell integration not in install.sh"; fi
+if [ -f docs/GETTING-STARTED.md ] && grep -q "GETTING-STARTED.md" install.sh; then ok "getting-started guide shipped + installed to ~/.omega"; else bad "getting-started guide (docs/GETTING-STARTED.md) not shipped/wired in install.sh"; fi
+if grep -q "Commands::Guide" crates/omega-cli/src/main.rs && grep -q "GETTING-STARTED.md" crates/omega-cli/src/main.rs; then ok "omega guide command wired (embedded fallback)"; else bad "omega guide command missing from CLI"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then

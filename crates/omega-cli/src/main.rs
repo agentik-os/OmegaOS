@@ -23,6 +23,12 @@ enum Commands {
     /// Launch the TUI session manager
     Menu,
 
+    /// Print the getting-started guide (the post-install onboarding steps:
+    /// Claude login, Telegram remote, service keys, first project). The npx
+    /// installer's animation hides install.sh output, so this is the durable
+    /// way to (re)read it.
+    Guide,
+
     /// Create a new rmux session
     New {
         /// Session name
@@ -568,6 +574,19 @@ async fn main() -> Result<()> {
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
         Some(Commands::Cleanup { yes }) => cmd_cleanup(yes).await,
+        Some(Commands::Guide) => {
+            // Prefer the installed copy (matches the installed version); fall
+            // back to the guide embedded at compile time so `omega guide`
+            // always answers, even if ~/.omega was wiped.
+            let installed = dirs::home_dir()
+                .map(|h| h.join(".omega/GETTING-STARTED.md"))
+                .filter(|p| p.exists());
+            match installed.and_then(|p| std::fs::read_to_string(p).ok()) {
+                Some(text) => print!("{}", text),
+                None => print!("{}", include_str!("../../../docs/GETTING-STARTED.md")),
+            }
+            Ok(())
+        }
         Some(Commands::Doctor { pre_reset, fix }) => {
             if pre_reset {
                 cmd_doctor_pre_reset()
