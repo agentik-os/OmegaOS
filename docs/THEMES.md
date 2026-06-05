@@ -61,7 +61,8 @@ Borders, labels, and structure stay quiet grayscale; the single accent color
 (Matrix green, Dracula purple, neon pink, …) is reserved for what matters —
 active state and your selection. Two mono themes push this to the limit:
 Noir and Paper stay grayscale by design, using weight and inversion instead
-of hue for hierarchy.
+of hue for hierarchy — their one non-gray role is the warn orange of the
+blocked badge, because an alert must read at a glance.
 
 ---
 
@@ -76,11 +77,14 @@ enforce WCAG-AA contrast ratios for **every** palette:
   `dim2`) vs the background: **≥ 3.0:1** (AA for large text / UI components).
 - **Selection bar**: `sel_fg` on the accent background: **≥ 4.5:1** — the
   inverted cursor bar is always readable.
-- **Hierarchy**: `dim2 < dim < text` in luminance — quieter roles are
-  measurably quieter, but never below the AA floor.
+- **Hierarchy**: contrast-vs-background ordering `dim2 < dim < text` (on a
+  light theme like Paper the raw luminance order inverts — ink text is the
+  *darkest* color) — quieter roles are measurably quieter, but never below
+  the AA floor.
 
 A palette that regresses below any threshold fails the test suite, so no theme
-can ship unreadable. Omega is exempt by design: it uses ANSI named colors, so
+can ship unreadable. Omega is exempt by design: it uses ANSI named colors
+(every role but `warn`, which keeps the truecolor blocked-badge orange), so
 its actual contrast is whatever your terminal's palette delivers (and adapting
 to that palette is its whole point).
 
@@ -90,10 +94,13 @@ to that palette is its whole point).
 
 ### Truecolor themes render identically everywhere
 
-Every theme except Omega uses 24-bit RGB (truecolor). Truecolor bytes go
-straight to the screen — they never pass through your terminal's 16-color
-palette — so Matrix is the exact same `#00FF41` in iTerm, Alacritty, kitty,
-Windows Terminal, and **Termius**. If a truecolor theme looks wrong, your
+In every theme except Omega, all identity colors — the accent, the
+background, the text, and the tuned grays — are 24-bit RGB (truecolor).
+Truecolor bytes go straight to the screen — they never pass through your
+terminal's 16-color palette — so Matrix is the exact same `#00FF41` in iTerm,
+Alacritty, kitty, Windows Terminal, and **Termius**. (A few structural roles
+— the bright white, the selection-bar text black — remain named ANSI and
+resolve through your palette.) If a truecolor theme looks wrong, your
 emulator or multiplexer is likely downgrading truecolor; verify support with:
 
 ```
@@ -105,8 +112,9 @@ between, like an old tmux/screen) is quantizing to 256 colors.
 
 ### Omega adapts to you
 
-Omega, the default, is built from ANSI *named* colors (red, green, blue, …),
-so it inherits your terminal/Termius color profile — background included.
+Omega, the default, is built from ANSI *named* colors (red, green, blue, …;
+only its `warn` badge is truecolor orange), so it inherits your terminal/
+Termius color profile — background included.
 That's its feature, not a limitation: it follows your light/dark preference
 and matches whatever scheme you've tuned your terminal to. If you want the
 TUI to look like *your* terminal, use Omega; if you want it to look the same
@@ -116,7 +124,9 @@ on every machine, pick any other theme.
 
 The session-pane preview passes agent output through untouched — agent panes
 are **never re-themed**, on any theme. Claude (and any CLI agent) emits ANSI
-named colors, and those resolve through your terminal's palette. So if dark
+named colors, and those resolve through your terminal's palette. (One safety
+net: indexed black and white — 0 and 15 — map to your terminal's default
+foreground, so agent text never goes invisible on a matching background.) So if dark
 blue agent output is unreadable, the fix is your terminal/Termius color
 profile, not the OmegaOS theme. In Termius: **Settings → Appearance → Color
 Scheme** — pick (or edit) a scheme whose blue is legible on your background.
