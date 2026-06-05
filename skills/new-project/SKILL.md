@@ -30,10 +30,21 @@ asked interactively. Never block on a value the menu already supplied.
 
 | id | Stack | Components |
 |----|-------|-----------|
-| `nextstack` | **Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit** | App Router, Convex realtime, Clerk auth, Stripe billing, the **full** shadcn chatbot kit (every chat component), oklch brand system. Optional: **React Flow**. |
+| `nextstack` *(default)* | **Next.js 16 + Convex + Clerk + Stripe + shadcn-chatbot-kit** | App Router, Convex realtime, Clerk auth, Stripe billing, the **full** shadcn chatbot kit (every chat component), oklch brand system. Optional: **React Flow**. The smart-default for SaaS/web. |
+| `custom` | **Pick-your-own** | Let the operator compose the stack — same question flow as the old VPS wizard. |
 
-> Only `nextstack` exists today. New stacks are added as new rows + a scaffold
-> block below — the menu reads this table.
+> `nextstack` is the **proposed default** (identical to the old-VPS smart default).
+> Choosing **`custom`** opens a short stack chooser (AskUserQuestion), one question
+> each, default pre-selected:
+> - **Project type** — SaaS web · Landing/marketing · Mobile (Expo) · Desktop (Tauri) · API backend.
+> - **Backend/DB** — Convex *(default)* · Supabase · Custom API (Hono) · none.
+> - **Auth** — Clerk *(default)* · Better Auth · Auth.js · none.
+> - **Payments** — Stripe *(default)* · LemonSqueezy · none.
+> - **UI** — shadcn/ui + oklch *(default)* · NativeWind (mobile) · Tamagui.
+>
+> The chosen components drive provisioning (Phase 2) + the scaffold (Phase 3):
+> provision only the picked services, scaffold only the picked libs. Add a new
+> fixed stack as another row + a scaffold block; `custom` needs no new row.
 
 ---
 
@@ -55,8 +66,11 @@ a fresh scaffold:
 Then stop — import is done. The scaffold phases below are for fresh projects.
 
 1. Parse `$ARGUMENTS`: `STACK`, `CATEGORY`, `NAME` (positional).
-2. **Stack**: if missing or unknown → AskUserQuestion listing the table above.
-   Lock `nextstack` for now.
+2. **Stack**: if missing or unknown → AskUserQuestion listing the table above with
+   **`nextstack` pre-selected as the default**. If the user picks **`custom`**, run
+   the stack chooser (the bulleted questions above) and record the picked
+   components — they drive which services get provisioned (Phase 2) and which libs
+   get scaffolded (Phase 3). Any explicit stack arg is honored without asking.
 3. **Category** (the guiding branch) — if missing, AskUserQuestion:
    - `customer` → client work → `<projects_dir>/customers/<name>` (falls back to
      an existing `clients/` if that's the user's layout)
@@ -243,19 +257,34 @@ Do not re-implement vision/PRD/planning — delegate, in order, scoped to
 `$PROJECT_DIR`:
 
 1. `/omg-vision` — emotional positioning → `VISION.md`
-2. `/omg-prd` — full doc suite from the vision
-3. `/omg-planner` — generate the **typed** `.planner/tracker.json` (a DAG of
+2. **Spawn the project's DEDICATED ORACLE to present the vision** (asked for on
+   every new project). As soon as `VISION.md` exists, dispatch the project oracle
+   to read it and explain the product back to the operator, in their language:
+   `omega dispatch "$NAME" "Read $PROJECT_DIR/VISION.md and present this product's
+   VISION to me in one message — soul statement, internal compass, primary persona,
+   the 3 design principles, and what we build next. Concrete and warm, no fluff."`
+   This opens a persistent oracle so the operator can immediately discuss + steer
+   the vision. (From the Telegram bot, `createProject` already auto-launches it.)
+3. `/omg-prd` — full doc suite from the vision → `docs/PRD.md`
+4. `/omg-brand-identity` — **visual identity** (Kapferer Brand Identity Prism,
+   design tokens, 2-3 switchable variants, typography/color/voice/logo direction,
+   AI prompts, an interactive **brand-book** Next.js sub-app) → `BRAND.md` +
+   `brand-book/`. Reuses the project's oklch tokens so brand + scaffold stay
+   consistent. Skippable for non-visual projects (`--skip=brand`).
+5. `/omg-planner` — generate the **typed** `.planner/tracker.json` (a DAG of
    single-worker-dispatch steps; audits as a terminal `wave`). Verify it loads:
    `omega plan-status .` must print the steps with `ready N | blocked M`.
-4. `omega plan-run .` — **the OmegaOS engine executes the plan**: ready-set →
-   spawn worker → Guardian re-runs each `verify_command` → advance. Sequencing is
-   enforced structurally (a step can NEVER be skipped) and no step is "done"
-   without its verify proof. Watch progress with `omega plan-status .`.
+6. `omega plan-run .` — **the OmegaOS engine executes the plan (the "build")**:
+   ready-set → spawn worker → Guardian re-runs each `verify_command` → advance.
+   Sequencing is enforced structurally (a step can NEVER be skipped) and no step is
+   "done" without its verify proof. Watch progress with `omega plan-status .`.
    If `omega` is not on PATH, fall back to `bun ~/.omega/skills/planner/fallback/plan.ts run .`.
 
-Offer to stop after `/omg-vision` so the user can review, or — in a dispatched
-(non-interactive) context — proceed automatically through to `omega plan-run`
-(Law L3). The engine, not the LLM, owns the execution loop from step 4 on.
+Full pipeline order: **vision → (oracle presents it) → prd → brand-identity →
+planner → build (plan-run)**. Offer to stop after `/omg-vision` so the user can
+review with the oracle, or — in a dispatched (non-interactive) context — proceed
+automatically through to `omega plan-run` (Law L3). The engine, not the LLM, owns
+the execution loop from `plan-run` on.
 
 ---
 

@@ -788,11 +788,11 @@ else
     info "New-project skill not found — skipping"
 fi
 
-# Install the OmegaOS pipeline skills (vision, prd) the new-project flow delegates
-# to — shipped as /omg-* so a FRESH install is self-contained (the pipeline no
-# longer depends on the user's personal /vision /prd existing). Does NOT touch any
-# pre-existing /vision /prd the user may already have.
-for psk in vision prd; do
+# Install the OmegaOS pipeline skills (vision, prd, brand-identity) the new-project
+# flow delegates to — shipped as /omg-* so a FRESH install is self-contained (the
+# pipeline no longer depends on the user's personal /vision /prd /brand-identity
+# existing). Does NOT touch any pre-existing ones the user may already have.
+for psk in vision prd brand-identity; do
     PSK_SRC="$OMEGA_SRC/skills/$psk"
     PSK_DST="$OMEGA_DIR/skills/$psk"
     if [[ -d "$PSK_SRC" ]]; then
