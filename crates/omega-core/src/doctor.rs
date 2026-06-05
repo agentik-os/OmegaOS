@@ -359,6 +359,7 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
         let live = home.join(".omega/telegram-bot/omega-tg-bot.ts");
         let candidates = [
+            home.join("Station/SideBusiness/OmegaOS/telegram-bot/omega-tg-bot.ts"),
             home.join("Station/OmegaOS/telegram-bot/omega-tg-bot.ts"),
             home.join("OmegaOS/telegram-bot/omega-tg-bot.ts"),
             std::path::PathBuf::from("/tmp/omega-build/telegram-bot/omega-tg-bot.ts"),
