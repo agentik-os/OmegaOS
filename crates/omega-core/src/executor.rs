@@ -306,7 +306,7 @@ mod tests {
     #[tokio::test]
     async fn run_completes_all_steps_in_order() {
         let dir = tempfile::tempdir().unwrap();
-        save_linear_plan(dir.path(), "true");
+        save_linear_plan(dir.path(), "test -d .");
         let rt = FakeRuntime { script: HashMap::new() };
         let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
         assert!(report.success);
@@ -357,7 +357,7 @@ mod tests {
     #[tokio::test]
     async fn pass_releases_scope_claim() {
         let dir = tempfile::tempdir().unwrap();
-        save_linear_plan(dir.path(), "true");
+        save_linear_plan(dir.path(), "test -d .");
         let rt = TrackingRuntime::default();
         let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
         assert!(report.success);
