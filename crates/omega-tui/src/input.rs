@@ -817,11 +817,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             Action::ForceRedraw
         }
-        // Ctrl+R — refresh the session list + preview in place (same as F5).
-        // Hot-reload of the binary lives on the menu's "R" item (MenuAction::Restart),
-        // so ^R no longer tears down the screen.
+        // Ctrl+R — RELOAD the TUI: tear down + re-exec the freshly-built binary
+        // (browser-style ^R = reload). Soft in-place refresh (no teardown) is on
+        // F5 / the menu's Refresh item; menu "R" also reloads.
         KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::Refresh
+            Action::Restart
         }
 
         // Quit
@@ -1696,11 +1696,11 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     // --- TUI-local (never forwarded) ---
 
-    // Ctrl+R — refresh the session list + preview in place, even in chat focus,
-    // so the binding is consistent everywhere and never tears down the screen.
-    // Hot-reload of the binary lives on the menu's "R" item (MenuAction::Restart).
+    // Ctrl+R — RELOAD the TUI even from chat focus (browser-style ^R = reload):
+    // tear down + re-exec the freshly-built binary. Consistent with list focus.
+    // Soft in-place refresh stays on F5 / the menu's Refresh item.
     if key.code == KeyCode::Char('r') && key.modifiers.contains(KeyModifiers::CONTROL) {
-        return Action::Refresh;
+        return Action::Restart;
     }
 
     // Ctrl+X — CLOSE (kill) the session you're focused in, WITHOUT first Tabbing
