@@ -701,18 +701,36 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
 
         InputMode::SelectModel(config_key, options, sel) => {
             let count = options.len().max(1);
+            // Theme selector: live-preview the highlighted theme on every
+            // arrow move so the whole TUI re-skins under the overlay.
+            let is_theme = config_key == "general.theme";
             match key.code {
                 KeyCode::Esc => {
+                    if is_theme {
+                        // Revert the live preview to the saved theme.
+                        crate::theme::set_active_slug(&app.config.theme);
+                    }
                     app.input_mode = InputMode::Normal;
                     app.status_message = Some("Cancelled".to_string());
                     Action::None
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    app.input_mode = InputMode::SelectModel(config_key, options, (sel + 1) % count);
+                    let next = (sel + 1) % count;
+                    if is_theme {
+                        if let Some(slug) = options.get(next) {
+                            crate::theme::set_active_slug(slug);
+                        }
+                    }
+                    app.input_mode = InputMode::SelectModel(config_key, options, next);
                     Action::None
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    if is_theme {
+                        if let Some(slug) = options.get(next) {
+                            crate::theme::set_active_slug(slug);
+                        }
+                    }
                     app.input_mode = InputMode::SelectModel(config_key, options, next);
                     Action::None
                 }

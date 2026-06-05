@@ -8,6 +8,13 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 ## [Unreleased]
 
 ### Added
+- TUI theme selector (Settings → Theme): 15 selectable palettes — Omega
+  (default), Matrix, Terminal, Amber, Noir, Paper, Monogram, Dracula, Nord,
+  Gruvbox, Solarized Dark, Tokyo Night, Synthwave, Ocean, Crimson. The
+  selector live-previews each theme while arrowing through it, the choice
+  persists in `~/.omega/config.toml` (`theme = "..."`), and every chrome
+  color in the TUI now goes through semantic theme roles. The session-pane
+  preview keeps the agent's own colors untouched.
 - GitHub Actions CI: build the workspace with `-D warnings` and run the test
   suite as hard gates; clippy and rustfmt run as advisory steps.
 - Hand-written, human-voiced README with French, Russian, and Chinese

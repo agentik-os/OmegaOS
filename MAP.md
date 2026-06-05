@@ -66,6 +66,7 @@ OmegaOS/
 │   ├── omega-tui/src/                 Terminal UI (ratatui)
 │   │   ├── app.rs                     App state (7 tabs)
 │   │   ├── input.rs                   Keyboard + mouse handling
+│   │   ├── theme.rs                   Theme engine (15 palettes, Settings → Theme)
 │   │   └── ui.rs                      Tab rendering
 │   │
 │   └── omega-cli/src/                 CLI binary

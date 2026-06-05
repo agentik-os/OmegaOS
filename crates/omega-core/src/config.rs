@@ -31,6 +31,11 @@ pub struct OmegaConfig {
     /// (Arrow-only navigation is always enforced there; j/k never move the cursor.)
     #[serde(default = "default_session_shortcuts")]
     pub session_shortcuts: bool,
+    /// TUI color theme slug (Settings → Theme). The registry of valid slugs
+    /// lives in omega-tui's theme module; an unknown slug falls back to the
+    /// default "omega" palette at load time.
+    #[serde(default = "default_theme")]
+    pub theme: String,
     /// IANA timezone for the on-screen clock (e.g. "Europe/Paris", "America/New_York").
     /// Persisted timestamps stay UTC — this localizes ONLY the displayed clock,
     /// because a headless VPS runs in UTC and the operator usually does not.
@@ -56,6 +61,10 @@ fn default_auto_naming() -> bool {
 
 fn default_session_shortcuts() -> bool {
     true
+}
+
+fn default_theme() -> String {
+    "omega".to_string()
 }
 
 /// Auto-detect the user's project root: the first existing common work
@@ -151,6 +160,7 @@ impl Default for OmegaConfig {
             auto_spawn_master: default_auto_master(),
             auto_naming: default_auto_naming(),
             session_shortcuts: default_session_shortcuts(),
+            theme: default_theme(),
             timezone: None,
             telegram: None,
         }

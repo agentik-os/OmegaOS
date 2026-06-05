@@ -659,6 +659,8 @@ async fn run_menu() -> Result<()> {
     use omega_tui::app::App;
 
     let config = OmegaConfig::load().unwrap_or_default();
+    // Apply the persisted TUI theme before the first frame renders.
+    omega_tui::theme::set_active_slug(&config.theme);
     let mut app = App::new(config);
 
     if let Err(e) = app.refresh().await {
@@ -1653,17 +1655,35 @@ async fn run_tui_loop(
                     }
                 }
                 Action::CommitSettingsEdit { config_key, value } => {
-                    let mut providers = omega_core::providers::ProvidersConfig::load();
-                    if let Err(e) = set_config_value(&mut providers, &config_key, &value) {
-                        app.status_message = Some(format!("Save failed: {}", e));
-                    } else if let Err(e) = providers.save() {
-                        app.status_message = Some(format!("Save failed: {}", e));
+                    // The TUI theme lives in ~/.omega/config.toml (OmegaConfig),
+                    // not providers.toml — handle it before the provider path.
+                    if config_key == "general.theme" {
+                        let mut c = OmegaConfig::load().unwrap_or_default();
+                        c.theme = value.clone();
+                        if let Err(e) = save_omega_config(&c) {
+                            app.status_message = Some(format!("Save failed: {}", e));
+                        } else {
+                            omega_tui::theme::set_active_slug(&value);
+                            app.config = OmegaConfig::load().unwrap_or_default();
+                            let label = omega_tui::theme::ThemeId::from_slug(&value)
+                                .map(|t| t.label())
+                                .unwrap_or(value.as_str());
+                            app.status_message =
+                                Some(format!("Theme '{}' applied — saved [+]", label));
+                        }
                     } else {
-                        app.status_message =
-                            Some(format!("Saved {} to providers.toml [+]", config_key));
-                        // Bust the cache so the Settings panel reflects the
-                        // value just typed (not the stale in-memory copy).
-                        app.invalidate_providers();
+                        let mut providers = omega_core::providers::ProvidersConfig::load();
+                        if let Err(e) = set_config_value(&mut providers, &config_key, &value) {
+                            app.status_message = Some(format!("Save failed: {}", e));
+                        } else if let Err(e) = providers.save() {
+                            app.status_message = Some(format!("Save failed: {}", e));
+                        } else {
+                            app.status_message =
+                                Some(format!("Saved {} to providers.toml [+]", config_key));
+                            // Bust the cache so the Settings panel reflects the
+                            // value just typed (not the stale in-memory copy).
+                            app.invalidate_providers();
+                        }
                     }
                 }
                 Action::RenameSession { old, new } => {

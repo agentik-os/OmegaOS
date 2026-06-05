@@ -495,6 +495,25 @@ pub fn fields_for_section(
                 current: config.session_shortcuts,
             });
         }
+        SettingsSection::Theme => {
+            // One Select over the theme registry; the SelectModel overlay
+            // live-previews each theme as you arrow through it (input.rs),
+            // and ui.rs appends a colored swatch line per theme below.
+            let options: Vec<String> = crate::theme::ThemeId::all()
+                .iter()
+                .map(|t| t.slug().to_string())
+                .collect();
+            let current_index = options
+                .iter()
+                .position(|s| *s == config.theme)
+                .unwrap_or(0);
+            out.push(SettingsField::Select {
+                label: "Active theme".to_string(),
+                config_key: "general.theme".to_string(),
+                options,
+                current_index,
+            });
+        }
         SettingsSection::Install => {
             // Per-agent install / uninstall buttons
             for agent in Agent::all() {
@@ -715,6 +734,7 @@ fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsSection {
     General,
+    Theme,
     Install,
     Claude,
     Codex,
@@ -730,6 +750,7 @@ impl SettingsSection {
     pub fn all() -> &'static [SettingsSection] {
         &[
             SettingsSection::General,
+            SettingsSection::Theme,
             SettingsSection::Install,
             SettingsSection::Claude,
             SettingsSection::Codex,
@@ -744,6 +765,7 @@ impl SettingsSection {
     pub fn label(&self) -> &'static str {
         match self {
             SettingsSection::General => "General",
+            SettingsSection::Theme => "Theme",
             SettingsSection::Install => "Install agents",
             SettingsSection::Claude => "Claude (Anthropic)",
             SettingsSection::Codex => "Codex (OpenAI)",
