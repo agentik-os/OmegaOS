@@ -1917,38 +1917,6 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
 
-    // ── Actions — every project feature, VISIBLE (Telegram-menu parity). ──
-    let tg_on = project.telegram_enabled();
-    lines.push(Line::from(Span::styled(
-        "  ── Actions ──",
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::from(vec![
-        Span::styled("    Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw("open the project in a terminal"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    T     ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw(format!(
-            "Telegram topic: {} — toggle {}",
-            if tg_on { "🔔 ON" } else { "🔕 OFF" },
-            if tg_on { "OFF" } else { "ON" },
-        )),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    x     ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw("delete… (menu: 1 OmegaOS · 2 + local folder · 3 + GitHub)"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    D     ", Style::default().fg(Color::Red)),
-        Span::raw("quick delete local machine (press twice)"),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("    n     ", Style::default().fg(Color::Green)),
-        Span::raw("add another project"),
-    ]));
-
-    lines.push(Line::from(""));
 
     // Planner status (if .planner/tracker.json exists)
     let tracker = omega_core::planner::PlanTracker::load(&project.path);
@@ -2035,14 +2003,32 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
+    // ── ONE actions menu — every project feature, one line each, [key] style. ──
+    let tg_on = project.telegram_enabled();
     lines.push(Line::from(Span::styled(
         "  ── Actions ──",
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
     )));
-    lines.push(Line::from(Span::styled(
-        "    [d] Dispatch oracle    [p] Run planner    [Enter on detail] Open in terminal",
-        Style::default().fg(Color::Cyan),
-    )));
+    let action = |key: &str, label: String| -> Line<'static> {
+        Line::from(Span::styled(
+            format!("    [{}]{}{}", key, " ".repeat(7usize.saturating_sub(key.len())), label),
+            Style::default().fg(Color::Cyan),
+        ))
+    };
+    lines.push(action("Enter", "Open in terminal".to_string()));
+    lines.push(action("d", "Dispatch oracle".to_string()));
+    lines.push(action("p", "Run planner".to_string()));
+    lines.push(action(
+        "T",
+        format!(
+            "Telegram topic: {} → toggle {}",
+            if tg_on { "🔔 ON" } else { "🔕 OFF" },
+            if tg_on { "OFF" } else { "ON" },
+        ),
+    ));
+    lines.push(action("x", "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)".to_string()));
+    lines.push(action("D", "Quick delete local machine (press twice)".to_string()));
+    lines.push(action("n", "Add another project".to_string()));
 
     lines
 }
