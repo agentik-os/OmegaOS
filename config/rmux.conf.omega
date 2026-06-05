@@ -91,3 +91,106 @@ set -sa terminal-features ",*:RGB"
 # Focus events: let editors / Claude know when the pane gains or loses focus
 # (autosave, pause-on-blur, etc.).
 set -g focus-events on
+
+# ─── Theme — Omega chrome (Monogram model) ───────────────────────────────────
+# Quiet grayscale chrome + ONE signature accent: the same user-validated
+# "Monogram model" every omega TUI theme is built on (crates/omega-tui/src/
+# theme.rs — mono()). Accent = the Omega cyan; alert hues are the SYSTEM
+# alert tokens (theme.rs: error #ff6e6e, warn #ffa500) so the same pixel
+# means the same thing in the TUI and on the chrome. The chrome itself is
+# deliberately STATIC: one quiet Monogram-Omega bar frames all 15 switchable
+# TUI themes. Grays are tuned to the repo's WCAG-AA contrast contract
+# (theme.rs doc table), measured against THIS bar's bg #16161a:
+#   dim #7f7f7f = 4.51:1 (contract: dim ≥ 4.5:1) · dim2 #636363 = 3.00:1
+#   (contract: dim2 ≥ 3.0:1) · bright #e1e1e1 = 13.8:1 — and the gray
+#   hierarchy ratio(dim2) < ratio(dim) < ratio(bright) holds.
+# State language, everywhere on the chrome:
+#   active = bright+bold · passive = dim · focus = cyan accent (nothing else
+#   is cyan) · error/alert = amber/red (used for NOTHING else).
+# Truecolor hex is safe: terminal-features ",*:RGB" is advertised above.
+# Every line below was runtime-validated against rmux 0.3.1 (set-option +
+# show-options round-trip) — a rejected option/form silently aborts this whole
+# source-file (see the bind-key NOTE above), so never add unvalidated lines.
+
+# Status bar: near-black chrome (#16161a — one step above the Monogram #0a0a0c
+# canvas so the bar still reads as a bar), default text dim. The bar is
+# passive by default; elements opt INTO prominence. Replaces the legacy
+# bg=green,fg=black tmux look.
+set -g status-style "bg=#16161a,fg=#7f7f7f"
+
+# Session name: bold black-on-cyan block at the left edge — the strongest mark
+# on the bar answers "where am I". Truncation happens INSIDE the format
+# (#{=29:…}: 29 name chars + 2 pad spaces fit status-left-length 32) so the
+# closing pad and the #[default] reset always survive a long session name —
+# a raw #{session_name} overflow would swallow them and bleed the cyan block
+# into the window list.
+# status-right (the omega clock) is defined earlier and stays untouched.
+set -g status-left "#[fg=#000000,bg=#00ffff,bold] #{=29:session_name} #[default] "
+set -g status-left-length 32
+
+# Window list: passive windows are dim; the focused window is the ONLY other
+# cyan block on the bar — same language as the session block, so the two cyan
+# things together read "you are here".
+set -g window-status-style "fg=#7f7f7f"
+set -g window-status-current-style "fg=#000000,bg=#00ffff,bold"
+
+# Background activity: bright+bold — alive and wants a look; clearly above the
+# dim passive row, clearly below the focus block. monitor-activity is OFF by
+# default in rmux: without it this rung of the ladder never fires. Style the
+# tab only — visual-activity stays off, no message popups.
+set -g monitor-activity on
+set -g window-status-activity-style "fg=#e1e1e1,bold"
+
+# Bell is the alarm channel: a self-contained black-on-error block. The bg is
+# load-bearing — rmux appends this style AFTER window-status-current-style,
+# so a fg-only bell on the focused window would composite red-on-cyan at
+# 2.68:1 (illegible exactly where bells usually land). A block also keeps the
+# alarm readable for red-blind operators: shape, not hue, carries it.
+# #ff6e6e = the system error token (theme.rs).
+set -g window-status-bell-style "fg=#000000,bg=#ff6e6e,bold"
+
+# Panes: passive borders recede into dim2; the active pane wears the accent —
+# one glance finds the focus even in a 6-pane team layout.
+set -g pane-border-style "fg=#636363"
+set -g pane-active-border-style "fg=#00ffff"
+
+# Messages: rmux renders errors AND benign status messages through ONE shared
+# channel, message-style (tmux model) — bold black on the system warn token
+# #ffa500 is the "look now" block. message-command-style (the quieter `:`
+# prompt) is stored but NOT consulted by rmux 0.3.1 at render time
+# (rmux-server handler_prompt.rs:203 hardcodes command_prompt: false): kept
+# as documented intent + forward-compat; today the prompt wears message-style.
+set -g message-style "bg=#ffa500,fg=#000000,bold"
+set -g message-command-style "bg=#16161a,fg=#ffa500"
+
+# Copy-mode selection: reverse-accent (black on cyan) — focus language again;
+# the default yellow is gone, its family survives only as the amber alerts.
+set -g mode-style "bg=#00ffff,fg=#000000"
+
+# Copy-mode search & marks + menus: the rmux DEFAULTS carry stray hues here
+# (match bg=cyan, current-match bg=magenta, mark bg=red, menu-selected
+# bg=yellow) — red/magenta/yellow off the alert channel would break the
+# discipline. menu-selected-style renders today (handler_overlay/layout.rs);
+# the three copy-mode styles are stored-only in rmux 0.3.1 (no render path
+# yet) — themed anyway so the stray defaults can never surface once the
+# renderer learns them. Ladder: plain matches sit on the dim gray, the
+# CURRENT match and the menu selection speak focus (black-on-cyan), the mark
+# speaks active (black-on-bright).
+set -g copy-mode-match-style "bg=#7f7f7f,fg=#000000"
+set -g copy-mode-current-match-style "bg=#00ffff,fg=#000000"
+set -g copy-mode-mark-style "bg=#e1e1e1,fg=#000000"
+set -g menu-selected-style "bg=#00ffff,fg=#000000"
+
+# Popups are the chrome's flagship surface — every omega menu / dispatch
+# binding above opens one (rendered: handler_overlay/layout.rs). Accent
+# border = focus language; chrome bg behind the content.
+set -g popup-style "bg=#16161a"
+set -g popup-border-style "fg=#00ffff"
+
+# display-panes overlay: active pane number in accent, the rest in dim2 — the
+# same active/passive split as the borders (replaces tmux red/blue).
+set -g display-panes-active-colour "#00ffff"
+set -g display-panes-colour "#636363"
+
+# Clock mode: the accent, like every other "alive" element.
+set -g clock-mode-colour "#00ffff"

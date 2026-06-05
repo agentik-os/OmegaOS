@@ -91,6 +91,21 @@ if grep -q "ensure_utf8_locale" install.sh; then ok "UTF-8 locale guaranteed by 
 #     buffer. Written to the shell env file by install.sh for every session.
 if grep -q "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" install.sh; then ok "Claude normal-screen (full scroll in rmux panel) wired by install.sh"; else bad "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN not set by install.sh"; fi
 
+# 4j. Omega chrome theme (Monogram model) persisted in the sourced rmux config:
+#     dark chrome + cyan accent for focus, dim passives, reserved amber/red
+#     alert channel. Sentinels = the state-differentiation load-bearers.
+RC=config/rmux.conf.omega
+while IFS= read -r opt; do
+  [ -z "$opt" ] && continue
+  if grep -qF "$opt" "$RC" 2>/dev/null; then ok "rmux theme: '$opt' persisted"; else bad "rmux theme: '$opt' missing from rmux.conf.omega"; fi
+done <<'OPTS'
+set -g status-style "bg=#16161a,fg=#7f7f7f"
+set -g window-status-current-style "fg=#000000,bg=#00ffff,bold"
+set -g window-status-bell-style "fg=#000000,bg=#ff6e6e,bold"
+set -g pane-active-border-style "fg=#00ffff"
+set -g message-style "bg=#ffa500,fg=#000000,bold"
+OPTS
+
 # 5. Self-improvement crons scheduled.
 if grep -q "omega patrol" install.sh; then ok "patrol/usage crons scheduled"; else bad "crons missing from install.sh"; fi
 
