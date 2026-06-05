@@ -1234,7 +1234,7 @@ fn render_session_item(
         Some(DoneStatus::DoneClean) => ("+ ", th::success()),
         Some(DoneStatus::Pending) => ("~ ", th::accent2()),
         Some(DoneStatus::Failed) => ("x ", th::error()),
-        Some(DoneStatus::Blocked) => ("! ", Color::Rgb(255, 165, 0)),
+        Some(DoneStatus::Blocked) => ("! ", th::warn()),
         None => ("", th::text()),
     };
 

@@ -9,6 +9,28 @@
 //! NOT themed on purpose: the session-pane preview passthrough
 //! (`preview_to_color` in ui.rs) — that is the agent's own output and must
 //! keep the terminal's real palette.
+//!
+//! # Contrast contract (test-enforced, WCAG 2.x AA)
+//!
+//! Every theme that paints its own background (`bg: Some(..)`) must hold,
+//! measured against that bg:
+//!
+//! | roles                                  | minimum ratio |
+//! |----------------------------------------|---------------|
+//! | text, dim, info, error, warn           | 4.5 : 1       |
+//! | accent, accent2, success, special, dim2| 3.0 : 1       |
+//! | sel_fg on the accent (selection bars)  | 4.5 : 1       |
+//!
+//! plus the gray hierarchy `ratio(dim2) < ratio(dim) < ratio(text)` so the
+//! three quiet levels stay visually ordered. A theme that fails is fixed by
+//! tuning the palette VALUE, never by relaxing the threshold — see
+//! `tests::contrast_contract`.
+//!
+//! Omega is exempt: `bg = None` and its roles are named ANSI colors that
+//! delegate to the terminal's own palette, so no fixed luminance exists to
+//! audit. Every other theme is truecolor by design — literal RGB renders
+//! identically on every truecolor emulator (incl. Termius); only Omega
+//! adapts to the terminal scheme.
 
 use ratatui::style::Color;
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -23,6 +45,9 @@ pub struct Theme {
     pub accent2: Color,
     pub success: Color,
     pub error: Color,
+    /// Attention-but-not-failure states (blocked badge, stale markers) —
+    /// semantically between accent2 and error.
+    pub warn: Color,
     pub info: Color,
     pub special: Color,
     pub dim: Color,
@@ -42,6 +67,7 @@ pub struct Theme {
     pub accent2_hi: Color,
     pub success_hi: Color,
     pub error_hi: Color,
+    pub warn_hi: Color,
     pub info_hi: Color,
     pub special_hi: Color,
 }
@@ -54,6 +80,7 @@ const fn mk(
     accent2: Color,
     success: Color,
     error: Color,
+    warn: Color,
     info: Color,
     special: Color,
     dim: Color,
@@ -66,6 +93,7 @@ const fn mk(
         accent2,
         success,
         error,
+        warn,
         info,
         special,
         dim,
@@ -78,6 +106,7 @@ const fn mk(
         accent2_hi: accent2,
         success_hi: success,
         error_hi: error,
+        warn_hi: warn,
         info_hi: info,
         special_hi: special,
     }
@@ -109,7 +138,11 @@ const fn lighten(c: Color) -> Color {
 ///                     NOT body gray, clearly NOT the full accent
 /// - accent          → success/active states (`● on`, running markers):
 ///                     the signature color marks everything alive
-const fn mono(accent: Color, bg: Color, text: Color) -> Theme {
+///
+/// `dim`/`dim2` are per-theme: the quietest grays that still clear the
+/// contrast contract on THIS theme's bg (dim ≥ 4.5:1, dim2 ≥ 3.0:1) —
+/// literal values here, the WCAG math lives in the tests.
+const fn mono(accent: Color, bg: Color, text: Color, dim: Color, dim2: Color) -> Theme {
     Theme {
         bg: Some(bg),
         text,
@@ -117,11 +150,12 @@ const fn mono(accent: Color, bg: Color, text: Color) -> Theme {
             accent,
             lighten(accent),           // accent2 — separators / selected-field bg
             accent,                    // success — active states wear the accent
-            Color::White,              // error
+            Color::Rgb(255, 110, 110), // error — alert red, distinct from bg AND actives
+            Color::Rgb(255, 165, 0),   // warn — blocked/attention badge
             Color::Rgb(180, 180, 180), // info
             lighten(accent),           // special — subtle but themed
-            Color::Rgb(115, 115, 115), // dim
-            Color::Rgb(70, 70, 70),    // dim2
+            dim,
+            dim2,
             Color::White,              // bright
             Color::Black,              // sel_fg
         )
@@ -144,6 +178,7 @@ const OMEGA: Theme = Theme {
         Color::Yellow,
         Color::Green,
         Color::Red,
+        Color::Rgb(255, 165, 0), // warn — the historical blocked-badge orange
         Color::Blue,
         Color::Magenta,
         Color::Gray,
@@ -158,6 +193,8 @@ const MATRIX: Theme = mono(
     Color::Rgb(0, 255, 65),
     Color::Rgb(5, 15, 5),
     Color::Rgb(210, 230, 210),
+    Color::Rgb(122, 122, 122),
+    Color::Rgb(94, 94, 94),
 );
 
 /// Terminal — mono chrome + soft phosphor green.
@@ -165,6 +202,8 @@ const TERMINAL: Theme = mono(
     Color::Rgb(102, 255, 102),
     Color::Rgb(0, 18, 0),
     Color::Rgb(200, 225, 200),
+    Color::Rgb(122, 122, 122),
+    Color::Rgb(95, 95, 95),
 );
 
 /// Amber — mono chrome + retro amber phosphor.
@@ -172,6 +211,8 @@ const AMBER: Theme = mono(
     Color::Rgb(255, 176, 0),
     Color::Rgb(22, 13, 0),
     Color::Rgb(235, 220, 200),
+    Color::Rgb(123, 123, 123),
+    Color::Rgb(95, 95, 95),
 );
 
 /// Noir — full black & white, pure grayscale on dark terminals.
@@ -183,10 +224,11 @@ const NOIR: Theme = Theme {
     Color::White,              // accent2 — separators / selected-field bg pop above the 220 text
     Color::Rgb(235, 235, 235), // success — actives brighter than body text
     Color::Rgb(255, 255, 255),
+    Color::Rgb(255, 165, 0),   // warn — the one non-gray: blocked must read at a glance
     Color::Rgb(170, 170, 170),
     Color::Rgb(215, 215, 215),
     Color::Rgb(120, 120, 120),
-    Color::Rgb(75, 75, 75),
+    Color::Rgb(90, 90, 90),
     Color::White,
     Color::Black,
 )
@@ -201,10 +243,11 @@ const PAPER: Theme = Theme {
     Color::Rgb(0, 0, 0),       // accent2 — separators / selected-field bg: pure ink
     Color::Rgb(30, 30, 30),    // success — actives darker than body ink
     Color::Rgb(0, 0, 0),
+    Color::Rgb(150, 75, 0),    // warn — burnt orange, legible on the paper bg
     Color::Rgb(90, 90, 90),
     Color::Rgb(60, 60, 60),
-    Color::Rgb(150, 150, 150),
-    Color::Rgb(185, 185, 185),
+    Color::Rgb(112, 112, 112),
+    Color::Rgb(141, 141, 141),
     Color::Rgb(0, 0, 0),
     Color::Rgb(255, 255, 255),
 )
@@ -215,6 +258,8 @@ const MONOGRAM: Theme = mono(
     Color::Rgb(0, 255, 255),
     Color::Rgb(10, 10, 12),
     Color::Rgb(225, 225, 225),
+    Color::Rgb(121, 121, 121),
+    Color::Rgb(93, 93, 93),
 );
 
 /// Dracula — mono chrome + Dracula purple.
@@ -222,6 +267,8 @@ const DRACULA: Theme = mono(
     Color::Rgb(189, 147, 249),
     Color::Rgb(40, 42, 54),
     Color::Rgb(235, 235, 240),
+    Color::Rgb(145, 145, 145),
+    Color::Rgb(115, 115, 115),
 );
 
 /// Nord — mono chrome + arctic ice blue.
@@ -229,6 +276,8 @@ const NORD: Theme = mono(
     Color::Rgb(136, 192, 208),
     Color::Rgb(46, 52, 64),
     Color::Rgb(222, 228, 235),
+    Color::Rgb(156, 156, 156),
+    Color::Rgb(125, 125, 125),
 );
 
 /// Gruvbox — mono chrome + warm gruvbox orange.
@@ -236,6 +285,8 @@ const GRUVBOX: Theme = mono(
     Color::Rgb(254, 128, 25),
     Color::Rgb(40, 40, 40),
     Color::Rgb(230, 220, 200),
+    Color::Rgb(142, 142, 142),
+    Color::Rgb(113, 113, 113),
 );
 
 /// Solarized — mono chrome + solarized teal.
@@ -243,6 +294,8 @@ const SOLARIZED: Theme = mono(
     Color::Rgb(42, 161, 152),
     Color::Rgb(0, 43, 54),
     Color::Rgb(200, 210, 205),
+    Color::Rgb(141, 141, 141),
+    Color::Rgb(112, 112, 112),
 );
 
 /// Tokyo Night — mono chrome + Tokyo Night blue.
@@ -250,6 +303,8 @@ const TOKYO_NIGHT: Theme = mono(
     Color::Rgb(122, 162, 247),
     Color::Rgb(26, 27, 38),
     Color::Rgb(215, 220, 240),
+    Color::Rgb(131, 131, 131),
+    Color::Rgb(103, 103, 103),
 );
 
 /// Synthwave — mono chrome + neon pink.
@@ -257,6 +312,8 @@ const SYNTHWAVE: Theme = mono(
     Color::Rgb(255, 113, 206),
     Color::Rgb(26, 11, 46),
     Color::Rgb(235, 225, 245),
+    Color::Rgb(125, 125, 125),
+    Color::Rgb(98, 98, 98),
 );
 
 /// Ocean — mono chrome + deep sea blue.
@@ -264,14 +321,24 @@ const OCEAN: Theme = mono(
     Color::Rgb(0, 170, 255),
     Color::Rgb(10, 25, 40),
     Color::Rgb(210, 225, 240),
+    Color::Rgb(129, 129, 129),
+    Color::Rgb(100, 100, 100),
 );
 
 /// Crimson — mono chrome + alert red.
-const CRIMSON: Theme = mono(
-    Color::Rgb(255, 70, 85),
-    Color::Rgb(26, 5, 8),
-    Color::Rgb(240, 215, 215),
-);
+/// Exception to the mono error red: Crimson's accent IS red — a red error
+/// would collide with the active state, so error stays White here.
+const CRIMSON: Theme = Theme {
+    error: Color::White,
+    error_hi: Color::White,
+    ..mono(
+        Color::Rgb(255, 70, 85),
+        Color::Rgb(26, 5, 8),
+        Color::Rgb(240, 215, 215),
+        Color::Rgb(121, 121, 121),
+        Color::Rgb(94, 94, 94),
+    )
+};
 
 // ── Registry ────────────────────────────────────────────────────────────────
 
@@ -452,6 +519,9 @@ pub fn success() -> Color {
 pub fn error() -> Color {
     cur().error
 }
+pub fn warn() -> Color {
+    cur().warn
+}
 pub fn info() -> Color {
     cur().info
 }
@@ -482,6 +552,9 @@ pub fn success_hi() -> Color {
 pub fn error_hi() -> Color {
     cur().error_hi
 }
+pub fn warn_hi() -> Color {
+    cur().warn_hi
+}
 pub fn info_hi() -> Color {
     cur().info_hi
 }
@@ -511,5 +584,94 @@ mod tests {
     #[test]
     fn fifteen_themes() {
         assert_eq!(ThemeId::all().len(), 15);
+    }
+
+    // ── WCAG 2.x contrast contract ──────────────────────────────────────────
+    // The math lives here, not in the const palettes: themes carry literal
+    // Rgb values and this test is the enforcement.
+
+    /// Channel values for the colors that appear in palettes. Named
+    /// White/Black (Noir, Crimson's error) get their nominal sRGB values —
+    /// close enough for a contract on themes that paint their own bg.
+    fn rgb_of(c: Color) -> (u8, u8, u8) {
+        match c {
+            Color::Rgb(r, g, b) => (r, g, b),
+            Color::White => (255, 255, 255),
+            Color::Black => (0, 0, 0),
+            other => panic!("contrast contract: {other:?} has no fixed luminance"),
+        }
+    }
+
+    /// WCAG 2.x relative luminance with sRGB linearization.
+    fn relative_luminance(c: Color) -> f64 {
+        fn lin(v: u8) -> f64 {
+            let v = v as f64 / 255.0;
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        let (r, g, b) = rgb_of(c);
+        0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+    }
+
+    fn contrast_ratio(a: Color, b: Color) -> f64 {
+        let (la, lb) = (relative_luminance(a), relative_luminance(b));
+        let (hi, lo) = if la >= lb { (la, lb) } else { (lb, la) };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    /// The contract from the module doc: AA thresholds per role, plus the
+    /// dim hierarchy. A failing theme is fixed by tuning the palette VALUE,
+    /// never by relaxing a threshold here.
+    #[test]
+    fn contrast_contract() {
+        for id in ThemeId::all() {
+            let t = id.palette();
+            let Some(bg) = t.bg else {
+                // Omega is exempt: bg = None and its roles are named ANSI
+                // colors that adapt to the terminal's own palette — there is
+                // no fixed luminance to audit.
+                assert_eq!(*id, ThemeId::Omega, "only Omega may skip the contract");
+                continue;
+            };
+            let vs_bg = |c: Color| contrast_ratio(c, bg);
+            let check = |role: &str, c: Color, min: f64| {
+                let r = vs_bg(c);
+                assert!(
+                    r >= min,
+                    "{}: {role} {:?} is {r:.2}:1 vs bg, needs >= {min}:1",
+                    id.slug(),
+                    c
+                );
+            };
+            // 4.5:1 — body-level legibility.
+            check("text", t.text, 4.5);
+            check("dim", t.dim, 4.5);
+            check("info", t.info, 4.5);
+            check("error", t.error, 4.5);
+            check("warn", t.warn, 4.5);
+            // sel_fg renders on accent-colored selection bars, not on bg.
+            let sel = contrast_ratio(t.sel_fg, t.accent);
+            assert!(
+                sel >= 4.5,
+                "{}: sel_fg on accent is {sel:.2}:1, needs >= 4.5:1",
+                id.slug()
+            );
+            // 3.0:1 — large/graphical roles.
+            check("accent", t.accent, 3.0);
+            check("accent2", t.accent2, 3.0);
+            check("success", t.success, 3.0);
+            check("special", t.special, 3.0);
+            check("dim2", t.dim2, 3.0);
+            // Gray hierarchy: the three quiet levels stay visually ordered.
+            let (r2, r1, rt) = (vs_bg(t.dim2), vs_bg(t.dim), vs_bg(t.text));
+            assert!(
+                r2 < r1 && r1 < rt,
+                "{}: dim hierarchy broken: dim2 {r2:.2} < dim {r1:.2} < text {rt:.2}",
+                id.slug()
+            );
+        }
     }
 }
