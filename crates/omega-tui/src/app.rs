@@ -1225,6 +1225,16 @@ impl App {
         Some(self.sessions[idx].session.name.clone())
     }
 
+    /// Clear the Tab double-tap chord state. Any non-Tab path that changes
+    /// session focus (chat Esc, chat Ctrl+X, a vanished session's forced drop
+    /// to the list) must call this, or a Tab pressed within the 400ms window
+    /// right after is misread as the SECOND tap of a chord and lands in
+    /// ChatFullscreen instead of navigating (AF-7).
+    pub fn reset_tab_chord(&mut self) {
+        self.last_tab_press = None;
+        self.tab_seq_start = None;
+    }
+
     /// Handle a Tab press in the Sessions tab.
     ///   • Single Tab  → NAVIGATE: toggle the session list ↔ the session itself
     ///     (List ↔ Chat; from fullscreen → back to the list).
@@ -1733,7 +1743,17 @@ impl App {
 
         // F-1: re-anchor the selection by NAME so a list mutation never moves
         // it off the session the user is looking at (or chatting with).
-        let reanchored = match &selected_name {
+        self.reanchor_selection(selected_name.as_deref());
+
+        Ok(())
+    }
+
+    /// F-1 re-anchor after a list rebuild: restore the selection to
+    /// `selected_name`; when that session vanished, drop a chat-focused user
+    /// back to the list (their keystream was aimed at the dead session) and
+    /// clamp the index. Sync + daemon-free so it is directly testable.
+    fn reanchor_selection(&mut self, selected_name: Option<&str>) {
+        let reanchored = match selected_name {
             Some(name) => self.select_by_name(name),
             None => false,
         };
@@ -1747,7 +1767,10 @@ impl App {
                 SessionFocus::Chat | SessionFocus::ChatFullscreen
             ) {
                 self.session_focus = SessionFocus::List;
-                if let Some(name) = &selected_name {
+                // The forced focus change is Tab-less — clear the chord state
+                // so an immediate Tab isn't misread as a double-tap (AF-7).
+                self.reset_tab_chord();
+                if let Some(name) = selected_name {
                     self.status_message = Some(format!("{name} ended — back to list"));
                 }
             }
@@ -1756,8 +1779,6 @@ impl App {
                 self.selected = self.sessions.len() - 1;
             }
         }
-
-        Ok(())
     }
 
     fn flush_group_rows(
@@ -2056,6 +2077,72 @@ mod nesting_tests {
                 "oracle-Causio-2",
                 "Causio-worker-a", // its recorded child
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod reanchor_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use omega_core::session::OmegaSession;
+
+    fn entry(name: &str) -> SessionEntry {
+        SessionEntry {
+            session: OmegaSession::classify(name),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        }
+    }
+
+    /// Daemon-free App with `names` as the session list (no rmux needed —
+    /// same pattern as nesting_tests above).
+    fn app_with_sessions(names: &[&str]) -> App {
+        let mut app = App::new(OmegaConfig::default());
+        app.tab = Tab::Sessions;
+        app.sessions = names.iter().map(|n| entry(n)).collect();
+        app
+    }
+
+    #[test]
+    fn reanchor_keeps_selection_on_name_across_list_mutation() {
+        // AF-2/CA-3 regression (F-1): a session appearing above the selection
+        // shifts every index — the NAME anchor must survive the shift.
+        let mut app = app_with_sessions(&["a", "b", "c"]);
+        app.selected = 1; // "b"
+        app.sessions.insert(0, entry("new-arrival"));
+        app.reanchor_selection(Some("b"));
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.selected_session().unwrap().session.name, "b");
+    }
+
+    #[test]
+    fn reanchor_clamps_index_when_the_name_vanished() {
+        let mut app = app_with_sessions(&["a", "b"]);
+        app.selected = 5; // stale out-of-range index from the bigger old list
+        app.reanchor_selection(Some("gone"));
+        assert_eq!(app.selected, 1, "fall back to the last in-bounds row");
+    }
+
+    #[test]
+    fn chat_on_vanished_session_drops_to_list_and_clears_chord() {
+        // AF-7 mirror: the forced Chat→List drop is a Tab-less focus change,
+        // so it must also clear the double-tap chord state.
+        let mut app = app_with_sessions(&["a"]);
+        app.selected = 0;
+        app.session_focus = SessionFocus::Chat;
+        app.last_tab_press = Some(std::time::Instant::now());
+        app.tab_seq_start = Some(SessionFocus::List);
+        app.reanchor_selection(Some("gone"));
+        assert_eq!(app.session_focus, SessionFocus::List);
+        assert!(app.last_tab_press.is_none(), "chord timestamp must be cleared");
+        assert!(app.tab_seq_start.is_none(), "chord start must be cleared");
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("gone ended"),
+            "vanish notice must be set, got {:?}",
+            app.status_message
         );
     }
 }

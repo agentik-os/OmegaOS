@@ -623,7 +623,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             app.input_mode = InputMode::Normal;
             let q = query.trim();
             app.session_filter = if q.is_empty() { None } else { Some(q.to_string()) };
-            app.selected = 0; // the filtered list changes length — reset selection.
+            // Anchor to the top row: the dispatched Refresh re-anchors by the
+            // NAME at this index, and the old selection may not survive the
+            // new filter at all — row 0 is the predictable landing spot.
+            app.selected = 0;
             app.status_message = Some(match &app.session_filter {
                 Some(f) => format!("Filter: '{}' (press / to change)", f),
                 None => "Filter cleared".to_string(),
@@ -1546,7 +1549,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Action::None
             } else if app.tab == Tab::Sessions {
                 // Chat/ChatFullscreen Esc never reaches here — the router
-                // short-circuits into handle_key_chat, which owns chat Esc.
+                // short-circuits into handle_key_chat, which owns chat Esc:
+                // it swallows the dead-session Esc too (AF-5) instead of
+                // re-dispatching it into this quit arm.
                 app.should_quit = true;
                 Action::Quit
             } else {
@@ -1636,7 +1641,8 @@ fn open_dashboard_action(app: &mut App) -> Action {
 /// menus work natively inside the agent.
 ///
 /// TUI-local keys (never forwarded):
-///   Esc           → back to session list (F-2; interrupt agent = Ctrl+C)
+///   Esc           → back to session list (F-2; interrupt agent = Ctrl+C,
+///                    literal ESC to the agent = Alt+Esc)
 ///   Tab           → cycle focus (List → Chat → Fullscreen → List)
 ///   Alt+Up/Down   → scroll preview
 ///   PageUp/Down   → scroll preview
@@ -1653,6 +1659,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // (Tab, q, arrows all work again). No recursion: focus is now List,
             // so handle_key_normal won't route back into the chat handler.
             app.session_focus = SessionFocus::List;
+            app.reset_tab_chord();
+            // EXCEPT Esc (AF-5): chat Esc means "back to the list", and the
+            // focus reset above already delivered that. Re-dispatching it would
+            // hit the Sessions-tab quit arm and close the whole TUI in ONE press.
+            if key.code == KeyCode::Esc {
+                app.status_message = Some("Focus: session list".to_string());
+                return Action::None;
+            }
             return handle_key_normal(app, key);
         }
     };
@@ -1726,8 +1740,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     // action is the Ctrl+X chord (mnemonic: eXit; same deliberate override style
     // as Ctrl+R above). Drop to the list first so the user lands on a live
     // selection after the focused pane dies instead of a dead/empty chat.
+    // Same guard as the list-focus 'x' (F-12): a protected session never dies.
     if key.code == KeyCode::Char('x') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if app.selected_session().is_some_and(|e| e.is_protected) {
+            app.status_message = Some("Session is protected (press . to unlock)".to_string());
+            return Action::None;
+        }
         app.session_focus = SessionFocus::List;
+        app.reset_tab_chord();
         return Action::KillSession(session);
     }
 
@@ -1832,11 +1852,19 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             app.chat_line_chars = 0;
             Action::ForwardKeyToSession { session, key: "Enter" }
         }
+        // Alt+Esc → literal ESC to the agent's PTY (AF-1): vim/less and other
+        // modal programs inside a shell session need a real ESC; plain Esc is
+        // TUI-local (back to list) and Ctrl+C only interrupts.
+        KeyCode::Esc if alt => Action::ForwardKeyToSession { session, key: "Escape" },
         KeyCode::Esc => {
             // Esc = back to the session list — matches the title hint, the Help
             // tab, and the layered-Esc pattern on every other tab (F-2). NOT
-            // forwarded: interrupting the agent stays available via Ctrl+C (C-c).
+            // forwarded: interrupting the agent stays available via Ctrl+C (C-c),
+            // a literal ESC via Alt+Esc above. Clear the Tab-chord state so a Tab
+            // right after (inside the 400ms double-tap window) reads as a fresh
+            // first tap, not the second half of a Tab-Tab (AF-7).
             app.session_focus = SessionFocus::List;
+            app.reset_tab_chord();
             app.status_message = Some("Focus: session list".to_string());
             Action::None
         }
@@ -2221,5 +2249,110 @@ mod tests {
             matches!(app.session_focus, SessionFocus::List),
             "focus must recover to the session list, not stay stuck in chat"
         );
+    }
+
+    /// Daemon-free App chat-focused on a single session (no rmux needed).
+    fn chat_app(name: &str) -> App {
+        let mut app = test_app();
+        app.tab = Tab::Sessions;
+        app.sessions.push(SessionEntry {
+            session: OmegaSession::classify(name),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        });
+        app.selected = 0;
+        app.session_focus = SessionFocus::Chat;
+        app
+    }
+
+    // AF-7/AF-3/CA-2 regression: Tab → Esc → Tab inside the 400ms double-tap
+    // window must end on Chat (fresh first tap), NOT ChatFullscreen (the Esc
+    // used to leave the chord state stale, so the next Tab read as tap #2).
+    #[test]
+    fn chat_esc_returns_to_list_and_clears_tab_chord() {
+        let mut app = chat_app("oracle-Demo-1");
+        app.session_focus = SessionFocus::List;
+        app.handle_tab_in_sessions(); // Tab #1: List → Chat, chord armed
+        assert_eq!(app.session_focus, SessionFocus::Chat);
+
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None));
+        assert_eq!(app.session_focus, SessionFocus::List);
+        assert!(app.last_tab_press.is_none(), "Esc must clear last_tab_press");
+        assert!(app.tab_seq_start.is_none(), "Esc must clear tab_seq_start");
+
+        app.handle_tab_in_sessions(); // Tab right after Esc, inside the window
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "post-Esc Tab must navigate, not complete a stale Tab-Tab chord"
+        );
+    }
+
+    // F-12/DESIGN-004 regression: a protected session must NEVER die from a
+    // chat-focus Ctrl+X — same guard as the list-focus 'x'.
+    #[test]
+    fn chat_ctrl_x_never_kills_a_protected_session() {
+        let mut app = chat_app("oracle-Demo-1");
+        app.sessions[0].is_protected = true;
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(act, Action::None), "protected session must not die");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "nothing was killed — stay in chat"
+        );
+        assert!(app.status_message.as_deref().unwrap_or("").contains("protected"));
+    }
+
+    #[test]
+    fn chat_ctrl_x_kills_unprotected_and_drops_to_list() {
+        let mut app = chat_app("oracle-Demo-1");
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(act, Action::KillSession(ref n) if n == "oracle-Demo-1"));
+        assert_eq!(app.session_focus, SessionFocus::List);
+        assert!(
+            app.last_tab_press.is_none() && app.tab_seq_start.is_none(),
+            "Ctrl+X focus drop must clear the Tab chord state"
+        );
+    }
+
+    // AF-1: Alt+Esc must deliver a literal ESC to the agent PTY (vim/less).
+    #[test]
+    fn chat_alt_esc_forwards_literal_escape() {
+        let mut app = chat_app("oracle-Demo-1");
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::ALT));
+        assert!(
+            matches!(act, Action::ForwardKeyToSession { key, .. } if key == "Escape"),
+            "Alt+Esc must forward rmux key \"Escape\""
+        );
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "Alt+Esc must not exit chat focus"
+        );
+    }
+
+    // AF-5: when the focused session died, Esc must mean "back to the list",
+    // not fall through to the Sessions-tab quit arm (one-keypress app exit).
+    #[test]
+    fn dead_session_esc_does_not_quit_in_one_press() {
+        let mut app = test_app();
+        app.tab = Tab::Sessions;
+        app.session_focus = SessionFocus::Chat;
+        assert!(app.sessions.is_empty(), "precondition: focused session is gone");
+
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None), "Esc must be swallowed, not quit");
+        assert!(!app.should_quit, "one Esc on a dead session must not quit the TUI");
+        assert_eq!(app.session_focus, SessionFocus::List);
     }
 }

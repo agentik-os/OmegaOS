@@ -2966,6 +2966,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
         key("Shift+Tab", "Forward to Claude (cycle modes)"),
+        key("Alt+Esc", "Send a literal ESC to the agent (vim/less)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
         key("Ctrl+W / Alt+Bksp", "Delete word backwards"),
         key("Shift+Del / Alt+Del", "Delete word forwards"),
@@ -3198,11 +3199,12 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        // On Sessions tab, display the selected session's compact git status
-        // (`↑4h • main`) — the keyboard hints that used to live here are now
-        // all under the Help tab. Everywhere else, keep the regular status
-        // message. Falls back to status_message when the git lookup hasn't
-        // resolved yet (first ~10s or non-git cwd).
+        // A live status notice ALWAYS wins (F-7): kill/create/vanish/focus
+        // confirmations and forwarder errors were built for this channel, and
+        // the event loop clears the message on the next keypress — so on the
+        // Sessions tab the bar falls back to the selected session's compact
+        // git status (`↑4h • main`) once the notice is consumed. The keyboard
+        // hints that used to live here are all under the Help tab.
         {
             let on_sessions = app.tab == crate::app::Tab::Sessions;
             let git_text = if on_sessions {
@@ -3211,13 +3213,10 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             };
-            let (text, style) = match git_text {
-                Some(g) => (g, Style::default().fg(th::success())),
-                None if on_sessions => (String::new(), Style::default()),
-                None => (
-                    app.status_message.as_deref().unwrap_or("").to_string(),
-                    Style::default().fg(th::dim()),
-                ),
+            let (text, style) = match (app.status_message.as_deref(), git_text) {
+                (Some(msg), _) => (msg.to_string(), Style::default().fg(th::dim())),
+                (None, Some(g)) => (g, Style::default().fg(th::success())),
+                (None, None) => (String::new(), Style::default()),
             };
             Span::styled(text, style)
         },

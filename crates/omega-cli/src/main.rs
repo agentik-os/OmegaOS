@@ -1097,6 +1097,16 @@ async fn run_tui_loop(
             let selected_before = app.selected;
             let tab_before = app.tab;
             let detail_focused_before = app.detail_focused;
+            // F-7: a status notice lives until the NEXT keypress. Clearing it
+            // here (before dispatch) lets the handler below set a fresh message
+            // that then survives until the user types again — and on the
+            // Sessions tab the bar falls back to the per-session git text once
+            // the notice is consumed (see draw_status_bar).
+            if matches!(&evt, crossterm::event::Event::Key(k)
+                if k.kind != crossterm::event::KeyEventKind::Release)
+            {
+                app.status_message = None;
+            }
             let status_before = app.status_message.clone();
             match handle_event(app, evt) {
                 Action::Quit => break,
@@ -1392,12 +1402,16 @@ async fn run_tui_loop(
                     }
                 }
                 Action::Refresh => {
+                    // Ack BEFORE refreshing (KillSession-style ordering, CA-4):
+                    // a notice produced inside refresh() — e.g. the "<name>
+                    // ended — back to list" vanish message — must win over the
+                    // generic ack, not be clobbered by it.
+                    app.status_message = Some("Refreshed".to_string());
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
                     if app.tab == omega_tui::app::Tab::Agentic {
                         app.refresh_projects();
                     }
-                    app.status_message = Some("Refreshed".to_string());
                 }
                 Action::LoginClaude => {
                     // Drive the real OAuth engine (oauth::request_reauth) instead
