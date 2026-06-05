@@ -1366,7 +1366,7 @@ async fn run_tui_loop(
                 Action::Refresh => {
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
-                    if app.tab == omega_tui::app::Tab::Projects {
+                    if app.tab == omega_tui::app::Tab::Agentic {
                         app.refresh_projects();
                     }
                     app.status_message = Some("Refreshed".to_string());
@@ -1928,9 +1928,10 @@ async fn run_tui_loop(
                 terminal.clear()?;
             }
 
-            // Entering the Projects tab → reload the registry so projects added
-            // via `omega project add` in another shell show up without restart.
-            if app.tab == omega_tui::app::Tab::Projects && tab_before != omega_tui::app::Tab::Projects {
+            // Entering the Agentic tab (which now hosts the Projects group) →
+            // reload the registry so projects added via `omega project add` in
+            // another shell show up without restart.
+            if app.tab == omega_tui::app::Tab::Agentic && tab_before != omega_tui::app::Tab::Agentic {
                 app.refresh_projects();
             }
 
@@ -1943,10 +1944,8 @@ async fn run_tui_loop(
                 app.status_message = Some(match app.tab {
                     Tab::Sessions => "↑/↓ select · Enter/Tab chat · c/C/g new agent · x kill · . lock · F5 refresh".to_string(),
                     Tab::Menu => "↑/↓ select · Enter run · or press the shortcut key shown".to_string(),
-                    Tab::Monitor => "↑/↓ select · Enter sets up the section · L login · T telegram · B billing".to_string(),
-                    Tab::Projects => "↑/↓ select · n add · x remove · p plan · d dispatch · Enter open".to_string(),
-                    Tab::Settings => "↑/↓ section · Enter/Tab edit fields · Enter activate".to_string(),
-                    Tab::Agentic => "↑/↓ or [ ] sub-sections · Tab focus detail".to_string(),
+                    Tab::Settings => "↑/↓ Monitor + Settings sections · Enter/Tab edit · L login · T telegram · B billing".to_string(),
+                    Tab::Agentic => "↑/↓ Agentic + Projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });
             }
@@ -3955,6 +3954,26 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
             let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
         }
         println!("[+] Oracle done signal written: oracle-{}.done.json", key);
+        // AUDIT JOURNAL: append the mission outcome to the per-project audit log,
+        // organized under ~/.omega/audit/<project>/audit.jsonl (governance trail — who
+        // did what, when, with what result). Best-effort, never blocks the done signal.
+        {
+            let dir = config.state_dir.parent().map(|p| p.join("audit").join(project));
+            if let Some(dir) = dir {
+                let _ = std::fs::create_dir_all(&dir);
+                let line = format!(
+                    "{{\"ts\":\"{}\",\"event\":\"done\",\"oracle\":\"{}\",\"status\":\"{:?}\",\"summary\":{}}}\n",
+                    chrono::Utc::now().to_rfc3339(),
+                    key,
+                    final_status,
+                    serde_json::to_string(summary).unwrap_or_else(|_| "\"\"".into()),
+                );
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("audit.jsonl")) {
+                    let _ = f.write_all(line.as_bytes());
+                }
+            }
+        }
         // AUTO-CLOSE: writing the report IS the close condition (operator contract).
         // On a clean done, close the oracle's own session — detached + a short delay so
         // THIS `omega done` returns cleanly and the done.json is on disk for the

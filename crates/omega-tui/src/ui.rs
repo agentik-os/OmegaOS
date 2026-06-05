@@ -59,10 +59,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.tab {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
-        Tab::Monitor => draw_monitor(frame, app, chunks[1]),
-        Tab::Projects => draw_projects(frame, app, chunks[1]),
-        Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Agentic => draw_info(frame, app, chunks[1]),
+        Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
     }
 
@@ -474,15 +472,13 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Monitor", "Projects", "Settings", "Agentic", "Help"];
+    let titles = vec!["Sessions", "Menu", "Agentic", "Settings", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
-        Tab::Monitor => 2,
-        Tab::Projects => 3,
-        Tab::Settings => 4,
-        Tab::Agentic => 5,
-        Tab::Help => 6,
+        Tab::Agentic => 2,
+        Tab::Settings => 3,
+        Tab::Help => 4,
     };
 
     let tabs = Tabs::new(titles)
@@ -499,6 +495,37 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
         .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
 
     frame.render_widget(tabs, area);
+}
+
+/// A dim `─── label ───` group header row for a grouped left-list (same grammar
+/// as the Menu tab's section headers).
+fn group_header(label: &str) -> ListItem<'static> {
+    ListItem::new(Line::from(Span::styled(
+        format!("  ─── {} ───", label),
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )))
+}
+
+/// A selectable section row for a grouped left-list. `current` = this is the
+/// cursor row; `focused_sel` = cursor row AND the list panel holds focus (full
+/// cyan highlight). Visual selection is baked into the item — the `ListState`
+/// only drives scrolling.
+fn section_row(label: String, current: bool, focused_sel: bool) -> ListItem<'static> {
+    let prefix = if current { "▶ " } else { "  " };
+    let style = if focused_sel {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else if current {
+        Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    ListItem::new(Line::from(vec![
+        Span::styled(prefix.to_string(), Style::default().fg(Color::Cyan)),
+        Span::styled(label, style),
+    ]))
 }
 
 fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -1228,122 +1255,72 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_monitor(frame: &mut Frame, app: &mut App, area: Rect) {
-    let section = app.selected_monitor_section();
-    let (lines, selected_line) = render_monitor_detail(app);
-
-    // Auto-scroll: keep the focused row visible (action cursor when the Actions
-    // section is focused, otherwise just track scroll on plain scrolling).
-    if app.detail_focused {
-        let panel_height = area.height.saturating_sub(2);
-        let field_line = selected_line as u16;
-        if field_line < app.detail_scroll {
-            app.detail_scroll = field_line.saturating_sub(1);
-        } else if field_line >= app.detail_scroll + panel_height {
-            app.detail_scroll = field_line.saturating_sub(panel_height.saturating_sub(2));
-        }
-    }
-
-    // Fullscreen detail mode: skip the left list, detail takes 100% width.
-    if app.detail_fullscreen {
-        let title = format!(
-            " Monitor — {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
-            section.label()
-        );
-        let paragraph = Paragraph::new(lines)
-            .scroll((app.detail_scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
-        frame.render_widget(paragraph, area);
-        return;
-    }
-
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(area);
-
+/// Build the unified Settings-tab left list: a top-padding blank, the Monitor
+/// group, a blank gap, then the Settings group. Returns (items, flat_selected)
+/// where `flat_selected` is the rendered row index of the cursor (for the
+/// `ListState` so it scrolls to keep the cursor visible).
+fn build_settings_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     let list_focused = !app.detail_focused;
-    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
-    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut flat_selected = 0usize;
 
-    // ── Left: section list ──────────────────────────────────────────────────
-    let items: Vec<ListItem> = MonitorSection::all()
-        .iter()
-        .enumerate()
-        .map(|(i, sec)| {
-            let selected = i == app.monitor_selected && list_focused;
-            let prefix = if i == app.monitor_selected { "▶ " } else { "  " };
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if i == app.monitor_selected {
-                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                Span::styled(sec.label(), style),
-            ]))
-        })
-        .collect();
+    // Top padding.
+    items.push(ListItem::new(Line::from("")));
 
-    let list_title = if list_focused {
-        " ▶ FOCUSED Monitor — ↑/↓ select, Tab → detail "
-    } else {
-        " Monitor — Tab to focus list "
-    };
+    // ── Group 1: Monitor ────────────────────────────────────────────────────
+    items.push(group_header("Monitor"));
+    for (i, sec) in MonitorSection::all().iter().enumerate() {
+        let current = app.settings_group == 0 && i == app.monitor_selected;
+        if current {
+            flat_selected = items.len();
+        }
+        items.push(section_row(sec.label().to_string(), current, current && list_focused));
+    }
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(list_title)
-                .border_style(Style::default().fg(list_border)),
-        )
-        .highlight_style(Style::default());
+    // Gap between groups.
+    items.push(ListItem::new(Line::from("")));
 
-    let mut monitor_list_state = ListState::default().with_selected(Some(app.monitor_selected));
-    frame.render_stateful_widget(list, split[0], &mut monitor_list_state);
+    // ── Group 2: Settings ───────────────────────────────────────────────────
+    items.push(group_header("Settings"));
+    for (i, sec) in SettingsSection::all().iter().enumerate() {
+        let current = app.settings_group == 1 && i == app.settings_selected;
+        if current {
+            flat_selected = items.len();
+        }
+        items.push(section_row(sec.label().to_string(), current, current && list_focused));
+    }
 
-    // ── Right: detail panel ───────────────────────────────────────────────
-    let detail_title = if app.detail_focused {
-        format!(
-            " {}  [FOCUSED — ↑/↓ navigate, Tab → list, Tab-Tab → fullscreen] ",
-            section.label()
-        )
-    } else {
-        format!(" {} ", section.label())
-    };
-
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(detail_title)
-                .border_style(Style::default().fg(detail_border)),
-        );
-    frame.render_widget(paragraph, split[1]);
+    (items, flat_selected)
 }
 
 /// Build the right-panel lines for the currently selected Monitor section.
 /// Returns (lines, selected_line) — `selected_line` is the line of the
 /// highlighted action (Actions section, focused); 0 otherwise.
 fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
+    // Inline sub-header for a merged section's second block.
+    let sub = |label: &str| {
+        Line::from(Span::styled(
+            format!("  ─── {} ───", label),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ))
+    };
     match app.selected_monitor_section() {
-        MonitorSection::Account => (render_monitor_account(app), 0),
-        MonitorSection::Billing => (render_monitor_billing(), 0),
-        MonitorSection::Telegram => (render_monitor_telegram(), 0),
-        MonitorSection::Accounts => (render_monitor_accounts(), 0),
-        MonitorSection::Projects => (render_monitor_projects(), 0),
+        // Connected account + live billing, one panel.
+        MonitorSection::AccountBilling => {
+            let mut lines = render_monitor_account(app);
+            lines.push(Line::from(""));
+            lines.push(sub("Billing (live)"));
+            lines.extend(render_monitor_billing());
+            (lines, 0)
+        }
+        // Telegram bot config + the project group, one panel.
+        MonitorSection::Telegram => {
+            let mut lines = render_monitor_telegram();
+            lines.push(Line::from(""));
+            lines.push(sub("Project group"));
+            lines.extend(render_monitor_projects());
+            (lines, 0)
+        }
         MonitorSection::Actions => render_monitor_actions(app),
     }
 }
@@ -1522,41 +1499,6 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
         monitor::CacheStatus::Missing => "missing".to_string(),
     };
     lines.push(Line::from(format!("    Usage cache:    {}", cache_text)));
-    lines
-}
-
-fn render_monitor_accounts() -> Vec<Line<'static>> {
-    use omega_core::monitor;
-    let accounts = monitor::list_accounts();
-    let mut lines: Vec<Line> = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "    Saved Claude accounts (~/.claude/accounts):",
-            Style::default().fg(Color::Cyan),
-        )),
-        Line::from(""),
-    ];
-    if accounts.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "    (no saved accounts)",
-            Style::default().fg(Color::Gray),
-        )));
-    } else {
-        for acc in &accounts {
-            let marker = if acc.is_active { "▶" } else { " " };
-            let color = if acc.is_active { Color::Green } else { Color::Reset };
-            lines.push(Line::from(vec![
-                Span::styled(format!("    {} ", marker), Style::default().fg(Color::Cyan)),
-                Span::styled(acc.label.clone(), Style::default().fg(color).add_modifier(Modifier::BOLD)),
-                Span::raw(format!("   {}", acc.email.as_deref().unwrap_or(""))),
-            ]));
-        }
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "    ▶ Press Enter to add / re-auth a Claude account (opens the login flow)",
-        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
-    )));
     lines
 }
 
@@ -1777,111 +1719,61 @@ fn short_num(n: u64) -> String {
     }
 }
 
-fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
-    let registry = &app.project_registry;
+/// Build the unified Agentic-tab left list: a top-padding blank, the Agentic
+/// info group, a blank gap, then the Projects group. Returns (items,
+/// flat_selected) — the rendered row index of the cursor for `ListState`
+/// scroll tracking.
+fn build_agentic_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
+    let list_focused = !app.detail_focused;
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut flat_selected = 0usize;
 
-    // Fullscreen detail
-    if app.detail_fullscreen {
-        let lines = render_project_detail(app);
-        let title = app
-            .selected_project()
-            .map(|p| format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", p.name))
-            .unwrap_or_else(|| " Projects  [FULLSCREEN] ".to_string());
-        let paragraph = Paragraph::new(lines)
-            .scroll((app.detail_scroll, 0))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(title)
-                    .border_style(Style::default().fg(Color::Yellow)),
-            );
-        frame.render_widget(paragraph, area);
-        return;
+    // Top padding.
+    items.push(ListItem::new(Line::from("")));
+
+    // ── Group 1: Agentic info sections ───────────────────────────────────────
+    items.push(group_header("Agentic"));
+    for (i, sec) in InfoSection::all().iter().enumerate() {
+        let current = app.agentic_group == 0 && i == app.info_section_selected;
+        if current {
+            flat_selected = items.len();
+        }
+        items.push(section_row(sec.label().to_string(), current, current && list_focused));
     }
 
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(area);
+    // Gap between groups.
+    items.push(ListItem::new(Line::from("")));
 
-    let list_focused = !app.detail_focused;
-    let list_border = if list_focused { Color::Cyan } else { Color::Gray };
-    let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
-
-    // Left: project list
-    let items: Vec<ListItem> = if registry.projects.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "  (no projects — press n or Enter to add one)",
-            Style::default().fg(Color::Gray),
-        )))]
+    // ── Group 2: Projects ────────────────────────────────────────────────────
+    items.push(group_header("Projects"));
+    if app.project_registry.projects.is_empty() {
+        let current = app.agentic_group == 1;
+        if current {
+            flat_selected = items.len();
+        }
+        items.push(section_row(
+            "(no projects — press n to add)".to_string(),
+            current,
+            current && list_focused,
+        ));
     } else {
-        registry
-            .projects
-            .iter()
-            .enumerate()
-            .map(|(i, project)| {
-                let selected = i == app.projects_selected && list_focused;
-                let prefix = if i == app.projects_selected { "▶ " } else { "  " };
-                let icon = project.icon.as_deref().unwrap_or("▣");
-                let style = if selected {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else if i == app.projects_selected {
-                    Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                // 🔕 marks a project whose Telegram toggle is OFF (no topic on
-                // sync, dimmed-but-listed in the Atlas bot). Default ON = no mark.
-                let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
-                ListItem::new(Line::from(vec![
-                    Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                    Span::raw(format!("{} ", icon)),
-                    Span::styled(project.name.clone(), style),
-                    Span::styled(tg_mark, Style::default().fg(Color::DarkGray)),
-                ]))
-            })
-            .collect()
-    };
+        for (i, project) in app.project_registry.projects.iter().enumerate() {
+            let current = app.agentic_group == 1 && i == app.projects_selected;
+            if current {
+                flat_selected = items.len();
+            }
+            let icon = project.icon.as_deref().unwrap_or("▣");
+            // 🔕 marks a project whose Telegram toggle is OFF.
+            let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
+            items.push(section_row(
+                format!("{} {}{}", icon, project.name, tg_mark),
+                current,
+                current && list_focused,
+            ));
+        }
+    }
 
-    let list_title = if list_focused {
-        format!(
-            " ▶ Projects ({}) — ↑/↓ · n add · x remove · T telegram · D delete-forever · p plan · d dispatch · Enter open ",
-            registry.projects.len()
-        )
-    } else {
-        format!(" Projects ({}) — Tab to focus list ", registry.projects.len())
-    };
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(list_title)
-                .border_style(Style::default().fg(list_border)),
-        )
-        .highlight_style(Style::default());
-
-    let mut state = ListState::default().with_selected(Some(app.projects_selected));
-    frame.render_stateful_widget(list, split[0], &mut state);
-
-    // Right: project detail
-    let lines = render_project_detail(app);
-    let detail_title = if app.detail_focused {
-        " Project Detail  [FOCUSED — ↑/↓ scroll, Tab → list] "
-    } else {
-        " Project Detail "
-    };
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(detail_title)
-                .border_style(Style::default().fg(detail_border)),
-        );
-    frame.render_widget(paragraph, split[1]);
+    (items, flat_selected)
 }
 
 fn render_project_detail(app: &App) -> Vec<Line<'static>> {
@@ -2073,8 +1965,21 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
 }
 
 fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
+    // Detail panel + the focused-line for auto-scroll depend on which group the
+    // cursor sits in: the Monitor group renders the monitor detail, the Settings
+    // group renders the provider fields.
+    let on_monitor = app.settings_on_monitor();
     let providers = app.providers();
-    let (lines, selected_field_line) = render_settings_detail(app, &providers);
+    let (lines, selected_field_line) = if on_monitor {
+        render_monitor_detail(app)
+    } else {
+        render_settings_detail(app, &providers)
+    };
+    let section_label: String = if on_monitor {
+        app.selected_monitor_section().label().to_string()
+    } else {
+        app.selected_settings_section().label().to_string()
+    };
 
     // Auto-scroll to keep the selected field visible
     if app.detail_focused {
@@ -2089,10 +1994,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Fullscreen detail mode: skip the left list, detail takes 100% width
     if app.detail_fullscreen {
-        let title = format!(
-            " {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
-            app.selected_settings_section().label()
-        );
+        let title = format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", section_label);
         let paragraph = Paragraph::new(lines)
             .scroll((app.detail_scroll, 0))
             .block(
@@ -2114,30 +2016,8 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { Color::Cyan } else { Color::Gray };
     let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
 
-    // ── Left: section list ──────────────────────────────────────────────────
-    let items: Vec<ListItem> = SettingsSection::all()
-        .iter()
-        .enumerate()
-        .map(|(i, section)| {
-            let selected = i == app.settings_selected && list_focused;
-            let prefix = if i == app.settings_selected { "▶ " } else { "  " };
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if i == app.settings_selected {
-                // Selected but not focused — dim highlight
-                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                Span::styled(section.label(), style),
-            ]))
-        })
-        .collect();
+    // ── Left: grouped section list (Monitor group + Settings group) ──────────
+    let (items, rendered_selected) = build_settings_list(app);
 
     let list_title = if list_focused {
         " ▶ FOCUSED Settings — ↑/↓ select, Tab → focus detail "
@@ -2154,15 +2034,17 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         )
         .highlight_style(Style::default());
 
-    let mut settings_list_state = ListState::default().with_selected(Some(app.settings_selected));
+    let mut settings_list_state = ListState::default().with_selected(Some(rendered_selected));
     frame.render_stateful_widget(list, split[0], &mut settings_list_state);
 
     // ── Right: details panel ────────────────────────────────────────────────
     let detail_title = if app.detail_focused {
-        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
-            app.selected_settings_section().label())
+        format!(
+            " {}  [FOCUSED — ↑/↓ navigate, Tab → list, Tab-Tab → fullscreen] ",
+            section_label
+        )
     } else {
-        format!(" {} ", app.selected_settings_section().label())
+        format!(" {} ", section_label)
     };
 
     let paragraph = Paragraph::new(lines)
@@ -2369,12 +2251,26 @@ fn mask_key(key: &str) -> String {
 }
 
 fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
-    let (lines, scroll_target) = match app.selected_info_section() {
-        InfoSection::Master => { let l = render_info_master(); (l, 0) }
-        InfoSection::AisbAgents => render_info_aisb_agents(app),
-        InfoSection::Oracle => { let l = render_info_oracle(); (l, 0) }
-        InfoSection::Workers => { let l = render_info_workers(); (l, 0) }
-        InfoSection::Rules => { let l = render_info_rules(); (l, 0) }
+    // Detail + label depend on the group: the Agentic info group renders the
+    // info sections, the Projects group renders the selected project's detail.
+    let on_projects = app.agentic_on_projects();
+    let (lines, scroll_target) = if on_projects {
+        (render_project_detail(app), 0usize)
+    } else {
+        match app.selected_info_section() {
+            InfoSection::Atlas => (render_info_atlas(), 0),
+            InfoSection::AisbAgents => render_info_aisb_agents(app),
+            InfoSection::Oracle => (render_info_oracle(), 0),
+            InfoSection::Workers => (render_info_workers(), 0),
+            InfoSection::Rules => (render_info_rules(), 0),
+        }
+    };
+    let section_label: String = if on_projects {
+        app.selected_project()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "Projects".to_string())
+    } else {
+        app.selected_info_section().label().to_string()
     };
 
     // Auto-scroll to keep selected item visible (agents list, etc.)
@@ -2390,10 +2286,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
 
     // Fullscreen detail
     if app.detail_fullscreen {
-        let title = format!(
-            " {}  [FULLSCREEN — Tab/Tab-Tab to exit] ",
-            app.selected_info_section().label()
-        );
+        let title = format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", section_label);
         let paragraph = Paragraph::new(lines)
             .scroll((app.detail_scroll, 0))
             .block(
@@ -2415,28 +2308,8 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { Color::Cyan } else { Color::Gray };
     let detail_border = if app.detail_focused { Color::Yellow } else { Color::Gray };
 
-    let items: Vec<ListItem> = InfoSection::all()
-        .iter()
-        .enumerate()
-        .map(|(i, sec)| {
-            let selected = i == app.info_section_selected && list_focused;
-            let prefix = if i == app.info_section_selected { "▶ " } else { "  " };
-            let style = if selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else if i == app.info_section_selected {
-                Style::default().fg(Color::Reset).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(prefix, Style::default().fg(Color::Cyan)),
-                Span::styled(sec.label(), style),
-            ]))
-        })
-        .collect();
+    // ── Left: grouped list (Agentic info group + Projects group) ─────────────
+    let (items, rendered_selected) = build_agentic_list(app);
 
     let list_title = if list_focused {
         " ▶ FOCUSED Agentic — ↑/↓ select, Tab → focus detail "
@@ -2452,14 +2325,16 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
         )
         .highlight_style(Style::default());
 
-    let mut info_list_state = ListState::default().with_selected(Some(app.info_section_selected));
+    let mut info_list_state = ListState::default().with_selected(Some(rendered_selected));
     frame.render_stateful_widget(list, split[0], &mut info_list_state);
 
     let detail_title = if app.detail_focused {
-        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
-            app.selected_info_section().label())
+        format!(
+            " {}  [FOCUSED — ↑/↓ scroll, Tab → list, Tab-Tab → fullscreen] ",
+            section_label
+        )
     } else {
-        format!(" {} ", app.selected_info_section().label())
+        format!(" {} ", section_label)
     };
 
     let paragraph = Paragraph::new(lines)
@@ -2546,40 +2421,41 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     (lines, selected_agent_line)
 }
 
-fn render_info_master() -> Vec<Line<'static>> {
+fn render_info_atlas() -> Vec<Line<'static>> {
     let master = omega_core::aisb::MASTER_SESSION_NAME;
     vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  Ω  AISB MASTER — the 13-agent brain hub",
+            "  Ω  ATLAS — the Director brain (omega-tg-bot.ts)",
             Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("  The AISB Master is the single brain reached over Telegram: you"),
-        Line::from("  message it, it classifies intent and routes to the right oracle,"),
-        Line::from("  agent or skill. The 13 Matrix agents (see 'AISB Agents') are its"),
-        Line::from("  faculties. One conversation, many agents, shared evolution."),
+        Line::from("  Atlas is the single brain reached over Telegram: you message it,"),
+        Line::from("  it classifies intent and dispatches to the right oracle, agent or"),
+        Line::from("  skill. The 13 Matrix agents (see 'AISB Agents') are its faculties."),
+        Line::from("  One conversation, many agents, shared evolution."),
         Line::from(""),
         Line::from(Span::styled("  Live session", Style::default().fg(Color::Cyan))),
-        Line::from(format!("    {}  — live viewer of the Telegram conversation", master)),
+        Line::from(format!("    {}  — live viewer of the Atlas Telegram conversation", master)),
         Line::from("    Select it in the Sessions tab + Tab to watch the live conversation."),
         Line::from(""),
         Line::from(Span::styled("  Telegram bridge", Style::default().fg(Color::Cyan))),
-        Line::from("    Set up:  select AISB Master in the Sessions tab and press Enter"),
+        Line::from("    Set up:  Settings tab → Telegram & projects → Enter (or press 'T')"),
         Line::from("             to connect Telegram (guided wizard — no command needed)."),
-        Line::from("    Once set, the bridge streams the brain's replies + accepts"),
-        Line::from("    voice / documents / photos (transcribed + analysed)."),
+        Line::from("    Once set, Atlas streams its replies + accepts voice / documents /"),
+        Line::from("    photos (transcribed + analysed). Per-project topics on sync."),
         Line::from(""),
-        Line::from(Span::styled("  OmegaMC dashboard", Style::default().fg(Color::Cyan))),
-        Line::from("    The phone-side web control surface (agents, conversations,"),
-        Line::from("    tasks, swarms). Repo: agentik-os/agentik-telegram (MIT)."),
-        Line::from("    Open:  Monitor tab → 'O' (Open Dashboard) — launches it from"),
-        Line::from("           ~/.omega/repos/omega-mc when installed."),
+        Line::from(Span::styled("  OmegaMC dashboard & gateway", Style::default().fg(Color::Cyan))),
+        Line::from("    The phone-side web control surface (agents, conversations, tasks,"),
+        Line::from("    swarms) backed by the on-demand gateway. Repo: agentik-os/"),
+        Line::from("    agentik-telegram (MIT); runs as a Docker container on :8080."),
+        Line::from("    Open:  Settings tab → Actions → 'O' (Open Dashboard) — launches it"),
+        Line::from("           from ~/.omega/repos/omega-mc when installed."),
         Line::from("    The 13 AISB agents are mapped into its registry"),
         Line::from("    (config/omega-aisb.yaml)."),
         Line::from(""),
         Line::from(Span::styled(
-            "  One brain, one Telegram channel, one dashboard — all 13 agents.",
+            "  One brain (Atlas), one Telegram channel, one dashboard — all 13 agents.",
             Style::default().fg(Color::Gray),
         )),
     ]

@@ -6,10 +6,8 @@ use omega_core::session::{OmegaSession, SessionManager, SessionRole};
 pub enum Tab {
     Sessions,
     Menu,
-    Monitor,
-    Projects,
-    Settings,
     Agentic,
+    Settings,
     Help,
 }
 
@@ -35,7 +33,7 @@ pub enum ReauthStatus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoSection {
-    Master,
+    Atlas,
     AisbAgents,
     Oracle,
     Workers,
@@ -45,7 +43,7 @@ pub enum InfoSection {
 impl InfoSection {
     pub fn all() -> &'static [InfoSection] {
         &[
-            InfoSection::Master,
+            InfoSection::Atlas,
             InfoSection::AisbAgents,
             InfoSection::Oracle,
             InfoSection::Workers,
@@ -54,7 +52,7 @@ impl InfoSection {
     }
     pub fn label(&self) -> &'static str {
         match self {
-            InfoSection::Master => "AISB Master — the brain hub",
+            InfoSection::Atlas => "Atlas — the Director brain",
             InfoSection::AisbAgents => "AISB Agents (13)",
             InfoSection::Oracle => "Oracle — routing & coordination",
             InfoSection::Workers => "Workers — dispatch & lifecycle",
@@ -728,37 +726,31 @@ impl SettingsSection {
     }
 }
 
-/// Left-hand sections of the Monitor tab. Mirrors `SettingsSection` /
-/// `InfoSection`: a section list on the left, the selected section's detail on
-/// the right. The `Actions` section hosts the interactive `MonitorAction` list.
+/// Left-hand rows of the Monitor GROUP inside the Settings tab (top group;
+/// the Settings providers sit below it as a second group). Mirrors
+/// `SettingsSection` / `InfoSection`: a section list on the left, the selected
+/// section's detail on the right. The `Actions` section hosts the interactive
+/// `MonitorAction` list. `AccountBilling` merges the connected-account view with
+/// live billing; `Telegram` merges the bot config with the project group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorSection {
-    Account,
-    Billing,
+    AccountBilling,
     Telegram,
-    Accounts,
-    Projects,
     Actions,
 }
 
 impl MonitorSection {
     pub fn all() -> &'static [MonitorSection] {
         &[
-            MonitorSection::Account,
-            MonitorSection::Billing,
+            MonitorSection::AccountBilling,
             MonitorSection::Telegram,
-            MonitorSection::Accounts,
-            MonitorSection::Projects,
             MonitorSection::Actions,
         ]
     }
     pub fn label(&self) -> &'static str {
         match self {
-            MonitorSection::Account => "Connected account",
-            MonitorSection::Billing => "Billing (live)",
-            MonitorSection::Telegram => "Telegram bot & group",
-            MonitorSection::Accounts => "Claude accounts",
-            MonitorSection::Projects => "Project group",
+            MonitorSection::AccountBilling => "Account & billing",
+            MonitorSection::Telegram => "Telegram & projects",
             MonitorSection::Actions => "Actions",
         }
     }
@@ -880,6 +872,11 @@ pub struct App {
     /// Cursor within the Monitor `Actions` section's `MonitorAction` list.
     pub monitor_action_selected: usize,
     pub settings_selected: usize,
+    /// Which group of the Settings tab the cursor is on: 0 = Monitor group
+    /// (`MonitorSection`/`monitor_selected`), 1 = Settings group
+    /// (`SettingsSection`/`settings_selected`). The two groups share one
+    /// continuous left list separated by a blank gap + `─── header ───`.
+    pub settings_group: u8,
     /// Cursor within the focused Settings section's interactive field list.
     pub settings_field_selected: usize,
     /// Field index awaiting a second Enter to confirm a destructive Action
@@ -899,6 +896,11 @@ pub struct App {
     /// the cred-group step, read by the CreateProject handler). None = default.
     pub new_project_cred_group: Option<String>,
     pub info_section_selected: usize,
+    /// Which group of the Agentic tab the cursor is on: 0 = Agentic info
+    /// sections (`InfoSection`/`info_section_selected`), 1 = Projects
+    /// (`project_registry`/`projects_selected`). One continuous left list,
+    /// separated by a blank gap + `─── Projects ───` header.
+    pub agentic_group: u8,
     /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
     pub info_agent_selected: usize,
     pub should_quit: bool,
@@ -1048,6 +1050,7 @@ impl App {
             monitor_selected: 0,
             monitor_action_selected: 0,
             settings_selected: 0,
+            settings_group: 0,
             settings_field_selected: 0,
             settings_confirm_pending: None,
             menu_confirm_pending: None,
@@ -1055,6 +1058,7 @@ impl App {
             session_filter: None,
             new_project_cred_group: None,
             info_section_selected: 0,
+            agentic_group: 0,
             info_agent_selected: 0,
             should_quit: false,
             status_message: None,
@@ -1120,29 +1124,6 @@ impl App {
         {
             self.projects_selected = self.project_registry.projects.len() - 1;
         }
-    }
-
-    pub fn select_project_next(&mut self) {
-        let count = self.project_registry.projects.len();
-        if count > 0 {
-            self.projects_selected = (self.projects_selected + 1) % count;
-        }
-        // Moving the cursor disarms any pending remove-confirm.
-        self.project_confirm_pending = None;
-        self.project_delete_pending = None;
-    }
-
-    pub fn select_project_prev(&mut self) {
-        let count = self.project_registry.projects.len();
-        if count > 0 {
-            self.projects_selected = if self.projects_selected == 0 {
-                count - 1
-            } else {
-                self.projects_selected - 1
-            };
-        }
-        self.project_confirm_pending = None;
-        self.project_delete_pending = None;
     }
 
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
@@ -1340,29 +1321,63 @@ impl App {
     }
 
     // ── Monitor section list (left panel) ───────────────────────────────────
-    pub fn select_monitor_next(&mut self) {
-        let count = MonitorSection::all().len();
-        self.monitor_selected = (self.monitor_selected + 1) % count;
-        self.monitor_action_selected = 0;
-        self.detail_scroll = 0;
-        // Leaving the Telegram section drops any armed disconnect-confirm.
-        self.monitor_disconnect_armed = false;
+    /// True when the Settings-tab cursor sits on a Monitor-group row.
+    pub fn settings_on_monitor(&self) -> bool {
+        self.settings_group == 0
     }
 
-    pub fn select_monitor_prev(&mut self) {
-        let count = MonitorSection::all().len();
-        self.monitor_selected = if self.monitor_selected == 0 {
-            count - 1
-        } else {
-            self.monitor_selected - 1
-        };
+    /// Side effects shared by every Settings-tab cursor move: reset the action
+    /// cursor, scroll, disconnect-arm, field cursor and confirm-arm.
+    fn on_settings_nav_change(&mut self) {
         self.monitor_action_selected = 0;
         self.detail_scroll = 0;
         self.monitor_disconnect_armed = false;
+        self.settings_field_selected = 0;
+        self.settings_confirm_pending = None;
+    }
+
+    /// Advance the unified Settings-tab cursor: walks the Monitor group, then
+    /// the Settings group, then wraps back to the top of the Monitor group.
+    pub fn settings_tab_next(&mut self) {
+        let mlen = MonitorSection::all().len();
+        let slen = SettingsSection::all().len();
+        if self.settings_group == 0 {
+            if self.monitor_selected + 1 < mlen {
+                self.monitor_selected += 1;
+            } else {
+                self.settings_group = 1;
+                self.settings_selected = 0;
+            }
+        } else if self.settings_selected + 1 < slen {
+            self.settings_selected += 1;
+        } else {
+            self.settings_group = 0;
+            self.monitor_selected = 0;
+        }
+        self.on_settings_nav_change();
+    }
+
+    pub fn settings_tab_prev(&mut self) {
+        let mlen = MonitorSection::all().len();
+        let slen = SettingsSection::all().len();
+        if self.settings_group == 0 {
+            if self.monitor_selected > 0 {
+                self.monitor_selected -= 1;
+            } else {
+                self.settings_group = 1;
+                self.settings_selected = slen.saturating_sub(1);
+            }
+        } else if self.settings_selected > 0 {
+            self.settings_selected -= 1;
+        } else {
+            self.settings_group = 0;
+            self.monitor_selected = mlen.saturating_sub(1);
+        }
+        self.on_settings_nav_change();
     }
 
     pub fn selected_monitor_section(&self) -> MonitorSection {
-        MonitorSection::all()[self.monitor_selected]
+        MonitorSection::all()[self.monitor_selected.min(MonitorSection::all().len() - 1)]
     }
 
     // ── Monitor action cursor (inside the Actions section) ───────────────────
@@ -1382,24 +1397,6 @@ impl App {
 
     pub fn selected_monitor_action(&self) -> MonitorAction {
         MonitorAction::all()[self.monitor_action_selected]
-    }
-
-    pub fn select_settings_next(&mut self) {
-        let count = SettingsSection::all().len();
-        self.settings_selected = (self.settings_selected + 1) % count;
-        self.settings_field_selected = 0;
-        self.settings_confirm_pending = None;
-    }
-
-    pub fn select_settings_prev(&mut self) {
-        let count = SettingsSection::all().len();
-        self.settings_selected = if self.settings_selected == 0 {
-            count - 1
-        } else {
-            self.settings_selected - 1
-        };
-        self.settings_field_selected = 0;
-        self.settings_confirm_pending = None;
     }
 
     pub fn selected_settings_section(&self) -> SettingsSection {
@@ -1784,11 +1781,9 @@ impl App {
     pub fn next_tab(&mut self) {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
-            Tab::Menu => Tab::Monitor,
-            Tab::Monitor => Tab::Projects,
-            Tab::Projects => Tab::Settings,
-            Tab::Settings => Tab::Agentic,
-            Tab::Agentic => Tab::Help,
+            Tab::Menu => Tab::Agentic,
+            Tab::Agentic => Tab::Settings,
+            Tab::Settings => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
     }
@@ -1797,11 +1792,9 @@ impl App {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
-            Tab::Monitor => Tab::Menu,
-            Tab::Projects => Tab::Monitor,
-            Tab::Settings => Tab::Projects,
-            Tab::Agentic => Tab::Settings,
-            Tab::Help => Tab::Agentic,
+            Tab::Agentic => Tab::Menu,
+            Tab::Settings => Tab::Agentic,
+            Tab::Help => Tab::Settings,
         };
     }
 
@@ -1822,7 +1815,65 @@ impl App {
     }
 
     pub fn selected_info_section(&self) -> InfoSection {
-        InfoSection::all()[self.info_section_selected]
+        InfoSection::all()[self.info_section_selected.min(InfoSection::all().len() - 1)]
+    }
+
+    /// True when the Agentic-tab cursor sits on a Projects-group row.
+    pub fn agentic_on_projects(&self) -> bool {
+        self.agentic_group == 1
+    }
+
+    /// Number of navigable rows in the Agentic Projects group (≥1 so the empty
+    /// "(no projects)" placeholder row stays selectable).
+    fn agentic_proj_len(&self) -> usize {
+        self.project_registry.projects.len().max(1)
+    }
+
+    /// Advance the unified Agentic-tab cursor: walks the info sections, then the
+    /// project list, then wraps back to the first info section.
+    pub fn agentic_tab_next(&mut self) {
+        let ilen = InfoSection::all().len();
+        let plen = self.agentic_proj_len();
+        if self.agentic_group == 0 {
+            if self.info_section_selected + 1 < ilen {
+                self.info_section_selected += 1;
+            } else {
+                self.agentic_group = 1;
+                self.projects_selected = 0;
+            }
+        } else if self.projects_selected + 1 < plen {
+            self.projects_selected += 1;
+        } else {
+            self.agentic_group = 0;
+            self.info_section_selected = 0;
+        }
+        self.on_agentic_nav_change();
+    }
+
+    pub fn agentic_tab_prev(&mut self) {
+        let ilen = InfoSection::all().len();
+        let plen = self.agentic_proj_len();
+        if self.agentic_group == 0 {
+            if self.info_section_selected > 0 {
+                self.info_section_selected -= 1;
+            } else {
+                self.agentic_group = 1;
+                self.projects_selected = plen.saturating_sub(1);
+            }
+        } else if self.projects_selected > 0 {
+            self.projects_selected -= 1;
+        } else {
+            self.agentic_group = 0;
+            self.info_section_selected = ilen.saturating_sub(1);
+        }
+        self.on_agentic_nav_change();
+    }
+
+    fn on_agentic_nav_change(&mut self) {
+        self.info_agent_selected = 0;
+        self.detail_scroll = 0;
+        self.project_confirm_pending = None;
+        self.project_delete_pending = None;
     }
 
     pub fn select_info_agent_next(&mut self) {

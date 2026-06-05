@@ -235,27 +235,13 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 }
             }
         }
-        Tab::Monitor => {
-            if down { app.scroll_detail_down(lines); }
-            else { app.scroll_detail_up(lines); }
-        }
-        Tab::Projects => {
-            if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
-            } else {
-                for _ in 0..lines {
-                    if down { app.select_project_next(); } else { app.select_project_prev(); }
-                }
-            }
-        }
         Tab::Settings => {
             if app.detail_focused {
                 if down { app.scroll_detail_down(lines); }
                 else { app.scroll_detail_up(lines); }
             } else {
                 for _ in 0..lines {
-                    if down { app.select_settings_next(); } else { app.select_settings_prev(); }
+                    if down { app.settings_tab_next(); } else { app.settings_tab_prev(); }
                 }
             }
         }
@@ -265,7 +251,7 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 else { app.scroll_detail_up(lines); }
             } else {
                 for _ in 0..lines {
-                    if down { app.select_info_next(); } else { app.select_info_prev(); }
+                    if down { app.agentic_tab_next(); } else { app.agentic_tab_prev(); }
                 }
             }
         }
@@ -856,11 +842,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "In session — Tab: back to list · Ctrl+X: close session · Tab-Tab: hide/show menu".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
+            } else if matches!(app.tab, Tab::Settings | Tab::Agentic) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
-                // When entering detail on Settings, snap cursor to first actionable
-                if app.tab == Tab::Settings && app.detail_focused {
+                // When entering detail on the Settings group, snap cursor to the
+                // first actionable field (the Monitor group has no field list).
+                if app.tab == Tab::Settings && app.detail_focused && !app.settings_on_monitor() {
                     let section = app.selected_settings_section();
                     let providers = app.providers();
                     let fields = crate::app::fields_for_section(
@@ -888,7 +875,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Scroll: depends on the active tab + focus. PageUp/PageDown super-
         // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(app.preview_inner_height.max(10));
@@ -896,7 +883,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(app.preview_inner_height.max(10));
@@ -904,7 +891,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
                 app.detail_scroll = 0;
             } else {
                 app.scroll_preview_home();
@@ -912,7 +899,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic | Tab::Monitor | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
                 app.detail_scroll = u16::MAX / 2;
             } else {
                 app.scroll_preview_end();
@@ -934,49 +921,40 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Navigation: ↑/↓ AND j/k — context-aware (sessions vs menu)
         KeyCode::Down | KeyCode::Char('j') => {
-            // Settings tab + detail focused: navigate ACTIONABLE fields
+            // Settings tab + detail focused: Monitor group → action cursor (on
+            // the Actions section) or scroll; Settings group → navigate fields.
             if app.tab == Tab::Settings && app.detail_focused {
-                let section = app.selected_settings_section();
-                let providers = app.providers();
-                let fields = crate::app::fields_for_section(
-                    section,
-                    &providers,
-                    &app.config,
-                );
-                advance_to_next_actionable(app, &fields, true);
+                if app.settings_on_monitor() {
+                    if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                        app.select_monitor_action_next();
+                    } else {
+                        app.scroll_detail_down(1);
+                    }
+                } else {
+                    let section = app.selected_settings_section();
+                    let providers = app.providers();
+                    let fields = crate::app::fields_for_section(section, &providers, &app.config);
+                    advance_to_next_actionable(app, &fields, true);
+                }
                 return Action::None;
             }
-            // Info tab: when detail focused on AISB Agents → navigate agents,
-            // else scroll detail. When list focused → navigate sub-sections.
+            // Agentic tab + detail focused: Projects group → scroll the project
+            // detail; info group → navigate AISB agents (on that section) or scroll.
             if app.tab == Tab::Agentic && app.detail_focused {
-                if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                if app.agentic_on_projects() {
+                    app.scroll_detail_down(1);
+                } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_next();
                 } else {
                     app.scroll_detail_down(1);
                 }
                 return Action::None;
             }
-            if app.tab == Tab::Monitor && app.detail_focused {
-                // Actions section → navigate the action cursor; other sections
-                // just scroll the detail panel.
-                if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
-                    app.select_monitor_action_next();
-                } else {
-                    app.scroll_detail_down(1);
-                }
-                return Action::None;
-            }
-            if app.tab == Tab::Projects && app.detail_focused {
-                app.scroll_detail_down(1);
-                return Action::None;
-            }
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
-                Tab::Monitor => app.select_monitor_next(),
-                Tab::Projects => app.select_project_next(),
-                Tab::Settings => app.select_settings_next(),
-                Tab::Agentic => app.select_info_next(),
+                Tab::Settings => app.settings_tab_next(),
+                Tab::Agentic => app.agentic_tab_next(),
                 Tab::Help => app.scroll_detail_down(1),
             }
             Action::None
@@ -984,43 +962,35 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         KeyCode::Up | KeyCode::Char('k') => {
             if app.tab == Tab::Settings && app.detail_focused {
-                let section = app.selected_settings_section();
-                let providers = app.providers();
-                let fields = crate::app::fields_for_section(
-                    section,
-                    &providers,
-                    &app.config,
-                );
-                advance_to_next_actionable(app, &fields, false);
+                if app.settings_on_monitor() {
+                    if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                        app.select_monitor_action_prev();
+                    } else {
+                        app.scroll_detail_up(1);
+                    }
+                } else {
+                    let section = app.selected_settings_section();
+                    let providers = app.providers();
+                    let fields = crate::app::fields_for_section(section, &providers, &app.config);
+                    advance_to_next_actionable(app, &fields, false);
+                }
                 return Action::None;
             }
             if app.tab == Tab::Agentic && app.detail_focused {
-                if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
+                if app.agentic_on_projects() {
+                    app.scroll_detail_up(1);
+                } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_prev();
                 } else {
                     app.scroll_detail_up(1);
                 }
                 return Action::None;
             }
-            if app.tab == Tab::Monitor && app.detail_focused {
-                if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
-                    app.select_monitor_action_prev();
-                } else {
-                    app.scroll_detail_up(1);
-                }
-                return Action::None;
-            }
-            if app.tab == Tab::Projects && app.detail_focused {
-                app.scroll_detail_up(1);
-                return Action::None;
-            }
             match app.tab {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
-                Tab::Monitor => app.select_monitor_prev(),
-                Tab::Projects => app.select_project_prev(),
-                Tab::Settings => app.select_settings_prev(),
-                Tab::Agentic => app.select_info_prev(),
+                Tab::Settings => app.settings_tab_prev(),
+                Tab::Agentic => app.agentic_tab_prev(),
                 Tab::Help => app.scroll_detail_up(1),
             }
             Action::None
@@ -1029,11 +999,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Left/Right inside Info navigates between sub-sections (independent of agent sub-cursor)
         // We use a separate explicit handler via PgUp/PgDn — but since arrow keys are taken
         // for tabs, users can use Home/End or [/] to jump between sub-sections:
-        KeyCode::Char('[') if app.tab == Tab::Agentic => {
+        KeyCode::Char('[') if app.tab == Tab::Agentic && !app.agentic_on_projects() => {
             app.select_info_prev();
             Action::None
         }
-        KeyCode::Char(']') if app.tab == Tab::Agentic => {
+        KeyCode::Char(']') if app.tab == Tab::Agentic && !app.agentic_on_projects() => {
             app.select_info_next();
             Action::None
         }
@@ -1073,42 +1043,47 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Menu => execute_menu_action(app, app.selected_menu_action()),
-            Tab::Monitor => {
-                // 2-column model: Enter on the section list focuses the detail
-                // panel. Once focused, Enter on the Actions section runs the
-                // selected action (or shows its status hint for placeholders).
+            Tab::Settings => {
+                // 2-column model. Enter on the section list focuses the detail
+                // panel. Once focused, behaviour splits by group: the Monitor
+                // group routes each section to its primary action; the Settings
+                // group activates the selected provider field.
                 if !app.detail_focused {
                     app.detail_focused = true;
                     app.detail_scroll = 0;
+                    // Settings group → snap to the first actionable field.
+                    if !app.settings_on_monitor() {
+                        let section = app.selected_settings_section();
+                        let providers = app.providers();
+                        let fields = crate::app::fields_for_section(section, &providers, &app.config);
+                        if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
+                            app.settings_field_selected = first;
+                        }
+                    }
                     app.status_message = Some(
-                        "Focus: detail (↑/↓ navigate, Enter run on Actions, Tab → list)".to_string(),
+                        "Focus: detail (↑/↓ navigate, Enter activate, Tab → list, Tab-Tab → fullscreen)".to_string(),
                     );
                     Action::None
-                } else if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
-                    let action = app.selected_monitor_action();
-                    // OpenDashboard resolves the real OmegaMC launch (or honest
-                    // not-installed message) against the filesystem; it needs
-                    // `&mut App`, so it routes through its own handler.
-                    if matches!(action, MonitorAction::OpenDashboard) {
-                        open_dashboard_action(app)
-                    } else {
-                        execute_monitor_action(action)
-                    }
-                } else {
-                    // Every OTHER section is itself Enter-actionable: focused-Enter
-                    // routes the section straight to its existing primary
-                    // wizard/action (the same Action variants the Actions list
-                    // emits) — no command-line, no new wizard.
+                } else if app.settings_on_monitor() {
+                    // ── Monitor group: focused-Enter routes the section to its
+                    // primary wizard/action (no command-line, no new wizard). ──
                     use crate::app::MonitorSection;
                     match app.selected_monitor_section() {
-                        // Account → the OAuth re-login engine. Context-aware:
-                        // once the authorize URL is captured, Enter opens the
-                        // code-input modal; otherwise it kicks off request_reauth.
-                        MonitorSection::Account => account_enter_action(app),
-                        // Billing → re-run `omega usage --check` (live OAuth %).
-                        MonitorSection::Billing => Action::RefreshBilling,
-                        // Telegram → context-sensitive: set up when absent, or a
-                        // two-press-confirmed disconnect when a config exists.
+                        MonitorSection::Actions => {
+                            let action = app.selected_monitor_action();
+                            // OpenDashboard needs `&mut App` → its own handler.
+                            if matches!(action, MonitorAction::OpenDashboard) {
+                                open_dashboard_action(app)
+                            } else {
+                                execute_monitor_action(action)
+                            }
+                        }
+                        // Account & billing → the OAuth re-login engine. Context-
+                        // aware: once the authorize URL is captured, Enter opens
+                        // the code modal; otherwise it kicks off request_reauth.
+                        MonitorSection::AccountBilling => account_enter_action(app),
+                        // Telegram & projects → set up when absent, or a two-press-
+                        // confirmed disconnect when a config exists.
                         MonitorSection::Telegram => {
                             if omega_core::monitor::OmegaTelegramConfig::exists() {
                                 if app.monitor_disconnect_armed {
@@ -1125,45 +1100,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                                 Action::TelegramSetup
                             }
                         }
-                        // Accounts → no core account-switch primitive exists yet;
-                        // the honest reusable flow is add/re-auth an account via
-                        // the same login flow as the Account section.
-                        MonitorSection::Accounts => Action::LoginClaude,
-                        // Project group → guided single-field group_id capture
-                        // modal (the bot's primary path is auto-detect; this is
-                        // the manual fallback, in-TUI, no `/setupgroup` to type).
-                        MonitorSection::Projects => {
-                            app.input_buffer = String::new();
-                            app.input_mode = crate::app::InputMode::GroupSetupId;
-                            app.status_message = Some(
-                                "Telegram group_id (negative, e.g. -1001234567890) — Enter to save, Esc to cancel".to_string(),
-                            );
-                            Action::None
-                        }
-                        MonitorSection::Actions => Action::None,
                     }
-                }
-            }
-            Tab::Settings => {
-                // Enter on the section list → focus the right detail panel
-                // (same as Tab). Once focused, Enter activates the selected field.
-                if !app.detail_focused {
-                    let section = app.selected_settings_section();
-                    let providers = app.providers();
-                    let fields = crate::app::fields_for_section(
-                        section,
-                        &providers,
-                        &app.config,
-                    );
-                    app.detail_focused = true;
-                    if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
-                        app.settings_field_selected = first;
-                    }
-                    app.status_message = Some(
-                        "Focus: detail (↑/↓ navigate fields, Enter activate, Tab → list, Tab-Tab → fullscreen)".to_string(),
-                    );
-                    Action::None
                 } else {
+                    // ── Settings group: activate the selected provider field. ──
                     let section = app.selected_settings_section();
                     let providers = app.providers();
                     let fields = crate::app::fields_for_section(
@@ -1210,67 +1149,68 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     }
                 }
             }
-            Tab::Projects => {
-                if app.project_registry.projects.is_empty() {
-                    // Empty registry: Enter is free (no focus/open ambiguity) →
-                    // open the same add-project modal as 'n'. This gives a
-                    // non-dev the literal "Enter opens an add-project wizard"
-                    // exactly where they need it.
-                    app.input_buffer = String::new();
-                    app.input_mode = InputMode::AddProjectPath;
-                    app.status_message = Some(
-                        "Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string(),
-                    );
-                    Action::None
-                } else if !app.detail_focused {
-                    app.detail_focused = true;
-                    app.detail_scroll = 0;
-                    app.status_message = Some(
-                        "Focus: project detail (↑/↓ scroll, Enter → open in terminal, Tab → list)".to_string(),
-                    );
-                    Action::None
-                } else {
-                    // Detail focused → Enter opens the project in a terminal.
-                    match app.selected_project() {
-                        Some(p) => Action::OpenProject {
-                            name: p.name.clone(),
-                            path: p.path.to_string_lossy().to_string(),
-                            oracle_session: p.oracle_session.clone(),
-                        },
-                        None => {
-                            app.status_message = Some("No project selected".to_string());
-                            Action::None
+            Tab::Agentic => {
+                if app.agentic_on_projects() {
+                    // ── Projects group ──
+                    if app.project_registry.projects.is_empty() {
+                        // Empty registry: Enter opens the same add-project modal
+                        // as 'n' — the literal "Enter adds a project" affordance.
+                        app.input_buffer = String::new();
+                        app.input_mode = InputMode::AddProjectPath;
+                        app.status_message = Some(
+                            "Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string(),
+                        );
+                        Action::None
+                    } else if !app.detail_focused {
+                        app.detail_focused = true;
+                        app.detail_scroll = 0;
+                        app.status_message = Some(
+                            "Focus: project detail (↑/↓ scroll, Enter → open in terminal, Tab → list)".to_string(),
+                        );
+                        Action::None
+                    } else {
+                        // Detail focused → Enter opens the project in a terminal.
+                        match app.selected_project() {
+                            Some(p) => Action::OpenProject {
+                                name: p.name.clone(),
+                                path: p.path.to_string_lossy().to_string(),
+                                oracle_session: p.oracle_session.clone(),
+                            },
+                            None => {
+                                app.status_message = Some("No project selected".to_string());
+                                Action::None
+                            }
                         }
                     }
+                } else {
+                    // ── Agentic info group: Enter focuses the detail panel so
+                    // users can browse Oracle/Workers/Rules content. ──
+                    if !app.detail_focused {
+                        app.detail_focused = true;
+                        app.detail_scroll = 0;
+                        app.status_message = Some(
+                            "Focus: detail (↑/↓ scroll or navigate agents, Tab → list, Tab-Tab → fullscreen)".to_string(),
+                        );
+                    }
+                    Action::None
                 }
-            }
-            Tab::Agentic => {
-                // Enter on Info section list → focus the right detail panel
-                // (same as Tab). Lets users browse Oracle/Workers/Rules content.
-                if !app.detail_focused {
-                    app.detail_focused = true;
-                    app.detail_scroll = 0;
-                    app.status_message = Some(
-                        "Focus: detail (↑/↓ scroll or navigate agents, Tab → list, Tab-Tab → fullscreen)".to_string(),
-                    );
-                }
-                Action::None
             }
             Tab::Help => Action::None,
         },
 
-        // Monitor tab letter shortcuts
-        KeyCode::Char('L') if app.tab == Tab::Monitor => Action::LoginClaude,
-        KeyCode::Char('T') if app.tab == Tab::Monitor => Action::TelegramSetup,
-        KeyCode::Char('P') if app.tab == Tab::Monitor => Action::ProvisioningSetup,
-        KeyCode::Char('D') if app.tab == Tab::Monitor => Action::TelegramDisconnect,
-        KeyCode::Char('B') if app.tab == Tab::Monitor => Action::RefreshBilling,
-        KeyCode::Char('O') if app.tab == Tab::Monitor => open_dashboard_action(app),
+        // Settings tab → Monitor group: letter shortcuts (only when the cursor
+        // sits in the Monitor group, so they don't fire while editing providers).
+        KeyCode::Char('L') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::LoginClaude,
+        KeyCode::Char('T') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::TelegramSetup,
+        KeyCode::Char('P') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::ProvisioningSetup,
+        KeyCode::Char('D') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::TelegramDisconnect,
+        KeyCode::Char('B') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::RefreshBilling,
+        KeyCode::Char('O') if app.tab == Tab::Settings && app.settings_on_monitor() => open_dashboard_action(app),
 
         // Projects tab: 'n' opens a guided "register existing folder" modal
         // (the in-TUI replacement for the `omega project add` CLI hint). For a
         // green-field scaffold the Menu tab's New-project wizard still applies.
-        KeyCode::Char('n') if app.tab == Tab::Projects => {
+        KeyCode::Char('n') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::AddProjectPath;
             app.status_message =
@@ -1280,7 +1220,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
         // Projects tab: 'x' removes the selected project (two-press confirm).
         // First press arms it for that name; second 'x' on the same name fires.
-        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Projects => {
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     if app.project_confirm_pending.as_deref() == Some(name.as_str()) {
@@ -1303,7 +1243,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
         // Projects tab: 'T' toggles the selected project's Telegram visibility
         // (topic sync + Atlas bot). Marked 🔕 in the list when OFF.
-        KeyCode::Char('T') if app.tab == Tab::Projects => {
+        KeyCode::Char('T') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => Action::ToggleProjectTelegram { name },
                 None => {
@@ -1315,7 +1255,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Projects tab: 'D' = Delete forever (two-press confirm) — removes the
         // project from OmegaOS AND deletes its local folder. Distinct from 'x'
         // (registry-only removal). First press arms it; second 'D' fires.
-        KeyCode::Char('D') if app.tab == Tab::Projects => {
+        KeyCode::Char('D') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     if app.project_delete_pending.as_deref() == Some(name.as_str()) {
@@ -1358,7 +1298,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
         // Projects tab: 'p' runs the planner for the selected project
         // (the global 'p' = new Pi session applies on every other tab).
-        KeyCode::Char('p') if app.tab == Tab::Projects => {
+        KeyCode::Char('p') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project() {
                 Some(p) => Action::RunPlannerForProject {
                     name: p.name.clone(),
@@ -1399,7 +1339,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         // Projects tab: 'd' pre-fills the dispatch with the selected project,
         // skipping the project-name step → straight to mission entry.
-        KeyCode::Char('d') if app.tab == Tab::Projects => {
+        KeyCode::Char('d') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     app.input_buffer = String::new();
@@ -1888,9 +1828,11 @@ fn omega_chat_command(raw: &str) -> Option<Tab> {
         .to_ascii_lowercase()
         .as_str()
     {
-        "projects" | "project" => Some(Tab::Projects),
+        // Projects + the Monitor view live inside Agentic / Settings now; keep
+        // the old command words working by routing them to their new home tab.
+        "projects" | "project" => Some(Tab::Agentic),
         "sessions" | "relay" => Some(Tab::Sessions),
-        "monitor" | "status" => Some(Tab::Monitor),
+        "monitor" | "status" => Some(Tab::Settings),
         "settings" | "config" => Some(Tab::Settings),
         "agents" | "agentic" | "aisb" => Some(Tab::Agentic),
         "menu" => Some(Tab::Menu),
@@ -1903,8 +1845,6 @@ fn tab_label(tab: Tab) -> &'static str {
     match tab {
         Tab::Sessions => "Sessions",
         Tab::Menu => "Menu",
-        Tab::Monitor => "Monitor",
-        Tab::Projects => "Projects",
         Tab::Settings => "Settings",
         Tab::Agentic => "Agentic",
         Tab::Help => "Help",
@@ -2143,7 +2083,7 @@ mod tests {
     #[test]
     fn h_launches_hermes_from_any_tab() {
         let mut app = test_app();
-        app.tab = Tab::Monitor;
+        app.tab = Tab::Settings;
         let action = handle_key(&mut app, press('h'));
         assert!(matches!(action, Action::None));
         assert!(matches!(&app.input_mode, InputMode::NewNamedSession(s) if s == "hermes"));
@@ -2163,7 +2103,7 @@ mod tests {
         });
         app.selected = 0;
 
-        app.tab = Tab::Monitor;
+        app.tab = Tab::Settings;
         assert!(
             matches!(handle_key(&mut app, press('x')), Action::None),
             "x off the Sessions tab must not kill the hidden selection"
