@@ -48,8 +48,13 @@ g() { printf '%s' "$SCAN" | grep -Eq "$1"; }   # match the normalized command
 # `sudo rm` and `cmd && rm`. rmf also swallows an optional opening quote so `rm -rf "$HOME"` hits.
 BND='(^|[;&|(){}`])[[:space:]]*(sudo[[:space:]]+|doas[[:space:]]+)?'
 rmf="${BND}"'rm[[:space:]]+(-[a-zA-Z]*[rf][a-zA-Z]*[[:space:]]+)+["'"'"'`]?'
+# A target token ENDS (TERM) at whitespace, a quote, end-of-line, or a shell separator —
+# crucially NOT another path char. So a HOME/root target is catastrophic only when it IS
+# the root itself (rm -rf /, /*, ~, ~/, $HOME, /home, /home/<user>) — never `~/.local/bin/x`
+# or `~/.omega/state/f` (a path UNDER home: ~ then / then more → no TERM → not flagged).
+Q="'"; SEP="[[:space:]\"${Q}\`;|&)]"; TERM="(${SEP}|\$)"
 
-if   g "${rmf}"'(/|/\*|~|\$HOME|/home|/home/[^/[:space:]"'"'"']+)([[:space:]/";]|$|\*)'; then
+if   g "${rmf}(/\*?${TERM}|(~|\\\$HOME|/home(/[^/[:space:]\"${Q}\`]+)?)/?${TERM})"; then
     SEV="catastrophic"; REASON="rm -rf targeting / or \$HOME — wipes the home/root tree, no undo"
 elif g "${BND}"'git[[:space:]]+push[^|;&]*(--force([^-]|$)|[[:space:]]-f([[:space:]]|$))' \
   && g '(\bmain\b|\bmaster\b|HEAD:.*(main|master)|\+.*(main|master))'; then
@@ -116,18 +121,28 @@ jq -nc --arg ts "$TS" --arg sev "$SEV" --arg act "$ACTION" --arg sess "$SESSION"
 # ── Catastrophic → alert the operator + block ────────────────────────────────
 if [ "$SEV" = "catastrophic" ]; then
     TG_TOML="$HOME/.omega/telegram.toml"
-    if [ -f "$TG_TOML" ]; then
-        TOKEN=$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)
-        DM=$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1)
-        if [ -n "$TOKEN" ] && [ -n "$DM" ]; then
+    GFILE="$HOME/.omega/telegram-groups.json"
+    TOKEN=$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)
+    if [ -n "$TOKEN" ]; then
+        # Alerts belong in the hub group's "alerts" TOPIC — never the Atlas topic (that's
+        # discussion only) and never a DM. Fall back to the operator DM only if no hub/alerts
+        # topic is configured.
+        HUB=$(jq -r '.hub // empty' "$GFILE" 2>/dev/null)
+        ALERTS=$(jq -r '.alerts_topic // empty' "$GFILE" 2>/dev/null)
+        if [ -n "$HUB" ] && [ -n "$ALERTS" ]; then
+            CHAT="$HUB"; THREAD="$ALERTS"
+        else
+            CHAT=$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1); THREAD=""
+        fi
+        if [ -n "$CHAT" ]; then
             esc() { printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'; }
             MSG="‖ <b>Guard — opération bloquée</b>
 projet <b>$(esc "$PROJECT")</b> · <i>$(esc "$SESSION")</i>
 $(esc "$REASON")
 <code>$(esc "${CMD:0:300}")</code>"
-            curl -s --max-time 6 "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-                 --data-urlencode "chat_id=$DM" --data-urlencode "text=$MSG" \
-                 --data-urlencode "parse_mode=HTML" >/dev/null 2>&1 &
+            a=(--data-urlencode "chat_id=$CHAT" --data-urlencode "text=$MSG" --data-urlencode "parse_mode=HTML")
+            [ -n "$THREAD" ] && a+=(--data-urlencode "message_thread_id=$THREAD")
+            curl -s --max-time 6 "https://api.telegram.org/bot${TOKEN}/sendMessage" "${a[@]}" >/dev/null 2>&1 &
         fi
     fi
     # PreToolUse: exit 2 refuses the tool call; stderr is fed back to the agent.
