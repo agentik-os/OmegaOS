@@ -1071,15 +1071,27 @@ function mcSetDefaultModel(fullId: string): string {
   } catch { return ""; }
 }
 // Render the model list for a provider with the current pick marked ✓.
+// Is a provider's API key set? (omega() returns "(no output…" for an empty value.)
+async function providerHasKey(provider: string): Promise<boolean> {
+  const v = (await omega(["config", "get", `${provider}.api_key`])).trim();
+  return !!v && !/^\(no output/.test(v) && !/error/i.test(v);
+}
 async function modelProviderView(provider: string, banner = ""): Promise<{ text: string; markup: any }> {
-  const [models, cur] = await Promise.all([listModels(provider), currentModel(provider)]);
+  const [models, cur, hasKey] = await Promise.all([listModels(provider), currentModel(provider), providerHasKey(provider)]);
   const rows: Btn[][] = [];
   for (let i = 0; i < models.length; i += 2)
     rows.push(models.slice(i, i + 2).map(m => ({ text: `${m === cur ? "✓ " : ""}${m}`.slice(0, 28), callback_data: `model:set:${provider}:${m}`.slice(0, 64) })));
+  // API-key row: a 🗑 delete-key button when a key is set. Deleting it makes sessions
+  // fall back to OAuth/subscription — which stops Claude Code's "use this API key?"
+  // prompt that breaks autonomous oracle sessions.
+  const keyLine = hasKey
+    ? ` 🔑 API key: <b>set</b> — sessions use it. <i>Delete it (🗑) to use your subscription/OAuth instead and stop the “use this key?” prompt.</i>`
+    : ` 🔑 API key: <i>none</i> — sessions use OAuth/subscription (autonomous, no prompt). ✅`;
   const body = (banner ? banner + "\n\n" : "") + (models.length
-    ? ` Current: <code>${esc(cur || "default")}</code>\n Tap a model to activate it.`
-    : ` No catalogued models. Configure: <code>omega config set ${esc(provider)}.model …</code>`);
-  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, [{ text: "« Providers", callback_data: "nav:model" }]]) };
+    ? ` Current: <code>${esc(cur || "default")}</code>\n Tap a model to activate it.\n\n${keyLine}`
+    : ` No catalogued models. Configure: <code>omega config set ${esc(provider)}.model …</code>\n\n${keyLine}`);
+  const keyRow: Btn[][] = hasKey ? [[{ text: "🗑 Delete API key (x)", callback_data: `model:delkey:${provider}`.slice(0, 64) }]] : [];
+  return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
 }
 
 // ── views ────────────────────────────────────────────────────────────────────
@@ -1175,6 +1187,14 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     return edit(chat, msgId, out, kb([[{ text: "« Status", callback_data: "nav:status" }]]));
   }
   if (ns === "model" && action === "prov") { const v = await modelProviderView(arg); return edit(chat, msgId, v.text, v.markup); }
+  if (ns === "model" && action === "delkey") {
+    // Delete a provider's API key → sessions fall back to OAuth/subscription, which
+    // stops Claude Code's "do you want to use this API key?" prompt (breaks autonomy).
+    const res = await omega(["config", "set", `${arg}.api_key`, ""]);
+    const ok = /^\[\+\] Set/m.test(res);
+    const v = await modelProviderView(arg, ` ${ok ? "🗑 ✅" : "⚠️"} <b>${esc(arg)}</b> API key ${ok ? "deleted — sessions now use OAuth/subscription (autonomous, no prompt)." : "delete failed: " + esc(res.slice(0, 80))}`);
+    return edit(chat, msgId, v.text, v.markup);
+  }
   if (ns === "model" && action === "set") {
     // arg = "provider:model" — model may contain "/" (openrouter ids), never ":".
     const i = arg.indexOf(":"); const provider = arg.slice(0, i); const model = arg.slice(i + 1);
