@@ -1841,24 +1841,6 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::RemoveProject { name } => {
-                    let mut registry = omega_core::project_manager::ProjectRegistry::load();
-                    if registry.remove(&name) {
-                        match registry.save() {
-                            Ok(()) => {
-                                app.refresh_projects();
-                                app.status_message =
-                                    Some(format!("[+] Removed project '{}' from the registry", name));
-                            }
-                            Err(e) => {
-                                app.status_message =
-                                    Some(format!("Removed '{}' but save failed: {}", name, e));
-                            }
-                        }
-                    } else {
-                        app.status_message = Some(format!("Project '{}' not found", name));
-                    }
-                }
                 Action::ToggleProjectTelegram { name } => {
                     // Flip the per-project Telegram toggle in the shared registry.
                     // The next `/sync` reconciles the forum topic (creates when ON,
@@ -1887,12 +1869,13 @@ async fn run_tui_loop(
                         app.status_message = Some(format!("Project '{}' not found", name));
                     }
                 }
-                Action::HardDeleteProject { name } => {
-                    // Delete local machine: delegate to the bot's one-shot CLI (the ONE
-                    // canonical deletion impl) so the Telegram topic, dashboard agent,
-                    // agent-bot and registry are cleaned the same way as the bot's own
-                    // delete — plus kill the oracle + rm -rf the local folder (scope
-                    // "local"). GitHub is kept.
+                Action::DeleteProjectTier { name, mode } => {
+                    // The SAME three escalating tiers as the Telegram delete menu,
+                    // executed through the bot's one-shot CLI — ONE canonical
+                    // deletion impl across every surface (TUI / Telegram / CLI):
+                    //   omega → unmanage (topic + dashboard agent + agent-bot + registry)
+                    //   local → that + kill oracle + rm -rf the local folder
+                    //   all   → that + delete the GitHub repo (irreversible)
                     let omega_dir = std::env::var("OMEGA_DIR").unwrap_or_else(|_| {
                         format!(
                             "{}/.omega",
@@ -1900,22 +1883,27 @@ async fn run_tui_loop(
                         )
                     });
                     let bot = format!("{}/telegram-bot/omega-tg-bot.ts", omega_dir);
-                    app.status_message = Some(format!("Deleting '{}' (local machine)…", name));
+                    let label = match mode {
+                        "all" => "all (+ GitHub)",
+                        "local" => "local machine",
+                        _ => "OmegaOS view",
+                    };
+                    app.status_message = Some(format!("Deleting '{}' ({})…", name, label));
                     let out = std::process::Command::new("bun")
-                        .args([&bot, "project-delete", &name, "local"])
+                        .args([bot.as_str(), "project-delete", name.as_str(), mode])
                         .output();
                     app.refresh_projects();
                     match out {
                         Ok(o) => {
                             let txt = String::from_utf8_lossy(&o.stdout);
-                            let last = txt.lines().last().unwrap_or("done").trim();
+                            let last = txt.lines().last().unwrap_or("done").trim().to_string();
                             app.status_message =
-                                Some(format!("[x] Deleted '{}' (local machine) — {}", name, last));
+                                Some(format!("[x] Deleted '{}' ({}) — {}", name, label, last));
                         }
                         Err(e) => {
                             app.status_message = Some(format!(
-                                "Deleted from registry but cleanup failed (bun): {} — run `bun {} project-delete {} local`",
-                                e, bot, name
+                                "Delete failed to launch (bun): {} — run `bun {} project-delete {} {}`",
+                                e, bot, name, mode
                             ));
                         }
                     }
@@ -3916,6 +3904,14 @@ fn cmd_progress(
                 osignal.duration_secs =
                     (osignal.finished_at - osignal.started_at).num_seconds().max(0) as u64;
                 osignal.write(&config.state_dir)?;
+                // The 1-min notifier cron may have already reported the transient
+                // Pending state and written its per-path .notified marker — without
+                // invalidating it, the corrected done_clean would NEVER be sent and
+                // the operator's record would permanently say "mission incomplète".
+                omega_core::done::OracleDoneSignal::invalidate_notified(
+                    &config.state_dir,
+                    session,
+                );
                 println!("[+] L4 gate satisfied - done upgraded to done_clean, auto-closing session");
                 if let Ok(exe) = std::env::current_exe() {
                     // Session names are sanitized to [A-Za-z0-9._-] (no shell

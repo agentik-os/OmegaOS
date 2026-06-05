@@ -109,6 +109,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::SelectModel(..) => {
             draw_model_picker(frame, app);
         }
+        InputMode::ProjectDelete(..) => {
+            draw_project_delete_picker(frame, app);
+        }
         InputMode::NewProjectCredGroup(..) => {
             let groups = omega_core::provisioning::list_groups().join(", ");
             draw_simple_input_modal(
@@ -263,6 +266,53 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
             .borders(Borders::ALL)
             .title(format!(" Select {} — ↑/↓, Enter, Esc ", config_key))
             .border_style(Style::default().fg(Color::Cyan)),
+    );
+    frame.render_widget(list, area);
+}
+
+/// Project delete menu — the SAME three escalating tiers as the Telegram bot
+/// (omega → local → all), as a visible arrow-key overlay. ↑/↓ or 1/2/3, Enter,
+/// Esc. Destructive → red border, explicit consequences per tier.
+fn draw_project_delete_picker(frame: &mut Frame, app: &App) {
+    let (name, sel): (&str, usize) = match &app.input_mode {
+        InputMode::ProjectDelete(name, sel) => (name.as_str(), *sel),
+        _ => return,
+    };
+    let options = [
+        "1. Remove from OmegaOS — topic + dashboard agent + agent-bot + registry (folder & GitHub kept)",
+        "2. Delete local machine — that + kill oracle + DELETE the local folder (GitHub kept)",
+        "3. Delete ALL (+ GitHub) — that + DELETE the GitHub repo (nothing remains)",
+        "   Cancel",
+    ];
+    let area = centered_rect(80, 30, frame.area());
+    frame.render_widget(Clear, area);
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let danger = matches!(i, 1 | 2);
+            let style = if i == sel {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(if danger { Color::Red } else { Color::Cyan })
+                    .add_modifier(Modifier::BOLD)
+            } else if danger {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if i == sel { "▶" } else { " " };
+            ListItem::new(Line::from(vec![
+                Span::styled(prefix.to_string(), Style::default().fg(Color::Red)),
+                Span::styled(format!(" {} ", opt), style),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" 🗑 Delete {} — ↑/↓ or 1/2/3, Enter, Esc ", name))
+            .border_style(Style::default().fg(Color::Red)),
     );
     frame.render_widget(list, area);
 }
@@ -1867,6 +1917,39 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
 
+    // ── Actions — every project feature, VISIBLE (Telegram-menu parity). ──
+    let tg_on = project.telegram_enabled();
+    lines.push(Line::from(Span::styled(
+        "  ── Actions ──",
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(vec![
+        Span::styled("    Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("open the project in a terminal"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    T     ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(format!(
+            "Telegram topic: {} — toggle {}",
+            if tg_on { "🔔 ON" } else { "🔕 OFF" },
+            if tg_on { "OFF" } else { "ON" },
+        )),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    x     ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("delete… (menu: 1 OmegaOS · 2 + local folder · 3 + GitHub)"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    D     ", Style::default().fg(Color::Red)),
+        Span::raw("quick delete local machine (press twice)"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("    n     ", Style::default().fg(Color::Green)),
+        Span::raw("add another project"),
+    ]));
+
+    lines.push(Line::from(""));
+
     // Planner status (if .planner/tracker.json exists)
     let tracker = omega_core::planner::PlanTracker::load(&project.path);
     if let Some(ref tracker) = tracker {
@@ -2880,6 +2963,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             InputMode::SelectModel(..) => {
                 ("Select model — ↑/↓, Enter, Esc", String::new())
+            }
+            InputMode::ProjectDelete(..) => {
+                ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())
             }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);

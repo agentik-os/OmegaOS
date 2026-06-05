@@ -86,7 +86,10 @@ pub enum Action {
     /// (reuses `project_manager::add_existing_project`).
     RegisterProject { path: String },
     /// Projects tab: remove a project from the registry (two-press confirmed).
-    RemoveProject { name: String },
+    /// Delete a project at one of the three Telegram-parity tiers:
+    /// mode = "omega" (unmanage), "local" (+ folder), "all" (+ GitHub repo).
+    /// Runs the bot's one-shot CLI — the ONE canonical deletion impl.
+    DeleteProjectTier { name: String, mode: &'static str },
     /// Projects tab: flip the selected project's Telegram toggle (topic sync +
     /// Atlas bot visibility). Writes `ManagedProject.telegram`; the next `/sync`
     /// reconciles the forum topic (creates when ON, removes when OFF).
@@ -94,7 +97,6 @@ pub enum Action {
     /// Projects tab: "Delete forever" (two-press confirmed) — runs the canonical
     /// deletion (Telegram topic + dashboard agent + agent-bot + registry + the
     /// local folder) via the bot's one-shot CLI so there is ONE implementation.
-    HardDeleteProject { name: String },
     /// Monitor → Project group: persist the Telegram supergroup id
     /// (`TelegramGroupConfig`). The manual fallback to the bot's auto-detect.
     GroupSetupCommit { group_id: i64 },
@@ -663,6 +665,40 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
             })
         }
+        InputMode::ProjectDelete(name, sel) => {
+            const COUNT: usize = 4; // 3 tiers + cancel
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::ProjectDelete(name, (sel + 1) % COUNT);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { COUNT - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::ProjectDelete(name, next);
+                    Action::None
+                }
+                // Digit shortcuts mirror the Telegram buttons (1️⃣/2️⃣/3️⃣).
+                KeyCode::Char('1') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "omega" } }
+                KeyCode::Char('2') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "local" } }
+                KeyCode::Char('3') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "all" } }
+                KeyCode::Enter => {
+                    app.input_mode = InputMode::Normal;
+                    match sel {
+                        0 => Action::DeleteProjectTier { name, mode: "omega" },
+                        1 => Action::DeleteProjectTier { name, mode: "local" },
+                        2 => Action::DeleteProjectTier { name, mode: "all" },
+                        _ => { app.status_message = Some("Cancelled".to_string()); Action::None }
+                    }
+                }
+                _ => Action::None,
+            }
+        }
+
         InputMode::SelectModel(config_key, options, sel) => {
             let count = options.len().max(1);
             match key.code {
@@ -1246,22 +1282,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 _ => Action::None,
             }
         }
-        // Projects tab: 'x' removes the selected project (two-press confirm).
-        // First press arms it for that name; second 'x' on the same name fires.
+        // Projects tab: 'x' opens the DELETE menu — the same three escalating
+        // tiers as the Telegram bot (visible options, no hidden hotkey-guessing).
         KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
-                    if app.project_confirm_pending.as_deref() == Some(name.as_str()) {
-                        app.project_confirm_pending = None;
-                        Action::RemoveProject { name }
-                    } else {
-                        app.project_confirm_pending = Some(name.clone());
-                        app.status_message = Some(format!(
-                            "Press x again to remove '{}' (Esc to cancel)",
-                            name
-                        ));
-                        Action::None
-                    }
+                    app.input_mode = InputMode::ProjectDelete(name, 0);
+                    Action::None
                 }
                 None => {
                     app.status_message = Some("No project selected".to_string());
@@ -1269,8 +1296,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
         }
-        // Projects tab: 'T' toggles the selected project's Telegram visibility
-        // (topic sync + Atlas bot). Marked 🔕 in the list when OFF.
         KeyCode::Char('T') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => Action::ToggleProjectTelegram { name },
@@ -1288,7 +1313,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Some(name) => {
                     if app.project_delete_pending.as_deref() == Some(name.as_str()) {
                         app.project_delete_pending = None;
-                        Action::HardDeleteProject { name }
+                        Action::DeleteProjectTier { name, mode: "local" }
                     } else {
                         app.project_delete_pending = Some(name.clone());
                         app.status_message = Some(format!(

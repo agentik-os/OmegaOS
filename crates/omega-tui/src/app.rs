@@ -71,6 +71,11 @@ pub enum InputMode {
     /// the shared `ProjectRegistry` — the SAME source the Telegram dispatch
     /// picker uses — so the added-projects list stays in sync across surfaces.
     DispatchProject(Vec<String>, usize),
+    /// Project delete menu (Agentic → Projects 'x') — the SAME three escalating
+    /// tiers as the Telegram bot's delete menu (omega → local → all), executed
+    /// through the bot's one-shot CLI (one canonical deletion impl).
+    /// Holds (project name, selected index).
+    ProjectDelete(String, usize),
     DispatchMission(String),
     /// Renaming an existing session — holds the original name.
     RenameSession(String),
