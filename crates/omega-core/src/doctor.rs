@@ -148,15 +148,18 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 3. Doctrine integrity (6 Laws + 20 operational rules).
+    // 3. Doctrine integrity (6 Laws + 21 operational rules — R-PDF added
+    // 2026-06-05; bump EXPECTED_OPS whenever rules.rs ships a new rule).
+    const EXPECTED_LAWS: usize = 6;
+    const EXPECTED_OPS: usize = 21;
     let laws = crate::rules::laws().len();
     let ops = crate::rules::operational_rules().len();
-    if laws == 6 && ops == 20 {
+    if laws == EXPECTED_LAWS && ops == EXPECTED_OPS {
         checks.push(Check::ok("doctrine", format!("{} Laws + {} Rules", laws, ops)));
     } else {
         checks.push(Check::warn(
             "doctrine",
-            format!("{} Laws + {} Rules (expected 6 + 20)", laws, ops),
+            format!("{} Laws + {} Rules (expected {} + {})", laws, ops, EXPECTED_LAWS, EXPECTED_OPS),
         ));
     }
 
