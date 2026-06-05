@@ -164,21 +164,21 @@ impl Agent {
             // on PATH). A node-less box was why these "Enter → install" actions
             // appeared to do nothing.
             Agent::Glm => Some(
-                "if command -v npm >/dev/null 2>&1; then npm install -g @anthropic-ai/claude-code; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @anthropic-ai/claude-code; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @anthropic-ai/claude-code; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @anthropic-ai/claude-code; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Claude => Some(
                 "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
             ),
             Agent::Codex => Some(
-                "if command -v npm >/dev/null 2>&1; then npm install -g @openai/codex; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @openai/codex; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @openai/codex; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @openai/codex; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Gemini => Some(
-                "if command -v npm >/dev/null 2>&1; then npm install -g @google/gemini-cli; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @google/gemini-cli; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @google/gemini-cli; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @google/gemini-cli; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             // Pi: install the npm package directly (the curl|sh installer runs a
             // TTY animation that fails in a non-interactive pane → `pi` never landed).
             Agent::Pi => Some(
-                "if command -v npm >/dev/null 2>&1; then npm install -g @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @earendil-works/pi-coding-agent; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @earendil-works/pi-coding-agent; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
             ),
             Agent::Hermes => Some(
                 "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
@@ -197,8 +197,8 @@ impl Agent {
             // OmegaOS itself installs into it). Uninstalling the CLI must not wipe
             // the user's whole config. Config can be removed by hand if desired.
             Agent::Claude => Some("rm -f \"$(command -v claude)\""),
-            Agent::Codex => Some("npm uninstall -g @openai/codex"),
-            Agent::Gemini => Some("npm uninstall -g @google/gemini-cli"),
+            Agent::Codex => Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @openai/codex"),
+            Agent::Gemini => Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @google/gemini-cli"),
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
@@ -299,7 +299,7 @@ impl Agent {
         // dispatched oracle drops to a bare shell instead of running its mission.
         // Prepend the user bin dirs so every launched agent + tool always resolves.
         let env_prefix = format!(
-            "export PATH=\"{home}/.local/bin:{home}/.bun/bin:$PATH\"; {}",
+            "export PATH=\"{home}/.local/bin:{home}/.bun/bin:{home}/.npm-global/bin:$PATH\"; {}",
             self.provider_env_prefix(&providers),
             home = home
         );
@@ -566,7 +566,10 @@ impl Agent {
             // `bash -c` panes that omit ~/.local/bin) — fall back to canonical
             // install locations so doctor doesn't falsely report "claude not on PATH".
             Agent::Claude => claude_available(&home),
-            Agent::Codex => has_cmd("codex"),
+            Agent::Codex => {
+                has_cmd("codex")
+                    || std::path::Path::new(&format!("{}/.npm-global/bin/codex", home)).exists()
+            }
             Agent::Gemini => {
                 has_cmd("gemini")
                     || std::path::Path::new(&format!("{}/.npm-global/bin/gemini", home)).exists()
@@ -574,6 +577,7 @@ impl Agent {
             Agent::Pi => {
                 has_cmd("pi")
                     || std::path::Path::new(&format!("{}/.local/bin/pi", home)).exists()
+                    || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
             }
             Agent::Hermes => has_cmd("hermes"),
             // GLM runs on the Claude Code binary (redirected at launch) — available
@@ -600,6 +604,7 @@ fn claude_available(home: &str) -> bool {
     has_cmd("claude")
         || std::path::Path::new(&format!("{}/.local/bin/claude", home)).exists()
         || std::path::Path::new(&format!("{}/.claude/local/claude", home)).exists()
+        || std::path::Path::new(&format!("{}/.npm-global/bin/claude", home)).exists()
 }
 
 fn shell_quote(s: &str) -> String {

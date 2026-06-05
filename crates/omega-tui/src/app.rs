@@ -388,6 +388,30 @@ impl SettingsField {
     }
 }
 
+/// Build the effort field: a fixed arrow-key Select over the levels the agent
+/// CLI actually accepts (`--effort low|medium|high|xhigh|max` — agents.rs). A
+/// saved custom/legacy value is prepended so it stays visible until replaced.
+fn effort_field(config_key: &str, current: &str) -> SettingsField {
+    let mut options: Vec<String> = ["low", "medium", "high", "xhigh", "max"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let current_index = match options.iter().position(|e| e == current) {
+        Some(i) => i,
+        None if current.is_empty() => 2, // default suggestion: high
+        None => {
+            options.insert(0, current.to_string());
+            0
+        }
+    };
+    SettingsField::Select {
+        label: "Effort".to_string(),
+        config_key: config_key.to_string(),
+        options,
+        current_index,
+    }
+}
+
 /// Build a model field for a provider. When the provider has a known model
 /// list (`providers::models_for`), this is an arrow-key Select (NO typing);
 /// otherwise it falls back to a free-text field so providers without a curated
@@ -502,12 +526,9 @@ pub fn fields_for_section(
         SettingsSection::Claude => {
             let c = &providers.claude;
             out.push(model_field("claude", "claude.model", &c.model));
-            out.push(SettingsField::EditText {
-                label: "Effort (low/medium/high/max)".to_string(),
-                config_key: "claude.effort".to_string(),
-                current_value: c.effort.clone(),
-                masked: false,
-            });
+            // Effort = arrow-key Select (NO typing): free text let invalid values
+            // through (e.g. "Ultra"); the CLI only accepts these five levels.
+            out.push(effort_field("claude.effort", &c.effort));
             out.push(SettingsField::EditText {
                 label: "Anthropic API key".to_string(),
                 config_key: "claude.api_key".to_string(),
