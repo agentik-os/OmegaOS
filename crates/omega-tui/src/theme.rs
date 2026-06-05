@@ -270,6 +270,47 @@ const PAPER: Theme = Theme {
 )
 };
 
+/// Transparent Dark — NO painted background: the terminal's own bg (and any
+/// transparency/blur it has) shows through. White-ink mono chrome — Noir's
+/// hierarchy, for dark or translucent terminal backgrounds.
+const TRANSPARENT_DARK: Theme = Theme {
+    bg: None,
+    text: Color::Rgb(220, 220, 220),
+    ..mk(
+    Color::White,
+    Color::White,              // accent2 — separators / selected-field bg pop above the 220 text
+    Color::Rgb(235, 235, 235), // success — actives brighter than body text
+    Color::Rgb(255, 255, 255),
+    Color::Rgb(255, 165, 0),   // warn — the one non-gray: blocked must read at a glance
+    Color::Rgb(170, 170, 170),
+    Color::Rgb(215, 215, 215),
+    Color::Rgb(120, 120, 120),
+    Color::Rgb(90, 90, 90),
+    Color::White,
+    Color::Black,
+)
+};
+
+/// Transparent Light — NO painted background, black-ink mono chrome —
+/// Paper's hierarchy, for light terminal backgrounds.
+const TRANSPARENT_LIGHT: Theme = Theme {
+    bg: None,
+    text: Color::Rgb(20, 20, 20),
+    ..mk(
+    Color::Rgb(20, 20, 20),
+    Color::Rgb(0, 0, 0),       // accent2 — separators / selected-field bg: pure ink
+    Color::Rgb(30, 30, 30),    // success — actives darker than body ink
+    Color::Rgb(0, 0, 0),
+    Color::Rgb(150, 75, 0),    // warn — burnt orange, legible on a light bg
+    Color::Rgb(90, 90, 90),
+    Color::Rgb(60, 60, 60),
+    Color::Rgb(112, 112, 112),
+    Color::Rgb(141, 141, 141),
+    Color::Rgb(0, 0, 0),
+    Color::Rgb(255, 255, 255),
+)
+};
+
 /// Monogram — the original: mono chrome + cyan.
 const MONOGRAM: Theme = mono(
     Color::Rgb(0, 255, 255),
@@ -383,6 +424,8 @@ pub enum ThemeId {
     Synthwave = 12,
     Ocean = 13,
     Crimson = 14,
+    TransparentDark = 15,
+    TransparentLight = 16,
 }
 
 impl ThemeId {
@@ -403,6 +446,8 @@ impl ThemeId {
             ThemeId::Synthwave,
             ThemeId::Ocean,
             ThemeId::Crimson,
+            ThemeId::TransparentDark,
+            ThemeId::TransparentLight,
         ]
     }
 
@@ -424,6 +469,8 @@ impl ThemeId {
             ThemeId::Synthwave => "synthwave",
             ThemeId::Ocean => "ocean",
             ThemeId::Crimson => "crimson",
+            ThemeId::TransparentDark => "transparent-dark",
+            ThemeId::TransparentLight => "transparent-light",
         }
     }
 
@@ -444,6 +491,8 @@ impl ThemeId {
             ThemeId::Synthwave => "Synthwave",
             ThemeId::Ocean => "Ocean",
             ThemeId::Crimson => "Crimson",
+            ThemeId::TransparentDark => "Transparent Dark",
+            ThemeId::TransparentLight => "Transparent Light",
         }
     }
 
@@ -464,6 +513,8 @@ impl ThemeId {
             ThemeId::Synthwave => "Mono chrome + neon pink",
             ThemeId::Ocean => "Mono chrome + deep sea blue",
             ThemeId::Crimson => "Mono chrome + alert red",
+            ThemeId::TransparentDark => "No painted bg, white ink: the terminal transparency shows",
+            ThemeId::TransparentLight => "No painted bg, black ink for light terminals",
         }
     }
 
@@ -484,6 +535,8 @@ impl ThemeId {
             ThemeId::Synthwave => &SYNTHWAVE,
             ThemeId::Ocean => &OCEAN,
             ThemeId::Crimson => &CRIMSON,
+            ThemeId::TransparentDark => &TRANSPARENT_DARK,
+            ThemeId::TransparentLight => &TRANSPARENT_LIGHT,
         }
     }
 
@@ -605,8 +658,8 @@ mod tests {
     }
 
     #[test]
-    fn fifteen_themes() {
-        assert_eq!(ThemeId::all().len(), 15);
+    fn seventeen_themes() {
+        assert_eq!(ThemeId::all().len(), 17);
     }
 
     // ── WCAG 2.x contrast contract ──────────────────────────────────────────
@@ -678,12 +731,20 @@ mod tests {
     fn contrast_contract() {
         for id in ThemeId::all() {
             let t = id.palette();
-            let Some(bg) = t.bg else {
+            let bg = match t.bg {
+                Some(bg) => bg,
                 // Omega is exempt: bg = None and its roles are named ANSI
                 // colors that adapt to the terminal's own palette — there is
-                // no fixed luminance to audit.
-                assert_eq!(*id, ThemeId::Omega, "only Omega may skip the contract");
-                continue;
+                // no fixed luminance to audit. The transparent themes also
+                // paint no bg but their inks are fixed RGB, so they are
+                // audited against the terminal background they are DESIGNED
+                // for (dark → black, light → white).
+                None => match *id {
+                    ThemeId::Omega => continue,
+                    ThemeId::TransparentDark => Color::Rgb(0, 0, 0),
+                    ThemeId::TransparentLight => Color::Rgb(255, 255, 255),
+                    other => panic!("{other:?}: bg-less theme needs an assumed audit bg"),
+                },
             };
             let vs_bg = |c: Color| contrast_ratio(c, bg);
             let check = |role: &str, c: Color, min: f64| {
@@ -731,7 +792,13 @@ mod tests {
             // state than the active accent, not just clear the bg (the axis
             // that let 'Amber warn ≡ accent' ship green). Noir and Paper are
             // exempt — mono by design, the badge glyphs (+ ~ x !) carry state.
-            if !matches!(*id, ThemeId::Noir | ThemeId::Paper) {
+            if !matches!(
+                *id,
+                ThemeId::Noir
+                    | ThemeId::Paper
+                    | ThemeId::TransparentDark
+                    | ThemeId::TransparentLight
+            ) {
                 let dw = delta_e76(t.warn, t.accent);
                 assert!(
                     dw >= 30.0,

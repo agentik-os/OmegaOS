@@ -22,9 +22,11 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   body text. Omega stays 100% named ANSI — warn included, an adaptive light
   red — so it keeps inheriting the terminal's own palette. Documented in
   `docs/THEMES.md`.
-- TUI theme selector (Settings → Theme): 15 selectable palettes — Omega
+- TUI theme selector (Settings → Theme): 17 selectable palettes — Omega
   (default), Matrix, Terminal, Amber, Noir, Paper, Monogram, Dracula, Nord,
-  Gruvbox, Solarized Dark, Tokyo Night, Synthwave, Ocean, Crimson. Every
+  Gruvbox, Solarized Dark, Tokyo Night, Synthwave, Ocean, Crimson, plus
+  Transparent Dark/Light (no painted background — the terminal's own bg and
+  transparency show through, with fixed white/black ink). Every
   theme except Omega paints its own full-screen background and text color
   and follows the "Monogram model": a quiet grayscale chrome plus ONE
   signature accent per theme (Matrix green, Dracula purple, neon pink, …);

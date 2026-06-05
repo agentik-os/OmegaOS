@@ -19,7 +19,8 @@
 # TUI color theme — pick interactively in the TUI (Settings → Theme, with live
 # preview) or set the slug here. One of: omega (default), matrix, terminal,
 # amber, noir, paper, monogram, dracula, nord, gruvbox, solarized, tokyo-night,
-# synthwave, ocean, crimson. Unknown slugs fall back to omega.
+# synthwave, ocean, crimson, transparent-dark, transparent-light. Unknown slugs
+# fall back to omega.
 # theme = "omega"
 
 # On-screen clock timezone (IANA name). A headless VPS usually runs in UTC, so

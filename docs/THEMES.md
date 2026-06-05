@@ -5,7 +5,7 @@
 > **Esc** reverts to what you had. The list scroll-follows your cursor, so
 > it stays usable even on a 24-row terminal.
 
-The TUI ships 15 palettes. Your choice persists in `~/.omega/config.toml`:
+The TUI ships 17 palettes. Your choice persists in `~/.omega/config.toml`:
 
 ```toml
 [general]
@@ -17,7 +17,7 @@ in the TUI goes through semantic roles, never raw color literals.
 
 ---
 
-## The 15 themes
+## The 17 themes
 
 | Slug | Label | Identity | Best for |
 |---|---|---|---|
@@ -36,10 +36,16 @@ in the TUI goes through semantic roles, never raw color literals.
 | `synthwave` | Synthwave | `#FF71CE` neon pink on `#1A0B2E` | Dark terminals |
 | `ocean` | Ocean | `#00AAFF` azure on `#0A1928` | Dark terminals |
 | `crimson` | Crimson | `#FF4655` red on `#1A0508` | Dark terminals |
+| `transparent-dark` | Transparent Dark | White-ink grayscale, **no painted background** — your terminal's bg (and its transparency/blur) shows through | Dark / translucent terminals |
+| `transparent-light` | Transparent Light | Black-ink grayscale, **no painted background** | **Light terminals** |
 
-Every theme except Omega paints its own full-screen background and text color,
-so the TUI looks the same regardless of what your terminal is set to. Omega is
-deliberately the opposite — see [Omega adapts to you](#omega-adapts-to-you).
+Every theme except Omega and the two Transparent variants paints its own
+full-screen background and text color, so the TUI looks the same regardless of
+what your terminal is set to. Omega is deliberately the opposite — see
+[Omega adapts to you](#omega-adapts-to-you) — and the Transparent pair keeps
+your terminal's background (including any transparency/blur) under fixed
+white/black ink; their contrast contract is audited against the background
+they are designed for (black / white).
 
 ---
 
