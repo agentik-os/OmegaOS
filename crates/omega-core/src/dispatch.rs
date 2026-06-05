@@ -561,7 +561,11 @@ impl Dispatcher {
             // session instead of mutating the crashed original. The base
             // --session-id is the SAME persisted UUID (resolve_session_id reuses
             // state.session_id), so the fork derives from the right lineage.
-            opts.permission_mode = Some("auto".to_string());
+            // A resurrected oracle is AUTONOMOUS exactly like a fresh dispatch
+            // (None → --dangerously-skip-permissions): never gate on the operator.
+            // ("auto" used to prompt on risky ops — the exact friction the operator
+            // rejects: every OmegaOS session must run fully bypass-permissions.)
+            opts.permission_mode = None;
             opts.exclude_dynamic_prompt_sections = true;
             opts.fork_session = true;
             opts.session_id = Some(resolve_session_id(

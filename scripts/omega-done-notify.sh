@@ -129,13 +129,14 @@ ${body}"
 
 ${foot}"
 
-    # Route (3 levels): a mapped project TOPIC → hub+thread; else the ATLAS topic
-    # (reports with no project, e.g. OmegaOS-self) → hub+atlas; else the operator DM.
+    # Route (2 levels): a mapped project TOPIC → hub+thread; else the operator DM.
+    # NEVER the Atlas topic — Atlas is discussion + briefing only, never mission
+    # reports (operator doctrine: alerts/tracking/reports live in their own topics,
+    # Atlas stays a clean conversation channel). An unmapped-project report
+    # (e2etest, OmegaOS-self before its topic existed) goes to the DM, not Atlas.
     thread="$(topic_for "$PROJECT")"
     if [ -n "$thread" ] && [ -n "${HUB:-}" ]; then
         target="$HUB"; via="topic ${thread}"
-    elif [ -n "${ATLAS:-}" ] && [ -n "${HUB:-}" ]; then
-        target="$HUB"; thread="$ATLAS"; via="Atlas (${ATLAS})"
     else
         target="$DM"; thread=""; via="DM"
     fi

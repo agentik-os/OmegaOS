@@ -3158,10 +3158,12 @@ async fn cmd_spawn_worker(
 
     // Per-role LaunchOptions for the WORKER (Claude only — other providers
     // ignore the Claude-only fields). A worker is a hermetic, trusted executor:
-    //   * permission-mode "acceptEdits" — auto-accept file edits (it owns its
-    //     scoped files) instead of blanket --dangerously-skip-permissions.
-    //   * disallowed_tools — deny the destructive/irreversible ops a worker must
-    //     never run autonomously (git push, rm, sudo). Oracles keep full access.
+    //   * permission-mode "bypassPermissions" — never prompt the operator (every
+    //     OmegaOS session runs fully autonomous; "acceptEdits" still gated on Bash
+    //     and stalled hermetic workers waiting for an answer no one gives).
+    //   * disallowed_tools — the real safety rail (orthogonal to permission mode,
+    //     a hard deny that survives bypass): the destructive/irreversible ops a
+    //     worker must never run (git push, rm, sudo). Oracles keep full access.
     //   * mcp_config + --strict-mcp-config — ONLY the OmegaOS MCP servers, no
     //     user/project .mcp.json (hermetic).
     //   * NO --bare — bare mode skips OAuth credential loading in Claude Code
@@ -3170,7 +3172,7 @@ async fn cmd_spawn_worker(
         .unwrap_or(omega_core::agents::Agent::Claude);
     let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
         let mut opts = omega_core::agents::LaunchOptions::default();
-        opts.permission_mode = Some("acceptEdits".to_string());
+        opts.permission_mode = Some("bypassPermissions".to_string());
         opts.disallowed_tools = Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string());
         // NOT bare: --bare skips OAuth credential loading in Claude Code >= 2.1.x
         // (runtime-verified 2026-06-05: `claude --bare --print` -> "Not logged in"
