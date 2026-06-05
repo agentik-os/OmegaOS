@@ -106,8 +106,23 @@ try:
         'rateLimitTier': 'default_claude_max_20x'
     }}
 
-    with open('$CREDENTIALS', 'w') as f:
+    # Atomic write through the symlink chain: open('w') on the credentials
+    # path truncated the SHARED target in place — a concurrent reader saw a
+    # 0-byte file and 401'd into "Please run /login". Stage a temp next to
+    # the resolved target (mode preserved), then os.replace (rename(2)) so
+    # readers always see the old-or-new complete file.
+    import os
+    target = os.path.realpath('$CREDENTIALS')
+    mode = 0o600
+    try:
+        mode = os.stat(target).st_mode & 0o777
+    except OSError:
+        pass
+    tmp = target + '.oauth.tmp'
+    with open(tmp, 'w') as f:
         json.dump(creds, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, target)
 
     email = resp.get('account', {}).get('email_address', 'unknown')
     expires_min = resp['expires_in'] // 60
@@ -173,8 +188,22 @@ try:
         creds['claudeAiOauth']['refreshToken'] = resp['refresh_token']
     creds['claudeAiOauth']['expiresAt'] = int(time.time() * 1000) + resp['expires_in'] * 1000
 
-    with open('$CREDENTIALS', 'w') as f:
+    # Atomic write through the symlink chain (see `exchange`): never truncate
+    # the shared target in place — temp next to the resolved target, mode
+    # preserved, then os.replace. The cron try-refresh rotates the refresh
+    # token; a torn write here would strand every session on a dead token.
+    import os
+    target = os.path.realpath('$CREDENTIALS')
+    mode = 0o600
+    try:
+        mode = os.stat(target).st_mode & 0o777
+    except OSError:
+        pass
+    tmp = target + '.oauth.tmp'
+    with open(tmp, 'w') as f:
         json.dump(creds, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, target)
 
     print(json.dumps({'ok': True, 'expires_min': resp['expires_in'] // 60}))
 except Exception as e:
