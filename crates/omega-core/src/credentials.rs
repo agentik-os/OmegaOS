@@ -207,7 +207,23 @@ impl CredentialStore {
                         )
                     })?;
                 } else {
-                    // Both exist — keep canonical, back up + remove legacy.
+                    // Both exist. The legacy real file is what the CLI just
+                    // wrote — Claude's atomic /login and token-rotation writes
+                    // replace the symlink with a regular file holding the
+                    // FRESHEST tokens. The old behavior (back up + discard
+                    // legacy, keep canonical) threw away the only copy of the
+                    // rotated refresh token: the canonical kept a consumed one,
+                    // the next refresh failed, and every session 401'd into
+                    // "Please run /login". Adopt the fresher legacy content
+                    // into the canonical's resolved target first, THEN back up
+                    // + remove legacy.
+                    adopt_fresher_legacy(&legacy, &canonical).with_context(|| {
+                        format!(
+                            "adopting fresher legacy creds {} into {}",
+                            legacy.display(),
+                            canonical.display()
+                        )
+                    })?;
                     let backup = legacy.with_extension("json.pre-omega");
                     let _ = std::fs::rename(&legacy, &backup);
                 }
@@ -233,6 +249,56 @@ impl CredentialStore {
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
+}
+
+/// Both the legacy path (a real file the CLI just wrote) and the canonical
+/// store exist. Copy the legacy content into the canonical's RESOLVED target
+/// when it is valid JSON and at least as fresh (mtime) as the target — atomic
+/// temp+rename in the target's directory, preserving the target's mode (e.g.
+/// 0660 group-shared on multi-user hosts), never clobbering the
+/// canonical→shared symlink chain. A stale or corrupt legacy file (e.g. a
+/// truncated write) is skipped: the caller backs it up without adoption.
+/// On error the caller must leave the legacy file in place — it may hold the
+/// only copy of the freshest rotated refresh token.
+fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
+    let bytes = std::fs::read(legacy)
+        .with_context(|| format!("reading {}", legacy.display()))?;
+    // Corrupt/truncated legacy must never clobber a good canonical.
+    if serde_json::from_slice::<Value>(&bytes).is_err() {
+        return Ok(());
+    }
+    let target = std::fs::canonicalize(canonical).unwrap_or_else(|_| canonical.to_path_buf());
+    // Freshness: the CLI's write is newer-or-equal → adopt. An older legacy
+    // (e.g. a stray leftover) must not roll the canonical back.
+    let legacy_mtime = std::fs::metadata(legacy).and_then(|m| m.modified()).ok();
+    let target_mtime = std::fs::metadata(&target).and_then(|m| m.modified()).ok();
+    if let (Some(l), Some(t)) = (legacy_mtime, target_mtime) {
+        if l < t {
+            return Ok(());
+        }
+    }
+    let staged = target.with_extension("json.adopt.tmp");
+    let _ = std::fs::remove_file(&staged); // clear any stale temp
+    std::fs::write(&staged, &bytes)
+        .with_context(|| format!("writing {}", staged.display()))?;
+    // Preserve the target's existing mode (0660 group-shared on multi-user
+    // hosts); fall back to owner-only. chmod the TEMP we own, never the
+    // target (which may be root-owned → EPERM), then rename(2) — readers
+    // always see the old-or-new complete file, never a truncated one.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target)
+            .map(|m| m.permissions().mode() & 0o777)
+            .unwrap_or(0o600);
+        let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode));
+    }
+    if let Err(e) = std::fs::rename(&staged, &target) {
+        let _ = std::fs::remove_file(&staged); // don't leak the temp
+        return Err(e)
+            .with_context(|| format!("renaming {} -> {}", staged.display(), target.display()));
+    }
+    Ok(())
 }
 
 /// Map a provider id to the legacy path its CLI expects.
@@ -386,6 +452,60 @@ mod tests {
         // legacy should now be a symlink
         let meta = std::fs::symlink_metadata(&legacy).unwrap();
         assert!(meta.file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_legacy_adopts_fresher_real_file_through_symlink_chain() {
+        // Prod shape: canonical claude.json is itself a symlink to a shared
+        // file. Claude's atomic /login replaced the legacy symlink with a real
+        // file holding FRESH tokens. ensure_legacy_symlink must push that
+        // content into the shared target (through the chain, keeping the
+        // canonical symlink intact) instead of discarding it — discarding was
+        // the root cause of the recurring "Please run /login" 401 loop.
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _env) = fresh_store(tmp.path());
+        // shared file with OLD creds + canonical symlink pointing at it
+        let shared = tmp.path().join("shared-credentials.json");
+        std::fs::write(&shared, "{\"claudeAiOauth\":{\"refreshToken\":\"OLD\"}}").unwrap();
+        let canonical = store.active_path("claude");
+        std::os::unix::fs::symlink(&shared, &canonical).unwrap();
+        // legacy real file with FRESH creds (what Claude just wrote)
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let legacy = tmp.path().join(".claude").join(".credentials.json");
+        std::fs::write(&legacy, "{\"claudeAiOauth\":{\"refreshToken\":\"FRESH\"}}").unwrap();
+
+        store.ensure_legacy_symlink("claude").unwrap();
+
+        // shared target adopted the fresh content
+        let shared_content = std::fs::read_to_string(&shared).unwrap();
+        assert!(shared_content.contains("FRESH"), "shared must hold the fresh token, got: {shared_content}");
+        // canonical→shared symlink untouched
+        assert!(std::fs::symlink_metadata(&canonical).unwrap().file_type().is_symlink());
+        // legacy is a symlink again, and a backup of the real file exists
+        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+        assert!(legacy.with_extension("json.pre-omega").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_legacy_skips_corrupt_legacy_file() {
+        // A truncated/corrupt legacy file must never clobber good canonical
+        // creds — it gets backed up and re-linked, canonical stays intact.
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _env) = fresh_store(tmp.path());
+        store
+            .write("claude", &json!({"claudeAiOauth": {"refreshToken": "GOOD"}}))
+            .unwrap();
+        std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        let legacy = tmp.path().join(".claude").join(".credentials.json");
+        std::fs::write(&legacy, "not-json{{{").unwrap();
+
+        store.ensure_legacy_symlink("claude").unwrap();
+
+        let canonical_content = std::fs::read_to_string(store.active_path("claude")).unwrap();
+        assert!(canonical_content.contains("GOOD"), "canonical must keep good creds, got: {canonical_content}");
+        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
     }
 
     #[test]
