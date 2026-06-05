@@ -2073,7 +2073,7 @@ fn render_settings_detail(
     // Top hint
     if detail_active {
         lines.push(Line::from(Span::styled(
-            "  ↑/↓ navigate · Enter activates · Tab → back to list",
+            "  ↑/↓ navigate · Enter activates · x clear field (2×) · Tab → back to list",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )));
     } else {
