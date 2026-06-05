@@ -49,6 +49,21 @@ use ratatui::{
 // the agent's own pane content, never re-skinned.
 use crate::theme as th;
 
+/// Global breathing room around the whole UI — some terminals render cell
+/// (0,0) flush against the window edge, which looks cramped. The theme
+/// background still paints the FULL frame, so the margin shows the theme's
+/// canvas (or the terminal's own bg for Omega/Transparent). Skipped on tiny
+/// terminals where every row counts.
+fn padded(area: Rect) -> Rect {
+    if area.width < 70 || area.height < 20 {
+        return area;
+    }
+    area.inner(ratatui::layout::Margin {
+        horizontal: 2,
+        vertical: 1,
+    })
+}
+
 pub fn draw(frame: &mut Frame, app: &mut App) {
     // Theme background: paint the whole frame first so every widget sits on
     // the active theme's canvas (None = keep the terminal's own background).
@@ -70,7 +85,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(padded(frame.area()));
 
     draw_tabs(frame, app, chunks[0]);
 
