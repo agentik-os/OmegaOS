@@ -703,7 +703,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "tg-link" | "oracle-prompt" | "whitelist-id"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "tg-link" | "oracle-prompt"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -1154,8 +1154,9 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   // serve a VPS-controlling bot without a whitelist) — if present, we don't re-ask.
   if (ns === "proj" && action === "botlink") {
     if (ALLOW.length === 0) {
-      setPending(from, "whitelist-id", arg);
-      return edit(chat, msgId, card("WHITELIST FIRST", ` 🔒 No operator user id is whitelisted yet. For safety (this bot controls the VPS), send your <b>numeric Telegram user id</b> to whitelist before linking a bot.`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+      // Structurally unreachable (the bot refuses to serve with an empty allow-list),
+      // but kept as a guard: never wire a VPS-controlling bot without a whitelist.
+      return edit(chat, msgId, card("WHITELIST FIRST", ` 🔒 No operator user id is whitelisted. For safety (this bot controls the VPS), set <code>allow_user_ids=[&lt;your_id&gt;]</code> in <code>${esc(TG_TOML)}</code>, then try again.`), kb([[{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
     }
     setPending(from, "tg-link", arg);
     return edit(chat, msgId, card("LINK A TELEGRAM BOT", ` 🔗 <b>${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send its <b>token</b> here (<code>123456:ABC…</code>).\n\n🔒 It will be <b>whitelisted to you alone</b> (id ${esc(ALLOW.join(", "))}) — nobody else can use it. Talking to it = addressing this project's oracle, scoped to it.`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
@@ -1444,6 +1445,30 @@ async function main() {
           const [c, ...a] = text.slice(1).split(/\s+/); const cmd = c.split("@")[0].toLowerCase();
           if (cmd === "setupgroup") await cmdSetupGroup(chat, chatId, thread);
           else if (cmd === "sync") await cmdSync(chatId, thread);
+          // /delete [name] — delete a project. In a project's topic, no name = THIS
+          // project. Opens the soft/full/forever options menu (same as the bot menu).
+          else if (cmd === "delete" || cmd === "del") {
+            const topicProj = thread ? loadGroups().topics?.[String(thread)] : undefined;
+            const target = a[0] || (topicProj && topicProj !== "atlas" ? topicProj : undefined);
+            if (!target) await send(chatId, "Usage: <code>/delete &lt;project&gt;</code> (or run it inside a project's topic).", undefined, thread);
+            else { const m = projDeleteMenu(target); await send(chatId, m.text, m.markup, thread); }
+          }
+          // /topic [name] on|off — flip a project's Telegram toggle (topic sync +
+          // Atlas display). In a topic, `/topic off` targets THIS project.
+          else if (cmd === "topic") {
+            const topicProj = thread ? loadGroups().topics?.[String(thread)] : undefined;
+            const st = (a.find(x => /^(on|off)$/i.test(x)) || "").toLowerCase();
+            const nameArg = a.find(x => !/^(on|off)$/i.test(x));
+            const target = nameArg || (topicProj && topicProj !== "atlas" ? topicProj : undefined);
+            if (!target || !st) await send(chatId, "Usage: <code>/topic &lt;project&gt; on|off</code> (or <code>/topic on|off</code> inside its topic).", undefined, thread);
+            else if (!setProjectTelegram(target, st === "on")) await send(chatId, `Project “${esc(target)}” not found.`, undefined, thread);
+            else {
+              let note = "";
+              if (st === "off") { const r = await removeProjectTopic(target); note = r === "deleted" ? " Topic removed." : ""; }
+              else note = " Run <code>/sync</code> to (re)create its topic.";
+              await send(chatId, `<b>${st === "on" ? "🔔" : "🔕"} ${esc(target)} — Telegram ${st.toUpperCase()}.</b>${note}`, undefined, thread);
+            }
+          }
           else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; await send(chatId, pre(`dispatch → ${p}`, await omega(["dispatch", p, m.join(" ")])), undefined, thread); }
           else if (KNOWN.has(cmd)) { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
           else {
@@ -1472,4 +1497,31 @@ async function main() {
     }
   }
 }
-main();
+
+// ── One-shot CLI mode ────────────────────────────────────────────────────────
+// So the OmegaOS TUI / `omega` CLI drive the SAME deletion + toggle code (one
+// canonical impl). Loads the token if present so the Telegram topic can be
+// removed; degrades gracefully (topic step skipped) if no token is configured.
+//   bun omega-tg-bot.ts project-delete   <name> <soft|full|forever>
+//   bun omega-tg-bot.ts project-telegram <name> <on|off>
+const ARGV = process.argv.slice(2);
+const stripHtml = (s: string) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+if (ARGV[0] === "project-delete") {
+  loadConfig();
+  const name = ARGV[1] || "";
+  const mode = (["soft", "full", "forever"].includes(ARGV[2]) ? ARGV[2] : "soft") as "soft" | "full" | "forever";
+  if (!name) { console.error("usage: project-delete <name> <soft|full|forever>"); process.exit(2); }
+  deleteProject(name, mode).then(r => { console.log(stripHtml(r)); process.exit(0); }).catch(e => { console.error(e?.message || e); process.exit(1); });
+} else if (ARGV[0] === "project-telegram") {
+  loadConfig();
+  const name = ARGV[1] || "";
+  const on = ARGV[2] !== "off";
+  if (!name) { console.error("usage: project-telegram <name> <on|off>"); process.exit(2); }
+  if (!setProjectTelegram(name, on)) { console.error(`project not found: ${name}`); process.exit(1); }
+  (on ? Promise.resolve("none" as const) : removeProjectTopic(name)).then(r => {
+    console.log(`Telegram ${on ? "ON" : "OFF"} for ${name}${r === "deleted" ? " (topic removed)" : ""}`);
+    process.exit(0);
+  });
+} else {
+  main();
+}
