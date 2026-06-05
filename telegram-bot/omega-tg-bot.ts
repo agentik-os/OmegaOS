@@ -1577,6 +1577,16 @@ async function main() {
   await refreshCommands();
   await tg("deleteWebhook", { drop_pending_updates: false });
   await resolvePublicIP();
+  // Resurrect every registered per-project agent bot (agent-bots.json) — the
+  // units live in ~/.config/systemd/user which a fresh install does NOT ship,
+  // so after reinstall + `omega backup` restore the dedicated bots would stay
+  // dead until each was re-linked by hand. spawnAgentBot is idempotent
+  // (rewrites the unit, daemon-reload, enable --now), so this is a no-op when
+  // everything is already running.
+  for (const id of Object.keys(loadAgentBots())) {
+    const r = spawnAgentBot(id);
+    if (r !== "ok") console.log(`agent-bot resurrect ${id}: ${r}`);
+  }
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json reports
