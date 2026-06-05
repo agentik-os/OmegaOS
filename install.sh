@@ -594,6 +594,14 @@ if [[ -f "$STUCK_SRC" ]]; then
     ok "Stuck-oracle alert installed: $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh"
 fi
 
+for hs in omega-atlas-brief omega-clean-projects; do
+    if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
+        cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"
+        ln -sf "$OMEGA_DIR/bin/$hs.sh" "$INSTALL_DIR/$hs" 2>/dev/null || true
+    fi
+done
+[[ -f "$OMEGA_DIR/bin/omega-atlas-brief.sh" ]] && ok "Atlas briefing + project cleaner installed"
+
 # Install the self-heal daemon (cron → `omega doctor --fix`; alerts Telegram if
 # warnings remain so the operator can tap /status → Fix it). Keeps the system
 # green unattended (duplicate pollers, dead bot service, stale cache, oauth).
@@ -947,6 +955,7 @@ USAGE_CRON="*/10 * * * * $INSTALL_DIR/omega usage --check >> $OMEGA_DIR/logs/ome
 TOKREFRESH_CRON="*/30 * * * * $OMEGA_DIR/bin/omega-token-refresh.sh >> $OMEGA_DIR/logs/omega-token-refresh.log 2>&1   # OMEGA-CRON-TOKEN-REFRESH-v1"
 DONENOTIFY_CRON="* * * * * $OMEGA_DIR/bin/omega-done-notify.sh >> $OMEGA_DIR/logs/omega-done-notify.log 2>&1   # OMEGA-CRON-DONE-NOTIFY-v1"
 STUCK_CRON="* * * * * $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh >> $OMEGA_DIR/logs/omega-stuck-alert.log 2>&1   # OMEGA-CRON-STUCK-ALERT-v1"
+BRIEF_CRON="0 8 * * * $OMEGA_DIR/bin/omega-atlas-brief.sh >> $OMEGA_DIR/logs/omega-atlas-brief.log 2>&1   # OMEGA-CRON-ATLAS-BRIEF-v1"
 SELFHEAL_CRON="0 */3 * * * $OMEGA_DIR/bin/omega-self-heal.sh >> $OMEGA_DIR/logs/omega-self-heal.log 2>&1   # OMEGA-CRON-SELFHEAL-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
@@ -978,6 +987,12 @@ if command -v crontab >/dev/null 2>&1; then
     elif [[ -f "$OMEGA_DIR/bin/omega-stuck-oracle-alert.sh" ]]; then
         ( crontab -l 2>/dev/null; echo "$STUCK_CRON" ) | crontab -
         ok "Stuck-oracle alert scheduled (every minute)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-ATLAS-BRIEF-v1"; then
+        ok "Atlas briefing already scheduled"
+    elif [[ -f "$OMEGA_DIR/bin/omega-atlas-brief.sh" ]]; then
+        ( crontab -l 2>/dev/null; echo "$BRIEF_CRON" ) | crontab -
+        ok "Atlas briefing scheduled (daily 08:00 UTC)"
     fi
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-SELFHEAL-v1"; then
         ok "Self-heal daemon already scheduled"

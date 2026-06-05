@@ -500,6 +500,24 @@ impl Dispatcher {
             god_mode = %god_mode,
             "Oracle dispatched"
         );
+        // AUDIT JOURNAL: record the dispatch under ~/.omega/audit/<project>/ (best-effort).
+        {
+            let dir = self.config.state_dir.parent().map(|p| p.join("audit").join(project));
+            if let Some(dir) = dir {
+                let _ = std::fs::create_dir_all(&dir);
+                let line = format!(
+                    "{{\"ts\":\"{}\",\"event\":\"dispatch\",\"oracle\":\"{}\",\"complexity\":\"{:?}\",\"mission\":{}}}\n",
+                    chrono::Utc::now().to_rfc3339(),
+                    oracle_name,
+                    decision.complexity,
+                    serde_json::to_string(&mission.chars().take(500).collect::<String>()).unwrap_or_else(|_| "\"\"".into()),
+                );
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("audit.jsonl")) {
+                    let _ = f.write_all(line.as_bytes());
+                }
+            }
+        }
         Ok(oracle_name)
     }
 
