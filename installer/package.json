@@ -1,6 +1,6 @@
 {
   "name": "omega-os",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "One-command installer for OmegaOS — the agentic terminal OS (rmux + AI orchestration). Run: npx omega-os",
   "bin": {
     "omega-os": "bin/omega-os.js"
