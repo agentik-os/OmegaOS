@@ -57,6 +57,16 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   ASCII convention. Telegram messages keep their emoji.
 
 ### Fixed
+- Pasting very long text (≳8 KB, e.g. 10k characters) into an attached rmux
+  client corrupted the paste: rmux pin bumped `726d9e7` → `4455da0`, whose
+  stateful `PasteFilter` keeps a paste spanning several client `read()`
+  bursts ONE bracketed block. Previously the per-burst heuristic re-wrapped
+  the middle bursts of a host-bracketed paste (the synthetic `201~` closed
+  the paste early — the rest went in raw and every embedded newline submitted
+  as Enter), and split an unbracketed (SSH/Termius) paste into several
+  `[Pasted text]` blocks. Runtime A/B proven with a 10,200-byte paste
+  recorded off the pane PTY: old = 2-3 corrupted blocks with an injected
+  `\r` at the read boundary, new = 1 block, body intact byte-for-byte.
 - Telegram bot never ran on macOS: the service install was systemd-only, so
   `omega telegram setup` wrote the config but every message went unanswered.
   `install.sh` now installs a launchd LaunchAgent on Darwin

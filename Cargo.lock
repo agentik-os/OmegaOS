@@ -431,7 +431,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -994,7 +994,7 @@ dependencies = [
 
 [[package]]
 name = "omega"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1018,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "omega-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1039,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "omega-tui"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1282,7 +1282,7 @@ dependencies = [
 [[package]]
 name = "ratatui-rmux"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "ratatui",
  "rmux-sdk",
@@ -1394,7 +1394,7 @@ dependencies = [
 [[package]]
 name = "rmux-ipc"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "libc",
  "rmux-os",
@@ -1407,7 +1407,7 @@ dependencies = [
 [[package]]
 name = "rmux-os"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "libc",
  "rmux-types",
@@ -1418,7 +1418,7 @@ dependencies = [
 [[package]]
 name = "rmux-proto"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "bincode",
  "rmux-types",
@@ -1429,7 +1429,7 @@ dependencies = [
 [[package]]
 name = "rmux-sdk"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "libc",
  "regex",
@@ -1446,7 +1446,7 @@ dependencies = [
 [[package]]
 name = "rmux-types"
 version = "0.3.1"
-source = "git+https://github.com/agentik-os/rmux?rev=726d9e7#726d9e7f64cf166ecf4792d04e22148401bcf1b0"
+source = "git+https://github.com/agentik-os/rmux?rev=4455da0#4455da08123642eb6477abf4f4dfaf663c2f4f6e"
 dependencies = [
  "serde",
 ]
@@ -1489,7 +1489,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1789,7 +1789,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

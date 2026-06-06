@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/agentik-os/OmegaOS"
@@ -16,9 +16,9 @@ repository = "https://github.com/agentik-os/OmegaOS"
 omega-core = { path = "crates/omega-core" }
 omega-tui = { path = "crates/omega-tui" }
 
-rmux-sdk = { git = "https://github.com/agentik-os/rmux", rev = "726d9e7", features = ["regex"] }
-rmux-proto = { git = "https://github.com/agentik-os/rmux", rev = "726d9e7" }
-ratatui-rmux = { git = "https://github.com/agentik-os/rmux", rev = "726d9e7" }
+rmux-sdk = { git = "https://github.com/agentik-os/rmux", rev = "4455da0", features = ["regex"] }
+rmux-proto = { git = "https://github.com/agentik-os/rmux", rev = "4455da0" }
+ratatui-rmux = { git = "https://github.com/agentik-os/rmux", rev = "4455da0" }
 
 tokio = { version = "1.48", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
