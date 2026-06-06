@@ -35,14 +35,41 @@ RMUX_REPO="https://github.com/agentik-os/rmux"
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
 info()  { echo -e "${CYAN}[INFO]${NC} $*"; }
 ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}==> $*${NC}"; }
+
+# Privileged command runner — the ONE way this script touches sudo. Tries
+# passwordless `sudo -n` first; if sudo wants a password AND a real terminal is
+# attached (stdin + stderr are TTYs — i.e. NOT hidden behind the npx animation),
+# falls back to ONE visible interactive prompt (the pre-1.5 behavior; sudo
+# caches the timestamp so later calls stay silent). Headless with no cached
+# credential → explicit, actionable error + rc 1, so each caller decides:
+# required steps abort with context, optional steps degrade. Never an invisible
+# hang, never a silent errexit death.
+omega_sudo() {
+    if [[ "$(id -u)" -eq 0 ]]; then "$@"; return; fi
+    if ! command -v sudo >/dev/null 2>&1; then
+        err "Privilege needed for '$1' but sudo is not installed — re-run as root or install sudo first."
+        return 1
+    fi
+    if sudo -n true 2>/dev/null; then
+        sudo -n "$@"; return
+    fi
+    if [[ -t 0 && -t 2 ]]; then
+        info "sudo needs your password (for: $*)"
+        sudo "$@"; return
+    fi
+    err "sudo needs a password and no TTY is available — run 'sudo -v' first, or rerun in a terminal. (skipped: sudo $*)"
+    return 1
+}
 
 # ─── Phase 1: Environment Detection ──────────────────────────────────────────
 
@@ -91,25 +118,26 @@ bootstrap_os_packages() {
         return 0
     fi
     info "Installing runtime prerequisites: ${need[*]}"
-    # sudo MUST be non-interactive (-n): the npx wrapper runs install.sh behind a
-    # full-screen animation, so a password prompt would be INVISIBLE and the
-    # install would hang forever (proven: macOS stuck at 20%). A failed sudo -n
-    # surfaces as a clear error below instead of a silent freeze.
-    local SUDO=""
-    [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
+    # Privileged installs go through omega_sudo (top of file): passwordless when
+    # cached, ONE visible prompt when a terminal is attached, and an explicit
+    # error when headless. Every branch records failure in pkg_rc so a failed
+    # bootstrap can NEVER fall through to the "ok" line below (the old
+    # `sudo -n … && …` apt list survived errexit and printed a false ok; the
+    # single-command dnf/yum/pacman/apk branches died with no message at all).
+    local pkg_rc=0
     if command -v apt-get >/dev/null 2>&1; then
-        $SUDO apt-get update -qq && $SUDO apt-get install -y curl git ca-certificates rsync jq
+        { omega_sudo apt-get update -qq && omega_sudo apt-get install -y curl git ca-certificates rsync jq; } || pkg_rc=$?
     elif command -v dnf >/dev/null 2>&1; then
-        $SUDO dnf install -y curl git ca-certificates rsync jq
+        omega_sudo dnf install -y curl git ca-certificates rsync jq || pkg_rc=$?
     elif command -v yum >/dev/null 2>&1; then
-        $SUDO yum install -y curl git ca-certificates rsync jq
+        omega_sudo yum install -y curl git ca-certificates rsync jq || pkg_rc=$?
     elif command -v pacman >/dev/null 2>&1; then
-        $SUDO pacman -Sy --noconfirm curl git ca-certificates rsync jq
+        omega_sudo pacman -Sy --noconfirm curl git ca-certificates rsync jq || pkg_rc=$?
     elif command -v apk >/dev/null 2>&1; then
-        $SUDO apk add --no-cache curl git ca-certificates rsync jq
+        omega_sudo apk add --no-cache curl git ca-certificates rsync jq || pkg_rc=$?
     elif command -v brew >/dev/null 2>&1; then
         # macOS with Homebrew. brew is non-interactive and must not run as root.
-        brew install "${need[@]}"
+        brew install "${need[@]}" || pkg_rc=$?
     elif [[ "$(uname -s)" == "Darwin" ]]; then
         # macOS without Homebrew: git/curl are hard requirements (ship with the
         # Xcode Command Line Tools); rsync/jq only degrade optional features
@@ -129,6 +157,10 @@ bootstrap_os_packages() {
         err "Install these manually, then re-run ./install.sh: ${need[*]}"
         exit 1
     fi
+    if [[ $pkg_rc -ne 0 ]]; then
+        err "Runtime prerequisite install failed (${need[*]}) — fix the sudo/package error above, then re-run ./install.sh"
+        exit 1
+    fi
     ok "Runtime prerequisites installed"
 }
 bootstrap_os_packages
@@ -143,13 +175,28 @@ ensure_build_toolchain() {
         ok "Build toolchain present (cc + pkg-config)"
     else
         info "Installing build toolchain (compiling from source)..."
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
-        if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get update -qq && $SUDO apt-get install -y build-essential pkg-config
-        elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y gcc gcc-c++ make pkgconf-pkg-config
-        elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y gcc gcc-c++ make pkgconfig
-        elif command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm base-devel pkgconf
-        elif command -v apk     >/dev/null 2>&1; then $SUDO apk add --no-cache build-base pkgconf
+        local tc_rc=0
+        if   command -v apt-get >/dev/null 2>&1; then { omega_sudo apt-get update -qq && omega_sudo apt-get install -y build-essential pkg-config; } || tc_rc=$?
+        elif command -v dnf     >/dev/null 2>&1; then omega_sudo dnf install -y gcc gcc-c++ make pkgconf-pkg-config || tc_rc=$?
+        elif command -v yum     >/dev/null 2>&1; then omega_sudo yum install -y gcc gcc-c++ make pkgconfig || tc_rc=$?
+        elif command -v pacman  >/dev/null 2>&1; then omega_sudo pacman -Sy --noconfirm base-devel pkgconf || tc_rc=$?
+        elif command -v apk     >/dev/null 2>&1; then omega_sudo apk add --no-cache build-base pkgconf || tc_rc=$?
+        elif [[ "$OS" == "Darwin" ]]; then
+            # macOS source build (e.g. Intel — no prebuilt asset in the release):
+            # pkg-config comes from Homebrew (mirrors bootstrap_os_packages' brew
+            # handling — non-interactive, never root); cc ships with the Xcode
+            # Command Line Tools, which a working brew already implies.
+            if command -v brew >/dev/null 2>&1; then
+                brew install pkg-config || tc_rc=$?
+            else
+                err "macOS source build needs Homebrew for pkg-config — install it from https://brew.sh, then re-run ./install.sh"
+                exit 1
+            fi
         else err "No supported package manager for the build toolchain — install a C compiler + pkg-config, then re-run."; exit 1
+        fi
+        if [[ $tc_rc -ne 0 ]]; then
+            err "Build toolchain install failed — fix the error above (or install a C compiler + pkg-config manually), then re-run ./install.sh"
+            exit 1
         fi
         ok "Build toolchain installed"
     fi
@@ -173,12 +220,14 @@ ensure_build_toolchain() {
 # build requirement). Connect with: mosh <host> -- rmux attach
 install_mosh_optional() {
     command -v mosh-server >/dev/null 2>&1 && { ok "mosh present (low-latency SSH available)"; return 0; }
-    local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
-    if   command -v apt-get >/dev/null 2>&1; then $SUDO apt-get install -y mosh 2>/dev/null
-    elif command -v dnf     >/dev/null 2>&1; then $SUDO dnf install -y mosh 2>/dev/null
-    elif command -v yum     >/dev/null 2>&1; then $SUDO yum install -y mosh 2>/dev/null
-    elif command -v pacman  >/dev/null 2>&1; then $SUDO pacman -Sy --noconfirm mosh 2>/dev/null
-    elif command -v apk     >/dev/null 2>&1; then $SUDO apk add --no-cache mosh 2>/dev/null
+    # Genuinely optional: ANY failure (sudo, package manager, missing package)
+    # degrades to an info line — the old bare `$SUDO … 2>/dev/null` statements
+    # killed the WHOLE install under errexit AND hid the only diagnostic.
+    if   command -v apt-get >/dev/null 2>&1; then omega_sudo apt-get install -y mosh || info "mosh skipped (sudo unavailable)"
+    elif command -v dnf     >/dev/null 2>&1; then omega_sudo dnf install -y mosh || info "mosh skipped (sudo unavailable)"
+    elif command -v yum     >/dev/null 2>&1; then omega_sudo yum install -y mosh || info "mosh skipped (sudo unavailable)"
+    elif command -v pacman  >/dev/null 2>&1; then omega_sudo pacman -Sy --noconfirm mosh || info "mosh skipped (sudo unavailable)"
+    elif command -v apk     >/dev/null 2>&1; then omega_sudo apk add --no-cache mosh || info "mosh skipped (sudo unavailable)"
     fi
     command -v mosh-server >/dev/null 2>&1 \
         && ok "mosh installed — connect with 'mosh <host> -- rmux attach' for lag-free typing/streaming" \
@@ -198,18 +247,17 @@ ensure_utf8_locale() {
     # infinite hang at ~20% (proven on a real Mac install). Nothing to do here.
     if [[ "$(uname -s)" == "Darwin" ]]; then ok "UTF-8 locale native (macOS)"; return 0; fi
     if locale -a 2>/dev/null | grep -qiE 'en_US\.utf-?8'; then ok "UTF-8 locale present (en_US.UTF-8)"; else
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
         # Every command here is best-effort: on a minimal image the `locales`
         # package (and its en_US source) may be absent, so locale-gen/localedef
         # can fail. Under `set -euo pipefail` an unguarded failure would ABORT
         # the whole install (proven in a clean ubuntu:24.04 container) — so each
         # is `|| true`. A missing UTF-8 locale degrades to C.UTF-8, never fatal.
         if command -v locale-gen >/dev/null 2>&1; then
-            $SUDO sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
-            grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo 'en_US.UTF-8 UTF-8' | $SUDO tee -a /etc/locale.gen >/dev/null 2>&1 || true
-            $SUDO locale-gen 2>/dev/null || true
+            omega_sudo sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen 2>/dev/null || true
+            grep -q '^en_US.UTF-8 UTF-8' /etc/locale.gen 2>/dev/null || echo 'en_US.UTF-8 UTF-8' | omega_sudo tee -a /etc/locale.gen >/dev/null 2>&1 || true
+            omega_sudo locale-gen 2>/dev/null || true
         elif command -v localedef >/dev/null 2>&1; then
-            $SUDO localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || true
+            omega_sudo localedef -i en_US -f UTF-8 en_US.UTF-8 2>/dev/null || true
         fi
         locale -a 2>/dev/null | grep -qiE 'en_US\.utf-?8' \
             && ok "UTF-8 locale generated (en_US.UTF-8)" \
@@ -217,8 +265,7 @@ ensure_utf8_locale() {
     fi
     # Make it the system default so root + future users get UTF-8 without per-shell setup.
     if [[ ! -s /etc/default/locale ]] || ! grep -q 'LANG=.*UTF-8' /etc/default/locale 2>/dev/null; then
-        local SUDO=""; [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1 && SUDO="sudo -n"
-        { echo 'LANG=en_US.UTF-8' | $SUDO tee /etc/default/locale >/dev/null 2>&1 \
+        { echo 'LANG=en_US.UTF-8' | omega_sudo tee /etc/default/locale >/dev/null 2>&1 \
             && ok "System default locale set (LANG=en_US.UTF-8 for all users)"; } || true
     fi
     return 0
@@ -365,6 +412,9 @@ fi
 # Defined here, run BEFORE the long Phase 5. Phase 5 is set -e and ~556 lines;
 # any non-zero command there used to abort the whole install and silently skip
 # the bot. Installing the bot first makes it survive a later abort. Idempotent.
+# TG_BOT_WARN carries a launchd-failed-to-start warning (headless/SSH Mac) into
+# the final summary, where the npx animation can't swallow it.
+TG_BOT_WARN=""
 install_command_bot() {
     [[ -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" ]] || { info "Telegram command bot source not found — skipping"; return 0; }
     loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
@@ -384,7 +434,7 @@ install_command_bot() {
     local BUN_BIN; BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
     if [[ -z "$BUN_BIN" ]]; then
         info "Installing bun (required by the Telegram command bot)…"
-        command -v unzip >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && sudo -n apt-get install -y unzip >/dev/null 2>&1 || true; }
+        command -v unzip >/dev/null 2>&1 || { command -v apt-get >/dev/null 2>&1 && omega_sudo apt-get install -y unzip >/dev/null 2>&1 || true; }
         curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
         [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
         [[ -z "$BUN_BIN" ]] && command -v npm >/dev/null 2>&1 && { npm install -g bun >/dev/null 2>&1 || true; BUN_BIN="$(command -v bun || true)"; }
@@ -420,7 +470,23 @@ EOF
         local LA_DIR="$HOME/Library/LaunchAgents"
         local LA_LABEL="os.omega.tg-bot"
         local LA_PLIST="$LA_DIR/$LA_LABEL.plist"
-        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs"
+        local TG_WRAPPER="$OMEGA_DIR/bin/tg-bot-launch.sh"
+        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
+        # launchd execs a tiny wrapper that resolves bun at RUNTIME: freezing the
+        # install-time $BUN_BIN under KeepAlive=true meant one bun reinstall (new
+        # path) → eternal respawn throttle. The wrapper survives bun moving.
+        cat > "$TG_WRAPPER" <<EOF
+#!/usr/bin/env bash
+# OmegaOS Telegram bot launcher (launchd → here → bun). Resolves bun at
+# runtime so a bun reinstall never bricks the LaunchAgent.
+OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
+done
+echo "tg-bot-launch: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2
+exit 127
+EOF
+        chmod +x "$TG_WRAPPER"
         cat > "$LA_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -429,31 +495,38 @@ EOF
     <key>Label</key><string>$LA_LABEL</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$BUN_BIN</string>
-        <string>$HOME/.omega/telegram-bot/omega-tg-bot.ts</string>
+        <string>$TG_WRAPPER</string>
     </array>
-    <key>WorkingDirectory</key><string>$HOME/.omega/telegram-bot</string>
+    <key>WorkingDirectory</key><string>$OMEGA_DIR/telegram-bot</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>OMEGA_DIR</key><string>$HOME/.omega</string>
+        <key>OMEGA_DIR</key><string>$OMEGA_DIR</string>
         <key>PATH</key><string>$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$HOME/.omega/logs/tg-bot.log</string>
-    <key>StandardErrorPath</key><string>$HOME/.omega/logs/tg-bot.log</string>
+    <key>StandardOutPath</key><string>$OMEGA_DIR/logs/tg-bot.log</string>
+    <key>StandardErrorPath</key><string>$OMEGA_DIR/logs/tg-bot.err.log</string>
 </dict>
 </plist>
 EOF
         # Idempotent (re)load: bootout any old instance, then bootstrap; fall
-        # back to legacy load -w on older macOS.
+        # back to legacy load -w on older macOS. Capture launchctl's stderr —
+        # over SSH with no GUI session `bootstrap gui/$UID` fails, and that
+        # failure must be LOUD (warn + final summary), not a suppressed info
+        # line the npx animation swallows while claiming "Telegram connected".
         launchctl bootout "gui/$(id -u)/$LA_LABEL" 2>/dev/null || true
-        launchctl bootstrap "gui/$(id -u)" "$LA_PLIST" 2>/dev/null \
-            || launchctl load -w "$LA_PLIST" 2>/dev/null || true
+        local LC_OUT=""
+        if ! LC_OUT="$(launchctl bootstrap "gui/$(id -u)" "$LA_PLIST" 2>&1)"; then
+            LC_OUT="$LC_OUT $(launchctl load -w "$LA_PLIST" 2>&1 || true)"
+        fi
         if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
+            TG_BOT_WARN=""
             ok "Telegram command bot installed + running via launchd (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>"
         else
-            info "Telegram command bot shipped but launchd did not start it — run in foreground: omega telegram run  (logs: ~/.omega/logs/tg-bot.log)"
+            TG_BOT_WARN="Telegram bot NOT started: launchd has no GUI session for this user (typical over SSH / headless). After a GUI login, run: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/os.omega.tg-bot.plist — or run it now in the foreground: omega telegram run  (logs: $OMEGA_DIR/logs/tg-bot.err.log)"
+            warn "$TG_BOT_WARN"
+            [[ -n "${LC_OUT// /}" ]] && warn "launchctl said: $LC_OUT" || true
         fi
     else
         info "Telegram command bot shipped, but bun/systemd missing — start later: omega-tg-up <BOT_TOKEN> <USER_ID>"
@@ -1417,6 +1490,12 @@ echo -e "${GREEN}${BOLD}══════════════════�
 echo -e "${GREEN}${BOLD}  OmegaOS v${OMEGA_VERSION} installed successfully!${NC}"
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
 echo ""
+# Surface the headless-Mac launchd failure HERE too: the npx animation swallows
+# mid-install lines, but the final summary is always shown.
+if [[ -n "${TG_BOT_WARN:-}" ]]; then
+    warn "$TG_BOT_WARN"
+    echo ""
+fi
 echo -e "  ${BOLD}Your 5-minute setup — in order:${NC}"
 echo ""
 echo -e "  ${BOLD}0.${NC} Reload your shell:        source $RC_FILE"
