@@ -48,16 +48,25 @@ export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // ============== Claude CLI Path ==============
 
-// Auto-detect from PATH, or use environment override
+// Auto-detect via the canonical chain shared with omega-tg-bot.ts resolveClaude
+// (mirrors omega-core agents.rs claude_available): env override first (legacy
+// CLAUDE_CLI_PATH kept for backward compat, then CLAUDE_BIN; bare names resolve
+// on PATH via Bun.which), then ~/.local/bin/claude, PATH, ~/.claude/local/claude,
+// ~/.npm-global/bin/claude.
 function findClaudeCli(): string {
-  const envPath = process.env.CLAUDE_CLI_PATH;
-  if (envPath) return envPath;
+  const fromEnv = (v: string | undefined) =>
+    v ? (v.includes("/") ? v : Bun.which(v)) : null;
+  const candidates = [
+    fromEnv(process.env.CLAUDE_CLI_PATH),
+    fromEnv(process.env.CLAUDE_BIN),
+    `${HOME}/.local/bin/claude`,
+    Bun.which("claude"),
+    `${HOME}/.claude/local/claude`,
+    `${HOME}/.npm-global/bin/claude`,
+  ];
+  for (const c of candidates) if (c && existsSync(c)) return c;
 
-  // Try to find claude in PATH using Bun.which
-  const whichResult = Bun.which("claude");
-  if (whichResult) return whichResult;
-
-  // Final fallback
+  // Final fallback (legacy default — the spawn error surfaces if it's absent)
   return "/usr/local/bin/claude";
 }
 

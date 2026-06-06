@@ -706,10 +706,15 @@ async function projectOracle(project: string, text: string): Promise<string> {
 // systemd user unit on Linux, launchd LaunchAgent on macOS (no systemd there —
 // mirrors install.sh's os.omega.tg-bot plist, so agent-bots provision on a Mac
 // too). The token lives only in agent-bots.json (mode 600), never in the unit.
+// Both units resolve bun at START time via `sh -c` (same chain as install.sh's
+// tg-bot-launch.sh: PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin) —
+// freezing the provision-time bun path under KeepAlive/Restart=always meant one
+// bun reinstall (new path) → eternal respawn throttle (the F14 class).
+const AGENT_BUN_RESOLVE = (script: string) =>
+  `for c in "$(command -v bun 2>/dev/null)" "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do [ -n "$c" ] && [ -x "$c" ] && exec "$c" ${script}; done; echo "tg-agent: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2; exit 127`;
 const agentSvcLabel = (id: string) => `os.omega.tg-agent-${id}`;
 function spawnAgentBot(agentId: string): string {
   try {
-    const bun = Bun.which("bun") || process.execPath; // runtime-resolved — never a hardcoded /usr/local/bin/bun
     if (process.platform === "darwin") {
       const uid = process.getuid?.() ?? 501;
       const label = agentSvcLabel(agentId);
@@ -723,8 +728,9 @@ function spawnAgentBot(agentId: string): string {
     <key>Label</key><string>${label}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${bun}</string>
-        <string>${OMEGA_DIR}/telegram-bot/omega-tg-bot.ts</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>${AGENT_BUN_RESOLVE(`"${OMEGA_DIR}/telegram-bot/omega-tg-bot.ts"`).replace(/&/g, "&amp;")}</string>
     </array>
     <key>WorkingDirectory</key><string>${OMEGA_DIR}/telegram-bot</string>
     <key>EnvironmentVariables</key>
@@ -760,7 +766,7 @@ Type=simple
 Environment=OMEGA_DIR=%h/.omega
 Environment=OMEGA_AGENT_BOT=${agentId}
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=${bun} %h/.omega/telegram-bot/omega-tg-bot.ts
+ExecStart=/bin/sh -lc '${AGENT_BUN_RESOLVE("%h/.omega/telegram-bot/omega-tg-bot.ts").replace(/\$/g, "$$$$")}'
 Restart=always
 RestartSec=3
 
@@ -1799,7 +1805,7 @@ async function main() {
             const me = `@${botInfo.result?.username || "?"}`;
             await send(chatId, spawn === "ok"
               ? `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`
-              : `<b>⚠️ Bot registered but service down</b>\n${esc(spawn)}\nCheck: <code>systemctl --user status omega-tg-agent-${esc(agentId)}</code>`,
+              : `<b>⚠️ Bot registered but service down</b>\n${esc(spawn)}\nCheck: <code>${process.platform === "darwin" ? `launchctl print gui/${process.getuid?.() ?? 501}/${esc(agentSvcLabel(agentId))}` : `systemctl --user status omega-tg-agent-${esc(agentId)}`}</code>`,
               kb([[{ text: "🤖 Agents", callback_data: "nav:agents" }]]), thread);
             continue;
           }
