@@ -479,7 +479,7 @@ async function deleteProject(name: string, mode: "omega" | "local" | "all"): Pro
   const bots = loadAgentBots();
   if (bots[id] || bots[name]) {
     delete bots[id]; delete bots[name]; saveAgentBots(bots);
-    Bun.spawnSync(["systemctl", "--user", "disable", "--now", `omega-tg-agent-${id}.service`]);
+    teardownAgentBot(id);
     steps.push("🔗 Dedicated agent bot: stopped + removed ✅");
   }
   // 4. Shared registry (TUI menu stops seeing it too)
@@ -599,28 +599,31 @@ function gitMenuKb(name: string) {
 // ── ATLAS: the Telegram brain IS Atlas — the boss the operator
 // talks to. "AISB" is the TEAM (13 Matrix manager agents + one dedicated oracle
 // per project), NOT a name. The Atlas directs them (or acts directly).
-// Claude binary: env override → native-installer path → whatever is on PATH
-// (npm/brew installs land elsewhere, e.g. /opt/homebrew/bin on macOS).
-const CLAUDE = process.env.CLAUDE_BIN || (() => {
-  const local = `${homedir()}/.local/bin/claude`;
-  if (existsSync(local)) return local;
-  try {
-    const p = Bun.spawnSync(["sh", "-c", "command -v claude"]).stdout.toString().trim();
-    if (p) return p;
-  } catch {}
-  return local; // default — master() reports a clear error if it is missing
-})();
-// `timeout` is GNU coreutils: absent on stock macOS (brew installs `gtimeout`).
-// A bare `timeout 900 claude …` there fails with "command not found" → empty
-// stdout → "(Atlas returned nothing)". Resolve a real binary or run unguarded.
-const TIMEOUT_CMD: string[] = (() => {
-  for (const c of ["timeout", "gtimeout"]) {
-    try {
-      if (Bun.spawnSync(["sh", "-c", `command -v ${c}`]).exitCode === 0) return [c, "900"];
-    } catch {}
-  }
-  return [];
-})();
+// Claude binary: resolved LAZILY, per message — install.sh deliberately starts
+// this bot BEFORE claude is installed, so a load-time constant would answer
+// "Claude Code not found" forever until a manual service restart. Resolution
+// order mirrors omega-core agents.rs (claude_available): env CLAUDE_BIN (bare
+// names resolved on PATH via Bun.which), ~/.local/bin/claude, PATH,
+// ~/.claude/local/claude, ~/.npm-global/bin/claude. A successful hit is cached;
+// while unresolved every message retries.
+let CLAUDE_RESOLVED = "";
+function resolveClaude(): string | null {
+  if (CLAUDE_RESOLVED) return CLAUDE_RESOLVED;
+  const envBin = process.env.CLAUDE_BIN;
+  const candidates = [
+    envBin ? (envBin.includes("/") ? envBin : Bun.which(envBin)) : null,
+    `${homedir()}/.local/bin/claude`,
+    Bun.which("claude"),
+    `${homedir()}/.claude/local/claude`,
+    `${homedir()}/.npm-global/bin/claude`,
+  ];
+  for (const c of candidates) if (c && existsSync(c)) return (CLAUDE_RESOLVED = c);
+  return null;
+}
+// `timeout` is GNU coreutils and absent on stock macOS (brew ships `gtimeout`),
+// so the watchdog lives in JS: runClaude kills a stuck `claude -p` after 900s
+// on every platform instead of probing for a platform timeout binary.
+const CLAUDE_TIMEOUT_MS = 900_000;
 let ATLAS_PROMPT = "";
 try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
 catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
@@ -636,26 +639,53 @@ const IDENTITY =
   "'AISB' is your TEAM, not your name: the 13 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia) plus one dedicated oracle per project. " +
   "You DIRECT them — dispatch to the right manager/oracle, or act directly with full VPS control. " +
   "When asked who you are, answer clearly: you are Atlas, directing the AISB team and the project oracles. Speak in the first person as Atlas.\n\n";
+// One funnel for every headless-claude brain call (Atlas + the project oracles):
+// lazy binary resolution, a JS-level 900s watchdog (proc.kill on expiry — portable,
+// unlike GNU `timeout`), captured stdout/stderr, and the shared not-found /
+// empty-output diagnostics. `who` labels the operator-facing messages.
+async function runClaude(text: string, systemPrompt: string, addDir: string, who: string, cwd?: string): Promise<string> {
+  const claude = resolveClaude();
+  if (!claude) {
+    return "Claude Code not found — install + log in on this machine:  omega install claude  then  claude  →  /login";
+  }
+  try {
+    const proc = Bun.spawn([claude, "-p", text, "--append-system-prompt", systemPrompt, "--add-dir", addDir, "--dangerously-skip-permissions"], {
+      cwd, env: { ...process.env, OMEGA_DIR }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
+    });
+    // Race the run against the watchdog instead of awaiting the streams after a
+    // kill: a SIGTERM'd claude can leave a grandchild holding the stdout pipe,
+    // which would block the drain (and the operator's reply) until IT exits.
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const run = (async () => {
+        const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+        await proc.exited;
+        return { out, err };
+      })().catch((e: any) => ({ out: "", err: String(e?.message || e) }));
+      const r = await Promise.race([run, new Promise<null>(res => {
+        watchdog = setTimeout(() => {
+          proc.kill(); // SIGTERM; escalate if it lingers (unref → never holds the loop)
+          setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5_000).unref?.();
+          res(null);
+        }, CLAUDE_TIMEOUT_MS);
+      })]);
+      if (!r) return `(${who}: claude timed out after ${CLAUDE_TIMEOUT_MS / 1000}s and was killed — try again or split the request.)`;
+      const o = r.out.trim();
+      if (o) return o;
+      // Empty stdout = claude failed (not logged in, crashed). Surface the stderr
+      // tail instead of a blind "returned nothing" — diagnosable from the phone.
+      const tail = r.err.trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+      return tail
+        ? `(${who} returned nothing — claude said: ${tail})`
+        : `(${who} returned nothing — try again or use /menu)`;
+    } finally { clearTimeout(watchdog); }
+  } catch (e: any) { return `${who} error: ${e?.message || e}`; }
+}
 async function master(text: string): Promise<string> {
   // Headless Claude AS ATLAS, full VPS control: every tool, whole-FS
   // (--add-dir /), permissions auto-approved. It dispatches to the 13 managers /
-  // project oracles (omega dispatch) or acts directly. timeout guards a stuck run.
-  if (!existsSync(CLAUDE)) {
-    return `Claude Code not found (${CLAUDE}) — install + log in on this machine:  omega install claude  then  claude  →  /login`;
-  }
-  try {
-    const r = await $`${TIMEOUT_CMD} ${CLAUDE} -p ${text} --append-system-prompt ${IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE} --add-dir / --dangerously-skip-permissions`
-      .env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
-    const o = r.stdout.toString().trim();
-    if (o) return o;
-    // Empty stdout = claude failed (not logged in, crashed, timed out). Surface
-    // the stderr tail instead of a blind "returned nothing" — diagnosable from
-    // the phone.
-    const err = r.stderr.toString().trim().split("\n").slice(-3).join(" · ").slice(0, 300);
-    return err
-      ? `(Atlas returned nothing — claude said: ${err})`
-      : "(Atlas returned nothing — try again or use /menu)";
-  } catch (e: any) { return "Atlas error: " + (e?.message || e); }
+  // project oracles (omega dispatch) or acts directly. runClaude guards a stuck run.
+  return runClaude(text, IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE, "/", "Atlas");
 }
 
 // ── Project oracle: an agent-bot's brain. Headless Claude SCOPED to one project —
@@ -669,25 +699,56 @@ async function projectOracle(project: string, text: string): Promise<string> {
     `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 13 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
-  if (!existsSync(CLAUDE)) {
-    return `Claude Code not found (${CLAUDE}) — install + log in on this machine:  omega install claude  then  claude  →  /login`;
-  }
-  try {
-    const r = await $`${TIMEOUT_CMD} ${CLAUDE} -p ${text} --append-system-prompt ${scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE} --add-dir ${dir} --dangerously-skip-permissions`
-      .cwd(dir).env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
-    const o = r.stdout.toString().trim();
-    if (o) return o;
-    const err = r.stderr.toString().trim().split("\n").slice(-3).join(" · ").slice(0, 300);
-    return err
-      ? `(The ${project} oracle returned nothing — claude said: ${err})`
-      : `(The ${project} oracle returned nothing — try again.)`;
-  } catch (e: any) { return `Oracle ${project} error: ${e?.message || e}`; }
+  return runClaude(text, scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE, dir, `The ${project} oracle`, dir);
 }
 
-// Provision a per-agent Telegram bot as its own systemd service (AGENT MODE). The
-// token lives only in agent-bots.json (mode 600), never in the unit file.
+// Provision a per-agent Telegram bot as its own background service (AGENT MODE):
+// systemd user unit on Linux, launchd LaunchAgent on macOS (no systemd there —
+// mirrors install.sh's os.omega.tg-bot plist, so agent-bots provision on a Mac
+// too). The token lives only in agent-bots.json (mode 600), never in the unit.
+const agentSvcLabel = (id: string) => `os.omega.tg-agent-${id}`;
 function spawnAgentBot(agentId: string): string {
   try {
+    const bun = Bun.which("bun") || process.execPath; // runtime-resolved — never a hardcoded /usr/local/bin/bun
+    if (process.platform === "darwin") {
+      const uid = process.getuid?.() ?? 501;
+      const label = agentSvcLabel(agentId);
+      const laDir = `${homedir()}/Library/LaunchAgents`;
+      const plist = `${laDir}/${label}.plist`;
+      Bun.spawnSync(["mkdir", "-p", laDir, `${OMEGA_DIR}/logs`]);
+      writeFileSync(plist, `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>${label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${bun}</string>
+        <string>${OMEGA_DIR}/telegram-bot/omega-tg-bot.ts</string>
+    </array>
+    <key>WorkingDirectory</key><string>${OMEGA_DIR}/telegram-bot</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OMEGA_DIR</key><string>${OMEGA_DIR}</string>
+        <key>OMEGA_AGENT_BOT</key><string>${agentId}</string>
+        <key>PATH</key><string>${homedir()}/.local/bin:${homedir()}/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>${OMEGA_DIR}/logs/tg-agent-${agentId}.log</string>
+    <key>StandardErrorPath</key><string>${OMEGA_DIR}/logs/tg-agent-${agentId}.log</string>
+</dict>
+</plist>
+`);
+      // Idempotent like `enable --now`: bootstrap only when not loaded, then
+      // kickstart (no -k → starts if stopped, leaves a running agent alone).
+      if (Bun.spawnSync(["launchctl", "print", `gui/${uid}/${label}`]).exitCode !== 0) {
+        const boot = Bun.spawnSync(["launchctl", "bootstrap", `gui/${uid}`, plist]);
+        if (boot.exitCode !== 0) return boot.stderr.toString().trim() || "launchctl bootstrap failed";
+      }
+      Bun.spawnSync(["launchctl", "kickstart", `gui/${uid}/${label}`]);
+      return "ok";
+    }
     const sd = `${homedir()}/.config/systemd/user`;
     Bun.spawnSync(["mkdir", "-p", sd]);
     writeFileSync(`${sd}/omega-tg-agent-${agentId}.service`, `[Unit]
@@ -699,7 +760,7 @@ Type=simple
 Environment=OMEGA_DIR=%h/.omega
 Environment=OMEGA_AGENT_BOT=${agentId}
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=/usr/local/bin/bun %h/.omega/telegram-bot/omega-tg-bot.ts
+ExecStart=${bun} %h/.omega/telegram-bot/omega-tg-bot.ts
 Restart=always
 RestartSec=3
 
@@ -710,6 +771,16 @@ WantedBy=default.target
     const r = Bun.spawnSync(["systemctl", "--user", "enable", "--now", `omega-tg-agent-${agentId}.service`]);
     return r.exitCode === 0 ? "ok" : (r.stderr.toString().trim() || "systemctl failed");
   } catch (e: any) { return e?.message || "spawn failed"; }
+}
+// Stop + remove an agent-bot service on either platform (launchd / systemd).
+function teardownAgentBot(id: string) {
+  if (process.platform === "darwin") {
+    const uid = process.getuid?.() ?? 501;
+    Bun.spawnSync(["launchctl", "bootout", `gui/${uid}/${agentSvcLabel(id)}`]);
+    Bun.spawnSync(["rm", "-f", `${homedir()}/Library/LaunchAgents/${agentSvcLabel(id)}.plist`]);
+  } else {
+    Bun.spawnSync(["systemctl", "--user", "disable", "--now", `omega-tg-agent-${id}.service`]);
+  }
 }
 
 // ── Dispatch to a REAL oracle session (the canonical path for project work). A
@@ -1416,7 +1487,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "botunlink") {
     const id = projId(arg);
     const abots = loadAgentBots();
-    if (abots[id] || abots[arg]) { delete abots[id]; delete abots[arg]; saveAgentBots(abots); Bun.spawnSync(["systemctl", "--user", "disable", "--now", `omega-tg-agent-${id}.service`]); }
+    if (abots[id] || abots[arg]) { delete abots[id]; delete abots[arg]; saveAgentBots(abots); teardownAgentBot(id); }
     return edit(chat, msgId, card("DEDICATED BOT", ` 🛑 <b>${esc(arg)}</b> — bot unlinked + stopped ✅`), kb([[{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }, { text: "📋 Projects", callback_data: "nav:projects" }]]));
   }
   if (ns === "proj" && action === "del") { const m = projDeleteMenu(arg); return edit(chat, msgId, m.text, m.markup); }
