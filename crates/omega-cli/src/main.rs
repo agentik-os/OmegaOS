@@ -2685,8 +2685,8 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                     (tok, id)
                 }
                 (Some(_), None, None) => anyhow::bail!(
-                    "missing <chat_id> — usage: omega telegram setup <bot_token> <chat_id>, \
-                     or OMEGA_TG_TOKEN=<token> omega telegram setup <chat_id>"
+                    "missing <chat_id> — usage: OMEGA_TG_TOKEN=<token> omega telegram setup <chat_id>, \
+                     or legacy: omega telegram setup <bot_token> <chat_id>"
                 ),
                 (None, _, Some(_)) => anyhow::bail!(
                     "missing <chat_id> — usage: OMEGA_TG_TOKEN=<token> omega telegram setup <chat_id>"
@@ -2738,7 +2738,7 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                 }
                 None => {
                     println!("Not configured.");
-                    println!("Run: omega telegram setup <BOT_TOKEN> <CHAT_ID> [--user-id 1,2,3]");
+                    println!("Run: OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <CHAT_ID> --user-id <CHAT_ID>");
                 }
             }
             Ok(())
@@ -2936,7 +2936,7 @@ fn cmd_monitor() -> Result<()> {
     println!("─── Omega Telegram ───");
     match tg {
         Some(c) => println!("  Configured: yes (enabled={}, relay={})", c.enabled, c.relay_session),
-        None => println!("  Not configured. Run: omega telegram setup <TOKEN> <CHAT_ID>"),
+        None => println!("  Not configured. Run: OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <CHAT_ID> --user-id <CHAT_ID>"),
     }
     Ok(())
 }
