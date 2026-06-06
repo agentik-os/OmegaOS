@@ -770,7 +770,7 @@ Type=simple
 Environment=OMEGA_DIR=%h/.omega
 Environment=OMEGA_AGENT_BOT=${agentId}
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=/bin/sh -lc '${AGENT_BUN_RESOLVE('"%h/.omega/telegram-bot/omega-tg-bot.ts"').replace(/\$/g, "$$$$")}'
+ExecStart=/bin/sh -c '${AGENT_BUN_RESOLVE('"%h/.omega/telegram-bot/omega-tg-bot.ts"').replace(/\$/g, "$$$$")}'
 Restart=always
 RestartSec=3
 
