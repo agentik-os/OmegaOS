@@ -198,7 +198,7 @@ async function telegramWizard() {
   try {
     const go = await ask('  Set it up now? ' + gray('[Y/n] '));
     if (go === null || /^n/i.test(go)) {
-      process.stdout.write('  ' + gray('Skipped — later: omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+      process.stdout.write('  ' + gray('Skipped — later: OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
       return null;
     }
 
@@ -212,7 +212,7 @@ async function telegramWizard() {
     for (let attempt = 0; attempt < 3 && !token; attempt++) {
       const t = await ask('  Paste the bot token ' + gray('(Enter to skip): '));
       if (!t) {
-        process.stdout.write('  ' + gray('Skipped — later: omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+        process.stdout.write('  ' + gray('Skipped — later: OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
         return null;
       }
       // A space / non-ASCII char in the token used to throw synchronously in
@@ -250,7 +250,7 @@ async function telegramWizard() {
     while (!chatId) {
       const a = await ask('  Press Enter AFTER sending it ' + gray('(or type your numeric id, or "skip"): '));
       if (a === null || /^skip$/i.test(a)) {
-        process.stdout.write('  ' + gray('Skipped — later: omega telegram setup ' + token.slice(0, 8) + '… <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+        process.stdout.write('  ' + gray('Skipped — later: OMEGA_TG_TOKEN=' + token.slice(0, 8) + '… omega telegram setup <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
         return null;
       }
       if (/^-?\d+$/.test(a)) {
@@ -329,7 +329,7 @@ async function telegramWizard() {
 function configureTelegram(tg) {
   if (!tg) return;
   const omegaBin = path.join(os.homedir(), '.local', 'bin', 'omega');
-  const manual = 'omega telegram setup <token> ' + tg.chatId + ' --user-id ' + tg.chatId;
+  const manual = 'OMEGA_TG_TOKEN=<token> omega telegram setup ' + tg.chatId + ' --user-id ' + tg.chatId;
   if (!fs.existsSync(omegaBin)) {
     process.stdout.write('  ' + yel('⚠ omega binary not found — finish Telegram manually: ') + cyan(manual) + '\n\n');
     return;
@@ -371,15 +371,15 @@ function printFailure(dir, code, lastLines, tg) {
   // The wizard's credentials must survive an install failure — don't make the
   // user redo the BotFather dance after fixing the build.
   if (tg) {
-    const setupCmd = 'omega telegram setup ' + tg.token + ' ' + tg.chatId + ' --user-id ' + tg.chatId;
+    const setupCmd = 'OMEGA_TG_TOKEN=' + tg.token + ' omega telegram setup ' + tg.chatId + ' --user-id ' + tg.chatId;
     process.stdout.write('\n  ' + yel('⚠ Your Telegram credentials were collected but NOT applied (install failed).') + '\n');
     process.stdout.write('    ' + gray('Once the install succeeds, run: ') + cyan(setupCmd) + '\n');
     const pendingDir = path.join(os.homedir(), '.omega');
     const pendingPath = path.join(pendingDir, 'pending-telegram.txt');
     try {
       fs.mkdirSync(pendingDir, { recursive: true });
-      const note = '# Discreet alternative: export OMEGA_TG_TOKEN=<token> and run the command\n'
-        + '# without the token argument — keeps it out of `ps` and shell history.\n';
+      const note = '# Run once the install succeeds — the OMEGA_TG_TOKEN env prefix keeps\n'
+        + '# the token out of `ps` output.\n';
       fs.writeFileSync(pendingPath, note + setupCmd + '\n', { mode: 0o600 });
       fs.chmodSync(pendingPath, 0o600); // mode option only applies on create
       process.stdout.write('    ' + gray('Saved to ' + pendingPath + ' (chmod 600).') + '\n');
