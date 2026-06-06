@@ -482,6 +482,15 @@ EOF
 # OmegaOS Telegram bot launcher (launchd → here → bun). Resolves bun at
 # runtime so a bun reinstall never bricks the LaunchAgent.
 OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+# Size-cap log rotation: launchd never rotates StandardOut/ErrPath, so under
+# KeepAlive=true these grow unbounded. Rotate at every launch (KeepAlive
+# restarts make launch-time rotation effective): >5MB → mv to <name>.1,
+# overwriting any previous .1 — worst case ~10MB per stream (live + .1).
+for _log in "\$OMEGA_DIR/logs/tg-bot.log" "\$OMEGA_DIR/logs/tg-bot.err.log"; do
+    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then
+        mv -f "\$_log" "\$_log.1"
+    fi
+done
 for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
     [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
 done
