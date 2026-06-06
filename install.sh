@@ -484,11 +484,15 @@ EOF
 OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
 # Size-cap log rotation: launchd never rotates StandardOut/ErrPath, so under
 # KeepAlive=true these grow unbounded. Rotate at every launch (KeepAlive
-# restarts make launch-time rotation effective): >5MB → mv to <name>.1,
-# overwriting any previous .1 — worst case ~10MB per stream (live + .1).
+# restarts make launch-time rotation effective): >5MB → COPY to <name>.1 then
+# truncate in place (copytruncate). NOT mv: launchd opens these fds at job
+# spawn BEFORE this wrapper runs, so mv re-points the live fds at .1 and the
+# rotating generation streams uncapped there. copytruncate keeps the fds on
+# the truncated original — .1 holds the snapshot at rotation, the live file
+# restarts at 0 and is re-capped at every respawn.
 for _log in "\$OMEGA_DIR/logs/tg-bot.log" "\$OMEGA_DIR/logs/tg-bot.err.log"; do
     if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then
-        mv -f "\$_log" "\$_log.1"
+        cp "\$_log" "\$_log.1" && : > "\$_log"
     fi
 done
 for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do

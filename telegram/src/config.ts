@@ -51,14 +51,19 @@ export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 // Auto-detect via the canonical chain shared with omega-tg-bot.ts resolveClaude
 // (mirrors omega-core agents.rs claude_available): env override first (legacy
 // CLAUDE_CLI_PATH kept for backward compat, then CLAUDE_BIN; bare names resolve
-// on PATH via Bun.which), then ~/.local/bin/claude, PATH, ~/.claude/local/claude,
-// ~/.npm-global/bin/claude.
+// on PATH via Bun.which; an explicit override is returned unconditionally),
+// then ~/.local/bin/claude, PATH, ~/.claude/local/claude, ~/.npm-global/bin/claude.
 function findClaudeCli(): string {
   const fromEnv = (v: string | undefined) =>
     v ? (v.includes("/") ? v : Bun.which(v)) : null;
+  // An explicit override wins UNCONDITIONALLY — even when it points at a
+  // missing path, return it (raw value if a bare name fails to resolve on
+  // PATH) so the spawn error names the misconfigured path. Falling through
+  // to auto-detect would silently run a different binary than the operator
+  // configured.
+  for (const v of [process.env.CLAUDE_CLI_PATH, process.env.CLAUDE_BIN])
+    if (v) return fromEnv(v) ?? v;
   const candidates = [
-    fromEnv(process.env.CLAUDE_CLI_PATH),
-    fromEnv(process.env.CLAUDE_BIN),
     `${HOME}/.local/bin/claude`,
     Bun.which("claude"),
     `${HOME}/.claude/local/claude`,

@@ -710,8 +710,12 @@ async function projectOracle(project: string, text: string): Promise<string> {
 // tg-bot-launch.sh: PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin) —
 // freezing the provision-time bun path under KeepAlive/Restart=always meant one
 // bun reinstall (new path) → eternal respawn throttle (the F14 class).
-const AGENT_BUN_RESOLVE = (script: string) =>
-  `for c in "$(command -v bun 2>/dev/null)" "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do [ -n "$c" ] && [ -x "$c" ] && exec "$c" ${script}; done; echo "tg-agent: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2; exit 127`;
+// logFile (darwin only — systemd output goes to the journal, which rotates
+// itself): launchd never rotates StandardOut/ErrPath, so the preamble size-caps
+// the agent log at 5MB via copytruncate (cp + truncate-in-place, NOT mv —
+// launchd opens the log fd before sh runs, and mv would re-point it at .1).
+const AGENT_BUN_RESOLVE = (script: string, logFile?: string) =>
+  `${logFile ? `if [ -f "${logFile}" ] && [ "$(wc -c < "${logFile}")" -gt 5242880 ]; then cp "${logFile}" "${logFile}.1" && : > "${logFile}"; fi; ` : ""}for c in "$(command -v bun 2>/dev/null)" "$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do [ -n "$c" ] && [ -x "$c" ] && exec "$c" ${script}; done; echo "tg-agent: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2; exit 127`;
 const agentSvcLabel = (id: string) => `os.omega.tg-agent-${id}`;
 function spawnAgentBot(agentId: string): string {
   try {
@@ -730,7 +734,7 @@ function spawnAgentBot(agentId: string): string {
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>${AGENT_BUN_RESOLVE(`"${OMEGA_DIR}/telegram-bot/omega-tg-bot.ts"`).replace(/&/g, "&amp;")}</string>
+        <string>${AGENT_BUN_RESOLVE(`"${OMEGA_DIR}/telegram-bot/omega-tg-bot.ts"`, `${OMEGA_DIR}/logs/tg-agent-${agentId}.log`).replace(/&/g, "&amp;")}</string>
     </array>
     <key>WorkingDirectory</key><string>${OMEGA_DIR}/telegram-bot</string>
     <key>EnvironmentVariables</key>
@@ -766,7 +770,7 @@ Type=simple
 Environment=OMEGA_DIR=%h/.omega
 Environment=OMEGA_AGENT_BOT=${agentId}
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=/bin/sh -lc '${AGENT_BUN_RESOLVE("%h/.omega/telegram-bot/omega-tg-bot.ts").replace(/\$/g, "$$$$")}'
+ExecStart=/bin/sh -lc '${AGENT_BUN_RESOLVE('"%h/.omega/telegram-bot/omega-tg-bot.ts"').replace(/\$/g, "$$$$")}'
 Restart=always
 RestartSec=3
 
