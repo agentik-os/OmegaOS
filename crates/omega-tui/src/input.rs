@@ -895,6 +895,29 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
     //     Esc time (fix6-T4) — re-entering the SAME chat is retarget-safe,
     //     so the advertised "Enter = back to chat" hint isn't dead for the
     //     full 800ms the same keypress armed.
+    // fix7-T1: Ctrl+L / Ctrl+R are deliberate two-key TUI COMMANDS with
+    // CONTROL-guarded arms — hoisted ABOVE the grace intercept (same pattern
+    // as the global Ctrl+T in handle_key) so the 800ms window can't eat a
+    // redraw/restart. Only these two are exempt: in chat focus, Ctrl/Alt
+    // combos forward to the agent PTY as readline input (Ctrl+C interrupt,
+    // Ctrl+W / Alt+Backspace kill-word), so an in-flight combo after a drop
+    // IS typed text — and the match arms below test key.code only, meaning a
+    // blanket modifier exemption would let Ctrl+C open the 'c' launcher
+    // modal and Ctrl+X hit the bare 'x' kill arm on a clamped-in neighbor —
+    // exactly the fix6-T2 / FIX-F holes this intercept closes.
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        // Ctrl+L — force full terminal redraw (fixes corrupted view).
+        if key.code == KeyCode::Char('l') {
+            return Action::ForceRedraw;
+        }
+        // Ctrl+R — RELOAD the TUI: tear down + re-exec the freshly-built
+        // binary (browser-style ^R = reload). Soft in-place refresh (no
+        // teardown) is on F5 / the menu's Refresh item; menu "R" also reloads.
+        if key.code == KeyCode::Char('r') {
+            return Action::Restart;
+        }
+    }
+
     if app.in_post_drop_grace() {
         let shift_tab = key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT);
         let nav = shift_tab
@@ -940,16 +963,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
     }
 
     match key.code {
-        // Ctrl+L — force full terminal redraw (fixes corrupted view)
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::ForceRedraw
-        }
-        // Ctrl+R — RELOAD the TUI: tear down + re-exec the freshly-built binary
-        // (browser-style ^R = reload). Soft in-place refresh (no teardown) is on
-        // F5 / the menu's Refresh item; menu "R" also reloads.
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-            Action::Restart
-        }
+        // (Ctrl+L redraw / Ctrl+R restart handled ABOVE the grace intercept —
+        // fix7-T1.)
 
         // Quit (in-flight 'q' during the post-drop grace is swallowed by the
         // fix6-T2 intercept above).
@@ -3109,6 +3124,44 @@ mod tests {
         assert_eq!(
             app.project_delete_pending, None,
             "the /command jump must disarm via leave_tab"
+        );
+    }
+
+    // fix7-T1: Ctrl+L (redraw) and Ctrl+R (restart) are deliberate two-key
+    // TUI commands hoisted ABOVE the grace intercept — the deny-by-default
+    // swallow must not eat them. Plain chars stay swallowed, and Ctrl combos
+    // WITHOUT a CONTROL-guarded command arm stay swallowed too: the match
+    // arms test key.code only, so e.g. Ctrl+C / Ctrl+X would false-match the
+    // bare 'c' launcher / 'x' kill arms (the fix6-T2 / FIX-F holes).
+    #[test]
+    fn grace_passes_ctrl_commands_but_swallows_typed_input() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.in_post_drop_grace(), "precondition: grace is open");
+
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(matches!(act, Action::ForceRedraw), "Ctrl+L must redraw during the grace");
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        assert!(matches!(act, Action::Restart), "Ctrl+R must restart during the grace");
+        assert!(app.in_post_drop_grace(), "the pass-through must not end the grace");
+
+        // Plain typed chars are still swallowed…
+        let act = handle_key(&mut app, press('c'));
+        assert!(matches!(act, Action::None), "plain 'c' must stay swallowed");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // …and so are PTY-bound Ctrl combos: in chat they forward to the
+        // agent (Ctrl+C interrupt), so post-drop they are in-flight input.
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert!(matches!(act, Action::None), "Ctrl+C must be swallowed in the grace");
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "Ctrl+C must not open the launcher modal during the grace"
+        );
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(act, Action::None),
+            "Ctrl+X must not kill the clamped-in selection during the grace"
         );
     }
 }

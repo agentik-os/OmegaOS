@@ -2,6 +2,31 @@ use omega_core::config::OmegaConfig;
 use omega_core::progress::ProgressInfo;
 use omega_core::session::{OmegaSession, SessionManager, SessionRole};
 
+// fix7-T2: the input-timing windows, previously five inline "Instant within
+// N ms" idioms whose ordering invariant lived in a comment. Same values —
+// named so the relationships are visible (and pinned) in one place.
+/// DESIGN-015 post-drop grace: destructive single-key hotkeys are ignored
+/// this long after a non-deliberate chat-focus drop.
+pub(crate) const GRACE_MS: u64 = 800;
+/// DESIGN-014 Esc-Esc chord window: a second Esc inside this window forwards
+/// a literal ESC to the agent.
+pub(crate) const ESC_CHORD_MS: u64 = 300;
+/// FIX-2 minimum display time for async-origin sticky status notices.
+pub(crate) const STICKY_MS: u64 = 2000;
+/// Tab double-tap window (Sessions menu toggle + 2col fullscreen).
+pub(crate) const DOUBLE_TAP_MS: u64 = 400;
+
+// FIX-D (D-5) — load-bearing: the grace MUST outlast the chord window so a
+// slow second Esc lands in a swallow band (chord expired, grace not) instead
+// of quitting the TUI while the status bar still teaches "Esc Esc = ESC".
+const _: () = assert!(GRACE_MS > ESC_CHORD_MS);
+
+/// True while `t` is less than `ms` milliseconds in the past — the single
+/// idiom behind every input-timing window above.
+pub(crate) fn within(t: std::time::Instant, ms: u64) -> bool {
+    t.elapsed() < std::time::Duration::from_millis(ms)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Sessions,
@@ -1050,12 +1075,13 @@ pub struct App {
     /// window so an in-flight keystream can't kill/quit (DESIGN-015 / NEW-3).
     pub focus_drop_at: Option<std::time::Instant>,
     /// Async-origin status notices (vanish, forwarder errors) keep a minimum
-    /// display deadline: the keypress TTL must not clear them before this
-    /// instant, or the typist they're addressed to never sees them (FIX-2).
-    pub status_sticky_until: Option<std::time::Instant>,
-    /// The exact message `status_sticky_until` protects (FIX-G/D-7): the TTL
+    /// display time (`STICKY_MS` from this set-instant): the keypress TTL
+    /// must not clear them inside that window, or the typist they're
+    /// addressed to never sees them (FIX-2).
+    pub status_sticky_at: Option<std::time::Instant>,
+    /// The exact message `status_sticky_at` protects (FIX-G/D-7): the TTL
     /// exemption applies only while `status_message` still holds this text,
-    /// so a plain overwrite can't inherit a dangling sticky deadline.
+    /// so a plain overwrite can't inherit a dangling sticky window.
     pub status_sticky_msg: Option<String>,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
@@ -1162,7 +1188,7 @@ impl App {
             session_focus: SessionFocus::List,
             chat_esc_at: None,
             focus_drop_at: None,
-            status_sticky_until: None,
+            status_sticky_at: None,
             status_sticky_msg: None,
             last_tab_press: None,
             tab_seq_start: None,
@@ -1286,17 +1312,15 @@ impl App {
     /// `draw_status_bar` renders with priority — clearing `status_message`
     /// can't hide them, and this fn never touches the armed state itself.
     pub fn consume_status_ttl(&mut self) {
-        if let Some(until) = self.status_sticky_until {
-            // FIX-G (D-7): the deadline belongs to the exact message
+        if let Some(at) = self.status_sticky_at {
+            // FIX-G (D-7): the window belongs to the exact message
             // set_status_sticky wrote. A plain `status_message = Some(..)`
             // overwrite inside the window must NOT inherit the exemption —
-            // the dangling deadline would TTL-shield the WRONG message.
-            if self.status_message == self.status_sticky_msg
-                && std::time::Instant::now() < until
-            {
+            // the dangling window would TTL-shield the WRONG message.
+            if self.status_message == self.status_sticky_msg && within(at, STICKY_MS) {
                 return;
             }
-            self.status_sticky_until = None;
+            self.status_sticky_at = None;
             self.status_sticky_msg = None;
         }
         self.status_message = None;
@@ -1307,19 +1331,21 @@ impl App {
     /// acks keep the plain keypress TTL (`status_message = Some(..)`).
     pub fn set_status_sticky(&mut self, msg: String) {
         self.status_message = Some(msg.clone());
-        // FIX-G (D-7): remember WHICH message the deadline belongs to, so a
+        // FIX-G (D-7): remember WHICH message the window belongs to, so a
         // plain overwrite inside the window doesn't inherit the exemption.
         self.status_sticky_msg = Some(msg);
-        self.status_sticky_until =
-            Some(std::time::Instant::now() + std::time::Duration::from_millis(2000));
+        self.status_sticky_at = Some(std::time::Instant::now());
     }
 
     /// True while an async-origin sticky notice is inside its minimum display
     /// window (FIX-G/D-8): the event loop's per-tab hint seeding must not
-    /// overwrite it.
+    /// overwrite it. fix7-T3: like the msg-pinned TTL check above, the window
+    /// only protects the EXACT message it was set for — once `status_message`
+    /// was overwritten, a dangling window must not shield the new text.
     pub fn status_sticky_unexpired(&self) -> bool {
-        self.status_sticky_until
-            .is_some_and(|t| std::time::Instant::now() < t)
+        self.status_sticky_msg.is_some()
+            && self.status_message == self.status_sticky_msg
+            && self.status_sticky_at.is_some_and(|t| within(t, STICKY_MS))
     }
 
     /// fix6-T8: render-side sticky expiry. `consume_status_ttl` only runs on
@@ -1330,12 +1356,10 @@ impl App {
     /// `git_text` resumes without a keypress. An overwritten message keeps the
     /// normal keypress TTL (the user is demonstrably at the keyboard).
     pub fn expire_sticky_status(&mut self) {
-        if let Some(until) = self.status_sticky_until {
-            if std::time::Instant::now() >= until
-                && self.status_message == self.status_sticky_msg
-            {
+        if let Some(at) = self.status_sticky_at {
+            if !within(at, STICKY_MS) && self.status_message == self.status_sticky_msg {
                 self.status_message = None;
-                self.status_sticky_until = None;
+                self.status_sticky_at = None;
                 self.status_sticky_msg = None;
             }
         }
@@ -1409,14 +1433,13 @@ impl App {
 
     /// DESIGN-015: true while inside the destructive-hotkey grace that
     /// follows a non-deliberate focus drop (vanish, Esc-from-chat).
-    /// FIX-D (D-5): the grace (800ms) is deliberately LONGER than the Esc-Esc
-    /// chord window (300ms, `take_esc_chord`) so a slow second Esc lands in a
-    /// swallow band — chord expired, grace not — instead of quitting the TUI
-    /// while the status bar is still teaching "Esc Esc = ESC to agent".
+    /// FIX-D (D-5): the grace (`GRACE_MS`) is deliberately LONGER than the
+    /// Esc-Esc chord window (`ESC_CHORD_MS`, `take_esc_chord`) — pinned by
+    /// the const assertion next to the constants — so a slow second Esc lands
+    /// in a swallow band — chord expired, grace not — instead of quitting the
+    /// TUI while the status bar is still teaching "Esc Esc = ESC to agent".
     pub fn in_post_drop_grace(&self) -> bool {
-        self.focus_drop_at
-            .map(|t| t.elapsed() < std::time::Duration::from_millis(800))
-            .unwrap_or(false)
+        self.focus_drop_at.is_some_and(|t| within(t, GRACE_MS))
     }
 
     /// A deliberate navigation key ends the grace window (and the Esc-Esc
@@ -1434,7 +1457,7 @@ impl App {
     pub fn take_esc_chord(&mut self) -> Option<String> {
         self.chat_esc_at
             .take()
-            .filter(|(t, _)| t.elapsed() < std::time::Duration::from_millis(300))
+            .filter(|(t, _)| within(*t, ESC_CHORD_MS))
             .map(|(_, name)| name)
     }
 
@@ -1448,12 +1471,9 @@ impl App {
     /// Called from BOTH the list handler and the chat handler so the behavior is
     /// identical wherever the sequence begins.
     pub fn handle_tab_in_sessions(&mut self) {
-        const DOUBLE_TAP_MS: u128 = 400;
-        let now = std::time::Instant::now();
         let is_double = self
             .last_tab_press
-            .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
-            .unwrap_or(false);
+            .is_some_and(|t| within(t, DOUBLE_TAP_MS));
 
         if is_double {
             // Second tap: revert the first tap's navigation and toggle the menu.
@@ -1466,7 +1486,7 @@ impl App {
         } else {
             // First tap: remember the starting state, then navigate.
             self.tab_seq_start = Some(self.session_focus);
-            self.last_tab_press = Some(now);
+            self.last_tab_press = Some(std::time::Instant::now());
             self.session_focus = match self.session_focus {
                 SessionFocus::List => SessionFocus::Chat,
                 _ => SessionFocus::List,
@@ -1486,13 +1506,10 @@ impl App {
     /// Tab in a 2-column tab (Settings / Info): single = toggle list↔detail,
     /// double = fullscreen detail, double again = back to list.
     pub fn handle_tab_in_2col(&mut self) {
-        const DOUBLE_TAP_MS: u128 = 400;
-        let now = std::time::Instant::now();
         let is_double = self
             .last_tab_press
-            .map(|t| now.duration_since(t).as_millis() < DOUBLE_TAP_MS)
-            .unwrap_or(false);
-        self.last_tab_press = Some(now);
+            .is_some_and(|t| within(t, DOUBLE_TAP_MS));
+        self.last_tab_press = Some(std::time::Instant::now());
 
         if is_double {
             // Double tap: toggle fullscreen
@@ -2415,8 +2432,8 @@ mod reanchor_tests {
         app.menu_confirm_pending = None;
         // Expired sticky → cleared like a plain message.
         app.set_status_sticky("async notice".into());
-        app.status_sticky_until =
-            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.status_sticky_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.consume_status_ttl();
         assert!(app.status_message.is_none(), "expired sticky must clear");
     }
@@ -2509,18 +2526,44 @@ mod reanchor_tests {
         app.expire_sticky_status();
         assert_eq!(app.status_message.as_deref(), Some("async notice"));
         // Expired + message still the protected one → the pair clears.
-        app.status_sticky_until =
-            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.status_sticky_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.expire_sticky_status();
         assert!(app.status_message.is_none(), "expired sticky must clear without input");
-        assert!(app.status_sticky_until.is_none() && app.status_sticky_msg.is_none());
+        assert!(app.status_sticky_at.is_none() && app.status_sticky_msg.is_none());
         // Expired but OVERWRITTEN by a plain key-triggered hint → the hint
         // keeps the normal keypress TTL (the user is at the keyboard).
         app.set_status_sticky("stale".into());
-        app.status_sticky_until =
-            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.status_sticky_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.status_message = Some("fresh hint".into());
         app.expire_sticky_status();
         assert_eq!(app.status_message.as_deref(), Some("fresh hint"));
+    }
+
+    // fix7-T3: the hint-seeding guard mirrors the FIX-G identity rule — the
+    // sticky window only shields the EXACT message it was set for. A plain
+    // overwrite must not inherit a dangling window (the old deadline-only
+    // check TTL-shielded WHATEVER text happened to be on the status line).
+    #[test]
+    fn sticky_unexpired_requires_message_identity() {
+        let mut app = app_with_sessions(&["a"]);
+        assert!(!app.status_sticky_unexpired(), "no sticky set → no shield");
+        app.set_status_sticky("async notice".into());
+        assert!(
+            app.status_sticky_unexpired(),
+            "a live, intact sticky must block per-tab hint seeding"
+        );
+        // Overwritten inside the window → the shield must drop with it.
+        app.status_message = Some("per-tab hint".into());
+        assert!(
+            !app.status_sticky_unexpired(),
+            "an overwritten message must not inherit the sticky window"
+        );
+        // Identity restored but window expired → no shield either.
+        app.status_message = Some("async notice".into());
+        app.status_sticky_at = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
+        assert!(!app.status_sticky_unexpired(), "an expired window must not shield");
     }
 }
