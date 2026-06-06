@@ -188,18 +188,18 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 6. Telegram service (systemd — soft if absent).
-    match systemctl_user(&["is-active", "omega-tg-bot.service"]) {
+    // 6. Telegram service (systemd on Linux, launchd on macOS — soft if absent).
+    match crate::service::tg_bot_status() {
         Some(s) if s == "active" => {
-            checks.push(Check::ok("telegram service", "omega-tg-bot.service active"))
+            checks.push(Check::ok("telegram service", "omega-tg-bot active"))
         }
         Some(other) => checks.push(Check::warn(
             "telegram service",
-            format!("omega-tg-bot.service {} (start: systemctl --user start omega-tg-bot)", other),
+            format!("omega-tg-bot {} (start: {})", other, crate::service::tg_bot_start_hint()),
         )),
         None => checks.push(Check::warn(
             "telegram service",
-            "systemd user unit not found (optional)",
+            "user service not found (optional)",
         )),
     }
 
@@ -376,7 +376,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                     }
                     Some(_) => checks.push(Check::warn(
                         "telegram bot parity",
-                        "live bot DIFFERS from repo — redeploy: cp <repo>/telegram-bot/omega-tg-bot.ts ~/.omega/telegram-bot/ && systemctl --user restart omega-tg-bot",
+                        format!(
+                            "live bot DIFFERS from repo — redeploy: cp <repo>/telegram-bot/omega-tg-bot.ts ~/.omega/telegram-bot/ && {}",
+                            crate::service::tg_bot_restart_hint()
+                        ),
                     )),
                     None => checks.push(Check::ok(
                         "telegram bot parity",
@@ -484,13 +487,8 @@ fn fix_duplicate_pollers() -> Vec<String> {
 }
 
 fn fix_restart_tg_service() -> Vec<String> {
-    let ok = std::process::Command::new("systemctl")
-        .args(["--user", "restart", "omega-tg-bot.service"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    if ok {
-        vec!["restarted omega-tg-bot.service".into()]
+    if crate::service::tg_bot_restart() {
+        vec!["restarted omega-tg-bot service".into()]
     } else {
         Vec::new()
     }

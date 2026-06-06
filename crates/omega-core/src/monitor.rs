@@ -325,6 +325,23 @@ impl OmegaTelegramConfig {
             std::fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
+        // The file holds the bot token — owner-only (0600). `mode()` only
+        // applies when the file is CREATED, so additionally tighten a
+        // pre-existing (possibly world-readable) file before rewriting it.
+        #[cfg(unix)]
+        {
+            use std::io::Write as _;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            f.write_all(content.as_bytes())?;
+        }
+        #[cfg(not(unix))]
         std::fs::write(&path, content)?;
         Ok(())
     }

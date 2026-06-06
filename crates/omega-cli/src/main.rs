@@ -661,11 +661,55 @@ async fn main() -> Result<()> {
 static KBD_ENHANCED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Pop the keyboard-enhancement flags if (and only if) init pushed them.
+/// Pop the keyboard-enhancement flags if (and only if) a push recorded them.
+/// `swap(false)` keeps the bookkeeping exact: after the pop the flag reflects
+/// reality, so a later teardown (or a re-push on attach/restart re-entry)
+/// never double-pops or skips a needed push.
 fn pop_kbd_enhancement(out: &mut impl std::io::Write) {
-    if KBD_ENHANCED.load(std::sync::atomic::Ordering::Relaxed) {
+    if KBD_ENHANCED.swap(false, std::sync::atomic::Ordering::Relaxed) {
         crossterm::execute!(out, crossterm::event::PopKeyboardEnhancementFlags).ok();
     }
+}
+
+/// Probe-guarded push of the kitty keyboard-enhancement flags (DESIGN-014).
+/// FIX-C ordering: call AFTER EnterAlternateScreen + enable_raw_mode — the
+/// push must land on the ALT-screen keyboard-mode stack (per-screen stacks),
+/// and the probe needs raw mode. Records what was pushed in KBD_ENHANCED so
+/// the matching pop is exact. Used at init, after the standalone-attach
+/// handover returns, and on restart-failure TUI re-entry.
+fn push_kbd_enhancement(out: &mut impl std::io::Write) {
+    let supported =
+        crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    KBD_ENHANCED.store(supported, std::sync::atomic::Ordering::Relaxed);
+    if supported {
+        crossterm::execute!(
+            out,
+            crossterm::event::PushKeyboardEnhancementFlags(
+                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            )
+        )
+        .ok();
+    }
+}
+
+/// The ONE terminal-restore sequence (FIX-C ordering, encoded once): pop the
+/// kbd flags while still on the alt-screen stack → raw mode off → leave the
+/// alt screen + release mouse capture / bracketed paste → re-show the cursor.
+/// Best-effort at every step — teardown must never abort halfway and strand
+/// the terminal in a worse state. Used by the quit path, the Ctrl+R restart
+/// teardown, and the (main-thread) panic hook; a panic hook runs in ordinary
+/// code context (not a signal handler), so the cursor::Show write is safe
+/// there too.
+fn restore_terminal(out: &mut impl std::io::Write) {
+    pop_kbd_enhancement(out);
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        out,
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        crossterm::event::DisableBracketedPaste,
+        crossterm::cursor::Show,
+    );
 }
 
 async fn run_menu() -> Result<()> {
@@ -733,18 +777,35 @@ async fn run_menu() -> Result<()> {
     // signalling SIGINT). Restore the terminal FIRST — pop the flags while
     // still in the alt screen (where FIX-C pushes them), then leave it —
     // and only then let the default hook print the panic where it's readable.
+    //
+    // Main-thread only: tokio polls the root future (this TUI loop) on the
+    // thread that called block_on, but spawn_blocking closures (meta/git
+    // scans) and detached tokio::spawn tasks (reauth) run on OTHER threads —
+    // a panic there must NOT cook the terminal under the still-running render
+    // loop. Background panics are appended to ~/.omega/logs/tui-panic.log
+    // instead, without touching the terminal or the stderr default hook.
     let default_panic_hook = std::panic::take_hook();
+    let tui_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        let mut out = std::io::stdout();
-        let _ = crossterm::terminal::disable_raw_mode();
-        pop_kbd_enhancement(&mut out); // pops only if init pushed (KBD_ENHANCED)
-        let _ = crossterm::execute!(
-            out,
-            crossterm::terminal::LeaveAlternateScreen,
-            crossterm::event::DisableMouseCapture,
-            crossterm::event::DisableBracketedPaste,
-        );
-        default_panic_hook(info);
+        if std::thread::current().id() == tui_thread {
+            restore_terminal(&mut std::io::stdout());
+            default_panic_hook(info);
+        } else if let Some(home) = dirs::home_dir() {
+            let dir = home.join(".omega/logs");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join("tui-panic.log"))
+            {
+                use std::io::Write as _;
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let _ = writeln!(f, "[{}] background-thread panic: {}", ts, info);
+            }
+        }
     }));
 
     crossterm::terminal::enable_raw_mode()?;
@@ -775,18 +836,7 @@ async fn run_menu() -> Result<()> {
     // the TUI AND leaked DISAMBIGUATE into the user's shell after quit. Push
     // in the alt screen; both pops (quit below, Ctrl+R restart) already run
     // before LeaveAlternateScreen, i.e. on the same alt-screen stack.
-    let kbd_enhanced =
-        crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
-    KBD_ENHANCED.store(kbd_enhanced, std::sync::atomic::Ordering::Relaxed);
-    if kbd_enhanced {
-        crossterm::execute!(
-            stdout,
-            crossterm::event::PushKeyboardEnhancementFlags(
-                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-            )
-        )
-        .ok();
-    }
+    push_kbd_enhancement(&mut stdout);
     let backend = ratatui::prelude::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
@@ -794,15 +844,7 @@ async fn run_menu() -> Result<()> {
 
     // FIX-C: pop BEFORE LeaveAlternateScreen — the push above landed on the
     // alt-screen stack, so the pop must drain that same stack.
-    pop_kbd_enhancement(terminal.backend_mut());
-    crossterm::terminal::disable_raw_mode()?;
-    crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        crossterm::event::DisableBracketedPaste,
-    )?;
-    terminal.show_cursor()?;
+    restore_terminal(terminal.backend_mut());
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
@@ -1207,16 +1249,7 @@ async fn run_tui_loop(
                     // in place (same PID on Unix via exec).
                     // FIX-C: pop BEFORE LeaveAlternateScreen — same alt-screen
                     // stack the init push landed on (no per-restart orphan).
-                    pop_kbd_enhancement(terminal.backend_mut());
-                    crossterm::terminal::disable_raw_mode().ok();
-                    crossterm::execute!(
-                        terminal.backend_mut(),
-                        crossterm::terminal::LeaveAlternateScreen,
-                        crossterm::event::DisableMouseCapture,
-                        crossterm::event::DisableBracketedPaste,
-                    )
-                    .ok();
-                    terminal.show_cursor().ok();
+                    restore_terminal(terminal.backend_mut());
                     // Resolve a binary path that actually exists. current_exe()
                     // can point at a now-replaced/deleted inode after a redeploy
                     // (cp over ~/.local/bin/omega), which makes exec() fail with
@@ -1241,7 +1274,35 @@ async fn run_tui_loop(
                         .arg("-c")
                         .arg("exec omega menu")
                         .exec();
-                    eprintln!("restart failed: {} (binary: {})", err, chosen.display());
+                    // BOTH execs failed (we only get here on exec failure —
+                    // success never returns). The old `break` only left the
+                    // event drain; Restart never set should_quit, so the
+                    // outer loop kept rendering frames onto the cooked main
+                    // screen. Re-enter the TUI fully instead of quitting:
+                    // the failure is transient (e.g. the binary mid-replace
+                    // during a redeploy) and the user keeps their session
+                    // manager, with the error surfaced as a sticky notice.
+                    let _ = crossterm::terminal::enable_raw_mode();
+                    let _ = crossterm::execute!(
+                        terminal.backend_mut(),
+                        crossterm::terminal::EnterAlternateScreen,
+                        crossterm::event::EnableBracketedPaste,
+                    );
+                    if app.mouse_capture {
+                        let _ = crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::event::EnableMouseCapture
+                        );
+                    }
+                    // Fresh alt-screen kbd stack — re-probe + re-push, same
+                    // guarded sequence as init (FIX-C ordering).
+                    push_kbd_enhancement(terminal.backend_mut());
+                    let _ = terminal.clear();
+                    app.set_status_sticky(format!(
+                        "restart failed: {} (binary: {})",
+                        err,
+                        chosen.display()
+                    ));
                     break;
                 }
                 Action::AttachSession(name) => {
@@ -1267,7 +1328,12 @@ async fn run_tui_loop(
                             }
                         }
                     } else {
-                        // Standalone mode — full terminal handover
+                        // Standalone mode — full terminal handover.
+                        // The init push landed on the ALT-screen kbd stack
+                        // (per-screen stacks): pop it BEFORE leaving, or the
+                        // flags are stranded there and dead for the rest of
+                        // the run after a single attach round-trip.
+                        pop_kbd_enhancement(terminal.backend_mut());
                         crossterm::terminal::disable_raw_mode()?;
                         crossterm::execute!(
                             terminal.backend_mut(),
@@ -1283,6 +1349,10 @@ async fn run_tui_loop(
                             crossterm::terminal::EnterAlternateScreen
                         )?;
                         crossterm::terminal::enable_raw_mode()?;
+                        // Fresh alt-screen kbd stack — re-probe + re-push,
+                        // same guarded sequence as init (FIX-C ordering:
+                        // after EnterAlternateScreen + raw mode).
+                        push_kbd_enhancement(terminal.backend_mut());
                         terminal.clear()?;
                         let _ = app.refresh().await;
                         if let Err(e) = status {
@@ -1484,20 +1554,25 @@ async fn run_tui_loop(
                     }
                 }
                 Action::Refresh => {
-                    // Ack BEFORE refreshing (KillSession-style ordering, CA-4):
-                    // a notice produced inside refresh() — e.g. the "<name>
-                    // ended — back to list" vanish message — must win over the
-                    // generic ack, not be clobbered by it. Only ack when no
-                    // handler message is pending (FIX-5/INFO-1): the TTL just
-                    // cleared stale text, so a Some here is the dispatching
-                    // handler's own ack (e.g. the filter message) — keep it.
-                    if app.status_message.is_none() {
-                        app.status_message = Some("Refreshed".to_string());
-                    }
+                    // Ack AFTER the refresh completes (pre-series ordering).
+                    // The old pre-refresh `is_none()` gate ate the ack
+                    // whenever an async sticky notice sat inside its 2s
+                    // window (consume_status_ttl keeps it → Some → no ack),
+                    // so F5 looked dead. Post-refresh, the ack overwrites any
+                    // pre-press leftover — the one thing it still yields to
+                    // is a notice refresh() itself just produced (CA-4: the
+                    // "<name> ended — back to list" vanish sticky), detected
+                    // as a change across the call. FIX-A is unaffected:
+                    // armed warnings render state-driven, above any
+                    // status_message write.
+                    let before_refresh = app.status_message.clone();
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
                     if app.tab == omega_tui::app::Tab::Agentic {
                         app.refresh_projects();
+                    }
+                    if app.status_message == before_refresh {
+                        app.status_message = Some("Refreshed".to_string());
                     }
                 }
                 Action::LoginClaude => {
@@ -1635,34 +1710,37 @@ async fn run_tui_loop(
                             send_telegram_confirmation(&bot_token, chat_id, &confirm).await;
 
                             // 2) Ensure the SINGLE canonical poller is running.
-                            //    The real bridge is the Bun bot shipped as the
-                            //    systemd --user unit `omega-tg-bot.service`. We must
-                            //    NOT spawn a competing Rust bridge (that produced two
-                            //    pollers hitting getUpdates → permanent HTTP 409).
-                            //    Kill any stale rmux bridge first, then enable+start
-                            //    the canonical unit. The `enable --now` is wrapped in
-                            //    a timeout so a slow/hung systemd can never FREEZE the
+                            //    The real bridge is the Bun bot shipped as a user
+                            //    service (systemd --user on Linux, a launchd
+                            //    LaunchAgent on macOS — service::tg_bot_start picks
+                            //    the right manager). We must NOT spawn a competing
+                            //    Rust bridge (that produced two pollers hitting
+                            //    getUpdates → permanent HTTP 409). Kill any stale
+                            //    rmux bridge first, then enable+start the canonical
+                            //    unit. The start is wrapped in a timeout so a
+                            //    slow/hung service manager can never FREEZE the
                             //    wizard UI (the "had to refresh manually" bug).
                             let mgr = SessionManager::connect().await?;
                             let _ = mgr.kill_session("omega-telegram-bridge").await;
-                            let systemd_ok = matches!(
+                            let service_ok = matches!(
                                 tokio::time::timeout(
                                     std::time::Duration::from_secs(8),
-                                    tokio::process::Command::new("systemctl")
-                                        .args(["--user", "enable", "--now", "omega-tg-bot.service"])
-                                        .status(),
+                                    tokio::task::spawn_blocking(
+                                        omega_core::service::tg_bot_start
+                                    ),
                                 )
                                 .await,
-                                Ok(Ok(s)) if s.success()
+                                Ok(Ok(true))
                             );
-                            if systemd_ok {
+                            if service_ok {
                                 app.status_message = Some(
-                                    "[+] Telegram setup done — bridge running as the persistent omega-tg-bot.service".to_string(),
+                                    "[+] Telegram setup done — bridge running as the persistent omega-tg-bot service".to_string(),
                                 );
                             } else {
-                                app.status_message = Some(
-                                    "[+] Telegram setup saved, but omega-tg-bot.service could not be started. Start it with: systemctl --user enable --now omega-tg-bot.service".to_string(),
-                                );
+                                app.status_message = Some(format!(
+                                    "[+] Telegram setup saved, but the omega-tg-bot service could not be started. Start it with: {}",
+                                    omega_core::service::tg_bot_start_hint()
+                                ));
                             }
                             // The bridge creates the aisb-master mirror session
                             // ASYNCHRONOUSLY on its own startup — racing the refresh
@@ -2077,13 +2155,11 @@ async fn run_tui_loop(
             // (e.g. a dispatch/login that also switched to the Sessions tab).
             if app.tab != tab_before
                 && app.status_message == status_before
-                // FIX-1 safety net: never overwrite an armed destructive-menu
-                // confirm warning with a per-tab hint (a direct tab writer —
-                // e.g. F1 → Help — bypasses the next/prev_tab disarm).
-                && app.menu_confirm_pending.is_none()
-                // FIX-G (D-8): nor an async sticky notice still inside its
-                // minimum display window (an in-flight Left/Right was breaking
-                // FIX-2's 2s promise).
+                // FIX-G (D-8): never overwrite an async sticky notice still
+                // inside its minimum display window (an in-flight Left/Right
+                // was breaking FIX-2's 2s promise). Armed-confirm warnings
+                // need no guard here: FIX-A renders them state-driven, with
+                // priority over any status_message text.
                 && !app.status_sticky_unexpired()
             {
                 use omega_tui::app::Tab;
@@ -2534,11 +2610,18 @@ enum TelegramAction {
     /// Save bot token + chat id (+ optional sender allow-list) to ~/.omega/telegram.toml
     Setup {
         bot_token: String,
+        /// Telegram chat id. Groups/supergroups have NEGATIVE ids
+        /// (e.g. -1001234567) — accepted as-is, no quoting needed.
+        #[arg(allow_negative_numbers = true)]
         chat_id: i64,
         /// Optional Telegram sender user_ids allowed to talk to the bot.
         /// When set, every message MUST come from one of these users; others
         /// are silently dropped. Recommended for shared chats.
-        #[arg(long, value_delimiter = ',')]
+        /// `allow_hyphen_values` (not `allow_negative_numbers`): a comma
+        /// list with a leading negative id ("-100123,42") is not
+        /// syntactically a number, so the negative-number exemption alone
+        /// still rejects it (runtime-proven).
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         user_id: Vec<i64>,
         /// Which rmux session the bot relays messages to (default: aisb-master)
         #[arg(long, default_value = "aisb-master")]

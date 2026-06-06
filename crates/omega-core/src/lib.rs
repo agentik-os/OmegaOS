@@ -48,6 +48,7 @@ pub mod rubric;
 pub mod rules;
 pub mod rpc;
 pub mod scope;
+pub mod service;
 pub mod session;
 pub mod session_log;
 pub mod ship;
