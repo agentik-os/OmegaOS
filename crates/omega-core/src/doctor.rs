@@ -311,20 +311,42 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     //     — `main_bot_pollers` excludes them platform-aware (/proc environ on
     //     Linux, launchd labels on macOS) so they don't inflate the count into
     //     a false "duplicate pollers" warning. A co-tenant's bot under another
-    //     user is also excluded (pgrep -u scopes to this user).
+    //     user is also excluded (pgrep -u scopes to this user). fix8-T1: a
+    //     headless Mac (SSH/cron — no GUI launchctl domain) cannot see the
+    //     agent-bot labels at all, so the exclusion list is unavailable there;
+    //     report info and skip the duplicate check instead of counting every
+    //     agent bot as a duplicate.
     {
-        let count = main_bot_pollers(&current_uid()).len();
-        if count > 1 {
-            checks.push(Check::warn(
+        let uid = current_uid();
+        let verdict = if cfg!(target_os = "macos") {
+            let exclusion = launchctl_gui_domain_accessible(&uid).then(agent_bot_pids_darwin);
+            poller_verdict(&raw_tg_bot_pids(&uid), exclusion.as_ref())
+        } else {
+            // Linux: the /proc-based exclusion is always available — same
+            // main_bot_pollers count as before.
+            let count = main_bot_pollers(&uid).len();
+            if count > 1 {
+                PollerVerdict::Duplicates(count)
+            } else {
+                PollerVerdict::Single(count)
+            }
+        };
+        match verdict {
+            PollerVerdict::Duplicates(count) => checks.push(Check::warn(
                 "telegram poller",
                 format!(
                     "multiple Telegram pollers ({}) — duplicate messages; keep only {}",
                     count,
                     crate::service::tg_bot_service_desc()
                 ),
-            ));
-        } else {
-            checks.push(Check::ok("telegram poller", format!("{} poller", count)));
+            )),
+            PollerVerdict::Single(count) => {
+                checks.push(Check::ok("telegram poller", format!("{} poller", count)))
+            }
+            PollerVerdict::Undeterminable => checks.push(Check::ok(
+                "telegram poller",
+                "poller ownership undeterminable on this host — no GUI launchctl domain; skipping duplicate check",
+            )),
         }
     }
 
@@ -475,26 +497,89 @@ fn agent_bot_pids_darwin() -> std::collections::HashSet<u32> {
         .collect()
 }
 
-/// This user's `bun … omega-tg-bot.ts` PIDs that are NOT agent bots. Agent
-/// bots (omega-tg-agent-* / os.omega.tg-agent-*) run the SAME script but are
-/// legitimate separate services and must NOT be killed. Platform-aware
-/// exclusion (fix7-T3): Linux reads OMEGA_AGENT_BOT= from /proc/<pid>/environ;
-/// macOS matches the pid against the os.omega.tg-agent-* launchd jobs.
-fn main_bot_pollers(uid: &str) -> Vec<u32> {
+/// Raw `bun … omega-tg-bot.ts` PIDs for this user (pgrep), BEFORE any
+/// agent-bot exclusion — both the main bot and agent bots match. See
+/// `main_bot_pollers` / `poller_verdict` for the exclusion step.
+fn raw_tg_bot_pids(uid: &str) -> Vec<u32> {
     let Ok(out) = std::process::Command::new("pgrep")
         .args(["-u", uid, "-f", r"bun.*omega-tg-bot\.ts"])
         .output()
     else {
         return Vec::new();
     };
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .filter_map(|s| s.parse::<u32>().ok())
+        .collect()
+}
+
+/// fix8-T1: whether this process can see the user's GUI launchctl domain.
+/// Headless sessions (SSH/cron — no Aqua session) cannot: `launchctl print
+/// gui/<uid>` fails there and/or `launchctl list` yields nothing. Without the
+/// GUI domain the os.omega.tg-agent-* labels are invisible, so agent bots can
+/// NOT be excluded from a poller count — callers must skip the duplicate
+/// check rather than count agent bots as duplicates.
+fn launchctl_gui_domain_accessible(uid: &str) -> bool {
+    let print_ok = std::process::Command::new("launchctl")
+        .args(["print", &format!("gui/{}", uid)])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    let list_nonempty = std::process::Command::new("launchctl")
+        .arg("list")
+        .output()
+        .map(|o| o.status.success() && o.stdout.iter().any(|b| !b.is_ascii_whitespace()))
+        .unwrap_or(false);
+    print_ok && list_nonempty
+}
+
+/// Outcome of the duplicate-poller decision (see `poller_verdict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollerVerdict {
+    /// 0 or 1 main poller — healthy.
+    Single(usize),
+    /// More than one main poller after agent-bot exclusion — warn.
+    Duplicates(usize),
+    /// Multiple pids but no exclusion list (headless Mac: GUI launchctl
+    /// domain inaccessible) — the extras may all be legitimate agent bots; info.
+    Undeterminable,
+}
+
+/// Pure duplicate-poller decision (fix8-T1) — unit-testable without launchctl.
+/// `agent_exclusion` is the set of known-legitimate agent-bot pids, or None
+/// when the platform cannot provide one. Without an exclusion list a multi-pid
+/// count is undeterminable and must NEVER be reported as duplicates.
+fn poller_verdict(
+    raw_pids: &[u32],
+    agent_exclusion: Option<&std::collections::HashSet<u32>>,
+) -> PollerVerdict {
+    match agent_exclusion {
+        Some(excl) => {
+            let count = raw_pids.iter().filter(|p| !excl.contains(p)).count();
+            if count > 1 {
+                PollerVerdict::Duplicates(count)
+            } else {
+                PollerVerdict::Single(count)
+            }
+        }
+        None if raw_pids.len() > 1 => PollerVerdict::Undeterminable,
+        None => PollerVerdict::Single(raw_pids.len()),
+    }
+}
+
+/// This user's `bun … omega-tg-bot.ts` PIDs that are NOT agent bots. Agent
+/// bots (omega-tg-agent-* / os.omega.tg-agent-*) run the SAME script but are
+/// legitimate separate services and must NOT be killed. Platform-aware
+/// exclusion (fix7-T3): Linux reads OMEGA_AGENT_BOT= from /proc/<pid>/environ;
+/// macOS matches the pid against the os.omega.tg-agent-* launchd jobs.
+fn main_bot_pollers(uid: &str) -> Vec<u32> {
     let agent_pids = if cfg!(target_os = "macos") {
         agent_bot_pids_darwin()
     } else {
         Default::default()
     };
-    String::from_utf8_lossy(&out.stdout)
-        .split_whitespace()
-        .filter_map(|s| s.parse::<u32>().ok())
+    raw_tg_bot_pids(uid)
+        .into_iter()
         .filter(|pid| {
             if cfg!(target_os = "macos") {
                 return !agent_pids.contains(pid);
@@ -620,6 +705,25 @@ pub fn overall(checks: &[Check]) -> Health {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // fix8-T1: the pure decision behind doctor check #11 (telegram poller).
+    #[test]
+    fn poller_verdict_excludes_agent_bots() {
+        let excl: std::collections::HashSet<u32> = [20, 30].into_iter().collect();
+        assert_eq!(poller_verdict(&[10, 20, 30], Some(&excl)), PollerVerdict::Single(1));
+        assert_eq!(poller_verdict(&[10, 11, 20], Some(&excl)), PollerVerdict::Duplicates(2));
+        assert_eq!(poller_verdict(&[], Some(&excl)), PollerVerdict::Single(0));
+    }
+
+    #[test]
+    fn poller_verdict_without_exclusion_never_warns() {
+        // Headless Mac: no GUI launchctl domain → no exclusion list. Several
+        // pids may all be legitimate agent bots — undeterminable, never
+        // Duplicates (the fix8-T1 false-warning bug).
+        assert_eq!(poller_verdict(&[10, 20, 30], None), PollerVerdict::Undeterminable);
+        assert_eq!(poller_verdict(&[10], None), PollerVerdict::Single(1));
+        assert_eq!(poller_verdict(&[], None), PollerVerdict::Single(0));
+    }
 
     #[test]
     fn overall_is_worst_of() {
