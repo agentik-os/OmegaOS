@@ -463,7 +463,7 @@ EOF
         # ALWAYS enable + start: the bot waits for a token and auto-connects the
         # moment `omega telegram setup` / omega-tg-up writes telegram.toml.
         systemctl --user enable --now omega-tg-bot.service 2>/dev/null || true
-        ok "Telegram command bot installed + running (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>  OR  omega-tg-up <TOKEN> <YOUR_USER_ID>"
+        ok "Telegram command bot installed + running (waits for token). Connect: OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <CHAT_ID>  (env form keeps the token out of the process list)  OR  omega-tg-up <TOKEN> <YOUR_USER_ID>"
     elif [[ "$(uname -s)" == "Darwin" && -n "$BUN_BIN" ]]; then
         # macOS: no systemd — install a launchd LaunchAgent instead, same
         # semantics (always running, waits for the token, auto-restarts).
@@ -537,7 +537,7 @@ EOF
         fi
         if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
             TG_BOT_WARN=""
-            ok "Telegram command bot installed + running via launchd (waits for token). Connect: omega telegram setup <TOKEN> <CHAT_ID>"
+            ok "Telegram command bot installed + running via launchd (waits for token). Connect: OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <CHAT_ID>  (env form keeps the token out of the process list)"
         else
             TG_BOT_WARN="Telegram bot NOT started: launchd has no GUI session for this user (typical over SSH / headless). After a GUI login, run: launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/os.omega.tg-bot.plist — or run it now in the foreground: omega telegram run  (logs: $OMEGA_DIR/logs/tg-bot.err.log)"
             warn "$TG_BOT_WARN"
@@ -1517,7 +1517,8 @@ echo -e "  ${BOLD}0.${NC} Reload your shell:        source $RC_FILE"
 echo -e "  ${BOLD}1.${NC} Connect Claude (required): claude   →  then type /login and follow the URL"
 echo -e "  ${BOLD}2.${NC} Telegram remote (recommended):"
 echo "       @BotFather → /newbot → copy the token; @userinfobot → your numeric id"
-echo "       omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>"
+echo "       OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_ID> --user-id <YOUR_ID>"
+echo "       (the env prefix keeps your token out of the process list)"
 echo "       Project topics: group + Topics ON + bot admin → /setupgroup → /sync"
 echo -e "  ${BOLD}3.${NC} Service keys (optional, for auto-provisioning new apps):"
 echo "       \$EDITOR $OMEGA_DIR/provisioning/services.env   (Vercel/GitHub/Convex/Stripe/OpenAI)"

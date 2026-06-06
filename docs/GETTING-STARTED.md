@@ -35,8 +35,9 @@ and alerts.
    it replies with your numeric id.
 3. **Wire it** (the bot only ever answers YOU — allow-list enforced):
    ```
-   omega telegram setup <BOT_TOKEN> <YOUR_USER_ID> --user-id <YOUR_USER_ID>
+   OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_USER_ID> --user-id <YOUR_USER_ID>
    ```
+   (the env prefix keeps the token out of the process list and shell history)
 4. *(optional but the full experience)* **Project hub with one topic per
    project**: create a Telegram group → enable **Topics** in its settings →
    add your bot as **admin** with **Manage Topics** → type `/setupgroup` in

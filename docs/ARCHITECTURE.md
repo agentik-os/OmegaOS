@@ -345,7 +345,7 @@ omega sync               Symlink to all LLMs
 omega accounts list      List provider accounts
 omega accounts switch <provider> <name>
 omega model show / set <provider> [model]
-omega telegram setup <TOKEN> <CHAT> --user-id <UID>
+OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <CHAT> --user-id <UID>
 omega telegram run       Start bridge
 omega pdf --template=... --send
 omega install <agent>    Install LLM CLI + auto-sync

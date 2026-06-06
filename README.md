@@ -127,7 +127,7 @@ prints the full step-by-step** (also saved at `~/.omega/GETTING-STARTED.md`,
 and shown at the end of the install). In short:
 
 1. **Connect Claude** *(required)* — `claude` → `/login` → follow the URL. Check: `claude auth status`.
-2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `omega telegram setup <TOKEN> <ID> --user-id <ID>`. For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
+2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>` (the env form keeps the token out of the process list; legacy alternative: `omega telegram setup <TOKEN> <ID> --user-id <ID>`). For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
 3. **Service keys** *(optional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI-for-voice) powers auto-provisioning of new apps.
 4. **Add a project** — `omega` → Projects → **[N] New Project**, Telegram → *Import from GitHub*, or just drop a repo under `~/Station/<Category>/`.
 5. **Verify** — `omega doctor`: every line `[+]`.
