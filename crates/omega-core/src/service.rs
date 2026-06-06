@@ -69,6 +69,11 @@ pub fn tg_bot_status() -> Option<String> {
 }
 
 /// Enable + start the tg-bot service. Returns true when the service is up.
+///
+/// fix7-T2: `.output()` (not `.status()`) — `.status()` inherits stdio, so
+/// launchctl/systemctl noise ("Bootstrap failed: 5", unit warnings) painted
+/// the TUI alt screen mid-wizard. Failures surface through the bool return +
+/// the `tg_bot_start_hint()` advice the callers already print.
 pub fn tg_bot_start() -> bool {
     if is_darwin() {
         // bootstrap is best-effort (fails harmlessly when already loaded);
@@ -76,35 +81,47 @@ pub fn tg_bot_start() -> bool {
         let _ = std::process::Command::new("launchctl")
             .args(["bootstrap", &format!("gui/{}", uid())])
             .arg(launchd_plist())
-            .status();
+            .output();
         std::process::Command::new("launchctl")
             .args(["kickstart", &launchd_target()])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
     } else {
         std::process::Command::new("systemctl")
             .args(["--user", "enable", "--now", TG_BOT_SYSTEMD_UNIT])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
     }
 }
 
 /// Restart the tg-bot service. Returns true on success.
+/// Child stdio captured for the same reason as `tg_bot_start` (fix7-T2).
 pub fn tg_bot_restart() -> bool {
     if is_darwin() {
         std::process::Command::new("launchctl")
             .args(["kickstart", "-k", &launchd_target()])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
     } else {
         std::process::Command::new("systemctl")
             .args(["--user", "restart", TG_BOT_SYSTEMD_UNIT])
-            .status()
-            .map(|s| s.success())
+            .output()
+            .map(|o| o.status.success())
             .unwrap_or(false)
+    }
+}
+
+/// Short human name of the canonical service manager + unit, for advice
+/// strings ("systemd omega-tg-bot.service" / "the os.omega.tg-bot
+/// LaunchAgent") — so doctor never tells a Mac user about systemd.
+pub fn tg_bot_service_desc() -> String {
+    if is_darwin() {
+        format!("the {} LaunchAgent", TG_BOT_LAUNCHD_LABEL)
+    } else {
+        format!("systemd {}", TG_BOT_SYSTEMD_UNIT)
     }
 }
 

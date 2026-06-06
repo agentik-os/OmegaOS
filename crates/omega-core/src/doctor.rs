@@ -305,18 +305,23 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     }
 
     // 11. Single Telegram MAIN-bot poller — two main pollers mean duplicate
-    //     messages / getUpdates 409s; only systemd should run it. Agent bots
-    //     (omega-tg-agent-*) run the SAME script but are legitimate separate
-    //     services (own token, per-project) — `main_bot_pollers` excludes them
-    //     via /proc/<pid>/environ so they don't inflate the count into a false
-    //     "duplicate pollers" warning. A co-tenant's bot under another user is
-    //     also excluded (pgrep -u scopes to this user).
+    //     messages / getUpdates 409s; only the service manager should run it.
+    //     Agent bots (omega-tg-agent-* / os.omega.tg-agent-*) run the SAME
+    //     script but are legitimate separate services (own token, per-project)
+    //     — `main_bot_pollers` excludes them platform-aware (/proc environ on
+    //     Linux, launchd labels on macOS) so they don't inflate the count into
+    //     a false "duplicate pollers" warning. A co-tenant's bot under another
+    //     user is also excluded (pgrep -u scopes to this user).
     {
         let count = main_bot_pollers(&current_uid()).len();
         if count > 1 {
             checks.push(Check::warn(
                 "telegram poller",
-                format!("multiple Telegram pollers ({}) — duplicate messages; keep only systemd omega-tg-bot.service", count),
+                format!(
+                    "multiple Telegram pollers ({}) — duplicate messages; keep only {}",
+                    count,
+                    crate::service::tg_bot_service_desc()
+                ),
             ));
         } else {
             checks.push(Check::ok("telegram poller", format!("{} poller", count)));
@@ -421,16 +426,60 @@ fn current_uid() -> String {
         .unwrap_or_default()
 }
 
-/// The systemd-managed main-bot PID (the ONE poller we must keep). 0/None if
-/// the unit isn't running under systemd.
-fn systemd_main_pid() -> Option<u32> {
-    let out = systemctl_user(&["show", "omega-tg-bot.service", "-p", "MainPID", "--value"])?;
-    out.trim().parse::<u32>().ok().filter(|p| *p != 0)
+/// The service-managed main-bot PID (the ONE poller we must keep): systemd
+/// MainPID on Linux, the launchd job pid on macOS (fix7-T3 — this healer was
+/// systemd-only and fail-safe-skipped on every Mac). 0/None if the service
+/// isn't running under its manager.
+fn service_main_pid() -> Option<u32> {
+    if cfg!(target_os = "macos") {
+        // `launchctl print gui/<uid>/os.omega.tg-bot` emits a `pid = <N>`
+        // line while the job is running (absent when stopped).
+        let target = format!("gui/{}/{}", current_uid(), crate::service::TG_BOT_LAUNCHD_LABEL);
+        let out = std::process::Command::new("launchctl")
+            .args(["print", &target])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None; // LaunchAgent not bootstrapped (or no launchd)
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("pid =").and_then(|v| v.trim().parse::<u32>().ok()))
+            .filter(|p| *p != 0)
+    } else {
+        let out = systemctl_user(&["show", "omega-tg-bot.service", "-p", "MainPID", "--value"])?;
+        out.trim().parse::<u32>().ok().filter(|p| *p != 0)
+    }
 }
 
-/// This user's `bun … omega-tg-bot.ts` PIDs that are NOT agent bots. Agent bots
-/// (omega-tg-agent-*.service) run the SAME script but carry OMEGA_AGENT_BOT in
-/// their environ — they are legitimate separate services and must NOT be killed.
+/// PIDs of legitimate agent bots on macOS, where /proc doesn't exist. Every
+/// agent bot is a launchd job labelled `os.omega.tg-agent-<id>` (see
+/// spawnAgentBot in omega-tg-bot.ts), so collect their pids from
+/// `launchctl list` (columns: PID Status Label; "-" when not running).
+/// NOTE a command-line check (`ps -o command=`) can NOT replace this: agent
+/// bots run the IDENTICAL `bun … omega-tg-bot.ts` command as the main bot
+/// and differ only by environment / launchd label.
+fn agent_bot_pids_darwin() -> std::collections::HashSet<u32> {
+    let Ok(out) = std::process::Command::new("launchctl").arg("list").output() else {
+        return Default::default();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut cols = l.split_whitespace();
+            let pid = cols.next()?.parse::<u32>().ok()?;
+            let _status = cols.next()?;
+            let label = cols.next()?;
+            label.starts_with("os.omega.tg-agent-").then_some(pid)
+        })
+        .collect()
+}
+
+/// This user's `bun … omega-tg-bot.ts` PIDs that are NOT agent bots. Agent
+/// bots (omega-tg-agent-* / os.omega.tg-agent-*) run the SAME script but are
+/// legitimate separate services and must NOT be killed. Platform-aware
+/// exclusion (fix7-T3): Linux reads OMEGA_AGENT_BOT= from /proc/<pid>/environ;
+/// macOS matches the pid against the os.omega.tg-agent-* launchd jobs.
 fn main_bot_pollers(uid: &str) -> Vec<u32> {
     let Ok(out) = std::process::Command::new("pgrep")
         .args(["-u", uid, "-f", r"bun.*omega-tg-bot\.ts"])
@@ -438,10 +487,18 @@ fn main_bot_pollers(uid: &str) -> Vec<u32> {
     else {
         return Vec::new();
     };
+    let agent_pids = if cfg!(target_os = "macos") {
+        agent_bot_pids_darwin()
+    } else {
+        Default::default()
+    };
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter_map(|s| s.parse::<u32>().ok())
         .filter(|pid| {
+            if cfg!(target_os = "macos") {
+                return !agent_pids.contains(pid);
+            }
             // Skip agent bots: their /proc/<pid>/environ contains OMEGA_AGENT_BOT=.
             let environ = std::fs::read(format!("/proc/{}/environ", pid)).unwrap_or_default();
             !environ
@@ -451,7 +508,7 @@ fn main_bot_pollers(uid: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Kill orphan duplicate pollers of the MAIN bot, keeping the systemd one.
+/// Kill orphan duplicate pollers of the MAIN bot, keeping the service-managed one.
 fn fix_duplicate_pollers() -> Vec<String> {
     let uid = current_uid();
     let pollers = main_bot_pollers(&uid);
@@ -459,16 +516,19 @@ fn fix_duplicate_pollers() -> Vec<String> {
         return Vec::new();
     }
     // SAFETY: only kill duplicates when we can positively identify the ONE to
-    // keep (the systemd-managed PID). If systemd can't tell us, do nothing rather
-    // than risk killing the live bot.
-    let Some(keep_pid) = systemd_main_pid() else {
-        return vec!["duplicate pollers found but systemd MainPID unknown — skipped (manual: keep only omega-tg-bot.service)".into()];
+    // keep (the service-managed PID). If the service manager can't tell us, do
+    // nothing rather than risk killing the live bot.
+    let Some(keep_pid) = service_main_pid() else {
+        return vec![format!(
+            "duplicate pollers found but the service-managed PID is unknown — skipped (manual: keep only {})",
+            crate::service::tg_bot_service_desc()
+        )];
     };
     let keep = Some(keep_pid);
     let mut log = Vec::new();
     for pid in pollers {
         if Some(pid) == keep {
-            continue; // the canonical, systemd-managed poller
+            continue; // the canonical, service-managed poller
         }
         let ok = std::process::Command::new("kill")
             .arg(pid.to_string())
@@ -479,7 +539,7 @@ fn fix_duplicate_pollers() -> Vec<String> {
             log.push(format!(
                 "killed duplicate Telegram poller pid {}{}",
                 pid,
-                keep.map(|k| format!(" (kept systemd {})", k)).unwrap_or_default()
+                keep.map(|k| format!(" (kept service-managed {})", k)).unwrap_or_default()
             ));
         }
     }

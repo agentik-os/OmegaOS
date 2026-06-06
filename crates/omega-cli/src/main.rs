@@ -1573,6 +1573,14 @@ async fn run_tui_loop(
                     }
                     if app.status_message == before_refresh {
                         app.status_message = Some("Refreshed".to_string());
+                        // fix7-T4: the ack is a deliberate user action — it
+                        // supersedes any async sticky still inside its 2s
+                        // window. Clear the pair WITH the overwrite, or
+                        // status_sticky_msg/at dangle pointing at a message
+                        // no longer shown (pair desync). Refresh-produced
+                        // notices (the != branch) keep their sticky untouched.
+                        app.status_sticky_at = None;
+                        app.status_sticky_msg = None;
                     }
                 }
                 Action::LoginClaude => {
@@ -2609,11 +2617,19 @@ enum AuditAction {
 enum TelegramAction {
     /// Save bot token + chat id (+ optional sender allow-list) to ~/.omega/telegram.toml
     Setup {
-        bot_token: String,
+        /// Bot token from @BotFather. May be OMITTED when the OMEGA_TG_TOKEN
+        /// env var carries it (keeps the secret out of `ps`/argv — how the
+        /// npm wizard invokes us); the first positional is then the chat id.
+        /// A plain `#[arg(env)]` can't express that: clap fills positionals
+        /// by argv index, so the lone <chat_id> would land in this slot —
+        /// both positionals are Options and cmd_telegram shifts them.
+        /// `allow_negative_numbers` so a leading negative chat id parses.
+        #[arg(value_name = "BOT_TOKEN", allow_negative_numbers = true)]
+        bot_token: Option<String>,
         /// Telegram chat id. Groups/supergroups have NEGATIVE ids
         /// (e.g. -1001234567) — accepted as-is, no quoting needed.
         #[arg(allow_negative_numbers = true)]
-        chat_id: i64,
+        chat_id: Option<i64>,
         /// Optional Telegram sender user_ids allowed to talk to the bot.
         /// When set, every message MUST come from one of these users; others
         /// are silently dropped. Recommended for shared chats.
@@ -2646,6 +2662,40 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
     use omega_core::monitor::OmegaTelegramConfig;
     match action {
         TelegramAction::Setup { bot_token, chat_id, user_id, relay_session, label } => {
+            // fix7-T1: resolve the token/chat pair. Two accepted shapes:
+            //   omega telegram setup <bot_token> <chat_id> …             (classic)
+            //   OMEGA_TG_TOKEN=<tok> omega telegram setup <chat_id> …    (token off argv)
+            // In the env form the single positional lands in `bot_token`
+            // (clap assigns by index) — shift it into chat_id here.
+            let env_token = std::env::var("OMEGA_TG_TOKEN")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            let (bot_token, chat_id) = match (bot_token, chat_id, env_token) {
+                // classic two-positional form — an explicit argv token wins over the env var
+                (Some(tok), Some(id), _) => (tok, id),
+                // env form: the one positional is the chat id
+                (Some(first), None, Some(tok)) => {
+                    let id = first.parse::<i64>().with_context(|| {
+                        format!(
+                            "OMEGA_TG_TOKEN is set, so the first positional must be the <chat_id> (got '{}')",
+                            first
+                        )
+                    })?;
+                    (tok, id)
+                }
+                (Some(_), None, None) => anyhow::bail!(
+                    "missing <chat_id> — usage: omega telegram setup <bot_token> <chat_id>, \
+                     or OMEGA_TG_TOKEN=<token> omega telegram setup <chat_id>"
+                ),
+                (None, _, Some(_)) => anyhow::bail!(
+                    "missing <chat_id> — usage: OMEGA_TG_TOKEN=<token> omega telegram setup <chat_id>"
+                ),
+                (None, _, None) => anyhow::bail!(
+                    "missing <bot_token> <chat_id> — pass both positionally, or set \
+                     OMEGA_TG_TOKEN (keeps the token out of the process list) and pass only <chat_id>"
+                ),
+            };
             let cfg = OmegaTelegramConfig {
                 bot_token,
                 chat_id,
