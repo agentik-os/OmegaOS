@@ -46,7 +46,9 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}==> $*${NC}"; }
 
-# Privileged command runner — the ONE way this script touches sudo. Tries
+# Privileged command runner — the ONE way this script touches sudo that can
+# ever PROMPT (sole exception: the system-wide rmux config block in Phase 5
+# uses raw `sudo` but self-gates on `sudo -n true`, so it never prompts). Tries
 # passwordless `sudo -n` first; if sudo wants a password AND a real terminal is
 # attached (stdin + stderr are TTYs — i.e. NOT hidden behind the npx animation),
 # falls back to ONE visible interactive prompt (the pre-1.5 behavior; sudo
@@ -1375,7 +1377,7 @@ fi
 # fresh box is usable in seconds instead of minutes.
 if [[ "${OMEGA_WITH_BROWSER:-0}" == "1" && "${OMEGA_SKIP_BROWSER:-0}" != "1" ]]; then
     if ! command -v Xvfb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get install -y xvfb >/dev/null 2>&1 && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
+        omega_sudo sh -c 'apt-get install -y xvfb >/dev/null 2>&1' && ok "Xvfb installed (headless PDF/Playwright)" || info "For headless PDF/browser: 'sudo apt-get install xvfb'"
     fi
     if command -v npm >/dev/null 2>&1; then
         command -v playwright >/dev/null 2>&1 || {
@@ -1385,7 +1387,7 @@ if [[ "${OMEGA_WITH_BROWSER:-0}" == "1" && "${OMEGA_SKIP_BROWSER:-0}" != "1" ]];
         if command -v playwright >/dev/null 2>&1; then
             playwright install chromium >/dev/null 2>&1 && ok "Chromium installed (Playwright + CDP ready)" || info "Chromium download failed — run 'playwright install chromium'"
             if command -v apt-get >/dev/null 2>&1; then
-                sudo env "PATH=$PATH" playwright install-deps chromium >/dev/null 2>&1 && ok "Chromium system deps installed" || info "For Chromium libs: 'sudo playwright install-deps chromium'"
+                omega_sudo env "PATH=$PATH" sh -c 'playwright install-deps chromium >/dev/null 2>&1' && ok "Chromium system deps installed" || info "For Chromium libs: 'sudo playwright install-deps chromium'"
             fi
         fi
     else

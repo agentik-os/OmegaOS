@@ -300,7 +300,7 @@ async function telegramWizard() {
         if (cand) {
           // Explicit operator confirmation — this id becomes BOTH the chat_id
           // and the --user-id allow-list. Never accept it on detection alone.
-          const yn = await ask('  detected: ' + bold(cand.name) + ' (id ' + cand.id + ') — c\'est bien vous ? ' + gray('[y/N] '));
+          const yn = await ask('  detected: ' + bold(cand.name) + ' (id ' + cand.id + ') — is that you? ' + gray('[y/N] '));
           if (yn !== null && /^y/i.test(yn)) { chatId = cand.id; who = cand.name; break; }
           process.stdout.write('  ' + gray('Ignored — send a NEW message from YOUR account, or type your numeric id.') + '\n');
         }
