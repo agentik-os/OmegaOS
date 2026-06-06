@@ -599,7 +599,28 @@ function gitMenuKb(name: string) {
 // ── ATLAS: the Telegram brain IS Atlas — the boss the operator
 // talks to. "AISB" is the TEAM (13 Matrix manager agents + one dedicated oracle
 // per project), NOT a name. The Atlas directs them (or acts directly).
-const CLAUDE = process.env.CLAUDE_BIN || `${homedir()}/.local/bin/claude`;
+// Claude binary: env override → native-installer path → whatever is on PATH
+// (npm/brew installs land elsewhere, e.g. /opt/homebrew/bin on macOS).
+const CLAUDE = process.env.CLAUDE_BIN || (() => {
+  const local = `${homedir()}/.local/bin/claude`;
+  if (existsSync(local)) return local;
+  try {
+    const p = Bun.spawnSync(["sh", "-c", "command -v claude"]).stdout.toString().trim();
+    if (p) return p;
+  } catch {}
+  return local; // default — master() reports a clear error if it is missing
+})();
+// `timeout` is GNU coreutils: absent on stock macOS (brew installs `gtimeout`).
+// A bare `timeout 900 claude …` there fails with "command not found" → empty
+// stdout → "(Atlas returned nothing)". Resolve a real binary or run unguarded.
+const TIMEOUT_CMD: string[] = (() => {
+  for (const c of ["timeout", "gtimeout"]) {
+    try {
+      if (Bun.spawnSync(["sh", "-c", `command -v ${c}`]).exitCode === 0) return [c, "900"];
+    } catch {}
+  }
+  return [];
+})();
 let ATLAS_PROMPT = "";
 try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
 catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
@@ -619,11 +640,21 @@ async function master(text: string): Promise<string> {
   // Headless Claude AS ATLAS, full VPS control: every tool, whole-FS
   // (--add-dir /), permissions auto-approved. It dispatches to the 13 managers /
   // project oracles (omega dispatch) or acts directly. timeout guards a stuck run.
+  if (!existsSync(CLAUDE)) {
+    return `Claude Code not found (${CLAUDE}) — install + log in on this machine:  omega install claude  then  claude  →  /login`;
+  }
   try {
-    const r = await $`timeout 900 ${CLAUDE} -p ${text} --append-system-prompt ${IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE} --add-dir / --dangerously-skip-permissions`
+    const r = await $`${TIMEOUT_CMD} ${CLAUDE} -p ${text} --append-system-prompt ${IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE} --add-dir / --dangerously-skip-permissions`
       .env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
     const o = r.stdout.toString().trim();
-    return o || "(Atlas returned nothing — try again or use /menu)";
+    if (o) return o;
+    // Empty stdout = claude failed (not logged in, crashed, timed out). Surface
+    // the stderr tail instead of a blind "returned nothing" — diagnosable from
+    // the phone.
+    const err = r.stderr.toString().trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+    return err
+      ? `(Atlas returned nothing — claude said: ${err})`
+      : "(Atlas returned nothing — try again or use /menu)";
   } catch (e: any) { return "Atlas error: " + (e?.message || e); }
 }
 
@@ -638,11 +669,18 @@ async function projectOracle(project: string, text: string): Promise<string> {
     `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 13 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
+  if (!existsSync(CLAUDE)) {
+    return `Claude Code not found (${CLAUDE}) — install + log in on this machine:  omega install claude  then  claude  →  /login`;
+  }
   try {
-    const r = await $`timeout 900 ${CLAUDE} -p ${text} --append-system-prompt ${scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE} --add-dir ${dir} --dangerously-skip-permissions`
+    const r = await $`${TIMEOUT_CMD} ${CLAUDE} -p ${text} --append-system-prompt ${scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE} --add-dir ${dir} --dangerously-skip-permissions`
       .cwd(dir).env({ ...process.env, OMEGA_DIR }).quiet().nothrow();
     const o = r.stdout.toString().trim();
-    return o || `(The ${project} oracle returned nothing — try again.)`;
+    if (o) return o;
+    const err = r.stderr.toString().trim().split("\n").slice(-3).join(" · ").slice(0, 300);
+    return err
+      ? `(The ${project} oracle returned nothing — claude said: ${err})`
+      : `(The ${project} oracle returned nothing — try again.)`;
   } catch (e: any) { return `Oracle ${project} error: ${e?.message || e}`; }
 }
 
