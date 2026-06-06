@@ -881,7 +881,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             // Esc-from-chat) an in-flight 'q' aimed at the agent must not
             // quit the whole TUI.
             if app.in_post_drop_grace() {
-                return Action::None;
+                return grace_swallow_notice(app, "q");
             }
             app.should_quit = true;
             Action::Quit
@@ -907,6 +907,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             if key.modifiers.contains(KeyModifiers::SHIFT) {
                 app.prev_tab();
             } else if app.tab == Tab::Sessions {
+                // FIX-F (R-3): an in-flight Tab right after a vanish/Esc drop
+                // must not re-enter chat on the clamped-to NEIGHBOR — the rest
+                // of the keystream would type into ITS PTY (the same NEW-3
+                // retarget the Enter guard below closes).
+                if app.in_post_drop_grace() {
+                    return grace_swallow_notice(app, "Tab");
+                }
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
                     SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
@@ -1097,7 +1104,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // must not re-enter chat on the clamped-to neighbor (the rest
                 // of the keystream would type into ITS PTY — NEW-3).
                 if app.in_post_drop_grace() {
-                    return Action::None;
+                    return grace_swallow_notice(app, "Enter");
                 }
                 // Two-panel default: Enter focuses the preview (acts like Tab).
                 // Once focused, Enter is forwarded to the rmux session below
@@ -1471,7 +1478,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             // DESIGN-015: an in-flight 'x' right after a focus drop must not
             // kill the (re-anchored or clamped-to) selection with no confirm.
             if app.in_post_drop_grace() {
-                return Action::None;
+                return grace_swallow_notice(app, "x");
             }
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
@@ -1518,6 +1525,12 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::F(5) => Action::Refresh,
 
         KeyCode::Char('.') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
+            // FIX-F (R-4): a sentence-final '.' in an in-flight keystream must
+            // not silently UNPROTECT the clamped-to neighbor — the toggle
+            // would persist long after the grace ended.
+            if app.in_post_drop_grace() {
+                return grace_swallow_notice(app, ".");
+            }
             // Toggle on the source entry, then return owned (name, state) so the
             // &mut borrow ends before we touch app.rows / app.status_message.
             let toggled = app.sessions.get_mut(app.selected).map(|entry| {
@@ -1555,8 +1568,14 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.status_message = Some("Cancelled".to_string());
                 return Action::None;
             }
-            // Cancel an armed project-remove or Telegram-disconnect confirm.
+            // Cancel ANY other armed two-press confirm: project-remove,
+            // project delete-forever (FIX-B/R-5 — its warning advertised
+            // "Esc to cancel" but this arm omitted it, so a 'D' after an
+            // advertised-but-dead cancel fired the rm -rf), a settings
+            // destructive-action/clear-field arm, or Telegram-disconnect.
             if app.project_confirm_pending.take().is_some()
+                || app.project_delete_pending.take().is_some()
+                || app.settings_confirm_pending.take().is_some()
                 || app.monitor_disconnect_armed
             {
                 app.monitor_disconnect_armed = false;
@@ -1588,18 +1607,34 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // legacy-deliverable hatch: terminals without the kitty
                 // protocol deliver Alt+Esc as a split ESC ESC pair, which
                 // would otherwise land here and QUIT the whole TUI.
-                if app.take_esc_chord() {
-                    if let Some(entry) = app.selected_session() {
-                        let session = entry.session.name.clone();
-                        app.enter_chat_focus();
-                        app.status_message = Some("ESC → agent".to_string());
-                        return Action::ForwardKeyToSession { session, key: "Escape" };
+                if let Some(armed_on) = app.take_esc_chord() {
+                    // FIX-H (D-10): the chord target was pinned at ARM time —
+                    // only fire if the selection still IS that session, so a
+                    // vanish-clamp between the two Escs can't forward the
+                    // literal ESC into a neighbor's PTY (and enter ITS chat).
+                    match app.selected_session() {
+                        Some(entry) if entry.session.name == armed_on => {
+                            let session = entry.session.name.clone();
+                            app.enter_chat_focus();
+                            app.status_message = Some("ESC → agent".to_string());
+                            return Action::ForwardKeyToSession { session, key: "Escape" };
+                        }
+                        _ => {
+                            app.status_message = Some(format!(
+                                "Esc-Esc dropped — '{}' is gone",
+                                armed_on
+                            ));
+                            return Action::None;
+                        }
                     }
                 }
                 // DESIGN-015: inside the post-drop grace a stray Esc must not
-                // quit the TUI in one press.
+                // quit the TUI in one press. FIX-D (D-5): with the grace
+                // (800ms) longer than the chord window (300ms), a SLOW second
+                // Esc of a taught Esc-Esc gesture lands here — swallowed with
+                // a notice instead of quitting the whole TUI.
                 if app.in_post_drop_grace() {
-                    return Action::None;
+                    return grace_swallow_notice(app, "Esc");
                 }
                 app.should_quit = true;
                 Action::Quit
@@ -1611,6 +1646,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
 
         _ => Action::None,
     }
+}
+
+/// FIX-D (D-11): the post-drop grace swallows a destructive key — tell the
+/// user instead of silently eating the press (a fast Esc→Enter or Esc→q used
+/// to disappear with zero feedback).
+fn grace_swallow_notice(app: &mut App, key: &str) -> Action {
+    app.status_message = Some(format!(
+        "'{}' ignored — just left a session (↑/↓ first, or wait a moment)",
+        key
+    ));
+    Action::None
 }
 
 /// Move the settings field cursor to the next/previous actionable field,
@@ -1919,14 +1965,19 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // inside the window forwards a real ESC to this agent — the
             // legacy-deliverable hatch for terminals whose Alt+Esc arrives as
             // a split ESC ESC pair (which would otherwise quit the TUI via
-            // the Sessions quit arm). Also open the destructive-hotkey grace
+            // the Sessions quit arm). FIX-H (D-10): pin THIS session as the
+            // chord target so a vanish-clamp before the second Esc can't
+            // retarget a neighbor. Also open the destructive-hotkey grace
             // (DESIGN-015) so the rest of an in-flight keystream can't land
             // on q/x/Enter in list mode.
-            app.chat_esc_at = Some(std::time::Instant::now());
+            app.chat_esc_at = Some((std::time::Instant::now(), session.clone()));
             app.focus_drop_at = Some(std::time::Instant::now());
             // DESIGN-018: teach the recovery keys in-context, not Help-only.
+            // FIX-E (D-6): list-focus-true copy — Ctrl+C here opens the
+            // New-Claude prompt (the interrupt forward is chat-focus only),
+            // so teach the keys that actually work from the list.
             app.status_message = Some(
-                "Focus: session list (Esc Esc = ESC to agent, Ctrl+C = interrupt)".to_string(),
+                "Focus: session list (Esc Esc = ESC to agent · Enter = back to chat)".to_string(),
             );
             Action::None
         }
@@ -2542,9 +2593,9 @@ mod tests {
     fn post_drop_grace_expires_after_window() {
         let mut app = chat_app("oracle-Demo-1");
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        // Backdate the drop beyond the 300ms window.
+        // Backdate the drop beyond the 800ms window (FIX-D widened it).
         app.focus_drop_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(400));
+            .checked_sub(std::time::Duration::from_millis(900));
         app.chat_esc_at = None;
         let act = handle_key(&mut app, press('q'));
         assert!(matches!(act, Action::Quit), "expired grace must restore q");
@@ -2590,5 +2641,125 @@ mod tests {
             "a leaked Sessions chord must not fullscreen the 2col detail"
         );
         assert!(app.detail_focused, "single Tab on a 2col tab focuses the detail");
+    }
+
+    // FIX-B (R-5): Esc must cancel EVERY armed two-press confirm. The
+    // project-delete warning advertised "Esc to cancel" while the Esc arm
+    // omitted the flag — an advertised-but-dead cancel in front of an rm -rf.
+    #[test]
+    fn esc_cancels_every_armed_confirm_state() {
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+
+        // project_delete_pending (Projects tab 'D' — the rm -rf class).
+        let mut app = test_app();
+        app.tab = Tab::Agentic;
+        app.project_delete_pending = Some("Demo".into());
+        assert!(matches!(handle_key(&mut app, esc), Action::None));
+        assert_eq!(app.project_delete_pending, None, "Esc must disarm 'D'");
+        assert_eq!(app.status_message.as_deref(), Some("Cancelled"));
+
+        // settings_confirm_pending (Settings Enter/x arm — uninstall class).
+        let mut app = test_app();
+        app.tab = Tab::Settings;
+        app.detail_focused = true;
+        app.settings_confirm_pending = Some(1);
+        handle_key(&mut app, esc);
+        assert_eq!(app.settings_confirm_pending, None, "Esc must disarm settings confirm");
+        assert!(app.detail_focused, "the cancel CONSUMES the Esc — focus unchanged");
+
+        // monitor_disconnect_armed (wired pre-fix5 — keep covered).
+        let mut app = test_app();
+        app.tab = Tab::Settings;
+        app.monitor_disconnect_armed = true;
+        handle_key(&mut app, esc);
+        assert!(!app.monitor_disconnect_armed, "Esc must disarm the disconnect");
+
+        // menu_confirm_pending (KillAll).
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_confirm_pending = Some(MenuAction::KillAll);
+        handle_key(&mut app, esc);
+        assert_eq!(app.menu_confirm_pending, None, "Esc must disarm the menu confirm");
+    }
+
+    // FIX-B + FIX-H (D-9): a tab switch (leave_tab) cancels every armed
+    // confirm AND the Esc-Esc chord arm — none may survive into a tab where
+    // their context is invisible.
+    #[test]
+    fn tab_switch_cancels_all_armed_confirms_and_esc_chord() {
+        let mut app = test_app();
+        app.tab = Tab::Agentic;
+        app.project_delete_pending = Some("Demo".into());
+        app.settings_confirm_pending = Some(0);
+        app.monitor_disconnect_armed = true;
+        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(app.project_delete_pending, None);
+        assert_eq!(app.settings_confirm_pending, None);
+        assert!(!app.monitor_disconnect_armed);
+        assert!(app.chat_esc_at.is_none(), "stale chord arm must not survive a tab switch");
+    }
+
+    // FIX-D (D-5): a SLOW second Esc — chord window (300ms) expired, grace
+    // (800ms) not — must be swallowed WITH a notice (D-11), never quit the
+    // TUI whose status bar just taught "Esc Esc = ESC to agent".
+    #[test]
+    fn slow_second_esc_swallowed_with_notice_not_quit() {
+        let mut app = chat_app("oracle-Demo-1");
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        handle_key(&mut app, esc); // chat → list: arms chord + grace
+        // Backdate both stamps 400ms: chord stale, grace still open.
+        let t = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_millis(400))
+            .unwrap();
+        app.chat_esc_at = Some((t, "oracle-Demo-1".into()));
+        app.focus_drop_at = Some(t);
+
+        let act = handle_key(&mut app, esc);
+        assert!(matches!(act, Action::None), "slow second Esc must not act");
+        assert!(!app.should_quit, "slow second Esc must NOT quit the TUI");
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("ignored"),
+            "the swallow must be announced, got {:?}",
+            app.status_message
+        );
+    }
+
+    // FIX-H (D-10): the chord target is pinned at ARM time — if the armed
+    // session vanished and a NEIGHBOR clamped into its slot before the
+    // second Esc, the literal ESC is dropped with a notice, not forwarded
+    // into the neighbor's PTY.
+    #[test]
+    fn esc_chord_dropped_when_pinned_target_vanished() {
+        let mut app = chat_app("oracle-Demo-1");
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        handle_key(&mut app, esc); // arms the chord on oracle-Demo-1
+        // The session vanishes; a neighbor clamps into the selected slot.
+        app.sessions.clear();
+        app.sessions.push(SessionEntry {
+            session: OmegaSession::classify("neighbor"),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        });
+        app.selected = 0;
+
+        let act = handle_key(&mut app, esc); // second Esc, inside the window
+        assert!(
+            !matches!(act, Action::ForwardKeyToSession { .. }),
+            "ESC must NOT forward into the neighbor's PTY"
+        );
+        assert!(!app.should_quit, "the dropped chord must not fall through to quit");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::List,
+            "must not enter the neighbor's chat"
+        );
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("oracle-Demo-1"),
+            "the drop notice must name the vanished target, got {:?}",
+            app.status_message
+        );
     }
 }

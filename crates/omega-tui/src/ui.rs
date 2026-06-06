@@ -3201,12 +3201,18 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        // A live status notice ALWAYS wins (F-7): kill/create/vanish/focus
-        // confirmations and forwarder errors were built for this channel, and
-        // the event loop clears the message on the next keypress — so on the
-        // Sessions tab the bar falls back to the selected session's compact
-        // git status (`↑4h • main`) once the notice is consumed. The keyboard
-        // hints that used to live here are all under the Help tab.
+        // FIX-A (fix5): an armed two-press confirm renders STATE-DRIVEN with
+        // top priority — the warning comes from `armed_confirm_warning()`
+        // (the state itself), not from `status_message`, so it is TTL-immune
+        // and overwrite-immune by construction: launcher prompts, Ctrl-T,
+        // paste acks and sticky forwarder errors can no longer hide a live
+        // armed confirm (R-1/R-2/D-3/D-4). Below that, a live status notice
+        // wins (F-7): kill/create/vanish/focus confirmations and forwarder
+        // errors were built for this channel, and the event loop clears the
+        // message on the next keypress — so on the Sessions tab the bar falls
+        // back to the selected session's compact git status (`↑4h • main`)
+        // once the notice is consumed. The keyboard hints that used to live
+        // here are all under the Help tab.
         {
             let on_sessions = app.tab == crate::app::Tab::Sessions;
             let git_text = if on_sessions {
@@ -3215,10 +3221,15 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             };
-            let (text, style) = match (app.status_message.as_deref(), git_text) {
-                (Some(msg), _) => (msg.to_string(), Style::default().fg(th::dim())),
-                (None, Some(g)) => (g, Style::default().fg(th::success())),
-                (None, None) => (String::new(), Style::default()),
+            let armed = app.armed_confirm_warning();
+            let (text, style) = match (armed, app.status_message.as_deref(), git_text) {
+                (Some(warn), _, _) => (
+                    warn,
+                    Style::default().fg(th::error()).add_modifier(Modifier::BOLD),
+                ),
+                (None, Some(msg), _) => (msg.to_string(), Style::default().fg(th::dim())),
+                (None, None, Some(g)) => (g, Style::default().fg(th::success())),
+                (None, None, None) => (String::new(), Style::default()),
             };
             Span::styled(text, style)
         },

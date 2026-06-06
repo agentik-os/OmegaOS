@@ -727,8 +727,37 @@ async fn run_menu() -> Result<()> {
         std::env::set_var("COLORTERM", "truecolor");
     }
 
+    // FIX-I (D-12): a panic inside the TUI loop must not strand the user's
+    // terminal raw, stuck in the alternate screen, or with the kitty
+    // enhancement flags active (Esc arrives as `CSI 27 u`, Ctrl+C stops
+    // signalling SIGINT). Restore the terminal FIRST — pop the flags while
+    // still in the alt screen (where FIX-C pushes them), then leave it —
+    // and only then let the default hook print the panic where it's readable.
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let mut out = std::io::stdout();
+        let _ = crossterm::terminal::disable_raw_mode();
+        pop_kbd_enhancement(&mut out); // pops only if init pushed (KBD_ENHANCED)
+        let _ = crossterm::execute!(
+            out,
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableBracketedPaste,
+        );
+        default_panic_hook(info);
+    }));
+
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
+    crossterm::execute!(
+        stdout,
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        // Bracketed paste — long pastes arrive as a single Event::Paste
+        // instead of fragmenting into per-character Key events (which would
+        // hit Enter on embedded \n and submit prematurely).
+        crossterm::event::EnableBracketedPaste,
+    )?;
     // DESIGN-014: make the chat Alt+Esc literal-ESC hatch deliverable. Legacy
     // terminals emit Alt+Esc as an ESC ESC byte pair that crossterm parses as
     // plain Esc — one press when the pair lands in a single read
@@ -739,6 +768,13 @@ async fn run_menu() -> Result<()> {
     // (graceful fallback — the probe needs raw mode, enabled above): on
     // unsupported terminals nothing is pushed and the Esc-Esc chord
     // (input.rs) is the literal-ESC path; we only pop what we pushed.
+    // FIX-C (D-1/D-2): push AFTER EnterAlternateScreen — kitty-class
+    // terminals keep INDEPENDENT per-screen keyboard-mode stacks ("The main
+    // and alternate screens … must maintain their own, independent, keyboard
+    // mode stacks"). Pushing on the main screen made the flag a no-op inside
+    // the TUI AND leaked DISAMBIGUATE into the user's shell after quit. Push
+    // in the alt screen; both pops (quit below, Ctrl+R restart) already run
+    // before LeaveAlternateScreen, i.e. on the same alt-screen stack.
     let kbd_enhanced =
         crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     KBD_ENHANCED.store(kbd_enhanced, std::sync::atomic::Ordering::Relaxed);
@@ -751,20 +787,13 @@ async fn run_menu() -> Result<()> {
         )
         .ok();
     }
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        // Bracketed paste — long pastes arrive as a single Event::Paste
-        // instead of fragmenting into per-character Key events (which would
-        // hit Enter on embedded \n and submit prematurely).
-        crossterm::event::EnableBracketedPaste,
-    )?;
     let backend = ratatui::prelude::CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
     let result = run_tui_loop(&mut terminal, &mut app).await;
 
+    // FIX-C: pop BEFORE LeaveAlternateScreen — the push above landed on the
+    // alt-screen stack, so the pop must drain that same stack.
     pop_kbd_enhancement(terminal.backend_mut());
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(
@@ -1176,6 +1205,8 @@ async fn run_tui_loop(
                     // Tear down the terminal cleanly, then re-exec the
                     // current binary so a freshly-built `omega` is picked up
                     // in place (same PID on Unix via exec).
+                    // FIX-C: pop BEFORE LeaveAlternateScreen — same alt-screen
+                    // stack the init push landed on (no per-restart orphan).
                     pop_kbd_enhancement(terminal.backend_mut());
                     crossterm::terminal::disable_raw_mode().ok();
                     crossterm::execute!(
@@ -2050,6 +2081,10 @@ async fn run_tui_loop(
                 // confirm warning with a per-tab hint (a direct tab writer —
                 // e.g. F1 → Help — bypasses the next/prev_tab disarm).
                 && app.menu_confirm_pending.is_none()
+                // FIX-G (D-8): nor an async sticky notice still inside its
+                // minimum display window (an in-flight Left/Right was breaking
+                // FIX-2's 2s promise).
+                && !app.status_sticky_unexpired()
             {
                 use omega_tui::app::Tab;
                 app.status_message = Some(match app.tab {

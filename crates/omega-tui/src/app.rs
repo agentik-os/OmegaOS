@@ -1034,7 +1034,10 @@ pub struct App {
     /// a real ESC to the agent instead of falling through to the quit arm.
     /// Legacy terminals deliver Alt+Esc as a split ESC ESC pair, so without
     /// this chord the "literal ESC" gesture would QUIT the TUI.
-    pub chat_esc_at: Option<std::time::Instant>,
+    /// FIX-H (D-10): carries the session NAME the chord was armed on, pinned
+    /// at arm time — the fire site verifies it still matches the selection so
+    /// a vanish-clamp between the two Escs can't retarget a neighbor's PTY.
+    pub chat_esc_at: Option<(std::time::Instant, String)>,
     /// Set when chat focus was dropped without a deliberate navigation key
     /// (session vanished mid-typing, or Esc-from-chat) — destructive single-key
     /// hotkeys (q / x / Enter / Esc-quit) are ignored while inside the grace
@@ -1044,6 +1047,10 @@ pub struct App {
     /// display deadline: the keypress TTL must not clear them before this
     /// instant, or the typist they're addressed to never sees them (FIX-2).
     pub status_sticky_until: Option<std::time::Instant>,
+    /// The exact message `status_sticky_until` protects (FIX-G/D-7): the TTL
+    /// exemption applies only while `status_message` still holds this text,
+    /// so a plain overwrite can't inherit a dangling sticky deadline.
+    pub status_sticky_msg: Option<String>,
     /// Tracks the last Tab press for double-tap detection (any tab).
     pub last_tab_press: Option<std::time::Instant>,
     /// Focus state at the START of a Tab sequence, captured on the first tap so
@@ -1077,7 +1084,8 @@ pub struct App {
     pub project_confirm_pending: Option<String>,
     /// Two-press confirm for "Delete forever" (Projects tab 'D'): holds the
     /// project name armed by the first press; second 'D' on the same name fires
-    /// the destructive HardDeleteProject. Cleared on cursor move / Esc.
+    /// the destructive HardDeleteProject. Cleared on cursor move, Esc, and tab
+    /// switch (FIX-B — the Esc cancel was advertised but unwired before fix5).
     pub project_delete_pending: Option<String>,
     /// Two-press confirm for the Monitor Telegram section's Enter→disconnect.
     /// Armed by the first focused-Enter, fired by the second. Cleared on nav.
@@ -1152,6 +1160,7 @@ impl App {
             chat_esc_at: None,
             focus_drop_at: None,
             status_sticky_until: None,
+            status_sticky_msg: None,
             last_tab_press: None,
             tab_seq_start: None,
             cmd_capture: None,
@@ -1279,10 +1288,17 @@ impl App {
             return;
         }
         if let Some(until) = self.status_sticky_until {
-            if std::time::Instant::now() < until {
+            // FIX-G (D-7): the deadline belongs to the exact message
+            // set_status_sticky wrote. A plain `status_message = Some(..)`
+            // overwrite inside the window must NOT inherit the exemption —
+            // the dangling deadline would TTL-shield the WRONG message.
+            if self.status_message == self.status_sticky_msg
+                && std::time::Instant::now() < until
+            {
                 return;
             }
             self.status_sticky_until = None;
+            self.status_sticky_msg = None;
         }
         self.status_message = None;
     }
@@ -1291,16 +1307,82 @@ impl App {
     /// survives in-flight keystrokes (FIX-2). Nav hints and key-triggered
     /// acks keep the plain keypress TTL (`status_message = Some(..)`).
     pub fn set_status_sticky(&mut self, msg: String) {
-        self.status_message = Some(msg);
+        self.status_message = Some(msg.clone());
+        // FIX-G (D-7): remember WHICH message the deadline belongs to, so a
+        // plain overwrite inside the window doesn't inherit the exemption.
+        self.status_sticky_msg = Some(msg);
         self.status_sticky_until =
             Some(std::time::Instant::now() + std::time::Duration::from_millis(2000));
     }
 
-    /// DESIGN-015: true while inside the ~300ms destructive-hotkey grace that
+    /// True while an async-origin sticky notice is inside its minimum display
+    /// window (FIX-G/D-8): the event loop's per-tab hint seeding must not
+    /// overwrite it.
+    pub fn status_sticky_unexpired(&self) -> bool {
+        self.status_sticky_until
+            .is_some_and(|t| std::time::Instant::now() < t)
+    }
+
+    /// FIX-A (fix5): single source of truth for "an armed two-press confirm
+    /// is live", covering ALL four armed states. `draw_status_bar` renders
+    /// this with priority over `status_message`, so the warning is
+    /// STATE-DRIVEN — TTL-immune and overwrite-immune by construction. The
+    /// entire R-1/R-2/D-3/D-4 class (launcher prompts, Ctrl-T, paste, sticky
+    /// forwarder errors overwriting an armed warning) dies here: as long as
+    /// the state is armed, the warning is on screen, whatever else wrote to
+    /// the status line.
+    pub fn armed_confirm_warning(&mut self) -> Option<String> {
+        if let Some(action) = self.menu_confirm_pending {
+            let verb = if matches!(action, MenuAction::NuclearCleanup) {
+                "NUCLEAR CLEANUP (kill all + prune state + free RAM)"
+            } else {
+                "KILL ALL sessions"
+            };
+            return Some(format!(
+                "[!] {} — press Enter again to CONFIRM, Esc to cancel",
+                verb
+            ));
+        }
+        if let Some(name) = &self.project_delete_pending {
+            return Some(format!(
+                "Press D again to DELETE LOCAL MACHINE '{}' (OmegaOS + kill oracle + rm -rf LOCAL FOLDER; GitHub kept) — Esc to cancel",
+                name
+            ));
+        }
+        if let Some(idx) = self.settings_confirm_pending {
+            // Re-derive the armed field's label (the index is cleared on any
+            // nav/section change, so it still points at the armed field).
+            let section = self.selected_settings_section();
+            let providers = self.providers();
+            let fields = fields_for_section(section, &providers, &self.config);
+            return Some(match fields.get(idx) {
+                Some(SettingsField::EditText { label, .. }) => {
+                    format!("Press x again to clear: {} (Esc to cancel)", label.trim())
+                }
+                Some(f) => format!(
+                    "Press Enter again to confirm: {} (Esc to cancel)",
+                    f.label().trim()
+                ),
+                None => "Press the same key again to confirm (Esc to cancel)".to_string(),
+            });
+        }
+        if self.monitor_disconnect_armed {
+            return Some(
+                "Press Enter again to DISCONNECT the Telegram bot (Esc to cancel)".to_string(),
+            );
+        }
+        None
+    }
+
+    /// DESIGN-015: true while inside the destructive-hotkey grace that
     /// follows a non-deliberate focus drop (vanish, Esc-from-chat).
+    /// FIX-D (D-5): the grace (800ms) is deliberately LONGER than the Esc-Esc
+    /// chord window (300ms, `take_esc_chord`) so a slow second Esc lands in a
+    /// swallow band — chord expired, grace not — instead of quitting the TUI
+    /// while the status bar is still teaching "Esc Esc = ESC to agent".
     pub fn in_post_drop_grace(&self) -> bool {
         self.focus_drop_at
-            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(800))
             .unwrap_or(false)
     }
 
@@ -1311,14 +1393,16 @@ impl App {
         self.chat_esc_at = None;
     }
 
-    /// DESIGN-014: consume the Esc-Esc chord arm. True when an Esc arrives
-    /// within the window after an Esc that dropped chat focus — the caller
-    /// forwards a literal ESC to the agent instead of quitting.
-    pub fn take_esc_chord(&mut self) -> bool {
+    /// DESIGN-014: consume the Esc-Esc chord arm. Returns the session the
+    /// chord was ARMED on when the second Esc arrives within the window —
+    /// FIX-H (D-10): the caller must verify it still matches the current
+    /// selection before forwarding, so a vanish-clamp between the two Escs
+    /// can't forward the literal ESC into a NEIGHBOR's PTY.
+    pub fn take_esc_chord(&mut self) -> Option<String> {
         self.chat_esc_at
             .take()
-            .map(|t| t.elapsed() < std::time::Duration::from_millis(300))
-            .unwrap_or(false)
+            .filter(|(t, _)| t.elapsed() < std::time::Duration::from_millis(300))
+            .map(|(_, name)| name)
     }
 
     /// Handle a Tab press in the Sessions tab.
@@ -1975,14 +2059,20 @@ impl App {
         self.sessions.get(self.selected)
     }
 
-    /// Shared tab-switch hygiene: leaving a tab cancels an armed
-    /// destructive-menu confirm (FIX-1 — the warning would otherwise be
-    /// overwritten by the per-tab hint while the armed state persists) and
-    /// clears the Tab chord so it can't leak into another tab's double-tap
-    /// detection (FIX-4 — `handle_tab_in_2col` shares `last_tab_press`).
+    /// Shared tab-switch hygiene: leaving a tab cancels EVERY armed two-press
+    /// confirm (FIX-1 + FIX-B — an armed destructive state must not survive
+    /// into a tab where its context is invisible), clears the Tab chord so it
+    /// can't leak into another tab's double-tap detection (FIX-4 —
+    /// `handle_tab_in_2col` shares `last_tab_press`), and clears the Esc-Esc
+    /// chord arm (FIX-H/D-9 — a stale arm must not replay a literal ESC into
+    /// chat after a tab round-trip).
     fn leave_tab(&mut self) {
         self.menu_confirm_pending = None;
+        self.project_delete_pending = None;
+        self.settings_confirm_pending = None;
+        self.monitor_disconnect_armed = false;
         self.reset_tab_chord();
+        self.chat_esc_at = None;
     }
 
     pub fn next_tab(&mut self) {
@@ -2288,5 +2378,54 @@ mod reanchor_tests {
             std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
         app.consume_status_ttl();
         assert!(app.status_message.is_none(), "expired sticky must clear");
+    }
+
+    // FIX-A (fix5): the armed-confirm warning is STATE-driven. For ALL FOUR
+    // armed sites the keypress TTL may clear status_message — the warning
+    // must still be available to draw_status_bar via armed_confirm_warning(),
+    // so it stays on screen until confirm/cancel whatever else happens.
+    #[test]
+    fn armed_confirm_warning_covers_all_four_sites_and_survives_ttl() {
+        let mut app = app_with_sessions(&["a"]);
+
+        // 1. Menu KillAll / NuclearCleanup.
+        app.menu_confirm_pending = Some(MenuAction::KillAll);
+        app.status_message = None; // simulate a wiped/overwritten status line
+        app.consume_status_ttl();
+        assert!(
+            app.armed_confirm_warning().unwrap_or_default().contains("KILL ALL"),
+            "menu warning must be state-derived"
+        );
+        app.menu_confirm_pending = None;
+
+        // 2. Projects 'D' delete-forever (rm -rf class).
+        app.project_delete_pending = Some("Demo".into());
+        app.consume_status_ttl();
+        let warn = app.armed_confirm_warning().unwrap_or_default();
+        assert!(
+            warn.contains("Demo") && warn.contains("rm -rf"),
+            "project-delete warning must name the project and the harm, got {warn:?}"
+        );
+        app.project_delete_pending = None;
+
+        // 3. Settings destructive-action / clear-field confirm (index-armed).
+        app.settings_confirm_pending = Some(0);
+        app.consume_status_ttl();
+        assert!(
+            app.armed_confirm_warning().is_some(),
+            "settings confirm must render a state-driven warning"
+        );
+        app.settings_confirm_pending = None;
+
+        // 4. Monitor Telegram disconnect.
+        app.monitor_disconnect_armed = true;
+        app.consume_status_ttl();
+        assert!(
+            app.armed_confirm_warning().unwrap_or_default().contains("DISCONNECT"),
+            "monitor disconnect warning must be state-derived"
+        );
+        app.monitor_disconnect_armed = false;
+
+        assert!(app.armed_confirm_warning().is_none(), "no armed state → no warning");
     }
 }
