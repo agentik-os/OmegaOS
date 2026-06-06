@@ -124,23 +124,34 @@ function have(cmd) { return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).s
  * or when ~/.omega/telegram.toml already exists (re-install keeps it).
  * ========================================================================= */
 
+// Never rejects. Resolves the parsed Telegram body (ok:true/false), or
+// { ok:false, _network:'<why>' } when the request itself failed (timeout,
+// DNS, unparseable body, or a SYNCHRONOUS https.get throw — e.g.
+// ERR_UNESCAPED_CHARACTERS from a malformed token, which previously
+// unwound past the wizard's try/finally and was swallowed silently).
 function tgApi(token, method, params) {
   return new Promise((resolve) => {
     const qs = params
       ? '?' + Object.entries(params).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&')
       : '';
-    const req = https.get(
-      { host: 'api.telegram.org', path: '/bot' + token + '/' + method + qs, timeout: 10000 },
-      (res) => {
-        let body = '';
-        res.on('data', (d) => { body += d; });
-        res.on('end', () => {
-          try { resolve(JSON.parse(body)); } catch (e) { resolve(null); }
-        });
-      }
-    );
-    req.on('timeout', () => { req.destroy(); resolve(null); });
-    req.on('error', () => resolve(null));
+    let req;
+    try {
+      req = https.get(
+        { host: 'api.telegram.org', path: '/bot' + encodeURIComponent(token) + '/' + method + qs, timeout: 10000 },
+        (res) => {
+          let body = '';
+          res.on('data', (d) => { body += d; });
+          res.on('end', () => {
+            try { resolve(JSON.parse(body)); } catch (e) { resolve({ ok: false, _network: 'unparseable response from Telegram' }); }
+          });
+        }
+      );
+    } catch (e) {
+      resolve({ ok: false, _network: e && e.code === 'ERR_UNESCAPED_CHARACTERS' ? 'invalid characters in token' : ((e && e.message) || 'request failed') });
+      return;
+    }
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, _network: 'timeout — Telegram unreachable' }); });
+    req.on('error', (e) => resolve({ ok: false, _network: (e && e.message) || 'network error' }));
   });
 }
 
@@ -204,12 +215,22 @@ async function telegramWizard() {
         process.stdout.write('  ' + gray('Skipped — later: omega telegram setup <BOT_TOKEN> <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
         return null;
       }
+      // A space / non-ASCII char in the token used to throw synchronously in
+      // https.get and silently kill the whole wizard — catch it up front.
+      if (/[^\x21-\x7e]/.test(t)) {
+        process.stdout.write('  ' + red('✗') + ' Telegram rejected that token (invalid characters)' + gray(' — re-copy it from BotFather, no spaces or accents') + '\n');
+        continue;
+      }
       const me = await tgApi(t, 'getMe');
       if (me && me.ok && me.result && me.result.username) {
         token = t; botUser = me.result.username;
         process.stdout.write('  ' + grn('✓') + ' bot found: ' + bold('@' + botUser) + '\n');
+      } else if (me && me._network === 'invalid characters in token') {
+        process.stdout.write('  ' + red('✗') + ' Telegram rejected that token (invalid characters)' + gray(' — re-copy it from BotFather, no spaces or accents') + '\n');
+      } else if (me && me._network) {
+        process.stdout.write('  ' + red('✗') + ' could not reach Telegram (' + me._network + ')' + gray(' — check the network and retry') + '\n');
       } else {
-        process.stdout.write('  ' + red('✗') + ' Telegram rejected that token' + gray(' — recheck the BotFather message (network ok?)') + '\n');
+        process.stdout.write('  ' + red('✗') + ' Telegram rejected that token' + gray(' — ' + ((me && me.description) || 'recheck the BotFather message')) + '\n');
       }
     }
     if (!token) {
@@ -222,28 +243,72 @@ async function telegramWizard() {
     process.stdout.write('    Open ' + cyan('t.me/' + botUser) + ' and send your bot any message (e.g. "hello").\n\n');
 
     let chatId = null, who = '';
+    // getUpdates offset, tracked across attempts: every poll advances past the
+    // updates it has seen, so NEW messages win — a stale backlog (stranger DMs,
+    // group chatter from a reused bot) can no longer become the allow-list id.
+    let nextOffset = 0;
     while (!chatId) {
       const a = await ask('  Press Enter AFTER sending it ' + gray('(or type your numeric id, or "skip"): '));
       if (a === null || /^skip$/i.test(a)) {
         process.stdout.write('  ' + gray('Skipped — later: omega telegram setup ' + token.slice(0, 8) + '… <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
         return null;
       }
-      if (/^-?\d{5,}$/.test(a)) { chatId = a; who = 'manual id'; break; }
+      if (/^-?\d+$/.test(a)) {
+        if (a.charAt(0) === '-') {
+          process.stdout.write('  ' + yel('⚠ negative id = GROUP/CHANNEL chat — EVERY member of that chat will be able to control this machine.') + '\n');
+        }
+        if (a.replace('-', '').length < 5) {
+          process.stdout.write('  ' + yel('⚠ unusually short id — Telegram ids are normally 5+ digits, double-check it.') + '\n');
+        }
+        chatId = a; who = 'manual id'; break;
+      }
       // Poll getUpdates a few times — the just-created bot has no other consumer.
+      let pollErr = null;
       for (let i = 0; i < 5 && !chatId; i++) {
-        const up = await tgApi(token, 'getUpdates', { limit: 10 });
+        const up = await tgApi(token, 'getUpdates', { limit: 10, offset: nextOffset });
+        if (up && up.ok === false) {
+          // Surface the real failure — an ok:false body (409 webhook conflict)
+          // or a dead network is NOT the same as "no message yet".
+          if (up._network) {
+            pollErr = 'could not reach Telegram (' + up._network + ')';
+          } else {
+            pollErr = 'Telegram error: ' + (up.description || 'unknown');
+            if (/webhook/i.test(up.description || '')) {
+              pollErr += ' — a webhook is active on this bot; delete it (curl "https://api.telegram.org/bot<TOKEN>/deleteWebhook") or create a fresh bot';
+            }
+          }
+          await sleep(1500);
+          continue;
+        }
         const msgs = up && up.ok && Array.isArray(up.result) ? up.result : [];
+        for (const u of msgs) {
+          if (typeof u.update_id === 'number' && u.update_id >= nextOffset) nextOffset = u.update_id + 1;
+        }
+        // Auto-detect accepts PRIVATE chats only — a group/channel id here would
+        // hand `claude --dangerously-skip-permissions` to every member.
+        let cand = null;
         for (let k = msgs.length - 1; k >= 0; k--) {
           const m = msgs[k].message;
-          if (m && m.chat && m.chat.id) {
-            chatId = String(m.chat.id);
-            who = (m.from && (m.from.first_name || m.from.username)) || 'you';
+          if (m && m.chat && m.chat.id && m.chat.type === 'private') {
+            cand = {
+              id: String(m.chat.id),
+              name: (m.from && (m.from.first_name || m.from.username)) || 'unknown',
+            };
             break;
           }
         }
+        if (cand) {
+          // Explicit operator confirmation — this id becomes BOTH the chat_id
+          // and the --user-id allow-list. Never accept it on detection alone.
+          const yn = await ask('  detected: ' + bold(cand.name) + ' (id ' + cand.id + ') — c\'est bien vous ? ' + gray('[y/N] '));
+          if (yn !== null && /^y/i.test(yn)) { chatId = cand.id; who = cand.name; break; }
+          process.stdout.write('  ' + gray('Ignored — send a NEW message from YOUR account, or type your numeric id.') + '\n');
+        }
         if (!chatId) await sleep(1500);
       }
-      if (!chatId) process.stdout.write('  ' + yel('No message seen yet') + gray(' — send it to t.me/' + botUser + ' then press Enter again') + '\n');
+      if (!chatId) {
+        process.stdout.write('  ' + yel(pollErr ? '✗ ' + pollErr : 'No message seen yet') + gray(' — send a NEW message to t.me/' + botUser + ' then press Enter again') + '\n');
+      }
     }
     process.stdout.write('  ' + grn('✓') + ' detected: ' + bold(who) + gray(' (chat id ' + chatId + ')') + '\n\n');
     process.stdout.write('  ' + grn('Telegram ready') + gray(' — it will be wired automatically after the install finishes.') + '\n\n');
@@ -284,12 +349,27 @@ function printSuccess(dir) {
   process.stdout.write('  ' + gray('Telegram / providers — Enter on any panel opens a guided wizard.') + '\n\n');
 }
 
-function printFailure(dir, code, lastLines) {
+function printFailure(dir, code, lastLines, tg) {
   process.stdout.write('\n  ' + red('✗ install.sh exited ' + code) + '\n');
   process.stdout.write('  ' + gray('Re-run inside the clone to see full output:  cd ' + dir + ' && ./install.sh') + '\n');
   if (lastLines && lastLines.length) {
     process.stdout.write('\n  ' + gray('Last output lines:') + '\n');
     for (const l of lastLines) process.stdout.write('  ' + gray('│ ') + l + '\n');
+  }
+  // The wizard's credentials must survive an install failure — don't make the
+  // user redo the BotFather dance after fixing the build.
+  if (tg) {
+    const setupCmd = 'omega telegram setup ' + tg.token + ' ' + tg.chatId + ' --user-id ' + tg.chatId;
+    process.stdout.write('\n  ' + yel('⚠ Your Telegram credentials were collected but NOT applied (install failed).') + '\n');
+    process.stdout.write('    ' + gray('Once the install succeeds, run: ') + cyan(setupCmd) + '\n');
+    const pendingPath = path.join(os.homedir(), '.omega-pending-telegram.txt');
+    try {
+      fs.writeFileSync(pendingPath, setupCmd + '\n', { mode: 0o600 });
+      fs.chmodSync(pendingPath, 0o600); // mode option only applies on create
+      process.stdout.write('    ' + gray('Saved to ' + pendingPath + ' (chmod 600).') + '\n');
+    } catch (e) {
+      process.stdout.write('    ' + gray('(could not save it to ' + pendingPath + ': ' + e.message + ')') + '\n');
+    }
   }
   process.stdout.write('\n');
 }
@@ -346,7 +426,7 @@ function runPlain(dir, tg) {
       printSuccess(dir);
     } else {
       process.stdout.write('\n');
-      printFailure(dir, code, lastLines.slice(-40));
+      printFailure(dir, code, lastLines.slice(-40), tg);
       process.exit(code || 1);
     }
   });
@@ -739,7 +819,7 @@ function runAnimated(dir, tg) {
       printSuccess(dir);
     } else {
       banner();
-      printFailure(dir, code, lastLines.slice(-40));
+      printFailure(dir, code, lastLines.slice(-40), tg);
       process.exit(code || 1);
     }
   });
@@ -798,4 +878,9 @@ async function main() {
   else runPlain(dir, tg);
 }
 
-main().catch((err) => die(err && err.message ? err.message : String(err)));
+if (require.main === module) {
+  main().catch((err) => die(err && err.message ? err.message : String(err)));
+} else {
+  // Exported for scripted smoke tests (https layer stubbed) — never used at runtime.
+  module.exports = { tgApi, telegramWizard, configureTelegram, printFailure };
+}
