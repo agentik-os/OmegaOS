@@ -3046,6 +3046,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
+    // fix6-T8: expire an async sticky notice render-side — the keypress TTL
+    // only runs on input, so without this an idle operator's status bar held
+    // the stale notice (masking the git segment) indefinitely.
+    app.expire_sticky_status();
     // Input mode: show a prompt line (no stats)
     if !matches!(app.input_mode, InputMode::Normal) {
         let (prompt, value) = match &app.input_mode {

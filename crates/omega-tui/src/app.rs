@@ -932,9 +932,15 @@ pub struct App {
     pub settings_group: u8,
     /// Cursor within the focused Settings section's interactive field list.
     pub settings_field_selected: usize,
-    /// Field index awaiting a second Enter to confirm a destructive Action
-    /// (the `confirm_first` flag). Cleared on navigation or section change.
-    pub settings_confirm_pending: Option<usize>,
+    /// Field awaiting a second Enter to confirm a destructive Action (the
+    /// `confirm_first` flag). Cleared on navigation or section change.
+    /// fix6-T1 (FIX-H pattern): carries the armed field's IDENTITY (its label)
+    /// pinned at arm time alongside the index — the field list is re-derived
+    /// live (`fields_for_section`), so a background install/uninstall finishing
+    /// between arm and confirm can insert/remove rows and shift the index onto
+    /// a DIFFERENT field. Fire sites and `armed_confirm_warning` verify the
+    /// pinned label still matches `fields.get(idx)`, else disarm with a notice.
+    pub settings_confirm_pending: Option<(usize, String)>,
     /// Two-press confirm for destructive menu items (KillAll / NuclearCleanup):
     /// first Enter arms it, second Enter on the same item fires.
     pub menu_confirm_pending: Option<MenuAction>,
@@ -1079,9 +1085,6 @@ pub struct App {
     pub projects_selected: usize,
     /// Cached project registry for the Projects tab.
     pub project_registry: omega_core::project_manager::ProjectRegistry,
-    /// Two-press confirm for removing a project (Projects tab 'x'): holds the
-    /// project name armed by the first press; second 'x' on the same name fires.
-    pub project_confirm_pending: Option<String>,
     /// Two-press confirm for "Delete forever" (Projects tab 'D'): holds the
     /// project name armed by the first press; second 'D' on the same name fires
     /// the destructive HardDeleteProject. Cleared on cursor move, Esc, and tab
@@ -1171,7 +1174,6 @@ impl App {
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
-            project_confirm_pending: None,
             project_delete_pending: None,
             monitor_disconnect_armed: false,
             providers_cache: None,
@@ -1273,20 +1275,17 @@ impl App {
     }
 
     /// F-7 clear-on-input TTL — called by the event loop on every key press
-    /// and mouse Down (NEW-6) BEFORE dispatch. Exemptions:
-    /// - An armed destructive-menu confirm (FIX-1/NEW-1): the warning is the
-    ///   ONLY indicator of the armed state, so it persists until
-    ///   confirm/cancel/other-selection. Never disarm here — this runs before
-    ///   dispatch, so a TTL-disarm would turn the confirming Enter into a
-    ///   re-arm instead of a fire.
+    /// and mouse Down (NEW-6) BEFORE dispatch. Exemption:
     /// - Async-origin sticky notices (FIX-2/NEW-2): a vanish notice or
     ///   forwarder error targets a user mid-typing; their in-flight keystroke
     ///   must not consume the message addressed to them. Time-based minimum
     ///   display instead of the keypress TTL.
+    ///
+    /// Armed two-press confirms need no exemption here (fix6-T9c): their
+    /// warnings are STATE-driven via `armed_confirm_warning()` (FIX-A), which
+    /// `draw_status_bar` renders with priority — clearing `status_message`
+    /// can't hide them, and this fn never touches the armed state itself.
     pub fn consume_status_ttl(&mut self) {
-        if self.menu_confirm_pending.is_some() {
-            return;
-        }
         if let Some(until) = self.status_sticky_until {
             // FIX-G (D-7): the deadline belongs to the exact message
             // set_status_sticky wrote. A plain `status_message = Some(..)`
@@ -1323,6 +1322,25 @@ impl App {
             .is_some_and(|t| std::time::Instant::now() < t)
     }
 
+    /// fix6-T8: render-side sticky expiry. `consume_status_ttl` only runs on
+    /// input, so for an IDLE operator an expired async notice masked the
+    /// Sessions git segment indefinitely. `draw_status_bar` calls this each
+    /// frame: once the deadline has passed — and `status_message` still holds
+    /// the exact message the deadline protects (FIX-G) — the pair clears so
+    /// `git_text` resumes without a keypress. An overwritten message keeps the
+    /// normal keypress TTL (the user is demonstrably at the keyboard).
+    pub fn expire_sticky_status(&mut self) {
+        if let Some(until) = self.status_sticky_until {
+            if std::time::Instant::now() >= until
+                && self.status_message == self.status_sticky_msg
+            {
+                self.status_message = None;
+                self.status_sticky_until = None;
+                self.status_sticky_msg = None;
+            }
+        }
+    }
+
     /// FIX-A (fix5): single source of truth for "an armed two-press confirm
     /// is live", covering ALL four armed states. `draw_status_bar` renders
     /// this with priority over `status_message`, so the warning is
@@ -1349,22 +1367,37 @@ impl App {
                 name
             ));
         }
-        if let Some(idx) = self.settings_confirm_pending {
-            // Re-derive the armed field's label (the index is cleared on any
-            // nav/section change, so it still points at the armed field).
+        if let Some((idx, pinned)) = self.settings_confirm_pending.clone() {
+            // Re-derive the field at the armed index and verify it is STILL
+            // the field that was armed (fix6-T1): the list is rebuilt live,
+            // so a background [Install] completing between arm and confirm
+            // can shift rows under the index. A silent re-label here would
+            // make the warning lie about what the confirming Enter fires.
             let section = self.selected_settings_section();
             let providers = self.providers();
             let fields = fields_for_section(section, &providers, &self.config);
-            return Some(match fields.get(idx) {
-                Some(SettingsField::EditText { label, .. }) => {
-                    format!("Press x again to clear: {} (Esc to cancel)", label.trim())
+            match fields.get(idx) {
+                Some(f) if f.label() == pinned => {
+                    return Some(match f {
+                        SettingsField::EditText { label, .. } => format!(
+                            "Press x again to clear: {} (Esc to cancel)",
+                            label.trim()
+                        ),
+                        f => format!(
+                            "Press Enter again to confirm: {} (Esc to cancel)",
+                            f.label().trim()
+                        ),
+                    });
                 }
-                Some(f) => format!(
-                    "Press Enter again to confirm: {} (Esc to cancel)",
-                    f.label().trim()
-                ),
-                None => "Press the same key again to confirm (Esc to cancel)".to_string(),
-            });
+                _ => {
+                    // The armed field moved or vanished — disarm with a
+                    // notice instead of re-labeling onto a different field.
+                    self.settings_confirm_pending = None;
+                    self.status_message = Some(
+                        "Confirm cancelled — the settings list changed".to_string(),
+                    );
+                }
+            }
         }
         if self.monitor_disconnect_armed {
             return Some(
@@ -2066,7 +2099,7 @@ impl App {
     /// `handle_tab_in_2col` shares `last_tab_press`), and clears the Esc-Esc
     /// chord arm (FIX-H/D-9 — a stale arm must not replay a literal ESC into
     /// chat after a tab round-trip).
-    fn leave_tab(&mut self) {
+    pub(crate) fn leave_tab(&mut self) {
         self.menu_confirm_pending = None;
         self.project_delete_pending = None;
         self.settings_confirm_pending = None;
@@ -2171,7 +2204,6 @@ impl App {
     fn on_agentic_nav_change(&mut self) {
         self.info_agent_selected = 0;
         self.detail_scroll = 0;
-        self.project_confirm_pending = None;
         self.project_delete_pending = None;
     }
 
@@ -2365,12 +2397,21 @@ mod reanchor_tests {
         app.status_message = Some("hint".into());
         app.consume_status_ttl();
         assert!(app.status_message.is_none(), "plain hints keep the keypress TTL");
-        // Armed destructive-menu confirm → exempt, and NOT disarmed.
+        // Armed destructive-menu confirm: the TTL clears the MESSAGE (fix6-T9c
+        // removed the FIX-1 exemption — FIX-A made it redundant) but never the
+        // STATE — the warning stays on screen via armed_confirm_warning().
         app.menu_confirm_pending = Some(MenuAction::KillAll);
         app.status_message = Some("[!] KILL ALL".into());
         app.consume_status_ttl();
-        assert!(app.status_message.is_some(), "armed confirm warning must persist");
+        assert!(
+            app.status_message.is_none(),
+            "T9c: no keypress-TTL exemption for armed menu confirms"
+        );
         assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll), "TTL must never disarm");
+        assert!(
+            app.armed_confirm_warning().unwrap_or_default().contains("KILL ALL"),
+            "the state-driven warning must still render"
+        );
         app.menu_confirm_pending = None;
         // Expired sticky → cleared like a plain message.
         app.set_status_sticky("async notice".into());
@@ -2408,8 +2449,16 @@ mod reanchor_tests {
         );
         app.project_delete_pending = None;
 
-        // 3. Settings destructive-action / clear-field confirm (index-armed).
-        app.settings_confirm_pending = Some(0);
+        // 3. Settings destructive-action / clear-field confirm — armed with
+        // the field's pinned IDENTITY (fix6-T1), so the warning only renders
+        // while the field at the index is still the armed one.
+        let real_label = {
+            let section = app.selected_settings_section();
+            let providers = app.providers();
+            let fields = fields_for_section(section, &providers, &app.config);
+            fields[0].label().to_string()
+        };
+        app.settings_confirm_pending = Some((0, real_label));
         app.consume_status_ttl();
         assert!(
             app.armed_confirm_warning().is_some(),
@@ -2427,5 +2476,51 @@ mod reanchor_tests {
         app.monitor_disconnect_armed = false;
 
         assert!(app.armed_confirm_warning().is_none(), "no armed state → no warning");
+    }
+
+    // fix6-T1: when the field list shifts under an armed settings confirm
+    // (background [Install] finishing inserts/removes rows), the warning must
+    // NOT silently re-label onto the field now at the index — it disarms with
+    // a notice instead.
+    #[test]
+    fn settings_confirm_warning_disarms_on_identity_mismatch() {
+        let mut app = app_with_sessions(&["a"]);
+        app.settings_confirm_pending = Some((0, "[Uninstall] ghost-agent".into()));
+        let warn = app.armed_confirm_warning();
+        assert!(warn.is_none(), "a shifted field must not render a re-labeled warning");
+        assert_eq!(
+            app.settings_confirm_pending, None,
+            "identity mismatch must disarm the confirm"
+        );
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("cancelled"),
+            "the disarm must be announced, got {:?}",
+            app.status_message
+        );
+    }
+
+    // fix6-T8: an expired async sticky notice must clear render-side (no
+    // keypress needed) so it can't mask the git segment for an idle operator.
+    #[test]
+    fn expired_sticky_clears_render_side_without_input() {
+        let mut app = app_with_sessions(&["a"]);
+        app.set_status_sticky("async notice".into());
+        // Unexpired → kept.
+        app.expire_sticky_status();
+        assert_eq!(app.status_message.as_deref(), Some("async notice"));
+        // Expired + message still the protected one → the pair clears.
+        app.status_sticky_until =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.expire_sticky_status();
+        assert!(app.status_message.is_none(), "expired sticky must clear without input");
+        assert!(app.status_sticky_until.is_none() && app.status_sticky_msg.is_none());
+        // Expired but OVERWRITTEN by a plain key-triggered hint → the hint
+        // keeps the normal keypress TTL (the user is at the keyboard).
+        app.set_status_sticky("stale".into());
+        app.status_sticky_until =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(1));
+        app.status_message = Some("fresh hint".into());
+        app.expire_sticky_status();
+        assert_eq!(app.status_message.as_deref(), Some("fresh hint"));
     }
 }

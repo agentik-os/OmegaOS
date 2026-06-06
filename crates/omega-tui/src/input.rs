@@ -195,6 +195,18 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                 // almost always the right panel for any reasonable terminal.
                 if mouse.column >= 30 {
                     if matches!(app.session_focus, SessionFocus::List) {
+                        // fix6-T5: the click is the mouse twin of the keyboard
+                        // Enter — apply the same post-drop-grace rule (T4):
+                        // re-entry only when the selection still equals the
+                        // pinned chord session, else swallow with a notice.
+                        if app.in_post_drop_grace() {
+                            if grace_pinned_reentry_ok(app) {
+                                app.end_post_drop_grace();
+                            } else {
+                                grace_swallow_notice(app, "click");
+                                return Action::None;
+                            }
+                        }
                         // Use the canonical focus path (follow_tail = true) so a
                         // mouse click behaves like the keyboard Enter — entering
                         // chat shows the latest output instead of freezing the view.
@@ -230,6 +242,11 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 if down { app.scroll_preview_down(lines); }
                 else { app.scroll_preview_up(lines); }
             } else {
+                // fix6-T6: scrolling the list moves the selection exactly like
+                // keyboard ↑/↓, so it must end the grace + Esc-Esc chord the
+                // same way — otherwise Esc→scroll→Esc hits the FIX-H mismatch
+                // arm claiming the (alive) armed session is gone.
+                app.end_post_drop_grace();
                 for _ in 0..lines {
                     if down { app.select_next(); } else { app.select_prev(); }
                 }
@@ -863,6 +880,65 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         return handle_key_chat(app, key);
     }
 
+    // fix6-T2: the DESIGN-015 post-drop grace, enforced at ONE altitude.
+    // The old per-arm deny-list (q/x/Enter/Tab/./Esc) was opt-in: every
+    // unguarded key — launchers c/C/g/p/G/t/h, dispatch 'd', rename 'r' —
+    // opened a modal that bypassed the grace entirely (once input_mode !=
+    // Normal, handle_key routes by mode before any guard). Swallow every
+    // key up front, except:
+    //   • navigation (↑/↓/j/k/PgUp/PgDn/Home/End/F5/F1/←/→/Tab-nav) — ↑/↓
+    //     end the grace in their own arms (deliberate driving);
+    //   • Esc — its arm owns the layered cancel/Esc-Esc-chord semantics and
+    //     keeps its own grace swallow AFTER the chord check (FIX-D), so the
+    //     chord still fires inside the grace;
+    //   • Enter/Tab IFF the selection still equals the session pinned at
+    //     Esc time (fix6-T4) — re-entering the SAME chat is retarget-safe,
+    //     so the advertised "Enter = back to chat" hint isn't dead for the
+    //     full 800ms the same keypress armed.
+    if app.in_post_drop_grace() {
+        let shift_tab = key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT);
+        let nav = shift_tab
+            || matches!(
+                key.code,
+                KeyCode::Up
+                    | KeyCode::Down
+                    | KeyCode::PageUp
+                    | KeyCode::PageDown
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::BackTab
+                    | KeyCode::F(1)
+                    | KeyCode::F(5)
+                    | KeyCode::Esc
+                    | KeyCode::Char('j')
+                    | KeyCode::Char('k')
+            );
+        if !nav {
+            match key.code {
+                KeyCode::Enter | KeyCode::Tab => {
+                    if grace_pinned_reentry_ok(app) {
+                        // Deliberate re-entry to the same session — end the
+                        // grace and let the arm below enter chat (T4).
+                        app.end_post_drop_grace();
+                    } else {
+                        return grace_swallow_notice(
+                            app,
+                            if key.code == KeyCode::Enter { "Enter" } else { "Tab" },
+                        );
+                    }
+                }
+                KeyCode::Char(c) => {
+                    let mut buf = [0u8; 4];
+                    let name = &*c.encode_utf8(&mut buf);
+                    return grace_swallow_notice(app, name);
+                }
+                _ => return grace_swallow_notice(app, "key"),
+            }
+        }
+    }
+
     match key.code {
         // Ctrl+L — force full terminal redraw (fixes corrupted view)
         KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -875,14 +951,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::Restart
         }
 
-        // Quit
+        // Quit (in-flight 'q' during the post-drop grace is swallowed by the
+        // fix6-T2 intercept above).
         KeyCode::Char('q') => {
-            // DESIGN-015: right after a non-deliberate focus drop (vanish,
-            // Esc-from-chat) an in-flight 'q' aimed at the agent must not
-            // quit the whole TUI.
-            if app.in_post_drop_grace() {
-                return grace_swallow_notice(app, "q");
-            }
             app.should_quit = true;
             Action::Quit
         }
@@ -908,12 +979,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.prev_tab();
             } else if app.tab == Tab::Sessions {
                 // FIX-F (R-3): an in-flight Tab right after a vanish/Esc drop
-                // must not re-enter chat on the clamped-to NEIGHBOR — the rest
-                // of the keystream would type into ITS PTY (the same NEW-3
-                // retarget the Enter guard below closes).
-                if app.in_post_drop_grace() {
-                    return grace_swallow_notice(app, "Tab");
-                }
+                // must not re-enter chat on the clamped-to NEIGHBOR — enforced
+                // by the fix6-T2 intercept (with the T4 pinned-session
+                // exemption) before this arm is reached.
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
                     SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
@@ -1100,12 +1168,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // from Omega.
         KeyCode::Enter => match app.tab {
             Tab::Sessions => {
-                // DESIGN-015: inside the post-drop grace an in-flight Enter
-                // must not re-enter chat on the clamped-to neighbor (the rest
-                // of the keystream would type into ITS PTY — NEW-3).
-                if app.in_post_drop_grace() {
-                    return grace_swallow_notice(app, "Enter");
-                }
+                // DESIGN-015: an in-flight Enter during the post-drop grace
+                // is handled by the fix6-T2 intercept (swallowed unless the
+                // selection still equals the pinned chord session — T4).
                 // Two-panel default: Enter focuses the preview (acts like Tab).
                 // Once focused, Enter is forwarded to the rmux session below
                 // (interactive passthrough — see the SessionFocus::Chat branch
@@ -1188,10 +1253,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                                     app.monitor_disconnect_armed = false;
                                     Action::TelegramDisconnect
                                 } else {
+                                    // Arm — the warning renders state-driven
+                                    // via armed_confirm_warning (FIX-A/T9b).
                                     app.monitor_disconnect_armed = true;
-                                    app.status_message = Some(
-                                        "Press Enter again to DISCONNECT the Telegram bot (Esc to cancel)".to_string(),
-                                    );
                                     Action::None
                                 }
                             } else {
@@ -1215,15 +1279,34 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                             if command == "__INTERNAL_TELEGRAM_SETUP__" {
                                 app.settings_confirm_pending = None;
                                 Action::TelegramSetup
-                            } else if confirm_first && app.settings_confirm_pending != Some(idx) {
-                                // First Enter on a destructive action → arm it,
-                                // require a second Enter on the same field.
-                                app.settings_confirm_pending = Some(idx);
-                                app.status_message = Some(format!(
-                                    "Press Enter again to confirm: {}",
-                                    label.trim()
-                                ));
-                                Action::None
+                            } else if confirm_first {
+                                // fix6-T1: two-press confirm keyed on the
+                                // field's pinned IDENTITY, not the bare index
+                                // — the list is re-derived live, so a
+                                // background install finishing between arm
+                                // and confirm can shift rows under the index.
+                                match app.settings_confirm_pending.take() {
+                                    Some((aidx, alabel)) if aidx == idx && alabel == label => {
+                                        Action::RunShellCommand { label, command }
+                                    }
+                                    Some(_) => {
+                                        // The armed field moved/vanished —
+                                        // never fire whatever sits there now.
+                                        app.status_message = Some(
+                                            "Confirm cancelled — the settings list changed"
+                                                .to_string(),
+                                        );
+                                        Action::None
+                                    }
+                                    None => {
+                                        // First Enter → arm; the warning is
+                                        // state-driven (armed_confirm_warning,
+                                        // FIX-A) — no status duplicate (T9b).
+                                        app.settings_confirm_pending =
+                                            Some((idx, label.clone()));
+                                        Action::None
+                                    }
+                                }
                             } else {
                                 app.settings_confirm_pending = None;
                                 Action::RunShellCommand { label, command }
@@ -1313,7 +1396,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.input_mode = InputMode::AddProjectPath;
             app.status_message =
                 Some("Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string());
-            app.project_confirm_pending = None;
             Action::None
         }
         // Settings group: 'x' clears the selected text field (e.g. unlink a saved
@@ -1330,15 +1412,23 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Some(crate::app::SettingsField::EditText { config_key, current_value, label, .. })
                     if !current_value.is_empty() =>
                 {
-                    if app.settings_confirm_pending == Some(idx) {
-                        app.settings_confirm_pending = None;
-                        app.status_message = Some(format!("Cleared: {}", label.trim()));
-                        Action::CommitSettingsEdit { config_key, value: String::new() }
-                    } else {
-                        app.settings_confirm_pending = Some(idx);
-                        app.status_message =
-                            Some(format!("Press x again to clear: {}", label.trim()));
-                        Action::None
+                    // fix6-T1: same pinned-identity confirm as the Enter arm.
+                    match app.settings_confirm_pending.take() {
+                        Some((aidx, alabel)) if aidx == idx && alabel == label => {
+                            app.status_message = Some(format!("Cleared: {}", label.trim()));
+                            Action::CommitSettingsEdit { config_key, value: String::new() }
+                        }
+                        Some(_) => {
+                            app.status_message = Some(
+                                "Confirm cancelled — the settings list changed".to_string(),
+                            );
+                            Action::None
+                        }
+                        None => {
+                            // Arm — warning is state-driven (FIX-A/T9b).
+                            app.settings_confirm_pending = Some((idx, label.clone()));
+                            Action::None
+                        }
                     }
                 }
                 _ => Action::None,
@@ -1377,11 +1467,9 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         app.project_delete_pending = None;
                         Action::DeleteProjectTier { name, mode: "local" }
                     } else {
+                        // Arm — the warning renders state-driven via
+                        // armed_confirm_warning (FIX-A/T9b).
                         app.project_delete_pending = Some(name.clone());
-                        app.status_message = Some(format!(
-                            "Press D again to DELETE LOCAL MACHINE '{}' (OmegaOS + kill oracle + rm -rf LOCAL FOLDER; GitHub kept) — Esc to cancel",
-                            name
-                        ));
                         Action::None
                     }
                 }
@@ -1475,11 +1563,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // the list isn't visible elsewhere, so don't kill a hidden selection
         // from another tab.
         KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
-            // DESIGN-015: an in-flight 'x' right after a focus drop must not
-            // kill the (re-anchored or clamped-to) selection with no confirm.
-            if app.in_post_drop_grace() {
-                return grace_swallow_notice(app, "x");
-            }
+            // DESIGN-015: an in-flight 'x' right after a focus drop is
+            // swallowed by the fix6-T2 intercept before this arm.
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
@@ -1525,12 +1610,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::F(5) => Action::Refresh,
 
         KeyCode::Char('.') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
-            // FIX-F (R-4): a sentence-final '.' in an in-flight keystream must
-            // not silently UNPROTECT the clamped-to neighbor — the toggle
-            // would persist long after the grace ended.
-            if app.in_post_drop_grace() {
-                return grace_swallow_notice(app, ".");
-            }
+            // FIX-F (R-4): a sentence-final '.' in an in-flight keystream is
+            // swallowed by the fix6-T2 intercept before this arm.
             // Toggle on the source entry, then return owned (name, state) so the
             // &mut borrow ends before we touch app.rows / app.status_message.
             let toggled = app.sessions.get_mut(app.selected).map(|entry| {
@@ -1557,28 +1638,27 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
 
         KeyCode::F(1) => {
+            // fix6-T7: route through leave_tab() — a direct `app.tab =` write
+            // bypassed the armed-confirm/chord hygiene every other switch has.
+            app.leave_tab();
             app.tab = Tab::Help;
             app.detail_scroll = 0;
             Action::None
         }
 
         KeyCode::Esc => {
-            // Cancel any armed destructive-menu confirm first.
-            if app.menu_confirm_pending.take().is_some() {
-                app.status_message = Some("Cancelled".to_string());
-                return Action::None;
-            }
-            // Cancel ANY other armed two-press confirm: project-remove,
-            // project delete-forever (FIX-B/R-5 — its warning advertised
-            // "Esc to cancel" but this arm omitted it, so a 'D' after an
-            // advertised-but-dead cancel fired the rm -rf), a settings
-            // destructive-action/clear-field arm, or Telegram-disconnect.
-            if app.project_confirm_pending.take().is_some()
-                || app.project_delete_pending.take().is_some()
-                || app.settings_confirm_pending.take().is_some()
-                || app.monitor_disconnect_armed
-            {
-                app.monitor_disconnect_armed = false;
+            // Cancel EVERY armed two-press confirm ATOMICALLY (fix6-T3): the
+            // old `a.take() || b.take() || …` chain short-circuited after the
+            // first armed state, so a dual-arm (reachable via direct tab
+            // writers that skipped leave_tab) needed one Esc per state. All
+            // take()s evaluate eagerly; one Esc clears them all (FIX-B/R-5 —
+            // every warning advertises "Esc to cancel", so none may be dead).
+            let menu = app.menu_confirm_pending.take().is_some();
+            let proj_delete = app.project_delete_pending.take().is_some();
+            let settings = app.settings_confirm_pending.take().is_some();
+            let disconnect = app.monitor_disconnect_armed;
+            app.monitor_disconnect_armed = false;
+            if menu || proj_delete || settings || disconnect {
                 app.status_message = Some("Cancelled".to_string());
                 return Action::None;
             }
@@ -1639,6 +1719,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.should_quit = true;
                 Action::Quit
             } else {
+                // fix6-T7: leave_tab hygiene on the Esc→Sessions jump too.
+                app.leave_tab();
                 app.tab = Tab::Sessions;
                 Action::None
             }
@@ -1657,6 +1739,18 @@ fn grace_swallow_notice(app: &mut App, key: &str) -> Action {
         key
     ));
     Action::None
+}
+
+/// fix6-T4: re-entry into chat during the post-drop grace is allowed only
+/// when the current selection still equals the session pinned at Esc time
+/// (`chat_esc_at`, FIX-H) — selection unchanged means the keystream resumes
+/// into the same PTY it was aimed at, so Enter/Tab/click is retarget-safe.
+/// A vanish-drop sets no pin, so its grace swallows re-entry unconditionally.
+fn grace_pinned_reentry_ok(app: &App) -> bool {
+    match (&app.chat_esc_at, app.selected_session()) {
+        (Some((_, pinned)), Some(entry)) => entry.session.name == *pinned,
+        _ => false,
+    }
 }
 
 /// Move the settings field cursor to the next/previous actionable field,
@@ -1798,6 +1892,8 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             }
             KeyCode::Enter => {
                 if let Some(tab) = omega_chat_command(&buf) {
+                    // fix6-T7: leave_tab hygiene on the /command jump too.
+                    app.leave_tab();
                     app.tab = tab;
                     if tab == Tab::Sessions {
                         app.session_focus = SessionFocus::List;
@@ -2094,14 +2190,9 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
                 _ => Action::None,
             };
         }
+        // Arm — the warning renders state-driven via armed_confirm_warning
+        // (FIX-A/T9b), so no status_message duplicate to drift out of sync.
         app.menu_confirm_pending = Some(action);
-        let verb = if matches!(action, MenuAction::NuclearCleanup) {
-            "NUCLEAR CLEANUP (kill all + prune state + free RAM)"
-        } else {
-            "KILL ALL sessions"
-        };
-        app.status_message =
-            Some(format!("[!] {} — press Enter again to CONFIRM, Esc to cancel", verb));
         return Action::None;
     }
 
@@ -2481,23 +2572,25 @@ mod tests {
             .position(|a| matches!(a, MenuAction::KillAll))
             .unwrap();
 
-        // First Enter arms + shows the warning.
+        // First Enter arms + the warning renders state-driven (FIX-A/T9b —
+        // arm sites no longer duplicate the text into status_message).
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(act, Action::None));
         assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll));
-        assert!(app.status_message.as_deref().unwrap_or("").contains("CONFIRM"));
+        assert!(app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM"));
 
-        // The next keypress's TTL (runs BEFORE dispatch) must keep the warning.
+        // The next keypress's TTL (runs BEFORE dispatch) can't touch the
+        // state-driven warning.
         app.consume_status_ttl();
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("CONFIRM"),
+            app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM"),
             "TTL must not wipe the confirm warning while armed"
         );
 
         // Down (browse) keeps both state and indicator in lockstep.
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.consume_status_ttl();
-        let visible = app.status_message.as_deref().unwrap_or("").contains("CONFIRM");
+        let visible = app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM");
 
         // Enter on the OTHER row must not fire the armed mass-kill.
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -2566,8 +2659,9 @@ mod tests {
     }
 
     // DESIGN-015/NR-2: Esc-then-type must not fall through to the destructive
-    // single-key list hotkeys (x kill / q quit / Enter re-target) inside the
-    // grace window; a deliberate navigation key re-enables them.
+    // single-key list hotkeys (x kill / q quit) inside the grace window; a
+    // deliberate navigation key re-enables them. (Enter on the UNCHANGED
+    // selection re-enters chat since fix6-T4 — covered by its own tests.)
     #[test]
     fn esc_then_type_grace_blocks_destructive_hotkeys() {
         let mut app = chat_app("oracle-Demo-1");
@@ -2576,8 +2670,6 @@ mod tests {
 
         let act = handle_key(&mut app, press('x'));
         assert!(matches!(act, Action::None), "in-flight 'x' must not kill");
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "in-flight Enter must not re-enter chat");
         assert_eq!(app.session_focus, SessionFocus::List);
         let act = handle_key(&mut app, press('q'));
         assert!(matches!(act, Action::None) && !app.should_quit, "in-flight 'q' must not quit");
@@ -2662,7 +2754,7 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Settings;
         app.detail_focused = true;
-        app.settings_confirm_pending = Some(1);
+        app.settings_confirm_pending = Some((1, "[Uninstall] demo".into()));
         handle_key(&mut app, esc);
         assert_eq!(app.settings_confirm_pending, None, "Esc must disarm settings confirm");
         assert!(app.detail_focused, "the cancel CONSUMES the Esc — focus unchanged");
@@ -2690,7 +2782,7 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Agentic;
         app.project_delete_pending = Some("Demo".into());
-        app.settings_confirm_pending = Some(0);
+        app.settings_confirm_pending = Some((0, "[Uninstall] demo".into()));
         app.monitor_disconnect_armed = true;
         app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
@@ -2760,6 +2852,263 @@ mod tests {
             app.status_message.as_deref().unwrap_or("").contains("oracle-Demo-1"),
             "the drop notice must name the vanished target, got {:?}",
             app.status_message
+        );
+    }
+
+    /// fix6-T1 helper: App parked on the Settings → Install section with the
+    /// detail focused and the cursor on the first confirm-first Action field.
+    /// Returns (app, field_idx, field_label).
+    fn settings_install_app() -> (App, usize, String) {
+        let mut app = test_app();
+        app.tab = Tab::Settings;
+        app.settings_group = 1; // Settings group (not Monitor)
+        app.settings_selected = crate::app::SettingsSection::all()
+            .iter()
+            .position(|s| matches!(s, crate::app::SettingsSection::Install))
+            .unwrap();
+        app.detail_focused = true;
+        let providers = app.providers();
+        let fields = crate::app::fields_for_section(
+            crate::app::SettingsSection::Install,
+            &providers,
+            &app.config,
+        );
+        let idx = fields
+            .iter()
+            .position(|f| matches!(f, crate::app::SettingsField::Action { confirm_first: true, .. }))
+            .expect("Install section always exposes a confirm-first action");
+        let label = fields[idx].label().to_string();
+        app.settings_field_selected = idx;
+        (app, idx, label)
+    }
+
+    // fix6-T1: a row shift between arm and confirm (a background [Install]
+    // finishing inserts/removes rows) must NOT fire the field now sitting at
+    // the armed index — disarm with a notice instead.
+    #[test]
+    fn settings_confirm_does_not_fire_after_row_shift() {
+        let (mut app, idx, _label) = settings_install_app();
+        // Arm with a STALE pinned identity — simulates the field list having
+        // shifted under the index after the arming Enter.
+        app.settings_confirm_pending = Some((idx, "[Uninstall] ghost-agent".into()));
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(
+            !matches!(act, Action::RunShellCommand { .. }),
+            "the confirming Enter must NOT fire a different field"
+        );
+        assert_eq!(app.settings_confirm_pending, None, "identity mismatch must disarm");
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("cancelled"),
+            "the disarm must be announced, got {:?}",
+            app.status_message
+        );
+    }
+
+    // fix6-T1 companion: the unshifted happy path still arms on the first
+    // Enter (pinning the field identity) and fires on the second.
+    #[test]
+    fn settings_confirm_arms_identity_and_fires_when_stable() {
+        let (mut app, idx, label) = settings_install_app();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let act = handle_key(&mut app, enter);
+        assert!(matches!(act, Action::None));
+        assert_eq!(
+            app.settings_confirm_pending,
+            Some((idx, label)),
+            "first Enter must pin the field identity"
+        );
+        let act = handle_key(&mut app, enter);
+        assert!(
+            matches!(act, Action::RunShellCommand { .. }),
+            "second Enter on the unchanged field must fire"
+        );
+        assert_eq!(app.settings_confirm_pending, None);
+    }
+
+    // fix6-T2: the grace is a deny-by-default intercept — previously-unguarded
+    // modal openers (launchers c/C/g/p/G/t/h, dispatch 'd', rename 'r') must
+    // be swallowed during the grace instead of opening a modal that bypasses
+    // it (once input_mode != Normal, handle_key routes by mode, ungated).
+    #[test]
+    fn grace_swallows_unguarded_modal_openers() {
+        for key in ['c', 'C', 'g', 'p', 'G', 't', 'h', 'd', 'r'] {
+            let mut app = chat_app("oracle-Demo-1");
+            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            assert_eq!(app.session_focus, SessionFocus::List);
+            let act = handle_key(&mut app, press(key));
+            assert!(matches!(act, Action::None), "'{key}' must be swallowed in the grace");
+            assert!(
+                matches!(app.input_mode, InputMode::Normal),
+                "'{key}' must not open a modal during the grace"
+            );
+            assert!(
+                app.status_message.as_deref().unwrap_or("").contains("ignored"),
+                "the swallow must be announced for '{key}', got {:?}",
+                app.status_message
+            );
+        }
+    }
+
+    // fix6-T3: Esc cancels ALL armed two-press confirms atomically — the old
+    // short-circuit chain cleared only the first armed state, so a dual-arm
+    // needed one Esc per state.
+    #[test]
+    fn esc_cancels_dual_armed_states_atomically() {
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_confirm_pending = Some(MenuAction::KillAll);
+        app.settings_confirm_pending = Some((0, "[Uninstall] demo".into()));
+        app.project_delete_pending = Some("Demo".into());
+        app.monitor_disconnect_armed = true;
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None));
+        assert_eq!(app.menu_confirm_pending, None, "one Esc must clear the menu arm");
+        assert_eq!(app.settings_confirm_pending, None, "…and the settings arm");
+        assert_eq!(app.project_delete_pending, None, "…and the project-delete arm");
+        assert!(!app.monitor_disconnect_armed, "…and the disconnect arm");
+        assert_eq!(app.status_message.as_deref(), Some("Cancelled"));
+    }
+
+    // fix6-T4: the taught "Enter = back to chat" works during the grace when
+    // the selection still equals the session pinned by the deliberate Esc —
+    // re-entry into the SAME chat is retarget-safe and ends the grace.
+    #[test]
+    fn grace_enter_reenters_chat_when_selection_matches_pin() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::List);
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None));
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "Enter on the pinned selection must re-enter chat"
+        );
+        assert!(!app.in_post_drop_grace(), "deliberate re-entry ends the grace");
+    }
+
+    // fix6-T4: with no pin (vanish-drop grace) or a mismatched pin (the armed
+    // session vanished, a neighbor clamped in), Enter/Tab stay swallowed.
+    #[test]
+    fn grace_enter_swallowed_without_matching_pin() {
+        // Vanish-style grace: no chat_esc_at pin at all.
+        let mut app = chat_app("oracle-Demo-1");
+        app.session_focus = SessionFocus::List;
+        app.focus_drop_at = Some(std::time::Instant::now());
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None), "unpinned grace Enter must be swallowed");
+        assert_eq!(app.session_focus, SessionFocus::List);
+
+        // Pin mismatch: armed on oracle-Demo-1, a neighbor clamped into the slot.
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        app.sessions.clear();
+        app.sessions.push(SessionEntry {
+            session: OmegaSession::classify("neighbor"),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        });
+        app.selected = 0;
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None), "mismatched-pin Tab must be swallowed");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::List,
+            "must not enter the neighbor's chat"
+        );
+    }
+
+    fn left_click(column: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column,
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    // fix6-T5: a right-panel click is the mouse twin of the keyboard Enter —
+    // it obeys the same grace rule (pinned-session exemption, else swallow).
+    #[test]
+    fn grace_click_applies_pinned_reentry_rule() {
+        // Pinned + unchanged selection → the click re-enters chat.
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        handle_event(&mut app, Event::Mouse(left_click(40)));
+        assert_eq!(app.session_focus, SessionFocus::Chat, "pinned click re-enters chat");
+
+        // No pin (vanish grace) → swallowed with a notice.
+        let mut app = chat_app("oracle-Demo-1");
+        app.session_focus = SessionFocus::List;
+        app.focus_drop_at = Some(std::time::Instant::now());
+        handle_event(&mut app, Event::Mouse(left_click(40)));
+        assert_eq!(app.session_focus, SessionFocus::List, "unpinned click must be swallowed");
+        assert!(
+            app.status_message.as_deref().unwrap_or("").contains("ignored"),
+            "the swallow must be announced, got {:?}",
+            app.status_message
+        );
+    }
+
+    // fix6-T6: scrolling the list moves the selection like keyboard ↑/↓, so it
+    // must end the grace AND the Esc-Esc chord — otherwise Esc→scroll→Esc hit
+    // the FIX-H mismatch arm claiming the (alive) armed session is gone.
+    #[test]
+    fn list_scroll_ends_grace_and_chord_like_arrow_keys() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.in_post_drop_grace() && app.chat_esc_at.is_some());
+        let scroll = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 5, // over the list, not the preview
+            row: 5,
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_event(&mut app, Event::Mouse(scroll));
+        assert!(app.chat_esc_at.is_none(), "scroll must clear the chord pin");
+        assert!(!app.in_post_drop_grace(), "scroll must end the grace");
+    }
+
+    // fix6-T7: direct tab writers route through leave_tab — F1→Help and the
+    // non-Sessions Esc→Sessions jump must clear armed confirms + chord state.
+    #[test]
+    fn f1_and_esc_jump_run_leave_tab_hygiene() {
+        // F1 from Menu with an armed confirm + chord.
+        let mut app = test_app();
+        app.tab = Tab::Menu;
+        app.menu_confirm_pending = Some(MenuAction::KillAll);
+        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
+        handle_key(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(app.tab, Tab::Help);
+        assert_eq!(app.menu_confirm_pending, None, "F1 must disarm via leave_tab");
+        assert!(app.chat_esc_at.is_none(), "F1 must clear the chord pin");
+
+        // Esc→Sessions jump from a non-Sessions tab clears the chord state.
+        let mut app = test_app();
+        app.tab = Tab::Agentic;
+        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
+        app.last_tab_press = Some(std::time::Instant::now());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(app.tab, Tab::Sessions);
+        assert!(
+            app.chat_esc_at.is_none() && app.last_tab_press.is_none(),
+            "the Esc jump must run leave_tab hygiene"
+        );
+    }
+
+    // fix6-T7: the in-chat /command tab jump also runs leave_tab hygiene.
+    #[test]
+    fn chat_command_jump_runs_leave_tab_hygiene() {
+        let mut app = chat_app("oracle-Demo-1");
+        app.cmd_capture = Some("menu".to_string());
+        app.project_delete_pending = Some("Demo".into());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.tab, Tab::Menu);
+        assert_eq!(
+            app.project_delete_pending, None,
+            "the /command jump must disarm via leave_tab"
         );
     }
 }
