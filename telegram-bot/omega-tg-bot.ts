@@ -1356,7 +1356,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub registered. Run <code>/sync</code> in it to map projects → topics." : " No hub yet — run <code>/setupgroup</code> in your supergroup first."), markup: kb([[back()]]) }; }
     case "killall": return { text: card("KILL ALL SESSIONS?", " 🛑 Kills every session.\n <i>Keeps the infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:killall" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
     case "clean": case "cleaning": return { text: card("🧹 CLEANING", " Maintenance du VPS et des projets — choisis une action :"), markup: kb([
-      [{ text: "💽 Nettoyage disque", callback_data: "nav:cleandisk" }],
+      [{ text: "💽 Nettoyage disque", callback_data: "nav:cleandisk" }, { text: "💾 Purge RAM", callback_data: "do:ramflush" }],
       [{ text: "🗂️ Ranger les projets (plan)", callback_data: "do:tidy" }],
       [{ text: "📊 Analyse disque", callback_data: "do:diskanalyze" }],
       [{ text: "🧽 Sessions orphelines", callback_data: "nav:cleansess" }, { text: "☠️ Kill all", callback_data: "nav:killall" }],
@@ -1572,6 +1572,10 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const script = `for d in $(find ${homedir()}/Station -maxdepth 3 -name .git -type d 2>/dev/null | sed 's#/.git$##' | grep -vE 'node_modules|/target/' | sort); do bash ${OMEGA_DIR}/skills/project-tidy/scripts/tidy-apply.sh "$d" 2>/dev/null | head -1; done`;
     const out = await $`bash -c ${script}`.nothrow().text();
     return edit(chat, msgId, pre("🗂️ Plan de rangement", out || "(rien)"), kb([[back("clean")]]));
+  }
+  if (ns === "do" && action === "ramflush") {
+    const out = await $`sudo bash ${OMEGA_DIR}/skills/ramflush/scripts/ram-flush.sh`.nothrow().text();
+    return edit(chat, msgId, pre("💾 Purge RAM — terminé", out || "(no output)"), kb([[back("clean")]]));
   }
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {

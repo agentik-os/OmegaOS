@@ -378,6 +378,17 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-06-05",
             reason: "A one-off fpdf2 venv was used instead of the bundled pdfgen, fragmenting PDF output and bypassing the branded SSOT that ships to every OmegaOS user.",
         },
+        Rule {
+            id: "R-SKILLPUB",
+            title: "Every new skill ships to the library + OmegaOS",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Reporting,
+            description: "A NEW skill is NOT done until it is published to BOTH sources of truth: (1) the operator's skill library `github.com/agentik-os/Agentik-Skills` (one folder per skill), and (2) OmegaOS itself — `skills/<name>/` in the repo + its install.sh copy block + `~/.omega/skills/<name>/` — committed AND pushed. A skill that lives only locally does not exist (lost on reset, never shipped via npx). OmegaOS is the SSOT; the library is the shareable mirror. Wire any Telegram/menu entry that triggers it in the same change.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-07",
+            reason: "Skills were built and used locally but never pushed to the library nor wired into OmegaOS, so they were lost on reset and never shipped to other installs. Publishing every new skill to both SSOTs makes them durable and shareable.",
+        },
     ]
 }
 

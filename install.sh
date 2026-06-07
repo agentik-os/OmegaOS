@@ -991,7 +991,7 @@ fi
 # project tidying (docs/ + agentic/ convention, doc↔app coherence). Portable
 # scripts (no machine-specific paths). Mirrors the design loop: copy →
 # ~/.omega/skills/<name>/ + /<name> and /omg-<name> slash stubs.
-for MSK in cleanup project-tidy; do
+for MSK in cleanup project-tidy ramflush; do
     MSK_SRC="$OMEGA_SRC/skills/$MSK"
     MSK_DST="$OMEGA_DIR/skills/$MSK"
     if [[ -d "$MSK_SRC" ]]; then
