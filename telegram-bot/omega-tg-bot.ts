@@ -1356,7 +1356,15 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
     case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub registered. Run <code>/sync</code> in it to map projects → topics." : " No hub yet — run <code>/setupgroup</code> in your supergroup first."), markup: kb([[back()]]) }; }
     case "killall": return { text: card("KILL ALL SESSIONS?", " 🛑 Kills every session.\n <i>Keeps the infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:killall" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
-    case "clean": return { text: card("CLEANUP?", " 🧹 Kills orphan sessions + purges the state.\n <i>Never touches the infra.</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:clean" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
+    case "clean": case "cleaning": return { text: card("🧹 CLEANING", " Maintenance du VPS et des projets — choisis une action :"), markup: kb([
+      [{ text: "💽 Nettoyage disque", callback_data: "nav:cleandisk" }],
+      [{ text: "🗂️ Ranger les projets (plan)", callback_data: "do:tidy" }],
+      [{ text: "📊 Analyse disque", callback_data: "do:diskanalyze" }],
+      [{ text: "🧽 Sessions orphelines", callback_data: "nav:cleansess" }, { text: "☠️ Kill all", callback_data: "nav:killall" }],
+      [back()],
+    ]) };
+    case "cleandisk": return { text: card("NETTOYAGE DISQUE ?", " 💽 Purge cache Docker + APT + journal + caches user.\n <i>Rebuildable — ne touche jamais au code.</i>"), markup: kb([[{ text: "✅ Oui, nettoyer", callback_data: "do:diskclean" }], [{ text: "✖ Annuler", callback_data: "nav:clean" }]]) };
+    case "cleansess": return { text: card("CLEANUP SESSIONS ?", " 🧹 Kills orphan sessions + purges the state.\n <i>Never touches the infra.</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:clean" }], [{ text: "✖ Cancel", callback_data: "nav:clean" }]]) };
     default: return { text: menuText, markup: menuKb() };
   }
 }
@@ -1550,8 +1558,22 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "billing") return edit(chat, msgId, pre("Billing", await omega(["monitor"])), kb([[back("account")]]));
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
-  if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("menu")]]));
-  if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("menu")]]));
+  if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("clean")]]));
+  if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("clean")]]));
+  if (ns === "do" && action === "diskclean") {
+    const cmd = "echo '== Docker build cache =='; docker builder prune -f 2>&1 | tail -1; echo '== APT =='; apt-get clean && echo ok; echo '== journal =='; journalctl --vacuum-size=100M 2>&1 | tail -1; echo '== caches user =='; bash " + OMEGA_DIR + "/skills/cleanup/scripts/clean-caches.sh 2>/dev/null | grep -i purg; echo; df -h / | tail -1";
+    const out = await $`sudo bash -c ${cmd}`.nothrow().text();
+    return edit(chat, msgId, pre("🧹 Nettoyage disque — terminé", out || "(no output)"), kb([[back("clean")]]));
+  }
+  if (ns === "do" && action === "diskanalyze") {
+    const out = await $`bash -c ${"df -h / | tail -1; echo; du -shx /home/*/Station /tmp 2>/dev/null | sort -rh | head -6"}`.nothrow().text();
+    return edit(chat, msgId, pre("📊 Analyse disque", out || "(no output)"), kb([[back("clean")]]));
+  }
+  if (ns === "do" && action === "tidy") {
+    const script = `for d in $(find ${homedir()}/Station -maxdepth 3 -name .git -type d 2>/dev/null | sed 's#/.git$##' | grep -vE 'node_modules|/target/' | sort); do bash ${OMEGA_DIR}/skills/project-tidy/scripts/tidy-apply.sh "$d" 2>/dev/null | head -1; done`;
+    const out = await $`bash -c ${script}`.nothrow().text();
+    return edit(chat, msgId, pre("🗂️ Plan de rangement", out || "(rien)"), kb([[back("clean")]]));
+  }
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {
     setPending(from, "tg-link", arg);
