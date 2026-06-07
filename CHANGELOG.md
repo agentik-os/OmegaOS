@@ -8,6 +8,14 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 ## [Unreleased]
 
 ### Added
+- **Deposit bot** (`omega-os` 1.5.4) — a private Telegram inbox so the operator
+  can send photos/notes from their phone that an agent reads in `~/.omega/inbox/`
+  (timestamped, captioned, indexed). Ships + auto-starts like the command bot
+  (`telegram-bot/inbox-bot.ts`, `omega-inbox-bot.service`); connect with
+  `inbox-bot-up <BOT_TOKEN>` (or `OMEGA_DEPOSIT_TOKEN=<TOKEN> inbox-bot-up`).
+  Token in `~/.omega/deposit.toml` (0600, R-TGSEC); the bot self-locks to the
+  first chat that messages it. Solves "runtime is the only truth" when a bug is
+  visual and only on the operator's screen (e.g. rmux rendering).
 - Guided Telegram setup in the npx installer (`omega-os` 1.5.0): before the
   Matrix animation takes the screen, an interactive wizard walks through
   BotFather bot creation, validates the token live (`getMe`), auto-detects

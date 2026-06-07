@@ -7,7 +7,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │ 1. SOURCE CODE (the repo)                                       │
-│    $HOME/VibeCoding/work/OmegaOS/                        │
+│    ~/Station/SideBusiness/OmegaOS/                              │
 │    github.com/agentik-os/OmegaOS                                │
 │    → Edit code here, push to GitHub                             │
 ├─────────────────────────────────────────────────────────────────┤
@@ -24,7 +24,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Source Code Layout (`$HOME/VibeCoding/work/OmegaOS/`)
+## Source Code Layout (`~/Station/SideBusiness/OmegaOS/`)
 
 ```
 OmegaOS/
@@ -54,7 +54,7 @@ OmegaOS/
 │   │   ├── providers.rs               Provider catalog
 │   │   ├── router.rs                  Smart routing
 │   │   ├── rubric.rs                  Success criteria
-│   │   ├── rules.rs                   15 operational rules
+│   │   ├── rules.rs                   6 Laws + 20 Rules
 │   │   ├── scope.rs                   File-lock scope claims
 │   │   ├── session.rs                 rmux SDK integration
 │   │   ├── ship.rs                    12-step ship pipeline
@@ -70,7 +70,7 @@ OmegaOS/
 │   │   └── ui.rs                      Tab rendering
 │   │
 │   └── omega-cli/src/                 CLI binary
-│       ├── main.rs                    25+ subcommands
+│       ├── main.rs                    40+ commands
 │       └── telegram_bridge.rs         Telegram bot (Rust, was Python)
 │
 ├── agents/                            Agent system prompts (markdown)
@@ -78,10 +78,10 @@ OmegaOS/
 │   ├── oracle.md / worker.md / team-lead.md
 │   └── aisb/                          13 Matrix agents
 │
-├── rules/                             15 operational rules (.md)
+├── rules/                             6 Laws + 20 Rules (.md)
 │   ├── L1-runtime-truth.md
 │   ├── R30-popper-falsification.md
-│   └── ... (all 15)
+│   └── ... (all of them)
 │
 ├── skills/                            Bundled skills
 │   ├── pdfgen/                        PDF generator (Next.js — see below)
@@ -123,7 +123,7 @@ OmegaOS/
 │   ├── gemini.json                    ← ~/.gemini/oauth_creds.json points here
 │   └── accounts/                      Saved account profiles
 │
-├── rules/                             15 .md files (synced from repo on install)
+├── rules/                             6 Laws + 20 Rules (.md, synced from repo on install)
 ├── agents/                            19 agent prompts
 ├── skills/
 │   ├── pdfgen/                        PDF generator
@@ -192,7 +192,7 @@ $ ./install.sh
 
 ```bash
 # Source is in the right place
-ls ~/VibeCoding/work/OmegaOS/crates/
+ls ~/Station/SideBusiness/OmegaOS/crates/
 
 # Binary is installed
 which omega && omega --version
@@ -204,5 +204,5 @@ ls ~/.omega/credentials/
 ls -la ~/.claude/.credentials.json   # → ~/.omega/credentials/claude.json
 
 # Build still works
-cd ~/VibeCoding/work/OmegaOS && cargo build --release
+cd ~/Station/SideBusiness/OmegaOS && cargo build --release
 ```

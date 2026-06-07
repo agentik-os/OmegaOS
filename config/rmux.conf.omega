@@ -88,6 +88,15 @@ set -g escape-time 10
 # is a server option (-s), appended (-a) so we don't clobber existing entries.
 set -sa terminal-features ",*:RGB"
 
+# Mouse/trackpad scroll: `mouse on` (above) only takes effect if rmux tells the
+# OUTER terminal to emit mouse events — which it gates on a TERM-family allowlist
+# (xterm*/kitty/iterm/foot/wezterm/ghostty) with NO fallback. On any other TERM
+# (screen-256color, alacritty, vte*, st, AirMux-hosted clients…) the enable
+# sequence is never sent, so wheel bytes never arrive and trackpad scroll is
+# dead. Forcing the `mouse` feature for ALL terminals removes that silent
+# dependency so wheel-scroll → copy-mode scrollback works everywhere.
+set -sa terminal-features ",*:mouse"
+
 # Focus events: let editors / Claude know when the pane gains or loses focus
 # (autosave, pause-on-blur, etc.).
 set -g focus-events on

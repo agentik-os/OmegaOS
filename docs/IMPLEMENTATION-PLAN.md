@@ -12,7 +12,7 @@ Already built and working:
 - AISB Master (auto-spawn, --continue, healthcheck)
 - Telegram bridge (long-poll, typing, auto-restart Master)
 - PDF generator (4 templates, Telegram delivery)
-- Rules registry (15 rules, export, sync to all LLMs)
+- Rules registry (6 Laws + 20 Rules, export, sync to all LLMs)
 - Config system (config.toml, providers.toml, OMEGA.md)
 - Basic dispatch, ship, inbox, patrol, audit, orchestration stubs
 

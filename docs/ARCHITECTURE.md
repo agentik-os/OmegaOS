@@ -1,5 +1,9 @@
 # OmegaOS — Architecture Documentation
 
+> **Scope:** authoritative full-system reference (crates, orchestration,
+> agent levels, CLI, channels). For the `~/.omega/` centralized runtime
+> layout (credentials, models, settings), see [ARCHITECTURE-V3.md](ARCHITECTURE-V3.md).
+>
 > Complete technical reference for the OmegaOS system.
 > Read this first to understand how everything fits together.
 
@@ -27,7 +31,7 @@ bot for remote control.
 
 | Component | Role |
 |-----------|------|
-| `omega` CLI | Main binary — 25+ subcommands |
+| `omega` CLI | Main binary — 40+ commands |
 | TUI | 7-tab session manager (Sessions/Menu/Monitor/Projects/Settings/Agentic/Help) |
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
 | AISB Master | Always-on Claude session with 13 Matrix agents |
@@ -57,7 +61,7 @@ bot for remote control.
 │       ├── claude-gareth.json
 │       └── ...
 │
-├── rules/                         15 operational rules (.md, editable)
+├── rules/                         6 Laws + 20 Rules (.md, editable)
 │   ├── L1-runtime-truth.md
 │   ├── L2-researcher-not-sycophant.md
 │   └── ... (all 15)
@@ -172,7 +176,7 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (7 tabs) · CLI (25+ cmds) · Telegram Bridge                │
+│  TUI (7 tabs) · CLI (40+ cmds) · Telegram Bridge                │
 │                      ↓ intent                                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
@@ -221,7 +225,7 @@ Each LLM CLI reads OmegaOS config:
 | Channel | How |
 |---------|-----|
 | TUI | `omega` or `omega menu` — full session manager |
-| CLI | `omega <cmd>` — 25+ subcommands |
+| CLI | `omega <cmd>` — 40+ commands |
 | Telegram | `/help`, `/list`, `/model`, `/newproject`, `/account`, etc. |
 
 ### Inter-process
@@ -339,7 +343,7 @@ omega new <name>         Create session
 omega kill <name>        Kill session
 omega dispatch <P> <M>   Send mission to oracle
 omega orchestrate <P> <M>  Full pipeline (classify → plan → dispatch → gate)
-omega rules list         Show 15 rules
+omega rules list         Show the 6 Laws + 20 Rules
 omega rules export       Write to ~/.omega/rules/
 omega sync               Symlink to all LLMs
 omega accounts list      List provider accounts
@@ -362,6 +366,6 @@ To verify the architecture is correctly set up:
 ls ~/.omega/                              # Should show: credentials/ rules/ agents/ skills/ ...
 ls ~/.omega/credentials/                  # Should show: claude.json codex.json ...
 ls -la ~/.claude/.credentials.json        # Should be a symlink to ~/.omega/credentials/claude.json
-omega rules list | wc -l                  # Should show 15 rules
+omega rules list                          # Should show the 6 Laws + 20 Rules
 cargo build --release                     # Should be 0 errors
 ```

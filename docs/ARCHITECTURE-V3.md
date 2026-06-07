@@ -1,5 +1,9 @@
 # OmegaOS — Centralized Configuration Architecture v3
 
+> **Scope:** authoritative for the `~/.omega/` centralized runtime layout
+> (credentials, models, settings). For the full system architecture
+> (crates, orchestration, agent levels, CLI), see [ARCHITECTURE.md](ARCHITECTURE.md).
+>
 > Single source of truth for ALL LLM coding agents.
 > `~/.omega/` is the master. Each LLM reads from it.
 > Credentials, models, and settings live ONLY in ~/.omega/ — never elsewhere.
@@ -11,7 +15,7 @@
 │
 ├── OMEGA.md                           Universal system prompt (every agent)
 │
-├── rules/                             15 operational rules (.md files)
+├── rules/                             6 Laws + 20 Rules (.md files)
 ├── agents/                            13 Matrix agents + oracle/worker prompts
 ├── skills/                            Cross-LLM skills (pdfgen, audits, ...)
 ├── docs/                              Reference documentation
