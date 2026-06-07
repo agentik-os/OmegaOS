@@ -1,6 +1,6 @@
 # Audit Meta-Protocol v2 — Universal Quality Gate
 
-> **Single source of truth applied to ALL 16 forensic audits in the Quality Arsenal.**
+> **Single source of truth applied to ALL 23 forensic audits in the Quality Arsenal.**
 > Created 2026-05-08 — model upgrade Opus 4.6 → 4.7 + max effort.
 > Replaces the implicit "score ∈ [0,100]" output with a structured, falsifiable, intent-aware result.
 

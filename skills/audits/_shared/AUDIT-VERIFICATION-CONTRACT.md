@@ -1,33 +1,38 @@
 ---
 name: AUDIT-VERIFICATION-CONTRACT
 description: >
-  MANDATORY verification contract for all Quality Arsenal audits (/codeaudit, /flowaudit, /logicaudit,
+  MANDATORY verification contract for all 23 Quality Arsenal audits (/codeaudit, /flowaudit, /logicaudit,
   /automationaudit, /debugaudit, /perfaudit, /secaudit, /a11yaudit, /seoaudit, /dataaudit, /apiaudit,
-  /copyaudit, /dxaudit, /motionaudit, /uiuxaudit, /featureaudit). Every audit MUST implement this
+  /copyaudit, /dxaudit, /motionaudit, /uiuxaudit, /featureaudit, /depaudit, /i18naudit,
+  /observabilityaudit, /privacyaudit, /refontaudit, /releaseaudit, /retentionaudit). Every audit MUST implement this
   before/after verification protocol. An audit that cannot prove "100% functional before AND after"
   is NOT complete. This is the "do no harm" contract.
   NOT a user-invokable skill — this is a shared source of truth referenced by all audit skills.
 ---
 
-# Audit Verification Contract v1.1 — "Do No Harm"
+# Audit Verification Contract v1.2 — "Do No Harm"
 
 > **An audit that breaks working functionality is a failure, regardless of score improvement.**
 > Before calling any fix "done", prove the thing you touched still works — AND wasn't broken before.
 
+> **v1.2 changelog (2026-06-07):** added invariant #9 (no performative phases —
+> depth is evidence density, not phase count); refreshed the arsenal count 16 → 23
+> (the authoritative list lives in `registry.toml`, `total_audits = 23`).
+>
 > **v1.1 changelog (2026-04-17):** formalized the HINGE {DOMAIN} pattern,
 > documented mandatory minimums (phase count, score normalization, Phase N-1
-> / N+4), clarified the 16 Quality Arsenal skills the contract applies to.
+> / N+4), clarified the 23 Quality Arsenal skills the contract applies to.
 
 ---
 
-## MANDATORY MINIMUMS (v1.1)
+## MANDATORY MINIMUMS (v1.2)
 
 Every Quality Arsenal skill MUST satisfy these structural invariants. A skill
 violating any of them is not compliant and fails `/metaudit`.
 
 | # | Invariant | Rationale |
 |---|---|---|
-| 1 | **At least 16 scored phases** (## headings counted as audit work, not doc) | Forensic depth — fewer phases = shallow audit |
+| 1 | **At least 16 scored phases** (## headings counted as audit work, not doc) | Breadth floor — fewer phases = shallow coverage. NOTE: phase count is a floor for *breadth*, never a substitute for *depth* — see #9 |
 | 2 | **Phase N-1 (PRE-FIX BASELINE)** implemented before first fix | Hippocratic rule — can't prove "no regression" without baseline |
 | 3 | **Phase N+4 (before-after matrix)** produced to `.{audit}/before-after.md` | Proof-of-work artifact required for 100/100 verdict |
 | 4 | **Score normalized to /100** (raw may be /100, /320, /360, /420, /540 — must include normalization formula `raw / max * 100 = /100`) | Cross-skill comparison |
@@ -35,6 +40,14 @@ violating any of them is not compliant and fails `/metaudit`.
 | 6 | **Popper falsification** in each scored item (how would you disprove this claim?) | Epistemic rigor — prevents confirmation bias |
 | 7 | **Fix → re-audit loop** with explicit max iterations (typically 5) | Bounded recovery, prevents infinite loops |
 | 8 | **Final verdict gate** blocks 100/100 claim unless `before-after.md` shows 0 regressions | Contract enforcement |
+| 9 | **No performative phases** — every scored phase MUST cite project-specific evidence for its score (file:line + captured command output run against THIS codebase), whether the verdict is PASS or FAIL. A phase scored from generic reasoning, with no real command executed against the target, is *performative* and fails `/metaudit` | Depth is **evidence density**, not phase count — this is what kills box-checking and forces every phase to do genuine forensic work |
+
+### Depth gate — evidence density (v1.2)
+
+Invariant #9 makes padding self-defeating: adding phases without evidence does not raise the score, it **fails compliance**. Two enforced consequences:
+
+- **Evidence-per-phase floor.** Every scored phase carries ≥1 distinct captured command (its falsification probe per #6) tied to a real path/line in the target. Empty "clean — looks fine" phases are rejected; a CLEAN verdict must show the exact command + output that *would have* surfaced the defect if present.
+- **Density-calibrated confidence.** If the count of scored PASS phases exceeds the count of distinct real captured-command evidences, `confidence` is capped at `medium` regardless of score — an audit cannot assert more than it actually ran. Maximize depth by running *more real probes*, never by adding *more headings*.
 
 ### The HINGE {DOMAIN} Pattern (canonical)
 

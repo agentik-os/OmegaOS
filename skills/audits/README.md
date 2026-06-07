@@ -1,6 +1,6 @@
 # Quality Arsenal — 23 Forensic Audits
 
-OmegaOS ships with 18 Gestalt-Popper forensic audits (+ 2 orchestrators) that systematically verify every surface of a software project. Each audit is a multi-phase protocol that observes, measures, scores, fixes, and re-audits.
+OmegaOS ships with 23 Gestalt-Popper forensic audits (+ 2 orchestrators) that systematically verify every surface of a software project. Each audit is a multi-phase protocol that observes, measures, scores, fixes, and re-audits.
 
 ## Architecture
 
