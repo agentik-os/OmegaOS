@@ -548,6 +548,95 @@ EOF
     fi
 }
 
+# Deposit bot — a private inbox (telegram-bot/inbox-bot.ts): the operator sends
+# photos/notes from their phone, an agent reads them in ~/.omega/inbox/. Same
+# shipping shape as the command bot, minus the cleanup/bun-install (already done
+# by install_command_bot, which runs first); config lives in ~/.omega/deposit.toml.
+install_inbox_bot() {
+    [[ -f "$OMEGA_SRC/telegram-bot/inbox-bot.ts" ]] || { info "Deposit bot source not found — skipping"; return 0; }
+    mkdir -p "$OMEGA_DIR/telegram-bot" "$OMEGA_DIR/inbox" "$OMEGA_DIR/bin"
+    cp -f "$OMEGA_SRC/telegram-bot/inbox-bot.ts" "$OMEGA_DIR/telegram-bot/inbox-bot.ts"
+    if [[ -f "$OMEGA_SRC/scripts/inbox-bot-up.sh" ]]; then
+        cp -f "$OMEGA_SRC/scripts/inbox-bot-up.sh" "$OMEGA_DIR/bin/inbox-bot-up.sh"
+        chmod +x "$OMEGA_DIR/bin/inbox-bot-up.sh"
+        ln -sf "$OMEGA_DIR/bin/inbox-bot-up.sh" "$INSTALL_DIR/inbox-bot-up" 2>/dev/null || true
+    fi
+    local BUN_BIN; BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
+    if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
+        local SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
+        cat > "$SD_DIR/omega-inbox-bot.service" <<EOF
+[Unit]
+Description=OmegaOS Deposit bot (photo/note inbox → ~/.omega/inbox)
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=OMEGA_DIR=%h/.omega
+WorkingDirectory=%h/.omega/telegram-bot
+ExecStart=$BUN_BIN %h/.omega/telegram-bot/inbox-bot.ts
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+        systemctl --user daemon-reload 2>/dev/null || true
+        # ALWAYS enable + start: the bot idles without a token and auto-connects
+        # the moment inbox-bot-up writes deposit.toml.
+        systemctl --user enable --now omega-inbox-bot.service 2>/dev/null || true
+        ok "Deposit bot installed + running (waits for token). Connect: OMEGA_DEPOSIT_TOKEN=<TOKEN> inbox-bot-up  OR  inbox-bot-up <TOKEN>"
+    elif [[ "$(uname -s)" == "Darwin" && -n "$BUN_BIN" ]]; then
+        local LA_DIR="$HOME/Library/LaunchAgents"
+        local LA_LABEL="os.omega.inbox-bot"
+        local LA_PLIST="$LA_DIR/$LA_LABEL.plist"
+        local IB_WRAPPER="$OMEGA_DIR/bin/inbox-bot-launch.sh"
+        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
+        cat > "$IB_WRAPPER" <<EOF
+#!/usr/bin/env bash
+# OmegaOS Deposit bot launcher (launchd → here → bun). Resolves bun at runtime.
+OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+for _log in "\$OMEGA_DIR/logs/inbox-bot.log" "\$OMEGA_DIR/logs/inbox-bot.err.log"; do
+    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then cp "\$_log" "\$_log.1" && : > "\$_log"; fi
+done
+for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/inbox-bot.ts"
+done
+echo "inbox-bot-launch: bun not found" >&2; exit 127
+EOF
+        chmod +x "$IB_WRAPPER"
+        cat > "$LA_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>$LA_LABEL</string>
+    <key>ProgramArguments</key>
+    <array><string>$IB_WRAPPER</string></array>
+    <key>WorkingDirectory</key><string>$OMEGA_DIR/telegram-bot</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>OMEGA_DIR</key><string>$OMEGA_DIR</string>
+        <key>PATH</key><string>$HOME/.local/bin:$HOME/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>$OMEGA_DIR/logs/inbox-bot.log</string>
+    <key>StandardErrorPath</key><string>$OMEGA_DIR/logs/inbox-bot.err.log</string>
+</dict>
+</plist>
+EOF
+        launchctl bootout "gui/$(id -u)/$LA_LABEL" 2>/dev/null || true
+        launchctl bootstrap "gui/$(id -u)" "$LA_PLIST" 2>/dev/null || launchctl load -w "$LA_PLIST" 2>/dev/null || true
+        if launchctl print "gui/$(id -u)/$LA_LABEL" >/dev/null 2>&1; then
+            ok "Deposit bot installed + running via launchd (waits for token). Connect: inbox-bot-up <TOKEN>"
+        else
+            info "Deposit bot shipped; launchd has no GUI session (headless/SSH). Start later after GUI login, or: inbox-bot-up <TOKEN>"
+        fi
+    else
+        info "Deposit bot shipped, but bun/systemd missing — start later: inbox-bot-up <BOT_TOKEN>"
+    fi
+}
+
 # ─── Phase 4: Build OmegaOS ──────────────────────────────────────────────────
 
 step "Phase 4: Building OmegaOS"
@@ -580,6 +669,7 @@ fi
 # Install the Telegram command bot NOW (before the long, fragile Phase 5) so a
 # set -e abort later can never skip the operator's phone interface.
 install_command_bot || info "command bot setup had warnings (non-fatal)"
+install_inbox_bot || info "deposit bot setup had warnings (non-fatal)"
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
@@ -896,6 +986,35 @@ EOF
 else
     info "Design skills not found — skipping"
 fi
+
+# Install the maintenance skills (cleanup, project-tidy) — VPS/disk cleanup +
+# project tidying (docs/ + agentic/ convention, doc↔app coherence). Portable
+# scripts (no machine-specific paths). Mirrors the design loop: copy →
+# ~/.omega/skills/<name>/ + /<name> and /omg-<name> slash stubs.
+for MSK in cleanup project-tidy; do
+    MSK_SRC="$OMEGA_SRC/skills/$MSK"
+    MSK_DST="$OMEGA_DIR/skills/$MSK"
+    if [[ -d "$MSK_SRC" ]]; then
+        mkdir -p "$MSK_DST"
+        cp -r "$MSK_SRC"/* "$MSK_DST/"
+        find "$MSK_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+        MCMD="$HOME/.claude/commands"; mkdir -p "$MCMD"
+        for cmd in "$MSK" "omg-$MSK"; do
+            cat > "$MCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $MSK maintenance skill. Read and follow the complete instructions in:
+
+\`$MSK_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        ok "Maintenance skill installed: $MSK → ~/.omega/skills/$MSK/ (/$MSK + /omg-$MSK)"
+    else
+        info "Maintenance skill $MSK not found — skipping"
+    fi
+done
 
 # Install the orchestration planner skill (engine-native).
 # OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
@@ -1372,6 +1491,7 @@ fi
 # (c) Telegram command bot — already installed right after Phase 4 (survives a
 # Phase 5 abort). Idempotent backstop: re-run (picks up bun if Phase 5 installed it).
 install_command_bot || true
+install_inbox_bot || true
 
 # (d) Claude Code agent binary — omega needs it to spawn agents.
 if ! command -v claude >/dev/null 2>&1; then
