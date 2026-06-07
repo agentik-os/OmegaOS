@@ -1574,8 +1574,14 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     return edit(chat, msgId, pre("🗂️ Plan de rangement", out || "(rien)"), kb([[back("clean")]]));
   }
   if (ns === "do" && action === "ramflush") {
-    const out = await $`sudo bash ${OMEGA_DIR}/skills/ramflush/scripts/ram-flush.sh`.nothrow().text();
-    return edit(chat, msgId, pre("💾 Purge RAM — terminé", out || "(no output)"), kb([[back("clean")]]));
+    // bun ne peut pas exec sudo (setuid) → on déclenche un helper root via fichier-trigger
+    // (agentik-ramflush.path → agentik-ramflush.service écrit le rapport dans state/ramflush.out).
+    const outf = `${OMEGA_DIR}/state/ramflush.out`, trig = `${OMEGA_DIR}/state/.ramflush-trigger`;
+    try { writeFileSync(outf, ""); } catch {}
+    try { writeFileSync(trig, String(Date.now())); } catch {}
+    let out = "";
+    for (let i = 0; i < 12; i++) { await Bun.sleep(600); try { const t = readFileSync(outf, "utf8"); if (t.trim().length > 40) { out = t; break; } } catch {} }
+    return edit(chat, msgId, pre("💾 Purge RAM — terminé", out || "⏳ déclenché — résultat indisponible (helper agentik-ramflush actif ?)"), kb([[back("clean")]]));
   }
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {
