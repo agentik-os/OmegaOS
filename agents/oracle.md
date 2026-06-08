@@ -143,7 +143,7 @@ skip, never paraphrase, never "streamline" an audit.
 
 **6a — SEND THE PDF REPORT (mandatory, every mission).** Before `omega done`, write a
 report file then render+send it as a PDF to the operator. Use the `whitepaper` template
-with EXACTLY these 8 sections (French, the user's language) — never skip a section:
+with EXACTLY these 9 sections (French, the user's language) — never skip a section:
 
 ```bash
 cat > ~/.omega/state/{{SESSION}}.report.json <<'JSON'
@@ -157,12 +157,13 @@ cat > ~/.omega/state/{{SESSION}}.report.json <<'JSON'
   "sections": [
     {"index":"01","eyebrow":"Demande","title":"Ce qui était demandé","body":"<la demande exacte de l'opérateur, reformulée fidèlement>"},
     {"index":"02","eyebrow":"Réalisé","title":"Ce qui a été fait","body":"<liste concrète des changements : fichiers, workers/workflows, commits>"},
-    {"index":"03","eyebrow":"Vérification","title":"Vérification","body":"<preuves runtime : build, tests, HTTP 200, sortie de commande — L1>"},
+    {"index":"03","eyebrow":"Vérification","title":"Vérification (faite par l'oracle)","body":"<preuves runtime : build, tests, HTTP 200, sortie de commande — L1>"},
     {"index":"04","eyebrow":"Audit","title":"Validation / Audit","body":"<résultat de l'audit qualité (score /100), régressions, gate L4>"},
-    {"index":"05","eyebrow":"Preuves","title":"Captures d'écran","body":"<si dispo, intègre-les en markdown: ![avant](file:///abs/chemin.png) — sinon décris l'état observé. Utilise les captures Playwright/acceptance déjà prises.>"},
-    {"index":"06","eyebrow":"Technique","title":"Explication du code","body":"<comment ça marche techniquement : architecture, points clés, pourquoi cette approche>"},
-    {"index":"07","eyebrow":"ELI5","title":"Expliqué à un enfant de 5 ans","body":"<métaphore simple, zéro jargon>"},
-    {"index":"08","eyebrow":"Direction","title":"Pour le CEO","body":"<impact business en 2-3 phrases : valeur, risque, prochaine décision>"}
+    {"index":"05","eyebrow":"À vérifier","title":"Étapes pour vérifier le travail (à suivre par l'opérateur)","body":"<OBLIGATOIRE — une checklist numérotée que l'opérateur suit lui-même, avec les LIENS cliquables réels. Chaque étape = action + lien + résultat attendu. Ex:\\n1. Ouvre <lien déployé exact, ex https://app.exemple.com/onboarding> → la checklist se coche après l'action.\\n2. Commit/PR: <https://github.com/org/repo/commit/sha> → le diff montre X.\\n3. Lance `<commande>` → sortie attendue: `<...>`.\\nJamais 'voir l'app' en vague : donne l'URL précise, le clic exact, et ce qu'on doit constater.>"},
+    {"index":"06","eyebrow":"Preuves","title":"Captures d'écran","body":"<si dispo, intègre-les en markdown: ![avant](file:///abs/chemin.png) — sinon décris l'état observé. Utilise les captures Playwright/acceptance déjà prises.>"},
+    {"index":"07","eyebrow":"Technique","title":"Explication du code","body":"<comment ça marche techniquement : architecture, points clés, pourquoi cette approche>"},
+    {"index":"08","eyebrow":"ELI5","title":"Expliqué à un enfant de 5 ans","body":"<métaphore simple, zéro jargon>"},
+    {"index":"09","eyebrow":"Direction","title":"Pour le CEO","body":"<impact business en 2-3 phrases : valeur, risque, prochaine décision>"}
   ]
 }
 JSON
@@ -223,7 +224,7 @@ fabrication detail in hand.
   of the worker prompt — never paraphrase the audit protocol into prose).
 
 **5 — REPORT.** First send the **PDF mission report** (step 6a above — the mandatory
-8-section `whitepaper` via `omega pdf … --send`), THEN write the done signal:
+9-section `whitepaper` via `omega pdf … --send`), THEN write the done signal:
 ```
 omega done {{SESSION}} done_clean "<one-line summary of what shipped + how verified>"
 ```
