@@ -148,9 +148,11 @@ skip, never paraphrase, never "streamline" an audit.
 
 **6 — CLOSE = PDF REPORT + DONE SIGNAL.** The mission closes ONLY after BOTH:
 
-**6a — SEND THE PDF REPORT (mandatory, every mission).** Before `omega done`, write a
-report file then render+send it as a PDF to the operator. Use the `whitepaper` template
-with EXACTLY these 9 sections (French, the user's language) — never skip a section:
+**6a — GENERATE THE PDF REPORT (mandatory, every mission).** Before `omega done`, write a
+report file then RENDER it to `~/.omega/state/{{SESSION}}.report.pdf`. Do NOT `--send` it:
+the done-notifier auto-delivers it to the project's **Telegram topic in the hub group**
+(dentistrygpt → dentistrygpt topic, etc.) — not the operator DM. Use the `whitepaper`
+template with EXACTLY these 9 sections (French, the user's language) — never skip a section:
 
 ```bash
 cat > ~/.omega/state/{{SESSION}}.report.json <<'JSON'
@@ -175,9 +177,10 @@ cat > ~/.omega/state/{{SESSION}}.report.json <<'JSON'
 }
 JSON
 omega pdf --template=whitepaper --data=$HOME/.omega/state/{{SESSION}}.report.json \
-  --out=$HOME/.omega/state/{{SESSION}}.report.pdf --send \
-  --caption "📄 {{SESSION}} — rapport de mission"
+  --out=$HOME/.omega/state/{{SESSION}}.report.pdf
 ```
+(Render only — the notifier sends it to the project topic. The filename MUST be
+`{{SESSION}}.report.pdf` in the state dir; the notifier finds it from the done signal.)
 
 Screenshots: embed any you captured (acceptance/Playwright `/tmp/*.png`) as markdown images
 in section 05 with absolute `file://` paths. If a render of the report fails, fix the JSON
@@ -231,7 +234,8 @@ fabrication detail in hand.
   of the worker prompt — never paraphrase the audit protocol into prose).
 
 **5 — REPORT.** First send the **PDF mission report** (step 6a above — the mandatory
-9-section `whitepaper` via `omega pdf … --send`), THEN write the done signal:
+9-section `whitepaper` rendered to `{{SESSION}}.report.pdf`; the notifier delivers it to
+the project's Telegram topic), THEN write the done signal:
 ```
 omega done {{SESSION}} done_clean "<one-line summary of what shipped + how verified>"
 ```

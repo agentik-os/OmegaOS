@@ -41,6 +41,17 @@ send_tg() { # $1=chat_id  $2=text  $3=thread(optional)
     printf '%s' "$r" | grep -q '"ok":true'
 }
 
+# Send a document (the mission report PDF) to a chat (+optional topic thread).
+# Multipart upload; goes to the SAME place as the text report (project topic in the
+# hub group, else the DM). Returns success/failure.
+send_doc() { # $1=chat_id  $2=file  $3=thread(optional)  $4=caption
+    [ -f "$2" ] || return 1
+    local a=(-F "chat_id=$1" -F "document=@$2" -F "caption=$4" -F "parse_mode=HTML")
+    [ -n "${3:-}" ] && a+=(-F "message_thread_id=$3")
+    local r; r="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendDocument" "${a[@]}")"
+    printf '%s' "$r" | grep -q '"ok":true'
+}
+
 # Topic id in the hub for a project (telegram-groups.json: {topics:{"<id>":"<proj>"}}).
 # Tries the exact project, then the session-suffix-stripped name (oracle-<p>-<n>).
 topic_for() {
@@ -155,6 +166,17 @@ ${foot}"
         target="$DM"; thread=""; via="DM"
     fi
     if send_tg "$target" "$msg" "$thread"; then
+        # Mission report PDF (written by the oracle as oracle-<key>.report.pdf) → the
+        # SAME target as the text report: the project's topic in the hub group, NOT the
+        # operator DM. Best-effort, sent once (bundled before the marker write).
+        PDF="${f%.done.json}.report.pdf"
+        if [ -f "$PDF" ]; then
+            if send_doc "$target" "$PDF" "$thread" "📄 $(esc "$PROJECT") — rapport de mission"; then
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) PDF sent ${ORACLE} → ${via}"
+            else
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) PDF send failed ${ORACLE} → ${via}"
+            fi
+        fi
         printf '%s' "$STATUS" > "$marker"
         echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) notified ${ORACLE} (${STATUS}) → ${via}"
     else
