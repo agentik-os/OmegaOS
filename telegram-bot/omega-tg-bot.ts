@@ -202,6 +202,8 @@ async function edit(chat: number, msgId: number, text: string, markup?: any, thr
   // Malformed HTML from model output → edit as CLEAN plain text (tags stripped).
   if (desc.includes("parse")) return tg("editMessageText", { ...body, text: plainText(text).slice(0, 4096), parse_mode: undefined });
   // Message gone (e.g. placeholder deleted): post a fresh message, keeping topic context.
+  // Log WHY so a recurring resend (the flood) is diagnosable from the bot journal.
+  console.error(`edit→resend: chat=${chat} msg=${msgId} reason="${(r.description || "?").slice(0, 80)}"`);
   return send(chat, text, markup, thread);
 }
 
@@ -799,7 +801,11 @@ function teardownAgentBot(id: string) {
 // → a visible Claude Code oracle session (its own mission; it delegates to dynamic
 // workflows / workers / audit-review). The Monitor watches done.json and relays the
 // result. The bot NEVER does project work itself (no headless brain).
-type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number };
+type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number; resends?: number };
+// Normalize an oracle id for comparison: the live progress/watch name carries the
+// "oracle-" prefix (oracle-dentistrygpt-8) but done.json stores the bare key
+// (dentistrygpt-8). Compare prefix-insensitively so reports match the RIGHT card.
+const normOracle = (s: string) => String(s || "").toLowerCase().replace(/^oracle-/, "");
 const watching: Watch[] = [];
 const reported = new Set<string>();
 const progressPath = (oracle: string) => `${OMEGA_DIR}/state/${oracle}.progress.json`;
@@ -910,7 +916,21 @@ async function pollProgress() {
     // message every 6s (the "plusieurs messages au lieu d'un" bug). Persist it so a
     // restart re-attaches to it too.
     const newId = r?.result?.message_id as number | undefined;
-    if (newId && newId !== w.msgId) { w.msgId = newId; persistMsgId(w.oracle, newId); }
+    if (newId && newId !== w.msgId) {
+      // edit() fell back to send() → a NEW message was posted. Adopt it so the next
+      // poll edits the new card in place. FLOOD CEILING: if a card keeps vanishing
+      // (deleted/uneditable) we must NOT keep posting a fresh message every 6s — that
+      // is the multi-message flood. After 3 resends, stop touching this card (the
+      // final report still posts fresh via pollReports' send()).
+      w.msgId = newId; persistMsgId(w.oracle, newId);
+      w.resends = (w.resends || 0) + 1;
+      if (w.resends >= 3) {
+        console.error(`pollProgress: ${w.oracle} card kept disappearing (${w.resends} resends) — stopping live updates (flood guard)`);
+        w.msgId = undefined;
+      }
+    } else {
+      w.resends = 0; // healthy in-place edit (or harmless no-op) → reset the guard
+    }
   }
 }
 // Monitor: scan ~/.omega/state/oracle-*.done.json, relay each finished dispatch back
@@ -923,8 +943,10 @@ async function pollReports() {
     if (reported.has(f)) continue;
     let d: any; try { d = JSON.parse(readFileSync(f, "utf8")); } catch { continue; }
     const finishedTs = d.finished_at ? Date.parse(d.finished_at) : Date.now();
-    const proj = String(d.project || "").toLowerCase();
-    const idx = watching.findIndex(w => finishedTs >= w.ts - 5000 && (w.oracle === d.oracle || (proj && w.oracle.toLowerCase().includes(proj))));
+    // Match the EXACT oracle (prefix-insensitive). The old substring `includes(project)`
+    // fuzzy-match wrongly hit EVERY card of the project — so a report could overwrite +
+    // splice the wrong oracle's live card, freezing a still-running oracle's card.
+    const idx = watching.findIndex(w => finishedTs >= w.ts - 5000 && normOracle(w.oracle) === normOracle(d.oracle));
     if (idx < 0) continue;
     const w = watching[idx]; reported.add(f); watching.splice(idx, 1);
     const st = d.status || "done";
@@ -940,7 +962,7 @@ async function pollReports() {
     const pending = (Array.isArray(d.pending_actions) && d.pending_actions.length) ? `\n\n<b>Remaining:</b> ${esc(d.pending_actions.join(" · ")).slice(0, 600)}` : "";
     // Pull the final task checklist from the progress file (before it's removed).
     let plist: PTask[] | undefined; let pdone = 0, ptot = 0;
-    try { const pj = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${d.oracle || w.oracle}.progress.json`, "utf8")); plist = pj.tasks; pdone = pj.done || 0; ptot = pj.total || 0; } catch {}
+    try { const pj = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${w.oracle}.progress.json`, "utf8")); plist = pj.tasks; pdone = pj.done || 0; ptot = pj.total || 0; } catch {}
     const checklist = taskList(plist);
     const barLine = ptot > 0 ? `<code>${bar(Math.round((pdone / ptot) * 100))}</code> ${pdone}/${ptot}` : `<code>${bar(100)}</code> 100%`;
     const report = `${sym} <b>${esc(d.project || w.project)}</b> · ${label}\n${barLine}${checklist}\n\n${body}${pending}${deploy}\n\n<i>${esc(d.oracle || w.oracle)}${dur}</i>${commit}`;
@@ -957,7 +979,7 @@ async function pollReports() {
     // next turn — to Atlas or the oracle — has the full thread.
     histAppend(w.chat, w.thread, "assistant", `[${d.project || w.project}] ${d.summary || label}`, String(d.project || w.project));
     try { writeFileSync(`${f}.notified`, ""); } catch {}
-    try { Bun.spawnSync(["rm", "-f", `${OMEGA_DIR}/state/${d.oracle || w.oracle}.progress.json`]); } catch {}
+    try { Bun.spawnSync(["rm", "-f", `${OMEGA_DIR}/state/${w.oracle}.progress.json`]); } catch {}
   }
 }
 
