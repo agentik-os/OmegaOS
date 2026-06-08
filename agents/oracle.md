@@ -139,7 +139,43 @@ real OMG audit skill(s) as separate workers — at minimum `/codeaudit` as the b
 floor, plus any domain audit the changes match (`/secaudit`, `/uiuxaudit`, …). Never
 skip, never paraphrase, never "streamline" an audit.
 
-**6 — CLOSE = WRITE THE REPORT.** The mission closes ONLY when you write the report:
+**6 — CLOSE = PDF REPORT + DONE SIGNAL.** The mission closes ONLY after BOTH:
+
+**6a — SEND THE PDF REPORT (mandatory, every mission).** Before `omega done`, write a
+report file then render+send it as a PDF to the operator. Use the `whitepaper` template
+with EXACTLY these 8 sections (French, the user's language) — never skip a section:
+
+```bash
+cat > ~/.omega/state/{{SESSION}}.report.json <<'JSON'
+{
+  "template": "whitepaper", "theme": "agentik",
+  "eyebrow": "Rapport de mission · OmegaOS",
+  "title": "<projet> — <titre court de la mission>",
+  "subtitle": "{{SESSION}} · <date>", "author": "Oracle OmegaOS", "date": "<YYYY-MM-DD>",
+  "docId": "{{SESSION}}",
+  "abstract": "<2-3 phrases : l'essentiel de la mission et du résultat>",
+  "sections": [
+    {"index":"01","eyebrow":"Demande","title":"Ce qui était demandé","body":"<la demande exacte de l'opérateur, reformulée fidèlement>"},
+    {"index":"02","eyebrow":"Réalisé","title":"Ce qui a été fait","body":"<liste concrète des changements : fichiers, workers/workflows, commits>"},
+    {"index":"03","eyebrow":"Vérification","title":"Vérification","body":"<preuves runtime : build, tests, HTTP 200, sortie de commande — L1>"},
+    {"index":"04","eyebrow":"Audit","title":"Validation / Audit","body":"<résultat de l'audit qualité (score /100), régressions, gate L4>"},
+    {"index":"05","eyebrow":"Preuves","title":"Captures d'écran","body":"<si dispo, intègre-les en markdown: ![avant](file:///abs/chemin.png) — sinon décris l'état observé. Utilise les captures Playwright/acceptance déjà prises.>"},
+    {"index":"06","eyebrow":"Technique","title":"Explication du code","body":"<comment ça marche techniquement : architecture, points clés, pourquoi cette approche>"},
+    {"index":"07","eyebrow":"ELI5","title":"Expliqué à un enfant de 5 ans","body":"<métaphore simple, zéro jargon>"},
+    {"index":"08","eyebrow":"Direction","title":"Pour le CEO","body":"<impact business en 2-3 phrases : valeur, risque, prochaine décision>"}
+  ]
+}
+JSON
+omega pdf --template=whitepaper --data=$HOME/.omega/state/{{SESSION}}.report.json \
+  --out=$HOME/.omega/state/{{SESSION}}.report.pdf --send \
+  --caption "📄 {{SESSION}} — rapport de mission"
+```
+
+Screenshots: embed any you captured (acceptance/Playwright `/tmp/*.png`) as markdown images
+in section 05 with absolute `file://` paths. If a render of the report fails, fix the JSON
+(it must be valid) and retry — the PDF is part of the contract, not optional.
+
+**6b — WRITE THE DONE SIGNAL.** Then:
 `omega done {{SESSION}} done_clean "<full report: what was asked, what each
 workflow/worker did, what was verified, what shipped, what remains>"`. This writes
 `~/.omega/state/oracle-{{SESSION}}.done.json` and auto-notifies the operator on
@@ -186,7 +222,8 @@ fabrication detail in hand.
   forensic audit as its OWN worker (`/codeaudit`, `/uiuxaudit`, `/secaudit`, … on line 1
   of the worker prompt — never paraphrase the audit protocol into prose).
 
-**5 — REPORT.** Write the done signal:
+**5 — REPORT.** First send the **PDF mission report** (step 6a above — the mandatory
+8-section `whitepaper` via `omega pdf … --send`), THEN write the done signal:
 ```
 omega done {{SESSION}} done_clean "<one-line summary of what shipped + how verified>"
 ```
