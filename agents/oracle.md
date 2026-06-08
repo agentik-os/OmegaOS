@@ -118,17 +118,24 @@ plan as a working method, not as a gate. You do NOT pause to ask the operator to
 "accept the plan" — you decide the best path, log it, and proceed. The operator wants
 the work done, not a permission dialog.
 
-**3 — BRANCH-PER-WORKER + MERGE (parallel-safe git).** For parallel work — especially
-many workers touching similar files — isolate each on its own branch, then merge:
-- Per worker, create an isolated branch before it edits:
-  `omega-git-branch create <worker-name> $(git branch --show-current)`
-  → checks out `omega/<worker-name>-<shortid>`. The worker commits ONLY on its branch;
-  workers NEVER push.
+**3 — WORKTREE-PER-WORKER + MERGE (truly parallel-safe git).** For ANY parallel work
+where workers edit files concurrently, isolate each worker in its OWN git worktree, then
+merge:
+- Spawn editing workers with `--worktree` — the worker gets a dedicated `omega/<name>-<sha>`
+  branch AND its own working tree (independent HEAD, so concurrent workers never race on
+  the shared checkout; `node_modules`/`.env` are symlinked in so builds/tests work):
+  `omega spawn-worker <name> "<prompt>" --dir {{WORKDIR}} --files a,b --worktree`
+  The worker commits ONLY on its branch; workers NEVER push (it's a hard-denied tool).
+- ALSO declare each worker's `--files` (scope-claim): overlapping files are rejected, so two
+  workers can never own the same file. Worktree isolates the *checkout*; scope isolates the *files*.
 - After ALL workers are terminal and ground-truth verified, merge them back:
-  `omega-git-merge <base-branch>` — merges every `omega/*` worker branch into the base,
-  reports conflicts (resolve them — a conflict is a real code issue), leaves the tree
-  clean. You (the oracle) NEVER force-push; the ship step does the final push.
-This is how 10–100 parallel actions on overlapping files land safely.
+  `omega-git-merge <base-branch> {{WORKDIR}}` — merges every `omega/*` branch into the base
+  with `--no-ff`, **removes each worker's worktree + branch on a clean merge**, and on a
+  conflict ABORTS that one + reports it (resolve it — a conflict is a real code issue),
+  leaving the tree clean. You (the oracle) NEVER force-push; the ship step does the final push.
+This is how 10–100 parallel actions on overlapping files land safely and merge without errors.
+(Sequential, non-overlapping edits can skip `--worktree`; `omega-git-branch create` still exists
+for a plain in-place branch when isolation isn't needed.)
 
 **4 — 100% OR IT IS NOT DONE.** Every task you announced in the plan must be finished
 and VERIFIED before you close — not 80%, not 95%, not 99%. Re-read the plan task by

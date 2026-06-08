@@ -250,6 +250,11 @@ enum Commands {
         /// Bypass the prompt-completeness gate (downgrade reject to a warning)
         #[arg(long)]
         force: bool,
+        /// Isolate the worker in its own git worktree (independent HEAD/working-tree
+        /// → truly parallel-safe; merge back later with omega-git-merge). Recommended
+        /// for any worker that edits files when others run concurrently.
+        #[arg(long)]
+        worktree: bool,
     },
 
     /// Spawn a team of agents in split panes
@@ -565,8 +570,8 @@ async fn main() -> Result<()> {
         Some(Commands::Orchestrate { project, mission, dir, timeout, no_gate }) => {
             cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await
         }
-        Some(Commands::SpawnWorker { task, prompt, dir, project, files, force }) => {
-            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files, force).await
+        Some(Commands::SpawnWorker { task, prompt, dir, project, files, force, worktree }) => {
+            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files, force, worktree).await
         }
         Some(Commands::Team { project, count, dir, members }) => {
             cmd_team(&project, count, dir.as_deref(), &members).await
@@ -3383,6 +3388,7 @@ async fn cmd_spawn_worker(
     project: Option<&str>,
     files: Option<Vec<String>>,
     force: bool,
+    worktree: bool,
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
@@ -3406,7 +3412,7 @@ async fn cmd_spawn_worker(
             .and_then(|s| omega_core::session::OmegaSession::classify(s).project),
     };
 
-    let work_dir = dir.unwrap_or(".");
+    let mut work_dir = dir.unwrap_or(".").to_string();
     let worker_name = match &project_name {
         Some(p) => format!("{}-worker-{}", p, task),
         None => format!("worker-{}", task),
@@ -3446,6 +3452,39 @@ async fn cmd_spawn_worker(
 
     if let Some(ref files) = files {
         omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
+    }
+
+    // --worktree: give this worker its OWN git worktree (independent HEAD + working
+    // tree) so concurrent workers never race on the shared checkout. node_modules/.env
+    // are symlinked in by omega-git-branch so builds/tests still work. The oracle later
+    // runs omega-git-merge to integrate the branch and remove the worktree. Best-effort:
+    // fall back to the shared dir (with a warning) if the worktree can't be created.
+    if worktree {
+        let home = dirs::home_dir().unwrap_or_default();
+        let script = home.join(".omega/bin/omega-git-branch.sh");
+        let out = std::process::Command::new("bash")
+            .arg(&script)
+            .arg("worktree")
+            .arg(&worker_name)
+            .arg("") // base = current HEAD of the repo dir
+            .arg(&work_dir)
+            .output();
+        match out {
+            Ok(o) if o.status.success() => {
+                let wt = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if !wt.is_empty() && std::path::Path::new(&wt).is_dir() {
+                    eprintln!("[+] worker isolated in worktree: {wt}");
+                    work_dir = wt;
+                } else {
+                    eprintln!("[!] worktree create returned no path — running in shared dir {work_dir}");
+                }
+            }
+            Ok(o) => eprintln!(
+                "[!] worktree create failed ({}) — running in shared dir {work_dir}",
+                String::from_utf8_lossy(&o.stderr).trim()
+            ),
+            Err(e) => eprintln!("[!] worktree create error ({e}) — running in shared dir {work_dir}"),
+        }
     }
 
     // THE FUNNEL — inject the Worker-scoped Laws + operational rules, exactly
@@ -3499,10 +3538,10 @@ async fn cmd_spawn_worker(
                 "failed to generate worker mcp-config — launching without it"
             ),
         }
-        mgr.create_agent_session_with_opts(&worker_name, work_dir, agent, Some(&full_prompt), opts)
+        mgr.create_agent_session_with_opts(&worker_name, &work_dir, agent, Some(&full_prompt), opts)
             .await
     } else {
-        mgr.create_agent_session(&worker_name, work_dir, &config.agent_command, Some(&full_prompt))
+        mgr.create_agent_session(&worker_name, &work_dir, &config.agent_command, Some(&full_prompt))
             .await
     };
     if let Err(e) = spawn_result {
