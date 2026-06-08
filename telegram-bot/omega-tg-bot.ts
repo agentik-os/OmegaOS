@@ -10,7 +10,7 @@
  * Single poller per bot token. config ← ~/.omega/telegram.toml.
  */
 import { $ } from "bun";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
@@ -802,6 +802,36 @@ function teardownAgentBot(id: string) {
 type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number };
 const watching: Watch[] = [];
 const reported = new Set<string>();
+const progressPath = (oracle: string) => `${OMEGA_DIR}/state/${oracle}.progress.json`;
+// Persist the live card's message id back to the progress file so a bot RESTART
+// (systemd Restart=always) can re-attach to the SAME card instead of orphaning it.
+function persistMsgId(oracle: string, msgId: number) {
+  try { const j = JSON.parse(readFileSync(progressPath(oracle), "utf8")); j.msgId = msgId; writeFileSync(progressPath(oracle), JSON.stringify(j)); } catch {}
+}
+// Re-attach watching[] to the live progress cards THIS bot owns (p.bot === BOT_ID)
+// that have not finished yet (no done.json). watching[] is in-memory, so without
+// this a restart freezes the card AND drops the final report. Scoped by BOT_ID so a
+// per-project agent bot never tries to edit another bot's card (a different chat) —
+// which, hitting a missing message, would re-send a stray message. Skips finished
+// (done.json present → already reported / handled by omega-done-notify) and stale
+// (>24h, abandoned) cards so old cards are never resurrected into new messages.
+function rehydrateWatching() {
+  let files: string[] = [];
+  try { files = Bun.spawnSync(["bash", "-lc", `ls ${OMEGA_DIR}/state/oracle-*.progress.json 2>/dev/null`]).stdout.toString().trim().split("\n").filter(Boolean); } catch {}
+  let n = 0;
+  for (const f of files) {
+    try {
+      const p = JSON.parse(readFileSync(f, "utf8"));
+      if (!p?.msgId || p.bot !== BOT_ID || !p.oracle) continue;
+      if (existsSync(`${OMEGA_DIR}/state/${p.oracle}.done.json`)) continue;
+      if (Date.now() - statSync(f).mtimeMs > 24 * 3600_000) continue;
+      if (watching.some(w => w.oracle === p.oracle)) continue;
+      watching.push({ chat: p.chat, thread: p.thread ?? undefined, mission: p.mission || "", ts: 0, oracle: p.oracle, project: p.project || "", msgId: p.msgId });
+      n++;
+    } catch {}
+  }
+  if (n) console.log(`rehydrated ${n} live progress card(s)`);
+}
 // Dispatch a real oracle session AND post a live progress card (edited in place by
 // pollProgress as the oracle calls `omega progress`, finalized into the report by
 // pollReports). `extra` is dispatched to the oracle (history/reply context) but NOT
@@ -814,7 +844,7 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
   const sent = await send(chat, progressCard(project, oracle, mission, null), undefined, thread);
   const msgId = sent?.result?.message_id as number | undefined;
   watching.push({ chat, thread, mission, ts: Date.now(), oracle, project, msgId });
-  try { writeFileSync(`${OMEGA_DIR}/state/${oracle}.progress.json`, JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, project, oracle, mission, done: 0, total: 0, tasks: [] })); } catch {}
+  try { writeFileSync(progressPath(oracle), JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, bot: BOT_ID, project, oracle, mission, done: 0, total: 0, tasks: [] })); } catch {}
   return ""; // card already sent
 }
 
@@ -871,9 +901,16 @@ async function pollProgress() {
   for (const w of watching) {
     if (!w.msgId) continue;
     let p: any = null;
-    try { p = JSON.parse(readFileSync(`${OMEGA_DIR}/state/${w.oracle}.progress.json`, "utf8")); } catch {}
+    try { p = JSON.parse(readFileSync(progressPath(w.oracle), "utf8")); } catch {}
     if (!p) continue;
-    await edit(w.chat, w.msgId, progressCard(w.project, w.oracle, w.mission, p), undefined, w.thread);
+    const r = await edit(w.chat, w.msgId, progressCard(w.project, w.oracle, w.mission, p), undefined, w.thread);
+    // If the card was gone and edit() had to re-send (its edit→send fallback), it
+    // returns the NEW message. Adopt that id so the next poll edits the new card in
+    // place — instead of editing the dead id, failing, and re-sending a fresh
+    // message every 6s (the "plusieurs messages au lieu d'un" bug). Persist it so a
+    // restart re-attaches to it too.
+    const newId = r?.result?.message_id as number | undefined;
+    if (newId && newId !== w.msgId) { w.msgId = newId; persistMsgId(w.oracle, newId); }
   }
 }
 // Monitor: scan ~/.omega/state/oracle-*.done.json, relay each finished dispatch back
@@ -1685,6 +1722,7 @@ async function agentBotMain(agentId: string) {
   await tg("setMyCommands", { commands: [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
   console.log(`agent-bot up: ${agentId} → project ${project}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
+  rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
   let offset = 0;
@@ -1738,6 +1776,7 @@ async function main() {
     if (r !== "ok") console.log(`agent-bot resurrect ${id}: ${r}`);
   }
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
+  rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json reports
   let offset = 0;
