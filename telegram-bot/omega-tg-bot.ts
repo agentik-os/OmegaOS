@@ -1813,8 +1813,8 @@ function novaMenuKb() {
   ]);
 }
 function novaConnectKb() {
-  const apps = ["gmail", "twitter", "linkedin", "reddit", "youtube"];
-  const label: Record<string, string> = { gmail: "📧 Gmail", twitter: "🐦 Twitter/X", linkedin: "💼 LinkedIn", reddit: "👽 Reddit", youtube: "▶️ YouTube" };
+  const apps = ["gmail", "twitter", "instagram", "linkedin", "reddit", "youtube"];
+  const label: Record<string, string> = { gmail: "📧 Gmail", twitter: "🐦 Twitter/X", instagram: "📸 Instagram", linkedin: "💼 LinkedIn", reddit: "👽 Reddit", youtube: "▶️ YouTube" };
   return kb([
     ...apps.map(a => [{ text: `Connecter ${label[a]}`, callback_data: `nova:conn:${a}` }]),
     [{ text: "« Retour", callback_data: "nova:menu" }],
