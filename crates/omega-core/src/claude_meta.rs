@@ -184,6 +184,7 @@ mod tests {
         assert_eq!(short_model("claude-opus-4-7-20260315"), "opus-4.7");
         assert_eq!(short_model("claude-sonnet-4-6"), "sonnet-4.6");
         assert_eq!(short_model("claude-opus-4-8"), "opus-4.8");
+        assert_eq!(short_model("claude-fable-5"), "fable-5");
         assert_eq!(short_model("opus"), "opus");
     }
 

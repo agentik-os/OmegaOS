@@ -12,11 +12,13 @@ use std::time::Duration;
 const MAX_GOAL_LEN: usize = 4000;
 
 /// Map a config `default_model` alias to the explicit model name Claude's CLI
-/// pins with `--model`. "opus" → "claude-opus-4-8"; any other value (including
-/// a full model name like "claude-opus-4-8" or a bare alias such as "sonnet")
-/// is passed through verbatim — the CLI accepts both aliases and full names.
+/// pins with `--model`. "fable" → "claude-fable-5"; "opus" → "claude-opus-4-8";
+/// any other value (including a full model name like "claude-opus-4-8" or a bare
+/// alias such as "sonnet") is passed through verbatim — the CLI accepts both
+/// aliases and full names.
 fn resolve_model_flag(default_model: &str) -> String {
     match default_model {
+        "fable" => "claude-fable-5".to_string(),
         "opus" => "claude-opus-4-8".to_string(),
         other => other.to_string(),
     }
