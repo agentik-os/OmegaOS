@@ -1016,6 +1016,37 @@ EOF
     fi
 done
 
+# Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
+# visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
+# OmegaOS conventions. Prompt-only except market-research (gooseworks API, user
+# creds) and the higgsfield pair (external `higgsfield` CLI — installed lazily at
+# RUNTIME by the skill itself, NEVER auto-installed here). Mirrors the maintenance
+# loop: copy → ~/.omega/skills/<name>/ + /<name> and /omg-<name> slash stubs.
+for GTMK in launch-strategy product-marketing-context cold-email social-content ad-creative content-strategy market-research marketing-strategist higgsfield-soul-id higgsfield-generate; do
+    GTMK_SRC="$OMEGA_SRC/skills/$GTMK"
+    GTMK_DST="$OMEGA_DIR/skills/$GTMK"
+    if [[ -d "$GTMK_SRC" ]]; then
+        mkdir -p "$GTMK_DST"
+        cp -r "$GTMK_SRC"/* "$GTMK_DST/"
+        find "$GTMK_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+        GTMK_CMD="$HOME/.claude/commands"; mkdir -p "$GTMK_CMD"
+        for cmd in "$GTMK" "omg-$GTMK"; do
+            cat > "$GTMK_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $GTMK skill. Read and follow the complete instructions in:
+
+\`$GTMK_DST/SKILL.md\`
+
+Use every reference and template it provides.
+EOF
+        done
+        ok "Marketing/Visual skill installed: $GTMK → ~/.omega/skills/$GTMK/ (/$GTMK + /omg-$GTMK)"
+    else
+        info "Marketing/Visual skill $GTMK not found — skipping"
+    fi
+done
+
 # Install the llm-council skill — a 100% Claude Code-native multi-model Claude
 # deliberation council (inspired by Karpathy's LLM Council), implemented on the
 # OmegaOS Workflow primitive: four Claude models answer in parallel, peer-review

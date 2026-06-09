@@ -400,6 +400,28 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-06-09",
             reason: "High-stakes / irreversible / contested calls made unilaterally by one model — or accepted on a single verification pass — drift and occasionally go catastrophically wrong; a multi-model Claude council with blind peer-review and an Opus president that records the dissent makes such decisions auditable and far harder to get wrong, at zero external API cost.",
         },
+        Rule {
+            id: "R-MARKETING",
+            title: "When to use the marketing / go-to-market suite",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Marketing / go-to-market / growth / launch / outbound / content missions reach for the vendored marketing suite in dependency order: market-research (upstream-most; gooseworks paid API + ~/.gooseworks creds) → product-marketing-context (run FIRST among the prompt skills — writes .agents/product-marketing.md that the others read) → marketing-strategist (GTM strategy lens) → launch-strategy (a launch moment) / content-strategy (what to produce) → social-content (organic) / ad-creative (paid copy; pairs with R-VISUAL-ID higgsfield-generate for the visual half) / cold-email (outbound). Invoke the real /omg-<skill> — never paraphrase. It is the go-to-market layer of the new-project pipeline, after /omg-brand-identity.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-09",
+            reason: "OmegaOS could research, brand, write a PRD, and build, but had no canonical go-to-market layer; marketing missions improvised GTM from scratch each time. Vendoring the 8-skill marketing suite and pinning the dependency order makes go-to-market reproducible. market-research folds the upstream research primitive into this rule rather than a separate research rule, to keep the registry lean.",
+        },
+        Rule {
+            id: "R-VISUAL-ID",
+            title: "When to use the Higgsfield visual-identity pair",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Coherent visual identity and consistent-character image/video generation use the Higgsfield pair in order: higgsfield-soul-id trains the identity anchor ONCE (a face-faithful Soul, returns a reference id), then higgsfield-generate produces identity-faithful images/videos/ads (Marketing Studio) via --soul-id. Trigger inside /omg-brand-identity (after the brand book sets the visual direction) and beside R-MARKETING ad-creative (copy + visual = a full paid creative). Both orchestrate the external higgsfield CLI (runtime curl|sh install + higgsfield auth login + paid plan): OmegaOS ships only the skill markdown, never auto-installs the CLI in install.sh, and live generation is not runtime-verifiable without the operator credentials.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-09",
+            reason: "OmegaOS could design a brand book but had no path from visual direction to actually generated, identity-consistent assets. soul-id + generate close that gap and plug visual identity into the brand pipeline. The external-CLI dependency is recorded so the boundary stays explicit: ship the markdown, keep the curl|sh CLI install a user opt-in, never claim a generated asset as runtime-verified without credentials.",
+        },
     ]
 }
 
