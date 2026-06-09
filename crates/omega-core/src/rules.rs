@@ -690,14 +690,28 @@ mod tests {
             }
             // Rule: 'R-' followed by one or more UPPERCASE ASCII letters.
             b'R' if bytes.get(1) == Some(&b'-') => {
-                let upper: String = stem[2..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_uppercase())
-                    .collect();
-                if upper.is_empty() {
+                // id = 'R-' + UPPERCASE tokens joined by '-', e.g. `R-SEC`,
+                // `R-SKILLPUB`, or the multi-token `R-VISUAL-ID`. A '-' belongs
+                // to the id only when the next char is uppercase; the first
+                // lowercase char (start of the kebab slug) ends the id.
+                let chars: Vec<char> = stem[2..].chars().collect();
+                let mut id = String::new();
+                let mut i = 0;
+                while i < chars.len() {
+                    let c = chars[i];
+                    if c.is_ascii_uppercase() {
+                        id.push(c);
+                    } else if c == '-' && chars.get(i + 1).is_some_and(|n| n.is_ascii_uppercase()) {
+                        id.push('-');
+                    } else {
+                        break;
+                    }
+                    i += 1;
+                }
+                if id.is_empty() {
                     None
                 } else {
-                    Some(format!("R-{upper}"))
+                    Some(format!("R-{id}"))
                 }
             }
             _ => None,
