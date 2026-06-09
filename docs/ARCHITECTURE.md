@@ -34,7 +34,7 @@ bot for remote control.
 | `omega` CLI | Main binary — 40+ commands |
 | TUI | 7-tab session manager (Sessions/Menu/Monitor/Projects/Settings/Agentic/Help) |
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
-| AISB Master | Always-on Claude session with 13 Matrix agents |
+| AISB Master | Always-on Claude session with 14 Matrix agents |
 | Telegram Bridge | Long-poll bot, relays messages to AISB |
 | Quality Arsenal | 23 forensic audits (code, UX, perf, security, etc.) |
 
@@ -69,7 +69,7 @@ bot for remote control.
 ├── agents/                        Agent system prompts
 │   ├── aisb-master.md             Master AISB brain
 │   ├── oracle.md / worker.md / team-lead.md
-│   └── aisb/                      13 Matrix agents
+│   └── aisb/                      14 Matrix agents
 │       ├── oracle.md / morpheus.md / seraph.md
 │       └── ... (13 total)
 │
@@ -180,7 +180,7 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 │                      ↓ intent                                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
-│  13 Matrix Agents:                                               │
+│  14 Matrix Agents:                                               │
 │    Oracle · Morpheus · Seraph · Keymaker · Smith · Niobe         │
 │    Architect · Merovingian · Neo · Zion · Link · Construct       │
 │    Pythia                                                        │
@@ -199,7 +199,7 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 
 | Role | Icon | Pattern | Purpose |
 |------|------|---------|---------|
-| AISB Master | ★ | `aisb-master` | Always-on brain, 13 agents |
+| AISB Master | ★ | `aisb-master` | Always-on brain, 14 agents |
 | Oracle | ◆ | `oracle-{Project}` | Strategic — classify, plan, dispatch |
 | Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed |
 | Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions |

@@ -1,4 +1,4 @@
-//! AISB Super Brain — typed registry of the 13 Matrix agents.
+//! AISB Super Brain — typed registry of the 14 Matrix agents.
 //!
 //! Each agent has a name, model class, role, tool set, and a compiled-in
 //! system prompt. This is the single source of truth — the Master AISB
@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The 13 Matrix-themed AISB agents.
+/// The 14 Matrix-themed AISB agents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AisbAgent {
     Oracle,
@@ -23,6 +23,7 @@ pub enum AisbAgent {
     Link,
     Construct,
     Pythia,
+    Council,
 }
 
 /// Model class used by each agent.
@@ -75,6 +76,7 @@ impl AisbAgent {
             AisbAgent::Link,
             AisbAgent::Construct,
             AisbAgent::Pythia,
+            AisbAgent::Council,
         ]
     }
 
@@ -266,6 +268,22 @@ impl AisbAgent {
                 ],
                 prompt: include_str!("../../../agents/aisb/pythia.md"),
             },
+            AisbAgent::Council => AgentDef {
+                agent: *self,
+                name: "COUNCIL",
+                model: ModelClass::Opus,
+                role: "Multi-model deliberation · Convener · President-synthesizer",
+                tagline: "Comprehension is not requisite for cooperation.",
+                tools: &["Read", "Bash", "Glob", "Grep", "Agent", "WebSearch"],
+                responsibilities: &[
+                    "Convenes four Claude models (Opus 4.8 / Sonnet 4.6 / Haiku 4.5 / Fable 5) in parallel on a high-stakes or contested call",
+                    "Has them peer-review each other ANONYMOUSLY, blind to model identity (aligns with R-VERIFY)",
+                    "An Opus president synthesizes the verdict with confidence + recorded dissent",
+                    "AUTO on irreversible / prod-wide / architecture / cross-project calls + conflicting verification verdicts",
+                    "100% Claude Code-native via the Workflow primitive — no API keys; DECIDES/ADVISES, never edits code",
+                ],
+                prompt: include_str!("../../../agents/aisb/council.md"),
+            },
         }
     }
 
@@ -274,7 +292,7 @@ impl AisbAgent {
     }
 }
 
-/// How many of the 13 agents are typed/present.
+/// How many of the 14 agents are typed/present.
 pub fn agent_count() -> usize {
     AisbAgent::all().len()
 }
@@ -284,8 +302,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn thirteen_agents() {
-        assert_eq!(agent_count(), 13);
+    fn fourteen_agents() {
+        assert_eq!(agent_count(), 14);
     }
 
     #[test]

@@ -2565,7 +2565,7 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  AISB = AI Super Brain — 13 Matrix agents the Master delegates to.",
+            "  AISB = AI Super Brain — 14 Matrix agents the Master delegates to.",
             Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
@@ -2640,7 +2640,7 @@ fn render_info_atlas() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("  Atlas is the single brain reached over Telegram: you message it,"),
         Line::from("  it classifies intent and dispatches to the right oracle, agent or"),
-        Line::from("  skill. The 13 Matrix agents (see 'AISB Agents') are its faculties."),
+        Line::from("  skill. The 14 Matrix agents (see 'AISB Agents') are its faculties."),
         Line::from("  One conversation, many agents, shared evolution."),
         Line::from(""),
         Line::from(Span::styled("  Live session", Style::default().fg(th::accent()))),
@@ -2659,11 +2659,11 @@ fn render_info_atlas() -> Vec<Line<'static>> {
         Line::from("    agentik-telegram (MIT); runs as a Docker container on :8080."),
         Line::from("    Open:  Settings tab → Actions → 'O' (Open Dashboard) — launches it"),
         Line::from("           from ~/.omega/repos/omega-mc when installed."),
-        Line::from("    The 13 AISB agents are mapped into its registry"),
+        Line::from("    The 14 AISB agents are mapped into its registry"),
         Line::from("    (config/omega-aisb.yaml)."),
         Line::from(""),
         Line::from(Span::styled(
-            "  One brain (Atlas), one Telegram channel, one dashboard — all 13 agents.",
+            "  One brain (Atlas), one Telegram channel, one dashboard — all 14 agents.",
             Style::default().fg(th::dim()),
         )),
     ]

@@ -16,7 +16,7 @@ that orchestrates multiple AI coding agents via rmux sessions.
 
 ## Orchestration
 
-- **AISB Master** — persistent always-on session, 13 Matrix agents delegate work
+- **AISB Master** — persistent always-on session, 14 Matrix agents delegate work
 - **Oracle** — 1 per project, classifies → plans → dispatches workers
 - **Workers** — ephemeral, parallel, file-lock scoped, auto-named
 - **Quality Gates** — rubric upfront, multi-grader consensus, Popper falsification

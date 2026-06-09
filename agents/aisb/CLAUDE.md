@@ -2,7 +2,7 @@
 
 > *"Free your mind."* — Morpheus
 >
-> 12 Matrix-themed agents + 1 watcher (Pythia) — ORACLE-led autonomous orchestration,
+> 13 Matrix-themed agents + 1 watcher (Pythia) — ORACLE-led autonomous orchestration,
 > now fully integrated with Omega's R-18 → R-35 outcome-driven primitives.
 > v7.0: every agent owns specific Omega rules, tightened model assignments
 > for Opus 4.16 / Sonnet 4.6 / Haiku 4.5, structured outputs everywhere.
@@ -109,12 +109,13 @@ Full build with quality gate = all 5 steps.
 | 11 | **LINK** | `link` | claude-haiku-4-5-20251001 | Communicate | R-20 webhook bridge, notify-bot.sh, Telegram reports |
 | 12 | **CONSTRUCT** | `construct` | claude-haiku-4-5-20251001 | Design | R-32 skill-search BM25, audit-gather/* |
 | 13 | **PYTHIA** | (cron-only, no subagent_type) | claude-opus-4-8 | Watch | Weekly Anthropic docs + GitHub diff, R-XX gap analysis |
+| 14 | **COUNCIL** | `council` | claude-opus-4-8 | Multi-model council | R-COUNCIL: 4 Claude models -> blind peer-review -> Opus president, recorded dissent (Claude-native, no API keys) |
 
 ### Model Tiers (May 2026)
 
 | Tier | Model | Agents | Why |
 |------|-------|--------|-----|
-| **Critical** | claude-opus-4-8 | ORACLE, MORPHEUS, PYTHIA (analysis runs) | Brain + code implementation + system-evolution proposals — quality matters most |
+| **Critical** | claude-opus-4-8 | ORACLE, MORPHEUS, PYTHIA (analysis runs), COUNCIL | Brain + code implementation + system-evolution proposals — quality matters most |
 | **Reasoning** | claude-sonnet-4-6 | SERAPH, KEYMAKER, NIOBE, SMITH, ARCHITECT | Analysis, planning, research, audit |
 | **Utility** | claude-haiku-4-5-20251001 | MEROVINGIAN, NEO, ZION, LINK, CONSTRUCT | Structured tasks, data formatting, simple routing |
 

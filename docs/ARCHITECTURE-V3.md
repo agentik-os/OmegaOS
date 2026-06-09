@@ -16,7 +16,7 @@
 ├── OMEGA.md                           Universal system prompt (every agent)
 │
 ├── rules/                             6 Laws + 20 Rules (.md files)
-├── agents/                            13 Matrix agents + oracle/worker prompts
+├── agents/                            14 Matrix agents + oracle/worker prompts
 ├── skills/                            Cross-LLM skills (pdfgen, audits, ...)
 ├── docs/                              Reference documentation
 ├── projects.json                      Project registry (paths, topics, oracle sessions)

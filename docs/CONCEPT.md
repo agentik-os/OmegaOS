@@ -54,7 +54,7 @@ Un seul LLM qui fait tout = context window saturé, pas de spécialisation, pas 
 L0   GOUVERNANCE        — Paperclip : registre des 14 agents, lignes de reporting fixes
 L1   HUMAIN             — toi (Telegram, CLI `omega`, web)
 L2   HERMÈS             — méta-compagnon, budget isolé (clé API propre)
-L3   AISB MASTER        — le cerveau : classe, route, délègue aux 13 agents
+L3   AISB MASTER        — le cerveau : classe, route, délègue aux 14 agents
 L4   ORACLE             — 1 par projet : planifie, dispatche les workers
 L5   WORKERS            — éphémères, parallèles, scope-lockés, vérifiés
 ```
@@ -65,7 +65,7 @@ L5   WORKERS            — éphémères, parallèles, scope-lockés, vérifiés
 - **L3 AISB ≠ L4 Oracle** : AISB est généraliste (il connaît tous les projets). Oracle est spécialiste d'UN projet (il connaît son code, son histoire, ses décisions). Mélanger les deux = un agent qui sait tout vaguement et rien précisément.
 - **L5 Workers éphémères** : ils naissent pour UNE tâche, avec un brief auto-contenu, et meurent en écrivant `.done.json`. Pas d'état partagé = pas de corruption croisée. Parallélisme safe.
 
-### Les 14 agents (Hermès + 13 AISB Matrix)
+### Les 15 agents (Hermès + 14 AISB Matrix)
 
 | Tier | Agent | Mission unique |
 |---|---|---|

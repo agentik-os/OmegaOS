@@ -237,6 +237,21 @@ pub fn classify_mission(mission: &str) -> RoutingDecision {
         Complexity::Epic => "oracle",
     };
 
+    // @council — an explicit @council mention or a high-stakes / contested decision
+    // routes to the COUNCIL — the multi-model Claude council (R-COUNCIL). Advisory only (printed by
+    // `omega route`); the council itself is convened via the llm-council skill / Atlas.
+    let council_signals = [
+        "@council", "irreversible", "prod-wide", "production-wide", "force-push",
+        "drop the database", "drop the prod", "architecture decision", "cross-project",
+        "contested", "high-stakes", "second opinion", "tie-break", "conflicting findings",
+    ];
+    let suggested_agent = if council_signals.iter().any(|s| lower.contains(s)) {
+        reasoning.push("Council signal — routing to @council (multi-model council)".to_string());
+        "council"
+    } else {
+        suggested_agent
+    };
+
     let audit_skills = detect_audit_skills(mission);
     if !audit_skills.is_empty() {
         reasoning.push(format!(
@@ -301,5 +316,17 @@ mod tests {
         // Even when specific audits are named, "full audit" expands to all.
         let d = classify_mission("do a security and seo full audit");
         assert_eq!(d.audit_skills.len(), crate::audit::all_audits().len());
+    }
+
+    #[test]
+    fn council_mention_routes_to_council() {
+        let d = classify_mission("@council should we drop the prod database — this is irreversible");
+        assert_eq!(d.suggested_agent, "council");
+    }
+
+    #[test]
+    fn normal_mission_does_not_route_to_council() {
+        let d = classify_mission("fix typo in README");
+        assert_ne!(d.suggested_agent, "council");
     }
 }

@@ -11,7 +11,7 @@ Shows the OMEGA banner, then:
 1. Clones the public repo [`agentik-os/OmegaOS`](https://github.com/agentik-os/OmegaOS)
    (into `~/Station/OmegaOS` if `~/Station` exists, else `./OmegaOS`)
 2. Runs its `install.sh` — builds rmux + omega from source, sets up `~/.omega`,
-   skills, Atlas + the 13 AISB agents, rules, hooks, mosh, bun (~8 min on a fresh box)
+   skills, Atlas + the 14 AISB agents, rules, hooks, mosh, bun (~8 min on a fresh box)
 
 While it builds, the **Matrix rain is interactive**: type to inject bright
 glyph-drops into the rain, press **`space`** for a pulse, and watch each install

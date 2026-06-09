@@ -1016,6 +1016,42 @@ EOF
     fi
 done
 
+# Install the llm-council skill — a 100% Claude Code-native multi-model Claude
+# deliberation council (inspired by Karpathy's LLM Council), implemented on the
+# OmegaOS Workflow primitive: four Claude models answer in parallel, peer-review
+# each other anonymously, an Opus president synthesizes the verdict WITH the
+# dissent. NO API KEYS — members run as in-process Workflow sub-agents through the
+# existing Claude Code session. Three trigger stubs: /llm-council, /omg-llm-council,
+# /council-llm-style entrypoint `/council` (multi-model second opinion).
+LLMC_SRC="$OMEGA_SRC/skills/llm-council"
+LLMC_DST="$OMEGA_DIR/skills/llm-council"
+if [[ -d "$LLMC_SRC" ]]; then
+    mkdir -p "$LLMC_DST"
+    cp -r "$LLMC_SRC"/* "$LLMC_DST/"
+    find "$LLMC_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    LLMC_CMD="$HOME/.claude/commands"; mkdir -p "$LLMC_CMD"
+    for cmd in llm-council omg-llm-council council omg-council; do
+        cat > "$LLMC_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Convene the multi-model LLM Council. Read and follow the complete protocol in:
+
+\`$LLMC_DST/SKILL.md\`
+
+Run the council with the **Workflow tool** exactly as the skill prescribes: four Claude
+models (Opus 4.8, Sonnet 4.6, Haiku 4.5, Fable 5) answer the SAME question independently
+and in parallel, then peer-review each other ANONYMOUSLY (Response A/B/C, identities hidden),
+and an Opus 4.8 president synthesizes the final verdict WITH the dissent. The members are
+in-process Workflow \`agent(prompt, { model })\` sub-agents on the existing Claude Code
+session — **no API keys, no external providers, no extra cost**. Use the embedded,
+copy-pasteable Workflow JS in the SKILL.md as the implementation.
+EOF
+    done
+    ok "Council skill installed: llm-council → ~/.omega/skills/llm-council/ (/llm-council + /omg-llm-council + /council + /omg-council)"
+else
+    info "Council skill llm-council not found — skipping"
+fi
+
 # Install the orchestration planner skill (engine-native).
 # OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
 # user's other commands (e.g. a pre-existing prose `/planner`).

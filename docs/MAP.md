@@ -33,7 +33,7 @@ OmegaOS/
 │   │   ├── account.rs                 Account management
 │   │   ├── agents.rs                  LLM agent registry
 │   │   ├── aisb.rs                    AISB Master spawning
-│   │   ├── aisb_agents.rs             13 Matrix agents
+│   │   ├── aisb_agents.rs             14 Matrix agents
 │   │   ├── audit.rs                   23 Quality Arsenal audits
 │   │   ├── bootstrap.rs               Project bootstrap pipeline
 │   │   ├── credentials.rs             Multi-provider credential store
@@ -76,7 +76,7 @@ OmegaOS/
 ├── agents/                            Agent system prompts (markdown)
 │   ├── aisb-master.md
 │   ├── oracle.md / worker.md / team-lead.md
-│   └── aisb/                          13 Matrix agents
+│   └── aisb/                          14 Matrix agents
 │
 ├── rules/                             6 Laws + 20 Rules (.md)
 │   ├── L1-runtime-truth.md

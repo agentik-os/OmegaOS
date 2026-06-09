@@ -27,7 +27,7 @@ Legend: ✅ done · 🟡 partial · ❌ not built · ⚪ optional/future
 | L5 | Workers (ephemeral, scoped) | ✅ | dispatch.rs + scope.rs |
 
 **Gap:** L0 governance registry and L2 Hermès-as-companion are not implemented.
-The 13 Matrix agents exist as typed data but the "Paperclip" governance layer
+The 14 Matrix agents exist as typed data but the "Paperclip" governance layer
 (who reports to whom, fixed lines) is conceptual only.
 
 ## 3. The 14 Agents
@@ -39,7 +39,7 @@ The 13 Matrix agents exist as typed data but the "Paperclip" governance layer
 | Morpheus / Construct / Architect / Keymaker / Niobe / Smith / Merovingian / Neo / Zion / Link / Seraph / Pythia | ✅ | aisb_agents.rs (13 typed, with prompts) |
 | Hermès (L2 companion) | 🟡 | exists as installable agent, not as isolated companion |
 
-The 13 Matrix agents are present as typed registry entries with prompts.
+The 14 Matrix agents are present as typed registry entries with prompts.
 What's missing is the *runtime wiring* — most are conceptual roles the AISB
 Master plays, not separate spawned processes yet.
 
