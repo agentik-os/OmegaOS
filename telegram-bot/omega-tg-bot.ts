@@ -264,7 +264,8 @@ function mdToHtml(src: string): string {
   s = s.replace(/`([^`\n]+)`/g, (_m, c) => stash(`<code>${esc(String(c))}</code>`));
   s = esc(s);
   s = s.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2">$1</a>');     // links
-  s = s.replace(/^[ \t]*#{1,6}[ \t]+(.+)$/gm, "<b>$1</b>");                              // headers → bold
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+(.+)$/gm, "<b>$1</b>");                              // headers (h1-h6) → bold (Telegram has no heading sizes)
+  s = s.replace(/\+\+([^\n+]+)\+\+/g, "<u>$1</u>");                                      // ++underline++ → <u>
   s = s.replace(/\*\*([^\n*]+)\*\*/g, "<b>$1</b>").replace(/__([^\n_]+)__/g, "<b>$1</b>"); // bold
   s = s.replace(/~~([^\n~]+)~~/g, "<s>$1</s>");                                          // strikethrough
   s = s.replace(/(^|[^*\w])\*([^\n*]+)\*(?!\w)/g, "$1<i>$2</i>");                        // italic *…*
@@ -1799,6 +1800,62 @@ async function cmdSync(chatId: number, thread?: number) {
 
 // ── AGENT MODE poll loop: a per-agent bot. Whitelisted to the operator; every
 // message goes straight to that project's scoped oracle (no menu, no other project).
+// ── Companion (Nova) inline menu + callbacks: the operator's button menu on his
+// phone. Connection buttons run Composio and hand back a tappable OAuth URL;
+// directive buttons inject a brief into Nova's brain (same as the slash commands).
+const NOVA_LIFE = `${homedir()}/Station/LifeStyle`;
+function novaMenuKb() {
+  return kb([
+    [{ text: "🔌 Connecter mes comptes", callback_data: "nova:connect" }],
+    [{ text: "📰 Actus Anthropic", callback_data: "nova:do:actus" }, { text: "📊 Rapport now", callback_data: "nova:do:rapport" }],
+    [{ text: "🎯 Objectifs", callback_data: "nova:do:objectifs" }, { text: "🧠 Profil", callback_data: "nova:do:profil" }],
+    [{ text: "🔮 Magic", callback_data: "nova:do:magic" }, { text: "🗣️ Interview", callback_data: "nova:do:interview" }],
+  ]);
+}
+function novaConnectKb() {
+  const apps = ["gmail", "twitter", "linkedin", "reddit", "youtube"];
+  const label: Record<string, string> = { gmail: "📧 Gmail", twitter: "🐦 Twitter/X", linkedin: "💼 LinkedIn", reddit: "👽 Reddit", youtube: "▶️ YouTube" };
+  return kb([
+    ...apps.map(a => [{ text: `Connecter ${label[a]}`, callback_data: `nova:conn:${a}` }]),
+    [{ text: "« Retour", callback_data: "nova:menu" }],
+  ]);
+}
+// Directive text injected into Nova's brain for each menu button (mirrors the
+// slash commands the persona already knows).
+const NOVA_DIRECTIVE: Record<string, string> = {
+  actus: "/actus — donne-moi les actualités du jour autour d'Anthropic (modèles, Claude, recherche, produits, sécurité, business). C'est mon outil n°1 : va chercher du frais sur le web (WebSearch/WebFetch), 4-6 items max, chacun 1-2 lignes + la source. Termine par 1 implication concrète pour moi.",
+  rapport: "/rapport — fais-moi un briefing maintenant (météo, focus du jour, 1 challenge, 1 question).",
+  objectifs: "/objectifs — affiche mes objectifs (~/Station/LifeStyle/About/00-OBJECTIFS.md, crée-le s'il manque) et challenge-moi sur 1 point.",
+  profil: "/profil — résume ce que tu sais de moi (identité, objectifs, état des sections de About/).",
+  magic: "/magic — synthèse de ma Matrice de Destinée (~/Station/LifeStyle/About/08-MagicLife/).",
+  interview: "/interview — re-questionne-moi pour détecter ce qui a changé depuis la dernière fois. Commence par UNE question, on enchaîne.",
+};
+// Run a Composio connection for `app`, return the tappable OAuth URL (or an error
+// the operator can act on — typically: paste your Composio API key first).
+async function novaComposioConnect(app: string): Promise<{ url?: string; msg: string }> {
+  const r = Bun.spawnSync(["bash", `${OMEGA_DIR}/bin/nova-composio-connect.sh`, app], { env: { ...process.env, HOME: homedir() } });
+  const out = (r.stdout.toString() + r.stderr.toString()).trim();
+  const url = (out.match(/https?:\/\/\S+/) || [])[0];
+  if (url) return { url, msg: `🔐 Autorise <b>${esc(app)}</b> depuis ton tél — appuie sur le bouton. Multi-comptes : reconnecte le même service avec un autre compte.` };
+  if (/API_KEY manquante|COMPOSIO_API_KEY/i.test(out)) return { msg: `🔑 Il me faut d'abord ta <b>clé Composio</b>. Récupère-la sur app.composio.dev (Settings → API Keys) et colle-la moi ici (ex: « ma clé composio: xxxx ») — je la range et on réessaie.` };
+  return { msg: `⚠️ Composio n'a pas renvoyé d'URL pour ${esc(app)} :\n<pre>${esc(out).slice(0, 400)}</pre>` };
+}
+async function onNovaCallback(data: string, chatId: number, msgId: number, from: number, botName: string, model?: string) {
+  const [, ns, arg] = data.split(":");
+  if (data === "nova:menu") return edit(chatId, msgId, `<b>⚡ ${esc(botName)} — menu</b>\nChoisis :`, novaMenuKb());
+  if (data === "nova:connect") return edit(chatId, msgId, `<b>🔌 Connecter mes comptes</b>\nVia Composio (un seul hub d'auth). Appuie sur un service → je te renvoie le lien d'autorisation à ouvrir sur ton tél.`, novaConnectKb());
+  if (ns === "conn" && arg) {
+    await edit(chatId, msgId, `⏳ Je prépare la connexion <b>${esc(arg)}</b>…`, undefined);
+    const { url, msg } = await novaComposioConnect(arg);
+    const markup = url ? kb([[{ text: `🔐 Autoriser ${arg}`, url }], [{ text: "« Comptes", callback_data: "nova:connect" }]]) : kb([[{ text: "« Comptes", callback_data: "nova:connect" }]]);
+    return edit(chatId, msgId, msg, markup);
+  }
+  if (ns === "do" && NOVA_DIRECTIVE[arg]) {
+    await brainReply(chatId, msgId, undefined, NOVA_DIRECTIVE[arg], companionBrain(chatId, undefined, model, botName), botName);
+    return;
+  }
+}
+
 async function agentBotMain(agentId: string) {
   while (!loadConfig()) { console.log(`agent-bot ${agentId}: waiting for token in ${AGENT_BOTS_FILE} …`); await Bun.sleep(5000); }
   const bot = loadAgentBots()[agentId];
@@ -1807,7 +1864,18 @@ async function agentBotMain(agentId: string) {
   // The companion's display name is its Telegram name (self-changeable via the
   // Bot API) — the label follows it on restart, never a hard-coded string.
   const botName: string = isCompanion ? ((await tg("getMe", {}))?.result?.first_name || "Assistant") : "";
-  await tg("setMyCommands", { commands: [{ command: "start", description: isCompanion ? `Talk to ${botName}, your assistant` : `Talk to the ${project} project oracle` }] });
+  // Companion's command menu = the operator's discoverable "re-ask me" menu. The
+  // brain (persona) acts on each directive; no per-command bot code needed.
+  await tg("setMyCommands", { commands: isCompanion ? [
+    { command: "menu", description: "Le menu à boutons (comptes, actus, profil…)" },
+    { command: "actus", description: "Actus du jour autour d'Anthropic" },
+    { command: "interview", description: "Re-questionne-moi pour détecter ce qui a changé" },
+    { command: "profil", description: "Ce que tu sais de moi (résumé)" },
+    { command: "objectifs", description: "Mes objectifs + challenge-moi dessus" },
+    { command: "magic", description: "Mon profil Magic (Matrice de Destinée)" },
+    { command: "rapport", description: "Fais-moi un briefing maintenant" },
+    { command: "aide", description: "Ce que tu sais faire" },
+  ] : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
   console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
@@ -1815,11 +1883,17 @@ async function agentBotMain(agentId: string) {
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
   let offset = 0;
   while (true) {
-    const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: ["message"] });
+    const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: isCompanion ? ["message", "callback_query"] : ["message"] });
     if (!r.ok) { await Bun.sleep(2000); continue; }
     for (const u of r.result) {
       offset = u.update_id + 1;
       try {
+        // Companion inline-menu buttons (connect accounts, directives).
+        if (u.callback_query) {
+          const q = u.callback_query; await tg("answerCallbackQuery", { callback_query_id: q.id });
+          if (isCompanion && allowed(q.from?.id ?? 0)) await onNovaCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0, botName, bot?.model);
+          continue;
+        }
         const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document) continue;
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
@@ -1834,10 +1908,13 @@ async function agentBotMain(agentId: string) {
         // Photo / image document → download it locally; aggregated with the text below.
         const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
         if (!text && !img) continue;
+        // Companion: /menu opens the button menu; /start greets + shows it.
+        if (isCompanion && (text === "/menu" || text === "/start")) {
+          await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
+          continue;
+        }
         if (text === "/start" || text === "/menu") {
-          await send(chatId, isCompanion
-            ? `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS : on parle de tout, je te challenge sur ta vie (store <code>~/Station/LifeStyle</code>), je te monte des micro-systèmes, j'agis sur le web et tes outils — et si tu me dis <b>« envoie ça à Atlas »</b> je lui transmets le travail lourd.`
-            : `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread);
+          await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread);
           continue;
         }
         // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
