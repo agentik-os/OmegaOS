@@ -5,6 +5,69 @@ description: Senior UI/UX Engineer. Architect digital interfaces overriding defa
 
 # High-Agency Frontend Skill
 
+<!-- BEGIN: Tier-1 Reference Canon + claude.ai/design Taste Engine (OmegaOS design doctrine) -->
+
+## 0. NORTH STAR — Tier-1 Reference Canon & the claude.ai/design Taste Engine
+
+Default output must read as a **Linear/Vercel-tier clone, not a generic Tailwind template**. The bar is `linear.app` and the 19-site canon; anything that reads "default shadcn / bootstrap / stock SaaS" has FAILED and must be raised, not shipped.
+
+- Pass test: one accent + hairline structure + tight negative display tracking + dark-first (or fully-themed) depth + motion restraint — a designer should not be able to tell it apart from a Tier-1 reference at a glance.
+- Pick ONE coherent dialect (a temperature + one or two signature deviations) and commit; never blend three sites' accents into a soup.
+- Steal verified discipline, not hex blindly — never invent false precision (a curve/token a site does not actually ship).
+- When unsure, return to the canon and measure against the Anchor before calling it done.
+
+### Default taste engine — distilled from claude.ai/design + the Linear-tier canon
+
+Apply these unless the user overrides — a contrary brief wins, but absence of one does not; fall back to these defaults:
+
+1. **Restraint is the feature.** Default to LESS — one accent, one type family, few elements per section. Suppress motion on high-frequency surfaces (nav hover, keyboard actions) entirely. If a flourish doesn't earn its place, cut it. The most-copied trait of every canon site is what they left out.
+2. **Single-accent color discipline.** Exactly ONE accent hue carries brand + CTAs + focus; everything else is a neutral ramp. Reserve any second/third color for *state* (success/error) or *data*, never decoration. A near-black or near-white never goes pure `#000`/`#FFF`.
+3. **Warmth or cool — pick a temperature and commit.** Choose ONE: cool (Linear indigo, Vercel blue, neutral-blue-black) OR warm (claude.ai cream + terracotta, Railway violet, PlanetScale/orange). Build the *entire* neutral ramp to match it (claude.ai runs warm ivory + warm-charcoal, never blue-black). Never mix warm and cool grays in one project.
+4. **Typographic confidence via weight + size + tracking, not theatrics.** Display ≤600 weight (whisper, never 800-black). Apply size-proportional NEGATIVE tracking on large display (~-.02 to -.05em), neutral on body; the only positive tracking is a small uppercase eyebrow. Body never below ~14px. A neutral grotesk is the floor; a serif body (claude.ai) or a mono-as-second-voice (Vercel/PlanetScale/Oxide) is the anti-generic signature — never default to bare Inter for premium.
+5. **Hairline structure over heavy chrome.** Build with 1px (or .5px) borders — solid neutral, or translucent white/black over a dark canvas so edges *glow* rather than cut. Snap everything to a 4px spacing ladder with a generous fixed section beat (~96px), cap content width (~1200–1280px), and keep a consistent small radius ladder (4/8/12px; pills only for chips/toggles).
+6. **Depth from surface + light, not drop-shadow glow.** Prefer a near-black surface ladder + hairlines (Linear), a single colored glow/ring (Neon's 1px green ring, Clerk's halo), or a soft tinted shadow (claude.ai composer) — never a generic gray box-shadow or the "AI purple" neon glow. Ban shadow-glow as the default depth cue.
+7. **Motion discipline — short, eased, purposeful.** Animate only `transform`/`opacity`. Keep interactive transitions snappy (treat ~150–200ms as a target, verify on the real site — don't assert a curve a site never ships). One easing family per project; differentiate reveals by staggered DELAY, not by switching curves. Reserve longer/ambient motion for one hero centerpiece. No bounce on chrome, no parallax-by-default, no scroll-jacking.
+8. **Dark-first depth as a first-class mode (and a real light mode).** Default to a dark or dark-capable canvas with the surface-ladder/glow depth language; if light-first (Clerk/cal.com/WorkOS/claude.ai light), ship BOTH modes via a token swap — never leave a half-built theme.
+9. **Craft in the details — keyboard-first, honest content.** Real `:focus-visible` rings (token-tinted, with offset), tactile press states (`active:scale`/`translate-y`), branded `::selection`, IDE-tokenized inline code. Show real artifacts (actual config, real metrics) over stock imagery; no emojis, no filler chrome ("scroll to explore"), no fake round numbers.
+10. **The clone test as the bar.** Output should be indistinguishable from a Tier-1 site (Linear/Vercel-tier): one accent, hairline structure, tight tracking, dark-first depth, motion restraint. "Generic Tailwind template" is a failure state — raise it until it reads canon.
+
+### The canonical reference set — anchor = linear.app
+
+Build to this bar by default; the output should sit beside these.
+
+**Anchor**
+- **linear.app** — steal: near-black `#08090A` canvas, ONE desaturated indigo `#5e6ad2`, Inter at weight ≤600 with size-proportional NEGATIVE tracking, depth from a surface-ladder + 1px hairlines (NEVER shadow-glow), 96px section beat on a 4px grid, motion that suppresses itself on high-frequency surfaces.
+
+**Tier 1 — Quasi-identical to Linear**
+- **vercel.com** — steal: Geist Sans + Geist Mono, pure `#000` / `#EDEDED` mono palette, ONE blue `#0070F3` as punctuation, hairline `rgba(255,255,255,.08)` cards, and the morphing shared-layout nav (sliding pill + resizing panel).
+- **planetscale.com** — steal: ZERO custom fonts (body in system MONO, sans is the exception), WARM orange `#f35815`, sharp 0-radius boxes via the dashed-box border + ASCII diagrams, and hover color-swaps that are 0ms instant.
+- **railway.app** — steal: IBM Plex Serif display (weight 500) over Inter body, VIOLET-tinted neutrals (hue 246), magenta→violet accent (`ring-pink-700`, CTA `#aa0aaa→#381dbd`), glow-grows-not-box CTA, blueprint-grid hairlines, and the live split-flap board.
+- **resend.com** — steal: Domaine + ABC Favorit display, achromatic Radix-gray on `#000` with NO solid accent — color exists only as a traveling glow on a 1px divider; IDE-token inline code.
+- **cal.com** — steal: Cal Sans display (POSITIVE tracking on small subheads) + Inter body, grayscale-as-brand (theme-flipping near-black `#111827` ↔ white CTA), 4px radius, graded per-state button shadows, branded `::selection`.
+
+**Tier 2 — Same energy**
+- **clerk.com** — steal: Suisse Int'l, body floor 15px, LIGHT-first with a warm violet primary `#6c47ff` + cyan `#5de3ff` demoted to a four-stop glow halo, .5px+1px hairlines with inset-rim shadows.
+- **trigger.dev** — steal: Satoshi titles + Geist UI + Geist Mono, ONE acid-lime `#a8ff53` (with a real lavender `#7655fd` second accent) on bespoke cool-charcoal, ONE easing only, and the `moving-lines` diagonal card-hover.
+- **turso.tech** — steal: Inter display at `-.03em`, Bunker-black `#0D1318` + mint Turso Aqua `#4FF8D2`, aqua-FILL/BLACK-text CTA, fuchsia second accent, hairline-flip-to-aqua hovers, near-invisible 5%-opacity light dot-grid.
+- **outstatic.com** — steal: a giant `leading-[0.9]` SERIF hero + one achromatic gradient-clipped word, light-first monochrome zinc, full-bleed SVG line-bg layers, and the neo-brutalist hard-offset-shadow push button.
+- **supabase.com** — steal: Circular Std at weight 500 (default tracking, NOT tight), 0°-saturation grayscale lit by ONE emerald `#3ECF8E` (green = success), neutral-gradient hairline cards, framer/anime/gsap motion at 400ms.
+- **neon.tech** — steal: one-weight custom display ("esbuild") + Inter + GeistMono, pure-black + mint `#00e599` shipped as a full alpha ladder, a 1px green RING instead of a drop-shadow on hover, 10%-green bloom gradients.
+
+**Tier 3 — A cut above on craft**
+- **liveblocks.io** — steal: Suisse Intl with JetBrains-Mono eyebrows, translucent-white hairlines (`#fdfcfc21`) that GLOW over `#000`, a multi-channel per-product semantic accent system locked to one lightness band, and CSS mask-sweep reveals.
+- **basehub.com** — steal: Geist + Geist Mono (by Geist's makers), pure-gray near-black `#040404` + warm orange `#FF6C02`, a five-layer rgba-orange ember glow as a scroll-progress pin, per-character 3D sin()-staggered list tumble.
+- **basement.studio** — steal: Geist Sans + flauta display on TRUE-black brutalism, loud per-case-study accents (`#ff4d00`/`#00FF9B`), translucent `white/.2` + `#2E2E2E` hairlines, and the `steps()` frame-stepped sprite mask reveal.
+- **rauno.me** — steal: a private bespoke face at tiny 14px, PURE-achromatic `hsl(0 0% N%)` neutrals, matte soft `0.12`-alpha shadows (no glow), a bounded OS-desktop canvas, and the hand-built right-edge minimap navigator.
+
+**Tier 4 — Style-defining**
+- **oxide.computer** — steal: SuisseIntl + a custom GT America Mono that DRAWS live ASCII diagrams, color authored in OKLCH (cool-black `oklch(0.162 0.01 260)` + oxide-green `≈#00D889`, green=success), one unified stroke token for all 1px edges, low-bounce Framer springs.
+- **workos.com** — steal: Untitled Sans with `-.05em→-.07em` display tracking, light↔dark-navy sandwich, indigo `#6363f1` primary + a saturated spectrum reserved for the signature stacked-RGBA chromatic glow; pill buttons, 1px hairlines.
+- **claude.ai** — steal: warm-cream ivory canvas (`#faf9f5`, never cold gray), a single terracotta `#d97757` accent, longform body in a SERIF (anti-AI-slop), soft drop-shadow depth over hairlines, token-streaming text as the signature motion.
+
+Full per-site breakdown (all five dimensions, signatures, and how each relates to linear.app) lives in `skills/design/references/tier1-inspiration.md` — read it for the canonical detail behind this taste layer.
+
+<!-- END: Tier-1 Reference Canon + claude.ai/design Taste Engine -->
+
 ## 1. ACTIVE BASELINE CONFIGURATION
 * DESIGN_VARIANCE: 8 (1=Perfect Symmetry, 10=Artsy Chaos)
 * MOTION_INTENSITY: 6 (1=Static/No movement, 10=Cinematic/Magic Physics)
@@ -224,3 +287,4 @@ Evaluate your code against this matrix before outputting. This is the **last** f
 - [ ] Are empty, loading, and error states provided?
 - [ ] Are cards omitted in favor of spacing where possible?
 - [ ] Did you strictly isolate CPU-heavy perpetual animations in their own Client Components?
+- [ ] Does the output read as Linear/Vercel-tier (Section 0 canon + claude.ai/design taste engine applied), not generic?
