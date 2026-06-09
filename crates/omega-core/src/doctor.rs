@@ -148,10 +148,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 3. Doctrine integrity (6 Laws + 21 operational rules — R-PDF added
-    // 2026-06-05; bump EXPECTED_OPS whenever rules.rs ships a new rule).
+    // 3. Doctrine integrity (6 Laws + 22 operational rules — R-SKILLPUB added
+    // 2026-06-07; bump EXPECTED_OPS whenever rules.rs ships a new rule).
     const EXPECTED_LAWS: usize = 6;
-    const EXPECTED_OPS: usize = 21;
+    const EXPECTED_OPS: usize = 22;
     let laws = crate::rules::laws().len();
     let ops = crate::rules::operational_rules().len();
     if laws == EXPECTED_LAWS && ops == EXPECTED_OPS {
@@ -497,12 +497,43 @@ fn agent_bot_pids_darwin() -> std::collections::HashSet<u32> {
         .collect()
 }
 
+/// fix9: whether a command line is a GENUINE `bun … omega-tg-bot.ts`
+/// invocation — argv[0] is the `bun` (or `…/bun`) executable AND a later token's
+/// path basename is exactly `omega-tg-bot.ts`. Rejects command lines that merely
+/// CONTAIN both tokens incidentally — e.g. a claude oracle/worker launcher whose
+/// own argv[0] is `bash`/`claude` and that mentions `bun` and `omega-tg-bot.ts`
+/// only inside a later argv element (a `--brief` string, $PATH, or quoted docs).
+/// The loose `bun.*omega-tg-bot\.ts` pgrep pattern counted those as pollers and
+/// `--fix` would have KILLED them (live agent sessions).
+///
+/// Requiring the bun executable to be argv[0] is the argv boundary expressed on
+/// the space-joined cmdline: argv[0] is a path with no internal spaces, so it is
+/// exactly the first whitespace token. A launcher's argv[0] is never `bun`, so
+/// an embedded bot command — even a bare, undecorated one — can never re-admit
+/// the false positive. (The brief recommended "any token == bun"; first-token is
+/// strictly safer and still matches every documented case.) Agent bots run the
+/// IDENTICAL `bun …/omega-tg-bot.ts` argv and pass here too; they are excluded
+/// later via /proc environ (OMEGA_AGENT_BOT=), not by this predicate.
+fn cmdline_is_tg_bot(cmdline: &str) -> bool {
+    let mut tokens = cmdline.split_whitespace();
+    let Some(exe) = tokens.next() else {
+        return false;
+    };
+    if exe != "bun" && !exe.ends_with("/bun") {
+        return false;
+    }
+    tokens.any(|t| t.rsplit('/').next() == Some("omega-tg-bot.ts"))
+}
+
 /// Raw `bun … omega-tg-bot.ts` PIDs for this user (pgrep), BEFORE any
 /// agent-bot exclusion — both the main bot and agent bots match. See
 /// `main_bot_pollers` / `poller_verdict` for the exclusion step.
 fn raw_tg_bot_pids(uid: &str) -> Vec<u32> {
+    // Tight pattern: require a `bun` executable token (start-of-line or after a
+    // path separator) immediately followed by args reaching omega-tg-bot.ts —
+    // NOT just `bun` and `omega-tg-bot.ts` anywhere on the line.
     let Ok(out) = std::process::Command::new("pgrep")
-        .args(["-u", uid, "-f", r"bun.*omega-tg-bot\.ts"])
+        .args(["-u", uid, "-f", r"(^|/)bun .*omega-tg-bot\.ts"])
         .output()
     else {
         return Vec::new();
@@ -510,6 +541,29 @@ fn raw_tg_bot_pids(uid: &str) -> Vec<u32> {
     String::from_utf8_lossy(&out.stdout)
         .split_whitespace()
         .filter_map(|s| s.parse::<u32>().ok())
+        .filter(|pid| {
+            // Belt-and-suspenders (fix9): on Linux confirm each pid's real argv
+            // is a genuine bun+script invocation by reading /proc/<pid>/cmdline
+            // (NUL-separated argv) — platform pgrep quirks can never re-admit
+            // the false positive that `--fix` would KILL. macOS has no /proc, so
+            // the tightened pgrep match stands there (agent bots excluded later
+            // via launchctl).
+            if cfg!(target_os = "macos") {
+                return true;
+            }
+            match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+                Ok(raw) => {
+                    let cmdline = raw
+                        .split(|b| *b == 0)
+                        .map(String::from_utf8_lossy)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    cmdline_is_tg_bot(&cmdline)
+                }
+                // pid vanished between pgrep and read — drop it.
+                Err(_) => false,
+            }
+        })
         .collect()
 }
 
@@ -723,6 +777,45 @@ mod tests {
         assert_eq!(poller_verdict(&[10, 20, 30], None), PollerVerdict::Undeterminable);
         assert_eq!(poller_verdict(&[10], None), PollerVerdict::Single(1));
         assert_eq!(poller_verdict(&[], None), PollerVerdict::Single(0));
+    }
+
+    // fix9: the pure predicate behind raw_tg_bot_pids' /proc/<pid>/cmdline
+    // filter (doctor check #11 telegram poller). The loose `bun.*omega-tg-bot
+    // \.ts` pattern false-matched claude launchers; `--fix` would KILL them.
+    #[test]
+    fn cmdline_is_tg_bot_rejects_claude_launcher() {
+        // `.bun/bin` in $PATH + `omega-tg-bot.ts` inside a --brief string — the
+        // documented false positive. argv[0] is `bash`, not the bun exe → false.
+        let line = r#"bash -c export PATH="/home/vibe/.bun/bin:/x"; claude --brief "edit telegram-bot/omega-tg-bot.ts""#;
+        assert!(!cmdline_is_tg_bot(line));
+    }
+
+    #[test]
+    fn cmdline_is_tg_bot_accepts_real_bot() {
+        // The genuine systemd poller: `…/bun` executable + script basename.
+        assert!(cmdline_is_tg_bot(
+            "/usr/local/bin/bun /home/vibe/.omega/telegram-bot/omega-tg-bot.ts"
+        ));
+    }
+
+    #[test]
+    fn cmdline_is_tg_bot_accepts_agent_bot() {
+        // Agent bots run the IDENTICAL bun+script command — true here; they are
+        // excluded later by /proc environ (OMEGA_AGENT_BOT), not this predicate.
+        assert!(cmdline_is_tg_bot(
+            "bun /home/vibe/.omega/telegram-bot/omega-tg-bot.ts --agent tg-agent-7"
+        ));
+    }
+
+    #[test]
+    fn cmdline_is_tg_bot_rejects_embedded_bare_bot_command() {
+        // Robustness: a launcher (argv[0]=bash) whose --brief embeds the BARE,
+        // undecorated real bot command as a substring. An "any token == bun"
+        // check would false-match (and --fix would KILL this claude session);
+        // requiring argv[0] to be the bun executable rejects it.
+        assert!(!cmdline_is_tg_bot(
+            "bash -c claude --brief run /usr/local/bin/bun /home/vibe/.omega/telegram-bot/omega-tg-bot.ts"
+        ));
     }
 
     #[test]
