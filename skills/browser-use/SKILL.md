@@ -74,7 +74,7 @@ The wrapper prints the agent's final output to stdout. Reply to the user in thei
 
 The `browser-use` bash wrapper, in order:
 
-1. **Resolves the key** — uses `$BROWSER_USE_API_KEY` if already set, else sources `~/.omega/secrets/integrations.env`. If still unset it prints how to get/place a key and exits 1. The key value is never echoed or logged.
+1. **Resolves the key** — uses `$BROWSER_USE_API_KEY` if already set, else lifts **only** that one variable out of `~/.omega/secrets/integrations.env` (the file is sourced in a subshell, so the other secrets in it never enter the SDK process — least privilege). If still unset it prints how to get/place a key and exits 1. The key value is never echoed or logged.
 2. **Ensures the venv** — if `~/.omega/skills/browser-use/.venv` is missing, it creates it (`python3 -m venv`) and runs `pip install --quiet --upgrade pip browser-use-sdk` (base package only — never the `x402` EVM extra). A one-line "bootstrapping venv" notice goes to stderr.
 3. **Runs `run.py`** against the cloud API — `run.py` (next to the wrapper) instantiates the official SDK client (which reads `BROWSER_USE_API_KEY` from the environment automatically), runs the single task on `api.browser-use.com`, waits for completion, and prints `result.output`.
 

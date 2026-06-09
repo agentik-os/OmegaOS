@@ -16,10 +16,12 @@ set -euo pipefail
 if [ -z "${BROWSER_USE_API_KEY:-}" ]; then
   SECRETS="$HOME/.omega/secrets/integrations.env"
   if [ -r "$SECRETS" ]; then
-    set -a
+    # Least privilege: source the env file in a SUBSHELL and lift out ONLY the
+    # one key this skill needs, so the other secrets in integrations.env never
+    # enter this process — or the SDK subprocess — environment.
     # shellcheck disable=SC1090
-    . "$SECRETS"
-    set +a
+    BROWSER_USE_API_KEY="$(set -a; . "$SECRETS" >/dev/null 2>&1; printf '%s' "${BROWSER_USE_API_KEY:-}")"
+    export BROWSER_USE_API_KEY
   fi
 fi
 

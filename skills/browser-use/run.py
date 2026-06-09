@@ -11,6 +11,7 @@ The task text is taken from argv (a single quoted element) and passed verbatim
 to the cloud agent; no shell eval, no interpolation.
 """
 import asyncio
+import re
 import sys
 
 # Documented v3 cloud entrypoint. The live cloud docs demonstrate the async
@@ -37,7 +38,10 @@ def main() -> int:
     try:
         output = asyncio.run(_run(task))
     except Exception as exc:  # noqa: BLE001 — surface a concise, key-free error
-        print(f"browser-use: cloud run failed: {exc}", file=sys.stderr)
+        # Defensive: redact anything resembling a bu_ key, in case a verbose
+        # SDK error echoes auth material.
+        msg = re.sub(r"bu_[A-Za-z0-9]+", "bu_***", str(exc))
+        print(f"browser-use: cloud run failed: {msg}", file=sys.stderr)
         return 1
     print(output)
     return 0
