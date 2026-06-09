@@ -120,7 +120,11 @@ let TOKEN = "", API = "", BOT_ID = 0, ALLOW: number[] = [];
 // MODE via env OMEGA_AGENT_BOT=<id>, reading its token from this registry (never
 // telegram.toml). Talking to it = talking to that project's oracle, scoped to it.
 const AGENT_BOTS_FILE = `${OMEGA_DIR}/agent-bots.json`;
-type AgentBot = { token: string; allow: number[]; project: string };
+// kind "oracle" (default): every message = a real oracle dispatch for `project`.
+// kind "companion": a FAST conversational brain (Haiku) scoped to the LifeStyle
+// store — instant chat, micro-builds, [[ATLAS: …]] hand-off. `model` overrides
+// the companion's default model id.
+type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion"; model?: string };
 function loadAgentBots(): Record<string, AgentBot> { try { return JSON.parse(readFileSync(AGENT_BOTS_FILE, "utf8")); } catch { return {}; } }
 function saveAgentBots(b: Record<string, AgentBot>) { try { writeFileSync(AGENT_BOTS_FILE, JSON.stringify(b, null, 2)); } catch {} }
 
@@ -645,13 +649,13 @@ const IDENTITY =
 // lazy binary resolution, a JS-level 900s watchdog (proc.kill on expiry — portable,
 // unlike GNU `timeout`), captured stdout/stderr, and the shared not-found /
 // empty-output diagnostics. `who` labels the operator-facing messages.
-async function runClaude(text: string, systemPrompt: string, addDir: string, who: string, cwd?: string): Promise<string> {
+async function runClaude(text: string, systemPrompt: string, addDir: string, who: string, cwd?: string, extraArgs: string[] = [], timeoutMs = CLAUDE_TIMEOUT_MS): Promise<string> {
   const claude = resolveClaude();
   if (!claude) {
     return "Claude Code not found — install + log in on this machine:  omega install claude  then  claude  →  /login";
   }
   try {
-    const proc = Bun.spawn([claude, "-p", text, "--append-system-prompt", systemPrompt, "--add-dir", addDir, "--dangerously-skip-permissions"], {
+    const proc = Bun.spawn([claude, "-p", text, "--append-system-prompt", systemPrompt, "--add-dir", addDir, "--dangerously-skip-permissions", ...extraArgs], {
       cwd, env: { ...process.env, OMEGA_DIR }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     // Race the run against the watchdog instead of awaiting the streams after a
@@ -669,9 +673,9 @@ async function runClaude(text: string, systemPrompt: string, addDir: string, who
           proc.kill(); // SIGTERM; escalate if it lingers (unref → never holds the loop)
           setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5_000).unref?.();
           res(null);
-        }, CLAUDE_TIMEOUT_MS);
+        }, timeoutMs);
       })]);
-      if (!r) return `(${who}: claude timed out after ${CLAUDE_TIMEOUT_MS / 1000}s and was killed — try again or split the request.)`;
+      if (!r) return `(${who}: claude timed out after ${timeoutMs / 1000}s and was killed — try again or split the request.)`;
       const o = r.out.trim();
       if (o) return o;
       // Empty stdout = claude failed (not logged in, crashed). Surface the stderr
@@ -702,6 +706,52 @@ async function projectOracle(project: string, text: string): Promise<string> {
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
   return runClaude(text, scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE, dir, `The ${project} oracle`, dir);
+}
+
+// ── COMPANION: the operator's instant co-worker (agent-bot kind "companion").
+// A FAST brain — Haiku, few turns, no MCP servers, no doctrine, no dispatch —
+// for chatting about anything, challenging the operator on his life (the
+// LifeStyle store is inlined below so chat turns need NO tool round-trip), and
+// building micro-systems in ${LIFESTYLE_DIR}/builds/. It NEVER orchestrates:
+// real work is handed to Atlas via a [[ATLAS: …]] marker (see companionBrain).
+const LIFESTYLE_DIR = `${homedir()}/Station/LifeStyle`;
+const COMPANION_MODEL = "claude-haiku-4-5-20251001";
+const COMPANION_TIMEOUT_MS = 180_000; // a chat turn, not a mission — fail fast
+let COMPANION_PERSONA = ""; try { COMPANION_PERSONA = readFileSync(`${OMEGA_DIR}/agents/companion.md`, "utf8"); } catch {}
+function lifestyleContext(): string {
+  try {
+    const files = Bun.spawnSync(["bash", "-lc", `find ${LIFESTYLE_DIR} -maxdepth 2 -name '*.md' -not -path '*/builds/*' 2>/dev/null | sort | head -20`]).stdout.toString().trim().split("\n").filter(Boolean);
+    let out = "";
+    for (const f of files) {
+      try { out += `\n### ${f.replace(`${LIFESTYLE_DIR}/`, "")}\n${readFileSync(f, "utf8").slice(0, 4000)}\n`; } catch {}
+      if (out.length > 16_000) break; // keep the prompt small — speed is the product
+    }
+    return out ? `## LifeStyle store (${LIFESTYLE_DIR} — the operator's life, your working context)\n${out}` : "";
+  } catch { return ""; }
+}
+async function companion(text: string, model = COMPANION_MODEL): Promise<string> {
+  Bun.spawnSync(["mkdir", "-p", `${LIFESTYLE_DIR}/notes`, `${LIFESTYLE_DIR}/builds`]);
+  // --strict-mcp-config with no --mcp-config = zero MCP servers (startup cost);
+  // --max-turns caps a runaway tool loop — a companion turn is seconds, not minutes.
+  return runClaude(text, COMPANION_PERSONA + "\n\n" + lifestyleContext(), LIFESTYLE_DIR, "Cowork", LIFESTYLE_DIR,
+    ["--model", model, "--max-turns", "12", "--strict-mcp-config"], COMPANION_TIMEOUT_MS);
+}
+// Companion reply post-processing: strip the [[ATLAS: …]] marker from what the
+// operator sees, and fire the brief at the REAL Atlas brain (master — full VPS
+// control, dispatches to the right project oracle) in the background. Atlas's
+// answer lands as its own message when ready; the fast chat reply is never blocked.
+const ATLAS_MARK = /\[\[ATLAS:([\s\S]+?)\]\]/;
+function companionBrain(chatId: number, thread: number | undefined, model?: string): (t: string) => Promise<string> {
+  return async (t: string) => {
+    const out = await companion(t, model || COMPANION_MODEL);
+    const m = out.match(ATLAS_MARK);
+    if (!m) return out;
+    const brief = m[1].trim();
+    master(`${histContext(chatId, thread)}## Mission handed off by the operator's Cowork companion — triage and dispatch it to the right project/oracle, or act directly.\n${brief}`)
+      .then(r => { histAppend(chatId, thread, "assistant", `[Atlas] ${r}`, "atlas"); return send(chatId, mdToHtml(`🧭 **Atlas**\n\n${r}`), undefined, thread); })
+      .catch((e: any) => send(chatId, `⚠️ Atlas hand-off failed: ${esc(String(e?.message || e)).slice(0, 200)}`, undefined, thread));
+    return `${out.replace(ATLAS_MARK, "").trim()}\n\n🧭 _Transmis à Atlas — je te poste sa réponse ici dès qu'elle arrive._`;
+  };
 }
 
 // Provision a per-agent Telegram bot as its own background service (AGENT MODE):
@@ -1740,10 +1790,12 @@ async function cmdSync(chatId: number, thread?: number) {
 // message goes straight to that project's scoped oracle (no menu, no other project).
 async function agentBotMain(agentId: string) {
   while (!loadConfig()) { console.log(`agent-bot ${agentId}: waiting for token in ${AGENT_BOTS_FILE} …`); await Bun.sleep(5000); }
-  const project = loadAgentBots()[agentId]?.project || agentId;
-  await tg("setMyCommands", { commands: [{ command: "start", description: `Talk to the ${project} project oracle` }] });
+  const bot = loadAgentBots()[agentId];
+  const project = bot?.project || agentId;
+  const isCompanion = bot?.kind === "companion";
+  await tg("setMyCommands", { commands: [{ command: "start", description: isCompanion ? "Talk to your co-worker" : `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
-  console.log(`agent-bot up: ${agentId} → project ${project}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
+  console.log(`agent-bot up: ${agentId} → ${isCompanion ? "companion" : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
@@ -1754,14 +1806,35 @@ async function agentBotMain(agentId: string) {
     for (const u of r.result) {
       offset = u.update_id + 1;
       try {
-        const msg = u.message; if (!msg?.text && !msg?.photo && !msg?.document) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document) continue;
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         let text = (msg.text || msg.caption || "").trim();
+        // Voice → Whisper transcription (same path as the hub bot), then handled as text.
+        if (!text && msg.voice) {
+          await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
+          text = await transcribeVoice(msg.voice.file_id);
+          if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
+        }
         // Photo / image document → download it locally; aggregated with the text below.
         const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
         if (!text && !img) continue;
-        if (text === "/start" || text === "/menu") { await send(chatId, `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread); continue; }
+        if (text === "/start" || text === "/menu") {
+          await send(chatId, isCompanion
+            ? `<b>⚡ Cowork</b>\nTon co-worker instantané sur le VPS : on parle de tout, je te challenge sur ta vie (store <code>~/Station/LifeStyle</code>), je te monte des micro-systèmes à tester, et si tu me dis <b>« envoie ça à Atlas »</b> je lui transmets le travail.`
+            : `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread);
+          continue;
+        }
+        // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
+        // History gives it the running conversation; the brain itself is stateless.
+        if (isCompanion) {
+          const prompt = img ? withImageNote(text, img) : text;
+          const ctx = histContext(chatId, thread);
+          histAppend(chatId, thread, "operator", text || "(image)", agentId);
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model), "Cowork");
+          continue;
+        }
         // A message to a project agent-bot = a MISSION → ONE real oracle session.
         // Album / caption-split fragments are buffered and flushed together.
         queueMissionFragment(chatId, thread, text, img, "", msg.message_id, project);
