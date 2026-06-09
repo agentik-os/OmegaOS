@@ -708,19 +708,28 @@ async function projectOracle(project: string, text: string): Promise<string> {
   return runClaude(text, scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE, dir, `The ${project} oracle`, dir);
 }
 
-// ── COMPANION: the operator's instant co-worker (agent-bot kind "companion").
-// A FAST brain — Haiku, few turns, no MCP servers, no doctrine, no dispatch —
-// for chatting about anything, challenging the operator on his life (the
-// LifeStyle store is inlined below so chat turns need NO tool round-trip), and
-// building micro-systems in ${LIFESTYLE_DIR}/builds/. It NEVER orchestrates:
-// real work is handed to Atlas via a [[ATLAS: …]] marker (see companionBrain).
+// ── COMPANION: the operator's instant personal assistant (agent-bot kind
+// "companion"). A FAST brain — Haiku, capped turns, no MCP servers, no oracle
+// dispatch — that chats about anything, challenges the operator from the
+// LifeStyle store (inlined below so chat turns need NO tool round-trip),
+// builds micro-systems in ${LIFESTYLE_DIR}/builds/, and acts on the whole VPS
+// (web, scraping, skills). It SELF-IMPROVES: the persona is hot-reloaded from
+// ${LIFESTYLE_DIR}/PERSONA.md on every turn, and the assistant edits that file
+// itself (the shipped agents/companion.md is only the first-boot fallback).
+// Heavy project work is handed to Atlas via [[ATLAS: …]] (see companionBrain).
 const LIFESTYLE_DIR = `${homedir()}/Station/LifeStyle`;
 const COMPANION_MODEL = "claude-haiku-4-5-20251001";
-const COMPANION_TIMEOUT_MS = 180_000; // a chat turn, not a mission — fail fast
-let COMPANION_PERSONA = ""; try { COMPANION_PERSONA = readFileSync(`${OMEGA_DIR}/agents/companion.md`, "utf8"); } catch {}
+const COMPANION_TIMEOUT_MS = 300_000; // a chat/assistant turn, not a mission — fail fast
+function companionPersona(): string {
+  for (const p of [`${LIFESTYLE_DIR}/PERSONA.md`, `${OMEGA_DIR}/agents/companion.md`]) {
+    try { return readFileSync(p, "utf8"); } catch {}
+  }
+  return "";
+}
 function lifestyleContext(): string {
   try {
-    const files = Bun.spawnSync(["bash", "-lc", `find ${LIFESTYLE_DIR} -maxdepth 2 -name '*.md' -not -path '*/builds/*' 2>/dev/null | sort | head -20`]).stdout.toString().trim().split("\n").filter(Boolean);
+    // PERSONA.md is already the system prompt — don't inline it twice.
+    const files = Bun.spawnSync(["bash", "-lc", `find ${LIFESTYLE_DIR} -maxdepth 2 -name '*.md' -not -name PERSONA.md -not -path '*/builds/*' 2>/dev/null | sort | head -20`]).stdout.toString().trim().split("\n").filter(Boolean);
     let out = "";
     for (const f of files) {
       try { out += `\n### ${f.replace(`${LIFESTYLE_DIR}/`, "")}\n${readFileSync(f, "utf8").slice(0, 4000)}\n`; } catch {}
@@ -729,25 +738,27 @@ function lifestyleContext(): string {
     return out ? `## LifeStyle store (${LIFESTYLE_DIR} — the operator's life, your working context)\n${out}` : "";
   } catch { return ""; }
 }
-async function companion(text: string, model = COMPANION_MODEL): Promise<string> {
+async function companion(text: string, model = COMPANION_MODEL, label = "Assistant"): Promise<string> {
   Bun.spawnSync(["mkdir", "-p", `${LIFESTYLE_DIR}/notes`, `${LIFESTYLE_DIR}/builds`]);
   // --strict-mcp-config with no --mcp-config = zero MCP servers (startup cost);
-  // --max-turns caps a runaway tool loop — a companion turn is seconds, not minutes.
-  return runClaude(text, COMPANION_PERSONA + "\n\n" + lifestyleContext(), LIFESTYLE_DIR, "Cowork", LIFESTYLE_DIR,
-    ["--model", model, "--max-turns", "12", "--strict-mcp-config"], COMPANION_TIMEOUT_MS);
+  // --max-turns caps a runaway tool loop. --add-dir / = the assistant is a
+  // super-admin on the VPS (the operator's explicit choice) — the persona, not
+  // a sandbox, draws the line between its work and the oracles' project code.
+  return runClaude(text, companionPersona() + "\n\n" + lifestyleContext(), "/", label, LIFESTYLE_DIR,
+    ["--model", model, "--max-turns", "24", "--strict-mcp-config"], COMPANION_TIMEOUT_MS);
 }
 // Companion reply post-processing: strip the [[ATLAS: …]] marker from what the
 // operator sees, and fire the brief at the REAL Atlas brain (master — full VPS
 // control, dispatches to the right project oracle) in the background. Atlas's
 // answer lands as its own message when ready; the fast chat reply is never blocked.
 const ATLAS_MARK = /\[\[ATLAS:([\s\S]+?)\]\]/;
-function companionBrain(chatId: number, thread: number | undefined, model?: string): (t: string) => Promise<string> {
+function companionBrain(chatId: number, thread: number | undefined, model?: string, label = "Assistant"): (t: string) => Promise<string> {
   return async (t: string) => {
-    const out = await companion(t, model || COMPANION_MODEL);
+    const out = await companion(t, model || COMPANION_MODEL, label);
     const m = out.match(ATLAS_MARK);
     if (!m) return out;
     const brief = m[1].trim();
-    master(`${histContext(chatId, thread)}## Mission handed off by the operator's Cowork companion — triage and dispatch it to the right project/oracle, or act directly.\n${brief}`)
+    master(`${histContext(chatId, thread)}## Mission handed off by ${label}, the operator's personal assistant — triage and dispatch it to the right project/oracle, or act directly.\n${brief}`)
       .then(r => { histAppend(chatId, thread, "assistant", `[Atlas] ${r}`, "atlas"); return send(chatId, mdToHtml(`🧭 **Atlas**\n\n${r}`), undefined, thread); })
       .catch((e: any) => send(chatId, `⚠️ Atlas hand-off failed: ${esc(String(e?.message || e)).slice(0, 200)}`, undefined, thread));
     return `${out.replace(ATLAS_MARK, "").trim()}\n\n🧭 _Transmis à Atlas — je te poste sa réponse ici dès qu'elle arrive._`;
@@ -1793,9 +1804,12 @@ async function agentBotMain(agentId: string) {
   const bot = loadAgentBots()[agentId];
   const project = bot?.project || agentId;
   const isCompanion = bot?.kind === "companion";
-  await tg("setMyCommands", { commands: [{ command: "start", description: isCompanion ? "Talk to your co-worker" : `Talk to the ${project} project oracle` }] });
+  // The companion's display name is its Telegram name (self-changeable via the
+  // Bot API) — the label follows it on restart, never a hard-coded string.
+  const botName: string = isCompanion ? ((await tg("getMe", {}))?.result?.first_name || "Assistant") : "";
+  await tg("setMyCommands", { commands: [{ command: "start", description: isCompanion ? `Talk to ${botName}, your assistant` : `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
-  console.log(`agent-bot up: ${agentId} → ${isCompanion ? "companion" : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
+  console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
@@ -1822,7 +1836,7 @@ async function agentBotMain(agentId: string) {
         if (!text && !img) continue;
         if (text === "/start" || text === "/menu") {
           await send(chatId, isCompanion
-            ? `<b>⚡ Cowork</b>\nTon co-worker instantané sur le VPS : on parle de tout, je te challenge sur ta vie (store <code>~/Station/LifeStyle</code>), je te monte des micro-systèmes à tester, et si tu me dis <b>« envoie ça à Atlas »</b> je lui transmets le travail.`
+            ? `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS : on parle de tout, je te challenge sur ta vie (store <code>~/Station/LifeStyle</code>), je te monte des micro-systèmes, j'agis sur le web et tes outils — et si tu me dis <b>« envoie ça à Atlas »</b> je lui transmets le travail lourd.`
             : `<b>🔮 Oracle — ${esc(project)}</b>\nWrite your mission: each message launches an <b>oracle dispatch</b> (a dedicated Claude Code session on the VPS) for project <b>${esc(project)}</b>. I relay the result back to you.`, undefined, thread);
           continue;
         }
@@ -1832,7 +1846,7 @@ async function agentBotMain(agentId: string) {
           const prompt = img ? withImageNote(text, img) : text;
           const ctx = histContext(chatId, thread);
           histAppend(chatId, thread, "operator", text || "(image)", agentId);
-          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model), "Cowork");
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model, botName), botName);
           continue;
         }
         // A message to a project agent-bot = a MISSION → ONE real oracle session.
