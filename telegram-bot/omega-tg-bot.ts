@@ -86,29 +86,39 @@ async function transcribeVoice(fileId: string): Promise<string> {
     return (j?.text || "").trim();
   } catch { return ""; }
 }
-// Image input: a photo (or image document) is downloaded to ${OMEGA_DIR}/state/tg-media/
-// so the dispatched oracle / Atlas can open it with the Read tool. Returns the local
-// path, or "" when the message carries no image / the download failed. Without this,
-// a photo+caption message has no `.text` and was silently DROPPED by both poll loops
-// (the operator's mission never reached any oracle).
-async function saveIncomingImage(msg: any): Promise<string> {
+// File input: ANY attachment — a photo, a document of any type (PDF, .txt, .csv,
+// code, zip…), a video, or an audio file — is downloaded to ${OMEGA_DIR}/state/tg-media/
+// so the dispatched oracle / Atlas can open it with the Read tool. (The oracle runs
+// --dangerously-skip-permissions, so it can read this path whatever its --add-dir is.)
+// Returns the local path, or "" when the message carries no file / the download failed.
+// Without this, a file+caption message has no `.text` and was silently DROPPED by both
+// poll loops (the operator's mission never reached any oracle) — and before, even a
+// document WAS dropped unless its mime was image/* (the gap the operator hit).
+// NOTE: Telegram's Bot API caps getFile downloads at 20 MB — larger files return "".
+async function saveIncomingFile(msg: any): Promise<string> {
   try {
     const photo = Array.isArray(msg?.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : undefined; // last = largest size
-    const doc = /^image\//.test(msg?.document?.mime_type || "") ? msg.document : undefined;
-    const fileId = photo?.file_id || doc?.file_id; if (!fileId) return "";
+    const att = msg?.document || msg?.video || msg?.audio || undefined; // any file type — NO mime filter
+    const fileId = att?.file_id || photo?.file_id; if (!fileId) return "";
     const gf = await tg("getFile", { file_id: fileId });
     const fp = gf?.result?.file_path; if (!fp) return "";
-    const ext = (fp.match(/\.[A-Za-z0-9]+$/) || [".jpg"])[0];
-    const dest = `${OMEGA_DIR}/state/tg-media/tg-${msg.chat?.id}-${msg.message_id}${ext}`;
+    // Preserve the operator's original filename when Telegram provides one (documents/
+    // audio carry file_name) — sanitized so it can't escape tg-media/ or carry shell-
+    // meaningful chars; else fall back to the server path's extension.
+    const orig = String(att?.file_name || "").replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "").slice(0, 80);
+    const ext = (fp.match(/\.[A-Za-z0-9]+$/) || [photo ? ".jpg" : ""])[0];
+    const base = orig || `tg-${msg.chat?.id}-${msg.message_id}${ext}`;
+    const dest = `${OMEGA_DIR}/state/tg-media/${msg.chat?.id}-${msg.message_id}-${base}`;
     const data = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`)).arrayBuffer();
     await Bun.write(dest, data); // creates parent dirs
     return dest;
-  } catch (e: any) { console.error("saveIncomingImage:", e?.message || e); return ""; }
+  } catch (e: any) { console.error("saveIncomingFile:", e?.message || e); return ""; }
 }
-// Mission text for a message that carries an image: caption (or a default) + where
-// the image lives on the VPS, so the receiving Claude session opens it with Read.
-function withImageNote(text: string, img: string): string {
-  return `${text || "Analyze the attached image and act on it."}\n\n## Attached image\nSaved on the VPS at: ${img}\nOpen it with the Read tool and analyze it as part of this mission.`;
+// Mission text for a message that carries a file: caption (or a default) + where the
+// file lives on the VPS, so the receiving Claude session opens it with Read (works on
+// PDFs, text, code and images; for audio/video the path is still provided).
+function withFileNote(text: string, file: string): string {
+  return `${text || "Process the attached file and act on it."}\n\n## Attached file\nSaved on the VPS at: ${file}\nOpen it with the Read tool (it reads PDFs, text, code and images) and use it as part of this mission.`;
 }
 // Config is (re)loadable so the service can start WITHOUT a token and auto-connect
 // the moment one is written (by `omega telegram setup`, `omega-tg-up`, or editing
@@ -930,13 +940,13 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
 // chat+thread and flushed AGGREGATE_MS after the LAST one, as a single mission
 // carrying every text + every image. Restart loss window = AGGREGATE_MS, acceptable.
 const AGGREGATE_MS = 8000;
-type Fragments = { texts: string[]; imgs: string[]; quoted: string; lastMsgId: number; timer?: ReturnType<typeof setTimeout> };
+type Fragments = { texts: string[]; files: string[]; quoted: string; lastMsgId: number; timer?: ReturnType<typeof setTimeout> };
 const fragments = new Map<string, Fragments>();
-function queueMissionFragment(chat: number, thread: number | undefined, text: string, img: string, replyTo: string, msgId: number, fixedProject?: string) {
+function queueMissionFragment(chat: number, thread: number | undefined, text: string, file: string, replyTo: string, msgId: number, fixedProject?: string) {
   const key = `${chat}:${thread ?? 0}:${fixedProject || ""}`;
-  const f = fragments.get(key) || { texts: [], imgs: [], quoted: "", lastMsgId: msgId };
+  const f = fragments.get(key) || { texts: [], files: [], quoted: "", lastMsgId: msgId };
   if (text) f.texts.push(text);
-  if (img) f.imgs.push(img);
+  if (file) f.files.push(file);
   if (replyTo && !f.quoted) f.quoted = replyTo;
   f.lastMsgId = msgId;
   react(chat, msgId, "👀"); // received & buffering — the 🚀 lands at flush time
@@ -946,9 +956,9 @@ function queueMissionFragment(chat: number, thread: number | undefined, text: st
 }
 async function flushMission(chat: number, thread: number | undefined, f: Fragments, fixedProject?: string) {
   let text = f.texts.join("\n\n");
-  if (f.imgs.length) {
-    const many = f.imgs.length > 1;
-    text = `${text || `Analyze the attached image${many ? "s" : ""} and act on ${many ? "them" : "it"}.`}\n\n## Attached image${many ? "s" : ""}\n${f.imgs.map((p) => `- ${p}`).join("\n")}\nOpen ${many ? "them" : "it"} with the Read tool and analyze ${many ? "them" : "it"} as part of this mission.`;
+  if (f.files.length) {
+    const many = f.files.length > 1;
+    text = `${text || `Process the attached file${many ? "s" : ""} and act on ${many ? "them" : "it"}.`}\n\n## Attached file${many ? "s" : ""}\n${f.files.map((p) => `- ${p}`).join("\n")}\nOpen ${many ? "them" : "it"} with the Read tool (it reads PDFs, text, code and images) and use ${many ? "them" : "it"} as part of this mission.`;
   }
   if (!text) return;
   // AGENT MODE: fixed project — direct dispatch, no topic routing / history.
@@ -1904,7 +1914,7 @@ async function agentBotMain(agentId: string) {
           if (isCompanion && allowed(q.from?.id ?? 0)) await onNovaCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0, botName, bot?.model);
           continue;
         }
-        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         let text = (msg.text || msg.caption || "").trim();
@@ -1915,9 +1925,9 @@ async function agentBotMain(agentId: string) {
           if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
           await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
         }
-        // Photo / image document → download it locally; aggregated with the text below.
-        const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
-        if (!text && !img) continue;
+        // Any attachment (photo / document / video / audio) → download it locally; aggregated with the text below.
+        const file = (msg.photo || msg.document || msg.video || msg.audio) ? await saveIncomingFile(msg) : "";
+        if (!text && !file) continue;
         // Companion: /menu opens the button menu; /start greets + shows it.
         if (isCompanion && (text === "/menu" || text === "/start")) {
           await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
@@ -1930,15 +1940,15 @@ async function agentBotMain(agentId: string) {
         // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
         // History gives it the running conversation; the brain itself is stateless.
         if (isCompanion) {
-          const prompt = img ? withImageNote(text, img) : text;
+          const prompt = file ? withFileNote(text, file) : text;
           const ctx = histContext(chatId, thread);
-          histAppend(chatId, thread, "operator", text || "(image)", agentId);
+          histAppend(chatId, thread, "operator", text || "(file)", agentId);
           await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model, botName), botName);
           continue;
         }
         // A message to a project agent-bot = a MISSION → ONE real oracle session.
         // Album / caption-split fragments are buffered and flushed together.
-        queueMissionFragment(chatId, thread, text, img, "", msg.message_id, project);
+        queueMissionFragment(chatId, thread, text, file, "", msg.message_id, project);
       } catch (e: any) { console.error("agent-bot update error:", e?.message || e); }
     }
   }
@@ -1987,7 +1997,7 @@ async function main() {
           if (!allowed(q.from?.id ?? 0)) continue;
           await onCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0); continue;
         }
-        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
         const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0;
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
@@ -1999,12 +2009,12 @@ async function main() {
           if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
           await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
         }
-        // Photo / image document → download it locally. NOT baked into `text` here:
-        // mission-bound fragments (album photos, caption-split prompts) are
-        // aggregated by queueMissionFragment below; the command/pending paths
-        // attach the single image themselves via withImageNote.
-        const img = (msg.photo || msg.document) ? await saveIncomingImage(msg) : "";
-        if (!text && !img) continue;
+        // Any attachment (photo / document / video / audio) → download it locally. NOT
+        // baked into `text` here: mission-bound fragments (album photos, caption-split
+        // prompts) are aggregated by queueMissionFragment below; the command/pending
+        // paths attach the single file themselves via withFileNote.
+        const file = (msg.photo || msg.document || msg.video || msg.audio) ? await saveIncomingFile(msg) : "";
+        if (!text && !file) continue;
         // Reply-to-message: when the operator replies to a message, quote it as context
         // so the brain knows exactly what they're reacting to (e.g. reply to a report).
         const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").slice(0, 2000);
@@ -2013,7 +2023,7 @@ async function main() {
         const p = getPending(from);
         if (p && !text.startsWith("/")) {
           clearPending(from);
-          if (img) text = withImageNote(text, img); // single-message form for flows
+          if (file) text = withFileNote(text, file); // single-message form for flows
           if (p.kind === "login-code") {
             await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
             // Paste the code into the waiting `aisb-reauth` session; the engine
@@ -2116,14 +2126,14 @@ async function main() {
             // main bot. `omega dispatch` gives it the full Atlas reprompting (project
             // knowledge + OmegaOS doctrine); we prepend the conversation context.
             const proj = projectForCommand(cmd)!;
-            const mission = img ? withImageNote(a.join(" ").trim(), img) : a.join(" ").trim();
+            const mission = file ? withFileNote(a.join(" ").trim(), file) : a.join(" ").trim();
             if (!mission) { setPending(from, "oracle-prompt", proj); await send(chatId, card(`ORACLE — ${proj.toUpperCase()}`, ` 🔮 Send your <b>mission</b> for <b>${esc(proj)}</b> — I hand it to its oracle with the full Atlas reprompting (project + doctrine).`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }]]), thread); }
             else { react(chatId, msg.message_id, "🚀"); const ctx = histContext(chatId, thread); histAppend(chatId, thread, "operator", text, proj); const r = await dispatchToOracle(proj, mission, chatId, thread, ctx); if (r) await send(chatId, r, undefined, thread); }
           }
           else {
             // Unknown command → the AISB Master brain (commands gain intelligence:
             // any /verb the operator types is understood + dispatched, not dropped to the menu).
-            await brainReply(chatId, msg.message_id, thread, img ? withImageNote(text, img) : text);
+            await brainReply(chatId, msg.message_id, thread, file ? withFileNote(text, file) : text);
           }
         } else {
           // Free text in a project TOPIC = a MISSION → ONE real oracle session
@@ -2131,7 +2141,7 @@ async function main() {
           // belonging to one ask (album photos, caption-split prompts) are buffered
           // by queueMissionFragment and flushed together — routing, history and the
           // contextualized prompt are built at flush time (see flushMission).
-          queueMissionFragment(chatId, thread, text, img, replyTo, msg.message_id);
+          queueMissionFragment(chatId, thread, text, file, replyTo, msg.message_id);
         }
       } catch (e: any) { console.error("update error:", e?.message || e); }
     }
