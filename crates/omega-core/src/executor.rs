@@ -4,7 +4,7 @@
 //! the Guardian before marking a step Done.
 
 use crate::agents::Agent;
-use crate::done::DoneSignal;
+use crate::done::{DoneSignal, DoneStatus};
 use crate::guardian::{Guardian, Verdict};
 use crate::planner::{PlanStep, PlanTracker, StepStatus};
 use crate::scope;
@@ -31,6 +31,15 @@ pub trait WorkerRuntime {
     /// kills+releases (right for Retry/Fail); this releases only (right for a
     /// successful worker we leave for inspection). Default no-op.
     async fn release_scope(&self, _session: &str) {}
+    /// Crash-resume adoption probe: if this step's worker from a PREVIOUS run
+    /// is still observable (its detached session is alive, or its done.json
+    /// already landed), return the session name so run() WAITS on it instead
+    /// of resetting the step — re-dispatch would kill live work mid-edit or
+    /// discard a finished-but-unprocessed result (spawn clears both). Default
+    /// None: scripted test runtimes own no detached sessions.
+    async fn adoptable_session(&self, _step: &PlanStep) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -38,11 +47,19 @@ pub struct RunOptions {
     pub parallelism: usize,
     pub max_attempts: u8,
     pub worker_timeout: Duration,
+    /// Cap on one Guardian re-run of a verify_command. Without it a verify
+    /// that never exits (serve-without-exit, watch mode) froze the whole run.
+    pub verify_timeout: Duration,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { parallelism: 3, max_attempts: 2, worker_timeout: Duration::from_secs(60 * 30) }
+        Self {
+            parallelism: 3,
+            max_attempts: 2,
+            worker_timeout: Duration::from_secs(60 * 30),
+            verify_timeout: Duration::from_secs(60 * 10),
+        }
     }
 }
 
@@ -56,14 +73,39 @@ pub struct RunReport {
 
 /// Render the worker prompt for one step from its typed fields.
 pub fn render_brief(step: &PlanStep) -> String {
-    format!(
+    let mut brief = format!(
         "{title}\n\n{description}\n\nFiles you own (touch ONLY these): {files}\n\nDone criteria: {criteria}\n\nVerify before done.json: {verify}",
         title = step.title,
         description = step.description,
         files = step.files_to_touch.join(", "),
         criteria = step.done_criteria,
         verify = step.verify_command,
-    )
+    );
+    // A retry must not be blind: without the prior attempt's verification
+    // evidence in the brief, max_attempts just repeats the same mistake.
+    if let Some(feedback) = &step.last_feedback {
+        brief.push_str(&format!(
+            "\n\nPREVIOUS ATTEMPT FAILED VERIFICATION — diagnose and fix this first:\n{feedback}"
+        ));
+    }
+    brief
+}
+
+/// Worker timeout: explicit per-step override > terminal-wave default >
+/// RunOptions. Audit/deploy-wave steps run forensic audits / the acceptance
+/// browser sweep, which routinely outlive the 30-min default — killing them
+/// mid-audit falsely fails the heaviest, most valuable steps, so terminal
+/// waves get 4x.
+fn step_timeout(step: &PlanStep, opts: &RunOptions) -> Duration {
+    step.timeout_mins
+        .map(|m| Duration::from_secs(m * 60))
+        .unwrap_or_else(|| {
+            if step.wave.is_some_and(|w| w.is_terminal()) {
+                opts.worker_timeout * 4
+            } else {
+                opts.worker_timeout
+            }
+        })
 }
 
 /// Drive a plan to completion. Selects work via ready_steps only; gates every
@@ -73,16 +115,55 @@ pub async fn run<R: WorkerRuntime>(
     runtime: &R,
     opts: RunOptions,
 ) -> Result<RunReport> {
-    let mut tracker = PlanTracker::load(project_dir)
+    // load_strict so a malformed tracker surfaces its parse error instead of
+    // masquerading as "no tracker" (the operator must never be told the plan
+    // doesn't exist while it sits there corrupt).
+    let mut tracker = PlanTracker::load_strict(project_dir)
+        .context("loading .planner/tracker.json")?
         .context("no .planner/tracker.json — run `omega plan` first")?;
-    if !tracker.is_acyclic() {
-        bail!("plan DAG contains a cycle — aborting");
+    // Structural gate BEFORE any worker spawns: cycles, dangling deps,
+    // duplicate ids and trivial verify_commands on REMAINING steps are refused
+    // here — so a malformed plan can never silently mis-sequence, deadlock, or
+    // fake-complete the build. Run-time validation deliberately skips terminal
+    // steps and demotes files_to_touch issues to warnings: a mid-flight
+    // tracker from an older schema must stay resumable (validate_for_run doc).
+    tracker.validate_for_run().context("plan failed validation — fix the tracker.json")?;
+    // Crash-resume reconciliation: a previous plan-run that died mid-flight
+    // persisted its dispatched steps as InProgress (the tracker saves at spawn
+    // time, completion only later). ready_steps selects Pending ONLY, so
+    // without this pass those steps — and every dependent — stay stuck
+    // forever. BUT step workers are DETACHED rmux sessions that survive the
+    // engine dying: an InProgress step whose worker is still alive (or whose
+    // done.json already landed) is NOT an orphan — re-dispatching it would
+    // kill live work mid-edit / discard the unconsumed result (spawn clears
+    // both). Those steps are ADOPTED: kept InProgress and fed into the normal
+    // wait→verify path on the first loop iteration. Only steps with no
+    // observable worker are reset to Pending for re-dispatch (spawn() clears
+    // the stale done.json + session, and a same-name scope claim never
+    // self-conflicts, so no further cleanup is needed there).
+    let mut adopted: Vec<(String, String, Duration)> = Vec::new();
+    let orphaned: Vec<String> = tracker
+        .steps
+        .iter()
+        .filter(|s| s.status == StepStatus::InProgress)
+        .map(|s| s.step_id.clone())
+        .collect();
+    if !orphaned.is_empty() {
+        tracing::warn!(steps = ?orphaned, "reconciling in_progress steps left by a previous run");
+        for sid in &orphaned {
+            let step = tracker.get_step(sid).context("step vanished")?.clone();
+            if let Some(session) = runtime.adoptable_session(&step).await {
+                tracing::info!(step = %sid, session = %session,
+                    "adopting in_progress step (live worker session or existing done signal)");
+                let timeout = step_timeout(&step, &opts);
+                adopted.push((sid.clone(), session, timeout));
+            } else {
+                tracker.reset_to_pending(sid)?;
+            }
+        }
+        tracker.save(project_dir)?;
     }
-    // Strict structural gate BEFORE any worker spawns: dangling deps, duplicate
-    // ids, and trivial verify_commands are refused here — so a malformed plan can
-    // never silently mis-sequence or fake-complete the build.
-    tracker.validate().context("plan failed strict validation — fix the tracker.json")?;
-    let guardian = Guardian::new(opts.max_attempts);
+    let guardian = Guardian::new(opts.max_attempts, opts.verify_timeout);
     let mut report = RunReport::default();
 
     loop {
@@ -92,7 +173,7 @@ pub async fn run<R: WorkerRuntime>(
             .map(|s| s.step_id.clone())
             .collect();
 
-        if ready.is_empty() {
+        if ready.is_empty() && adopted.is_empty() {
             let st = tracker.status();
             report.success = st.is_complete();
             if !st.is_complete() {
@@ -105,6 +186,11 @@ pub async fn run<R: WorkerRuntime>(
                             report.failed.push(s.step_id.clone());
                         }
                         StepStatus::Pending => report.blocked.push(s.step_id.clone()),
+                        // Defensive: the start-of-run reconciliation makes a
+                        // leftover InProgress unreachable in this loop, but a
+                        // stuck step must still be VISIBLE in the report, never
+                        // silently dropped from the failure accounting.
+                        StepStatus::InProgress => report.blocked.push(s.step_id.clone()),
                         _ => {}
                     }
                 }
@@ -112,24 +198,27 @@ pub async fn run<R: WorkerRuntime>(
             return Ok(report);
         }
 
-        let mut inflight: Vec<(String, String)> = Vec::new();
+        // Adopted steps (crash-resume) drain into the first batch: they are
+        // already InProgress with a live/finished worker — no spawn needed.
+        let mut inflight: Vec<(String, String, Duration)> = std::mem::take(&mut adopted);
         for sid in &ready {
             tracker.start_step(sid)?;
             let step = tracker.get_step(sid).context("step vanished")?.clone();
+            let timeout = step_timeout(&step, &opts);
             let brief = render_brief(&step);
             let session = runtime.spawn(&step, &brief, project_dir).await?;
-            inflight.push((sid.clone(), session));
+            inflight.push((sid.clone(), session, timeout));
         }
         tracker.save(project_dir)?;
 
-        for (sid, session) in inflight {
+        for (sid, session, timeout) in inflight {
             // A single worker's wait_done error (timeout / unreadable / unparseable
             // done.json) must NOT abort the whole plan: that would strand every
             // sibling step persisted as Running, never reconciled. Treat it as a
             // failed step, record it, release its scope claim, and continue the
             // batch so the rest of the plan still drives to completion.
-            match runtime.wait_done(&session, opts.worker_timeout).await {
-                Ok(_done) => {}
+            let done = match runtime.wait_done(&session, timeout).await {
+                Ok(done) => done,
                 Err(e) => {
                     tracing::error!(step = %sid, session = %session, error = %e, "worker wait failed — marking step failed");
                     tracker.mark_failed(&sid)?;
@@ -140,9 +229,41 @@ pub async fn run<R: WorkerRuntime>(
                     tracker.save(project_dir)?;
                     continue;
                 }
-            }
+            };
             let step = tracker.get_step(&sid).context("step vanished")?.clone();
             let attempt = step.attempt + 1;
+            // A worker's done.json is an input, never the verdict (R-VERIFY) —
+            // but a worker that DECLARES blocked/failed must never reach the
+            // Guardian: a verify weaker than the step's actual work (e.g. a
+            // build that already passed BEFORE the step) would convert that
+            // honest negative into a Pass and mark the step Done. Treat any
+            // non-done_clean signal like a failed verification: retry with the
+            // worker's stated blocker as feedback while attempts remain.
+            if done.status != DoneStatus::DoneClean {
+                let label = match done.status {
+                    DoneStatus::DoneClean => unreachable!(),
+                    DoneStatus::Pending => "pending",
+                    DoneStatus::Failed => "failed",
+                    DoneStatus::Blocked => "blocked",
+                };
+                tracing::warn!(step = %sid, status = %label, summary = %done.summary, "worker did not signal done_clean");
+                if attempt < opts.max_attempts {
+                    tracker.bump_attempt(&sid)?;
+                    tracker.reset_to_pending(&sid)?;
+                    if let Some(s) = tracker.get_step_mut(&sid) {
+                        s.last_feedback =
+                            Some(format!("previous worker signalled `{label}`: {}", done.summary));
+                    }
+                } else {
+                    tracker.mark_failed(&sid)?;
+                    report.failed.push(sid.clone());
+                }
+                // Either way the worker is finished with this attempt: kill the
+                // session + free the scope claim so a retry can re-claim.
+                runtime.cleanup_failed(&session).await;
+                tracker.save(project_dir)?;
+                continue;
+            }
             match guardian.verify(&step, project_dir, attempt).await {
                 Verdict::Pass => {
                     tracker.mark_done(&sid)?;
@@ -157,6 +278,12 @@ pub async fn run<R: WorkerRuntime>(
                     tracing::warn!(step = %sid, %feedback, "guardian: retry");
                     tracker.bump_attempt(&sid)?;
                     tracker.reset_to_pending(&sid)?;
+                    // Persist the Guardian's evidence ON the step: render_brief
+                    // appends it to the retry worker's prompt. Logging alone
+                    // delivered nothing to the worker — retries were blind.
+                    if let Some(s) = tracker.get_step_mut(&sid) {
+                        s.last_feedback = Some(feedback);
+                    }
                     // Release the file-scope claim from this attempt so the retry
                     // re-spawn can re-claim it. Without this, claim_or_reject in the
                     // next spawn() rejects (files still locked by the prior attempt)
@@ -190,6 +317,17 @@ pub struct RmuxRuntime<'a> {
 }
 
 impl WorkerRuntime for RmuxRuntime<'_> {
+    async fn adoptable_session(&self, step: &PlanStep) -> Option<String> {
+        // Same deterministic name spawn() uses — the only coupling adoption needs.
+        let session = format!("{}-step-{}", self.project, step.step_id.to_lowercase());
+        let done_path = self.state_dir.join(format!("worker-{session}.done.json"));
+        if done_path.exists() || self.mgr.capture_pane(&session).await.is_ok() {
+            Some(session)
+        } else {
+            None
+        }
+    }
+
     async fn spawn(&self, step: &PlanStep, brief: &str, cwd: &Path) -> Result<String> {
         let session = format!("{}-step-{}", self.project, step.step_id.to_lowercase());
 
@@ -335,6 +473,77 @@ mod tests {
         assert_eq!(report.completed, vec!["STEP-001", "STEP-002", "STEP-003"]);
         let t = PlanTracker::load(dir.path()).unwrap();
         assert!(t.status().is_complete());
+    }
+
+    #[tokio::test]
+    async fn resume_reconciles_orphaned_in_progress_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        save_linear_plan(dir.path(), "test -d .");
+        // Simulate a previous plan-run that died after dispatch: the step was
+        // persisted as in_progress with no live worker behind it.
+        let mut t = PlanTracker::load(dir.path()).unwrap();
+        t.start_step("STEP-001").unwrap();
+        t.save(dir.path()).unwrap();
+        let rt = FakeRuntime { script: HashMap::new() };
+        let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
+        assert!(report.success, "orphaned in_progress step must be re-dispatched, not stuck");
+        assert_eq!(report.completed, vec!["STEP-001", "STEP-002", "STEP-003"]);
+    }
+
+    #[tokio::test]
+    async fn blocked_worker_is_never_marked_done() {
+        let dir = tempfile::tempdir().unwrap();
+        // The trap: a verify that PASSES regardless of the step's work. The
+        // worker's honest `blocked` must not be laundered into Done by it.
+        save_linear_plan(dir.path(), "test -d .");
+        let mut script = HashMap::new();
+        script.insert("STEP-001".to_string(), DoneStatus::Blocked);
+        let rt = FakeRuntime { script };
+        let report =
+            run(dir.path(), &rt, RunOptions { max_attempts: 1, ..Default::default() }).await.unwrap();
+        assert!(!report.success);
+        assert_eq!(report.failed, vec!["STEP-001"]);
+        assert!(report.completed.is_empty());
+    }
+
+    /// Records every brief it is handed, so feedback delivery is provable.
+    #[derive(Default)]
+    struct BriefRecorder {
+        briefs: Mutex<Vec<String>>,
+    }
+
+    impl WorkerRuntime for BriefRecorder {
+        async fn spawn(&self, step: &PlanStep, brief: &str, _cwd: &Path) -> Result<String> {
+            self.briefs.lock().unwrap().push(brief.to_string());
+            Ok(format!("fake-{}", step.step_id))
+        }
+        async fn wait_done(&self, session: &str, _t: Duration) -> Result<DoneSignal> {
+            let step_id = session.strip_prefix("fake-").unwrap_or(session);
+            Ok(DoneSignal::stub(step_id, DoneStatus::DoneClean))
+        }
+    }
+
+    #[tokio::test]
+    async fn guardian_retry_feedback_reaches_the_retry_brief() {
+        let dir = tempfile::tempdir().unwrap();
+        // Fail-once verify: the first Guardian run plants a marker and exits 1;
+        // the re-run sees the marker and passes.
+        let verify = "test -f marker || { touch marker; exit 1; }";
+        let mut t = PlanTracker::new("P");
+        let p = t.add_phase("F", "g");
+        t.add_step(p, step("STEP-001", p).title("a").files(&["a.rs"]).criteria("ok").verify(verify).build()).unwrap();
+        t.save(dir.path()).unwrap();
+        let rt = BriefRecorder::default();
+        let report = run(dir.path(), &rt, RunOptions::default()).await.unwrap();
+        assert!(report.success);
+        let briefs = rt.briefs.lock().unwrap();
+        assert_eq!(briefs.len(), 2, "expected exactly one retry dispatch");
+        assert!(!briefs[0].contains("PREVIOUS ATTEMPT"), "first brief must be clean");
+        assert!(
+            briefs[1].contains("PREVIOUS ATTEMPT FAILED VERIFICATION"),
+            "retry brief must carry the Guardian feedback, got:\n{}",
+            briefs[1]
+        );
     }
 
     #[tokio::test]

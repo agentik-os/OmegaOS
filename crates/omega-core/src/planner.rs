@@ -22,11 +22,35 @@ pub struct PlanStep {
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub wave: Option<Wave>,
-    #[serde(default)]
+    // The planner SKILL tells the emitting LLM that the default-able fields
+    // accept `null`; #[serde(default)] alone covers only a MISSING key and
+    // rejects an explicit `"attempt": null` for u8 — which used to brick the
+    // whole plan with a misleading "no tracker" error. Accept null as 0.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub attempt: u8,
+    /// Optional per-step worker-timeout override (minutes). Heavy steps
+    /// (forensic audits, the /omg-acceptance browser sweep) routinely outlive
+    /// the engine's default worker timeout; the executor honors this first.
+    #[serde(default)]
+    pub timeout_mins: Option<u64>,
+    /// Why the previous attempt failed verification (Guardian evidence or the
+    /// worker's own blocked/failed note). Engine-written on retry; render_brief
+    /// delivers it to the retry worker so retries are never blind.
+    #[serde(default)]
+    pub last_feedback: Option<String>,
     pub status: StepStatus,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+}
+
+/// Deserialize an explicit JSON `null` as the type's default (serde's
+/// `#[serde(default)]` handles only an absent key, not `null`).
+fn null_as_default<'de, D, T>(de: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,11 +157,27 @@ impl PlanTracker {
         project_dir.join(".planner").join("tracker.json")
     }
 
+    /// Lenient loader for display surfaces (TUI): any failure is just "no plan".
     pub fn load(project_dir: &Path) -> Option<Self> {
+        Self::load_strict(project_dir).ok().flatten()
+    }
+
+    /// Strict loader for the engine/CLI: distinguishes "no tracker file"
+    /// (Ok(None)) from "tracker exists but is malformed" (Err carrying the
+    /// serde detail). Swallowing parse errors into None made the engine report
+    /// a corrupt tracker as "no .planner/tracker.json" — the operator was told
+    /// the plan doesn't exist while it sat there with invisible schema drift.
+    pub fn load_strict(project_dir: &Path) -> Result<Option<Self>> {
         let path = Self::tracker_path(project_dir);
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+        if !path.exists() {
+            return Ok(None);
+        }
+        let raw = std::fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?;
+        let tracker = serde_json::from_str(&raw).with_context(|| {
+            format!("{} exists but failed to parse — fix the JSON/schema", path.display())
+        })?;
+        Ok(Some(tracker))
     }
 
     /// Strict structural validation of a loaded plan. The engine REFUSES to run a
@@ -148,9 +188,38 @@ impl PlanTracker {
     ///   - **duplicate `step_id`s** (mark_done/ready_steps act on the wrong step);
     ///   - **empty or trivial `verify_command`** (`true` / `:` / bare `echo` →
     ///     the Guardian's re-run passes unconditionally, so the step is marked Done
-    ///     without any proof — the #1 cause of "done but broken").
+    ///     without any proof — the #1 cause of "done but broken");
+    ///   - **empty or directory `files_to_touch`** (the ready-set disjointness
+    ///     test and the executor's scope claim are both vacuous for an empty
+    ///     list, so two such steps could run in parallel on the same files —
+    ///     violating R-SCOPE — and a directory entry like `src/` is not a
+    ///     claimable scope). STRICT-only: legitimately file-less steps exist
+    ///     (a deploy that only runs `vercel --prod`, an audit sweep), so at
+    ///     RUN time these demote to loud warnings instead of refusals;
+    ///   - **dependency cycles** (no step in the cycle can ever become ready —
+    ///     the run deadlocks; `plan-status` advertises this validate() as the
+    ///     pre-flight gate that "proves no cycle", so the check lives HERE,
+    ///     not only in plan-run).
     /// Returns every issue at once (don't make the operator fix one at a time).
+    ///
+    /// Two strictness levels:
+    ///   - `validate()` — authoring-time gate (plan-status): everything above
+    ///     is a hard error, on every step.
+    ///   - `validate_for_run()` — execution gate (plan-run): structural issues
+    ///     (cycles, dangling/dup/self deps) stay hard for ALL steps; per-step
+    ///     content issues are only enforced on steps that still have work to do
+    ///     (Pending/InProgress) — a tracker mid-flight from an older schema
+    ///     must remain RESUMABLE (its Done/Failed history is not future work) —
+    ///     and the files_to_touch checks demote to warnings.
     pub fn validate(&self) -> Result<()> {
+        self.validate_impl(true)
+    }
+
+    pub fn validate_for_run(&self) -> Result<()> {
+        self.validate_impl(false)
+    }
+
+    fn validate_impl(&self, strict: bool) -> Result<()> {
         use std::collections::HashSet;
         let ids: HashSet<&str> = self.steps.iter().map(|s| s.step_id.as_str()).collect();
         let mut seen: HashSet<&str> = HashSet::new();
@@ -173,6 +242,14 @@ impl PlanTracker {
                     errs.push(format!("step `{}` depends on itself", s.step_id));
                 }
             }
+            // Content checks: at run time, only steps with REMAINING work are
+            // gated — terminal steps are history, and refusing to resume a
+            // half-built project over them would brick it.
+            let content_gated = strict
+                || matches!(s.status, StepStatus::Pending | StepStatus::InProgress);
+            if !content_gated {
+                continue;
+            }
             let v = s.verify_command.trim();
             let trivial = v.is_empty()
                 || v == "true"
@@ -183,6 +260,41 @@ impl PlanTracker {
                     "step `{}` has a trivial verify_command `{}` — it fake-passes; give a real check (build / test / typecheck / `jq -e .score>=N`)",
                     s.step_id, v
                 ));
+            }
+            if s.files_to_touch.is_empty() {
+                let msg = format!(
+                    "step `{}` has empty files_to_touch — list ≥1 exact file path (an empty list skips the scope claim and parallel disjointness entirely)",
+                    s.step_id
+                );
+                if strict {
+                    errs.push(msg);
+                } else {
+                    tracing::warn!("plan validation: {msg}");
+                }
+            }
+            for f in &s.files_to_touch {
+                if f.trim().is_empty() || f.ends_with('/') {
+                    let msg = format!(
+                        "step `{}` files_to_touch entry `{}` is not an exact file path — directories (`src/`) are not a claimable scope",
+                        s.step_id, f
+                    );
+                    if strict {
+                        errs.push(msg);
+                    } else {
+                        tracing::warn!("plan validation: {msg}");
+                    }
+                }
+            }
+        }
+        // Cycle detection: one fresh DFS per start node so the error can name a
+        // step actually inside the cycle. Report once — the named step is the
+        // thread to pull; listing every member adds noise, not signal.
+        for s in &self.steps {
+            let mut visited = HashSet::new();
+            let mut in_stack = HashSet::new();
+            if self.has_cycle(&s.step_id, &mut visited, &mut in_stack) {
+                errs.push(format!("dependency cycle involving step `{}`", s.step_id));
+                break;
             }
         }
         if !errs.is_empty() {
@@ -664,6 +776,8 @@ impl PlanStepBuilder {
             depends_on: self.depends_on,
             wave: self.wave,
             attempt: 0,
+            timeout_mins: None,
+            last_feedback: None,
             status: StepStatus::Pending,
             started_at: None,
             completed_at: None,
@@ -687,7 +801,10 @@ mod tests {
                     .description("Define the database schema with users table")
                     .files(&["convex/schema.ts"])
                     .criteria("npx convex dev starts without schema errors")
-                    .verify("npx convex dev --once 2>&1 | grep -v ERROR")
+                    // Exit-code only — piping through `grep -v` swallows the
+                    // command's exit code AND fake-passes (any non-matching
+                    // line satisfies it even when an ERROR line is present).
+                    .verify("npx convex dev --once")
                     .build(),
             )
             .unwrap();
@@ -748,6 +865,50 @@ mod tests {
         let dup = t.steps[0].clone();
         t.steps.push(dup);
         assert!(t.validate().is_err(), "duplicate step_id must be rejected");
+
+        // Dependency cycle (add_step can't create one; a loaded JSON can).
+        // plan-status advertises validate() as the gate that proves no cycle.
+        let mut t = sample_tracker();
+        t.steps[0].depends_on = vec!["STEP-002".to_string()];
+        let err = t.validate().unwrap_err().to_string();
+        assert!(err.contains("cycle"), "cyclic plan must be rejected: {err}");
+
+        // Empty files_to_touch → scope claim + parallel disjointness are
+        // vacuous (R-SCOPE violation); the SKILL promises this is rejected.
+        let mut t = sample_tracker();
+        t.steps[0].files_to_touch = vec![];
+        assert!(t.validate().is_err(), "empty files_to_touch must be rejected");
+
+        // Directory entries are not a claimable scope.
+        let mut t = sample_tracker();
+        t.steps[0].files_to_touch = vec!["src/".to_string()];
+        assert!(t.validate().is_err(), "directory files_to_touch must be rejected");
+    }
+
+    #[test]
+    fn attempt_null_deserializes_as_zero() {
+        // SKILL.md tells the planner LLM the default-able fields accept null;
+        // #[serde(default)] alone rejected an explicit "attempt": null.
+        let mut t = sample_tracker();
+        t.steps[0].attempt = 7; // ensure the round-trip really reads the null
+        let mut v: serde_json::Value = serde_json::to_value(&t).unwrap();
+        v["steps"][0]["attempt"] = serde_json::Value::Null;
+        let loaded: PlanTracker = serde_json::from_value(v).unwrap();
+        assert_eq!(loaded.steps[0].attempt, 0);
+    }
+
+    #[test]
+    fn load_strict_surfaces_parse_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Absent file → Ok(None), NOT an error.
+        assert!(PlanTracker::load_strict(tmp.path()).unwrap().is_none());
+        // Malformed file → Err naming the path, never "no tracker".
+        std::fs::create_dir_all(tmp.path().join(".planner")).unwrap();
+        std::fs::write(tmp.path().join(".planner/tracker.json"), "{not json").unwrap();
+        let err = PlanTracker::load_strict(tmp.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("failed to parse"), "got: {err:#}");
+        // The lenient loader still degrades to None for display surfaces.
+        assert!(PlanTracker::load(tmp.path()).is_none());
     }
 
     #[test]

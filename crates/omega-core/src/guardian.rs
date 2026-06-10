@@ -8,6 +8,7 @@
 use crate::planner::PlanStep;
 use crate::verifier::{IntentSpec, IntentVerifier};
 use std::path::Path;
+use std::time::Duration;
 
 /// Outcome of an independent verification of a completed step.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,11 +23,17 @@ pub enum Verdict {
 
 pub struct Guardian {
     max_attempts: u8,
+    /// Hard cap on one verify_command re-run. Workers have a timeout in the
+    /// executor, but this independent re-run had NONE — and the planner SKILL
+    /// prescribes build→serve→sweep verifies, exactly the command class that
+    /// can never exit (server stays up, watch mode, interactive prompt). One
+    /// hanging verify froze the whole plan-run forever.
+    verify_timeout: Duration,
 }
 
 impl Guardian {
-    pub fn new(max_attempts: u8) -> Self {
-        Self { max_attempts: max_attempts.max(1) }
+    pub fn new(max_attempts: u8, verify_timeout: Duration) -> Self {
+        Self { max_attempts: max_attempts.max(1), verify_timeout }
     }
 
     /// Tier 1 — deterministic. Re-run the step's verify_command in the project
@@ -44,7 +51,31 @@ impl Guardian {
             verify_commands: vec![step.verify_command.clone()],
         };
         let verifier = IntentVerifier::default();
-        match verifier.verify_once(&intent, project_dir, attempt as u32).await {
+        let outcome = tokio::time::timeout(
+            self.verify_timeout,
+            verifier.verify_once(&intent, project_dir, attempt as u32),
+        )
+        .await;
+        let outcome = match outcome {
+            Ok(o) => o,
+            Err(_elapsed) => {
+                // NOTE: the timed-out child is NOT killed here — IntentVerifier
+                // spawns without kill_on_drop, so dropping the future only
+                // detaches it. The orphan is bounded (one process per attempt);
+                // the constraint that matters is that the ENGINE moves on.
+                let msg = format!(
+                    "verify_command timed out after {}s: {}",
+                    self.verify_timeout.as_secs(),
+                    step.verify_command
+                );
+                return if attempt < self.max_attempts {
+                    Verdict::Retry { feedback: msg }
+                } else {
+                    Verdict::Fail { reason: msg }
+                };
+            }
+        };
+        match outcome {
             Ok(result) => {
                 let proven = !result.command_results.is_empty()
                     && result.command_results.iter().all(|c| c.passed);
@@ -89,15 +120,18 @@ mod tests {
             .build()
     }
 
+    /// Test-default timeout — generous enough to never trip on real commands.
+    const TIMEOUT: Duration = Duration::from_secs(600);
+
     #[test]
     fn guardian_min_one_attempt() {
-        let g = Guardian::new(0);
+        let g = Guardian::new(0, TIMEOUT);
         assert_eq!(g.max_attempts, 1);
     }
 
     #[tokio::test]
     async fn tier1_pass_when_command_exits_zero() {
-        let g = Guardian::new(2);
+        let g = Guardian::new(2, TIMEOUT);
         let dir = tempfile::tempdir().unwrap();
         let s = done_step("true");
         assert_eq!(g.verify(&s, dir.path(), 1).await, Verdict::Pass);
@@ -105,7 +139,7 @@ mod tests {
 
     #[tokio::test]
     async fn tier1_retry_then_fail_when_command_exits_nonzero() {
-        let g = Guardian::new(2);
+        let g = Guardian::new(2, TIMEOUT);
         let dir = tempfile::tempdir().unwrap();
         let s = done_step("false");
         assert!(matches!(g.verify(&s, dir.path(), 1).await, Verdict::Retry { .. }));
@@ -114,9 +148,26 @@ mod tests {
 
     #[tokio::test]
     async fn tier1_fail_on_empty_verify_command() {
-        let g = Guardian::new(2);
+        let g = Guardian::new(2, TIMEOUT);
         let dir = tempfile::tempdir().unwrap();
         let s = done_step("   ");
         assert!(matches!(g.verify(&s, dir.path(), 1).await, Verdict::Fail { .. }));
+    }
+
+    #[tokio::test]
+    async fn hanging_verify_times_out_instead_of_stalling() {
+        // A verify that never exits must yield a verdict, not freeze the run.
+        let g = Guardian::new(2, Duration::from_millis(100));
+        let dir = tempfile::tempdir().unwrap();
+        let s = done_step("sleep 30");
+        let start = std::time::Instant::now();
+        let v1 = g.verify(&s, dir.path(), 1).await;
+        assert!(start.elapsed() < Duration::from_secs(5), "verify did not time out");
+        match v1 {
+            Verdict::Retry { feedback } => assert!(feedback.contains("timed out")),
+            other => panic!("expected Retry on first attempt, got {other:?}"),
+        }
+        // Out of attempts → terminal Fail, same timeout path.
+        assert!(matches!(g.verify(&s, dir.path(), 2).await, Verdict::Fail { .. }));
     }
 }

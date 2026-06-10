@@ -44,7 +44,48 @@ function load(dir: string): Tracker {
     console.error(`no .planner/tracker.json in ${dir} — run /planner first`);
     process.exit(1);
   }
-  return JSON.parse(readFileSync(path, "utf8")) as Tracker;
+  let t: Tracker;
+  try {
+    t = JSON.parse(readFileSync(path, "utf8")) as Tracker;
+  } catch (e: any) {
+    // Surface the REAL parse error — a malformed tracker is not "no tracker".
+    console.error(`malformed ${path}: ${e?.message || e}`);
+    process.exit(1);
+  }
+  validate(t);
+  return t;
+}
+
+/** Mirror of the Rust gate's structural checks (validate() in planner.rs):
+ *  dangling deps, dependency cycles, and empty/bare-directory files_to_touch.
+ *  The fallback only REPORTS (it never spawns), so violations are loud
+ *  warnings — the engine itself refuses to run such a plan. */
+function validate(t: Tracker) {
+  const ids = new Set(t.steps.map((s) => s.step_id));
+  for (const s of t.steps) {
+    for (const d of s.depends_on)
+      if (!ids.has(d)) console.error(`WARN ${s.step_id}: depends_on '${d}' does not exist`);
+    if (s.files_to_touch.length === 0)
+      console.error(`WARN ${s.step_id}: files_to_touch is empty — scope-claim locking is impossible`);
+    for (const f of s.files_to_touch)
+      if (f.endsWith("/")) console.error(`WARN ${s.step_id}: bare directory scope '${f}' — claim files, not trees`);
+  }
+  // Cycle check: iteratively strip steps whose deps are all stripped; leftovers cycle.
+  const stripped = new Set<string>();
+  let advanced = true;
+  while (advanced) {
+    advanced = false;
+    for (const s of t.steps) {
+      if (stripped.has(s.step_id)) continue;
+      if (s.depends_on.every((d) => stripped.has(d) || !ids.has(d))) {
+        stripped.add(s.step_id);
+        advanced = true;
+      }
+    }
+  }
+  const cyclic = t.steps.filter((s) => !stripped.has(s.step_id));
+  if (cyclic.length)
+    console.error(`WARN dependency cycle: ${cyclic.map((s) => s.step_id).join(" → ")} — these steps can never become ready`);
 }
 
 function depsSatisfied(t: Tracker, s: Step): boolean {

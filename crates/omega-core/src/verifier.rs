@@ -135,6 +135,10 @@ impl IntentVerifier {
                 .current_dir(working_dir)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
+                // Guardian wraps this future in a timeout: when it fires, the
+                // future is DROPPED — without kill_on_drop the verify child
+                // would keep running detached forever.
+                .kill_on_drop(true)
                 .output()
                 .await?;
 

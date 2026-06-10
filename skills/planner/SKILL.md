@@ -70,9 +70,14 @@ audit verdict (`test -f audits/.<audit>/verdict.json` AND a score gate, e.g.
 `jq -e '.score>=85' audits/.codeaudit/verdict.json`). Pick the audit that fits the module
 (`/omg-codeaudit`, `/omg-secaudit`, `/omg-apiaudit`, `/omg-dataaudit`, `/omg-flowaudit`…).
 A module is NOT "done" until its audit passes — so a bug is caught at the module boundary,
-not discovered at the very end. The engine holds each module's audit until that module's
-steps are `done`; later modules `depends_on` the prior module's audit step. (A final
-cross-cutting audit wave on top is fine, but per-module gates are mandatory.)
+not discovered at the very end. **Per-module audit steps carry NO `wave`** — their gating is
+the DAG alone (`depends_on` that module's steps); later modules `depends_on` the prior
+module's audit step. `wave: "audit"` is a TERMINAL tier: the engine withholds any
+audit-wave step until every lower-wave step in the WHOLE plan is `done`, so tagging a
+module audit `wave: "audit"` defers it to the very end — exactly the failure this rule
+prevents. Reserve `wave: "audit"` / `"deploy"` for the final cross-cutting audit and
+deploy steps only. (That final audit wave is fine on top, but per-module gates are
+mandatory.)
 
 ### 6. The plan must be COMPLETE and CONTIGUOUS — prod-ready, no gaps
 A plan that jumps between areas and declares "done" with whole layers missing is the #1
@@ -90,6 +95,11 @@ executes exactly what you give it, so a sparse plan ships a broken app.
 `npm run build` / `tsc` / `lint` passing means the code COMPILES — it says NOTHING about
 whether a page renders, a route exists, or a flow works. The classic failure: a real build
 that ships a **404 on `/sign-in`** and a broken login. So:
+- **Rely on exit codes — NEVER pipe through `grep -v`.** A pipe swallows the left command's
+  exit code, and `grep -qv 'error'` exits 0 whenever ANY line lacks the pattern — i.e. it
+  passes even when the error IS present. A guaranteed fake-pass. If you must grep output,
+  invert a positive match: `! (cmd 2>&1 | grep -qi 'schema error')` — and prefer the
+  command's own exit code (`npx convex dev --once` exits non-zero on schema errors).
 - **Every page/route step's verify must hit the running app and assert it actually RENDERS** —
   HTTP 200 + an expected substring, never a 404/500. Pattern (build once, serve, curl):
   `curl -fsS http://127.0.0.1:$PORT/sign-in | grep -q "Sign in"` (a bare `curl` without `-f`
@@ -152,7 +162,7 @@ Write valid JSON matching the Rust `PlanTracker` type exactly. Fields `wave`, `a
       "description": "Define convex/schema.ts with a bookings table (userId, slotId, status, createdAt) plus search indexes on userId and slotId. Validate with Convex validator types so `npx convex dev` accepts it.",
       "files_to_touch": ["convex/schema.ts"],
       "done_criteria": "npx convex dev --once starts with no schema error and bookings appears in _generated/api",
-      "verify_command": "npx convex dev --once 2>&1 | grep -qv 'schema error'",
+      "verify_command": "npx convex dev --once",
       "depends_on": [],
       "wave": "foundation", "attempt": 0,
       "status": "pending", "started_at": null, "completed_at": null
@@ -185,6 +195,11 @@ Write valid JSON matching the Rust `PlanTracker` type exactly. Fields `wave`, `a
 
 Valid `wave` values: `foundation | w1 | w2 | w3 | audit | deploy` (or omit / `null`).
 
+Optional `timeout_mins` (number, per step): overrides the engine's worker timeout for that
+step. Defaults: 30 min per worker; `audit`/`deploy`-wave steps get 4x (120 min) because
+forensic audits and the `/omg-acceptance` sweep routinely outlive 30 min. Set it explicitly
+on any step you know runs long (big builds, full browser sweeps).
+
 ## Validation before handing to the engine
 After writing `tracker.json`, sanity-check it yourself:
 ```bash
@@ -215,5 +230,5 @@ bun ~/.omega/skills/planner/fallback/plan.ts run .
 | `verify_command: "true"` for real work | A real falsifiable command (build/test/curl) |
 | `files_to_touch: []` or `["src/"]` | Exact file paths, ≥1 |
 | "do steps in order" prose | Encode order in `depends_on` — the engine enforces it |
-| Audits as a separate Phase 7 | Audits as `wave: "audit"` steps in the plan |
+| Audits as a separate Phase 7 | Per-module audit steps gated by `depends_on` (no wave); only the final cross-cutting audit gets `wave: "audit"` |
 | One giant step ("build the feature") | Split into one-worker-dispatch units |
