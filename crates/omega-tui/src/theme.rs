@@ -6,9 +6,14 @@
 //! `AtomicU8`) so switching it in Settings re-skins the whole TUI on the
 //! very next frame — no plumbing through every render function.
 //!
-//! NOT themed on purpose: the session-pane preview passthrough
-//! (`preview_to_color` in ui.rs) — that is the agent's own output and must
-//! keep the terminal's real palette.
+//! Mostly NOT themed on purpose: the session-pane preview passthrough
+//! (`preview_to_color` in ui.rs) — that is the agent's own output and keeps
+//! the terminal's real palette. ONE deliberate exception: a small
+//! high-confidence emphasis catalog in `draw_sessions_right` (the selection
+//! bar, todo states, user-input echo, task dispatch, the activity footer)
+//! repaints whole matched rows with the active theme's semantic roles so
+//! those cues stay readable on every theme. Everything that doesn't match
+//! the catalog falls through to the raw ANSI render.
 //!
 //! # Contrast contract (test-enforced, WCAG 2.x AA)
 //!

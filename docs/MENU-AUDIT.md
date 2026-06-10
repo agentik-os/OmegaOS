@@ -1,5 +1,27 @@
 # OmegaOS TUI menu audit — 2026-05-28
 
+> **⚠️ HISTORICAL SNAPSHOT — frozen as of 2026-05-28, annotated 2026-06-10.**
+> This is a dated agent audit report, kept for traceability. It does **not**
+> describe the current TUI:
+>
+> - **Tab topology changed**: the TUI now has **5 tabs**
+>   (`Sessions / Menu / Agentic / Settings / Help` — `app.rs` `Tab` enum).
+>   The former *Monitor* tab is the Monitor group inside **Settings**; the
+>   former *Projects* tab is the Projects group inside **Agentic**.
+> - **The CRIT/HIGH findings below are FIXED** in the current tree, including:
+>   protection-flag persistence across refresh (snapshot/restore in
+>   `App::refresh`), the per-keystroke `providers.toml` reload
+>   (`App::providers_cache`), the dead Projects actions (`d`/`p`/`Enter` are
+>   wired), `refresh_projects()` call sites, the unreachable
+>   `render_settings_detail` fallback, and Help scroll wiring.
+> - The one finding that survived until June — the `column >= 30` mouse
+>   hit-test heuristic (Sessions, LOW below) — was fixed on 2026-06-10:
+>   `handle_mouse` now hit-tests against the rendered layout rects that
+>   `draw_sessions` records each frame (the Menu tab's geometry-cache
+>   pattern).
+>
+> Treat everything below as the state of 2026-05-28, not as an open bug list.
+
 ## Summary
 
 The 7-tab TUI (`Sessions / Menu / Monitor / Projects / Settings / Agentic / Help`) is structurally

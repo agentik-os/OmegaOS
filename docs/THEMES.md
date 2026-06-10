@@ -141,11 +141,23 @@ on every machine, pick any other theme.
 
 ### Agent panes keep the terminal's real palette
 
-The session-pane preview passes agent output through untouched — agent panes
-are **never re-themed**, on any theme. Claude (and any CLI agent) emits ANSI
-named colors, and those resolve through your terminal's palette. (One safety
-net: indexed black and white — 0 and 15 — map to your terminal's default
-foreground, so agent text never goes invisible on a matching background.) So if dark
-blue agent output is unreadable, the fix is your terminal/Termius color
-profile, not the OmegaOS theme. In Termius: **Settings → Appearance → Color
-Scheme** — pick (or edit) a scheme whose blue is legible on your background.
+The session-pane preview passes agent output through **mostly untouched**:
+raw ANSI colors resolve through your terminal's palette, on any theme. Two
+deliberate exceptions:
+
+- **A small emphasis catalog** (in `draw_sessions_right`): a handful of
+  high-confidence patterns — the agent's selected-menu row, TodoWrite states
+  (done/pending/in-progress/failed), your own input echo, Task sub-agent
+  dispatches, and the activity footer — are intentionally repainted with the
+  active theme's semantic roles (success/error/accent/…) so those cues stay
+  readable on every theme. Any line that doesn't match the catalog falls
+  through to the straight ANSI render.
+- **A safety net**: indexed black and white (0 and 15) on the default
+  background map to your terminal's default foreground, so agent text never
+  goes invisible on a matching background. (On an explicit background — e.g.
+  a reverse-video selection — they stay literal black/white.)
+
+So if dark blue agent output is unreadable, the fix is your terminal/Termius
+color profile, not the OmegaOS theme. In Termius: **Settings → Appearance →
+Color Scheme** — pick (or edit) a scheme whose blue is legible on your
+background.

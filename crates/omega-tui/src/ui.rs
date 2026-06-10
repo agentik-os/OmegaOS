@@ -36,6 +36,23 @@ fn preview_to_color(c: PreviewColor) -> Color {
         },
     }
 }
+
+/// Foreground mapping for a span that carries an EXPLICIT background. The
+/// 0/15 → Reset safety net above exists so black/white text on the DEFAULT
+/// background can't vanish into a same-shade theme canvas — but on a span
+/// with its own bg it backfires: the REVERSE fallback in omega-core
+/// (`styled_rows_from_snapshot`) synthesizes black-on-gray precisely so the
+/// swap stays visible, and 0→Reset turned that into default-fg-on-gray
+/// (near-white on light gray on dark terminals — selections unreadable).
+/// With an explicit bg the invisibility risk is gone, so black/white stay
+/// literal; everything else keeps the depth-preserving passthrough.
+fn preview_fg_color(c: PreviewColor, has_explicit_bg: bool) -> Color {
+    match c {
+        PreviewColor::Indexed(0) if has_explicit_bg => Color::Black,
+        PreviewColor::Indexed(15) if has_explicit_bg => Color::White,
+        other => preview_to_color(other),
+    }
+}
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -48,6 +65,36 @@ use ratatui::{
 // `preview_to_color` passthrough above keeps raw terminal colors -- that is
 // the agent's own pane content, never re-skinned.
 use crate::theme as th;
+
+// ── Render-path I/O memo ────────────────────────────────────────────────────
+// draw() runs at 15-60 FPS (TICK_ACTIVE 16ms / TICK_IDLE 66ms in main.rs), so
+// anything a renderer reads from the OS multiplies by the frame rate: the
+// status bar's SystemStats::read() forks a `df` subprocess, and the
+// monitor/project detail renderers re-read + re-parse JSON/TOML files — per
+// frame, per TUI. (The run-loop comment records that 5 idle menus once
+// saturated a 2-core VPS.) These memos hold each read for RENDER_TTL; status
+// surfaces tolerate a couple seconds of staleness invisibly. Same medicine as
+// `App::providers_cache`, generalized for the renderers that take no `App`.
+const RENDER_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn render_memo<T: Clone + 'static>(
+    slot: &'static std::thread::LocalKey<
+        std::cell::RefCell<Option<(std::time::Instant, T)>>,
+    >,
+    load: impl FnOnce() -> T,
+) -> T {
+    slot.with(|cell| {
+        let mut cached = cell.borrow_mut();
+        if let Some((at, v)) = cached.as_ref() {
+            if at.elapsed() < RENDER_TTL {
+                return v.clone();
+            }
+        }
+        let v = load();
+        *cached = Some((std::time::Instant::now(), v.clone()));
+        v
+    })
+}
 
 /// Global breathing room around the whole UI — some terminals render cell
 /// (0,0) flush against the window edge, which looks cramped. The theme
@@ -697,9 +744,19 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         (Some(split[0]), Some(split[1]))
     };
 
+    // Record the REAL panel rects for mouse hit-testing (input.rs
+    // handle_mouse) — the Menu tab's geometry-cache pattern. The old
+    // `column >= 30` heuristic misrouted clicks whenever the layout above
+    // disagreed with it (25% of a wide terminal passes col 30; the narrow
+    // single-column list owns the whole width).
+    app.sessions_list_area = list_area;
+    app.sessions_preview_area = preview_area;
+
     // Preview-only frame (fullscreen, or narrow + chat-focused): render the
     // Claude view full-width and return.
     if list_area.is_none() {
+        app.sessions_rendered_rows.clear();
+        app.sessions_list_fits = false;
         if let Some(pa) = preview_area {
             draw_sessions_right(frame, app, pa, chat_focused);
         }
@@ -708,20 +765,28 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
     let _ = list_focused;
 
     // ── Left: session list with project headers ─────────────────────────────
+    // Rendered-row → entry-index map for click hit-testing (headers = None),
+    // mirroring `menu_rendered_actions`. Valid only while the whole list fits
+    // (ListState offset 0) — `sessions_list_fits` below guards that.
+    let mut rendered_rows: Vec<Option<usize>> = Vec::with_capacity(app.rows.len());
     let mut entry_idx: usize = 0;
     let items: Vec<ListItem> = app
         .rows
         .iter()
         .map(|row| match row {
-            SessionRow::Header(label) => ListItem::new(Line::from(vec![
+            SessionRow::Header(label) => {
+                rendered_rows.push(None);
+                ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("  {} ", label),
                     Style::default()
                         .fg(th::dim())
                         .add_modifier(Modifier::BOLD),
                 ),
-            ])),
+            ]))
+            }
             SessionRow::Entry(entry) => {
+                rendered_rows.push(Some(entry_idx));
                 // `selected` = focused selection bar (you're browsing the list).
                 // `active`   = this is the session whose Claude pane fills the
                 //              right panel right now — keep it visibly marked in
@@ -783,6 +848,14 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
                 .border_style(list_border_style),
         )
         .highlight_style(Style::default());
+
+    // Click → row mapping is only trustworthy at ListState offset 0; a taller
+    // list scrolls internally, so clicks then just change panel focus (the
+    // same `menu_fits` guard the Menu tab uses).
+    app.sessions_list_fits = list_area
+        .map(|la| rendered_rows.len() <= la.height.saturating_sub(2) as usize)
+        .unwrap_or(false);
+    app.sessions_rendered_rows = rendered_rows;
 
     let mut state = ListState::default().with_selected(rendered_selected);
     if let Some(la) = list_area {
@@ -1062,13 +1135,27 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                             .map(|sp| {
                                 let mut style = Style::default();
                                 if let Some(c) = sp.fg {
-                                    style = style.fg(preview_to_color(c));
+                                    // bg-aware: keeps the reverse-video swap
+                                    // (black-on-gray) visible — see
+                                    // preview_fg_color.
+                                    style = style.fg(preview_fg_color(c, sp.bg.is_some()));
                                 }
                                 if let Some(c) = sp.bg {
                                     style = style.bg(preview_to_color(c));
                                 }
                                 if sp.bold {
                                     style = style.add_modifier(Modifier::BOLD);
+                                }
+                                // DIM/ITALIC/UNDERLINE pass through so Claude's
+                                // secondary (dim) text reads as secondary here too.
+                                if sp.dim {
+                                    style = style.add_modifier(Modifier::DIM);
+                                }
+                                if sp.italic {
+                                    style = style.add_modifier(Modifier::ITALIC);
+                                }
+                                if sp.underline {
+                                    style = style.add_modifier(Modifier::UNDERLINED);
                                 }
                                 Span::styled(sp.text.clone(), style)
                             })
@@ -1546,9 +1633,28 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
 
 fn render_monitor_billing() -> Vec<Line<'static>> {
     use omega_core::monitor;
-    let snap = monitor::UsageSnapshot::read().ok().flatten();
-    let cache_age = monitor::UsageSnapshot::cache_age_secs();
-    let bot_status = monitor::aisb_bot_status();
+    // Runs every frame while the Billing section is open — memoize the disk
+    // reads + process scan (see RENDER_TTL above).
+    thread_local! {
+        #[allow(clippy::type_complexity)]
+        static BILLING_MEMO: std::cell::RefCell<
+            Option<(
+                std::time::Instant,
+                (
+                    Option<omega_core::monitor::UsageSnapshot>,
+                    Option<u64>,
+                    omega_core::monitor::AisbBotStatus,
+                ),
+            )>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    let (snap, cache_age, bot_status) = render_memo(&BILLING_MEMO, || {
+        (
+            monitor::UsageSnapshot::read().ok().flatten(),
+            monitor::UsageSnapshot::cache_age_secs(),
+            monitor::aisb_bot_status(),
+        )
+    });
     let mut lines: Vec<Line> = vec![Line::from("")];
 
     if let Some(snap) = &snap {
@@ -1636,7 +1742,13 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
 
 fn render_monitor_telegram() -> Vec<Line<'static>> {
     use omega_core::monitor;
-    let tg_config = monitor::OmegaTelegramConfig::read();
+    // Per-frame TOML read → RENDER_TTL memo (see above).
+    thread_local! {
+        static TG_MEMO: std::cell::RefCell<
+            Option<(std::time::Instant, Option<omega_core::monitor::OmegaTelegramConfig>)>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    let tg_config = render_memo(&TG_MEMO, monitor::OmegaTelegramConfig::read);
     let mut lines: Vec<Line> = vec![Line::from("")];
 
     lines.push(Line::from(Span::styled(
@@ -1710,7 +1822,16 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
         )),
         Line::from(""),
     ];
-    match omega_core::telegram_group::TelegramGroupConfig::load() {
+    // Per-frame TOML read → RENDER_TTL memo (see above).
+    thread_local! {
+        static GROUP_MEMO: std::cell::RefCell<
+            Option<(
+                std::time::Instant,
+                Option<omega_core::telegram_group::TelegramGroupConfig>,
+            )>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    match render_memo(&GROUP_MEMO, omega_core::telegram_group::TelegramGroupConfig::load) {
         Some(gcfg) => {
             lines.push(Line::from(vec![
                 Span::raw("    Status:         "),
@@ -2000,8 +2121,36 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
 
 
-    // Planner status (if .planner/tracker.json exists)
-    let tracker = omega_core::planner::PlanTracker::load(&project.path);
+    // Planner + bootstrap status (if .planner/tracker.json etc. exist).
+    // Per-frame JSON read + parse → RENDER_TTL memo, keyed by the project
+    // path so switching the selection refreshes immediately.
+    thread_local! {
+        #[allow(clippy::type_complexity)]
+        static PROJECT_MEMO: std::cell::RefCell<
+            Option<(
+                std::time::Instant,
+                std::path::PathBuf,
+                (
+                    Option<omega_core::planner::PlanTracker>,
+                    Option<omega_core::bootstrap::BootstrapState>,
+                ),
+            )>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    let (tracker, bootstrap) = PROJECT_MEMO.with(|cell| {
+        let mut cached = cell.borrow_mut();
+        if let Some((at, path, v)) = cached.as_ref() {
+            if *path == project.path && at.elapsed() < RENDER_TTL {
+                return v.clone();
+            }
+        }
+        let v = (
+            omega_core::planner::PlanTracker::load(&project.path),
+            omega_core::bootstrap::BootstrapState::load(&project.path),
+        );
+        *cached = Some((std::time::Instant::now(), project.path.clone(), v.clone()));
+        v
+    });
     if let Some(ref tracker) = tracker {
         let status = tracker.status();
         lines.push(Line::from(Span::styled(
@@ -2057,8 +2206,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         )));
     }
 
-    // Bootstrap status
-    let bootstrap = omega_core::bootstrap::BootstrapState::load(&project.path);
+    // Bootstrap status (read in the PROJECT_MEMO block above)
     if let Some(ref state) = bootstrap {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -2150,6 +2298,15 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
             app.detail_scroll = field_line.saturating_sub(panel_height.saturating_sub(2));
         }
     }
+
+    // Publish the real clamp bound (the preview_max_scroll contract) and pin
+    // the offset to it: End / wheel-overscroll stop at the last content line
+    // instead of scrolling the Paragraph into blank space. The horizontal
+    // split below keeps the full height, so area.height is the panel height
+    // in both the split and fullscreen paths.
+    app.detail_max_scroll =
+        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
 
     // Fullscreen detail mode: skip the left list, detail takes 100% width
     if app.detail_fullscreen {
@@ -2492,6 +2649,12 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
+    // Publish + pin the scroll bound (same contract as draw_settings): End
+    // and wheel-overscroll stop at the content edge, never a blank panel.
+    app.detail_max_scroll =
+        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+
     // Fullscreen detail
     if app.detail_fullscreen {
         let title = format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", section_label);
@@ -2565,7 +2728,12 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "  AISB = AI Super Brain — 14 Matrix agents the Master delegates to.",
+            // Count derived from the roster (see InfoSection::label) so the
+            // blurb can't drift when an agent joins.
+            format!(
+                "  AISB = AI Super Brain — {} Matrix agents the Master delegates to.",
+                agents.len()
+            ),
             Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
@@ -2857,7 +3025,7 @@ fn render_info_rules() -> Vec<Line<'static>> {
     lines
 }
 
-fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     let cy = Style::default().fg(th::accent()).add_modifier(Modifier::BOLD);
     let yl = Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD);
     let wh = Style::default().fg(th::text());
@@ -2887,6 +3055,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         section("Navigation"),
         key("← / →", "Switch tabs"),
         key("Shift+Tab", "Previous tab"),
+        key("F1", "Open this Help tab"),
+        key("Ctrl+T", "Toggle mouse capture (off = native text selection)"),
         key("Ctrl+L", "Redraw screen (fix corrupted view)"),
         key("Esc", "Back (detail → list → Sessions → quit)"),
         key("q", "Quit OmegaOS"),
@@ -2901,7 +3071,7 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
             Span::styled("Esc", cy),
             Span::styled("  = back", wh),
         ]),
-        Line::from(Span::styled("    Same pattern on Sessions, Settings, Info, Monitor.", gr)),
+        Line::from(Span::styled("    Same pattern on Sessions, Settings, Agentic.", gr)),
         Line::from(""),
 
         section("Sessions"),
@@ -2913,6 +3083,8 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         key("r  /  R", "Rename selected session"),
         key("x  /  X", "Kill session (skip if locked)"),
         key(".", "Toggle lock/protection"),
+        key("/", "Filter the session list (empty+Enter clears)"),
+        key("b", "Jump to next blocked/failed session"),
         key("PgUp / PgDn", "Scroll preview"),
         key("Home / End", "Top / bottom (tail-follow)"),
         Line::from(""),
@@ -2940,24 +3112,31 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         key("F5", "Refresh sessions (r/R = Rename, everywhere)"),
         Line::from(""),
 
-        section("Monitor"),
+        section("Settings → Monitor group"),
         key("↑ / ↓ + Enter", "Run highlighted action"),
         key("L", "Login Claude (OAuth)"),
         key("T / D", "Telegram setup / disconnect"),
+        key("P", "Set up provisioning keys"),
         key("B", "Refresh billing"),
+        key("O", "Open OmegaMC dashboard"),
         Line::from(""),
 
         section("Settings"),
         key("↑ / ↓", "Browse sections"),
         key("Enter / Tab", "Focus detail panel → edit fields"),
         key("Enter (on field)", "Activate (install/edit/toggle)"),
+        key("x", "Clear selected text field (press twice)"),
         Line::from(""),
 
-        section("Projects"),
+        section("Agentic → Projects group"),
         key("↑ / ↓", "Browse projects"),
         key("Enter", "Focus detail; Enter again → open in terminal"),
         key("d", "Dispatch oracle to selected project"),
         key("p", "Run planner for selected project"),
+        key("n", "Register an existing folder as a project"),
+        key("T", "Toggle the project's Telegram topic"),
+        key("x", "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)"),
+        key("D", "Quick delete local (press twice)"),
         Line::from(""),
 
         section("Agentic"),
@@ -2968,7 +3147,10 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
         key("Shift+Tab", "Forward to Claude (cycle modes)"),
+        key("Esc", "Back to the session list"),
         key("Esc Esc / Alt+Esc", "Send a literal ESC to the agent (vim/less)"),
+        key("Ctrl+X", "Close (kill) the focused session"),
+        key("Ctrl+R", "Reload the TUI (re-exec the binary)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
         key("Ctrl+W / Alt+Bksp", "Delete word backwards"),
         key("Shift+Del / Alt+Del", "Delete word forwards"),
@@ -3032,6 +3214,12 @@ fn draw_help(frame: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(""),
     ]);
+
+    // Publish + pin the scroll bound (same contract as draw_settings/draw_info)
+    // so wheel-overscroll stops at the last line instead of a blank panel.
+    app.detail_max_scroll =
+        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
 
     let paragraph = Paragraph::new(lines)
         .scroll((app.detail_scroll, 0))
@@ -3155,8 +3343,17 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // Normal mode: status bar with live system stats (UX inspired by tmux-claude,
-    // re-implemented against the rmux SDK)
-    let stats = omega_core::sysinfo::SystemStats::read();
+    // re-implemented against the rmux SDK). Memoized: SystemStats::read forks
+    // a `df` subprocess — at 15-60 FPS that's a fork+exec storm per TUI.
+    thread_local! {
+        static STATS_MEMO: std::cell::RefCell<
+            Option<(std::time::Instant, omega_core::sysinfo::SystemStats)>,
+        > = const { std::cell::RefCell::new(None) };
+        static USAGE_MEMO: std::cell::RefCell<
+            Option<(std::time::Instant, Option<omega_core::monitor::UsageSnapshot>)>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    let stats = render_memo(&STATS_MEMO, omega_core::sysinfo::SystemStats::read);
 
     let cpu = format!("CPU {:.2}", stats.cpu_load);
     let ram = format!("RAM {}%", stats.ram_pct);
@@ -3164,7 +3361,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let n_sessions = format!("{} sess", app.sessions.len());
     // 5h token-budget snapshot (written by the `omega usage --check` cron) —
     // the real "before the hard stop" signal. None until the first check.
-    let usage = omega_core::monitor::UsageSnapshot::read().ok().flatten();
+    let usage = render_memo(&USAGE_MEMO, || {
+        omega_core::monitor::UsageSnapshot::read().ok().flatten()
+    });
 
     // Localized to `config.timezone` (IANA) so the headless-VPS UTC clock shows
     // the operator's wall time; falls back to $TZ, then system local. See

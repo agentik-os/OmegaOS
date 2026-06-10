@@ -75,13 +75,18 @@ impl InfoSection {
             InfoSection::Rules,
         ]
     }
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            InfoSection::Atlas => "Atlas — the Director brain",
-            InfoSection::AisbAgents => "AISB Agents (13)",
-            InfoSection::Oracle => "Oracle — routing & coordination",
-            InfoSection::Workers => "Workers — dispatch & lifecycle",
-            InfoSection::Rules => "Rules — system invariants",
+            InfoSection::Atlas => "Atlas — the Director brain".to_string(),
+            // Count derived from the roster, not hardcoded: the literal "(13)"
+            // silently went stale when Council joined the Matrix agents.
+            InfoSection::AisbAgents => format!(
+                "AISB Agents ({})",
+                omega_core::aisb_agents::AisbAgent::all().len()
+            ),
+            InfoSection::Oracle => "Oracle — routing & coordination".to_string(),
+            InfoSection::Workers => "Workers — dispatch & lifecycle".to_string(),
+            InfoSection::Rules => "Rules — system invariants".to_string(),
         }
     }
 }
@@ -480,6 +485,41 @@ fn model_field(provider: &str, config_key: &str, current: &str) -> SettingsField
 }
 
 /// Build the field list for a settings section.
+/// TTL-cached `Agent::is_available()` for the render path. `fields_for_section`
+/// runs every frame while Settings is open and `is_available` stats every PATH
+/// dir per agent (`has_cmd`), so the uncached form burned hundreds of stat
+/// calls per second at 15-60 FPS. A 2s memo keeps the [+]/[x] install badges
+/// honest within one housekeeping tick of an install/uninstall finishing,
+/// with zero per-frame filesystem work.
+fn agent_available_cached(agent: omega_core::agents::Agent) -> bool {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+    thread_local! {
+        static CACHE: RefCell<Option<(Instant, HashMap<&'static str, bool>)>> =
+            const { RefCell::new(None) };
+    }
+    CACHE.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        let stale = match slot.as_ref() {
+            Some((at, _)) => at.elapsed() >= Duration::from_secs(2),
+            None => true,
+        };
+        if stale {
+            let map = omega_core::agents::Agent::all()
+                .iter()
+                .map(|a| (a.name(), a.is_available()))
+                .collect();
+            *slot = Some((Instant::now(), map));
+        }
+        slot.as_ref()
+            .and_then(|(_, map)| map.get(agent.name()).copied())
+            // An agent outside Agent::all() (impossible today) falls back to
+            // the live check rather than lying "not installed".
+            .unwrap_or_else(|| agent.is_available())
+    })
+}
+
 pub fn fields_for_section(
     section: SettingsSection,
     providers: &omega_core::providers::ProvidersConfig,
@@ -545,7 +585,7 @@ pub fn fields_for_section(
                 if matches!(agent, Agent::Shell) {
                     continue;
                 }
-                let installed = agent.is_available();
+                let installed = agent_available_cached(*agent);
                 let badge = if installed { "[+]" } else { "[x]" };
                 let agent_name = agent.name();
                 out.push(SettingsField::Info(format!(
@@ -726,7 +766,7 @@ pub fn fields_for_section(
 
 fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
     let mut out = Vec::new();
-    let installed = agent.is_available();
+    let installed = agent_available_cached(agent);
     let badge = if installed { "[+] installed" } else { "[x] not installed" };
     out.push(SettingsField::Info(String::new()));
     out.push(SettingsField::Info(format!("Status: {}", badge)));
@@ -878,13 +918,18 @@ impl MonitorAction {
     /// Resolve the "Open Dashboard" action against the real filesystem.
     ///
     /// OmegaMC (the Telegram-controlled web dashboard, `agentik-os/agentik-telegram`)
-    /// is installed by `install.sh` Phase 6.95 into `$OMEGA_DIR/omega-mc` — a
+    /// is installed by `install.sh` Phase 6.95 into `$OMEGA_DIR/repos/omega-mc` — a
     /// best-effort clone that may be absent (private repo / `OMEGA_SKIP_DASHBOARD=1`).
     ///
-    /// Present → return the real `docker compose up -d` launch in that dir (the
-    /// caller turns this into `Action::RunShellCommand`, the same mechanism the
-    /// Settings install/uninstall actions use). Absent → return the honest
-    /// install instructions so the operator can clone it.
+    /// Present → launch through `omega-mc-up` (the caller turns this into
+    /// `Action::RunShellCommand`, the same mechanism the Settings
+    /// install/uninstall actions use). A raw `docker compose up -d` is NOT
+    /// enough: omega-mc-up first generates `.env` from live OmegaOS state (bot
+    /// token, Claude OAuth, DOCKER_GID, one-time vault passphrase), ensures
+    /// config/omega-mc.yaml, and builds the three LOCAL images that are never
+    /// published to GHCR — on a fresh install compose alone fails on the
+    /// missing .env/images. It's idempotent, so it's also the right re-launch
+    /// path. Absent → return the honest install instructions.
     pub fn resolve_open_dashboard() -> DashboardLaunch {
         let dir = omega_core::config::omega_dir().join("repos").join("omega-mc");
         let dir_str = dir.to_string_lossy().to_string();
@@ -892,19 +937,23 @@ impl MonitorAction {
         // marker install.sh checks (a failed clone is `rm -rf`'d, but a partial
         // manual copy could leave a bare dir). Runtime truth over assumption.
         if dir.join(".git").is_dir() {
+            // install.sh symlinks omega-mc-up onto PATH; fall back to the
+            // installed copy in $OMEGA_DIR/bin for shells that miss the link.
+            let fallback = omega_core::config::omega_dir().join("bin").join("omega-mc-up.sh");
             DashboardLaunch::Launch {
                 command: format!(
-                    "cd {dir} && echo '── Starting OmegaMC dashboard (docker compose up -d) ──' && docker compose up -d && echo && echo 'Dashboard up. Local URL: http://localhost:8080 (see {dir}/docker-compose.yml for the published port; AISB agents in config/omega-aisb.yaml).'",
+                    "echo '── Starting OmegaMC dashboard (omega-mc-up) ──' && {{ command -v omega-mc-up >/dev/null 2>&1 && omega-mc-up || {fb}; }} && echo && echo 'Dashboard up. Local URL: http://localhost:8080 (see {dir}/docker-compose.yml for the published port; AISB agents in config/omega-aisb.yaml).'",
+                    fb = shell_quote(&fallback.to_string_lossy()),
                     dir = shell_quote(&dir_str),
                 ),
                 message: format!(
-                    "▶ Starting OmegaMC dashboard via `docker compose up -d` in {dir_str} — watch the spawned session; URL printed there once containers are up."
+                    "▶ Starting OmegaMC dashboard via omega-mc-up ({dir_str}) — watch the spawned session; URL printed there once containers are up."
                 ),
             }
         } else {
             DashboardLaunch::NotInstalled {
                 message: format!(
-                    "OmegaMC dashboard not installed. Install it with: git clone https://github.com/agentik-os/agentik-telegram.git {dir_str} && cd {dir_str} && docker compose up -d"
+                    "OmegaMC dashboard not installed. Install it with: git clone https://github.com/agentik-os/agentik-telegram.git {dir_str} && omega-mc-up"
                 ),
             }
         }
@@ -945,6 +994,20 @@ pub struct App {
     pub menu_area: ratatui::layout::Rect,
     pub menu_rendered_actions: Vec<Option<usize>>,
     pub menu_fits: bool,
+    /// Last rendered Sessions-tab geometry, same pattern as the Menu cache
+    /// above: the REAL list/preview Rects (None when the responsive layout
+    /// hides a panel — narrow single-column, fullscreen) plus a rendered-row
+    /// → entry-index map (project headers excluded). Mouse hit-testing reads
+    /// these instead of the old hardcoded `column >= 30` heuristic, which
+    /// misrouted clicks on both wide terminals (25% list extends past col 30)
+    /// and narrow ones (full-width list, col 30+ is still the list).
+    /// `sessions_list_fits` is false when the list is taller than its area
+    /// (scrolled by ListState) — row mapping is then unreliable and clicks
+    /// only change panel focus.
+    pub sessions_list_area: Option<ratatui::layout::Rect>,
+    pub sessions_preview_area: Option<ratatui::layout::Rect>,
+    pub sessions_rendered_rows: Vec<Option<usize>>,
+    pub sessions_list_fits: bool,
     /// Selected Monitor section (left list). Indexes `MonitorSection::all()`.
     pub monitor_selected: usize,
     /// Cursor within the Monitor `Actions` section's `MonitorAction` list.
@@ -985,7 +1048,7 @@ pub struct App {
     /// (`project_registry`/`projects_selected`). One continuous left list,
     /// separated by a blank gap + `─── Projects ───` header.
     pub agentic_group: u8,
-    /// When the AISB Agents sub-section is active, which of the 13 is highlighted.
+    /// When the AISB Agents sub-section is active, which agent is highlighted.
     pub info_agent_selected: usize,
     pub should_quit: bool,
     pub status_message: Option<String>,
@@ -1089,16 +1152,6 @@ pub struct App {
     /// a following double-tap can toggle the left menu cleanly (the single tap
     /// already moved focus, so the double tap reverts to this and toggles).
     pub tab_seq_start: Option<SessionFocus>,
-    /// OmegaOS slash-command capture in chat focus. `Some(buf)` while the user
-    /// is typing a shared OmegaOS command (e.g. "/projects") at the start of a
-    /// chat line — keys are buffered by the TUI (not forwarded) until Enter
-    /// resolves it. The SAME command set works on Telegram, the TUI, and any
-    /// agent pane (one system, many brains).
-    pub cmd_capture: Option<String>,
-    /// Char count on the current chat line (reset on Enter) so a "/" only opens
-    /// command capture when it is the first character of the line — typing a
-    /// path/URL mid-line never triggers it. Best-effort.
-    pub chat_line_chars: usize,
     /// Generic right-panel focus for non-Sessions 2-column tabs (Settings/Info).
     /// false = list focused, true = detail focused.
     pub detail_focused: bool,
@@ -1106,6 +1159,13 @@ pub struct App {
     pub detail_fullscreen: bool,
     /// Scroll position for the detail panel in Settings/Info/Monitor.
     pub detail_scroll: u16,
+    /// Max scrollable offset for the detail panel (`content_lines -
+    /// panel_height`), written by the renderer each frame — the same contract
+    /// as `preview_max_scroll`. End and the scroll setters clamp against it:
+    /// an unclamped offset (the old `u16::MAX / 2` End) scrolled the Paragraph
+    /// thousands of lines past its content, rendering an empty panel that only
+    /// Home could recover.
+    pub detail_max_scroll: u16,
     pub current_session: Option<String>,
     /// Projects tab — selected project index.
     pub projects_selected: usize,
@@ -1152,6 +1212,10 @@ impl App {
             menu_area: ratatui::layout::Rect::default(),
             menu_rendered_actions: Vec::new(),
             menu_fits: true,
+            sessions_list_area: None,
+            sessions_preview_area: None,
+            sessions_rendered_rows: Vec::new(),
+            sessions_list_fits: false,
             monitor_selected: 0,
             monitor_action_selected: 0,
             settings_selected: 0,
@@ -1192,11 +1256,10 @@ impl App {
             status_sticky_msg: None,
             last_tab_press: None,
             tab_seq_start: None,
-            cmd_capture: None,
-            chat_line_chars: 0,
             detail_focused: false,
             detail_fullscreen: false,
             detail_scroll: 0,
+            detail_max_scroll: 0,
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
@@ -1493,10 +1556,6 @@ impl App {
             };
         }
 
-        // A Tab transition starts a fresh chat input line and drops any
-        // half-typed OmegaOS command, so the "/" trigger fires at line start.
-        self.cmd_capture = None;
-        self.chat_line_chars = 0;
         if self.session_focus != SessionFocus::List {
             self.preview_follow_tail = true;
             self.preview_scroll = 0;
@@ -1535,7 +1594,13 @@ impl App {
     }
 
     pub fn scroll_detail_down(&mut self, lines: u16) {
-        self.detail_scroll = self.detail_scroll.saturating_add(lines);
+        // Clamp to the renderer-published bound: an unbounded saturating_add
+        // let mouse wheels accumulate thousands of invisible offset lines past
+        // the end that then had to be scrolled back through.
+        self.detail_scroll = self
+            .detail_scroll
+            .saturating_add(lines)
+            .min(self.detail_max_scroll);
     }
     pub fn scroll_detail_up(&mut self, lines: u16) {
         self.detail_scroll = self.detail_scroll.saturating_sub(lines);

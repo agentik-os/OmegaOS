@@ -705,6 +705,12 @@ pub struct PreviewSpan {
     pub fg: Option<PreviewColor>,
     pub bg: Option<PreviewColor>,
     pub bold: bool,
+    /// DIM/ITALIC/UNDERLINE travel with the span: Claude Code renders its
+    /// secondary text dim — dropping the bit made it full-brightness in the
+    /// preview and visually merged with primary output.
+    pub dim: bool,
+    pub italic: bool,
+    pub underline: bool,
 }
 
 /// A styled preview row = a sequence of spans.
@@ -737,6 +743,9 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
         let mut cur_fg: Option<PreviewColor> = None;
         let mut cur_bg: Option<PreviewColor> = None;
         let mut cur_bold = false;
+        let mut cur_dim = false;
+        let mut cur_italic = false;
+        let mut cur_underline = false;
         let mut started = false;
         for col in 0..cols {
             let Some(cell) = snapshot.cell(r, col) else { continue };
@@ -745,6 +754,9 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             let attr_bits = cell.attributes.bits;
             let reverse = attr_bits & rmux_sdk::PaneAttributes::REVERSE.bits != 0;
             let bold = attr_bits & rmux_sdk::PaneAttributes::BOLD.bits != 0;
+            let dim = attr_bits & rmux_sdk::PaneAttributes::DIM.bits != 0;
+            let italic = attr_bits & rmux_sdk::PaneAttributes::ITALIC.bits != 0;
+            let underline = attr_bits & rmux_sdk::PaneAttributes::UNDERLINE.bits != 0;
             let mut fg = pane_color_to_preview(&cell.foreground);
             let mut bg = pane_color_to_preview(&cell.background);
             if reverse {
@@ -754,21 +766,31 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
                 if bg.is_none() { bg = Some(PreviewColor::Indexed(7)); }
             }
             let glyph = if ch.is_empty() { " ".to_string() } else { ch };
-            if started && fg == cur_fg && bg == cur_bg && bold == cur_bold {
+            if started
+                && fg == cur_fg
+                && bg == cur_bg
+                && bold == cur_bold
+                && dim == cur_dim
+                && italic == cur_italic
+                && underline == cur_underline
+            {
                 cur_text.push_str(&glyph);
             } else {
                 if started {
-                    line.push(PreviewSpan { text: std::mem::take(&mut cur_text), fg: cur_fg, bg: cur_bg, bold: cur_bold });
+                    line.push(PreviewSpan { text: std::mem::take(&mut cur_text), fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
                 }
                 cur_fg = fg;
                 cur_bg = bg;
                 cur_bold = bold;
+                cur_dim = dim;
+                cur_italic = italic;
+                cur_underline = underline;
                 cur_text = glyph;
                 started = true;
             }
         }
         if started && !cur_text.is_empty() {
-            line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold });
+            line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
         }
         // Trim trailing all-blank spans to keep lines tight.
         while line.last().map_or(false, |s| s.text.trim().is_empty() && s.bg.is_none()) {

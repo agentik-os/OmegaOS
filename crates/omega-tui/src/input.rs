@@ -160,11 +160,11 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
     }
     match mouse.kind {
         MouseEventKind::ScrollDown => {
-            scroll_active_panel_at(app, 3, true, mouse.column);
+            scroll_active_panel_at(app, 3, true, mouse.column, mouse.row);
             Action::None
         }
         MouseEventKind::ScrollUp => {
-            scroll_active_panel_at(app, 3, false, mouse.column);
+            scroll_active_panel_at(app, 3, false, mouse.column, mouse.row);
             Action::None
         }
         // Click in a panel = focus it (left = list, right = preview)
@@ -189,11 +189,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                 return Action::None;
             }
             if app.tab == Tab::Sessions {
-                // Heuristic: list is on the left ~25-30% of screen width.
-                // If click is in the right portion, focus the preview/chat.
-                // We can't read terminal width here directly, but column 30+ is
-                // almost always the right panel for any reasonable terminal.
-                if mouse.column >= 30 {
+                // Hit-test against the rects the renderer actually used
+                // (draw_sessions records them each frame) — the old hardcoded
+                // `column >= 30` heuristic misrouted clicks on wide terminals
+                // (the 25% list extends past col 30) AND narrow ones (the
+                // single-column list owns the full width).
+                if rect_hit(app.sessions_preview_area, mouse.column, mouse.row) {
                     if matches!(app.session_focus, SessionFocus::List) {
                         // fix6-T5: the click is the mouse twin of the keyboard
                         // Enter — apply the same post-drop-grace rule (T4):
@@ -212,9 +213,52 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                         // chat shows the latest output instead of freezing the view.
                         app.enter_chat_focus();
                     }
+                } else if rect_hit(app.sessions_list_area, mouse.column, mouse.row) {
+                    // Map the clicked row to its session (headers excluded).
+                    // Only trustworthy while the whole list fits on screen
+                    // (ListState offset 0) — the same guard as the Menu tab.
+                    let clicked = if app.sessions_list_fits {
+                        app.sessions_list_area.and_then(|a| {
+                            let ridx = (mouse.row - a.y - 1) as usize;
+                            app.sessions_rendered_rows.get(ridx).copied().flatten()
+                        })
+                    } else {
+                        None
+                    };
+                    match clicked {
+                        // Second click on the already-selected row = the mouse
+                        // twin of Enter: enter chat through the same
+                        // grace-guarded path as the preview click above.
+                        Some(idx)
+                            if idx == app.selected
+                                && matches!(app.session_focus, SessionFocus::List) =>
+                        {
+                            if app.in_post_drop_grace() {
+                                if grace_pinned_reentry_ok(app) {
+                                    app.end_post_drop_grace();
+                                } else {
+                                    grace_swallow_notice(app, "click");
+                                    return Action::None;
+                                }
+                            }
+                            app.enter_chat_focus();
+                        }
+                        Some(idx) => {
+                            // Selecting via click moves the cursor exactly like
+                            // keyboard ↑/↓, so it ends the grace + chord the
+                            // same way (fix6-T6).
+                            app.end_post_drop_grace();
+                            app.selected = idx;
+                            // Tab-less focus change — set_list_focus keeps the
+                            // chord contract (FIX-4): a click must not complete
+                            // a Tab-Tab.
+                            app.set_list_focus();
+                        }
+                        None => app.set_list_focus(),
+                    }
                 } else {
-                    // Tab-less focus change — set_list_focus keeps the chord
-                    // contract (FIX-4): a click must not complete a Tab-Tab.
+                    // Outside both panels (tab strip, status bar): just make
+                    // sure the list has focus, as before.
                     app.set_list_focus();
                 }
             }
@@ -224,10 +268,22 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
     }
 }
 
-/// Position-aware scroll: in Sessions tab, scrolling over the right panel
-/// (column >= 30) scrolls the preview regardless of focus state.
-fn scroll_active_panel_at(app: &mut App, lines: u16, down: bool, column: u16) {
-    if app.tab == Tab::Sessions && column >= 30 {
+/// True when (column, row) falls INSIDE the rect's borders — the same
+/// border-exclusive test the Menu tab click handler uses.
+fn rect_hit(rect: Option<ratatui::layout::Rect>, column: u16, row: u16) -> bool {
+    rect.is_some_and(|a| {
+        column > a.x
+            && column < a.x + a.width.saturating_sub(1)
+            && row > a.y
+            && row < a.y + a.height.saturating_sub(1)
+    })
+}
+
+/// Position-aware scroll: in Sessions tab, scrolling over the preview panel
+/// (hit-tested against the rect the renderer recorded — not the old
+/// hardcoded `column >= 30`) scrolls the preview regardless of focus state.
+fn scroll_active_panel_at(app: &mut App, lines: u16, down: bool, column: u16, row: u16) {
+    if app.tab == Tab::Sessions && rect_hit(app.sessions_preview_area, column, row) {
         if down { app.scroll_preview_down(lines); }
         else { app.scroll_preview_up(lines); }
         return;
@@ -852,7 +908,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         InputMode::ProvisioningSetup { step, collected } => match key.code {
             KeyCode::Esc => provisioning_advance(app, collected, String::new(), step),
             KeyCode::Enter => {
-                let value = std::mem::take(&mut app.input_buffer);
+                // Provisioning keys are pasted secrets — trim like
+                // handle_key_input does, or a trailing paste-newline is
+                // persisted verbatim (invisible in the masked echo).
+                let value = std::mem::take(&mut app.input_buffer).trim().to_string();
                 provisioning_advance(app, collected, value, step)
             }
             KeyCode::Backspace => {
@@ -1061,7 +1120,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         }
         KeyCode::End => {
             if matches!(app.tab, Tab::Settings | Tab::Agentic) {
-                app.detail_scroll = u16::MAX / 2;
+                // Jump to the renderer-published bound, not a huge sentinel:
+                // u16::MAX/2 scrolled the Paragraph ~32k lines past its
+                // content — an empty panel only Home could recover.
+                app.detail_scroll = app.detail_max_scroll;
             } else {
                 app.scroll_preview_end();
             }
@@ -1206,8 +1268,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         // Canonical focus path (chord reset + follow tail,
                         // FIX-4) — same as the mouse click.
                         app.enter_chat_focus();
-                        app.cmd_capture = None;
-                        app.chat_line_chars = 0;
                         // DESIGN-016: describe the REAL runtime bindings
                         // (single Tab → list, Tab-Tab → fullscreen; "/" is
                         // forwarded to the agent, not captured).
@@ -1819,10 +1879,11 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
 }
 
 /// Resolve + dispatch the Monitor "Open Dashboard" action. When OmegaMC is
-/// installed (`$OMEGA_DIR/omega-mc/.git`), launch it via `Action::RunShellCommand`
-/// (`docker compose up -d`) — the same session-spawning mechanism the Settings
-/// install/uninstall actions use. When absent, set an honest install message
-/// and dispatch nothing.
+/// installed (`$OMEGA_DIR/repos/omega-mc/.git`), launch it via
+/// `Action::RunShellCommand` (`omega-mc-up` — see `resolve_open_dashboard`
+/// for why raw compose isn't enough) — the same session-spawning mechanism
+/// the Settings install/uninstall actions use. When absent, set an honest
+/// install message and dispatch nothing.
 fn open_dashboard_action(app: &mut App) -> Action {
     match MonitorAction::resolve_open_dashboard() {
         crate::app::DashboardLaunch::Launch { command, message } => {
@@ -1873,63 +1934,6 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             return handle_key_normal(app, key);
         }
     };
-
-    // --- OmegaOS slash-command capture (shared command set) ---
-    // While capturing, keys build the command buffer locally instead of going
-    // to the agent. Enter resolves: a known OmegaOS command runs in the TUI;
-    // anything else is typed into the agent verbatim (its own slash commands
-    // still work — press Enter again to submit). Esc cancels. This is the TUI
-    // half of the command set the Telegram bridge also serves.
-    if let Some(mut buf) = app.cmd_capture.take() {
-        return match key.code {
-            KeyCode::Char(c)
-                if !key.modifiers.contains(KeyModifiers::CONTROL)
-                    && !key.modifiers.contains(KeyModifiers::ALT) =>
-            {
-                buf.push(c);
-                app.status_message = Some(format!("OmegaOS » {}   (Enter run · Esc cancel)", buf));
-                app.cmd_capture = Some(buf);
-                Action::None
-            }
-            KeyCode::Backspace => {
-                buf.pop();
-                if buf.is_empty() {
-                    app.status_message = Some("Command cancelled".to_string());
-                } else {
-                    app.status_message = Some(format!("OmegaOS » {}", buf));
-                    app.cmd_capture = Some(buf);
-                }
-                Action::None
-            }
-            KeyCode::Esc => {
-                app.status_message = Some("Command cancelled".to_string());
-                Action::None
-            }
-            KeyCode::Enter => {
-                if let Some(tab) = omega_chat_command(&buf) {
-                    // fix6-T7: leave_tab hygiene on the /command jump too.
-                    app.leave_tab();
-                    app.tab = tab;
-                    if tab == Tab::Sessions {
-                        app.session_focus = SessionFocus::List;
-                    }
-                    app.reset_2col_focus();
-                    app.status_message = Some(format!("→ {}  (OmegaOS {})", tab_label(tab), buf));
-                    Action::None
-                } else {
-                    app.status_message = Some(format!(
-                        "'{}' isn't an OmegaOS command — typed to the agent (Enter to send)",
-                        buf
-                    ));
-                    Action::SendTextRawToSession { session, text: buf }
-                }
-            }
-            _ => {
-                app.cmd_capture = Some(buf);
-                Action::None
-            }
-        };
-    }
 
     // --- TUI-local (never forwarded) ---
 
@@ -2038,10 +2042,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         KeyCode::Backspace if shift || alt || ctrl => {
             Action::ForwardKeyToSession { session, key: "C-w" }
         }
-        KeyCode::Backspace => {
-            app.chat_line_chars = app.chat_line_chars.saturating_sub(1);
-            Action::ForwardKeyToSession { session, key: "BSpace" }
-        }
+        KeyCode::Backspace => Action::ForwardKeyToSession { session, key: "BSpace" },
         // Forward-delete word:
         //   Shift+Delete or Alt+Delete → kill word forward (M-d in readline)
         KeyCode::Delete if shift || alt => {
@@ -2051,14 +2052,8 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         // Shift+Enter / Alt+Enter → insert a newline in the input (don't
         // submit), matching real Claude Code multi-line input. Plain Enter
         // still submits.
-        KeyCode::Enter if shift || alt => {
-            app.chat_line_chars = 0;
-            Action::InsertNewlineToSession { session }
-        }
-        KeyCode::Enter => {
-            app.chat_line_chars = 0;
-            Action::ForwardKeyToSession { session, key: "Enter" }
-        }
+        KeyCode::Enter if shift || alt => Action::InsertNewlineToSession { session },
+        KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
         // Alt+Esc → literal ESC to the agent's PTY (AF-1): vim/less and other
         // modal programs inside a shell session need a real ESC; plain Esc is
         // TUI-local (back to list) and Ctrl+C only interrupts.
@@ -2141,50 +2136,16 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             } else {
                 // Forward EVERY printable char to the agent — including a
                 // leading "/". We must NOT intercept "/" for OmegaOS command
-                // capture: doing so swallowed the keystrokes Claude Code needs
-                // for its OWN "/" slash-command menu, so the menu never opened,
-                // the selection was invisible, and the capture state could wedge
-                // the whole TUI. Claude's "/" now works natively; reach OmegaOS
-                // tabs via the menu (Tab out of chat) instead.
-                app.chat_line_chars += 1;
+                // capture (the deleted cmd_capture experiment): doing so
+                // swallowed the keystrokes Claude Code needs for its OWN "/"
+                // slash-command menu, so the menu never opened, the selection
+                // was invisible, and the capture state could wedge the whole
+                // TUI. Claude's "/" works natively; reach OmegaOS tabs via the
+                // menu (Tab out of chat) instead.
                 Action::ForwardCharToSession { session, ch: c }
             }
         }
         _ => Action::None,
-    }
-}
-
-/// Map an OmegaOS slash command typed in a chat to the tab it opens — the TUI
-/// half of the shared command set (the Telegram bridge accepts the same names).
-/// Returns None for anything that isn't an OmegaOS navigation command, so the
-/// caller hands it to the agent verbatim (the agent's own slash commands work).
-fn omega_chat_command(raw: &str) -> Option<Tab> {
-    match raw
-        .trim()
-        .trim_start_matches('/')
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        // Projects + the Monitor view live inside Agentic / Settings now; keep
-        // the old command words working by routing them to their new home tab.
-        "projects" | "project" => Some(Tab::Agentic),
-        "sessions" | "relay" => Some(Tab::Sessions),
-        "monitor" | "status" => Some(Tab::Settings),
-        "settings" | "config" => Some(Tab::Settings),
-        "agents" | "agentic" | "aisb" => Some(Tab::Agentic),
-        "menu" => Some(Tab::Menu),
-        "help" => Some(Tab::Help),
-        _ => None,
-    }
-}
-
-fn tab_label(tab: Tab) -> &'static str {
-    match tab {
-        Tab::Sessions => "Sessions",
-        Tab::Menu => "Menu",
-        Tab::Settings => "Settings",
-        Tab::Agentic => "Agentic",
-        Tab::Help => "Help",
     }
 }
 
@@ -2342,7 +2303,13 @@ where
                 app.status_message = Some("Cancelled (empty input)".to_string());
                 Action::None
             } else {
-                on_submit(app, value)
+                // Every handle_key_input field is single-line (names, tokens,
+                // paths, codes), so edge whitespace is never meaningful — but
+                // a bracketed PASTE delivers it verbatim, and a bot token with
+                // a trailing '\n' was written to telegram.toml as-is: the bot
+                // 401'd while the masked echo looked perfectly fine. Submit
+                // trimmed.
+                on_submit(app, value.trim().to_string())
             }
         }
         KeyCode::Backspace => {
@@ -3044,18 +3011,30 @@ mod tests {
         }
     }
 
-    // fix6-T5: a right-panel click is the mouse twin of the keyboard Enter —
+    /// Seed the rendered-geometry cache the way draw_sessions records it on a
+    /// 120x40 terminal (25/75 split): hit-testing reads these rects, not a
+    /// hardcoded column threshold.
+    fn seed_sessions_geometry(app: &mut App) {
+        app.sessions_list_area = Some(ratatui::layout::Rect::new(0, 0, 30, 40));
+        app.sessions_preview_area = Some(ratatui::layout::Rect::new(30, 0, 90, 40));
+        app.sessions_rendered_rows = vec![None, Some(0)]; // header + one entry
+        app.sessions_list_fits = true;
+    }
+
+    // fix6-T5: a preview-panel click is the mouse twin of the keyboard Enter —
     // it obeys the same grace rule (pinned-session exemption, else swallow).
     #[test]
     fn grace_click_applies_pinned_reentry_rule() {
         // Pinned + unchanged selection → the click re-enters chat.
         let mut app = chat_app("oracle-Demo-1");
+        seed_sessions_geometry(&mut app);
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         handle_event(&mut app, Event::Mouse(left_click(40)));
         assert_eq!(app.session_focus, SessionFocus::Chat, "pinned click re-enters chat");
 
         // No pin (vanish grace) → swallowed with a notice.
         let mut app = chat_app("oracle-Demo-1");
+        seed_sessions_geometry(&mut app);
         app.session_focus = SessionFocus::List;
         app.focus_drop_at = Some(std::time::Instant::now());
         handle_event(&mut app, Event::Mouse(left_click(40)));
@@ -3064,6 +3043,48 @@ mod tests {
             app.status_message.as_deref().unwrap_or("").contains("ignored"),
             "the swallow must be announced, got {:?}",
             app.status_message
+        );
+    }
+
+    // TUI-2: a click on a NON-selected list row selects it (no chat entry);
+    // a second click on the selected row enters chat. Clicks inside the list
+    // never route to the preview, even past the old col-30 threshold.
+    #[test]
+    fn list_click_selects_row_then_enters_chat() {
+        let mut app = chat_app("oracle-Demo-1");
+        app.sessions.push(SessionEntry {
+            session: OmegaSession::classify("oracle-Demo-2"),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        });
+        app.session_focus = SessionFocus::List;
+        seed_sessions_geometry(&mut app);
+        app.sessions_rendered_rows = vec![None, Some(0), Some(1)]; // header + 2 entries
+        app.selected = 0;
+
+        // Row 2 (rendered row index 1 → entry 1) is NOT selected: click selects.
+        let click_row2 = MouseEvent {
+            kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 10,
+            row: 3, // area.y(0) + border(1) + rendered row 2
+            modifiers: KeyModifiers::NONE,
+        };
+        handle_event(&mut app, Event::Mouse(click_row2));
+        assert_eq!(app.selected, 1, "click must select the clicked row");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::List,
+            "first click on a new row must NOT enter chat"
+        );
+
+        // Same row again (now selected) → mouse twin of Enter: chat focus.
+        handle_event(&mut app, Event::Mouse(click_row2));
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "second click on the selected row enters chat"
         );
     }
 
@@ -3110,20 +3131,6 @@ mod tests {
         assert!(
             app.chat_esc_at.is_none() && app.last_tab_press.is_none(),
             "the Esc jump must run leave_tab hygiene"
-        );
-    }
-
-    // fix6-T7: the in-chat /command tab jump also runs leave_tab hygiene.
-    #[test]
-    fn chat_command_jump_runs_leave_tab_hygiene() {
-        let mut app = chat_app("oracle-Demo-1");
-        app.cmd_capture = Some("menu".to_string());
-        app.project_delete_pending = Some("Demo".into());
-        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.tab, Tab::Menu);
-        assert_eq!(
-            app.project_delete_pending, None,
-            "the /command jump must disarm via leave_tab"
         );
     }
 
