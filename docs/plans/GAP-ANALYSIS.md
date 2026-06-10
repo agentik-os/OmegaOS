@@ -1,3 +1,5 @@
+> **Historical (2026-05) — kept for context.** A point-in-time gap analysis against the pre-rewrite concept doc ("Archidoc"), which is not in this repo. Current reference: [ARCHITECTURE.md](../ARCHITECTURE.md).
+
 # OmegaOS — Alignment with Archidoc (Concept Document)
 
 > How much of the conceptual architecture (Archidoc.md) is actually built,
@@ -19,7 +21,7 @@ Legend: ✅ done · 🟡 partial · ❌ not built · ⚪ optional/future
 
 | Level | Concept | Status | Notes |
 |-------|---------|--------|-------|
-| L0 | Governance (Paperclip registry, fixed reporting lines) | 🟡 | aisb_agents.rs has 13 typed agents but no explicit "governance registry" with reporting lines |
+| L0 | Governance (Paperclip registry, fixed reporting lines) | 🟡 | aisb_agents.rs has 14 typed agents but no explicit "governance registry" with reporting lines |
 | L1 | Human (Telegram/CLI/TUI) | ✅ | telegram_bridge.rs + omega-cli + omega-tui |
 | L2 | Hermès isolated companion (own API key) | ❌ | Hermes is an *installable agent* but NOT wired as an isolated-budget L2 companion |
 | L3 | AISB Master | ✅ | aisb.rs — persistent, auto-restart, --continue |
@@ -36,7 +38,7 @@ The 14 Matrix agents exist as typed data but the "Paperclip" governance layer
 |-------|--------|-------|
 | AISB (Lead) | ✅ | aisb_agents.rs |
 | Oracle (Manager) | ✅ | aisb_agents.rs + oracle_lifecycle.rs |
-| Morpheus / Construct / Architect / Keymaker / Niobe / Smith / Merovingian / Neo / Zion / Link / Seraph / Pythia | ✅ | aisb_agents.rs (13 typed, with prompts) |
+| Morpheus / Construct / Architect / Keymaker / Niobe / Smith / Merovingian / Neo / Zion / Link / Seraph / Pythia / Council | ✅ | aisb_agents.rs (14 typed, with prompts) |
 | Hermès (L2 companion) | 🟡 | exists as installable agent, not as isolated companion |
 
 The 14 Matrix agents are present as typed registry entries with prompts.

@@ -85,7 +85,7 @@ There is **no training loop**, **no RL/SFT pipeline**, **no embedding-based skil
 | 8 | Context compressor | Long-running Oracle sessions hitting 150K+ tokens | `crates/omega-core/src/compactor.rs` invoked by `claude_stream.rs` | L | Needs a "summarizer" sub-call; anti-thrash counter; image stripping |
 | 9 | Iteration budget (thread-safe) | Already partially present (`--max-turns`); add per-worker quotas tracked centrally | extend `dispatch.rs` + `gate.rs` | S | None |
 | 10 | Anthropic prompt cache `system_and_3` | AISB Master + every Oracle session | extend `claude_stream.rs` request builder | S | Must verify Claude Code CLI exposes cache breakpoints; if not, only applies to direct API calls |
-| 11 | Memory provider trait | New `trait MemoryProvider` for AISB; built-in JSONL provider + optional Convex provider | `crates/omega-core/src/memory.rs` | M | Decide whether Convex is in-scope (CONCEPT.md says optional) |
+| 11 | Memory provider trait | New `trait MemoryProvider` for AISB; built-in JSONL provider + optional Convex provider | `crates/omega-core/src/memory.rs` | M | Decide whether Convex is in-scope (docs/plans/CONCEPT.md says optional) |
 | 12 | Streaming context scrubber | Strip `<MEMORY_CONTEXT>...</MEMORY_CONTEXT>` from Telegram stream | extend `formatting.rs` | S | None |
 | 13 | Conversation loop self-healing retries | Already in `claude_stream.rs`; cross-check missing retry classes (invalid JSON args, length continuation) | patch `claude_stream.rs` | S | None |
 | 14 | Tool guardrails (whitelist per role) | Restrict review-agent + worker to a tool subset declared in `brief.json` | extend `dispatch.rs` brief schema | M | Requires per-session config plumbing |
@@ -151,7 +151,7 @@ There is **no training loop**, **no RL/SFT pipeline**, **no embedding-based skil
 3. **Training**: do we ever want a real fine-tuning loop, or is this strictly prompt-evolution / skill curation? Affects whether trajectory format must be ShareGPT-strict.
 4. **Memory backend**: JSON files (simple, git-friendly) or SQLite (queryable, FTS5)? Hermes uses SQLite. Rust has `rusqlite` already. Probably SQLite + a `~/.omega/memory.db`.
 5. **Sandbox for inline shell**: AppArmor / firejail / bubblewrap / nsjail? Or limit to a fixed allow-list of binaries? This blocks the skill-bundle quick win.
-6. **Convex dependency**: CONCEPT.md says optional. If we want the memory provider plugin pattern, do we ship a Convex provider in core or as an external plugin?
+6. **Convex dependency**: docs/plans/CONCEPT.md says optional. If we want the memory provider plugin pattern, do we ship a Convex provider in core or as an external plugin?
 7. **Compressor placement**: in-process via Claude Code hooks, or as a fork-restart with a compressed prompt? Determines feasibility of integration #3.
 8. **Skill quarantine**: do auto-created skills go live immediately (Hermes default) or to `_quarantine/` for 24h pending review (safer)?
 9. **Telegram surfacing**: do we send a `💾 Self-improvement review` line to Telegram after every Oracle done, or only on significant updates? Noise budget matters.

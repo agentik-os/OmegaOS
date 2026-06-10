@@ -32,7 +32,7 @@ bot for remote control.
 | Component | Role |
 |-----------|------|
 | `omega` CLI | Main binary — 40+ commands |
-| TUI | 7-tab session manager (Sessions/Menu/Monitor/Projects/Settings/Agentic/Help) |
+| TUI | 5-tab session manager (Sessions/Menu/Agentic/Settings/Help — Monitor and Projects live inside Settings and Agentic) |
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
 | AISB Master | Always-on Claude session with 14 Matrix agents |
 | Telegram Bridge | Long-poll bot, relays messages to AISB |
@@ -61,10 +61,10 @@ bot for remote control.
 │       ├── claude-gareth.json
 │       └── ...
 │
-├── rules/                         6 Laws + 20 Rules (.md, editable)
-│   ├── L1-runtime-truth.md
-│   ├── L2-researcher-not-sycophant.md
-│   └── ... (all 15)
+├── rules/                         the typed doctrine (.md, editable — `omega rules list` prints the current set)
+│   ├── L0-ship-the-truth...md
+│   ├── L1-runtime-is-the-only-truth.md
+│   └── ... (6 Laws + the named R-* rules)
 │
 ├── agents/                        Agent system prompts
 │   ├── aisb-master.md             Master AISB brain
@@ -176,14 +176,14 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (7 tabs) · CLI (40+ cmds) · Telegram Bridge                │
+│  TUI (5 tabs) · CLI (40+ cmds) · Telegram Bridge                │
 │                      ↓ intent                                    │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
 │  14 Matrix Agents:                                               │
 │    Oracle · Morpheus · Seraph · Keymaker · Smith · Niobe         │
 │    Architect · Merovingian · Neo · Zion · Link · Construct       │
-│    Pythia                                                        │
+│    Pythia · Council                                              │
 │                      ↓ dispatch                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 3 — Oracle (1 per project)                                │
@@ -204,6 +204,36 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 | Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed |
 | Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions |
 | System | ⚙ | `omega-telegram-bridge` | Infrastructure daemons |
+
+### Plan execution engine
+
+For multi-step builds, the prose plan is replaced by a typed DAG:
+
+1. **Planner** (`/omg-planner`) decomposes the work into single-worker-dispatch
+   steps and emits `.planner/tracker.json` (typed steps, dependencies, a real
+   `verify_command` per step).
+2. **`omega plan-run`** drives the plan: it spawns a real worker per step in
+   dependency order. Pre-run validation refuses skip-prone or fake-completing
+   plans (trivial `verify_command`s like `true` are rejected).
+3. **Gate** — structural can't-skip enforcement: a step only advances when its
+   worker's `done.json` lands and the step's invariants hold. Sequencing is
+   enforced by the engine, not by instructions.
+4. **Guardian** — independent verification: the step's `verify_command` is run
+   by the engine itself, so a worker's self-report alone never completes a step.
+
+`omega plan-status` prints progress from `.planner/tracker.json` read-only.
+
+### Worker isolation
+
+Three mechanisms keep parallel workers from trampling each other:
+
+- **Scope-claim file locks** — before writing, a worker claims its files with
+  real advisory locks (`fs2`, `scope.rs`). Overlapping claims are rejected at
+  dispatch (`omega scope`).
+- **Worktree isolation** — `omega spawn-worker --worktree` gives each parallel
+  worker its own git worktree, so simultaneous mutations never share a checkout.
+- **Clean merge** — `omega-git-merge` folds worker worktrees back into the main
+  branch when they finish.
 
 ---
 
@@ -247,15 +277,13 @@ Every mission passes through the rules:
 | L1 | Runtime truth | `gate.rs` requires log/pane evidence |
 | L2 | Researcher mindset | Worker prompt template |
 | L3 | Decide & proceed | `oracle_lifecycle.rs` no idle stops |
-| R-14 | Ship verification | `ship.rs` polls deploy URL until 200 |
-| R-19 | Rubric upfront | `rubric.rs` writes criteria before dispatch |
-| R-21 | Multi-grader (2/3) | `gate.rs` runs 3 lenses |
-| R-22 | Regression check | `gate.rs` semantic diff vs previous |
-| R-28 | Token budget | `mission.rs` tracks spend, hard cap |
-| R-30 | Popper falsification | `gate.rs` runs ≥12 adversarial challenges |
-| R-35 | Citation required | `verifier.rs` rejects uncited claims |
-| TG-SEC | Telegram allow-list | `monitor.rs::is_authorized` |
-| SCOPE-CLAIM | File locks | `scope.rs` rejects overlap at dispatch |
+| R-PROD | Ship verification | `ship.rs` polls deploy URL until 200 |
+| R-RUBRIC | Rubric upfront | `rubric.rs` writes criteria before dispatch |
+| R-VERIFY | Multi-grader (2/3) + Popper falsification | `gate.rs` runs 3 adversarial lenses |
+| R-BUDGET | Token budget | `mission.rs` tracks spend, hard cap |
+| R-CITE | Citation required | `verifier.rs` rejects uncited claims |
+| R-TGSEC | Telegram allow-list | `monitor.rs::is_authorized` |
+| R-SCOPE | One writer per file | `scope.rs` rejects overlap at dispatch |
 
 ---
 
@@ -343,7 +371,7 @@ omega new <name>         Create session
 omega kill <name>        Kill session
 omega dispatch <P> <M>   Send mission to oracle
 omega orchestrate <P> <M>  Full pipeline (classify → plan → dispatch → gate)
-omega rules list         Show the 6 Laws + 20 Rules
+omega rules list         Show the 6 Laws + the named operational Rules
 omega rules export       Write to ~/.omega/rules/
 omega sync               Symlink to all LLMs
 omega accounts list      List provider accounts
@@ -366,6 +394,6 @@ To verify the architecture is correctly set up:
 ls ~/.omega/                              # Should show: credentials/ rules/ agents/ skills/ ...
 ls ~/.omega/credentials/                  # Should show: claude.json codex.json ...
 ls -la ~/.claude/.credentials.json        # Should be a symlink to ~/.omega/credentials/claude.json
-omega rules list                          # Should show the 6 Laws + 20 Rules
+omega rules list                          # Should show the 6 Laws + the named Rules (26 as of 0.1.5)
 cargo build --release                     # Should be 0 errors
 ```

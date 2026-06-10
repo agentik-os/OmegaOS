@@ -54,7 +54,7 @@ OmegaOS/
 │   │   ├── providers.rs               Provider catalog
 │   │   ├── router.rs                  Smart routing
 │   │   ├── rubric.rs                  Success criteria
-│   │   ├── rules.rs                   6 Laws + 20 Rules
+│   │   ├── rules.rs                   The typed doctrine (6 Laws + named Rules)
 │   │   ├── scope.rs                   File-lock scope claims
 │   │   ├── session.rs                 rmux SDK integration
 │   │   ├── ship.rs                    12-step ship pipeline
@@ -66,7 +66,7 @@ OmegaOS/
 │   ├── omega-tui/src/                 Terminal UI (ratatui)
 │   │   ├── app.rs                     App state (7 tabs)
 │   │   ├── input.rs                   Keyboard + mouse handling
-│   │   ├── theme.rs                   Theme engine (15 palettes, Settings → Theme)
+│   │   ├── theme.rs                   Theme engine (palette gallery, Settings → Theme — see docs/THEMES.md)
 │   │   └── ui.rs                      Tab rendering
 │   │
 │   └── omega-cli/src/                 CLI binary
@@ -78,22 +78,26 @@ OmegaOS/
 │   ├── oracle.md / worker.md / team-lead.md
 │   └── aisb/                          14 Matrix agents
 │
-├── rules/                             6 Laws + 20 Rules (.md)
-│   ├── L1-runtime-truth.md
-│   ├── R30-popper-falsification.md
-│   └── ... (all of them)
+├── rules/                             The typed doctrine (.md) — 6 Laws + named R-* Rules
+│   ├── L1-runtime-is-the-only-truth.md
+│   ├── R-VERIFY-adversarial-verification.md
+│   └── ... (`omega rules list` prints the current set)
 │
 ├── skills/                            Bundled skills
 │   ├── pdfgen/                        PDF generator (Next.js — see below)
 │   └── audits/                        23 audit skills
 │
-├── docs/                              Documentation
+├── docs/                              Documentation (see docs/README.md for the index)
 │   ├── ARCHITECTURE.md                ← READ THIS for the full system
 │   ├── ARCHITECTURE-V3.md             ← Credential architecture spec
-│   ├── IMPLEMENTATION-PLAN.md
 │   ├── VERIFICATION-GATE.md
+│   ├── plans/                         Historical planning notes (IMPLEMENTATION-PLAN, GAP-ANALYSIS, …)
 │   └── reference/                     Reference materials
 │       └── oauth/                     Python source for OAuth reference
+│
+├── telegram-bot/                      Telegram bot runtimes (Bun/TypeScript)
+│   ├── omega-tg-bot.ts                Command bot (control center, installed to ~/.omega/telegram-bot/)
+│   └── inbox-bot.ts                   Deposit/inbox bot (operator file drop)
 │
 ├── tools/pdfgen/                      PDF generator (TypeScript + Next.js + Playwright)
 │   ├── components/templates/          Whitepaper / Audit / Marketing / Doc
@@ -123,7 +127,7 @@ OmegaOS/
 │   ├── gemini.json                    ← ~/.gemini/oauth_creds.json points here
 │   └── accounts/                      Saved account profiles
 │
-├── rules/                             6 Laws + 20 Rules (.md, synced from repo on install)
+├── rules/                             The typed doctrine (.md, synced from repo on install)
 ├── agents/                            19 agent prompts
 ├── skills/
 │   ├── pdfgen/                        PDF generator

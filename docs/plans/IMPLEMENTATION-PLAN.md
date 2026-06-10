@@ -1,3 +1,5 @@
+> **Historical (2026-05) — kept for context.** The original Rust-rewrite plan. The rewrite shipped; current reference: [ARCHITECTURE.md](../ARCHITECTURE.md) and [MAP.md](../MAP.md).
+
 # OmegaOS Rust Rewrite — Implementation Plan
 
 > Rewrite the entire VPS Python/bash AISB system in Rust.

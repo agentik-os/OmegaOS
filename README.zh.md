@@ -4,17 +4,19 @@
 
 [English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | 中文
 
+> [英文版 README](README.md) 是权威且最新的版本；本翻译可能略有滞后。
+
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
 OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。
 
 默认的 agent 运行时是 Claude Code。并行跑 agent 的工具多得是，这里不一样的地方在于：每个 agent，无论它在树里钻得多深，都带着同一套不容商量的规则——以纯文本形式注入进它的 prompt。这就是 doctrine（教义），也是你该从这里入手的原因。
 
-版本 0.1.0。我每天都在用它，请预期会有些粗糙的地方。
+当前版本见 [CHANGELOG.md](CHANGELOG.md)（在已安装的机器上运行 `omega -V`）。我每天都在用它，请预期会有些粗糙的地方。
 
 ## doctrine
 
-有一个类型化的注册表，包含 6 条 Law 和 20 条 Rule。它住在 Rust 里，位于 `crates/omega-core/src/rules.rs`，所以它是一件编译产物，而不是某个没人想起来更新的 YAML 文件。
+有一个类型化的注册表，包含 6 条 Law 和一组具名的操作 Rule（写作本文时为 26 条——`omega rules list` 会打印当前的集合）。它住在 Rust 里，位于 `crates/omega-core/src/rules.rs`，所以它是一件编译产物，而不是某个没人想起来更新的 YAML 文件。
 
 **Law 不可违背。**它们约束每一个 agent，并且凌驾于每一条 rule、每一个 task 之上。一共六条：
 
@@ -25,7 +27,7 @@ OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上
 - **L4 — Done means 100%, verified（完成意味着 100%，且经过验证）。**92% 不叫完成。把任务逐条列出来，逐条做完，逐条对着运行时验证。
 - **L5 — Quality over speed（质量高于速度）。**真协议不存在精简版、轻量版或快速版。403 或 401 是中止，不是通过。
 
-**Rule 是操作层面的。**一共二十条，归入 Universal、QualityGate、Orchestration、Reporting、Safety 几类。每条 Rule 都按它所约束的角色来划定范围：Master、Oracle、Worker。一个 worker 不会被它根本无从下手的编排规则压上身，一个 oracle 也不会背上 worker 那套文件加锁的纪律。同一个注册表，切出不同的片。
+**Rule 是操作层面的。**它们是具名的（R-SCOPE、R-VERIFY、R-CITE……），归入 Universal、QualityGate、Orchestration、Reporting、Safety 几类。每条 Rule 都按它所约束的角色来划定范围：Master、Oracle、Worker。一个 worker 不会被它根本无从下手的编排规则压上身，一个 oracle 也不会背上 worker 那套文件加锁的纪律。同一个注册表，切出不同的片。
 
 ### 漏斗
 
@@ -41,7 +43,7 @@ OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上
 omega rules list
 ```
 
-![omega rules list —— OmegaOS 输出的 6 条 Law 与 20 条 Rule](assets/omega-rules.svg)
+![omega rules list —— OmegaOS 输出的 Law 与 Rule](assets/omega-rules.svg)
 
 ## 架构
 
@@ -49,7 +51,7 @@ omega rules list
 
 **第 1 层 —— 人机界面。**TUI、CLI（40+ 命令）和 Telegram 桥接,在底下驱动的都是同一层。
 
-**第 2 层 —— AISB Master。**一个常驻的 agent，保持运行，挂了会自动重启，并用 `--continue` 续上它自己的对话。它内置 13 个以《黑客帝国》角色命名的 agent 模板（Oracle、Morpheus、Seraph、Keymaker、Smith、Niobe、Architect、Merovingian、Neo、Zion、Link、Construct、Pythia）。Master 是个派发器。它只做分类，把活儿路由给各个 oracle。
+**第 2 层 —— AISB Master。**一个常驻的 agent，保持运行，挂了会自动重启，并用 `--continue` 续上它自己的对话。它内置 14 个以《黑客帝国》角色命名的 agent 模板（Oracle、Morpheus、Seraph、Keymaker、Smith、Niobe、Architect、Merovingian、Neo、Zion、Link、Construct、Pythia、Council）。Master 是个派发器。它只做分类，把活儿路由给各个 oracle。
 
 **第 3 层 —— Oracle。**每个项目一个。它给请求分类、做规划、派发 worker，并在最后跑质量门禁。一个 oracle 负责编排，它自己不动项目代码。
 
@@ -102,19 +104,21 @@ cd OmegaOS
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.0
-  [+] rmux daemon      connected, 8 live session(s)
+  [+] binary           omega 0.1.5
+  [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 20 Rules
+  [+] doctrine         6 Laws + 26 Rules
   [+] agent CLI        claude available
-  [+] state dir        ~/.omega/state
-  [!] telegram service omega-telegram.service inactive (start: systemctl --user start omega-telegram)
-  [!] hooks            hook scripts missing from ~/.omega/hooks
-  [+] secrets dir      ~/.omega present
-  [+] memory           18422MB available
+  [+] state dir        /home/vibe/.omega/state
+  [+] telegram service omega-tg-bot active
+  [+] hooks            track + verify present, registered in settings.json
+  [+] secrets dir      /home/vibe/.omega present
+  [+] memory           249088MB available
+  [+] claude oauth     Claude OAuth valid
+  [+] telegram poller  1 poller
 ```
 
-`[!]` 那几行是警告，不是错误。这里 Telegram 服务停着，hook 脚本也没装。两者都是可选的。其余全绿。
+`[!]` 那几行是警告，不是错误——每一行都自带修复命令，`omega doctor --fix` 会自动修好机械性的问题。
 
 命令面，挑你实际真会用到的列一下：
 
@@ -151,7 +155,7 @@ omega pdf           生成一份 PDF 报告
 - TUI 假定终端支持 256 色。在 16 色终端上它会很丑。
 - 默认的 agent 运行时是 Claude Code，所以你需要 `claude` CLI 和一个 Anthropic 账号。其他 agent（pi、codex、gemini、glm）经由 `omega install` 安装也能跑，但它们被磨炼得少些。
 - **单机。**rmux 守护进程是本地的。没有跨主机的编排。
-- 这是 0.1.0。我每天都用，但你会撞上一些我还没撞过的粗糙地方。
+- 这是 0.1.x。我每天都用，但你会撞上一些我还没撞过的粗糙地方。
 
 ## 致谢
 

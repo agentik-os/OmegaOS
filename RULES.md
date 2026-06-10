@@ -5,7 +5,7 @@
 > Reste synchronisée avec `~/.omega/state/oracle-OmegaOS*`. **Ne pas supprimer.** Mettre à jour quand une règle change.
 
 ## Identité
-- **Projet** : OmegaOS — *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (6 Lois + 20 Règles compilées dans le binaire).
+- **Projet** : OmegaOS — *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (6 Lois + 26 Règles compilées dans le binaire — `omega rules list` affiche l'ensemble courant).
 - **Owner** : agentik-os (org GitHub). Mainteneur humain : à préciser.
 - **Repo** : `github.com/agentik-os/OmegaOS` · branche `main`
 - **Forme** : produit installable (pas une lib). `npx omega-os` ou `git clone … && ./install.sh` → commande `omega`, TUI `ratatui` (7 onglets), bridge Telegram. Version workspace `0.1.5` (npm `omega-os@1.5.3`).
@@ -27,7 +27,7 @@
 - **Release profile** : `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, panic `unwind` conservé (une task qui panique ne doit pas tuer l'orchestrateur).
 
 ## Intouchable (source de vérité)
-- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (6 Lois L0–L5 + 20 Règles typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
+- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (6 Lois L0–L5 + 26 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
 - `OMEGA.md` = instructions universelles chargées par TOUS les agents LLM. **Ne pas éditer ici sans intention.**
 - `~/.omega/` = état runtime + credentials + rules éditables. **Hors repo, jamais commité** (gitignored).
 
@@ -40,10 +40,11 @@
 - **Pas de `--force`, pas de `--no-verify`.** Vérification par runtime live avant merge.
 
 ## Pointeurs (à lire, ne pas recopier ici)
-- `OMEGA.md` — instructions universelles agents (Three Laws, orchestration, behavior, tools).
-- `~/.omega/rules/` — règles opérationnelles éditables (R-14 ship-verif, R-19 rubric, R-21 consensus, R-30 Popper, R-35 citation, R-28 token budget, SCOPE-CLAIM…).
+- `OMEGA.md` — instructions universelles agents (les 6 Lois L0–L5, orchestration, behavior, tools).
+- `~/.omega/rules/` — règles opérationnelles éditables, IDs nommés (R-ORCH orchestration workflow-first, R-RUBRIC rubrique avant exécution, R-VERIFY vérification adversariale 2-de-3, R-CITE citation obligatoire, R-BUDGET budget mission, R-PROD prod-verify, R-SCOPE un writer par fichier…).
 - `README.md` (+ `.fr/.ru/.zh`) — présentation produit, doctrine, « How a mission runs ».
-- `MAP.md` — où vit quoi (source vs binaire installé `~/.local/bin/omega` vs runtime `~/.omega/`).
+- `GUIDE.md` — le manuel opérateur complet (vocabulaire, cockpits, skills, vérification).
+- `docs/MAP.md` — où vit quoi (source vs binaire installé `~/.local/bin/omega` vs runtime `~/.omega/`).
 - `docs/ARCHITECTURE.md`, `docs/GETTING-STARTED.md`, `CLAUDE.md`, `SECURITY.md`, `CHANGELOG.md`.
 
 ## Objectif

@@ -1,8 +1,5 @@
-Je regarde d'abord ton nouveau repo Rust pour adapter l'architecture correctement, puis j'écris le doc.
-
-Voici le document conceptuel complet. Je l'ai écrit pour qu'il explique le **pourquoi** à chaque niveau, pas juste le **quoi**, et adapté au nouveau projet Rust (`~/.omega/`, crates, rmux).
-
----
+> **Historical concept note (pre-0.1)** — superseded by [README.md](../../README.md) and [GUIDE.md](../../GUIDE.md).
+> Kept for context: it still describes the original "Three Laws" doctrine; the live doctrine is 6 Laws (L0–L5) + named Rules — `omega rules list`.
 
 # OmegaOS — Concept & Principes
 
@@ -242,76 +239,3 @@ Les 3 piliers, encore :
 3. **Vérifiabilité** — `.done.json` + audit gate → la complétion est prouvée, jamais crue.
 
 rmux est le substrat (sessions persistantes pilotables par code). Rust est le langage (type-safe, rapide, pas de subprocess fragile). `~/.omega/` est l'état vivant. Le repo est la source immuable.
-
----
-
-Voilà le concept complet. Si tu veux, je peux te l'écrire dans un fichier `docs/CONCEPT.md` de ton repo local (si tu me confirmes le chemin), ou l'adapter en plus court pour le README. Dis-moi.
-
----
-**Resume :** Doc conceptuel complet fourni (pas de code, comme demandé). Explique le POURQUOI à chaque niveau : (1) le problème — N LLMs isolés qui divergent, sans coordination ni preuve de complétion ; (2) les 3 Lois fondatrices ; (3) multi-agent = un cerveau (AISB) + mains spécialisées (14 agents en hiérarchie L0-L5) + vérification indépendante (Seraph/LMC) ; (4) le fichier canonique `~/.omega/OMEGA.md` mirroré vers chaque dialecte LLM (CLAUDE.md/GEMINI.md/AGENTS.md/…) = une vérité, plusieurs dialectes ; (5) `.done.json` + audit gate = complétion dérivée jamais déclarée ; (6) rmux = substrat de sessions persistantes pilotables par code (remplace tmux shell-out fragile) ; (7) mapping ancien Python `~/Omega/Agentik_*` → nouveau Rust `~/.omega/` + crates ; (8) cycle de vie mission end-to-end en 10 étapes ; (9) la thèse synthétique. Offert d'écrire dans `docs/CONCEPT.md` si le chemin local est confirmé.
-
-
-Réponse courte d'abord, puis le raisonnement.
-
-**Pour OmegaOS spécifiquement : Rust était le bon choix. Tu l'as prouvé toi-même** (l'enfer d'install/startup Python que tu as vécu = exactement les faiblesses de Python pour de l'infra). Mais ce n'est PAS un "Rust > Python pour l'agentic" universel.
-
----
-
-## Rust vs Python pour l'agentic
-
-La clé que tout le monde rate : **l'intelligence est dans le LLM, pas dans ton code.** Ton code agentic fait surtout : spawn de process, lecture/écriture de fichiers, appels HTTP, gestion d'état, routing. Le goulot d'étranglement c'est **la latence réseau vers le LLM (secondes)**, jamais ton code (microsecondes). Donc la perf brute compte rarement.
-
-La vraie question n'est pas "lequel est rapide" mais **"infra ou prototype ?"**
-
-| Critère | Rust | Python |
-|---|---|---|
-| **Démarrage CLI** | ~5ms | 500-1500ms (tu l'as vécu : import tree) |
-| **Distribution** | 1 binaire statique | "installe Python 3.11+, venv, pip, prie que pathlib marche" ← ton enfer uv |
-| **Daemon 24/7** | pas de GC, ~10MB RAM | interpréteur + GC, memory creep |
-| **State machines** | enums + match exhaustif → bugs attrapés au compile | runtime errors (oracle lifecycle, done.json status) |
-| **Concurrence N agents** | tokio, pas de GIL | asyncio + GIL, ça marche mais c'est messier |
-| **Subprocess** | SDK typé (rmux) | shell-out fragile (tes hangs tmux) |
-| **Vitesse d'itération** | compile 10-60s par change | edit-run, zéro compile |
-| **Écosystème IA** | quasi inexistant | LangChain, LlamaIndex, embeddings, vector DBs — tout en Python d'abord |
-| **Auto-modification par agents** | les LLMs écrivent mal le Rust | les LLMs écrivent bien le Python |
-
-**Le verdict dépend de ce que ton code fait :**
-
-- **Orchestration pure** (spawn CLIs, route, gérer sessions, vérifier `.done.json`) → **Rust gagne.** C'est de l'infra : fiabilité, binaire unique, daemon, startup instantané. C'est EXACTEMENT OmegaOS. Tu n'as PAS besoin de l'écosystème IA Python parce que l'intelligence est dans les CLIs que tu orchestres, pas dans ton process.
-
-- **Compute IA in-process** (RAG, embeddings, fine-tuning, parsing de gros docs, pipelines de données) → **Python gagne.** Tout l'écosystème existe là, et tu ne réécriras pas FAISS/transformers en Rust.
-
-- **Prototype de recherche** (tu ne connais pas encore la forme de la solution, tu changes les prompts/la logique tous les jours) → **Python gagne.** Le cycle edit-run sans compile est décisif quand tu explores.
-
-**La ligne de partage** : OmegaOS est un **OS** (infra), pas un **notebook de recherche**. → Rust. Si demain tu ajoutes un RAG in-process ou des embeddings, ce module-là tu le fais en Python (sidecar) et tu l'orchestres depuis Rust. C'est le pattern "Rust pour l'os, Python pour le compute IA".
-
----
-
-## Bun vs Node vs Deno (les surfaces JS/TS)
-
-Tu as déjà du JS dans ta stack : `pdfgen` (Next.js + Playwright) et le plugin claude-mem qui a crashé tournait sous **Bun v1.3.14** avec un import `zod/v3` cassé — donc tu as déjà touché les limites de Bun.
-
-| Runtime | Forces | Faiblesses | Pour l'agentic |
-|---|---|---|---|
-| **Bun** | Startup ultra-rapide, tout intégré (bundler/test/pm/TS natif), idéal CLI rapides | Jeune, edge-cases de compat npm (← ton crash zod/v3 claude-mem) | Super pour des **outils CLI que tu contrôles** entièrement |
-| **Node** | Compat maximale, mature, tout est testé contre lui | Startup plus lent que Bun | Le **défaut sûr** — surtout pour Playwright, les SDK IA officiels |
-| **Deno** | Sécurisé par défaut (permissions), TS natif, bon stdlib | Écosystème plus petit, compat npm bolt-on | Bon si tu veux le **sandboxing** des agents |
-
-**Verdict pour les parties JS d'OmegaOS :**
-
-- **pdfgen (Playwright)** → **Node.** Playwright + Bun a des bugs connus de binaire/navigateur. Ne prends pas le risque sur un truc qui rend du HTML/CSS complet.
-- **Petits CLIs/scripts que tu contrôles** → **Bun**, pour le startup.
-- **Plugins tiers** (comme claude-mem) → tu ne contrôles pas leur runtime ; le crash zod/v3 sous Bun est leur bug, pas le tien. Leçon : **ne fais pas dépendre ton chemin critique d'un plugin tiers sous Bun.**
-
-**Mais le vrai conseil** : si tu te demandes "Bun vs X pour écrire l'orchestrateur agentic lui-même" → **ne l'écris pas en JS du tout.** Tu l'as en Rust, c'est mieux pour de l'infra. JS/Bun restent pour ce qui DOIT être JS (rendu DOM/Playwright pour les PDFs). Garde le JS confiné à pdfgen, le reste en Rust.
-
----
-
-## La synthèse en une phrase
-
-> **Rust pour l'OS agentic (orchestration, daemon, CLI, sessions) ; Python en sidecar si/quand tu fais du compute IA in-process ; Node pour le rendu (Playwright/pdfgen) ; Bun seulement pour des CLIs que tu contrôles à 100%.**
-
-Tu as déjà la bonne archi : `omega-core/omega-cli/omega-tui` en Rust + `tools/pdfgen` en Node. Ne fais surtout pas l'erreur inverse (réécrire pdfgen en Rust — tu perdrais Playwright, le rendu CSS complet, pour rien).
-
----
-**Resume :** Rust vs Python pour l'agentic — la perf compte rarement (le goulot est la latence LLM, pas ton code) ; la vraie question est infra vs prototype. Rust gagne pour l'orchestration pure (startup 5ms vs 500-1500ms Python, binaire unique vs enfer venv/uv que tu as vécu, state machines type-safe, daemon sans GC, SDK typé vs subprocess fragile). Python gagne pour le compute IA in-process (RAG/embeddings/écosystème) et le prototypage rapide (pas de compile). OmegaOS = OS = infra → Rust est le bon choix, confirmé par ton expérience des bugs Python. Bun vs Node vs Deno : Node pour Playwright/pdfgen (Bun a des bugs Playwright + ton crash claude-mem zod/v3 sous Bun le prouve), Bun seulement pour CLIs que tu contrôles à 100%, Deno si tu veux le sandboxing. Conseil : garde le JS confiné à pdfgen (rendu DOM), tout le reste en Rust, Python en sidecar uniquement si compute IA in-process.

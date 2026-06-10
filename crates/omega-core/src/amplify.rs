@@ -8,7 +8,7 @@
 //! (never rewrites) the message into
 //!   ## Mission / ## Context / ## Tasks / ## Success Criteria / ## Constraints
 //!
-//! Design constraints (from docs/VAULTS-PROMPT-ANALYSIS.md §6 "what to AVOID"):
+//! Design constraints (from docs/plans/VAULTS-PROMPT-ANALYSIS.md §6 "what to AVOID"):
 //!  - The Brain uses NO tools (deterministic, fast — not a mini-agent).
 //!  - It STRUCTURES, never invents terminology or features.
 //!  - Output is mission-only — rules/identity live in the oracle system

@@ -1,10 +1,13 @@
 /**
- * omega-new-project — reference dynamic Workflow (the programmatic bootstrap engine).
+ * omega-new-project — HISTORICAL reference implementation (NOT what runs today).
  *
- * This is the engine the /omega-new-project command runs. It replaces the old
- * 228-line prose playbook with a typed phase DAG executed by the Workflow
- * primitive: deterministic control flow, parallel fan-out, adversarial 2-of-3
- * gates, budget awareness, and resume via resumeFromRunId.
+ * The live /omg-new-project (alias /omega-new-project) pipeline is the SKILL at
+ * skills/new-project/SKILL.md (installed to ~/.omega/skills/new-project/), which
+ * provisions, scaffolds, then hands off to /omg-planner + `omega plan-run`.
+ * Nothing in the repo invokes this file. It is kept as a reference for the typed
+ * phase-DAG Workflow shape it pioneered (deterministic control flow, parallel
+ * fan-out, adversarial 2-of-3 gates, resume via resumeFromRunId) — a
+ * delete-candidate once that shape is fully absorbed by the skill + plan-run.
  *
  * SCOPE: this engine owns the MECHANICAL + verifiable phases —
  *   P0 capability probe -> P1 provision (parallel, idempotent) -> GATE-A

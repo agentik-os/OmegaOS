@@ -4,17 +4,19 @@
 
 [English](README.md) | [Français](README.fr.md) | Русский | [中文](README.zh.md)
 
+> Канонична и наиболее актуальна [английская версия README](README.md); этот перевод может отставать.
+
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
 OmegaOS — это не библиотека, которую вы импортируете. Вы ставите её на Linux-машину. Вы получаете команду `omega`, TUI для наблюдения за сессиями и их завершения, а также слой оркестрации, который раздаёт работу агентам. Есть ещё мост в Telegram, если хочется управлять всем этим с телефона.
 
 Среда исполнения агентов по умолчанию — Claude Code. Параллельно агентов запускает много инструментов. Здесь иначе то, что каждый агент, как бы глубоко в дереве он ни сидел, несёт один и тот же набор правил, не подлежащих обсуждению, — они вшиваются в его промпт обычным текстом. Это и есть доктрина, и с неё стоит начать.
 
-Версия 0.1.0. Я гоняю её каждый день; шероховатостей хватает.
+Текущая версия — см. [CHANGELOG.md](CHANGELOG.md) (`omega -V` на установленной машине). Я гоняю её каждый день; шероховатостей хватает.
 
 ## Доктрина
 
-Есть типизированный реестр из 6 Законов и 20 Правил. Он живёт в Rust, в `crates/omega-core/src/rules.rs`, так что это скомпилированный артефакт, а не YAML-файл, который кто-то забыл обновить.
+Есть типизированный реестр из 6 Законов и именованных операционных Правил (26 на момент написания — `omega rules list` печатает актуальный набор). Он живёт в Rust, в `crates/omega-core/src/rules.rs`, так что это скомпилированный артефакт, а не YAML-файл, который кто-то забыл обновить.
 
 **Законы нерушимы.** Они связывают каждого агента и стоят выше любого правила и любой задачи. Их шесть:
 
@@ -25,7 +27,7 @@ OmegaOS — это не библиотека, которую вы импорти
 - **L4 — Done means 100%, verified.** 92% — это не готово. Перечисли задачи, доведи каждую до конца, проверь каждую по runtime.
 - **L5 — Quality over speed.** Никаких облегчённых, урезанных или быстрых вариантов настоящего протокола. 403 или 401 — это abort, а не pass.
 
-**Правила операционны.** Их двадцать, разнесены по категориям Universal, QualityGate, Orchestration, Reporting и Safety. Каждое Правило ограничено теми ролями, которые оно связывает: Master, Oracle, Worker. Воркера не нагружают правилами оркестрации, по которым он всё равно ничего не сделает, а оракул не тащит на себе воркерскую дисциплину блокировки файлов. Реестр один, срезы разные.
+**Правила операционны.** Именованные (R-SCOPE, R-VERIFY, R-CITE, …), разнесены по категориям Universal, QualityGate, Orchestration, Reporting и Safety. Каждое Правило ограничено теми ролями, которые оно связывает: Master, Oracle, Worker. Воркера не нагружают правилами оркестрации, по которым он всё равно ничего не сделает, а оракул не тащит на себе воркерскую дисциплину блокировки файлов. Реестр один, срезы разные.
 
 ### Воронка
 
@@ -41,7 +43,7 @@ OmegaOS — это не библиотека, которую вы импорти
 omega rules list
 ```
 
-![omega rules list — 6 Законов и 20 Правил, выводимые OmegaOS](assets/omega-rules.svg)
+![omega rules list — Законы и Правила, выводимые OmegaOS](assets/omega-rules.svg)
 
 ## Архитектура
 
@@ -49,7 +51,7 @@ omega rules list
 
 **Уровень 1 — интерфейс для человека.** TUI, CLI (40+ команд) и мост в Telegram — все они дёргают один и тот же слой под собой.
 
-**Уровень 2 — AISB Master.** Постоянно работающий агент, который остаётся запущенным, сам перезапускается, если падает, и возобновляет собственный диалог через `--continue`. Он несёт 13 шаблонов агентов, названных в честь персонажей «Матрицы» (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Architect, Merovingian, Neo, Zion, Link, Construct, Pythia). Master — это диспетчер. Он только классифицирует и маршрутизирует работу к оракулам.
+**Уровень 2 — AISB Master.** Постоянно работающий агент, который остаётся запущенным, сам перезапускается, если падает, и возобновляет собственный диалог через `--continue`. Он несёт 14 шаблонов агентов, названных в честь персонажей «Матрицы» (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Architect, Merovingian, Neo, Zion, Link, Construct, Pythia, Council). Master — это диспетчер. Он только классифицирует и маршрутизирует работу к оракулам.
 
 **Уровень 3 — Oracle.** По одному на проект. Он классифицирует запрос, планирует, отправляет воркеров на задачи и под конец прогоняет quality gate. Оракул оркеструет. Сам он код проекта не правит.
 
@@ -102,19 +104,21 @@ cd OmegaOS
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.0
-  [+] rmux daemon      connected, 8 live session(s)
+  [+] binary           omega 0.1.5
+  [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 20 Rules
+  [+] doctrine         6 Laws + 26 Rules
   [+] agent CLI        claude available
-  [+] state dir        ~/.omega/state
-  [!] telegram service omega-telegram.service inactive (start: systemctl --user start omega-telegram)
-  [!] hooks            hook scripts missing from ~/.omega/hooks
-  [+] secrets dir      ~/.omega present
-  [+] memory           18422MB available
+  [+] state dir        /home/vibe/.omega/state
+  [+] telegram service omega-tg-bot active
+  [+] hooks            track + verify present, registered in settings.json
+  [+] secrets dir      /home/vibe/.omega present
+  [+] memory           249088MB available
+  [+] claude oauth     Claude OAuth valid
+  [+] telegram poller  1 poller
 ```
 
-Строки с `[!]` — это предупреждения, а не ошибки. Здесь служба Telegram остановлена, а скрипты хуков не установлены. И то и другое опционально. Всё остальное зелёное.
+Строки с `[!]` — это предупреждения, а не ошибки: каждая содержит команду починки, а `omega doctor --fix` чинит механические поломки автоматически.
 
 Набор команд, сокращённый до тех, к которым реально будете тянуться:
 
@@ -151,7 +155,7 @@ omega pdf           Generate a PDF report
 - TUI рассчитан на терминал с 256 цветами. На 16-цветном будет уродливо.
 - Среда исполнения агентов по умолчанию — Claude Code, так что нужны CLI `claude` и аккаунт Anthropic. Другие агенты (pi, codex, gemini, glm) ставятся через `omega install` и работают, но обкатаны слабее.
 - **Одна машина.** Демон rmux локален. Оркестрации между хостами нет.
-- Это 0.1.0. Я пользуюсь этим каждый день, но вы найдёте шероховатости, на которые я ещё не натыкался.
+- Это 0.1.x. Я пользуюсь этим каждый день, но вы найдёте шероховатости, на которые я ещё не натыкался.
 
 ## Благодарности
 

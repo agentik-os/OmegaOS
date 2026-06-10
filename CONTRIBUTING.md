@@ -1,6 +1,6 @@
 # Contributing to OmegaOS
 
-Thanks for looking. OmegaOS is young (0.1.0) and the surface moves, so a quick issue before a big PR saves everyone time.
+Thanks for looking. OmegaOS is young (0.1.x — see [CHANGELOG.md](CHANGELOG.md)) and the surface moves, so a quick issue before a big PR saves everyone time.
 
 ## Build it
 
@@ -29,7 +29,7 @@ Three crates:
 - `omega-cli` — the `omega` binary (clap).
 - `omega-tui` — the session manager (ratatui).
 
-The doctrine (the 6 Laws and 20 Rules) is a typed registry in `crates/omega-core/src/rules.rs`. If you touch how agents are dispatched, that file and the funnel (`rules::agent_context_block`) are where the rules get injected. Read the "How a mission runs" section of the README first.
+The doctrine (the 6 Laws and the named operational Rules — `omega rules list` prints the current set) is a typed registry in `crates/omega-core/src/rules.rs`. If you touch how agents are dispatched, that file and the funnel (`rules::agent_context_block`) are where the rules get injected. Read the "How a mission runs" section of the README first.
 
 ## Before you open a PR
 
@@ -37,6 +37,7 @@ The doctrine (the 6 Laws and 20 Rules) is a typed registry in `crates/omega-core
 - `cargo test` passes.
 - If you added an installed asset (an agent, a command, a config, a cron, a template), update `install.sh` so a fresh `git clone && ./install.sh` reproduces it, then run `./scripts/verify-install.sh`. A feature that a fresh install wouldn't get is not done.
 - No secrets in the tree. Tokens and keys live under `~/.omega/`, which is gitignored.
+- A `feat:` commit ships with a `CHANGELOG.md` entry (under `## [Unreleased]`). A feature nobody can find in the changelog gets lost at release time.
 - No emoji in terminal output. The TUI and CLI use ASCII glyphs (`[+]`, `[!]`, `[x]`); Telegram messages are the one place emoji are fine.
 
 `clippy` and `rustfmt` aren't clean across the whole tree yet, so CI runs them as advisory rather than blocking. Don't add new clippy warnings, and if you're touching a file that's already rustfmt-clean, keep it that way.

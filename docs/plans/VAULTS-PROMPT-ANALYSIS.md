@@ -1,3 +1,5 @@
+> **Historical (2026-05-28) — kept for context.** Working analysis behind `crates/omega-core/src/amplify.rs`. Not maintained as reference.
+
 # Vaults AISB → OmegaOS: Prompt-Amplification Analysis & Reapplication Plan
 
 **Date:** 2026-05-28

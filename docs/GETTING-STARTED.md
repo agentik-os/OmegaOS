@@ -47,6 +47,20 @@ and alerts.
 
 DM the bot `/start` to see the full button menu.
 
+### Per-project agent bots (optional)
+
+Beyond the single command bot, each project can get its **own** Telegram bot —
+a dedicated chat where that project's agent answers directly. To register one:
+create a bot with [@BotFather](https://t.me/BotFather), then open the command
+bot's **project menu** (Projects → your project → dedicated bot) and paste the
+token. OmegaOS stores it in `~/.omega/agent-bots.json` and runs the bot as a
+per-project service (`omega-tg-agent-<project>.service`), resurrected
+automatically at startup.
+
+`~/.omega/agent-bots.json` and the tokens inside it are **local secret state**:
+recreated on each machine, never committed to any repo (R-TGSEC — each bot
+answers only its allow-listed users).
+
 ## Step 3 — Service keys for auto-provisioning (optional)
 
 `/omg-new-project` can provision Vercel + Convex + GitHub + Clerk + Stripe for
@@ -110,8 +124,8 @@ Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) �
 - **More CLI agents**: `omega install codex|gemini|pi|hermes|glm` (or
   Settings → Install agents in the TUI). All install user-space, no root.
 - **Global keybindings**: `omega install-bindings` (Ctrl+Space popup).
-- **Themes**: 15 TUI palettes with live preview (Settings → Theme) — the full
-  gallery, slugs, and Termius guidance live in [docs/THEMES.md](THEMES.md).
+- **Themes**: a gallery of TUI palettes with live preview (Settings → Theme) —
+  the full list, slugs, and Termius guidance live in [docs/THEMES.md](THEMES.md).
 - **Remote use from a laptop**: `mosh user@host -- omega` (installed; instant
   typing over any latency). In Termius: enable the mosh toggle.
 

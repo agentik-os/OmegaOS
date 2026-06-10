@@ -5,8 +5,8 @@
 
 ## Part 1 — GitHub vs Installer vs Runtime
 
-You were confused about "GitHub = install part, installer = outside GitHub".
-Here's the truth:
+A common misconception is that the installer lives somewhere outside the
+repo. It doesn't:
 
 ### The installer IS in the GitHub repo
 
@@ -56,7 +56,7 @@ builds from the current directory.
   ├── OMEGA.md               (copied from repo)
   ├── config.toml            (from repo's config/default.toml)
   ├── providers.toml         (provider catalog)
-  ├── rules/                 (6 Laws + 20 Rules, via `omega rules export`)
+  ├── rules/                 (the typed doctrine, via `omega rules export`)
   ├── agents/                (19 agent prompts, copied)
   ├── skills/pdfgen/         (PDF generator, rsynced)
   ├── skills/audits/         (23 audits, copied)
@@ -77,7 +77,7 @@ migrate_creds "gemini" "$HOME/.config/gemini/oauth_creds.json"
 # → moves existing creds to ~/.omega/credentials/, creates symlinks back
 
 # Then:
-omega rules export    # writes the 6 Laws + 20 Rules to ~/.omega/rules/
+omega rules export    # writes the 6 Laws + the named Rules to ~/.omega/rules/
 omega sync            # symlinks rules into ~/.claude/rules/omega-*.md
                       # appends @import to ~/.gemini/GEMINI.md
                       # symlinks ~/.codex/AGENTS.md → OMEGA.md

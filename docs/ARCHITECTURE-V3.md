@@ -15,15 +15,20 @@
 │
 ├── OMEGA.md                           Universal system prompt (every agent)
 │
-├── rules/                             6 Laws + 20 Rules (.md files)
+├── rules/                             The typed doctrine — 6 Laws + named Rules (.md files; `omega rules list` prints the set)
 ├── agents/                            14 Matrix agents + oracle/worker prompts
-├── skills/                            Cross-LLM skills (pdfgen, audits, ...)
+├── skills/                            Cross-LLM skills (pdfgen, audits, llm-council, browser-use, marketing pack, ...)
 ├── docs/                              Reference documentation
 ├── projects.json                      Project registry (paths, topics, oracle sessions)
 │
 ├── config.toml                        General OmegaOS settings
 ├── providers.toml                     Per-provider config (model, base_url, default)
 ├── telegram.toml                      Telegram bridge (gitignored)
+├── deposit.toml                       Deposit/inbox bot token (0600, gitignored)
+├── agent-bots.json                    Per-project Telegram agent bots (tokens — local secret, never in the repo)
+│
+├── telegram-bot/                      Installed bot runtimes (omega-tg-bot.ts command bot, inbox-bot.ts deposit bot)
+├── inbox/                             Operator deposit inbox — files/photos/notes sent from the phone (timestamped, indexed)
 │
 ├── credentials/                       ALL provider credentials live HERE
 │   ├── claude.json                    Claude OAuth tokens (was ~/.claude/.credentials.json)

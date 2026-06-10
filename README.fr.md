@@ -4,17 +4,19 @@ Un plan de contrôle en terminal pour piloter en parallèle une flotte d'agents 
 
 [English](README.md) | Français | [Русский](README.ru.md) | [中文](README.zh.md)
 
+> Le [README anglais](README.md) est la version canonique et la plus à jour ; cette traduction peut avoir un temps de retard.
+
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
 OmegaOS n'est pas une bibliothèque qu'on importe. On l'installe sur une machine Linux. On récupère la commande `omega`, une TUI pour surveiller et tuer les sessions, et une couche d'orchestration qui distribue le travail aux agents. Il y a aussi un pont Telegram, si l'on veut piloter le tout depuis son téléphone.
 
 Le runtime d'agent par défaut, c'est Claude Code. Beaucoup d'outils savent faire tourner des agents en parallèle. Ce qui change ici, c'est que chaque agent, aussi profond soit-il dans l'arbre, porte les mêmes règles non négociables, injectées en texte brut dans son prompt. C'est la doctrine, et c'est par là qu'il faut commencer.
 
-Version 0.1.0. Je m'en sers tous les jours ; attendez-vous à des aspérités.
+Version courante : voir [CHANGELOG.md](CHANGELOG.md) (`omega -V` sur une machine installée). Je m'en sers tous les jours ; attendez-vous à des aspérités.
 
 ## La doctrine
 
-Il existe un registre typé de 6 Lois et 20 Règles. Il vit en Rust, dans `crates/omega-core/src/rules.rs` : c'est donc un artefact compilé, et pas un fichier YAML que quelqu'un a oublié de mettre à jour.
+Il existe un registre typé de 6 Lois et de Règles opérationnelles nommées (26 à l'heure où j'écris — `omega rules list` affiche l'ensemble courant). Il vit en Rust, dans `crates/omega-core/src/rules.rs` : c'est donc un artefact compilé, et pas un fichier YAML que quelqu'un a oublié de mettre à jour.
 
 **Les Lois sont inviolables.** Elles s'imposent à chaque agent et priment sur toute règle et toute tâche. Il y en a six :
 
@@ -25,7 +27,7 @@ Il existe un registre typé de 6 Lois et 20 Règles. Il vit en Rust, dans `crate
 - **L4 — Terminé veut dire 100 %, vérifié.** 92 %, ce n'est pas terminé. On énumère les tâches, on finit chacune, on vérifie chacune face au runtime.
 - **L5 — La qualité avant la vitesse.** Pas de variante allégée, simplifiée ou expédiée d'un vrai protocole. Un 403 ou un 401, c'est un abandon, pas un succès.
 
-**Les Règles sont opérationnelles.** Vingt en tout, réparties entre Universal, QualityGate, Orchestration, Reporting et Safety. Chaque Règle est cadrée selon les rôles auxquels elle s'applique : Master, Oracle, Worker. On n'encombre pas un worker de règles d'orchestration sur lesquelles il ne peut rien, et un oracle n'hérite pas de la discipline de verrouillage de fichiers du worker. Même registre, tranches différentes.
+**Les Règles sont opérationnelles.** Nommées (R-SCOPE, R-VERIFY, R-CITE…), réparties entre Universal, QualityGate, Orchestration, Reporting et Safety. Chaque Règle est cadrée selon les rôles auxquels elle s'applique : Master, Oracle, Worker. On n'encombre pas un worker de règles d'orchestration sur lesquelles il ne peut rien, et un oracle n'hérite pas de la discipline de verrouillage de fichiers du worker. Même registre, tranches différentes.
 
 ### L'entonnoir
 
@@ -41,7 +43,7 @@ Pour tout voir :
 omega rules list
 ```
 
-![omega rules list — les 6 Lois et 20 Règles, affichées par OmegaOS](assets/omega-rules.svg)
+![omega rules list — les Lois et les Règles, affichées par OmegaOS](assets/omega-rules.svg)
 
 ## Architecture
 
@@ -49,7 +51,7 @@ Quatre niveaux, de haut en bas.
 
 **Niveau 1 — Interface humaine.** La TUI, la CLI (plus de 40 commandes) et le pont Telegram pilotent tous la même couche en dessous.
 
-**Niveau 2 — AISB Master.** Un agent persistant qui reste actif, redémarre tout seul s'il meurt, et reprend sa propre conversation avec `--continue`. Il embarque 13 templates d'agents nommés d'après des personnages de Matrix (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Architect, Merovingian, Neo, Zion, Link, Construct, Pythia). Le Master est un répartiteur. Il se contente de classer le travail et de l'aiguiller vers les oracles.
+**Niveau 2 — AISB Master.** Un agent persistant qui reste actif, redémarre tout seul s'il meurt, et reprend sa propre conversation avec `--continue`. Il embarque 14 templates d'agents nommés d'après des personnages de Matrix (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Architect, Merovingian, Neo, Zion, Link, Construct, Pythia, Council). Le Master est un répartiteur. Il se contente de classer le travail et de l'aiguiller vers les oracles.
 
 **Niveau 3 — Oracle.** Un par projet. Il classe la demande, planifie, dépêche les workers, et passe le contrôle qualité à la fin. Un oracle orchestre. Il n'édite pas lui-même le code du projet.
 
@@ -102,19 +104,21 @@ Une fois terminé, lancez le doctor.
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.0
-  [+] rmux daemon      connected, 8 live session(s)
+  [+] binary           omega 0.1.5
+  [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 20 Rules
+  [+] doctrine         6 Laws + 26 Rules
   [+] agent CLI        claude available
-  [+] state dir        ~/.omega/state
-  [!] telegram service omega-telegram.service inactive (start: systemctl --user start omega-telegram)
-  [!] hooks            hook scripts missing from ~/.omega/hooks
-  [+] secrets dir      ~/.omega present
-  [+] memory           18422MB available
+  [+] state dir        /home/vibe/.omega/state
+  [+] telegram service omega-tg-bot active
+  [+] hooks            track + verify present, registered in settings.json
+  [+] secrets dir      /home/vibe/.omega present
+  [+] memory           249088MB available
+  [+] claude oauth     Claude OAuth valid
+  [+] telegram poller  1 poller
 ```
 
-Les lignes `[!]` sont des avertissements, pas des erreurs. Ici le service Telegram est arrêté et les scripts de hook ne sont pas installés. Les deux sont optionnels. Tout le reste est au vert.
+Les lignes `[!]` sont des avertissements, pas des erreurs — chacune embarque la commande de réparation, et `omega doctor --fix` répare les pannes mécaniques.
 
 La surface de commandes, réduite à celles que vous utiliserez vraiment :
 
@@ -151,7 +155,7 @@ Autant que vous les sachiez avant de vous lancer.
 - La TUI suppose un terminal 256 couleurs. Sur un terminal 16 couleurs, ce sera moche.
 - Le runtime d'agent par défaut, c'est Claude Code : il vous faut donc la CLI `claude` et un compte Anthropic. Les autres agents (pi, codex, gemini, glm) s'installent via `omega install` et tournent, mais ils sont moins éprouvés.
 - **Une seule machine.** Le daemon rmux est local. Il n'y a pas d'orchestration multi-hôtes.
-- C'est du 0.1.0. Je m'en sers tous les jours, mais vous tomberez sur des aspérités que je n'ai pas encore rencontrées.
+- C'est du 0.1.x. Je m'en sers tous les jours, mais vous tomberez sur des aspérités que je n'ai pas encore rencontrées.
 
 ## Remerciements
 
