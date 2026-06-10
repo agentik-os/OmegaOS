@@ -68,5 +68,18 @@ fi
 if [ -n "${ATLAS:-}" ] && [ -n "${HUB:-}" ]; then chat="$HUB"; th="$ATLAS"; else chat="$DM"; th=""; fi
 a=(--data-urlencode "chat_id=$chat" --data-urlencode "text=$msg" --data-urlencode "parse_mode=HTML")
 [ -n "$th" ] && a+=(--data-urlencode "message_thread_id=$th")
-curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${a[@]}" >/dev/null 2>&1 && : > "$MARKER"
-echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) atlas-brief sent (${clean}/${total} clean)"
+# curl exits 0 even on an HTTP 400 (parse error, bot kicked, dead thread id), so the
+# marker must be gated on the API's ok:true — not on curl — or a rejected brief
+# silently burns the day's 20h window. On hub/topic failure, retry once to the DM.
+res="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" "${a[@]}" 2>/dev/null)"
+if ! printf '%s' "$res" | grep -q '"ok":true' && [ "$chat" != "$DM" ]; then
+    res="$(curl -s "https://api.telegram.org/bot${TOKEN}/sendMessage" --data-urlencode "chat_id=$DM" --data-urlencode "text=$msg" --data-urlencode "parse_mode=HTML" 2>/dev/null)"
+fi
+if printf '%s' "$res" | grep -q '"ok":true'; then
+    : > "$MARKER"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) atlas-brief sent (${clean}/${total} clean)"
+else
+    mkdir -p "$OMEGA_DIR/logs"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) atlas-brief FAILED: ${res:-no response}" >> "$OMEGA_DIR/logs/atlas-brief.log"
+    exit 1
+fi

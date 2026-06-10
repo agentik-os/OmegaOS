@@ -11,7 +11,7 @@
 #      (bot token ← ~/.omega/telegram.toml, Claude OAuth ← credentials/claude.json,
 #       DOCKER_GID ← the host docker group). Vault passphrase + web password are
 #       generated ONCE and preserved across runs.
-#   2. Ensure config/omega-mc.yaml exists (AISB 13-agent roster).
+#   2. Ensure config/omega-mc.yaml exists (AISB 14-agent roster).
 #   3. Build the three local images if missing (gateway, agent-base, agent) —
 #      they are NOT published to GHCR (the agent image bundles the Claude Code
 #      binary, which can't be redistributed), so we build from source.

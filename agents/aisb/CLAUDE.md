@@ -2,7 +2,7 @@
 
 > *"Free your mind."* — Morpheus
 >
-> 13 Matrix-themed agents + 1 watcher (Pythia) — ORACLE-led autonomous orchestration,
+> 14 Matrix-themed agents incl. the Pythia watcher and the Council judge panel — ORACLE-led autonomous orchestration,
 > now fully integrated with Omega's R-18 → R-35 outcome-driven primitives.
 > v7.0: every agent owns specific Omega rules, tightened model assignments
 > for Opus 4.16 / Sonnet 4.6 / Haiku 4.5, structured outputs everywhere.

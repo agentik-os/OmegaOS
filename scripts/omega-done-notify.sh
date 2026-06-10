@@ -19,6 +19,10 @@ TG_TOML="$OMEGA_DIR/telegram.toml"
 GFILE="$OMEGA_DIR/telegram-groups.json"
 
 [ -d "$STATE" ] || exit 0
+# python3 parses every done.json below — without it this notifier would skip
+# silently FOREVER (every parse is error-suppressed). Fail loudly instead so
+# the cron's output/journal shows the real cause.
+command -v python3 >/dev/null 2>&1 || { echo "omega-done-notify: python3 MISSING — done.json reports cannot be parsed or relayed. Install python3." >&2; exit 1; }
 TOKEN="$(grep -E '^[[:space:]]*bot_token' "$TG_TOML" 2>/dev/null | head -1 | cut -d'"' -f2)"
 DM="$(grep -E '^[[:space:]]*chat_id' "$TG_TOML" 2>/dev/null | head -1 | grep -oE '\-?[0-9]+' | head -1)"
 [ -n "${TOKEN:-}" ] && [ -n "${DM:-}" ] || exit 0   # no telegram configured → nothing to do

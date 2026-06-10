@@ -9,7 +9,10 @@
 #
 # The Alerts topic is UNDELETABLE by design: if it is missing or was deleted
 # in the group, this script recreates it on the fly, persists the new id in
-# telegram-groups.json, and resends. Fallback chain: alerts topic → DM.
+# telegram-groups.json, and resends. Fallback chain: alerts topic → plain-text
+# retry (HTML parse errors die identically everywhere, so strip the tags like
+# the bot's edit() does) → DM. A fully undeliverable alert exits 1 and is
+# logged to ~/.omega/logs/alerts.log — never silently lost.
 #
 # Usage: omega-alert-send.sh "<HTML text>"
 # ═══════════════════════════════════════════════════════════════════════════
@@ -51,6 +54,22 @@ send_to() { # $1=chat $2=thread("" = none) → echoes API response
     api sendMessage "${a[@]}"
 }
 
+# Plain-text fallback: a caller passing unescaped <>& makes Telegram reject the
+# HTML ("can't parse entities") on EVERY chat — strip the tags and drop parse_mode
+# so the alert still lands (mirrors the bot's send()/edit() fallback).
+send_plain() { # $1=chat $2=thread("" = none) → echoes API response
+    local txt; txt="$(printf '%s' "$MSG" | sed 's/<[^>]*>//g')"
+    local a=(--data-urlencode "chat_id=$1" --data-urlencode "text=$txt" --data-urlencode "disable_web_page_preview=true")
+    [ -n "${2:-}" ] && a+=(--data-urlencode "message_thread_id=$2")
+    api sendMessage "${a[@]}"
+}
+
+# Every failed API response is appended here so a lost alert is diagnosable.
+log_fail() { # $1=target $2=response
+    mkdir -p "$OMEGA_DIR/logs"
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) alert-send FAILED ($1): ${2:-no response}" >> "$OMEGA_DIR/logs/alerts.log"
+}
+
 if [ -n "${HUB:-}" ]; then
     # No alerts topic on file → create it first (undeletable invariant).
     [ -n "${ALERTS:-}" ] || ALERTS="$(create_alerts_topic || true)"
@@ -64,9 +83,21 @@ if [ -n "${HUB:-}" ]; then
                 res="$(send_to "$HUB" "$ALERTS")"
                 printf '%s' "$res" | grep -q '"ok":true' && exit 0
             fi
+        # Malformed HTML dies identically on hub AND DM ($MSG unchanged) — retry
+        # tags-stripped in place before falling back.
+        elif printf '%s' "$res" | grep -qi "can't parse"; then
+            res="$(send_plain "$HUB" "$ALERTS")"
+            printf '%s' "$res" | grep -q '"ok":true' && exit 0
         fi
+        log_fail "hub $HUB topic $ALERTS" "$res"
     fi
 fi
-# Last resort: operator DM (never lose an alert).
-[ -n "${DM:-}" ] && send_to "$DM" "" >/dev/null
-exit 0
+# Last resort: operator DM (never lose an alert) — HTML first, then plain text.
+if [ -n "${DM:-}" ]; then
+    res="$(send_to "$DM" "")"
+    printf '%s' "$res" | grep -q '"ok":true' && exit 0
+    res="$(send_plain "$DM" "")"
+    printf '%s' "$res" | grep -q '"ok":true' && exit 0
+    log_fail "DM $DM" "$res"
+fi
+exit 1

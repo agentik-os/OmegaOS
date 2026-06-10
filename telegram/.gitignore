@@ -1,5 +1,0 @@
-node_modules/
-*.log
-.session.json
-sessions/
-.env

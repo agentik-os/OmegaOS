@@ -293,7 +293,7 @@ function mdToHtml(src: string): string {
 // ── Project management: "add a project" = make it MANAGED (dashboard + oracle + topic)
 const MC_CONFIG = `${OMEGA_DIR}/repos/omega-mc/config/omega-mc.yaml`;
 // Add a project's dedicated oracle to the Mission-Control roster (idempotent) so it
-// shows in the dashboard like the 13 managers + the atlas. omega-mc hot-reloads it.
+// shows in the dashboard like the 14 managers + the atlas. omega-mc hot-reloads it.
 const projId = (name: string) => name.toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
 // Remove a project's oracle entry from the Mission-Control roster (idempotent).
 function mcUnregister(name: string): boolean {
@@ -620,7 +620,7 @@ function gitMenuKb(name: string) {
 }
 
 // ── ATLAS: the Telegram brain IS Atlas — the boss the operator
-// talks to. "AISB" is the TEAM (13 Matrix manager agents + one dedicated oracle
+// talks to. "AISB" is the TEAM (14 Matrix manager agents + one dedicated oracle
 // per project), NOT a name. The Atlas directs them (or acts directly).
 // Claude binary: resolved LAZILY, per message — install.sh deliberately starts
 // this bot BEFORE claude is installed, so a load-time constant would answer
@@ -659,7 +659,7 @@ const ATLAS_DOCTRINE = doctrine("master");
 const ORACLE_DOCTRINE = doctrine("oracle");
 const IDENTITY =
   "You are ATLAS of OmegaOS — the boss the operator talks to here on Telegram. " +
-  "'AISB' is your TEAM, not your name: the 13 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia) plus one dedicated oracle per project. " +
+  "'AISB' is your TEAM, not your name: the 14 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia, council) plus one dedicated oracle per project. " +
   "You DIRECT them — dispatch to the right manager/oracle, or act directly with full VPS control. " +
   "When asked who you are, answer clearly: you are Atlas, directing the AISB team and the project oracles. Speak in the first person as Atlas.\n\n";
 // One funnel for every headless-claude brain call (Atlas + the project oracles):
@@ -706,7 +706,7 @@ async function runClaude(text: string, systemPrompt: string, addDir: string, who
 }
 async function master(text: string): Promise<string> {
   // Headless Claude AS ATLAS, full VPS control: every tool, whole-FS
-  // (--add-dir /), permissions auto-approved. It dispatches to the 13 managers /
+  // (--add-dir /), permissions auto-approved. It dispatches to the 14 managers /
   // project oracles (omega dispatch) or acts directly. runClaude guards a stuck run.
   return runClaude(text, IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE, "/", "Atlas");
 }
@@ -719,7 +719,7 @@ async function projectOracle(project: string, text: string): Promise<string> {
   const dir = repoPath(project) || gitRepos().find(r => r.name.toLowerCase() === project.toLowerCase())?.path || `${homedir()}/Station`;
   const scope =
     `You are the ORACLE of the project "${project}" — its dedicated orchestrator. Your ENTIRE world is this project at ${dir}: you have full knowledge of its code, history and state, and you orchestrate ONLY this project. ` +
-    `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 13 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
+    `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 14 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
   return runClaude(text, scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE, dir, `The ${project} oracle`, dir);
@@ -879,7 +879,9 @@ function teardownAgentBot(id: string) {
 // → a visible Claude Code oracle session (its own mission; it delegates to dynamic
 // workflows / workers / audit-review). The Monitor watches done.json and relays the
 // result. The bot NEVER does project work itself (no headless brain).
-type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number; resends?: number };
+// `gateSt` = the provisional status already rendered during an L4 gate hold, so the
+// 12s report poll re-edits the card only when the verdict actually changes.
+type Watch = { chat: number; thread?: number; mission: string; ts: number; oracle: string; project: string; msgId?: number; resends?: number; gateSt?: string };
 // Normalize an oracle id for comparison: the live progress/watch name carries the
 // "oracle-" prefix (oracle-dentistrygpt-8) but done.json stores the bare key
 // (dentistrygpt-8). Compare prefix-insensitively so reports match the RIGHT card.
@@ -907,7 +909,15 @@ function rehydrateWatching() {
     try {
       const p = JSON.parse(readFileSync(f, "utf8"));
       if (!p?.msgId || p.bot !== BOT_ID || !p.oracle) continue;
-      if (existsSync(`${OMEGA_DIR}/state/${p.oracle}.done.json`)) continue;
+      // Finished → skip, EXCEPT a gate-held provisional verdict (pending +
+      // gate_pending): that watch must survive a restart so the L4 upgrade to
+      // done_clean still re-edits the SAME card (pollReports' gate-hold path).
+      const df = `${OMEGA_DIR}/state/${p.oracle}.done.json`;
+      if (existsSync(df)) {
+        let hold = false;
+        try { const dd = JSON.parse(readFileSync(df, "utf8")); hold = dd.status === "pending" && dd.gate_pending === true; } catch {}
+        if (!hold) continue;
+      }
       if (Date.now() - statSync(f).mtimeMs > 24 * 3600_000) continue;
       if (watching.some(w => w.oracle === p.oracle)) continue;
       watching.push({ chat: p.chat, thread: p.thread ?? undefined, mission: p.mission || "", ts: 0, oracle: p.oracle, project: p.project || "", msgId: p.msgId });
@@ -1030,8 +1040,19 @@ async function pollReports() {
     // splice the wrong oracle's live card, freezing a still-running oracle's card.
     const idx = watching.findIndex(w => finishedTs >= w.ts - 5000 && normOracle(w.oracle) === normOracle(d.oracle));
     if (idx < 0) continue;
-    const w = watching[idx]; reported.add(f); watching.splice(idx, 1);
+    const w = watching[idx];
     const st = d.status || "done";
+    // L4 gate hold: `pending` + gate_pending=true is a PROVISIONAL verdict — `omega
+    // progress` / patrol rewrite this very done.json to done_clean once the plan
+    // hits 100%. Finalizing here froze the card on "mission incomplete" forever
+    // (watch spliced, file in `reported`), so the upgrade never reached the card.
+    // Render the provisional state once, keep the watch alive, and only finalize
+    // when the verdict can no longer change.
+    const gateHold = st === "pending" && d.gate_pending === true;
+    if (gateHold) {
+      if (w.gateSt === st) continue; // provisional state already on the card
+      w.gateSt = st;
+    } else { reported.add(f); watching.splice(idx, 1); }
     // Symbol aesthetic — no emoji. Report v3: status glyph + full bar + summary
     // (long → expandable) + subtle footer. Edits the live progress card in place.
     const sym = st === "done_clean" ? "✓" : st === "failed" ? "✗" : st === "blocked" ? "‖" : st === "pending" ? "…" : "▪";
@@ -1060,8 +1081,13 @@ async function pollReports() {
     // Persist the oracle's report into the conversation history (+ MC mirror) so the
     // next turn — to Atlas or the oracle — has the full thread.
     histAppend(w.chat, w.thread, "assistant", `[${d.project || w.project}] ${d.summary || label}`, String(d.project || w.project));
-    try { writeFileSync(`${f}.notified`, ""); } catch {}
-    try { Bun.spawnSync(["rm", "-f", `${OMEGA_DIR}/state/${w.oracle}.progress.json`]); } catch {}
+    // The marker records WHICH status was notified — omega-done-notify content-keys
+    // its re-arm on the marker body, and an empty marker matches ANY later status
+    // (it ate the pending→done_clean upgrade notification).
+    try { writeFileSync(`${f}.notified`, st); } catch {}
+    // During a gate hold keep progress.json: pollProgress keeps the card live and
+    // the final (upgraded) report still needs its checklist.
+    if (!gateHold) try { Bun.spawnSync(["rm", "-f", `${OMEGA_DIR}/state/${w.oracle}.progress.json`]); } catch {}
   }
 }
 
@@ -1253,6 +1279,7 @@ const MENU: [string, string][] = [
   ["menu", "Action hub — all commands as buttons"],
   ["commands", "Show available commands"],
   ["agents", "List the AISB agents (talk via the agents bot)"],
+  ["council", "Convene @council — judge panel for a high-stakes/contested decision"],
   ["dashboard", "Open the Mission Control dashboard (link)"],
   ["status", "Live system status"],
   ["sessions", "Active sessions — Status / Kill"],
@@ -1698,8 +1725,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "billing") return edit(chat, msgId, pre("Billing", await omega(["monitor"])), kb([[back("account")]]));
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
-  if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all"])), kb([[back("clean")]]));
-  if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup"])), kb([[back("clean")]]));
+  if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all", "--yes"])), kb([[back("clean")]]));
+  if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup", "--yes"])), kb([[back("clean")]]));
   if (ns === "do" && action === "diskclean") {
     const cmd = "echo '== Docker build cache =='; docker builder prune -f 2>&1 | tail -1; echo '== APT =='; apt-get clean && echo ok; echo '== journal =='; journalctl --vacuum-size=100M 2>&1 | tail -1; echo '== caches user =='; bash " + OMEGA_DIR + "/skills/cleanup/scripts/clean-caches.sh 2>/dev/null | grep -i purg; echo; df -h / | tail -1";
     const out = await $`sudo bash -c ${cmd}`.nothrow().text();
@@ -2120,6 +2147,14 @@ async function main() {
             }
           }
           else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; await send(chatId, pre(`dispatch → ${p}`, await omega(["dispatch", p, m.join(" ")])), undefined, thread); }
+          // /council <question> — MENU advertises it, so it MUST act here: KNOWN
+          // short-circuits the brain fallback, and view() would silently render the
+          // generic menu. Route it to the Atlas brain with an explicit convene order.
+          else if (cmd === "council") {
+            const q = a.join(" ").trim();
+            if (!q) await send(chatId, card("COUNCIL", " ⚖️ Send: <code>/council &lt;decision or question&gt;</code>\n Convenes the multi-model judge panel (@council, llm-council skill) and reports the verdict + dissent."), undefined, thread);
+            else await brainReply(chatId, msg.message_id, thread, `Convene the @council (the llm-council skill — multi-model judge panel) on the following high-stakes question, then report the final verdict AND the dissent: ${q}`);
+          }
           else if (KNOWN.has(cmd)) { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
           else if (projectForCommand(cmd)) {
             // /{project} <mission> — talk straight to that project's oracle from the

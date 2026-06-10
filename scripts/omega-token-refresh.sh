@@ -65,6 +65,6 @@ fi
 if bash "$OMEGA_DIR/bin/omega-alert-send.sh" "⚠️ AISB: the Claude token refresh failed. Open /account → 🔐 Login to re-authenticate (otherwise the agents will start hitting 401)." 2>/dev/null; then
     echo "$(stamp) refresh failed — operator alerted on Telegram"
 else
-    echo "$(stamp) refresh failed — no telegram config to alert"
+    echo "$(stamp) refresh failed — Telegram alert ALSO failed (config missing or send error; see alert-send output)"
 fi
 exit 0
