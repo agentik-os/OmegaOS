@@ -205,7 +205,13 @@ async function edit(chat: number, msgId: number, text: string, markup?: any, thr
   if (desc.includes("not modified")) return r;
   // Malformed HTML from model output → edit as CLEAN plain text (tags stripped).
   if (desc.includes("parse")) return tg("editMessageText", { ...body, text: plainText(text).slice(0, 4096), parse_mode: undefined });
-  // Message gone (e.g. placeholder deleted): post a fresh message, keeping topic context.
+  // Message gone (placeholder deleted / uneditable) → post a fresh message, keeping
+  // topic context — but ONLY for a genuine "message gone" error. A 429 rate-limit, a
+  // network hiccup, or "chat not found" is NOT a deleted card: resending it every 6s
+  // IS the flood, and a resend mid-429-storm only deepens the rate-limit. On any
+  // transient error, return the failed result and let the next poll edit in place.
+  const gone = desc.includes("message to edit not found") || desc.includes("message can't be edited") || desc.includes("message_id_invalid") || desc.includes("message identifier is not specified");
+  if (!gone) return r;
   // Log WHY so a recurring resend (the flood) is diagnosable from the bot journal.
   console.error(`edit→resend: chat=${chat} msg=${msgId} reason="${(r.description || "?").slice(0, 80)}"`);
   return send(chat, text, markup, thread);
@@ -990,9 +996,13 @@ async function pollProgress() {
         console.error(`pollProgress: ${w.oracle} card kept disappearing (${w.resends} resends) — stopping live updates (flood guard)`);
         w.msgId = undefined;
       }
-    } else {
+    } else if (r?.ok) {
       w.resends = 0; // healthy in-place edit (or harmless no-op) → reset the guard
     }
+    // else: a transient failure (rate-limit / network) — edit() neither edited in
+    // place nor resent anything. Do NOT reset the guard and do NOT post: just retry
+    // on the next tick once the rate-limit window clears. (Resetting here is what let
+    // the guard never trip during a 429 storm — the exact flood it must stop.)
   }
 }
 // Monitor: scan ~/.omega/state/oracle-*.done.json, relay each finished dispatch back
