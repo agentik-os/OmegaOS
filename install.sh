@@ -23,10 +23,10 @@ export NEEDRESTART_MODE=a
 export PIP_NO_INPUT=1
 export CI="${CI:-1}"   # many installers go non-interactive when CI is set
 
-# Single source of truth: the workspace Cargo.toml version (falls back to the
-# last known release if the parse ever fails).
+# Single source of truth: the workspace Cargo.toml version. Launched via
+# curl|bash there is no Cargo.toml in $PWD yet — re-derived after the Phase 4
+# clone (cd "$OMEGA_SRC"), so the epilogue never shows a stale hardcoded number.
 OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2)"
-[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="0.1.2"
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 REPO_URL="https://github.com/agentik-os/OmegaOS"
@@ -441,6 +441,39 @@ install_command_bot() {
         [[ -x "$HOME/.bun/bin/bun" ]] && { BUN_BIN="$HOME/.bun/bin/bun"; export PATH="$HOME/.bun/bin:$PATH"; }
         [[ -z "$BUN_BIN" ]] && command -v npm >/dev/null 2>&1 && { npm install -g bun >/dev/null 2>&1 || true; BUN_BIN="$(command -v bun || true)"; }
     fi
+    # BOTH init systems exec a tiny wrapper that resolves bun at RUNTIME: freezing
+    # the install-time $BUN_BIN into the unit meant one bun reinstall (new path)
+    # → eternal respawn throttle under KeepAlive=true / Restart=always (proven on
+    # macOS; the identical hazard existed in the Linux units). The wrapper
+    # survives bun moving, so it is written unconditionally.
+    local TG_WRAPPER="$OMEGA_DIR/bin/tg-bot-launch.sh"
+    mkdir -p "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
+    cat > "$TG_WRAPPER" <<EOF
+#!/usr/bin/env bash
+# OmegaOS Telegram bot launcher (systemd/launchd → here → bun). Resolves bun at
+# runtime so a bun reinstall never bricks the service.
+OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+# Size-cap log rotation: launchd never rotates StandardOut/ErrPath, so under
+# KeepAlive=true these grow unbounded. Rotate at every launch (KeepAlive
+# restarts make launch-time rotation effective): >5MB → COPY to <name>.1 then
+# truncate in place (copytruncate). NOT mv: launchd opens these fds at job
+# spawn BEFORE this wrapper runs, so mv re-points the live fds at .1 and the
+# rotating generation streams uncapped there. copytruncate keeps the fds on
+# the truncated original — .1 holds the snapshot at rotation, the live file
+# restarts at 0 and is re-capped at every respawn. (Under systemd output goes
+# to the journal, these files don't exist, and the loop is a no-op.)
+for _log in "\$OMEGA_DIR/logs/tg-bot.log" "\$OMEGA_DIR/logs/tg-bot.err.log"; do
+    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then
+        cp "\$_log" "\$_log.1" && : > "\$_log"
+    fi
+done
+for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
+done
+echo "tg-bot-launch: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2
+exit 127
+EOF
+    chmod +x "$TG_WRAPPER"
     if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
         local SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
         cat > "$SD_DIR/omega-tg-bot.service" <<EOF
@@ -452,7 +485,7 @@ After=network-online.target
 Type=simple
 Environment=OMEGA_DIR=%h/.omega
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=$BUN_BIN %h/.omega/telegram-bot/omega-tg-bot.ts
+ExecStart=%h/.omega/bin/tg-bot-launch.sh
 Restart=always
 RestartSec=3
 
@@ -472,36 +505,8 @@ EOF
         local LA_DIR="$HOME/Library/LaunchAgents"
         local LA_LABEL="os.omega.tg-bot"
         local LA_PLIST="$LA_DIR/$LA_LABEL.plist"
-        local TG_WRAPPER="$OMEGA_DIR/bin/tg-bot-launch.sh"
-        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
-        # launchd execs a tiny wrapper that resolves bun at RUNTIME: freezing the
-        # install-time $BUN_BIN under KeepAlive=true meant one bun reinstall (new
-        # path) → eternal respawn throttle. The wrapper survives bun moving.
-        cat > "$TG_WRAPPER" <<EOF
-#!/usr/bin/env bash
-# OmegaOS Telegram bot launcher (launchd → here → bun). Resolves bun at
-# runtime so a bun reinstall never bricks the LaunchAgent.
-OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
-# Size-cap log rotation: launchd never rotates StandardOut/ErrPath, so under
-# KeepAlive=true these grow unbounded. Rotate at every launch (KeepAlive
-# restarts make launch-time rotation effective): >5MB → COPY to <name>.1 then
-# truncate in place (copytruncate). NOT mv: launchd opens these fds at job
-# spawn BEFORE this wrapper runs, so mv re-points the live fds at .1 and the
-# rotating generation streams uncapped there. copytruncate keeps the fds on
-# the truncated original — .1 holds the snapshot at rotation, the live file
-# restarts at 0 and is re-capped at every respawn.
-for _log in "\$OMEGA_DIR/logs/tg-bot.log" "\$OMEGA_DIR/logs/tg-bot.err.log"; do
-    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then
-        cp "\$_log" "\$_log.1" && : > "\$_log"
-    fi
-done
-for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
-    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
-done
-echo "tg-bot-launch: bun not found (PATH, ~/.bun/bin, /opt/homebrew/bin, /usr/local/bin)" >&2
-exit 127
-EOF
-        chmod +x "$TG_WRAPPER"
+        mkdir -p "$LA_DIR"
+        # launchd execs the same runtime bun-resolving wrapper written above.
         cat > "$LA_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -555,6 +560,34 @@ EOF
 install_inbox_bot() {
     [[ -f "$OMEGA_SRC/telegram-bot/inbox-bot.ts" ]] || { info "Deposit bot source not found — skipping"; return 0; }
     mkdir -p "$OMEGA_DIR/telegram-bot" "$OMEGA_DIR/inbox" "$OMEGA_DIR/bin"
+    # Legacy cleanup — a hand-rolled inbox-bot.service (pre-ship deployment:
+    # ~/.omega/inbox-bot/ + token.env) polls the same bot token as the shipped
+    # omega-inbox-bot.service; two pollers on one token = Telegram 409. Same
+    # pattern as the omega-telegram.service cleanup in install_command_bot.
+    # One-time token migration FIRST (token.env: INBOX_BOT_TOKEN=… → the
+    # deposit.toml `bot_token = "…"` the shipped bot reads), so the operator's
+    # deposit inbox keeps working across the unit swap. Never clobbers an
+    # existing deposit.toml.
+    if [[ -f "$OMEGA_DIR/inbox-bot/token.env" && ! -f "$OMEGA_DIR/deposit.toml" ]]; then
+        local LEGACY_TOKEN LEGACY_CHAT
+        LEGACY_TOKEN="$(grep -m1 '^INBOX_BOT_TOKEN=' "$OMEGA_DIR/inbox-bot/token.env" 2>/dev/null | cut -d= -f2-)"
+        # The legacy bot kept its operator lock in config.json ({"chat_id": N});
+        # without migrating it the new bot would DROP every message ("no
+        # chat_id/pair_code in deposit.toml") — the token alone is not enough.
+        LEGACY_CHAT="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("chat_id",""))' "$OMEGA_DIR/inbox-bot/config.json" 2>/dev/null || true)"
+        if [[ -n "$LEGACY_TOKEN" ]]; then
+            printf 'bot_token = "%s"\n' "$LEGACY_TOKEN" > "$OMEGA_DIR/deposit.toml"
+            [[ -n "$LEGACY_CHAT" ]] && printf 'chat_id = %s\n' "$LEGACY_CHAT" >> "$OMEGA_DIR/deposit.toml"
+            chmod 600 "$OMEGA_DIR/deposit.toml"
+            ok "Deposit bot: migrated legacy inbox-bot token.env → deposit.toml${LEGACY_CHAT:+ (chat_id kept)}"
+        fi
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user disable --now inbox-bot.service 2>/dev/null || true
+        rm -f "$HOME/.config/systemd/user/inbox-bot.service" \
+              "$HOME/.config/systemd/user/default.target.wants/inbox-bot.service" 2>/dev/null || true
+        systemctl --user daemon-reload 2>/dev/null || true
+    fi
     cp -f "$OMEGA_SRC/telegram-bot/inbox-bot.ts" "$OMEGA_DIR/telegram-bot/inbox-bot.ts"
     if [[ -f "$OMEGA_SRC/scripts/inbox-bot-up.sh" ]]; then
         cp -f "$OMEGA_SRC/scripts/inbox-bot-up.sh" "$OMEGA_DIR/bin/inbox-bot-up.sh"
@@ -562,6 +595,24 @@ install_inbox_bot() {
         ln -sf "$OMEGA_DIR/bin/inbox-bot-up.sh" "$INSTALL_DIR/inbox-bot-up" 2>/dev/null || true
     fi
     local BUN_BIN; BUN_BIN="$(command -v bun || true)"; [[ -z "$BUN_BIN" && -x "$HOME/.bun/bin/bun" ]] && BUN_BIN="$HOME/.bun/bin/bun"
+    # Runtime bun-resolving wrapper, written unconditionally — same constraint as
+    # tg-bot-launch.sh above: a frozen install-time bun path under Restart=always
+    # / KeepAlive=true turns one bun reinstall into an eternal respawn throttle.
+    local IB_WRAPPER="$OMEGA_DIR/bin/inbox-bot-launch.sh"
+    mkdir -p "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
+    cat > "$IB_WRAPPER" <<EOF
+#!/usr/bin/env bash
+# OmegaOS Deposit bot launcher (systemd/launchd → here → bun). Resolves bun at runtime.
+OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+for _log in "\$OMEGA_DIR/logs/inbox-bot.log" "\$OMEGA_DIR/logs/inbox-bot.err.log"; do
+    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then cp "\$_log" "\$_log.1" && : > "\$_log"; fi
+done
+for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
+    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/inbox-bot.ts"
+done
+echo "inbox-bot-launch: bun not found" >&2; exit 127
+EOF
+    chmod +x "$IB_WRAPPER"
     if command -v systemctl >/dev/null 2>&1 && [[ -n "$BUN_BIN" ]]; then
         local SD_DIR="$HOME/.config/systemd/user"; mkdir -p "$SD_DIR"
         cat > "$SD_DIR/omega-inbox-bot.service" <<EOF
@@ -573,7 +624,7 @@ After=network-online.target
 Type=simple
 Environment=OMEGA_DIR=%h/.omega
 WorkingDirectory=%h/.omega/telegram-bot
-ExecStart=$BUN_BIN %h/.omega/telegram-bot/inbox-bot.ts
+ExecStart=%h/.omega/bin/inbox-bot-launch.sh
 Restart=always
 RestartSec=3
 
@@ -589,21 +640,8 @@ EOF
         local LA_DIR="$HOME/Library/LaunchAgents"
         local LA_LABEL="os.omega.inbox-bot"
         local LA_PLIST="$LA_DIR/$LA_LABEL.plist"
-        local IB_WRAPPER="$OMEGA_DIR/bin/inbox-bot-launch.sh"
-        mkdir -p "$LA_DIR" "$OMEGA_DIR/logs" "$OMEGA_DIR/bin"
-        cat > "$IB_WRAPPER" <<EOF
-#!/usr/bin/env bash
-# OmegaOS Deposit bot launcher (launchd → here → bun). Resolves bun at runtime.
-OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
-for _log in "\$OMEGA_DIR/logs/inbox-bot.log" "\$OMEGA_DIR/logs/inbox-bot.err.log"; do
-    if [ -f "\$_log" ] && [ "\$(wc -c < "\$_log")" -gt 5242880 ]; then cp "\$_log" "\$_log.1" && : > "\$_log"; fi
-done
-for cand in "\$(command -v bun 2>/dev/null)" "\$HOME/.bun/bin/bun" /opt/homebrew/bin/bun /usr/local/bin/bun; do
-    [ -n "\$cand" ] && [ -x "\$cand" ] && exec "\$cand" "\$OMEGA_DIR/telegram-bot/inbox-bot.ts"
-done
-echo "inbox-bot-launch: bun not found" >&2; exit 127
-EOF
-        chmod +x "$IB_WRAPPER"
+        mkdir -p "$LA_DIR"
+        # launchd execs the same runtime bun-resolving wrapper written above.
         cat > "$LA_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -651,6 +689,11 @@ if [[ -z "$OMEGA_SRC" ]]; then
 fi
 
 cd "$OMEGA_SRC"
+# curl|bash path: the version parse at the top of the script ran before the
+# clone existed — re-derive from the cloned Cargo.toml (still the single source
+# of truth; "unknown" only if the workspace manifest is unparseable).
+[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2)"
+[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="unknown"
 if [[ -n "${PREBUILT_OK:-}" ]]; then
     ok "omega CLI already installed from prebuilt — skipping source build"
 else
@@ -766,9 +809,12 @@ cp agents/*.md "$AGENTS_DIR/" 2>/dev/null || true
 cp -r agents/aisb/*.md "$AGENTS_DIR/aisb/" 2>/dev/null || true
 ok "Agent templates installed to $AGENTS_DIR/"
 
-# Install PDF generator (templates + engine — deps installed on first use)
+# Install PDF generator (templates + engine — deps installed on first use).
+# Canonical home is ~/.omega/skills/pdfgen — what the omega binary's lookup
+# (find_pdfgen_dir) prefers and what R-PDF documents; ~/.omega/pdfgen is the
+# LEGACY location, kept alive as a compatibility symlink for old references.
 PDFGEN_SRC="$OMEGA_SRC/tools/pdfgen"
-PDFGEN_DST="$OMEGA_DIR/pdfgen"
+PDFGEN_DST="$OMEGA_DIR/skills/pdfgen"
 if [[ -d "$PDFGEN_SRC" ]]; then
     mkdir -p "$PDFGEN_DST"
     if command -v rsync >/dev/null 2>&1; then
@@ -779,7 +825,20 @@ if [[ -d "$PDFGEN_SRC" ]]; then
         cp -a "$PDFGEN_SRC/." "$PDFGEN_DST/"
         rm -rf "$PDFGEN_DST/node_modules" "$PDFGEN_DST/.next" "$PDFGEN_DST/output"
     fi
-    ok "PDF generator installed to $PDFGEN_DST/ (deps auto-install on first 'omega pdf')"
+    # Migrate the legacy real dir to a symlink. The SOURCE tree there is a pure
+    # install copy, but RUNTIME artifacts are not: `omega pdf` runs with the
+    # resolved pdfgen dir as CWD, so user-generated PDFs (relative --out) and
+    # output/ live INSIDE the legacy dir — rescue those before discarding.
+    if [[ -d "$OMEGA_DIR/pdfgen" && ! -L "$OMEGA_DIR/pdfgen" ]]; then
+        find "$OMEGA_DIR/pdfgen" -maxdepth 1 -name '*.pdf' -exec mv -n {} "$PDFGEN_DST/" \; 2>/dev/null || true
+        if [[ -d "$OMEGA_DIR/pdfgen/output" ]]; then
+            mkdir -p "$PDFGEN_DST/output"
+            cp -an "$OMEGA_DIR/pdfgen/output/." "$PDFGEN_DST/output/" 2>/dev/null || true
+        fi
+        rm -rf "$OMEGA_DIR/pdfgen"
+    fi
+    ln -sfn "$PDFGEN_DST" "$OMEGA_DIR/pdfgen"
+    ok "PDF generator installed to $PDFGEN_DST/ (legacy ~/.omega/pdfgen → symlink; deps auto-install on first 'omega pdf')"
 else
     info "PDF generator source not found — skipping (can be added later)"
 fi
@@ -1348,7 +1407,10 @@ mkdir -p "$OMEGA_DIR/rules"
 if [[ -d "$OMEGA_SRC/rules" ]]; then
     cp "$OMEGA_SRC/rules"/*.md "$OMEGA_DIR/rules/" 2>/dev/null || true
 fi
-"$INSTALL_DIR/omega" rules export 2>/dev/null || true
+# Failure-tolerant (a broken binary must not abort the install) but VISIBLE:
+# the old silent `|| true` could print "ok … (0 files)" with nothing exported.
+"$INSTALL_DIR/omega" rules export 2>/dev/null \
+    || warn "omega rules export failed — code-registered rules not exported (re-run later: omega rules export)"
 RULES_COUNT=$(ls "$OMEGA_DIR/rules" 2>/dev/null | wc -l)
 ok "Rules exported to $OMEGA_DIR/rules/ ($RULES_COUNT files)"
 
@@ -1356,10 +1418,14 @@ ok "Rules exported to $OMEGA_DIR/rules/ ($RULES_COUNT files)"
 cp -r "$OMEGA_SRC/agents/"* "$AGENTS_DIR/" 2>/dev/null || true
 ok "Agent prompts installed"
 
-# Sync rules + OMEGA.md into all LLM config directories
+# Sync rules + OMEGA.md into all LLM config directories. Failure-tolerant but
+# visible (same constraint as rules export above — no silent empty sync).
 info "Syncing to LLM config directories..."
-"$INSTALL_DIR/omega" sync 2>/dev/null || true
-ok "LLM configs synced (Claude, Gemini, Codex)"
+if "$INSTALL_DIR/omega" sync 2>/dev/null; then
+    ok "LLM configs synced (Claude, Gemini, Codex)"
+else
+    warn "omega sync failed — LLM configs NOT synced (re-run later: omega sync)"
+fi
 
 # Schedule the self-improvement patrol (curator auto-trigger + trajectory
 # pruning). Idempotent — only adds the cron line if it's not already there.
@@ -1651,6 +1717,60 @@ else
     info "Companion skill packs deferred (planning-with-files, claude-mem, superpowers, …). Add: OMEGA_WITH_COMPANION=1 ./install.sh"
 fi
 
+# ─── Phase 6.92: Nova — personal-assistant layer (opt-in) ────────────────────
+# Nova is the operator's PERSONAL companion: the fallback persona
+# (agents/companion.md — shipped with the other agent prompts above), proactive
+# cron touchpoints (nova-report morning/evening/nudge → nova-send), an
+# always-alive terminal-session watchdog (nova-godmode), and a Composio app
+# connector (nova-composio-connect + the nova-apps.json catalogue).
+# OPT-IN (OMEGA_WITH_NOVA=1), like the browser stack: Nova needs her OWN
+# Telegram bot token + per-operator secrets (~/.omega/nova-secrets.env,
+# NOVA_CHAT_ID at minimum), so a default install must not schedule crons that
+# can only fail. Secrets and the live catalogue stay local-only (gitignored).
+step "Phase 6.92: Nova personal-assistant layer"
+if [[ "${OMEGA_WITH_NOVA:-0}" == "1" ]]; then
+    for nsk in nova-report nova-send nova-godmode nova-composio-connect; do
+        if [[ -f "$OMEGA_SRC/scripts/$nsk.sh" ]]; then
+            cp -f "$OMEGA_SRC/scripts/$nsk.sh" "$OMEGA_DIR/bin/$nsk.sh"
+            chmod +x "$OMEGA_DIR/bin/$nsk.sh"
+        fi
+    done
+    # Seed the app catalogue + the secrets template ONCE — never clobber the
+    # operator's live copies (they hold per-operator connection state / keys).
+    if [[ -f "$OMEGA_SRC/config/nova-apps.sample.json" && ! -f "$OMEGA_DIR/nova-apps.json" ]]; then
+        cp "$OMEGA_SRC/config/nova-apps.sample.json" "$OMEGA_DIR/nova-apps.json"
+        chmod 600 "$OMEGA_DIR/nova-apps.json"
+    fi
+    if [[ ! -f "$OMEGA_DIR/nova-secrets.env" ]]; then
+        cat > "$OMEGA_DIR/nova-secrets.env" <<'EOF'
+# Nova secrets — local-only, NEVER committed. Read by the nova-*.sh scripts.
+# NOVA_CHAT_ID=<your numeric Telegram user id>     (required: reports + send)
+# NOVA_OPERATOR_NAME=<how Nova calls you>           (optional)
+# NOVA_HOME=<life store dir>                        (default ~/Station/LifeStyle)
+# COMPOSIO_API_KEY=                                 (app connections via Composio)
+EOF
+        chmod 600 "$OMEGA_DIR/nova-secrets.env"
+    fi
+    # Cron touchpoints (TZ of the box). Idempotency greps the script+mode
+    # substring rather than only the OMEGA-CRON-NOVA-* marker, so a pre-marker
+    # hand-installed Nova line is never duplicated into a double-firing pair.
+    NOVA_MORNING_CRON="0 7 * * * $OMEGA_DIR/bin/nova-report.sh morning >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-MORNING-v1"
+    NOVA_EVENING_CRON="0 21 * * * $OMEGA_DIR/bin/nova-report.sh evening >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-EVENING-v1"
+    NOVA_NUDGE_CRON="0 11,15,18 * * * $OMEGA_DIR/bin/nova-report.sh nudge >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-NUDGE-v1"
+    NOVA_GODMODE_CRON="* * * * * $OMEGA_DIR/bin/nova-godmode.sh >> $OMEGA_DIR/logs/nova-godmode.log 2>&1   # OMEGA-CRON-NOVA-GODMODE-v1"
+    if command -v crontab >/dev/null 2>&1; then
+        crontab -l 2>/dev/null | grep -qF "nova-report.sh morning" || { ( crontab -l 2>/dev/null; echo "$NOVA_MORNING_CRON" ) | crontab -; }
+        crontab -l 2>/dev/null | grep -qF "nova-report.sh evening" || { ( crontab -l 2>/dev/null; echo "$NOVA_EVENING_CRON" ) | crontab -; }
+        crontab -l 2>/dev/null | grep -qF "nova-report.sh nudge"   || { ( crontab -l 2>/dev/null; echo "$NOVA_NUDGE_CRON" ) | crontab -; }
+        crontab -l 2>/dev/null | grep -qF "nova-godmode.sh"        || { ( crontab -l 2>/dev/null; echo "$NOVA_GODMODE_CRON" ) | crontab -; }
+        ok "Nova layer installed (4 scripts + crons: morning/evening/nudge reports + godmode watchdog). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
+    else
+        ok "Nova layer installed (4 scripts; crontab unavailable — schedule nova-report.sh/nova-godmode.sh in your scheduler)"
+    fi
+else
+    info "Nova personal-assistant layer deferred (needs its own bot token + NOVA_CHAT_ID). Add: OMEGA_WITH_NOVA=1 ./install.sh"
+fi
+
 # ─── Phase 6.95: Telegram interface → OmegaMC (Agentik-Telegram, Go + Docker) ───
 # OmegaMC (agentik-os/agentik-telegram) is the OmegaOS Telegram control plane: it
 # routes Telegram messages to named AISB agents — each running Claude Code in its
@@ -1678,7 +1798,33 @@ elif timeout 120 git clone --depth 1 https://github.com/agentik-os/Agentik-Skill
     ok "Agentik-Skills cloned → $SKILLS_REPO_DIR"
 else
     rm -rf "$SKILLS_REPO_DIR" 2>/dev/null || true
-    info "Agentik-Skills clone skipped — private repo needs gh auth. Later: gh repo clone agentik-os/Agentik-Skills $SKILLS_REPO_DIR"
+    # Honest about the gap: this is a PRIVATE repo, so without auth a fresh box
+    # lacks every skill family that lives only there — say which, and how to fix.
+    info "Agentik-Skills unavailable (private repo, no gh/git auth) — the Motion/animation skill families (hyperframes, gsap, three, animejs, lottie, waapi, css-animations, typegpu, remotion) + art-director design packs will be MISSING. Get access from the agentik-os maintainer, then: gh auth login && gh repo clone agentik-os/Agentik-Skills $SKILLS_REPO_DIR && ./install.sh"
+fi
+
+# Mirror the cloned library into the live skill store (Agentik-Skills mirror
+# step). The repo is the canonical SSOT skills library; without this mirror its
+# skills existed only where someone hand-copied them, so a fresh install
+# silently lacked 16+ live skills. Every dir holding a SKILL.md — top level
+# (<skill>/) AND categorized (<Category>/<skill>/) — lands in
+# ~/.omega/skills/<skill>/. Skills the OmegaOS repo itself ships are SKIPPED:
+# the Phase 5 vendored copies are canonical here, the mirror only fills gaps.
+if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
+    SKMIRROR=0
+    while IFS= read -r sk_md; do
+        sk_dir="$(dirname "$sk_md")"
+        sk_name="$(basename "$sk_dir")"
+        [[ -d "$OMEGA_SRC/skills/$sk_name" ]] && continue   # OmegaOS-vendored = canon
+        mkdir -p "$OMEGA_DIR/skills/$sk_name"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$sk_dir/" "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
+        else
+            cp -r "$sk_dir/." "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
+        fi
+        SKMIRROR=$((SKMIRROR + 1))
+    done < <(find "$SKILLS_REPO_DIR" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/.git/*' 2>/dev/null)
+    ok "Agentik-Skills mirrored → $OMEGA_DIR/skills/ ($SKMIRROR skills from the SSOT library)"
 fi
 
 if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
@@ -1721,6 +1867,12 @@ fi
 # the durable copies (single source: docs/GETTING-STARTED.md in the repo).
 if [[ -f "$OMEGA_SRC/docs/GETTING-STARTED.md" ]]; then
     cp -f "$OMEGA_SRC/docs/GETTING-STARTED.md" "$OMEGA_DIR/GETTING-STARTED.md"
+fi
+# Same parity for the full operator manual (vocabulary, cockpits, skill
+# catalog, LLM-agent contract): GUIDE.md is the document we tell people to
+# read next — a fresh box must have it locally, not just on GitHub.
+if [[ -f "$OMEGA_SRC/GUIDE.md" ]]; then
+    cp -f "$OMEGA_SRC/GUIDE.md" "$OMEGA_DIR/GUIDE.md"
 fi
 
 echo ""

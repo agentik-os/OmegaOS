@@ -128,8 +128,27 @@ else
   bad "local commits not pushed to origin"
 fi
 
+# 8b. npm channel parity: the npx installer (installer/package.json) version must
+#     match what the registry actually serves — a version bump without
+#     `npm publish` ships nobody anything, and the npm channel otherwise sits
+#     entirely outside this gate. Skips gracefully offline / without node+npm.
+if command -v npm >/dev/null 2>&1 && command -v node >/dev/null 2>&1; then
+  REPO_NPM_VER="$(node -p 'require("./installer/package.json").version' 2>/dev/null)"
+  REG_NPM_VER="$(timeout 15 npm view omega-os version 2>/dev/null)"
+  if [ -z "$REG_NPM_VER" ]; then
+    ok "npm registry unreachable (offline?) — installer version-parity skipped (repo: ${REPO_NPM_VER:-?})"
+  elif [ "$REPO_NPM_VER" = "$REG_NPM_VER" ]; then
+    ok "npx installer version matches the npm registry (omega-os $REG_NPM_VER)"
+  else
+    bad "installer/package.json $REPO_NPM_VER != published omega-os $REG_NPM_VER — npm publish (or revert the bump)"
+  fi
+else
+  ok "npm/node absent — installer version-parity check skipped"
+fi
+
 # 9. Self-containment assets (reset-survival): persistent service, hooks, identity.
 if [ -f telegram-bot/omega-tg-bot.ts ] && [ -f scripts/omega-tg-up.sh ] && grep -q "omega-tg-bot.ts" install.sh && grep -q "omega-tg-up" install.sh; then ok "Telegram command bot shipped + wired (omega-tg-bot + omega-tg-up + systemd service)"; else bad "Telegram command bot (omega-tg-bot.ts / omega-tg-up.sh) not shipped/wired in install.sh"; fi
+if [ -f telegram-bot/inbox-bot.ts ] && [ -f scripts/inbox-bot-up.sh ] && grep -q "inbox-bot.ts" install.sh && grep -q "inbox-bot-up" install.sh && grep -q "omega-inbox-bot.service" install.sh; then ok "Deposit bot shipped + wired (inbox-bot + inbox-bot-up + omega-inbox-bot.service)"; else bad "Deposit bot (inbox-bot.ts / inbox-bot-up.sh) not shipped/wired in install.sh"; fi
 if [ -f scripts/omega-mc-up.sh ] && grep -q "omega-mc-up.sh" install.sh && grep -q "agentik-telegram" install.sh; then ok "OmegaMC optional multi-agent backend shipped + wired (omega-mc-up + agentik-telegram clone)"; else bad "OmegaMC (omega-mc-up.sh / agentik-telegram clone) not shipped/wired in install.sh"; fi
 if ls scripts/hooks/*.sh >/dev/null 2>&1 && grep -q "scripts/hooks" install.sh; then ok "tracking + verify hooks shipped + installed"; else bad "hooks not shipped/wired"; fi
 if [ -f agents/identity/SOUL.template.md ] && grep -q "SOUL.template" install.sh; then ok "SOUL identity template shipped + installed"; else bad "SOUL template not shipped/wired"; fi
@@ -158,11 +177,39 @@ if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"'
 # Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).
 if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
-if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools.sh" install.sh; then ok "companion tools (planning-with-files/higgsfield/claude-mem/superpowers/mempalace/remotion) shipped + wired"; else bad "companion-tools installer not shipped/wired in install.sh"; fi
+# HONEST contract: install.sh DEFERS this pack by default (opt-in
+# OMEGA_WITH_COMPANION=1) — the gate asserts the opt-in branch exists; it must
+# never claim a default install provisions it.
+if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools.sh" install.sh && grep -q "OMEGA_WITH_COMPANION" install.sh; then ok "companion tools (planning-with-files/higgsfield/claude-mem/superpowers/mempalace/remotion) available OPT-IN (deferred by default — OMEGA_WITH_COMPANION=1)"; else bad "companion-tools installer not shipped/wired (opt-in branch) in install.sh"; fi
 # Browser engine for the Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester)
-# + CDP/DevTools automation: install.sh must provision Playwright AND its Chromium
-# (Chromium ships the DevTools Protocol, so one install covers both).
-if grep -q "playwright install chromium" install.sh && grep -q "OMEGA_SKIP_BROWSER" install.sh; then ok "Playwright + Chromium (CDP/DevTools) provisioned by install.sh"; else bad "install.sh does not install Playwright/Chromium — browser audits would fail on a fresh box"; fi
+# + CDP/DevTools automation. HONEST contract: install.sh defers the ~150MB
+# Chromium + apt deps by default (opt-in OMEGA_WITH_BROWSER=1) — a default
+# install has NO chromium, and this gate must say so instead of "provisioned".
+if grep -q "playwright install chromium" install.sh && grep -q "OMEGA_WITH_BROWSER" install.sh && grep -q "OMEGA_SKIP_BROWSER" install.sh; then ok "Playwright + Chromium (CDP/DevTools) available OPT-IN (deferred by default — OMEGA_WITH_BROWSER=1)"; else bad "install.sh browser-stack opt-in branch missing — browser audits unreachable on a fresh box"; fi
+# Nova personal-assistant layer vendored + wired as an OPT-IN (OMEGA_WITH_NOVA=1
+# — needs its own bot token), with a secrets-stripped app-catalogue sample. The
+# live ~/.omega/nova-secrets.env / nova-apps.json stay local-only state.
+NOVA_MISS=""
+for f in scripts/nova-report.sh scripts/nova-send.sh scripts/nova-godmode.sh scripts/nova-composio-connect.sh agents/companion.md config/nova-apps.sample.json; do
+  [ -f "$f" ] || NOVA_MISS="$NOVA_MISS $f"
+done
+if [ -z "$NOVA_MISS" ] && grep -q "OMEGA_WITH_NOVA" install.sh && grep -q "OMEGA-CRON-NOVA-GODMODE-v1" install.sh; then
+  ok "Nova layer shipped + wired OPT-IN (4 scripts + companion.md + apps sample + crons — OMEGA_WITH_NOVA=1)"
+else
+  bad "Nova layer not shipped/wired in install.sh (missing:${NOVA_MISS:- install.sh block})"
+fi
+# Nova vendored files must not embed operator-specific ids (a hardcoded chat-id
+# default or the maintainer's name) — they read ~/.omega/nova-secrets.env at
+# runtime. (Token patterns are already covered by the global secret gate.)
+if grep -qE 'NOVA_CHAT_ID:-[0-9]|Gareth' scripts/nova-report.sh scripts/nova-send.sh scripts/nova-godmode.sh scripts/nova-composio-connect.sh agents/companion.md config/nova-apps.sample.json 2>/dev/null; then
+  bad "Nova vendored files embed an operator id/name (must come from nova-secrets.env)"
+else
+  ok "Nova vendored files clean (operator ids/secrets read from nova-secrets.env at runtime)"
+fi
+# Agentik-Skills mirror step: cloning the SSOT library is not enough — install.sh
+# must mirror its <skill>/SKILL.md dirs into ~/.omega/skills/ or a fresh box
+# silently lacks the Motion/design families that live only there.
+if grep -q "Agentik-Skills mirrored" install.sh; then ok "Agentik-Skills → ~/.omega/skills mirror step present in install.sh"; else bad "Agentik-Skills mirror step missing from install.sh (cloned skills never reach ~/.omega/skills)"; fi
 # Quality Arsenal audit SKILLS shipped + wired (the registry is 23 audits; the
 # skill dirs must match so a fresh install can actually run them — excludes the
 # 3 non-audit dirs _shared / audit-orchestrator / audit-tracker).
@@ -248,6 +295,7 @@ if [ -f scripts/omega-self-heal.sh ] && grep -q "omega-self-heal.sh" install.sh 
 if grep -q "OMEGA_CREDENTIALS_LINK" install.sh; then ok "shared-credential override (OMEGA_CREDENTIALS_LINK) wired in install.sh"; else bad "shared-credential override not in install.sh"; fi
 if grep -q "alias om=" install.sh && grep -q "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" install.sh; then ok "shell integration (om alias + scrollback) wired in install.sh"; else bad "shell integration not in install.sh"; fi
 if [ -f docs/GETTING-STARTED.md ] && grep -q "GETTING-STARTED.md" install.sh; then ok "getting-started guide shipped + installed to ~/.omega"; else bad "getting-started guide (docs/GETTING-STARTED.md) not shipped/wired in install.sh"; fi
+if [ -f GUIDE.md ] && grep -q 'OMEGA_SRC/GUIDE.md' install.sh; then ok "GUIDE.md operator manual shipped + installed to ~/.omega"; else bad "GUIDE.md not shipped/wired in install.sh"; fi
 if grep -q "Commands::Guide" crates/omega-cli/src/main.rs && grep -q "GETTING-STARTED.md" crates/omega-cli/src/main.rs; then ok "omega guide command wired (embedded fallback)"; else bad "omega guide command missing from CLI"; fi
 if grep -q "agent-bot resurrect" telegram-bot/omega-tg-bot.ts; then ok "agent-bot units resurrected at bot startup (reinstall-safe)"; else bad "agent-bot resurrection loop missing from bot startup"; fi
 
