@@ -604,17 +604,19 @@ impl Dispatcher {
             opts.model = Some(resolve_model_flag(&self.config.default_model));
             opts.session_name = Some(oracle_name.to_string());
             // Resurrect path: same interactive oracle posture as a fresh
-            // dispatch, plus --fork-session so the resumed run forks to a NEW
-            // session instead of mutating the crashed original. The base
-            // --session-id is the SAME persisted UUID (resolve_session_id reuses
-            // state.session_id), so the fork derives from the right lineage.
+            // dispatch. NOTE: this is a FRESH conversation, not a lineage fork —
+            // resolve_session_id always mints a new UUID (see its doc: reusing a
+            // persisted id collides and the pane never launches Claude), and
+            // `--fork-session` only forks when RESUMING an existing session, so
+            // passing it alongside a fresh --session-id was a silent no-op. The
+            // crashed oracle's context is rebuilt from the mission brief +
+            // on-disk state instead.
             // A resurrected oracle is AUTONOMOUS exactly like a fresh dispatch
             // (None → --dangerously-skip-permissions): never gate on the operator.
             // ("auto" used to prompt on risky ops — the exact friction the operator
             // rejects: every OmegaOS session must run fully bypass-permissions.)
             opts.permission_mode = None;
             opts.exclude_dynamic_prompt_sections = true;
-            opts.fork_session = true;
             opts.session_id = Some(resolve_session_id(
                 &self.config.state_dir,
                 oracle_name,

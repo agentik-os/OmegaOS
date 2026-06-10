@@ -549,6 +549,110 @@ pub fn rules_for_agent(agent: AisbAgent) -> Vec<Rule> {
         .collect()
 }
 
+/// Extract the rule id from a markdown basename. Filenames are
+/// `<ID>-<slug>.md` where the id is either a Law (`L` + digits, e.g.
+/// `L0`) or a Rule (`R-` + UPPERCASE, e.g. `R-SCOPE`). Splitting on the
+/// first `-` is wrong (it would mangle `R-SCOPE` into `R`), so we walk
+/// the id grammar explicitly. Shared by the parity test, the doctor's
+/// on-disk doctrine check, and the export prune.
+pub fn id_from_basename(stem: &str) -> Option<String> {
+    let bytes = stem.as_bytes();
+    match bytes.first()? {
+        // Law: 'L' followed by one or more ASCII digits.
+        b'L' => {
+            let digits: String = stem[1..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if digits.is_empty() {
+                None
+            } else {
+                Some(format!("L{digits}"))
+            }
+        }
+        // Rule: 'R-' followed by one or more UPPERCASE ASCII letters.
+        b'R' if bytes.get(1) == Some(&b'-') => {
+            // id = 'R-' + UPPERCASE tokens joined by '-', e.g. `R-SEC`,
+            // `R-SKILLPUB`, or the multi-token `R-VISUAL-ID`. A '-' belongs
+            // to the id only when the next char is uppercase; the first
+            // lowercase char (start of the kebab slug) ends the id.
+            let chars: Vec<char> = stem[2..].chars().collect();
+            let mut id = String::new();
+            let mut i = 0;
+            while i < chars.len() {
+                let c = chars[i];
+                if c.is_ascii_uppercase() {
+                    id.push(c);
+                } else if c == '-' && chars.get(i + 1).is_some_and(|n| n.is_ascii_uppercase()) {
+                    id.push('-');
+                } else {
+                    break;
+                }
+                i += 1;
+            }
+            if id.is_empty() {
+                None
+            } else {
+                Some(format!("R-{id}"))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// The set of rule ids found in a markdown rules directory (`<ID>-<slug>.md`
+/// basenames). Used by `omega doctor` to diff the EXPORTED doctrine against
+/// the compiled registry — the in-binary count check alone never saw a
+/// deleted / extra / hand-edited file, which is what agents actually load.
+pub fn markdown_rule_ids(dir: &std::path::Path) -> std::collections::BTreeSet<String> {
+    let mut ids = std::collections::BTreeSet::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if let Some(id) = id_from_basename(stem) {
+                    ids.insert(id);
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Selective prune for `omega rules export`: delete ONLY the `.md` files
+/// whose basename id IS in the compiled registry — stale exports about to be
+/// rewritten (this covers a renamed slug for the same id). Files with an
+/// unrecognized or unregistered id are DISK-ONLY rules — install.sh copies
+/// repo `rules/*.md` into `~/.omega/rules` BEFORE running the export
+/// precisely so they survive — and must be preserved. The previous
+/// clear-everything loop wiped them, making install.sh's disk-only pass dead
+/// code. Returns the number of files pruned; best-effort, never fails.
+pub fn prune_registered_exports(dir: &std::path::Path) -> usize {
+    let registry: std::collections::BTreeSet<&'static str> =
+        all_rules().iter().map(|r| r.id).collect();
+    let mut pruned = 0usize;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if let Some(id) = id_from_basename(stem) {
+                if registry.contains(id.as_str()) && std::fs::remove_file(&path).is_ok() {
+                    pruned += 1;
+                }
+            }
+        }
+    }
+    pruned
+}
+
 impl RuleCategory {
     pub fn label(&self) -> &'static str {
         match self {
@@ -660,12 +764,13 @@ mod tests {
         );
     }
 
-    /// Locate the canonical markdown rules directory, if present. There is
-    /// no vendored copy inside the repo (the only repo `rules/` dir is a
-    /// gitignored stale worktree on an obsolete scheme), so the canonical
-    /// parity source is `$HOME/.omega/rules`. An `OMEGA_RULES_DIR` override
-    /// lets CI or a future vendored dir point the test elsewhere.
-    /// Returns `None` (→ test skips) when no directory exists.
+    /// Locate the canonical markdown rules directory, if present. The repo's
+    /// `rules/` dir is git-tracked and actively installed (install.sh copies
+    /// `rules/*.md` into `~/.omega/rules` before running the export), but it
+    /// vendors only a SUBSET of the registry, so the canonical parity source
+    /// is the full installed set at `$HOME/.omega/rules`. An
+    /// `OMEGA_RULES_DIR` override lets CI or a fully-vendored dir point the
+    /// test elsewhere. Returns `None` (→ test skips) when no directory exists.
     fn markdown_rules_dir() -> Option<std::path::PathBuf> {
         if let Ok(dir) = std::env::var("OMEGA_RULES_DIR") {
             let p = std::path::PathBuf::from(dir);
@@ -679,54 +784,38 @@ mod tests {
         p.is_dir().then_some(p)
     }
 
-    /// Extract the rule id from a markdown basename. Filenames are
-    /// `<ID>-<slug>.md` where the id is either a Law (`L` + digits, e.g.
-    /// `L0`) or a Rule (`R-` + UPPERCASE, e.g. `R-SCOPE`). Splitting on the
-    /// first `-` is wrong (it would mangle `R-SCOPE` into `R`), so we walk
-    /// the id grammar explicitly.
-    fn id_from_basename(stem: &str) -> Option<String> {
-        let bytes = stem.as_bytes();
-        match bytes.first()? {
-            // Law: 'L' followed by one or more ASCII digits.
-            b'L' => {
-                let digits: String = stem[1..]
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect();
-                if digits.is_empty() {
-                    None
-                } else {
-                    Some(format!("L{digits}"))
-                }
-            }
-            // Rule: 'R-' followed by one or more UPPERCASE ASCII letters.
-            b'R' if bytes.get(1) == Some(&b'-') => {
-                // id = 'R-' + UPPERCASE tokens joined by '-', e.g. `R-SEC`,
-                // `R-SKILLPUB`, or the multi-token `R-VISUAL-ID`. A '-' belongs
-                // to the id only when the next char is uppercase; the first
-                // lowercase char (start of the kebab slug) ends the id.
-                let chars: Vec<char> = stem[2..].chars().collect();
-                let mut id = String::new();
-                let mut i = 0;
-                while i < chars.len() {
-                    let c = chars[i];
-                    if c.is_ascii_uppercase() {
-                        id.push(c);
-                    } else if c == '-' && chars.get(i + 1).is_some_and(|n| n.is_ascii_uppercase()) {
-                        id.push('-');
-                    } else {
-                        break;
-                    }
-                    i += 1;
-                }
-                if id.is_empty() {
-                    None
-                } else {
-                    Some(format!("R-{id}"))
-                }
-            }
-            _ => None,
-        }
+    #[test]
+    fn export_prune_preserves_disk_only_rules() {
+        // CLI-3: the export prune may delete ONLY stale exports of
+        // REGISTERED ids; a disk-only rule (id not in the registry) and a
+        // non-rule .md must survive — install.sh's "copy repo rules first"
+        // pass depends on it.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("L0-ship-the-truth.md"), "registered law").unwrap();
+        std::fs::write(dir.join("R-SCOPE-one-writer-per-file.md"), "registered rule").unwrap();
+        std::fs::write(dir.join("R-CUSTOMLOCAL-my-private-rule.md"), "disk-only").unwrap();
+        std::fs::write(dir.join("notes.md"), "not a rule file").unwrap();
+
+        let pruned = prune_registered_exports(dir);
+        assert_eq!(pruned, 2, "exactly the two registered-id files are pruned");
+        assert!(!dir.join("L0-ship-the-truth.md").exists());
+        assert!(!dir.join("R-SCOPE-one-writer-per-file.md").exists());
+        assert!(dir.join("R-CUSTOMLOCAL-my-private-rule.md").exists());
+        assert!(dir.join("notes.md").exists());
+    }
+
+    #[test]
+    fn markdown_rule_ids_parses_basename_grammar() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("L4-done-means-100.md"), "").unwrap();
+        std::fs::write(dir.join("R-VISUAL-ID-higgsfield-pair.md"), "").unwrap();
+        std::fs::write(dir.join("README.md"), "").unwrap();
+        let ids = markdown_rule_ids(dir);
+        assert!(ids.contains("L4"));
+        assert!(ids.contains("R-VISUAL-ID"), "multi-token id must parse whole: {:?}", ids);
+        assert_eq!(ids.len(), 2, "non-rule files contribute no id");
     }
 
     /// Parity gate: the Rust registry (`all_rules()`) must not drift from the

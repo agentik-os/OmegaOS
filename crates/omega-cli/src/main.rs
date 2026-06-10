@@ -3298,7 +3298,11 @@ async fn cmd_orchestrate(
 /// Read-only plan progress from .planner/tracker.json.
 fn cmd_plan_status(path: &str) -> Result<()> {
     let dir = std::path::Path::new(path);
-    let tracker = omega_core::planner::PlanTracker::load(dir)
+    // load_strict: a malformed tracker must surface its parse error here — the
+    // lenient load() reported a corrupt file as "no tracker", telling the
+    // operator the plan doesn't exist while it sat there broken.
+    let tracker = omega_core::planner::PlanTracker::load_strict(dir)
+        .context("loading .planner/tracker.json")?
         .ok_or_else(|| anyhow::anyhow!("no .planner/tracker.json in {path}"))?;
     let st = tracker.status();
     println!(
@@ -3319,7 +3323,7 @@ fn cmd_plan_status(path: &str) -> Result<()> {
     // Surface the same strict gate `plan-run` enforces — so the planner can fix the
     // tracker BEFORE dispatching workers (dangling deps / trivial verifies / dups).
     match tracker.validate() {
-        Ok(()) => println!("\n[+] plan validation: OK (no dangling deps, no trivial verify_commands, no dup ids)"),
+        Ok(()) => println!("\n[+] plan validation: OK (acyclic, no dangling deps, no trivial verify_commands, no dup ids, exact files_to_touch)"),
         Err(e) => println!("\n[!] plan validation FAILED — `omega plan-run` will refuse this plan:\n{e}"),
     }
     Ok(())
@@ -3452,6 +3456,57 @@ async fn cmd_spawn_worker(
 
     if let Some(ref files) = files {
         omega_core::scope::claim_or_reject(&config.state_dir, &worker_name, files.clone())?;
+    }
+
+    // Clear any STALE lifecycle markers from a prior run under the same name.
+    // Worker names are deterministic (`<project>-worker-<task>`) and the
+    // done.json survives its session, so a leftover signal from a predecessor
+    // would make patrol read THIS fresh worker as already done on its next
+    // tick — pushing the OLD outcome to the oracle and reaping (killing) the
+    // new session after the close grace. Mirror of the Executor-path clear in
+    // orchestration.rs; the blocked/close markers go too, for the same reason.
+    // Ordering: after BOTH gates (prompt + scope claim) — a rejected dispatch
+    // must leave no side effects, and the scope gate is a rejection path too.
+    // Guard: if a same-name session is STILL ALIVE, or its done.json is fresh
+    // (a just-finished worker whose result patrol/oracle hasn't consumed yet —
+    // LLM oracles do double-fire spawn-worker), refuse instead of silently
+    // destroying the unconsumed outcome of live or just-completed work.
+    let done_marker = config.state_dir.join(format!("worker-{}.done.json", worker_name));
+    let refuse = |why: String| {
+        // This dispatch claimed scope above — a refusal must release it, or the
+        // rejected name holds its files hostage (no side effects on rejection).
+        if files.is_some() {
+            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
+        }
+        anyhow::anyhow!(why)
+    };
+    if mgr.capture_pane(&worker_name).await.is_ok() {
+        return Err(refuse(format!(
+            "worker session `{worker_name}` is still alive — not clobbering it. \
+             Wait for it to finish (or `omega kill {worker_name}`) before re-dispatching."
+        )));
+    }
+    if let Ok(meta) = std::fs::metadata(&done_marker) {
+        let fresh = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age.as_secs() < 120);
+        if fresh {
+            return Err(refuse(format!(
+                "worker `{worker_name}` left a done.json less than 2 minutes old — its result \
+                 may not be consumed yet. Re-dispatch after patrol's next tick (or remove \
+                 {} to override).",
+                done_marker.display()
+            )));
+        }
+    }
+    for marker in [
+        format!("worker-{}.done.json", worker_name),
+        format!("worker-blocked-{}.json", worker_name),
+        format!("worker-close-{}.json", worker_name),
+    ] {
+        let _ = std::fs::remove_file(config.state_dir.join(marker));
     }
 
     // --worktree: give this worker its OWN git worktree (independent HEAD + working
@@ -4212,7 +4267,12 @@ fn cmd_progress(
     m.insert("total".into(), serde_json::json!(total));
     m.insert("ts".into(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
     std::fs::create_dir_all(&config.state_dir).ok();
-    std::fs::write(&path, serde_json::to_string_pretty(&obj)?)?;
+    // Atomic tmp+rename (same idiom as done.rs): three readers poll this file
+    // concurrently — patrol's stall pass, the TUI worker bars, the Telegram
+    // card — so a torn read of a half-written JSON must be impossible.
+    let tmp = config.state_dir.join(format!(".oracle-{}.progress.json.tmp", key));
+    std::fs::write(&tmp, serde_json::to_string_pretty(&obj)?)?;
+    std::fs::rename(&tmp, &path)?;
     println!("[+] progress {}/{} for oracle-{}", done, total, key);
 
     // L4 GATE RESOLUTION: the `omega done` oracle path downgrades done_clean →
@@ -5069,17 +5129,12 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
             let rules_dir = home.join(".omega/rules");
             std::fs::create_dir_all(&rules_dir)?;
 
-            // Idempotent: clear stale exports first so a re-export always
-            // mirrors the current registry exactly (no lingering old-id files
-            // when rules are renamed or removed).
-            if let Ok(entries) = std::fs::read_dir(&rules_dir) {
-                for e in entries.flatten() {
-                    let p = e.path();
-                    if p.extension().and_then(|x| x.to_str()) == Some("md") {
-                        let _ = std::fs::remove_file(&p);
-                    }
-                }
-            }
+            // Idempotent: prune stale REGISTRY exports first so a re-export
+            // always mirrors the current registry exactly (no lingering old-id
+            // files when rules are renamed or removed) — while .md files whose
+            // id is NOT in the compiled registry survive: those are disk-only
+            // rules (install.sh copies repo rules/ before this export runs).
+            rules::prune_registered_exports(&rules_dir);
 
             let all = rules::all_rules();
             for r in &all {
@@ -5195,6 +5250,62 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
     Ok(())
 }
 
+/// Resolve the OmegaOS repo checkout that `omega sync` copies FROM.
+///
+/// The repo-sourced steps (OMEGA.md, agents/, tools/pdfgen) used bare
+/// CWD-relative paths, so running `omega sync` from anywhere but the repo
+/// root silently skipped them all. Resolution order: $OMEGA_SRC (install.sh's
+/// source-dir convention), the CWD, then the known checkout locations (the
+/// same candidate list doctor.rs uses for bot parity). A candidate counts
+/// only if it actually looks like the repo (OMEGA.md + crates/omega-core).
+fn resolve_omega_src() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(src) = std::env::var("OMEGA_SRC") {
+        if !src.is_empty() {
+            candidates.push(std::path::PathBuf::from(src));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd);
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Station/SideBusiness/OmegaOS"));
+        candidates.push(home.join("Station/OmegaOS"));
+        candidates.push(home.join("OmegaOS"));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join("OMEGA.md").is_file() && p.join("crates/omega-core").is_dir())
+}
+
+/// Prune dangling omega-managed symlinks from a ~/.claude integration dir.
+///
+/// sync only ever CREATED links, so every rule rename/removal left its old
+/// link pointing at a deleted ~/.omega file forever. Scope strictly to links
+/// whose target is INSIDE ~/.omega — user-managed links are never touched.
+/// `symlink_metadata` succeeding while `exists()` (which follows the link)
+/// fails is the dangling test.
+fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_symlink() {
+            continue;
+        }
+        let Ok(target) = std::fs::read_link(&path) else {
+            continue;
+        };
+        if target.starts_with(omega_dir) && !path.exists() && std::fs::remove_file(&path).is_ok() {
+            println!("  [-] pruned dangling link: {}", path.display());
+        }
+    }
+}
+
 fn cmd_sync() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
     let omega_dir = home.join(".omega");
@@ -5204,57 +5315,76 @@ fn cmd_sync() -> Result<()> {
         std::fs::create_dir_all(omega_dir.join(sub))?;
     }
 
-    // Export rules if not already present
+    // Export rules unconditionally: Export now prunes only registry-owned .md
+    // files (disk-only rules survive), so re-running sync refreshes renamed or
+    // updated rules instead of silently keeping a stale set (the old
+    // only-when-empty guard meant sync NEVER updated rules after first run).
     let rules_dir = omega_dir.join("rules");
-    if std::fs::read_dir(&rules_dir)?.count() == 0 {
-        println!("Exporting rules...");
-        cmd_rules(RulesAction::Export)?;
+    println!("Exporting rules...");
+    cmd_rules(RulesAction::Export)?;
+
+    // Resolve the repo checkout ONCE for every repo-sourced step below — the
+    // old bare relative paths only worked with the repo root as CWD, so
+    // `omega sync` from anywhere else silently skipped OMEGA.md/agents/pdfgen.
+    let repo_src = resolve_omega_src();
+    if repo_src.is_none() {
+        println!("[i] OmegaOS repo checkout not found — skipping OMEGA.md/agents/pdfgen sync");
     }
 
-    // Copy OMEGA.md to ~/.omega/
-    let omega_md_src = std::path::Path::new("OMEGA.md");
+    // Copy OMEGA.md to ~/.omega/ (the dst is also the Codex symlink target below,
+    // so it lives outside the repo-scoped block)
     let omega_md_dst = omega_dir.join("OMEGA.md");
-    if omega_md_src.exists() {
-        std::fs::copy(omega_md_src, &omega_md_dst)?;
-        println!("[+] OMEGA.md → {}", omega_md_dst.display());
+    if let Some(src) = &repo_src {
+        let omega_md_src = src.join("OMEGA.md");
+        if omega_md_src.exists() {
+            std::fs::copy(&omega_md_src, &omega_md_dst)?;
+            println!("[+] OMEGA.md → {}", omega_md_dst.display());
+        }
     }
 
     // Copy agents from repo if available
-    let agents_src = std::path::Path::new("agents");
-    if agents_src.exists() {
-        let agents_dst = omega_dir.join("agents");
-        std::fs::create_dir_all(agents_dst.join("aisb"))?;
-        for entry in std::fs::read_dir(agents_src).into_iter().flatten() {
-            let entry = entry?;
-            let dst = agents_dst.join(entry.file_name());
-            if entry.file_type()?.is_dir() {
-                // aisb/ subdirectory
-                for sub in std::fs::read_dir(entry.path()).into_iter().flatten() {
-                    let sub = sub?;
-                    if sub.file_name().to_string_lossy().ends_with(".md") {
-                        std::fs::copy(sub.path(), agents_dst.join("aisb").join(sub.file_name()))?;
+    if let Some(src) = &repo_src {
+        let agents_src = src.join("agents");
+        if agents_src.exists() {
+            let agents_dst = omega_dir.join("agents");
+            std::fs::create_dir_all(agents_dst.join("aisb"))?;
+            for entry in std::fs::read_dir(&agents_src).into_iter().flatten() {
+                let entry = entry?;
+                let dst = agents_dst.join(entry.file_name());
+                if entry.file_type()?.is_dir() {
+                    // aisb/ subdirectory
+                    for sub in std::fs::read_dir(entry.path()).into_iter().flatten() {
+                        let sub = sub?;
+                        if sub.file_name().to_string_lossy().ends_with(".md") {
+                            std::fs::copy(sub.path(), agents_dst.join("aisb").join(sub.file_name()))?;
+                        }
                     }
+                } else if entry.file_name().to_string_lossy().ends_with(".md") {
+                    std::fs::copy(entry.path(), &dst)?;
                 }
-            } else if entry.file_name().to_string_lossy().ends_with(".md") {
-                std::fs::copy(entry.path(), &dst)?;
             }
+            println!("[+] Agents synced to {}", agents_dst.display());
         }
-        println!("[+] Agents synced to {}", agents_dst.display());
     }
 
-    // Copy skills from repo if available (pdfgen etc.)
-    let skills_src = std::path::Path::new("tools/pdfgen");
-    let skills_dst = omega_dir.join("skills/pdfgen");
-    if skills_src.exists() && !skills_dst.join("bin/pdfgen.ts").exists() {
-        std::fs::create_dir_all(&skills_dst)?;
-        let status = std::process::Command::new("rsync")
-            .args(["-a", "--exclude=node_modules", "--exclude=.next", "--exclude=output"])
-            .arg(format!("{}/", skills_src.display()))
-            .arg(format!("{}/", skills_dst.display()))
-            .status();
-        if let Ok(s) = status {
-            if s.success() {
-                println!("[+] PDF generator synced to {}", skills_dst.display());
+    // Sync pdfgen from the repo — UNCONDITIONALLY, not only on first install.
+    // R-PDF promises "`omega sync` re-links it": template/theme improvements
+    // in tools/pdfgen must reach the installed copy, so an existing
+    // bin/pdfgen.ts is no longer a skip condition.
+    if let Some(src) = &repo_src {
+        let skills_src = src.join("tools/pdfgen");
+        let skills_dst = omega_dir.join("skills/pdfgen");
+        if skills_src.exists() {
+            std::fs::create_dir_all(&skills_dst)?;
+            let status = std::process::Command::new("rsync")
+                .args(["-a", "--exclude=node_modules", "--exclude=.next", "--exclude=output"])
+                .arg(format!("{}/", skills_src.display()))
+                .arg(format!("{}/", skills_dst.display()))
+                .status();
+            if let Ok(s) = status {
+                if s.success() {
+                    println!("[+] PDF generator synced to {}", skills_dst.display());
+                }
             }
         }
     }
@@ -5265,6 +5395,9 @@ fn cmd_sync() -> Result<()> {
         // Rules: symlink each omega rule with omega- prefix
         let claude_rules = claude_dir.join("rules");
         std::fs::create_dir_all(&claude_rules)?;
+        // Prune BEFORE linking: a renamed/removed rule leaves its old
+        // omega-* link dangling forever otherwise (sync only creates).
+        prune_dangling_omega_links(&claude_rules, &omega_dir);
         for entry in std::fs::read_dir(&rules_dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -5282,6 +5415,9 @@ fn cmd_sync() -> Result<()> {
         let skills_dir = omega_dir.join("skills");
         let claude_skills = claude_dir.join("skills");
         std::fs::create_dir_all(&claude_skills)?;
+        // Same prune as rules: a deleted ~/.omega/skills dir must take its
+        // ~/.claude/skills link with it on the next sync.
+        prune_dangling_omega_links(&claude_skills, &omega_dir);
         if skills_dir.exists() {
             for entry in std::fs::read_dir(&skills_dir)? {
                 let entry = entry?;

@@ -163,6 +163,47 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         ));
     }
 
+    // 3b. Doctrine FILES — on-disk ~/.omega/rules vs the compiled registry.
+    // The count check above sees only the binary; agents actually LOAD the
+    // exported .md files, so a deleted / extra / renamed file drifted
+    // silently before this. Cheap id-set diff using the same basename
+    // grammar as the rules parity test. Extra ids are reported, not failed —
+    // disk-only rules (repo `rules/*.md` not in the registry) are legal.
+    {
+        let rules_dir = config.state_dir.parent().map(|p| p.join("rules"));
+        match rules_dir {
+            Some(dir) if dir.is_dir() => {
+                let on_disk = crate::rules::markdown_rule_ids(&dir);
+                let registry: std::collections::BTreeSet<String> = crate::rules::all_rules()
+                    .iter()
+                    .map(|r| r.id.to_string())
+                    .collect();
+                let missing: Vec<String> = registry.difference(&on_disk).cloned().collect();
+                let extra: Vec<String> = on_disk.difference(&registry).cloned().collect();
+                if missing.is_empty() && extra.is_empty() {
+                    checks.push(Check::ok(
+                        "doctrine files",
+                        format!("{} rule files match the registry", on_disk.len()),
+                    ));
+                } else {
+                    let mut msg = String::from("on-disk rules drift");
+                    if !missing.is_empty() {
+                        msg.push_str(&format!(" — missing: {}", missing.join(", ")));
+                    }
+                    if !extra.is_empty() {
+                        msg.push_str(&format!(" — extra/disk-only: {}", extra.join(", ")));
+                    }
+                    msg.push_str(" (fix: omega rules export)");
+                    checks.push(Check::warn("doctrine files", msg));
+                }
+            }
+            _ => checks.push(Check::warn(
+                "doctrine files",
+                "~/.omega/rules missing — run: omega rules export",
+            )),
+        }
+    }
+
     // 4. Agent CLI available.
     match crate::agents::Agent::from_name(&config.agent_command) {
         Some(agent) if agent.is_available() => {

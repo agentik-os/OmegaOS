@@ -96,7 +96,43 @@ impl Patrol {
         // ── Worker patrol: done signals ──
         for session in &sessions {
             if session.role == SessionRole::Worker {
-                if let Some(done) = DoneSignal::read(&self.config.state_dir, &session.name)? {
+                // ── Freshness guard (worker twin of the oracle guard below) ──
+                // Worker names are deterministic (`<project>-worker-<task>`)
+                // and the done.json survives its session, so a re-dispatch
+                // under the same name would otherwise be insta-finished — and
+                // then reaped — on its PREDECESSOR's stale signal. Date the
+                // signal against the worker's `dispatched_at` from its
+                // oracle's persisted state (register_worker refreshes it on a
+                // re-dispatch). No WorkerEntry → treat as fresh: hand-spawned
+                // workers have no registry entry, and dropping their signal
+                // would break done delivery for them entirely.
+                let fresh_done = match DoneSignal::read(&self.config.state_dir, &session.name)? {
+                    Some(done) => {
+                        let dispatched_at = oracle_states
+                            .iter()
+                            .flat_map(|s| s.workers.iter())
+                            .filter(|w| w.session_name == session.name)
+                            .map(|w| w.dispatched_at)
+                            .max();
+                        if worker_signal_is_stale(done.finished_at, dispatched_at) {
+                            tracing::warn!(
+                                worker = %session.name,
+                                finished_at = %done.finished_at,
+                                dispatched_at = ?dispatched_at,
+                                "stale worker done signal predates dispatch — ignored"
+                            );
+                            report.actions_taken.push(format!(
+                                "Ignored stale done signal for {} (predates dispatch)",
+                                session.name
+                            ));
+                            None
+                        } else {
+                            Some(done)
+                        }
+                    }
+                    None => None,
+                };
+                if let Some(done) = fresh_done {
                     report.done_workers.push(session.name.clone());
 
                     // ── Opus 4.8 ground-truth gate ──
@@ -151,14 +187,42 @@ impl Patrol {
                                 DoneStatus::Blocked => "blocked",
                             }
                         };
-                        let _ = inbox.push(&InboxEvent::worker_done(&session.name, status_str));
-                        // Surface the fabrication detail so the oracle can
-                        // re-dispatch with eyes open.
-                        if let Some(reason) = &contest_reason {
-                            let _ = inbox.push(&InboxEvent::worker_blocked(
-                                &session.name,
-                                &format!("GROUND-TRUTH CONTEST: {}", reason),
-                            ));
+                        // Push the worker_done event ONCE per signal, not once
+                        // per tick. The reap pass treats "event absent from
+                        // the oracle inbox" as the ack — a re-push every tick
+                        // made the ack unobservable (only the grace timer ever
+                        // fired) and delivered the same event to the oracle
+                        // repeatedly. The marker is keyed on status+finished_at
+                        // so a NEW or upgraded signal re-arms automatically.
+                        let event_key =
+                            format!("{}:{}", status_str, done.finished_at.timestamp());
+                        if !inbox_event_already_sent(
+                            &self.config.state_dir,
+                            &session.name,
+                            "done",
+                            &event_key,
+                        ) {
+                            let pushed = inbox
+                                .push(&InboxEvent::worker_done(&session.name, status_str))
+                                .is_ok();
+                            // Surface the fabrication detail so the oracle can
+                            // re-dispatch with eyes open.
+                            if let Some(reason) = &contest_reason {
+                                let _ = inbox.push(&InboxEvent::worker_blocked(
+                                    &session.name,
+                                    &format!("GROUND-TRUTH CONTEST: {}", reason),
+                                ));
+                            }
+                            // Record only on a successful push — a failed one
+                            // must retry next tick, not be marked delivered.
+                            if pushed {
+                                record_inbox_event_sent(
+                                    &self.config.state_dir,
+                                    &session.name,
+                                    "done",
+                                    &event_key,
+                                );
+                            }
                         }
 
                         // Update oracle state with worker completion
@@ -213,10 +277,30 @@ impl Patrol {
                     report.blocked_workers.push(session.name.clone());
                     if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states) {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                        let _ = inbox.push(&InboxEvent::worker_blocked(
+                        // Same push-once contract as worker_done above: the
+                        // blocked file persists across ticks, so an unguarded
+                        // push re-delivered the question every minute. Keyed
+                        // on blocked_at — a NEW block re-arms.
+                        let bkey = blocked.blocked_at.timestamp().to_string();
+                        if !inbox_event_already_sent(
+                            &self.config.state_dir,
                             &session.name,
-                            &blocked.question,
-                        ));
+                            "blocked",
+                            &bkey,
+                        ) && inbox
+                            .push(&InboxEvent::worker_blocked(
+                                &session.name,
+                                &blocked.question,
+                            ))
+                            .is_ok()
+                        {
+                            record_inbox_event_sent(
+                                &self.config.state_dir,
+                                &session.name,
+                                "blocked",
+                                &bkey,
+                            );
+                        }
                     }
                 }
             }
@@ -344,24 +428,36 @@ impl Patrol {
                     {
                         if let Some(last_update) = progress.last_updated {
                             let idle_secs = (Utc::now() - last_update).num_seconds();
-                            if idle_secs > AUTO_DONE_IDLE_SECS {
-                                // ── Conservative ground-truth gate ──
-                                // Ticking all todos is NOT proof the worker
-                                // finished cleanly — it may have crashed
-                                // mid-edit right after the last tick. The
-                                // strongest available "finished cleanly"
-                                // signal is the rmux session being GONE (the
-                                // process actually exited), not merely idle at
-                                // a prompt. Re-probe liveness now via the
-                                // SessionManager: `capture_pane` returns Err
-                                // when the session/pane no longer resolves —
-                                // the same dead-session idiom used by the pane
-                                // stall + orphan passes above/below. We do NOT
-                                // suppress legitimate auto-done: an alive-but-
-                                // idle worker keeps the prior behaviour, just
-                                // logged distinctly so the heuristic is visible.
-                                let session_gone =
-                                    mgr.capture_pane(&session.name).await.is_err();
+                            // ── Conservative ground-truth gate ──
+                            // Ticking all todos is NOT proof the worker finished
+                            // cleanly — it may have crashed mid-edit right after
+                            // the last tick. The strongest available "finished
+                            // cleanly" signal is the rmux session being GONE (the
+                            // process actually exited), not merely idle at a
+                            // prompt. Re-probe liveness via the SessionManager:
+                            // `capture_pane` returns Err when the session/pane no
+                            // longer resolves — the same dead-session idiom used
+                            // by the pane stall + orphan passes above/below.
+                            //
+                            // Thresholds split by liveness: a GONE session is safe
+                            // to record after AUTO_DONE_IDLE_SECS, but an ALIVE
+                            // worker that just ticked its last todo is routinely
+                            // deep in its verify step (build/test > 2 min, writes
+                            // no progress ticks) — killing it that early aborts
+                            // real work mid-verification. Alive sessions get the
+                            // full file-stall bar (STALL_THRESHOLD_SECS), the same
+                            // patience as the stall pass. (This branch was dead
+                            // code until the progress-schema fix made these files
+                            // parse — the 120s tuning never ran against a live
+                            // worker.)
+                            let session_gone =
+                                mgr.capture_pane(&session.name).await.is_err();
+                            let idle_threshold = if session_gone {
+                                AUTO_DONE_IDLE_SECS
+                            } else {
+                                STALL_THRESHOLD_SECS
+                            };
+                            if idle_secs > idle_threshold {
                                 if session_gone {
                                     tracing::info!(
                                         worker = %session.name,
@@ -426,10 +522,28 @@ impl Patrol {
                                             &self.config.state_dir,
                                             &oracle.name,
                                         );
-                                        let _ = inbox.push(&InboxEvent::worker_done(
-                                            &session.name,
-                                            "pending",
-                                        ));
+                                        // Mark the event sent under the SAME
+                                        // key the main done pass will compute
+                                        // for this signal next tick, so it
+                                        // doesn't re-deliver it (only on a
+                                        // successful push — a failure retries).
+                                        if inbox
+                                            .push(&InboxEvent::worker_done(
+                                                &session.name,
+                                                "pending",
+                                            ))
+                                            .is_ok()
+                                        {
+                                            record_inbox_event_sent(
+                                                &self.config.state_dir,
+                                                &session.name,
+                                                "done",
+                                                &format!(
+                                                    "pending:{}",
+                                                    signal.finished_at.timestamp()
+                                                ),
+                                            );
+                                        }
                                         if let Ok(Some(mut oracle_state)) = OracleState::read(
                                             &self.config.state_dir,
                                             &oracle.name,
@@ -521,6 +635,7 @@ impl Patrol {
                 let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
                 self.stall_detector.forget(&marker.session);
                 WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
+                remove_inbox_event_markers(&self.config.state_dir, &marker.session);
                 let trigger = if oracle_acked { "oracle ack'd" } else { "grace elapsed" };
                 tracing::info!(
                     worker = %marker.session,
@@ -537,6 +652,43 @@ impl Patrol {
                 // the reap fired). Nothing to kill — just clear the marker + lock.
                 let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
                 WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
+                remove_inbox_event_markers(&self.config.state_dir, &marker.session);
+            }
+        }
+
+        // ── Scope-claim janitor ──
+        // Only the done_clean path releases a worker's scope; failed /
+        // blocked / contested workers and patrol's auto-done (PENDING, scope
+        // deliberately HELD pending a real done_clean) leave the claim
+        // behind. Once the owning session is DEAD that hold can never be
+        // cleared by the worker itself — the files stay locked and every
+        // re-dispatch over them bails on "Scope conflict" until a manual
+        // `omega cleanup`. A dead owner cannot write, so releasing is safe.
+        // Two guards against racing a spawn-in-progress (spawn-worker claims
+        // scope an instant BEFORE its rmux session appears): require a
+        // recorded done/blocked signal on disk AND a minimum claim age.
+        const SCOPE_RELEASE_MIN_AGE_SECS: i64 = 300;
+        for claim in ScopeClaim::read_all(&self.config.state_dir) {
+            if live_session_names.contains(claim.session.as_str()) {
+                continue;
+            }
+            if (Utc::now() - claim.claimed_at).num_seconds() < SCOPE_RELEASE_MIN_AGE_SECS {
+                continue;
+            }
+            let has_signal = DoneSignal::read(&self.config.state_dir, &claim.session)
+                .ok()
+                .flatten()
+                .is_some()
+                || WorkerBlocked::read(&self.config.state_dir, &claim.session)
+                    .ok()
+                    .flatten()
+                    .is_some();
+            if has_signal {
+                let _ = ScopeClaim::release(&self.config.state_dir, &claim.session);
+                report.actions_taken.push(format!(
+                    "Released scope of dead session {} (terminal signal on disk)",
+                    claim.session
+                ));
             }
         }
 
@@ -583,6 +735,9 @@ impl Patrol {
             }
         }
 
+        // ── State-dir GC (bounded, age-gated) ──
+        self.gc_state_dir(&live_session_names, &mut report);
+
         self.log_patrol(&report)?;
 
         Ok(report)
@@ -596,10 +751,15 @@ impl Patrol {
         report: &mut PatrolReport,
     ) -> Result<()> {
         let live_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
-        let mut registry = OracleRegistry::load(&self.config.state_dir);
-
-        // Cleanup dead entries from registry
-        registry.cleanup(&live_names);
+        // Read-only SNAPSHOT for the spawned_at lookups below. All mutations
+        // (cleanup + status changes) are collected during the loop and applied
+        // at the END under the `.oracle-registry.lock` — the old pattern
+        // (load here, mutate across the kill_session awaits, save at the end,
+        // no lock) clobbered any oracle a concurrent locked dispatch
+        // registered mid-tick, erasing the spawned_at its freshness guard
+        // depends on.
+        let registry = OracleRegistry::load(&self.config.state_dir);
+        let mut status_changes: Vec<(String, OracleRegistryStatus)> = Vec::new();
 
         for session in sessions {
             if session.role != SessionRole::Oracle {
@@ -699,7 +859,7 @@ impl Patrol {
 
                 if !stale && done.is_closeable() {
                     report.done_oracles.push(session.name.clone());
-                    registry.mark_status(&session.name, OracleRegistryStatus::Done);
+                    status_changes.push((session.name.clone(), OracleRegistryStatus::Done));
                     // Self-improvement: auto-dispatch the curator worker
                     // ONCE per done oracle. The marker file prevents
                     // re-triggering after the curator already ran. Must run
@@ -741,12 +901,20 @@ impl Patrol {
                     && !report.done_oracles.contains(&session.name)
                 {
                     // All workers are done but oracle hasn't written done signal yet — mark idle
-                    registry.mark_status(&session.name, OracleRegistryStatus::Idle);
+                    status_changes.push((session.name.clone(), OracleRegistryStatus::Idle));
                 }
             }
         }
 
-        let _ = registry.save(&self.config.state_dir);
+        // Apply cleanup + the collected status changes atomically on a FRESH
+        // reload under the registry lock, so a registration made by a
+        // concurrent dispatch during this tick is merged, never lost.
+        let _ = OracleRegistry::update_locked(&self.config.state_dir, |reg| {
+            reg.cleanup(&live_names);
+            for (name, status) in &status_changes {
+                reg.mark_status(name, *status);
+            }
+        });
         Ok(())
     }
 
@@ -841,10 +1009,16 @@ impl Patrol {
         // carries legacy garbage. See session::sanitize_session_name.
         let curator_session =
             crate::session::sanitize_session_name(&format!("curator-{}", oracle_name));
+        // `oracle_name` is the FULL session name (`oracle-X`), but the signal
+        // on disk is single-prefixed via OracleDoneSignal's oracle_key rule —
+        // formatting the full name in produced `oracle-oracle-X.done.json`, a
+        // path that never exists, so every curator since install read nothing
+        // (7 trigger flags, zero outputs). Strip the one prefix first.
+        let done_key = oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name);
         let done_path = self
             .config
             .state_dir
-            .join(format!("oracle-{}.done.json", oracle_name));
+            .join(format!("oracle-{}.done.json", done_key));
         let prompt = format!(
             "/omega-curate {}",
             done_path.to_string_lossy()
@@ -890,6 +1064,115 @@ impl Patrol {
             }
         }
         Ok(())
+    }
+
+    /// Bounded state-dir garbage collection. The spawn paths write per-session
+    /// side files (`{name}.mcp.json`, `{name}.debug.log`), and the protocol
+    /// leaves per-signal files behind (worker done.json, push-once `.sent`
+    /// markers, resurrect/stuck markers, retired `-prev` done.json) — nothing
+    /// deleted any of them automatically, so a live host accumulated 460+
+    /// files. Every rule below is conservative: keyed on the owning session
+    /// being DEAD and an age floor, so an in-flight spawn (side files written
+    /// an instant before the rmux session appears) is never swept. Also
+    /// migrates legacy double-prefixed oracle state files in passing (see
+    /// `OracleState::state_key`).
+    fn gc_state_dir(
+        &self,
+        live: &std::collections::HashSet<&str>,
+        report: &mut PatrolReport,
+    ) {
+        const HOUR: u64 = 3_600;
+        const DAY: u64 = 86_400;
+        let dir = &self.config.state_dir;
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let age = file_age_secs(&path).unwrap_or(0);
+            let dead_after =
+                |session: &str, min_age: u64| !live.contains(session) && age >= min_age;
+
+            // Legacy double-prefixed oracle state → migrate once (rename into
+            // the canonical single-prefix name; drop it if the canonical file
+            // already exists — the live binary has been writing there).
+            if name.starts_with("oracle-oracle-") && name.ends_with(".state.json") {
+                let target = dir.join(&name["oracle-".len()..]);
+                if target.exists() {
+                    let _ = std::fs::remove_file(&path);
+                } else {
+                    let _ = std::fs::rename(&path, &target);
+                }
+                continue;
+            }
+
+            let stale = if let Some(session) = name.strip_suffix(".mcp.json") {
+                // One written per spawn (oracle AND worker), never read after
+                // launch — the single largest garbage class.
+                dead_after(session, HOUR)
+            } else if let Some(session) = name.strip_suffix(".debug.log") {
+                // Post-mortem value decays fast; keep a week.
+                dead_after(session, 7 * DAY)
+            } else if name.starts_with("worker-") && name.ends_with(".done.json") {
+                // Long-consumed worker signals. The spawn-time clear protects a
+                // re-dispatch immediately; this only bounds the pile.
+                let session = &name["worker-".len()..name.len() - ".done.json".len()];
+                dead_after(session, 7 * DAY)
+            } else if name.ends_with(".resurrect-attempt") {
+                // Pure anti-thrash stamp with a 5-minute window — a day-old
+                // marker is garbage regardless of session state.
+                age >= DAY
+            } else if let Some(stem) = name.strip_suffix(".stuck-alerted") {
+                // The cron keys this on the state-file basename: `oracle-X`,
+                // or legacy `oracle-oracle-X`. Live when either form maps to
+                // a live session; dead → removing re-arms the alert for a
+                // recycled name (mirrors OracleDoneSignal::clear).
+                let owner_live = live.contains(stem)
+                    || stem
+                        .strip_prefix("oracle-")
+                        .map(|s| live.contains(s))
+                        .unwrap_or(false);
+                !owner_live && age >= HOUR
+            } else if name.starts_with("worker-") && name.ends_with(".sent") {
+                // Push-once markers — the reap removes them; this catches leaks.
+                let stem = &name["worker-".len()..];
+                let session = stem
+                    .strip_suffix(".done.sent")
+                    .or_else(|| stem.strip_suffix(".blocked.sent"))
+                    .unwrap_or(stem);
+                dead_after(session, 7 * DAY)
+            } else if name.starts_with("oracle-")
+                && name.ends_with(".done.json")
+                && is_retired_done_name(&name)
+            {
+                // Retired signals: only once DELIVERED (.notified sibling) and
+                // past a 14-day record window — never destroy an unsent report.
+                let notified = dir.join(format!("{}.notified", name));
+                if notified.exists() && age >= 14 * DAY {
+                    let _ = std::fs::remove_file(&notified);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if stale && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            report
+                .actions_taken
+                .push(format!("GC: removed {} stale state file(s)", removed));
+        }
     }
 
     fn find_parent_oracle<'a>(
@@ -1062,6 +1345,77 @@ fn signal_predates_session(
     }
 }
 
+/// Worker-signal freshness predicate (pure + testable, the worker twin of
+/// `signal_predates_session`). A done.json whose `finished_at` predates the
+/// worker's `dispatched_at` belongs to a PREVIOUS mission that recycled the
+/// deterministic worker name — acting on it insta-finishes (and reaps) the
+/// new worker. Unlike the oracle guard, an UNKNOWN dispatch time is treated
+/// as FRESH: workers without a registry entry (hand-spawned) have no other
+/// done-delivery path, so dropping their signal would silence them entirely.
+fn worker_signal_is_stale(
+    finished_at: chrono::DateTime<Utc>,
+    dispatched_at: Option<chrono::DateTime<Utc>>,
+) -> bool {
+    matches!(dispatched_at, Some(d) if finished_at < d)
+}
+
+/// Push-once markers for the per-tick inbox pushes. Patrol re-detects the
+/// same done/blocked file every tick while it exists; the marker records the
+/// content key (status + signal timestamp) of the event last pushed for a
+/// session, so the event reaches the oracle exactly once per signal. A new
+/// or upgraded signal carries a different key and re-arms automatically —
+/// no coordination with the spawn-time stale-signal clear is needed.
+fn event_sent_path(state_dir: &std::path::Path, session: &str, kind: &str) -> std::path::PathBuf {
+    state_dir.join(format!("worker-{}.{}.sent", session, kind))
+}
+
+fn inbox_event_already_sent(
+    state_dir: &std::path::Path,
+    session: &str,
+    kind: &str,
+    key: &str,
+) -> bool {
+    std::fs::read_to_string(event_sent_path(state_dir, session, kind))
+        .map(|c| c.trim() == key)
+        .unwrap_or(false)
+}
+
+fn record_inbox_event_sent(state_dir: &std::path::Path, session: &str, kind: &str, key: &str) {
+    let _ = std::fs::write(event_sent_path(state_dir, session, kind), key);
+}
+
+fn remove_inbox_event_markers(state_dir: &std::path::Path, session: &str) {
+    let _ = std::fs::remove_file(event_sent_path(state_dir, session, "done"));
+    let _ = std::fs::remove_file(event_sent_path(state_dir, session, "blocked"));
+}
+
+/// Age of a file in seconds via mtime — `None` when unreadable (the GC then
+/// treats it as age 0, i.e. never deletes on an unknown clock).
+fn file_age_secs(path: &std::path::Path) -> Option<u64> {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs())
+}
+
+/// True for a RETIRED oracle signal — `oracle-<key>-prev<ts>.done.json`, the
+/// rename `OracleDoneSignal::clear` performs on an un-notified signal. The
+/// `<ts>` digits requirement keeps a project whose name merely contains
+/// "-prev" out of the GC's reach.
+fn is_retired_done_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".done.json") else {
+        return false;
+    };
+    match stem.rfind("-prev") {
+        Some(i) => {
+            let ts = &stem[i + "-prev".len()..];
+            !ts.is_empty() && ts.chars().all(|c| c.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
 /// Detect a fatal, non-recoverable agent error in a session's pane output — the
 /// agent is stuck on an error rather than working or idle. Only the tail (the
 /// live error, not old scrollback) is inspected. A content-filter block and a
@@ -1140,6 +1494,52 @@ mod tests {
         // Unknown spawn time (no registry entry) → conservatively stale:
         // never kill a session you cannot date.
         assert!(signal_predates_session(Utc::now(), None));
+    }
+
+    #[test]
+    fn worker_stale_signal_guard() {
+        let dispatch = Utc::now();
+        // Predecessor's signal (finished before this dispatch) → stale.
+        assert!(worker_signal_is_stale(
+            dispatch - chrono::Duration::hours(2),
+            Some(dispatch)
+        ));
+        // Signal written by THIS dispatch → fresh.
+        assert!(!worker_signal_is_stale(
+            dispatch + chrono::Duration::seconds(30),
+            Some(dispatch)
+        ));
+        // Unknown dispatch time (hand-spawned worker, no registry entry) →
+        // FRESH: the opposite default to the oracle guard, because dropping
+        // the signal would break done delivery for unregistered workers.
+        assert!(!worker_signal_is_stale(Utc::now(), None));
+    }
+
+    #[test]
+    fn inbox_event_markers_are_content_keyed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        // Nothing sent yet.
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
+        record_inbox_event_sent(dir, "w1", "done", "done_clean:100");
+        // Same signal → already sent (no per-tick re-push).
+        assert!(inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
+        // Upgraded / new signal (different key) → re-armed.
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:200"));
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "pending:100"));
+        // Kinds are independent.
+        assert!(!inbox_event_already_sent(dir, "w1", "blocked", "100"));
+        remove_inbox_event_markers(dir, "w1");
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
+    }
+
+    #[test]
+    fn retired_done_name_matcher() {
+        assert!(is_retired_done_name("oracle-OmegaOS-prev1765432100.done.json"));
+        // A live signal is never "retired", even for a project containing -prev.
+        assert!(!is_retired_done_name("oracle-OmegaOS.done.json"));
+        assert!(!is_retired_done_name("oracle-x-prevention.done.json"));
+        assert!(!is_retired_done_name("oracle-x-prev.done.json"));
     }
 
     #[test]

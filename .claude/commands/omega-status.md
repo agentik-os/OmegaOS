@@ -1,5 +1,5 @@
 ---
-description: Show OmegaOS runtime status — active oracles, workers, queued missions, recent done.json events
+description: Show OmegaOS runtime status — active oracles, workers, recent done.json events
 ---
 
 Run `omega list` (live sessions + roles) and `omega status` (system overview), then summarize:

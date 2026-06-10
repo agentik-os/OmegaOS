@@ -77,10 +77,11 @@ pub struct OracleState {
     /// oracle is still live work, even if every worker is in a terminal status.
     #[serde(default)]
     pub closeable_since: Option<DateTime<Utc>>,
-    /// Claude `--session-id` UUID for this oracle. Generated once at first
-    /// dispatch and persisted so a resurrect (`--fork-session`) and any
-    /// cross-restart resume reuse the SAME id instead of orphaning the
-    /// conversation. `None` for states written before this field existed.
+    /// Claude `--session-id` UUID for this oracle, persisted for the record.
+    /// NOTE: every dispatch/resurrect mints a FRESH id (resolve_session_id —
+    /// reusing one collides: `--session-id` CREATES, it does not resume), so
+    /// this field is bookkeeping, not lineage. `None` for states written
+    /// before this field existed.
     #[serde(default)]
     pub session_id: Option<String>,
 }
@@ -184,9 +185,19 @@ impl OracleState {
     }
 
     pub fn register_worker(&mut self, entry: WorkerEntry) {
-        // Idempotent — never double-register the same session (retry / concurrent
-        // dispatch would otherwise duplicate the entry and break terminal detection).
-        if self.workers.iter().any(|w| w.session_name == entry.session_name) {
+        // Upsert — never DUPLICATE the same session (retry / concurrent
+        // dispatch would otherwise break terminal detection), but a
+        // RE-DISPATCH under the same deterministic worker name must refresh
+        // the entry: patrol's worker freshness guard dates done signals
+        // against `dispatched_at`, and keeping the old timestamp would let
+        // the PREVIOUS mission's stale done.json pass as fresh and
+        // insta-finish (then reap) the new worker.
+        if let Some(w) = self
+            .workers
+            .iter_mut()
+            .find(|w| w.session_name == entry.session_name)
+        {
+            *w = entry;
             return;
         }
         self.workers.push(entry);
@@ -256,21 +267,53 @@ impl OracleState {
         (Utc::now() - self.started_at).num_seconds().max(0) as u64
     }
 
+    /// Filename key — the oracle name minus a single leading `oracle-`
+    /// prefix, the SAME rule as `OracleDoneSignal::oracle_key`. Every
+    /// caller holds the FULL session name (`oracle-X`), and formatting it
+    /// straight into `oracle-{}.state.json` produced double-prefixed files
+    /// (`oracle-oracle-X.state.json`) that the shell-side consumers
+    /// (stuck-oracle-alert derives its done/progress probe paths from the
+    /// state basename) then mis-keyed — finished oracles were never
+    /// recognized as done and false stall alerts fired forever.
+    fn state_key(oracle_name: &str) -> &str {
+        oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name)
+    }
+
     /// Persist oracle state to disk for patrol/AISB visibility.
     pub fn write(&self, state_dir: &Path) -> Result<()> {
         std::fs::create_dir_all(state_dir)?;
-        let path = state_dir.join(format!("oracle-{}.state.json", self.oracle_name));
-        let tmp = state_dir.join(format!(".oracle-{}.state.json.tmp", self.oracle_name));
+        let key = Self::state_key(&self.oracle_name);
+        let path = state_dir.join(format!("oracle-{}.state.json", key));
+        let tmp = state_dir.join(format!(".oracle-{}.state.json.tmp", key));
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&tmp, &content)?;
         std::fs::rename(&tmp, &path)?;
+        // Migration: drop the legacy double-prefixed twin so `read_all`
+        // never yields two states for one oracle.
+        let legacy = state_dir.join(format!("oracle-{}.state.json", self.oracle_name));
+        if legacy != path {
+            let _ = std::fs::remove_file(&legacy);
+        }
         Ok(())
     }
 
     pub fn read(state_dir: &Path, oracle_name: &str) -> Result<Option<Self>> {
-        let path = state_dir.join(format!("oracle-{}.state.json", oracle_name));
+        let key = Self::state_key(oracle_name);
+        let path = state_dir.join(format!("oracle-{}.state.json", key));
         if !path.exists() {
-            return Ok(None);
+            // Lazy migration: a state written by a pre-normalization binary
+            // lives at the double-prefixed name. Rename it into place so
+            // every later read, read_all, and the shell consumers see the
+            // canonical file; if the rename fails (perms/race), read the
+            // legacy file in place rather than dropping live state.
+            let legacy = state_dir.join(format!("oracle-oracle-{}.state.json", key));
+            if !legacy.exists() {
+                return Ok(None);
+            }
+            if std::fs::rename(&legacy, &path).is_err() {
+                let content = std::fs::read_to_string(&legacy)?;
+                return Ok(Some(serde_json::from_str(&content)?));
+            }
         }
         let content = std::fs::read_to_string(&path)?;
         Ok(Some(serde_json::from_str(&content)?))
@@ -296,9 +339,15 @@ impl OracleState {
     }
 
     pub fn remove(state_dir: &Path, oracle_name: &str) -> Result<()> {
-        let path = state_dir.join(format!("oracle-{}.state.json", oracle_name));
+        let key = Self::state_key(oracle_name);
+        let path = state_dir.join(format!("oracle-{}.state.json", key));
         if path.exists() {
             std::fs::remove_file(&path)?;
+        }
+        // Remove a lingering legacy double-prefixed file too.
+        let legacy = state_dir.join(format!("oracle-oracle-{}.state.json", key));
+        if legacy.exists() {
+            std::fs::remove_file(&legacy)?;
         }
         Ok(())
     }
@@ -974,6 +1023,28 @@ impl OracleRegistry {
         self.oracles.push(entry);
     }
 
+    /// Apply mutations to the registry atomically, under the same exclusive
+    /// advisory lock as `reserve_oracle`/`register_resurrected`. Patrol's
+    /// previous pattern — load at tick start, mutate across awaits, save at
+    /// the end — clobbered any oracle a concurrent locked dispatch
+    /// registered mid-tick: the lost entry took its `spawned_at` with it,
+    /// the freshness guard then treated EVERY signal of that oracle as
+    /// stale (never upgraded, never reaped), and `next_oracle_name` could
+    /// re-issue its name while the session was live. The closure runs on a
+    /// FRESH reload while the lock is held — keep it synchronous and quick.
+    pub fn update_locked<F>(state_dir: &Path, mutate: F) -> Result<()>
+    where
+        F: FnOnce(&mut OracleRegistry),
+    {
+        std::fs::create_dir_all(state_dir)?;
+        let lockfile = std::fs::File::create(state_dir.join(".oracle-registry.lock"))?;
+        lockfile.lock_exclusive()?;
+        let mut reg = Self::load(state_dir);
+        mutate(&mut reg);
+        reg.save(state_dir)
+        // lockfile drops here -> advisory lock released
+    }
+
     /// Re-register a resurrected oracle as Active with a FRESH `spawned_at`,
     /// under the same exclusive lock as reserve_oracle. The resurrect path
     /// previously never re-registered (the dead entry had been purged by
@@ -1034,10 +1105,20 @@ impl OracleRegistry {
     }
 
     /// Remove dead entries (sessions that no longer exist in rmux).
+    /// `Done` entries are purged too once their session is gone — retaining
+    /// them forever grew `next_oracle_name`'s index without bound and
+    /// contradicted the dispatch-time "Dead-purged → name re-issued"
+    /// contract (the stale-signal clear exists precisely because names
+    /// recycle). A freshly-spawned entry is exempt for a short grace
+    /// window: the caller's session list may be a snapshot taken BEFORE
+    /// the spawn (patrol snapshots sessions at tick start), and purging it
+    /// would erase the `spawned_at` the freshness guard depends on.
     pub fn cleanup(&mut self, live_sessions: &[String]) {
+        const SPAWN_GRACE_SECS: i64 = 120;
+        let now = Utc::now();
         for entry in &mut self.oracles {
-            if entry.status != OracleRegistryStatus::Done
-                && !live_sessions.contains(&entry.session_name)
+            if !live_sessions.contains(&entry.session_name)
+                && (now - entry.spawned_at).num_seconds() > SPAWN_GRACE_SECS
             {
                 entry.status = OracleRegistryStatus::Dead;
             }
@@ -1189,6 +1270,123 @@ mod tests {
         // All N registrations survive (none clobbered by a racing save).
         let reg = OracleRegistry::load(dir.as_path());
         assert_eq!(reg.oracles.iter().filter(|e| e.project == "Race").count(), N);
+    }
+
+    #[test]
+    fn oracle_state_filename_is_prefix_normalized() {
+        // Callers hold the FULL session name (`oracle-X`); the file on disk
+        // must be single-prefixed (`oracle-X.state.json`), never
+        // `oracle-oracle-X.state.json` — same rule as OracleDoneSignal.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mission = Mission::new("Acme", "do it", PathBuf::from("/tmp"));
+        let state = OracleState::new("oracle-Acme-2", &mission);
+        state.write(dir).unwrap();
+
+        assert!(dir.join("oracle-Acme-2.state.json").exists());
+        assert!(!dir.join("oracle-oracle-Acme-2.state.json").exists());
+
+        // Both name forms resolve the same file.
+        assert!(OracleState::read(dir, "oracle-Acme-2").unwrap().is_some());
+        assert!(OracleState::read(dir, "Acme-2").unwrap().is_some());
+    }
+
+    #[test]
+    fn oracle_state_read_migrates_legacy_double_prefix() {
+        // A state written by a pre-normalization binary lives at the
+        // double-prefixed name; read() must find it AND rename it into place.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mission = Mission::new("Acme", "do it", PathBuf::from("/tmp"));
+        let state = OracleState::new("oracle-Acme", &mission);
+        let legacy = dir.join("oracle-oracle-Acme.state.json");
+        std::fs::write(&legacy, serde_json::to_string_pretty(&state).unwrap()).unwrap();
+
+        let read = OracleState::read(dir, "oracle-Acme").unwrap();
+        assert!(read.is_some(), "legacy state must remain readable");
+        assert!(dir.join("oracle-Acme.state.json").exists(), "must migrate in place");
+        assert!(!legacy.exists(), "legacy file must be renamed away");
+    }
+
+    #[test]
+    fn register_worker_upsert_refreshes_dispatched_at() {
+        // A re-dispatch under the same deterministic worker name must
+        // refresh dispatched_at (the worker freshness guard dates done
+        // signals against it) without duplicating the entry.
+        let mission = Mission::new("Acme", "do it", PathBuf::from("/tmp"));
+        let mut state = OracleState::new("oracle-Acme", &mission);
+        let t0 = Utc::now() - chrono::Duration::hours(2);
+        state.register_worker(WorkerEntry {
+            session_name: "Acme-worker-x".into(),
+            task_id: "t1".into(),
+            task_name: "x".into(),
+            files_owned: vec![],
+            dispatched_at: t0,
+            status: WorkerEntryStatus::DoneClean,
+        });
+        let t1 = Utc::now();
+        state.register_worker(WorkerEntry {
+            session_name: "Acme-worker-x".into(),
+            task_id: "t1".into(),
+            task_name: "x".into(),
+            files_owned: vec![],
+            dispatched_at: t1,
+            status: WorkerEntryStatus::Running,
+        });
+        assert_eq!(state.workers.len(), 1, "no duplicate entry");
+        assert_eq!(state.workers[0].dispatched_at, t1);
+        assert_eq!(state.workers[0].status, WorkerEntryStatus::Running);
+    }
+
+    #[test]
+    fn cleanup_purges_done_entries_with_dead_sessions_after_grace() {
+        let mut reg = OracleRegistry { oracles: Vec::new() };
+        let old = Utc::now() - chrono::Duration::hours(1);
+        // Done + dead session + past the spawn grace → purged.
+        reg.register(OracleRegistryEntry {
+            oracle_name: "oracle-A".into(),
+            project: "A".into(),
+            session_name: "oracle-A".into(),
+            status: OracleRegistryStatus::Done,
+            spawned_at: old,
+            files_owned: vec![],
+        });
+        // Active + dead but JUST spawned → kept (snapshot may predate spawn).
+        reg.register(OracleRegistryEntry {
+            oracle_name: "oracle-B".into(),
+            project: "B".into(),
+            session_name: "oracle-B".into(),
+            status: OracleRegistryStatus::Active,
+            spawned_at: Utc::now(),
+            files_owned: vec![],
+        });
+        // Done + LIVE session → kept.
+        reg.register(OracleRegistryEntry {
+            oracle_name: "oracle-C".into(),
+            project: "C".into(),
+            session_name: "oracle-C".into(),
+            status: OracleRegistryStatus::Done,
+            spawned_at: old,
+            files_owned: vec![],
+        });
+        reg.cleanup(&["oracle-C".to_string()]);
+        let names: Vec<&str> = reg.oracles.iter().map(|e| e.oracle_name.as_str()).collect();
+        assert!(!names.contains(&"oracle-A"), "Done+dead+aged must be purged");
+        assert!(names.contains(&"oracle-B"), "fresh spawn must survive a stale snapshot");
+        assert!(names.contains(&"oracle-C"), "Done+live must be retained");
+    }
+
+    #[test]
+    fn update_locked_persists_mutations() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        OracleRegistry::reserve_oracle(dir, "Acme", None).unwrap();
+        OracleRegistry::update_locked(dir, |reg| {
+            reg.mark_status("oracle-Acme", OracleRegistryStatus::Done);
+        })
+        .unwrap();
+        let reg = OracleRegistry::load(dir);
+        assert_eq!(reg.oracles[0].status, OracleRegistryStatus::Done);
     }
 
     #[test]

@@ -579,6 +579,14 @@ impl OracleDoneSignal {
     /// Returns whether a stale signal actually existed.
     pub fn clear(state_dir: &Path, oracle: &str) -> bool {
         let key = Self::oracle_key(oracle);
+        // Re-arm the stuck-oracle alert for the recycled name: the cron's
+        // once-per-oracle `<state-basename>.stuck-alerted` marker survives
+        // the signal otherwise, silencing a genuine future stall under the
+        // same name. Cover the legacy double-prefixed basename too (state
+        // files were `oracle-oracle-X.state.json` before normalization).
+        let _ = std::fs::remove_file(state_dir.join(format!("oracle-{}.stuck-alerted", key)));
+        let _ =
+            std::fs::remove_file(state_dir.join(format!("oracle-oracle-{}.stuck-alerted", key)));
         let path = state_dir.join(format!("oracle-{}.done.json", key));
         if !path.exists() {
             let _ = std::fs::remove_file(Self::notified_path(state_dir, oracle));
