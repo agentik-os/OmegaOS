@@ -344,6 +344,18 @@ maybe_install_prebuilt() {
             | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
     [[ -n "$tag" ]] || { info "No published release yet — building from source"; return 0; }
 
+    # Freshness gate: a checkout that already has a local release build is a
+    # dev/operator box — that build reflects HEAD, while the prebuilt reflects
+    # the (older) release tag. Installing the prebuilt here silently DOWNGRADES
+    # the binary that was just built from newer commits at the same version
+    # number (stale-binary bug, 2026-06-10: doctor showed 21/26 rules because
+    # the v0.1.5 release artifact replaced a fresh post-release build). Fresh
+    # boxes have no target/release and keep the fast path.
+    if [[ -x "$OMEGA_SRC/target/release/omega" ]]; then
+        info "Local release build present — preferring source build over prebuilt $tag"
+        return 0
+    fi
+
     local base tarball tmp
     base="https://github.com/agentik-os/OmegaOS/releases/download/$tag"
     tarball="omega-$triple.tar.gz"
