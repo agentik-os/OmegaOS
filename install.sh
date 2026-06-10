@@ -726,6 +726,14 @@ fi
 install_command_bot || info "command bot setup had warnings (non-fatal)"
 install_inbox_bot || info "deposit bot setup had warnings (non-fatal)"
 
+# TTS voice bench (Nova's voices: Pocket/Chatterbox/Kokoro/Piper + ElevenLabs
+# proxy via the omega-ttsd gateway). Engine venvs + models are multi-GB — the
+# installer is idempotent and per-engine fault-tolerant; a failure here never
+# blocks the rest of the install.
+if [[ -f "$OMEGA_SRC/tools/tts/install-tts.sh" ]]; then
+    bash "$OMEGA_SRC/tools/tts/install-tts.sh" || info "TTS bench setup had warnings (non-fatal — omega-ttsd serves whatever installed)"
+fi
+
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
 step "Phase 5: Configuring OmegaOS"

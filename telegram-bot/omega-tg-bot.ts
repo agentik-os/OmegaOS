@@ -782,6 +782,88 @@ function companionBrain(chatId: number, thread: number | undefined, model?: stri
   };
 }
 
+// ── Nova voice (TTS bench): the operator picks the reply mode (text / voice /
+// both) and the engine from the 🔊 menu; synthesis goes through the local
+// omega-ttsd gateway (Pocket/Chatterbox/Kokoro/Piper kept in RAM + ElevenLabs
+// proxy), which returns Telegram-ready OGG/Opus. The text reply NEVER waits on
+// synthesis — voice is fire-and-forget on top of it.
+const TTSD = `http://127.0.0.1:${process.env.OMEGA_TTSD_PORT || 8765}`;
+const VOICE_PREFS_FILE = `${OMEGA_DIR}/state/nova-voice.json`;
+type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string };
+function voicePrefs(): VoicePrefs {
+  try { return { mode: "text", engine: "pocket", ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
+  catch { return { mode: "text", engine: "pocket" }; }
+}
+function saveVoicePrefs(p: VoicePrefs) {
+  Bun.spawnSync(["mkdir", "-p", `${OMEGA_DIR}/state`]);
+  try { writeFileSync(VOICE_PREFS_FILE, JSON.stringify(p)); } catch {}
+}
+// Markdown reads terribly aloud — strip it (and cap length: a voice note is a
+// note, not an audiobook; the full text is always in the chat/history anyway).
+function ttsSpeakable(md: string): string {
+  return md
+    .replace(/```[\s\S]*?```/g, " … ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_~]{1,3}([^*_~\n]+)[*_~]{1,3}/g, "$1")
+    .replace(/^\s*[-•]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim().slice(0, 2500);
+}
+async function synthVoice(engine: string, text: string): Promise<Uint8Array | { error: string }> {
+  try {
+    const r = await fetch(`${TTSD}/tts`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ engine, text: ttsSpeakable(text) }),
+      signal: AbortSignal.timeout(420_000), // chatterbox on CPU is slow by design
+    });
+    if (!r.ok) { const j: any = await r.json().catch(() => ({})); return { error: j?.error || `HTTP ${r.status}` }; }
+    return new Uint8Array(await r.arrayBuffer());
+  } catch (e: any) { return { error: /timeout|abort/i.test(String(e)) ? "timeout de synthèse" : String(e?.message || e) }; }
+}
+// sendVoice needs multipart (binary upload) — the JSON `tg()` funnel can't carry it.
+async function sendVoiceNote(chat: number, ogg: Uint8Array, thread?: number, caption?: string): Promise<any> {
+  const fd = new FormData();
+  fd.append("chat_id", String(chat));
+  if (thread) fd.append("message_thread_id", String(thread));
+  if (caption) fd.append("caption", caption.slice(0, 1024));
+  fd.append("voice", new Blob([ogg], { type: "audio/ogg" }), "nova.ogg");
+  try { return await (await fetch(`${API}/sendVoice`, { method: "POST", body: fd })).json(); }
+  catch (e: any) { return { ok: false, description: String(e?.message || e) }; }
+}
+// Voice layer over a finished companion reply. mode "both": voice note follows
+// the text. mode "voice": the placeholder shows a teaser, and is deleted once
+// the note lands (synthesis failed → the full text is restored: never lose an
+// answer to a TTS hiccup).
+async function speakReply(chat: number, thread: number | undefined, out: string, phId?: number) {
+  const vp = voicePrefs();
+  if (vp.mode === "text") return;
+  const r = await synthVoice(vp.engine, out);
+  if (r instanceof Uint8Array) {
+    const sent = await sendVoiceNote(chat, r, thread);
+    if (vp.mode === "voice" && sent?.ok && phId) await tg("deleteMessage", { chat_id: chat, message_id: phId });
+  } else {
+    const warn = `⚠️ Synthèse vocale échouée (<b>${esc(vp.engine)}</b>) : <i>${esc(r.error).slice(0, 200)}</i>`;
+    if (vp.mode === "voice" && phId) { let html; try { html = mdToHtml(out); } catch { html = out; } await edit(chat, phId, html, undefined, thread); }
+    await send(chat, warn, undefined, thread);
+  }
+}
+// Persist the ElevenLabs key pasted in chat («clé elevenlabs: xxx») into
+// provisioning/services.env — the daemon re-reads it on every request, so the
+// engine turns on with no restart.
+function saveElevenLabsKey(key: string) {
+  const path = `${OMEGA_DIR}/provisioning/services.env`;
+  Bun.spawnSync(["mkdir", "-p", `${OMEGA_DIR}/provisioning`]);
+  let txt = ""; try { txt = readFileSync(path, "utf8"); } catch {}
+  const line = `export ELEVENLABS_API_KEY="${key}"`;
+  txt = /^\s*(export\s+)?ELEVENLABS_API_KEY\s*=/m.test(txt)
+    ? txt.replace(/^\s*(export\s+)?ELEVENLABS_API_KEY\s*=.*$/m, line)
+    : `${txt.trimEnd()}\n${line}\n`;
+  writeFileSync(path, txt, { mode: 0o600 });
+}
+
 // Provision a per-agent Telegram bot as its own background service (AGENT MODE):
 // systemd user unit on Linux, launchd LaunchAgent on macOS (no systemd there —
 // mirrors install.sh's os.omega.tg-bot plist, so agent-bots provision on a Mac
@@ -1097,7 +1179,7 @@ async function react(chat: number, msgId: number, emoji: string) {
 }
 // One funnel for every brain call: 🤔 reaction (seen it) + a live placeholder, run
 // the Master, then edit the placeholder with HTML-formatted output + ✅ reaction.
-async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas") {
+async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas", speak = false) {
   react(chat, userMsgId, "🤔");
   await tg("sendChatAction", { chat_id: chat, action: "typing", message_thread_id: thread });
   const ph = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", message_thread_id: thread, text: `🧠 <i>${label} thinking…</i>` });
@@ -1123,11 +1205,18 @@ async function brainReply(chat: number, userMsgId: number, thread: number | unde
   // Fire-and-forget BY DESIGN: the poll loop must never block on a 900s brain run.
   // The chain below always lands a final message (success OR error) for the operator.
   brain(prompt)
-    .then(out => {
+    .then(async out => {
       stop();
       histAppend(chat, thread, "assistant", out, label.toLowerCase()); // persist the reply (+ MC mirror)
       let html: string; try { html = mdToHtml(out); } catch { html = out; } // bad markup → raw text
-      return phId ? edit(chat, phId, html, undefined, thread) : send(chat, html, undefined, thread);
+      // 🔊 mode "voice": teaser placeholder, deleted once the note lands (speakReply
+      // restores the text if synthesis fails). Other modes: text lands first, always.
+      const voiceOnly = speak && voicePrefs().mode === "voice";
+      const r = voiceOnly && phId
+        ? await edit(chat, phId, "🎙️ <i>réponse vocale en préparation…</i>", undefined, thread)
+        : await (phId ? edit(chat, phId, html, undefined, thread) : send(chat, html, undefined, thread));
+      if (speak) speakReply(chat, thread, out, phId).catch(() => {});
+      return r;
     })
     .then(() => react(chat, userMsgId, "✅"))
     .catch(async () => {
@@ -1857,7 +1946,30 @@ function novaMenuKb() {
     [{ text: "📰 Actus Anthropic", callback_data: "nova:do:actus" }, { text: "📊 Rapport now", callback_data: "nova:do:rapport" }],
     [{ text: "🎯 Objectifs", callback_data: "nova:do:objectifs" }, { text: "🧠 Profil", callback_data: "nova:do:profil" }],
     [{ text: "🔮 Magic", callback_data: "nova:do:magic" }, { text: "🗣️ Interview", callback_data: "nova:do:interview" }],
+    [{ text: "🔊 Voix (mode + moteur)", callback_data: "nova:voice" }],
   ]);
+}
+// 🔊 Voice submenu: live engine list from the omega-ttsd gateway (🟢 installed /
+// 🔴 unavailable), current mode + engine marked, one-tap test voice note.
+async function novaVoiceView(botName: string): Promise<{ text: string; markup: any }> {
+  const vp = voicePrefs();
+  let engines: { id: string; label: string; note: string; available: boolean }[] = [];
+  try { engines = await (await fetch(`${TTSD}/engines`, { signal: AbortSignal.timeout(3000) })).json() as any; } catch {}
+  const modeBtn = (m: VoicePrefs["mode"], label: string) => ({ text: `${vp.mode === m ? "● " : ""}${label}`, callback_data: `nova:vmode:${m}` });
+  const markup = kb([
+    [modeBtn("text", "📝 Texte"), modeBtn("voice", "🎙️ Vocal"), modeBtn("both", "📝+🎙️ Les deux")],
+    ...engines.map(e => [{ text: `${vp.engine === e.id ? "✓ " : ""}${e.available ? "" : "🔴 "}${e.label}`, callback_data: `nova:vengine:${e.id}` }]),
+    [{ text: "🧪 Tester la voix sélectionnée", callback_data: "nova:vtest" }],
+    [{ text: "« Retour", callback_data: "nova:menu" }],
+  ]);
+  const lines = engines.length
+    ? engines.map(e => `${e.available ? "🟢" : "🔴"} <b>${esc(e.label)}</b> — ${esc(e.note)}`).join("\n")
+    : "⚠️ Le démon TTS ne répond pas — relance-le : <code>systemctl --user restart omega-ttsd</code>";
+  const modeLabel = { text: "📝 texte seul", voice: "🎙️ vocal seul", both: "📝+🎙️ les deux" }[vp.mode];
+  return {
+    text: `<b>🔊 Voix de ${esc(botName)}</b>\nMode : <b>${modeLabel}</b> · Moteur : <b>${esc(vp.engine)}</b>\n\n${lines}\n\n💡 Pour activer ElevenLabs, colle ta clé ici : <code>clé elevenlabs: sk_…</code>`,
+    markup,
+  };
 }
 function novaConnectKb() {
   const apps = ["gmail", "twitter", "instagram", "linkedin", "reddit", "youtube"];
@@ -1898,8 +2010,24 @@ async function onNovaCallback(data: string, chatId: number, msgId: number, from:
     return edit(chatId, msgId, msg, markup);
   }
   if (ns === "do" && NOVA_DIRECTIVE[arg]) {
-    await brainReply(chatId, msgId, undefined, NOVA_DIRECTIVE[arg], companionBrain(chatId, undefined, model, botName), botName);
+    await brainReply(chatId, msgId, undefined, NOVA_DIRECTIVE[arg], companionBrain(chatId, undefined, model, botName), botName, true);
     return;
+  }
+  // 🔊 Voice bench: mode / engine selection re-renders the submenu in place.
+  if (data === "nova:voice" || ns === "vmode" || ns === "vengine") {
+    if (ns === "vmode") saveVoicePrefs({ ...voicePrefs(), mode: arg as VoicePrefs["mode"] });
+    if (ns === "vengine") saveVoicePrefs({ ...voicePrefs(), engine: arg });
+    const v = await novaVoiceView(botName);
+    return edit(chatId, msgId, v.text, v.markup);
+  }
+  if (data === "nova:vtest") {
+    const vp = voicePrefs();
+    await edit(chatId, msgId, `🧪 Synthèse en cours avec <b>${esc(vp.engine)}</b>… (le premier appel charge le modèle, ça peut prendre 1-2 min)`, undefined);
+    const r = await synthVoice(vp.engine, `Salut ! C'est ${botName}. Tu écoutes ma voix générée par le moteur ${vp.engine}. Alors, qu'est-ce que tu en penses ? On la garde, ou on en essaie une autre ?`);
+    if (r instanceof Uint8Array) await sendVoiceNote(chatId, r, undefined, `🧪 ${vp.engine}`);
+    else await send(chatId, `⚠️ Test <b>${esc(vp.engine)}</b> échoué : <i>${esc(r.error).slice(0, 200)}</i>`);
+    const v = await novaVoiceView(botName);
+    return edit(chatId, msgId, v.text, v.markup);
   }
 }
 
@@ -1967,10 +2095,17 @@ async function agentBotMain(agentId: string) {
         // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
         // History gives it the running conversation; the brain itself is stateless.
         if (isCompanion) {
+          // «clé elevenlabs: sk_…» pasted in chat → store it, engine turns on live.
+          const keyM = text.match(/cl[ée]\s*elevenlabs\s*[:=]?\s*([A-Za-z0-9_-]{16,})/i);
+          if (keyM) {
+            saveElevenLabsKey(keyM[1]);
+            await send(chatId, "🔑 Clé ElevenLabs enregistrée — le moteur est actif. /menu → 🔊 Voix → ElevenLabs, puis 🧪 pour tester.", undefined, thread);
+            continue;
+          }
           const prompt = file ? withFileNote(text, file) : text;
           const ctx = histContext(chatId, thread);
           histAppend(chatId, thread, "operator", text || "(file)", agentId);
-          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model, botName), botName);
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model, botName), botName, true);
           continue;
         }
         // A message to a project agent-bot = a MISSION → ONE real oracle session.
