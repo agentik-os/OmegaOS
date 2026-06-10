@@ -1083,6 +1083,42 @@ else
     info "Council skill llm-council not found — skipping"
 fi
 
+# Install the browser-use skill — agentic CLOUD browser automation via the
+# official browser-use-sdk (Browser Use cloud API). Markdown + thin wrapper +
+# run.py only: the Python venv (~/.omega/skills/browser-use/.venv) and the pip
+# install are a RUNTIME OPT-IN created lazily on first run — install.sh NEVER
+# pip-installs or creates the venv, and BROWSER_USE_API_KEY is read at runtime
+# from ~/.omega/secrets/integrations.env, never the repo (R-BROWSER / R-SEC).
+BUSE_SRC="$OMEGA_SRC/skills/browser-use"
+BUSE_DST="$OMEGA_DIR/skills/browser-use"
+if [[ -d "$BUSE_SRC" ]]; then
+    mkdir -p "$BUSE_DST"
+    cp -r "$BUSE_SRC"/* "$BUSE_DST/"
+    # The wrapper is named `browser-use` (no .sh extension), so the generic *.sh
+    # chmod patterns miss it — set the exec bit explicitly (cp -r drops it).
+    chmod +x "$BUSE_DST/browser-use" 2>/dev/null || true
+    find "$BUSE_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    BUSE_CMD="$HOME/.claude/commands"; mkdir -p "$BUSE_CMD"
+    for cmd in browser-use omg-browser-use; do
+        cat > "$BUSE_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the browser-use skill — an agentic cloud browser task from natural language.
+Read and follow the complete instructions in:
+
+\`$BUSE_DST/SKILL.md\`
+
+browser-use is for LLM-AGENTIC browsing of UIs we don't control (unknown steps);
+for deterministic E2E of our own apps use Playwright/acceptance instead (R-BROWSER).
+It needs the paid Browser Use cloud + BROWSER_USE_API_KEY in
+~/.omega/secrets/integrations.env; the venv + pip install are a runtime opt-in.
+EOF
+    done
+    ok "browser-use skill installed: browser-use → ~/.omega/skills/browser-use/ (/browser-use + /omg-browser-use)"
+else
+    info "browser-use skill browser-use not found — skipping"
+fi
+
 # Install the orchestration planner skill (engine-native).
 # OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
 # user's other commands (e.g. a pre-existing prose `/planner`).

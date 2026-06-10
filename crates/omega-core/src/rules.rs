@@ -422,6 +422,17 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-06-09",
             reason: "OmegaOS could design a brand book but had no path from visual direction to actually generated, identity-consistent assets. soul-id + generate close that gap and plug visual identity into the brand pipeline. The external-CLI dependency is recorded so the boundary stays explicit: ship the markdown, keep the curl|sh CLI install a user opt-in, never claim a generated asset as runtime-verified without credentials.",
         },
+        Rule {
+            id: "R-BROWSER",
+            title: "When to use browser-use (agentic) vs Playwright (scripted)",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Two browser-automation paths, split by whether the steps are known in advance. Playwright (Bun, via the Bash CLI) = deterministic/scripted automation with KNOWN steps: the acceptance gate, golden-path route sweeps, and E2E of our OWN apps — the default for our apps' E2E (see /omg-acceptance and R-TEST: drive the prod URL with Playwright, never an MCP browser tool). browser-use (the browser-use-sdk cloud SDK) = LLM-agentic natural-language browser tasks with UNKNOWN steps: navigate/extract on an arbitrary or unfamiliar site, fill an unknown form, agentic web research across UIs we don't control (the agent runs on the Browser Use cloud). Decision: known steps + our app → Playwright; unknown UI / open-ended / agentic browsing → browser-use. Triggers /omg-browser-use + /browser-use. External-dependency boundary (R-SEC): browser-use-sdk is the paid Browser Use cloud API (Python, BROWSER_USE_API_KEY from ~/.omega/secrets/integrations.env, never the repo); OmegaOS ships only the skill markdown + a thin wrapper — the pip install (venv at ~/.omega/skills/browser-use/.venv) and the key are a runtime opt-in, never auto-installed by install.sh, so a live agentic run is not runtime-verifiable without the key. Stays at the skill layer, not omega-core (R-STACK).",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-09",
+            reason: "OmegaOS had a deterministic browser path (Playwright/acceptance) but no agentic-browsing primitive for UIs it doesn't control; browser-use-sdk fills that gap. Without a written boundary agents would misuse the paid agentic cloud for routine E2E (or hand-script an unknown third-party UI in Playwright). Same paid-API / runtime-opt-in boundary as higgsfield (R-VISUAL-ID) and gooseworks: ship the markdown + wrapper, keep the pip install + key a user opt-in, never claim an agentic run as runtime-verified without the operator's key.",
+        },
     ]
 }
 
