@@ -51,10 +51,10 @@ def fetch_prompt(rel_path: str) -> str:
     return dest
 
 
-def synth(engine: str, voice: str, text: str, timeout=600) -> bytes:
+def synth(engine: str, voice: str, text: str, params=None, timeout=600) -> bytes:
     req = urllib.request.Request(
         f"{TTSD}/tts",
-        data=json.dumps({"engine": engine, "text": text, "voice": voice}).encode(),
+        data=json.dumps({"engine": engine, "text": text, "voice": voice, "params": params or {}}).encode(),
         headers={"content-type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -102,12 +102,12 @@ def main():
                 log(f"N°{n} [{engine}] PROMPT FAIL: {ex}")
                 failed += 1
                 continue
-        resolved.append({"n": n, "engine": engine, "voice": voice, "label": label})
+        resolved.append({"n": n, "engine": engine, "voice": voice, "label": label, **({"params": e["params"]} if e.get("params") else {})})
         if n < args.start or (args.only and engine != args.only):
             continue
         t0 = time.time()
         try:
-            ogg = synth(engine, voice, args.text.format(n=n))
+            ogg = synth(engine, voice, args.text.format(n=n), e.get("params"))
             ok = send_voice(token, chat, ogg, f"N°{n} — {label} ({engine})")
             log(f"N°{n} [{engine}] {'sent' if ok else 'SEND FAIL'} in {time.time() - t0:.0f}s — {label}")
             sent += ok

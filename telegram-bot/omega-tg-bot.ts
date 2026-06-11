@@ -793,7 +793,7 @@ const VOICE_PREFS_FILE = `${OMEGA_DIR}/state/nova-voice.json`;
 // path, or ElevenLabs voice_id) — set by «voix N» from the casting bench
 // (tools/tts/casting.py numbers every sample; the resolved map lives in
 // ~/.omega/tts/casting-manifest.json). Empty = the engine's default voice.
-type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: string; voiceLabel?: string };
+type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: string; voiceLabel?: string; voiceParams?: Record<string, number> };
 function voicePrefs(): VoicePrefs {
   try { return { mode: "text", engine: "pocket", ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
   catch { return { mode: "text", engine: "pocket" }; }
@@ -816,11 +816,11 @@ function ttsSpeakable(md: string): string {
     .replace(/\s+/g, " ")
     .trim().slice(0, 2500);
 }
-async function synthVoice(engine: string, text: string, voice = ""): Promise<Uint8Array | { error: string }> {
+async function synthVoice(engine: string, text: string, voice = "", params?: Record<string, number>): Promise<Uint8Array | { error: string }> {
   try {
     const r = await fetch(`${TTSD}/tts`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ engine, text: ttsSpeakable(text), voice }),
+      body: JSON.stringify({ engine, text: ttsSpeakable(text), voice, params: params || {} }),
       signal: AbortSignal.timeout(420_000), // chatterbox on CPU is slow by design
     });
     if (!r.ok) { const j: any = await r.json().catch(() => ({})); return { error: j?.error || `HTTP ${r.status}` }; }
@@ -844,7 +844,7 @@ async function sendVoiceNote(chat: number, ogg: Uint8Array, thread?: number, cap
 async function speakReply(chat: number, thread: number | undefined, out: string, phId?: number) {
   const vp = voicePrefs();
   if (vp.mode === "text") return;
-  const r = await synthVoice(vp.engine, out, vp.voice || "");
+  const r = await synthVoice(vp.engine, out, vp.voice || "", vp.voiceParams);
   if (r instanceof Uint8Array) {
     const sent = await sendVoiceNote(chat, r, thread);
     if (vp.mode === "voice" && sent?.ok && phId) await tg("deleteMessage", { chat_id: chat, message_id: phId });
@@ -2022,14 +2022,14 @@ async function onNovaCallback(data: string, chatId: number, msgId: number, from:
   if (data === "nova:voice" || ns === "vmode" || ns === "vengine") {
     if (ns === "vmode") saveVoicePrefs({ ...voicePrefs(), mode: arg as VoicePrefs["mode"] });
     // Switching engine resets the picked voice — a casting voice belongs to its engine.
-    if (ns === "vengine") saveVoicePrefs({ ...voicePrefs(), engine: arg, voice: "", voiceLabel: "" });
+    if (ns === "vengine") saveVoicePrefs({ ...voicePrefs(), engine: arg, voice: "", voiceLabel: "", voiceParams: undefined });
     const v = await novaVoiceView(botName);
     return edit(chatId, msgId, v.text, v.markup);
   }
   if (data === "nova:vtest") {
     const vp = voicePrefs();
     await edit(chatId, msgId, `🧪 Synthèse en cours avec <b>${esc(vp.engine)}</b>… (le premier appel charge le modèle, ça peut prendre 1-2 min)`, undefined);
-    const r = await synthVoice(vp.engine, `Salut ! C'est ${botName}. Tu écoutes ma voix générée par le moteur ${vp.engine}. Alors, qu'est-ce que tu en penses ? On la garde, ou on en essaie une autre ?`, vp.voice || "");
+    const r = await synthVoice(vp.engine, `Salut ! C'est ${botName}. Tu écoutes ma voix générée par le moteur ${vp.engine}. Alors, qu'est-ce que tu en penses ? On la garde, ou on en essaie une autre ?`, vp.voice || "", vp.voiceParams);
     if (r instanceof Uint8Array) await sendVoiceNote(chatId, r, undefined, `🧪 ${vp.engine}`);
     else await send(chatId, `⚠️ Test <b>${esc(vp.engine)}</b> échoué : <i>${esc(r.error).slice(0, 200)}</i>`);
     const v = await novaVoiceView(botName);
@@ -2117,7 +2117,7 @@ async function agentBotMain(agentId: string) {
               if (!v) { await send(chatId, `⚠️ Voix n°${vM[1]} inconnue — le casting va de 1 à ${list.length}.`, undefined, thread); continue; }
               const cur = voicePrefs();
               // Picking a voice means he wants to HEAR it — text-only auto-upgrades to both.
-              saveVoicePrefs({ ...cur, engine: v.engine, voice: v.voice, voiceLabel: `n°${v.n} ${v.label}`, mode: cur.mode === "text" ? "both" : cur.mode });
+              saveVoicePrefs({ ...cur, engine: v.engine, voice: v.voice, voiceLabel: `n°${v.n} ${v.label}`, voiceParams: v.params || undefined, mode: cur.mode === "text" ? "both" : cur.mode });
               await send(chatId, `🎙️ Adopté ! Je te parle désormais avec la voix <b>n°${v.n} — ${esc(v.label)}</b> (moteur ${esc(v.engine)}).`, undefined, thread);
             } catch {
               await send(chatId, "⚠️ Aucun casting trouvé — lance d'abord tools/tts/casting.py.", undefined, thread);

@@ -130,10 +130,10 @@ class Worker:
         t.join(timeout)
         return out[0].strip() if out else ""
 
-    def run(self, text: str, out_path: str, voice: str = "") -> dict:
+    def run(self, text: str, out_path: str, voice: str = "", params: dict | None = None) -> dict:
         if self.proc.poll() is not None:
             raise RuntimeError("worker died")
-        self.proc.stdin.write(json.dumps({"text": text, "out": out_path, "voice": voice}) + "\n")
+        self.proc.stdin.write(json.dumps({"text": text, "out": out_path, "voice": voice, "params": params or {}}) + "\n")
         self.proc.stdin.flush()
         line = self._readline(JOB_TIMEOUT)
         if not line:
@@ -142,7 +142,7 @@ class Worker:
         return json.loads(line)
 
 
-def synth_local(eid: str, text: str, voice: str = "") -> bytes:
+def synth_local(eid: str, text: str, voice: str = "", params: dict | None = None) -> bytes:
     with _locks[eid]:
         w = _workers.get(eid)
         if w is None or w.proc.poll() is not None:
@@ -150,7 +150,7 @@ def synth_local(eid: str, text: str, voice: str = "") -> bytes:
         os.makedirs(OUT_DIR, exist_ok=True)
         wav = os.path.join(OUT_DIR, f"{eid}-{int(time.time() * 1000)}.wav")
         try:
-            r = w.run(text, wav, voice)
+            r = w.run(text, wav, voice, params)
             if not r.get("ok"):
                 raise RuntimeError(r.get("error", "unknown worker error"))
             return to_ogg(wav)
@@ -189,10 +189,19 @@ def synth_elevenlabs(text: str, voice: str = "") -> bytes:
 
 
 def to_ogg(src: str) -> bytes:
-    """Telegram voice notes want OGG/Opus mono — convert whatever the engine made."""
+    """Telegram voice notes want OGG/Opus mono — convert whatever the engine made.
+
+    A gentle mastering chain rides along: rumble cut, a touch of low-mid warmth,
+    tamed harsh highs, and broadcast loudness — every engine sounds noticeably
+    cleaner and softer through it.
+    """
     ogg = src.rsplit(".", 1)[0] + ".ogg"
+    fx = ("highpass=f=70,"
+          "equalizer=f=220:t=q:w=1.2:g=1.5,"
+          "equalizer=f=6500:t=q:w=1.5:g=-2,"
+          "loudnorm=I=-19:TP=-2:LRA=9")
     r = subprocess.run(
-        ["ffmpeg", "-y", "-i", src, "-ac", "1", "-ar", "48000",
+        ["ffmpeg", "-y", "-i", src, "-af", fx, "-ac", "1", "-ar", "48000",
          "-c:a", "libopus", "-b:a", "48k", ogg],
         capture_output=True, timeout=120,
     )
@@ -240,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
             eid = body.get("engine", "")
             text = (body.get("text") or "").strip()[:MAX_TEXT]
             voice = str(body.get("voice") or "")[:300]
+            params = body.get("params") if isinstance(body.get("params"), dict) else None
             if eid not in ENGINES:
                 return self._json(400, {"error": f"unknown engine {eid!r}"})
             if not text:
@@ -247,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
             if not engine_available(eid):
                 return self._json(409, {"error": f"{eid} indisponible (non installé ou clé manquante)"})
             t0 = time.time()
-            ogg = synth_elevenlabs(text, voice) if eid == "elevenlabs" else synth_local(eid, text, voice)
+            ogg = synth_elevenlabs(text, voice) if eid == "elevenlabs" else synth_local(eid, text, voice, params)
             log(f"{eid}: {len(text)} chars → {len(ogg)} bytes in {time.time() - t0:.1f}s")
             self.send_response(200)
             self.send_header("content-type", "audio/ogg")

@@ -34,6 +34,11 @@ for line in sys.stdin:
         kw = {"audio_prompt_path": job["voice"]} if job.get("voice") else {}
         if MULTI:
             kw["language_id"] = "fr"
+        # Tuning knobs (exaggeration ↓ = softer delivery, cfg_weight ↓ = slower,
+        # more deliberate pacing, temperature ↓ = steadier) — set per voice.
+        for k in ("exaggeration", "cfg_weight", "temperature"):
+            if k in (job.get("params") or {}):
+                kw[k] = job["params"][k]
         wav = model.generate(job["text"], **kw)
         torchaudio.save(job["out"], wav, model.sr)
         emit({"ok": True})
