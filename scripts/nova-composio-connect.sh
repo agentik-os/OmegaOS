@@ -54,20 +54,78 @@ if [ "$AUTH" = "__MISSING__" ]; then
   exit 1
 fi
 
-composio login --api-key "$COMPOSIO_API_KEY" >/dev/null 2>&1 || true
+# ── Composio API v3 (le CLI composio-core 0.7.x est MORT : HTTP 410) ────────
+# Flow v3 : auth_config par toolkit (géré Composio) → connected_account → URL OAuth.
+connect_v3() {  # $1=slug  $2=auth  $3=envvar
+python3 - "$1" "$2" "${3:-}" <<'PYEOF'
+import json, os, sys, urllib.request, urllib.error
+
+slug, auth, envvar = sys.argv[1], sys.argv[2], sys.argv[3]
+KEY = os.environ["COMPOSIO_API_KEY"]
+BASE = "https://backend.composio.dev/api/v3"
+
+def api(path, body=None):
+    req = urllib.request.Request(BASE + path, method="POST" if body else "GET",
+        data=json.dumps(body).encode() if body else None,
+        headers={"x-api-key": KEY, "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.load(r), None
+    except urllib.error.HTTPError as e:
+        return None, f"HTTP {e.code}: {e.read().decode()[:300]}"
+
+# 1) auth_config existant pour ce toolkit, sinon création (auth gérée par Composio)
+cfgs, err = api(f"/auth_configs?toolkit_slug={slug}")
+if err: sys.exit(f"❌ auth_configs: {err}")
+ac = next((i["id"] for i in (cfgs.get("items") or []) if i.get("id")), None)
+if not ac:
+    created, err = api("/auth_configs", {"toolkit": {"slug": slug},
+                                         "auth_config": {"type": "use_composio_managed_auth"}})
+    if err: sys.exit(f"❌ création auth_config: {err}")
+    ac = created.get("auth_config", {}).get("id") or created.get("id")
+if not ac: sys.exit("❌ pas d'auth_config id dans la réponse")
+
+# 2) connected_account → URL de redirection OAuth (ou état direct pour une clé API)
+conn = {"user_id": "nova"}
+if auth == "api_key":
+    val = os.environ.get(envvar or "", "")
+    if not val: sys.exit(f"🔑 clé manquante: ajoute {envvar}=... dans ~/.omega/nova-secrets.env")
+    conn["state"] = {"authScheme": "API_KEY", "val": {"api_key": val, "generic_api_key": val}}
+acc, err = api("/connected_accounts", {"auth_config": {"id": ac}, "connection": conn})
+if err: sys.exit(f"❌ connected_account: {err}")
+
+def find_url(o):
+    if isinstance(o, str) and o.startswith("http") and ("redirect" not in o[:8]): return o if "composio" in o or "oauth" in o or "auth" in o else None
+    if isinstance(o, dict):
+        for k in ("redirect_url", "redirectUrl", "redirect_uri"):
+            if isinstance(o.get(k), str): return o[k]
+        for v in o.values():
+            u = find_url(v)
+            if u: return u
+    if isinstance(o, list):
+        for v in o:
+            u = find_url(v)
+            if u: return u
+    return None
+
+url = find_url(acc)
+status = (acc.get("connection") or {}).get("status") or acc.get("status") or "?"
+if url:
+    print(f"🔗 Ouvre cette URL pour autoriser '{slug}' :\n{url}")
+elif str(status).upper() in ("ACTIVE", "CONNECTED"):
+    print(f"✅ '{slug}' connecté directement (status {status}).")
+else:
+    print(f"⚠️ Compte créé (status {status}) mais pas d'URL retournée — réponse: {json.dumps(acc)[:400]}")
+PYEOF
+}
 
 case "$AUTH" in
   api_key)
-    KEY="${!ENVVAR:-}"
-    if [ -z "$KEY" ]; then
-      echo "🔑 '$APP' a besoin d'une clé API. Ajoute '$ENVVAR=...' dans $OMEGA/nova-secrets.env puis relance." >&2
-      exit 2
-    fi
     echo "→ Connexion de '$APP' (clé API depuis \$$ENVVAR)…"
-    composio add "$APP"
+    connect_v3 "$APP" api_key "$ENVVAR"
     ;;
   *)
-    echo "→ Connexion de '$APP' à Composio. Ouvre l'URL d'autorisation qui s'affiche :"
-    composio add "$APP"
+    echo "→ Connexion de '$APP' à Composio :"
+    connect_v3 "$APP" oauth2 ""
     ;;
 esac
