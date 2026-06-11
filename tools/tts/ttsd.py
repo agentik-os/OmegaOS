@@ -179,9 +179,14 @@ def synth_elevenlabs(text: str, voice: str = "") -> bytes:
     cfg = elevenlabs_config()
     if voice:
         cfg["voice_id"] = voice
+    body = {"text": text, "model_id": cfg["model_id"]}
+    # Optional voice_settings passthrough from elevenlabs.json — e.g.
+    # {"speed": 1.05, "stability": 0.5} to tune pace/character per machine.
+    if isinstance(cfg.get("voice_settings"), dict):
+        body["voice_settings"] = cfg["voice_settings"]
     req = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{cfg['voice_id']}?output_format=mp3_44100_128",
-        data=json.dumps({"text": text, "model_id": cfg["model_id"]}).encode(),
+        data=json.dumps(body).encode(),
         headers={"xi-api-key": key, "content-type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=120) as r:
