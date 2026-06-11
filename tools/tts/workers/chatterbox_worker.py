@@ -30,7 +30,11 @@ emit({"ready": True})
 for line in sys.stdin:
     try:
         job = json.loads(line)
-        wav = model.generate(job["text"], language_id="fr") if MULTI else model.generate(job["text"])
+        # voice = path to a reference wav (zero-shot cloning); absent → default voice.
+        kw = {"audio_prompt_path": job["voice"]} if job.get("voice") else {}
+        if MULTI:
+            kw["language_id"] = "fr"
+        wav = model.generate(job["text"], **kw)
         torchaudio.save(job["out"], wav, model.sr)
         emit({"ok": True})
     except Exception as e:  # noqa: BLE001

@@ -26,13 +26,26 @@ try:
     model = TTSModel.load_model(language=LANG)
 except TypeError:            # older pocket-tts without the language kwarg
     model = TTSModel.load_model()
-voice_state = model.get_state_for_audio_prompt(VOICE)
+# Voice states (kvcache embeddings) are slow to compute and cheap to keep —
+# cache one per voice so switching voices (the casting bench, the operator's
+# pick) costs nothing after the first use. `voice` = catalog name, local wav,
+# or hf:// path; default = the French catalog voice.
+_states = {}
+
+
+def state_for(voice: str):
+    if voice not in _states:
+        _states[voice] = model.get_state_for_audio_prompt(voice)
+    return _states[voice]
+
+
+state_for(VOICE)
 emit({"ready": True})
 
 for line in sys.stdin:
     try:
         job = json.loads(line)
-        audio = model.generate_audio(voice_state, job["text"])
+        audio = model.generate_audio(state_for(job.get("voice") or VOICE), job["text"])
         scipy.io.wavfile.write(job["out"], model.sample_rate, audio.numpy())
         emit({"ok": True})
     except Exception as e:  # noqa: BLE001 — a bad job must never kill the worker

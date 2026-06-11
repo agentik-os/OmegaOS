@@ -28,7 +28,7 @@ for line in sys.stdin:
     try:
         job = json.loads(line)
         chunks = []
-        for _, _, audio in pipeline(job["text"], voice=VOICE):
+        for _, _, audio in pipeline(job["text"], voice=job.get("voice") or VOICE):
             chunks.append(audio.numpy() if hasattr(audio, "numpy") else np.asarray(audio))
         if not chunks:
             raise RuntimeError("kokoro produced no audio")

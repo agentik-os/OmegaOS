@@ -20,24 +20,36 @@ TTS_DIR = os.environ.get("TTS_DIR", os.path.expanduser("~/.omega/tts"))
 MODEL_DIR = os.path.join(TTS_DIR, "models", "piper")
 VOICE = "fr_FR-siwis-medium"
 
-voice = None
-try:
-    from piper import PiperVoice
-    voice = PiperVoice.load(os.path.join(MODEL_DIR, f"{VOICE}.onnx"))
-except Exception:  # noqa: BLE001 — Python API changed → fall back to the CLI
-    pass
+# One loaded PiperVoice per model name; fall back to the CLI (which also
+# auto-downloads a missing voice) when the Python API is unavailable.
+_voices: dict = {}
+
+
+def load_voice(name: str):
+    if name not in _voices:
+        try:
+            from piper import PiperVoice
+            _voices[name] = PiperVoice.load(os.path.join(MODEL_DIR, f"{name}.onnx"))
+        except Exception:  # noqa: BLE001
+            _voices[name] = None
+    return _voices[name]
+
+
+load_voice(VOICE)
 emit({"ready": True})
 
 for line in sys.stdin:
     try:
         job = json.loads(line)
+        name = job.get("voice") or VOICE
+        voice = load_voice(name)
         if voice is not None:
             import wave
             with wave.open(job["out"], "wb") as f:
                 voice.synthesize_wav(job["text"], f)
         else:
             r = subprocess.run(
-                [sys.executable, "-m", "piper", "--model", VOICE,
+                [sys.executable, "-m", "piper", "--model", name,
                  "--data-dir", MODEL_DIR, "--download-dir", MODEL_DIR,
                  "-f", job["out"], "--", job["text"]],
                 capture_output=True, timeout=120,

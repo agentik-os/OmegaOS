@@ -130,10 +130,10 @@ class Worker:
         t.join(timeout)
         return out[0].strip() if out else ""
 
-    def run(self, text: str, out_path: str) -> dict:
+    def run(self, text: str, out_path: str, voice: str = "") -> dict:
         if self.proc.poll() is not None:
             raise RuntimeError("worker died")
-        self.proc.stdin.write(json.dumps({"text": text, "out": out_path}) + "\n")
+        self.proc.stdin.write(json.dumps({"text": text, "out": out_path, "voice": voice}) + "\n")
         self.proc.stdin.flush()
         line = self._readline(JOB_TIMEOUT)
         if not line:
@@ -142,7 +142,7 @@ class Worker:
         return json.loads(line)
 
 
-def synth_local(eid: str, text: str) -> bytes:
+def synth_local(eid: str, text: str, voice: str = "") -> bytes:
     with _locks[eid]:
         w = _workers.get(eid)
         if w is None or w.proc.poll() is not None:
@@ -150,7 +150,7 @@ def synth_local(eid: str, text: str) -> bytes:
         os.makedirs(OUT_DIR, exist_ok=True)
         wav = os.path.join(OUT_DIR, f"{eid}-{int(time.time() * 1000)}.wav")
         try:
-            r = w.run(text, wav)
+            r = w.run(text, wav, voice)
             if not r.get("ok"):
                 raise RuntimeError(r.get("error", "unknown worker error"))
             return to_ogg(wav)
@@ -161,11 +161,13 @@ def synth_local(eid: str, text: str) -> bytes:
                 pass
 
 
-def synth_elevenlabs(text: str) -> bytes:
+def synth_elevenlabs(text: str, voice: str = "") -> bytes:
     key = read_services_env("ELEVENLABS_API_KEY")
     if not key:
         raise RuntimeError("ELEVENLABS_API_KEY manquante dans provisioning/services.env")
     cfg = elevenlabs_config()
+    if voice:
+        cfg["voice_id"] = voice
     req = urllib.request.Request(
         f"https://api.elevenlabs.io/v1/text-to-speech/{cfg['voice_id']}?output_format=mp3_44100_128",
         data=json.dumps({"text": text, "model_id": cfg["model_id"]}).encode(),
@@ -237,6 +239,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(int(self.headers.get("content-length", 0))))
             eid = body.get("engine", "")
             text = (body.get("text") or "").strip()[:MAX_TEXT]
+            voice = str(body.get("voice") or "")[:300]
             if eid not in ENGINES:
                 return self._json(400, {"error": f"unknown engine {eid!r}"})
             if not text:
@@ -244,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
             if not engine_available(eid):
                 return self._json(409, {"error": f"{eid} indisponible (non installé ou clé manquante)"})
             t0 = time.time()
-            ogg = synth_elevenlabs(text) if eid == "elevenlabs" else synth_local(eid, text)
+            ogg = synth_elevenlabs(text, voice) if eid == "elevenlabs" else synth_local(eid, text, voice)
             log(f"{eid}: {len(text)} chars → {len(ogg)} bytes in {time.time() - t0:.1f}s")
             self.send_response(200)
             self.send_header("content-type", "audio/ogg")
