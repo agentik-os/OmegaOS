@@ -79,8 +79,12 @@ cfgs, err = api(f"/auth_configs?toolkit_slug={slug}")
 if err: sys.exit(f"❌ auth_configs: {err}")
 ac = next((i["id"] for i in (cfgs.get("items") or []) if i.get("id")), None)
 if not ac:
-    created, err = api("/auth_configs", {"toolkit": {"slug": slug},
-                                         "auth_config": {"type": "use_composio_managed_auth"}})
+    # api_key toolkits have no Composio-managed credentials → custom auth config
+    body = ({"toolkit": {"slug": slug},
+             "auth_config": {"type": "use_custom_auth", "authScheme": "API_KEY", "credentials": {}}}
+            if auth == "api_key" else
+            {"toolkit": {"slug": slug}, "auth_config": {"type": "use_composio_managed_auth"}})
+    created, err = api("/auth_configs", body)
     if err: sys.exit(f"❌ création auth_config: {err}")
     ac = created.get("auth_config", {}).get("id") or created.get("id")
 if not ac: sys.exit("❌ pas d'auth_config id dans la réponse")
@@ -90,7 +94,7 @@ conn = {"user_id": "nova"}
 if auth == "api_key":
     val = os.environ.get(envvar or "", "")
     if not val: sys.exit(f"🔑 clé manquante: ajoute {envvar}=... dans ~/.omega/nova-secrets.env")
-    conn["state"] = {"authScheme": "API_KEY", "val": {"api_key": val, "generic_api_key": val}}
+    conn["state"] = {"authScheme": "API_KEY", "val": {"api_key": val, "generic_api_key": val, "status": "ACTIVE"}}
 acc, err = api("/connected_accounts", {"auth_config": {"id": ac}, "connection": conn})
 if err: sys.exit(f"❌ connected_account: {err}")
 
