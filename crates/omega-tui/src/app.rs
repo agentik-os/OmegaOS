@@ -1784,6 +1784,11 @@ impl App {
                 self.preview_content =
                     "(this is the session running OmegaOS — preview disabled to prevent recursion)"
                         .to_string();
+                // Drop the styled snapshot too — the renderer prefers it over
+                // preview_content, so leaving it showed the PREVIOUSLY
+                // selected session's frozen mirror under this session's title.
+                self.preview_styled = None;
+                self.preview_cursor = None;
                 return Ok(());
             }
         }

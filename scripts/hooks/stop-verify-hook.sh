@@ -7,8 +7,10 @@
 # Enforces Law L1 (runtime is truth) + L4 (done means 100%, verified).
 
 # Only nudge inside a project tree.
+# (~/Station is the live projects root — the original VibeCoding/projects
+# gate matched nothing on this layout, so the hook never fired.)
 case "$PWD" in
-    *"/VibeCoding/"*|*"/projects/"*) ;;
+    *"/VibeCoding/"*|*"/projects/"*|*"/Station/"*) ;;
     *) exit 0 ;;
 esac
 

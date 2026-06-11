@@ -110,7 +110,7 @@ dock version >/dev/null 2>&1 || die "cannot reach the Docker daemon (tried direc
 # 409-conflicts with the OmegaOS command bot, which owns the bot token. No
 # telegram.toml is required here.
 ALLOW_ID=$(grep -oP 'allow_user_ids\s*=\s*\[\s*\K[0-9]+' "$TG_TOML" 2>/dev/null || true)
-CHAT_ID=$(grep -oP 'chat_id\s*=\s*\K[0-9]+' "$TG_TOML" 2>/dev/null || true)
+CHAT_ID=$(grep -oP 'chat_id\s*=\s*\K-?[0-9]+' "$TG_TOML" 2>/dev/null || true)
 OPERATOR="${ALLOW_ID:-$CHAT_ID}"
 
 OAUTH=""

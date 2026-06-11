@@ -894,7 +894,9 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     app.preview_inner_width = area.width.saturating_sub(2);
     app.preview_inner_height = area.height.saturating_sub(2);
 
-    let total_lines = app.preview_content.lines().count() as u16;
+    // Saturate instead of `as`-truncating: a deep history capture can exceed
+    // 65 535 lines, and modulo-wrapped math made the scroll bound garbage.
+    let total_lines = app.preview_content.lines().count().min(u16::MAX as usize) as u16;
     let viewport_height = area.height.saturating_sub(2);
     let max_scroll = total_lines.saturating_sub(viewport_height);
     // Publish the real clamp bound so the scroll setters (which don't know the
@@ -1006,9 +1008,13 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     //    or with multiple co-occurrences to avoid false
                     //    positives on prose) ──────────────────────────────
                     // 1. Activity status footer: "Twisting… (22s · ↓ 1.0k
-                    //    tokens · thought for 2s)" and siblings.
+                    //    tokens · thought for 2s)" and siblings. Anchored on
+                    //    the "… (" verb→parenthesis seam — plain conversation
+                    //    prose mentioning tokens with a stray '·' or ellipsis
+                    //    was painted bold red across the row.
                     let is_activity = trimmed.contains("tokens")
-                        && (trimmed.contains('·') || trimmed.contains('…'));
+                        && trimmed.contains('·')
+                        && trimmed.contains("… (");
                     // 2. User input echo:
                     //    - "❯ <text>"        : Claude Code's input prompt
                     //    - "▶ You: <text>"   : AISB-master mirror format
@@ -1030,10 +1036,12 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                         || trimmed.starts_with("✗ ")
                         || trimmed.starts_with("⊘ ");
                     // 4. Task-tool / sub-agent dispatch: "● Task(...)" or a
-                    //    line carrying "subagent_type=" (Claude Code's Task
-                    //    invocation echo).
+                    //    tool-echo bullet carrying "subagent_type=". The
+                    //    bare contains() matched prose DISCUSSING the field
+                    //    (this very kind of sentence) — require the line to
+                    //    be a ● bullet.
                     let is_task_dispatch = trimmed.starts_with("● Task(")
-                        || trimmed.contains("subagent_type=");
+                        || (trimmed.starts_with('●') && trimmed.contains("subagent_type="));
 
                     // Order matters: more-specific patterns first so a TODO
                     // line that happens to contain "tokens" isn't mis-typed

@@ -76,6 +76,10 @@ for f in "$STATE"/oracle-*.done.json; do
     marker="${f}.notified"
 
     # Extract every field robustly (one python read; NUL-safe, no fragile word-split).
+    # Reset the guard + fields BEFORE the eval: if python dies hard (empty
+    # output), stale values from the PREVIOUS iteration would otherwise pass
+    # the OK gate and re-send the previous report under this file's marker.
+    OK=0 STATUS="" ORACLE="" PROJECT="" MISSION="" SUMMARY="" COMMIT="" DEPLOY="" DUR="" PENDING=""
     eval "$(python3 - "$f" <<'PY' 2>/dev/null
 import json,sys,shlex
 try:

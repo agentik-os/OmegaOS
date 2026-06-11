@@ -27,7 +27,9 @@ branches="$(git for-each-ref --format='%(refname:short)' refs/heads/omega/ 2>/de
 [ -n "$branches" ] || { echo "[OK] no omega/* worker branches to merge."; exit 0; }
 
 # branch → worktree path (empty if the branch has no worktree).
-wt_for() { git worktree list --porcelain 2>/dev/null | awk -v b="refs/heads/$1" 'BEGIN{p=""}/^worktree /{p=$2}/^branch /{if($2==b){print p;exit}}'; }
+# substr($0,10) = everything after "worktree " — $2 truncated paths at the
+# first space, so cleanup could rm the wrong path.
+wt_for() { git worktree list --porcelain 2>/dev/null | awk -v b="refs/heads/$1" 'BEGIN{p=""}/^worktree /{p=substr($0,10)}/^branch /{if($2==b){print p;exit}}'; }
 
 merged=0; conflicts=""
 while IFS= read -r b; do

@@ -27,7 +27,7 @@ TG="$HOME/.omega/telegram.toml"
 [ -f "$TG" ] || exit 0
 TOKEN="$(grep -oP 'bot_token\s*=\s*"\K[^"]+' "$TG" 2>/dev/null | head -1)"
 CHAT="$(grep -oP 'allow_user_ids\s*=\s*\[\s*\K[0-9]+' "$TG" 2>/dev/null | head -1)"
-[ -n "$CHAT" ] || CHAT="$(grep -oP 'chat_id\s*=\s*\K[0-9]+' "$TG" 2>/dev/null | head -1)"
+[ -n "$CHAT" ] || CHAT="$(grep -oP 'chat_id\s*=\s*\K-?[0-9]+' "$TG" 2>/dev/null | head -1)"
 [ -n "$TOKEN" ] && [ -n "$CHAT" ] || exit 0
 
 # Cooldown: at most one self-heal alert per 6h (don't nag).
@@ -36,7 +36,7 @@ if [ -f "$FLAG" ]; then
     AGE=$(( $(date +%s) - $(stat -c %Y "$FLAG" 2>/dev/null || echo 0) ))
     [ "$AGE" -lt 21600 ] && exit 0
 fi
-mkdir -p "$HOME/.omega/state" && : > "$FLAG"
+mkdir -p "$HOME/.omega/state"
 
 RULE="━━━━━━━━━━━━"
 MSG="${RULE}
@@ -46,5 +46,9 @@ ${RULE}
  Tap /status → <b>🛠 Fix it</b> to send an oracle."
 
 # Operational alert → the dedicated Alerts topic via the canonical sender
-# (auto-recreates the topic if deleted, DM fallback).
-bash "$HOME/.omega/bin/omega-alert-send.sh" "$MSG" || true
+# (auto-recreates the topic if deleted, DM fallback). Arm the 6h cooldown
+# ONLY on a successful send — arming before (and swallowing the failure)
+# silenced the NEXT alert for 6h whenever this one failed.
+if bash "$HOME/.omega/bin/omega-alert-send.sh" "$MSG"; then
+    : > "$FLAG"
+fi
