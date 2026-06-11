@@ -50,6 +50,33 @@ printf '%s self-improve ran (%s chars)\n' "$(date '+%F %T')" "${#OUT}" >> "$LOG"
 printf '%s' "$OUT" | grep -qx "SKIP" && exit 0
 [ -z "${OUT//[[:space:]]/}" ] && exit 0
 
+# Quiet guard: the 🌱 announce never interrupts a live conversation (operator
+# rule). Wait for a quiet slot (30 min idle, checked every 10 min, up to 2h);
+# still busy after that → hold the message, the journal has the full entry.
+idle_secs() {
+python3 - "$HIST" <<'PY'
+import datetime, json, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 8192))
+        lines = [l for l in f.read().decode(errors="ignore").splitlines() if l.strip()]
+    ts = json.loads(lines[-1])["ts"]
+    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    print(int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()))
+except Exception:
+    print(10**9)
+PY
+}
+QUIET_SECS=$(( ${NOVA_QUIET_WINDOW_MIN:-30} * 60 ))
+for _ in $(seq 1 12); do
+    [ "$(idle_secs)" -ge "$QUIET_SECS" ] && break
+    sleep 600
+done
+if [ "$(idle_secs)" -lt "$QUIET_SECS" ]; then
+    printf '%s announce held — chat still active after 2h quiet-wait (journal has the entry)\n' "$(date '+%F %T')" >> "$LOG"
+    exit 0
+fi
+
 # Companion bot token from agent-bots.json (first kind=companion entry).
 TOKEN="$(python3 -c '
 import json, os

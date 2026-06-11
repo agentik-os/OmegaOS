@@ -26,6 +26,29 @@ WHO="${NOVA_OPERATOR_NAME:-}"
 HIST="$OMEGA/state/tg-history/$NOVA_CHAT_ID.jsonl"
 export PATH="$HOME/Linux/bin:$HOME/.local/bin:$PATH"
 
+# ── Quiet guard: NEVER interrupt a live conversation with a scheduled message
+# (operator rule, 2026-06-11 — an evening debrief fired mid-discussion). If the
+# chat saw ANY activity in the last NOVA_QUIET_WINDOW_MIN minutes (default 30),
+# this touchpoint silently skips its slot — the operator's flow owns the channel.
+IDLE_SECS="$(python3 - "$HIST" <<'PY'
+import datetime, json, sys
+try:
+    with open(sys.argv[1], "rb") as f:
+        f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 8192))
+        lines = [l for l in f.read().decode(errors="ignore").splitlines() if l.strip()]
+    ts = json.loads(lines[-1])["ts"]
+    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    print(int((datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()))
+except Exception:
+    print(10**9)  # no history → no conversation to disturb
+PY
+)"
+QUIET_SECS=$(( ${NOVA_QUIET_WINDOW_MIN:-30} * 60 ))
+if [ "$IDLE_SECS" -lt "$QUIET_SECS" ]; then
+    echo "$(date '+%F %T') $MODE skipped — conversation active ${IDLE_SECS}s ago (< ${QUIET_SECS}s quiet window)"
+    exit 0
+fi
+
 # Last ~12 turns of the conversation, as context (so she doesn't repeat herself).
 CTX="$(tail -n 14 "$HIST" 2>/dev/null | python3 -c 'import sys,json
 for l in sys.stdin:
