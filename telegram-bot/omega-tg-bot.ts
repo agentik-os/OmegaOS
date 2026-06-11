@@ -2065,6 +2065,7 @@ async function agentBotMain(agentId: string) {
   // Companion's command menu = the operator's discoverable "re-ask me" menu. The
   // brain (persona) acts on each directive; no per-command bot code needed.
   await tg("setMyCommands", { commands: isCompanion ? [
+    { command: "call", description: "📞 M'appeler — conversation audio en direct" },
     { command: "menu", description: "Le menu à boutons (comptes, actus, profil…)" },
     { command: "actus", description: "Actus du jour autour d'Anthropic" },
     { command: "interview", description: "Re-questionne-moi pour détecter ce qui a changé" },
@@ -2106,6 +2107,13 @@ async function agentBotMain(agentId: string) {
         // Any attachment (photo / document / video / audio) → download it locally; aggregated with the text below.
         const file = (msg.photo || msg.document || msg.video || msg.audio) ? await saveIncomingFile(msg) : "";
         if (!text && !file) continue;
+        // Companion: /call hands over the live-call button, no brain round-trip.
+        if (isCompanion && text === "/call") {
+          const rows = novaCallButton();
+          if (rows.length) await send(chatId, `📞 <b>Appelle-moi</b> — je décroche tout de suite.`, kb(rows), thread);
+          else await send(chatId, "L'appel vocal n'est pas configuré sur cette machine (state/nova-call.json absent).", undefined, thread);
+          continue;
+        }
         // Companion: /menu opens the button menu; /start greets + shows it.
         if (isCompanion && (text === "/menu" || text === "/start")) {
           await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
