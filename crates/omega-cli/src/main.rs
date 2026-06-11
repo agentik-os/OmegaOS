@@ -3161,6 +3161,24 @@ async fn cmd_kill(name: &str) -> Result<()> {
     let mgr = SessionManager::connect().await?;
     mgr.kill_session(name).await?;
     let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
+    // Killing an oracle = closing its mission. Drop the lifecycle state too,
+    // or patrol resurrects the session the operator just killed (workers
+    // non-terminal + phase < 24h) and the stuck-alert cron keeps watching a
+    // ghost — `omega kill` is the documented close action in that very alert.
+    if name.starts_with("oracle-") {
+        let _ = omega_core::oracle_lifecycle::OracleState::remove(&config.state_dir, name);
+        let key = name.strip_prefix("oracle-").unwrap_or(name);
+        for f in [
+            format!("oracle-{key}.progress.json"),
+            format!("oracle-{key}.stuck-alerted"),
+            // Resurrect markers are stamped with the FULL session name after
+            // an `oracle-` prefix (giving oracle-oracle-X) — remove both forms.
+            format!("oracle-{key}.resurrect-attempt"),
+            format!("oracle-{name}.resurrect-attempt"),
+        ] {
+            let _ = std::fs::remove_file(config.state_dir.join(f));
+        }
+    }
     println!("Killed session: {}", name);
     Ok(())
 }

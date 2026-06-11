@@ -40,6 +40,7 @@ except Exception: pass
 PY
 }
 now=$(date +%s)
+RMUX_BIN="${RMUX_BIN:-$(command -v rmux || echo "$HOME/.local/bin/rmux")}"
 
 # Each live oracle is an oracle-<key>.state.json without a matching done.json.
 for sf in "$STATE"/oracle-*.state.json; do
@@ -50,6 +51,13 @@ for sf in "$STATE"/oracle-*.state.json; do
     [ -f "$STATE/${base}.done.json" ] && continue   # already finished
     marker="$STATE/${base}.stuck-alerted"
     [ -f "$marker" ] && continue                     # alerted once already
+
+    # A DEAD session can't be "stuck" — only alert for oracles the operator
+    # can actually see and act on. Leftover state.json of killed/crashed
+    # oracles used to fire "oracle bloqué depuis N min" forever (patrol's GC
+    # re-armed the marker hourly while the state file stayed in place);
+    # dead-oracle recovery and state GC are patrol's job, not this alert's.
+    "$RMUX_BIN" has-session -t "$base" >/dev/null 2>&1 || continue
 
     # Last activity = newest mtime among progress.json, debug.log, state.json.
     newest=0

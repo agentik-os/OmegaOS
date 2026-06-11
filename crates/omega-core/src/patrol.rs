@@ -1128,6 +1128,43 @@ impl Patrol {
                 // Pure anti-thrash stamp with a 5-minute window — a day-old
                 // marker is garbage regardless of session state.
                 age >= DAY
+            } else if name.starts_with("oracle-")
+                && (name.ends_with(".state.json") || name.ends_with(".progress.json"))
+            {
+                // Lifecycle state of a DEAD oracle. Resurrect abandons a
+                // mission after 24h (phase_entered_at), so two-days-dead
+                // state is a pure phantom: its only remaining effect was
+                // feeding the stuck-alert cron endless "oracle bloqué"
+                // pings for sessions the operator can't even see (216 such
+                // files had accumulated by 2026-06-11). The .state.json
+                // basename IS the session name (state_key strips the
+                // oracle- prefix before formatting).
+                let stem = name
+                    .trim_end_matches(".state.json")
+                    .trim_end_matches(".progress.json");
+                dead_after(stem, 2 * DAY)
+            } else if name.starts_with("oracle-")
+                && (name.ends_with(".report.json")
+                    || name.ends_with(".report.pdf")
+                    || name.ends_with(".findings.md"))
+            {
+                // Delivered mission artifacts — same 14-day record window
+                // as retired done.json signals.
+                let stem = name
+                    .trim_end_matches(".report.json")
+                    .trim_end_matches(".report.pdf")
+                    .trim_end_matches(".findings.md");
+                dead_after(stem, 14 * DAY)
+            } else if name.ends_with(".inbox.lock") || name.ends_with(".inbox.jsonl") {
+                // Inbox side files are keyed on the FULL session name with an
+                // extra oracle- prefix ("oracle-<session>.inbox.lock", giving
+                // oracle-oracle-X for oracles) — strip one prefix to recover
+                // the owning session.
+                let stem = name
+                    .trim_end_matches(".inbox.lock")
+                    .trim_end_matches(".inbox.jsonl");
+                let session = stem.strip_prefix("oracle-").unwrap_or(stem);
+                dead_after(session, 7 * DAY)
             } else if let Some(stem) = name.strip_suffix(".stuck-alerted") {
                 // The cron keys this on the state-file basename: `oracle-X`,
                 // or legacy `oracle-oracle-X`. Live when either form maps to
