@@ -1947,10 +1947,15 @@ const NOVA_LIFE = `${homedir()}/Station/LifeStyle`;
 // Live voice call (ElevenLabs Conversational AI): the machine opts in by
 // writing state/nova-call.json {url, label?} — no file, no button. The URL
 // opens the agent's talk-to page; Telegram URL buttons launch it in one tap.
-function novaCallButton(): { text: string; url: string }[][] {
+function novaCallButton(): any[][] {
   try {
     const c = JSON.parse(readFileSync(`${OMEGA_DIR}/state/nova-call.json`, "utf8"));
-    if (c?.url) return [[{ text: c.label || "📞 Appel vocal live", url: c.url }]];
+    const rows: any[][] = [];
+    // web_app opens the call INSIDE Telegram (Mini App) — private chats only,
+    // which is all a companion bot ever serves. url is the browser fallback.
+    if (c?.web_app) rows.push([{ text: c.webAppLabel || "📞 Appel vocal (dans Telegram)", web_app: { url: c.web_app } }]);
+    if (c?.url) rows.push([{ text: c.label || "🌐 Appel vocal (navigateur)", url: c.url }]);
+    return rows;
   } catch {}
   return [];
 }
