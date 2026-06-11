@@ -84,6 +84,7 @@ def main():
     ap.add_argument("--bot", default="lifestyle")
     ap.add_argument("--start", type=int, default=1, help="resume from this number")
     ap.add_argument("--only", default="", help="restrict to one engine")
+    ap.add_argument("--text", default=TEXT, help="sample text ({n} = voice number)")
     args = ap.parse_args()
 
     bots = json.load(open(os.path.join(OMEGA_DIR, "agent-bots.json")))
@@ -106,7 +107,7 @@ def main():
             continue
         t0 = time.time()
         try:
-            ogg = synth(engine, voice, TEXT.format(n=n))
+            ogg = synth(engine, voice, args.text.format(n=n))
             ok = send_voice(token, chat, ogg, f"N°{n} — {label} ({engine})")
             log(f"N°{n} [{engine}] {'sent' if ok else 'SEND FAIL'} in {time.time() - t0:.0f}s — {label}")
             sent += ok
