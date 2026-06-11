@@ -18,3 +18,7 @@ anyhow.workspace = true
 chrono.workspace = true
 dirs.workspace = true
 tracing.workspace = true
+# Mouse drag-selection over the session mirror: display-column slicing +
+# OSC 52 clipboard payload. Both already in the lockfile transitively.
+unicode-width = "0.2"
+base64 = "0.22"

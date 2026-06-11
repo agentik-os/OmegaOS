@@ -53,6 +53,45 @@ fn preview_fg_color(c: PreviewColor, has_explicit_bg: bool) -> Color {
         other => preview_to_color(other),
     }
 }
+
+/// Re-style a rendered line so display columns `[from, to)` carry REVERSED —
+/// the mouse drag-selection highlight. Splits spans at the boundaries and
+/// counts DISPLAY width (emoji/CJK = 2 cells) so the highlight tracks the
+/// pointer on wide glyphs.
+fn reverse_cols(line: &Line<'_>, from: usize, to: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthChar;
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
+    let mut col = 0usize;
+    for sp in &line.spans {
+        let mut seg = String::new();
+        let mut seg_rev: Option<bool> = None;
+        for ch in sp.content.chars() {
+            let rev = col >= from && col < to;
+            if seg_rev != Some(rev) {
+                if let (Some(prev), false) = (seg_rev, seg.is_empty()) {
+                    let style = if prev {
+                        sp.style.add_modifier(Modifier::REVERSED)
+                    } else {
+                        sp.style
+                    };
+                    out.push(Span::styled(std::mem::take(&mut seg), style));
+                }
+                seg_rev = Some(rev);
+            }
+            seg.push(ch);
+            col += ch.width().unwrap_or(0);
+        }
+        if let (Some(prev), false) = (seg_rev, seg.is_empty()) {
+            let style = if prev {
+                sp.style.add_modifier(Modifier::REVERSED)
+            } else {
+                sp.style
+            };
+            out.push(Span::styled(seg, style));
+        }
+    }
+    Line::from(out)
+}
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -1215,6 +1254,32 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
             }
             padded.append(&mut preview_lines);
             preview_lines = padded;
+        }
+    }
+
+    // ── Mouse drag-selection (tmux-style) ───────────────────────────────
+    // Capture the viewport rows as plain text so button-release can resolve
+    // the drag rectangle to real text (app.take_preview_selection_text), and
+    // paint the in-flight selection REVERSED so you see what you're grabbing.
+    let inner_h = area.height.saturating_sub(2) as usize;
+    app.preview_screen_rows = (0..inner_h)
+        .map(|r| {
+            preview_lines
+                .get(scroll as usize + r)
+                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .unwrap_or_default()
+        })
+        .collect();
+    if app.preview_select_dragging {
+        if let Some(((sc, sr), (ec, er))) = app.preview_selection_viewport() {
+            for r in sr..=er.min(inner_h.saturating_sub(1)) {
+                let li = scroll as usize + r;
+                if let Some(line) = preview_lines.get_mut(li) {
+                    let from = if r == sr { sc } else { 0 };
+                    let to = if r == er { ec + 1 } else { usize::MAX };
+                    *line = reverse_cols(line, from, to);
+                }
+            }
         }
     }
 
@@ -3083,6 +3148,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("← / →", "Switch tabs"),
         key("Shift+Tab", "Previous tab"),
         key("F1", "Open this Help tab"),
+        key("Drag", "Select text in the session view → copies to clipboard (OSC 52)"),
         key("Ctrl+T", "Toggle mouse capture (off = native text selection)"),
         key("Ctrl+L", "Redraw screen (fix corrupted view)"),
         key("Esc", "Back (detail → list → Sessions → quit)"),

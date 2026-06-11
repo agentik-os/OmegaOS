@@ -167,8 +167,54 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
             scroll_active_panel_at(app, 3, false, mouse.column, mouse.row);
             Action::None
         }
+        // Drag with the left button held = tmux-style text selection over the
+        // preview mirror (mouse capture stays ON, so wheel-scroll keeps
+        // working). The anchor is armed on Down below; releasing copies.
+        MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+            if app.preview_select_anchor.is_some()
+                && app.tab == Tab::Sessions
+                && app.sessions_preview_area.is_some()
+            {
+                app.preview_select_head = Some((mouse.column, mouse.row));
+                app.preview_select_dragging = true;
+            }
+            Action::None
+        }
+        MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+            if app.preview_select_dragging {
+                if let Some(text) = app.take_preview_selection_text() {
+                    let chars = text.chars().count();
+                    app.pending_clipboard = Some(text);
+                    app.set_status_sticky(format!(
+                        "✓ {} char{} copied to clipboard",
+                        chars,
+                        if chars == 1 { "" } else { "s" }
+                    ));
+                } else {
+                    app.clear_preview_selection();
+                }
+            } else {
+                app.clear_preview_selection();
+            }
+            Action::None
+        }
         // Click in a panel = focus it (left = list, right = preview)
         MouseEventKind::Down(_) => {
+            // Left press inside the preview arms a possible drag-selection;
+            // anywhere else cancels a stale one. A plain click (no drag)
+            // keeps its focus meaning via the logic below.
+            if matches!(
+                mouse.kind,
+                MouseEventKind::Down(crossterm::event::MouseButton::Left)
+            ) && app.tab == Tab::Sessions
+                && rect_hit(app.sessions_preview_area, mouse.column, mouse.row)
+            {
+                app.preview_select_anchor = Some((mouse.column, mouse.row));
+                app.preview_select_head = Some((mouse.column, mouse.row));
+                app.preview_select_dragging = false;
+            } else {
+                app.clear_preview_selection();
+            }
             // Menu tab: click an action row → select + run it (like Enter).
             // Guarded to when the list fits on screen (offset 0) so a click never
             // maps to the wrong row while scrolled — keyboard always works too.

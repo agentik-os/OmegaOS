@@ -1057,6 +1057,20 @@ async fn run_tui_loop(
 
         terminal.draw(|f| draw(f, app))?; // app is &mut, allows auto-scroll
 
+        // ── Mouse-selection clipboard ───────────────────────────────────
+        // Push the drag-selected preview text to the user's clipboard via
+        // OSC 52, written RAW to stdout (an escape sequence — it doesn't
+        // disturb the ratatui buffer). Works over SSH/Termius, and rmux
+        // forwards OSC 52 to the outer terminal when the TUI runs nested.
+        if let Some(text) = app.pending_clipboard.take() {
+            use base64::Engine as _;
+            use std::io::Write as _;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+            let mut out = std::io::stdout();
+            let _ = write!(out, "\x1b]52;c;{}\x07", b64);
+            let _ = out.flush();
+        }
+
         // ── Responsive pane sizing ──────────────────────────────────────
         // Make the embedded Claude/agent view track the rmux preview panel's
         // CURRENT geometry. This runs EVERY tick (~16ms), right after the

@@ -1122,6 +1122,23 @@ pub struct App {
     /// history mode; reused on every subsequent frame so we don't re-capture
     /// the whole buffer at the idle cadence. Cleared when we return to the tail.
     pub preview_history_for: Option<String>,
+    /// Mouse drag-selection over the preview mirror (tmux-style: capture stays
+    /// ON, so wheel-scroll keeps working while you select). Screen-absolute
+    /// cell where the left button went down / last drag position.
+    pub preview_select_anchor: Option<(u16, u16)>,
+    pub preview_select_head: Option<(u16, u16)>,
+    /// True once a Drag event arrived after the Down — distinguishes a
+    /// selection gesture from a plain focus click.
+    pub preview_select_dragging: bool,
+    /// Plain text of the preview viewport rows exactly as last rendered
+    /// (viewport-relative, one String per visible row). Written by the
+    /// renderer each frame so button-release can resolve the drag rectangle
+    /// to real text.
+    pub preview_screen_rows: Vec<String>,
+    /// Selected text waiting to be pushed to the terminal clipboard via
+    /// OSC 52 (drained by the run loop; rmux forwards OSC 52 to the outer
+    /// terminal when the TUI runs nested).
+    pub pending_clipboard: Option<String>,
     pub session_focus: SessionFocus,
     /// Set when a chat Esc just dropped focus to the list — arms the Esc-Esc
     /// literal-ESC chord (DESIGN-014): a second Esc inside the window forwards
@@ -1249,6 +1266,11 @@ impl App {
             preview_follow_tail: true,
             preview_needs_history: false,
             preview_history_for: None,
+            preview_select_anchor: None,
+            preview_select_head: None,
+            preview_select_dragging: false,
+            preview_screen_rows: Vec::new(),
+            pending_clipboard: None,
             session_focus: SessionFocus::List,
             chat_esc_at: None,
             focus_drop_at: None,
@@ -1606,10 +1628,70 @@ impl App {
         self.detail_scroll = self.detail_scroll.saturating_sub(lines);
     }
 
+    /// Cancel an in-flight mouse selection. Called when the view shifts under
+    /// the gesture (wheel scroll, session switch) — the anchor is a SCREEN
+    /// cell, so once the content moves the highlight would lie about what
+    /// release will copy.
+    pub fn clear_preview_selection(&mut self) {
+        self.preview_select_anchor = None;
+        self.preview_select_head = None;
+        self.preview_select_dragging = false;
+    }
+
+    /// Resolve the current drag rectangle to the normalized viewport range
+    /// `((start_col,start_row),(end_col,end_row))`, rows/cols 0-based inside
+    /// the preview borders, start ≤ end in row-major order.
+    pub fn preview_selection_viewport(&self) -> Option<((usize, usize), (usize, usize))> {
+        let area = self.sessions_preview_area?;
+        let (ac, ar) = self.preview_select_anchor?;
+        let (hc, hr) = self.preview_select_head?;
+        let to_vp = |c: u16, r: u16| {
+            (
+                (c.max(area.x + 1).min(area.x + area.width.saturating_sub(2)) - (area.x + 1))
+                    as usize,
+                (r.max(area.y + 1).min(area.y + area.height.saturating_sub(2)) - (area.y + 1))
+                    as usize,
+            )
+        };
+        let a = to_vp(ac, ar);
+        let h = to_vp(hc, hr);
+        // Row-major normalize: (row, col) ordering decides direction.
+        if (h.1, h.0) < (a.1, a.0) {
+            Some((h, a))
+        } else {
+            Some((a, h))
+        }
+    }
+
+    /// Resolve the finished drag to the selected TEXT (from the screen rows
+    /// the renderer captured) and clear the selection. Single-row drags slice
+    /// one line; multi-row drags take first row from start-col, middle rows
+    /// whole, last row up to end-col — terminal-selection semantics. Rows are
+    /// right-trimmed so the padded cells don't become trailing spaces.
+    pub fn take_preview_selection_text(&mut self) -> Option<String> {
+        let sel = self.preview_selection_viewport();
+        self.clear_preview_selection();
+        let ((sc, sr), (ec, er)) = sel?;
+        let mut out: Vec<String> = Vec::new();
+        for r in sr..=er {
+            let Some(row) = self.preview_screen_rows.get(r) else { break };
+            let from = if r == sr { sc } else { 0 };
+            let to = if r == er { ec + 1 } else { usize::MAX };
+            out.push(slice_display_cols(row, from, to).trim_end().to_string());
+        }
+        let text = out.join("\n");
+        if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
+
     // Scroll is measured from the tail: 0 = newest. "Down" moves toward the
     // newest line (decreasing the from-tail offset), "up" moves into history.
 
     pub fn scroll_preview_down(&mut self, lines: u16) {
+        self.clear_preview_selection();
         self.preview_scroll = self.preview_scroll.saturating_sub(lines);
         // Reaching the tail re-glues to live follow (and lets refresh_preview
         // switch back to the cheap visible-only capture).
@@ -1619,6 +1701,7 @@ impl App {
     }
 
     pub fn scroll_preview_up(&mut self, lines: u16) {
+        self.clear_preview_selection();
         // When leaving tail mode, preview_max_scroll is 0 (content == viewport).
         // Skip the clamp on this first transition so the scroll position actually
         // advances; the next renderer tick loads full history and sets a real
@@ -2321,6 +2404,46 @@ impl App {
                 self.selected - 1
             };
         }
+    }
+}
+
+/// Slice a row by DISPLAY columns `[from, to)` — emoji/CJK occupy 2 cells, so
+/// byte/char indexing would cut the wrong region. A wide char is included
+/// when its starting cell falls inside the range (terminal-selection feel).
+pub(crate) fn slice_display_cols(row: &str, from: usize, to: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+    let mut col = 0usize;
+    let mut out = String::new();
+    for ch in row.chars() {
+        let w = ch.width().unwrap_or(0);
+        if col >= to {
+            break;
+        }
+        if col >= from {
+            out.push(ch);
+        }
+        col += w;
+    }
+    out
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::slice_display_cols;
+
+    #[test]
+    fn ascii_range() {
+        assert_eq!(slice_display_cols("hello world", 6, 11), "world");
+        assert_eq!(slice_display_cols("hello", 0, usize::MAX), "hello");
+        assert_eq!(slice_display_cols("hello", 7, 9), "");
+    }
+
+    #[test]
+    fn wide_chars_count_two_cells() {
+        // "日本" = 4 cells; slicing cells [2,4) must yield the second char.
+        assert_eq!(slice_display_cols("日本x", 2, 4), "本");
+        // A wide char starting inside the range is included whole.
+        assert_eq!(slice_display_cols("a日b", 1, 3), "日");
     }
 }
 

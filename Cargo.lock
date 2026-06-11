@@ -997,6 +997,7 @@ name = "omega"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "clap",
  "clap_complete",
@@ -1042,6 +1043,7 @@ name = "omega-tui"
 version = "0.1.6"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "crossterm 0.29.0",
  "dirs",
@@ -1053,6 +1055,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
