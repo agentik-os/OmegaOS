@@ -1749,12 +1749,31 @@ fi
 # can only fail. Secrets and the live catalogue stay local-only (gitignored).
 step "Phase 6.92: Nova personal-assistant layer"
 if [[ "${OMEGA_WITH_NOVA:-0}" == "1" ]]; then
-    for nsk in nova-report nova-send nova-godmode nova-composio-connect; do
-        if [[ -f "$OMEGA_SRC/scripts/$nsk.sh" ]]; then
-            cp -f "$OMEGA_SRC/scripts/$nsk.sh" "$OMEGA_DIR/bin/$nsk.sh"
-            chmod +x "$OMEGA_DIR/bin/$nsk.sh"
+    for nsk in nova-report.sh nova-send.sh nova-godmode.sh nova-composio-connect.sh \
+               nova-call-sync.py nova-call-kb.py nova-self-improve.sh; do
+        if [[ -f "$OMEGA_SRC/scripts/$nsk" ]]; then
+            cp -f "$OMEGA_SRC/scripts/$nsk" "$OMEGA_DIR/bin/$nsk"
+            chmod +x "$OMEGA_DIR/bin/$nsk"
         fi
     done
+    # Seed Nova's self-improvement anatomy into the life store ONCE — these are
+    # HER files afterwards (she edits them), never clobbered by a re-install.
+    # shellcheck source=/dev/null
+    [[ -f "$OMEGA_DIR/nova-secrets.env" ]] && source "$OMEGA_DIR/nova-secrets.env" 2>/dev/null || true
+    NOVA_LIFE_DIR="${NOVA_HOME:-$HOME/Station/LifeStyle}"
+    mkdir -p "$NOVA_LIFE_DIR" "$OMEGA_DIR/backups/nova"
+    if [[ -f "$OMEGA_SRC/config/nova-anatomy.template.md" && ! -f "$NOVA_LIFE_DIR/ANATOMY.md" ]]; then
+        cp "$OMEGA_SRC/config/nova-anatomy.template.md" "$NOVA_LIFE_DIR/ANATOMY.md"
+    fi
+    if [[ ! -f "$NOVA_LIFE_DIR/SELF-IMPROVEMENT.md" ]]; then
+        cat > "$NOVA_LIFE_DIR/SELF-IMPROVEMENT.md" <<'EOF'
+# SELF-IMPROVEMENT — journal de mes modifications de moi-même
+
+> Tenu par Nova. Une entrée par modification : date, composant, quoi, pourquoi
+> (le problème OBSERVÉ), comment vérifier. Les backups vivent dans
+> `~/.omega/backups/nova/`.
+EOF
+    fi
     # Seed the app catalogue + the secrets template ONCE — never clobber the
     # operator's live copies (they hold per-operator connection state / keys).
     if [[ -f "$OMEGA_SRC/config/nova-apps.sample.json" && ! -f "$OMEGA_DIR/nova-apps.json" ]]; then
@@ -1778,14 +1797,24 @@ EOF
     NOVA_EVENING_CRON="0 21 * * * $OMEGA_DIR/bin/nova-report.sh evening >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-EVENING-v1"
     NOVA_NUDGE_CRON="0 11,15,18 * * * $OMEGA_DIR/bin/nova-report.sh nudge >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-NUDGE-v1"
     NOVA_GODMODE_CRON="* * * * * $OMEGA_DIR/bin/nova-godmode.sh >> $OMEGA_DIR/logs/nova-godmode.log 2>&1   # OMEGA-CRON-NOVA-GODMODE-v1"
+    # Voice-call loop + weekly self-improvement. All three scripts no-op
+    # silently until their per-operator config exists (NOVA_CHAT_ID, the call
+    # agent in state/nova-call.json, ELEVENLABS_API_KEY) — safe to schedule on
+    # a fresh box.
+    NOVA_CALLSYNC_CRON="* * * * * /usr/bin/python3 $OMEGA_DIR/bin/nova-call-sync.py # OMEGA-CRON-NOVA-CALL-SYNC-v1"
+    NOVA_CALLKB_CRON="0 6 * * * /usr/bin/python3 $OMEGA_DIR/bin/nova-call-kb.py # OMEGA-CRON-NOVA-CALL-KB-v1"
+    NOVA_SELFIMPROVE_CRON="0 19 * * 0 /bin/bash $OMEGA_DIR/bin/nova-self-improve.sh # OMEGA-CRON-NOVA-SELF-IMPROVE-v1"
     if command -v crontab >/dev/null 2>&1; then
         crontab -l 2>/dev/null | grep -qF "nova-report.sh morning" || { ( crontab -l 2>/dev/null; echo "$NOVA_MORNING_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-report.sh evening" || { ( crontab -l 2>/dev/null; echo "$NOVA_EVENING_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-report.sh nudge"   || { ( crontab -l 2>/dev/null; echo "$NOVA_NUDGE_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-godmode.sh"        || { ( crontab -l 2>/dev/null; echo "$NOVA_GODMODE_CRON" ) | crontab -; }
-        ok "Nova layer installed (4 scripts + crons: morning/evening/nudge reports + godmode watchdog). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
+        crontab -l 2>/dev/null | grep -qF "nova-call-sync.py"      || { ( crontab -l 2>/dev/null; echo "$NOVA_CALLSYNC_CRON" ) | crontab -; }
+        crontab -l 2>/dev/null | grep -qF "nova-call-kb.py"        || { ( crontab -l 2>/dev/null; echo "$NOVA_CALLKB_CRON" ) | crontab -; }
+        crontab -l 2>/dev/null | grep -qF "nova-self-improve.sh"   || { ( crontab -l 2>/dev/null; echo "$NOVA_SELFIMPROVE_CRON" ) | crontab -; }
+        ok "Nova layer installed (7 scripts + crons: reports + godmode + call-sync + call-KB + weekly self-improve). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
     else
-        ok "Nova layer installed (4 scripts; crontab unavailable — schedule nova-report.sh/nova-godmode.sh in your scheduler)"
+        ok "Nova layer installed (7 scripts; crontab unavailable — schedule nova-report.sh/nova-godmode.sh/nova-call-sync.py in your scheduler)"
     fi
 else
     info "Nova personal-assistant layer deferred (needs its own bot token + NOVA_CHAT_ID). Add: OMEGA_WITH_NOVA=1 ./install.sh"

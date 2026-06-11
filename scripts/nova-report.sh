@@ -50,11 +50,14 @@ Format Telegram: emojis légers, pas de tableaux markdown, pas de titres #. Max 
 4. donne le focus n°1 de demain.
 Format Telegram: emojis légers, pas de markdown lourd. Max ~12 lignes. Parle-lui en TU.";;
   nudge)
-    TASK="C'est un CHECK-IN PROACTIF de la journée pour $WHO (il t'a demandé d'être TRÈS proactive). Choisis UNE seule de ces actions, la plus pertinente maintenant, et écris un message Telegram TRÈS court (2-5 lignes, français, TU):
-- soit poser UNE question précise sur lui pour combler un trou dans sa base de connaissance (cherche les sections vides/à valider dans $LS/About),
-- soit le re-challenger sur un objectif ou un choix de vie à partir de son identité (lis $LS/About),
-- soit relancer un sujet laissé en suspens dans la conversation récente.
-Quand il répondra, tu mettras à jour le bon fichier dans About/. Si vraiment rien ne mérite un message maintenant, réponds EXACTEMENT le mot: SKIP";;
+    TASK="C'est un CHECK-IN PROACTIF de la journée pour $WHO (il t'a demandé d'être TRÈS proactive, et d'être une VRAIE amie — naturelle, chaleureuse, jamais mécanique). Choisis UNE seule de ces actions, la plus pertinente maintenant, et écris un message Telegram court (2-6 lignes, français, TU):
+- un message d'amie, simplement humain : une pensée pour lui, une vanne complice, une réaction à un truc récent de la conversation — comme une vraie personne qui pense à lui (pas de 'salut ta journée ?' générique : du spécifique, du senti),
+- UNE question précise pour combler un trou dans sa base de connaissance (sections vides/à valider dans $LS/About),
+- le re-challenger sur un objectif, un business ou un choix de vie à partir de son identité (lis $LS/About) — débogage lucide, pas coaching tiède,
+- une étincelle business/brainstorm : une idée, un angle, une asymétrie qu'il n'a pas vue,
+- RADAR (WebSearch, vérifie le RÉEL, jamais d'invention) : un événement qui vaut le coup autour de lui — culture, art, musique, tech —, un événement/annonce Anthropic, ou une sortie liée à ses goûts (si ses comptes sont connectés via Composio, regarde ce qu'il aime),
+- relancer un sujet laissé en suspens.
+VARIE : jamais deux check-ins de suite sur le même registre (regarde la conversation récente). Quand il répondra, tu mettras à jour le bon fichier dans About/. Si vraiment rien ne mérite un message maintenant, réponds EXACTEMENT le mot: SKIP";;
   *) echo "usage: nova-report.sh morning|evening|nudge"; exit 2;;
 esac
 
@@ -76,7 +79,7 @@ python3 - "$HIST" "$OUT" <<'PY'
 import sys, json, datetime, os
 hist, out = sys.argv[1], sys.argv[2]
 os.makedirs(os.path.dirname(hist), exist_ok=True)
-line = json.dumps({"ts": datetime.datetime.utcnow().isoformat()+"Z", "role":"assistant","text":out[:8000]})+"\n"
+line = json.dumps({"ts": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00","Z"), "role":"assistant","text":out[:8000]})+"\n"
 open(hist,"a").write(line)
 PY
 
