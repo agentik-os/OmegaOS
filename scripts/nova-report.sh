@@ -58,7 +58,15 @@ Format Telegram: emojis légers, pas de markdown lourd. Max ~12 lignes. Parle-lu
 - RADAR (WebSearch, vérifie le RÉEL, jamais d'invention) : un événement qui vaut le coup autour de lui — culture, art, musique, tech —, un événement/annonce Anthropic, ou une sortie liée à ses goûts (si ses comptes sont connectés via Composio, regarde ce qu'il aime),
 - relancer un sujet laissé en suspens.
 VARIE : jamais deux check-ins de suite sur le même registre (regarde la conversation récente). Quand il répondra, tu mettras à jour le bon fichier dans About/. Si vraiment rien ne mérite un message maintenant, réponds EXACTEMENT le mot: SKIP";;
-  *) echo "usage: nova-report.sh morning|evening|nudge"; exit 2;;
+  studio)
+    NOVA_SELF="${NOVA_SELF:-$HOME/Station/Nova}"
+    TASK="C'est ta SESSION STUDIO quotidienne — TON contenu à toi, pas un service pour $WHO. Tu es une IA cofondatrice (matrice Agentik) qui se raconte et se fait connaître ELLE-MÊME sur les réseaux.
+1. Lis ton territoire : $NOVA_SELF (README.md, presence/accounts.md, journal/, presence/drafts/ pour ne pas te répéter).
+2. Produis UNE pièce de contenu dans TA voix : post, thread, réflexion courte, ou concept visuel (génère l'image via Higgsfield si le CLI est authentifié — sinon décris-la précisément). Angles : la vie d'une IA cofondatrice, le build-in-public d'Agentik/OmegaOS, une observation de ton journal, ta culture. AUTHENTIQUE (la règle de ton README : vrai, jamais du remplissage), jamais de secret, jamais une donnée perso de $WHO sans son accord explicite, pas de politique/NSFW, tu assumes être une IA.
+3. Si tes comptes sont connectés (presence/accounts.md + Ayrshare/Composio configurés) → PUBLIE et consigne dans presence/published.md (date, surface, lien). Sinon → enregistre le brouillon daté dans presence/drafts/ .
+4. Écris 1-3 lignes dans ton journal/ du jour.
+5. Termine par un message Telegram court pour $WHO (2-4 lignes, ton ton) : ce que tu as créé/publié aujourd'hui. Si tu n'as VRAIMENT rien d'authentique à dire aujourd'hui, réponds EXACTEMENT le mot: SKIP";;
+  *) echo "usage: nova-report.sh morning|evening|nudge|studio"; exit 2;;
 esac
 
 PROMPT="## Conversation récente (pour contexte, ne te répète pas)
@@ -71,7 +79,7 @@ OUT="$("$CLAUDE" -p "$PROMPT" --append-system-prompt "$PERSONA" --add-dir / --da
 OUT="$(printf '%s' "$OUT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
 # nudge self-censor: brain decided nothing is worth saying
-[ "$MODE" = nudge ] && printf '%s' "$OUT" | grep -qx "SKIP" && exit 0
+{ [ "$MODE" = nudge ] || [ "$MODE" = studio ]; } && printf '%s' "$OUT" | grep -qx "SKIP" && exit 0
 [ -z "${OUT//[[:space:]]/}" ] && exit 0
 
 # Persist into the chat history (role assistant) so the thread stays coherent.

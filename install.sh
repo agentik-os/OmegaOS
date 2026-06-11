@@ -1804,6 +1804,7 @@ EOF
     NOVA_CALLSYNC_CRON="* * * * * /usr/bin/python3 $OMEGA_DIR/bin/nova-call-sync.py # OMEGA-CRON-NOVA-CALL-SYNC-v1"
     NOVA_CALLKB_CRON="0 6 * * * /usr/bin/python3 $OMEGA_DIR/bin/nova-call-kb.py # OMEGA-CRON-NOVA-CALL-KB-v1"
     NOVA_SELFIMPROVE_CRON="0 19 * * 0 /bin/bash $OMEGA_DIR/bin/nova-self-improve.sh # OMEGA-CRON-NOVA-SELF-IMPROVE-v1"
+    NOVA_STUDIO_CRON="0 12 * * * $OMEGA_DIR/bin/nova-report.sh studio >> $OMEGA_DIR/logs/nova-report.log 2>&1   # OMEGA-CRON-NOVA-STUDIO-v1"
     if command -v crontab >/dev/null 2>&1; then
         crontab -l 2>/dev/null | grep -qF "nova-report.sh morning" || { ( crontab -l 2>/dev/null; echo "$NOVA_MORNING_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-report.sh evening" || { ( crontab -l 2>/dev/null; echo "$NOVA_EVENING_CRON" ) | crontab -; }
@@ -1812,7 +1813,8 @@ EOF
         crontab -l 2>/dev/null | grep -qF "nova-call-sync.py"      || { ( crontab -l 2>/dev/null; echo "$NOVA_CALLSYNC_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-call-kb.py"        || { ( crontab -l 2>/dev/null; echo "$NOVA_CALLKB_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-self-improve.sh"   || { ( crontab -l 2>/dev/null; echo "$NOVA_SELFIMPROVE_CRON" ) | crontab -; }
-        ok "Nova layer installed (7 scripts + crons: reports + godmode + call-sync + call-KB + weekly self-improve). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
+        crontab -l 2>/dev/null | grep -qF "nova-report.sh studio"  || { ( crontab -l 2>/dev/null; echo "$NOVA_STUDIO_CRON" ) | crontab -; }
+        ok "Nova layer installed (7 scripts + crons: reports + godmode + call-sync + call-KB + weekly self-improve + daily studio). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
     else
         ok "Nova layer installed (7 scripts; crontab unavailable — schedule nova-report.sh/nova-godmode.sh/nova-call-sync.py in your scheduler)"
     fi
