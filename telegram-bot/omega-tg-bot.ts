@@ -1944,8 +1944,19 @@ async function cmdSync(chatId: number, thread?: number) {
 // phone. Connection buttons run Composio and hand back a tappable OAuth URL;
 // directive buttons inject a brief into Nova's brain (same as the slash commands).
 const NOVA_LIFE = `${homedir()}/Station/LifeStyle`;
+// Live voice call (ElevenLabs Conversational AI): the machine opts in by
+// writing state/nova-call.json {url, label?} — no file, no button. The URL
+// opens the agent's talk-to page; Telegram URL buttons launch it in one tap.
+function novaCallButton(): { text: string; url: string }[][] {
+  try {
+    const c = JSON.parse(readFileSync(`${OMEGA_DIR}/state/nova-call.json`, "utf8"));
+    if (c?.url) return [[{ text: c.label || "📞 Appel vocal live", url: c.url }]];
+  } catch {}
+  return [];
+}
 function novaMenuKb() {
   return kb([
+    ...novaCallButton(),
     [{ text: "🔌 Connecter mes comptes", callback_data: "nova:connect" }],
     [{ text: "📰 Actus Anthropic", callback_data: "nova:do:actus" }, { text: "📊 Rapport now", callback_data: "nova:do:rapport" }],
     [{ text: "🎯 Objectifs", callback_data: "nova:do:objectifs" }, { text: "🧠 Profil", callback_data: "nova:do:profil" }],
@@ -1964,6 +1975,7 @@ async function novaVoiceView(botName: string): Promise<{ text: string; markup: a
     [modeBtn("text", "📝 Texte"), modeBtn("voice", "🎙️ Vocal"), modeBtn("both", "📝+🎙️ Les deux")],
     ...engines.map(e => [{ text: `${vp.engine === e.id ? "✓ " : ""}${e.available ? "" : "🔴 "}${e.label}`, callback_data: `nova:vengine:${e.id}` }]),
     [{ text: "🧪 Tester la voix sélectionnée", callback_data: "nova:vtest" }],
+    ...novaCallButton(),
     [{ text: "« Retour", callback_data: "nova:menu" }],
   ]);
   const lines = engines.length
