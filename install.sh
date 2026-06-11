@@ -1097,11 +1097,12 @@ done
 
 # Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
 # visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
-# OmegaOS conventions. Prompt-only except market-research (gooseworks API, user
-# creds) and the higgsfield pair (external `higgsfield` CLI — installed lazily at
-# RUNTIME by the skill itself, NEVER auto-installed here). Mirrors the maintenance
-# loop: copy → ~/.omega/skills/<name>/ + /<name> and /omg-<name> slash stubs.
-for GTMK in launch-strategy product-marketing-context cold-email social-content ad-creative content-strategy market-research marketing-strategist higgsfield-soul-id higgsfield-generate; do
+# OmegaOS conventions — plus the OmegaOS-native `diagram` visual skill. Prompt-only
+# except market-research (gooseworks API, user creds), the higgsfield pair, and
+# diagram (external `d2` / mermaid-cli renderers — all installed lazily at RUNTIME
+# by the skill itself, NEVER auto-installed here). Mirrors the maintenance loop:
+# copy → ~/.omega/skills/<name>/ + /<name> and /omg-<name> slash stubs.
+for GTMK in launch-strategy product-marketing-context cold-email social-content ad-creative content-strategy market-research marketing-strategist higgsfield-soul-id higgsfield-generate diagram; do
     GTMK_SRC="$OMEGA_SRC/skills/$GTMK"
     GTMK_DST="$OMEGA_DIR/skills/$GTMK"
     if [[ -d "$GTMK_SRC" ]]; then
