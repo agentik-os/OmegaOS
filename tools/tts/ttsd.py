@@ -64,6 +64,17 @@ ENGINES = {
     },
 }
 
+# Operator preference: ~/.omega/tts/config.json {"disabled": ["pocket", …]}
+# hides engines from /engines and rejects them on /tts — the catalog stays
+# shipped/generic, the machine decides what it serves.
+def disabled_engines() -> set:
+    try:
+        with open(os.path.join(TTS_DIR, "config.json")) as f:
+            return set(json.load(f).get("disabled") or [])
+    except OSError:
+        return set()
+
+
 _workers: dict = {}
 _locks = {eid: threading.Lock() for eid in ENGINES}
 
@@ -233,11 +244,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/health":
             return self._json(200, {"ok": True})
         if self.path == "/engines":
+            off = disabled_engines()
             return self._json(200, [
                 {"id": eid, "label": e["label"], "kind": e["kind"], "note": e["note"],
                  "available": engine_available(eid),
                  "loaded": eid in _workers and _workers[eid].proc.poll() is None}
-                for eid, e in ENGINES.items()
+                for eid, e in ENGINES.items() if eid not in off
             ])
         return self._json(404, {"error": "not found"})
 
@@ -250,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
             text = (body.get("text") or "").strip()[:MAX_TEXT]
             voice = str(body.get("voice") or "")[:300]
             params = body.get("params") if isinstance(body.get("params"), dict) else None
-            if eid not in ENGINES:
+            if eid not in ENGINES or eid in disabled_engines():
                 return self._json(400, {"error": f"unknown engine {eid!r}"})
             if not text:
                 return self._json(400, {"error": "empty text"})

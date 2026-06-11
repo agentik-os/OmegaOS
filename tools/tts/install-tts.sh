@@ -18,6 +18,14 @@ mkdir -p "$TTS_DIR/venvs" "$TTS_DIR/workers" "$TTS_DIR/models/piper" "$TTS_DIR/o
 cp -f "$SRC_DIR/ttsd.py" "$TTS_DIR/ttsd.py"
 cp -f "$SRC_DIR/workers/"*.py "$TTS_DIR/workers/"
 
+# Operator preference: engines listed in config.json "disabled" are neither
+# served by the daemon nor (re)installed here — multi-GB venvs stay deleted.
+is_disabled() { python3 -c "
+import json,sys
+try: sys.exit(0 if '$1' in (json.load(open('$TTS_DIR/config.json')).get('disabled') or []) else 1)
+except Exception: sys.exit(1)
+"; }
+
 # uv makes the venv builds fast and reproducible; fall back to pip+venv.
 UV="$(command -v uv || true)"
 mkvenv() { # mkvenv <name> <pip-args…>
@@ -39,23 +47,31 @@ if command -v apt-get >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     command -v espeak-ng >/dev/null 2>&1 || sudo apt-get install -y -qq espeak-ng >/dev/null 2>&1
 fi
 
-info "pocket (Kyutai Pocket TTS — CPU real-time, French)…"
-mkvenv pocket pocket-tts scipy || { warn "pocket install failed"; FAILED="$FAILED pocket"; }
-
-info "kokoro (Kokoro 82M — light, French ff_siwis)…"
-mkvenv kokoro kokoro soundfile || { warn "kokoro install failed"; FAILED="$FAILED kokoro"; }
-
-info "piper (Piper — fastest, fr_FR-siwis)…"
-if mkvenv piper piper-tts; then
-    "$TTS_DIR/venvs/piper/bin/python" -m piper.download_voices --data-dir "$TTS_DIR/models/piper" fr_FR-siwis-medium >/dev/null 2>&1 \
-        || warn "piper voice download failed (will retry lazily at first use)"
-else
-    warn "piper install failed"; FAILED="$FAILED piper"
+if is_disabled pocket; then info "pocket disabled by config — skipped"; else
+    info "pocket (Kyutai Pocket TTS — CPU real-time, French)…"
+    mkvenv pocket pocket-tts scipy || { warn "pocket install failed"; FAILED="$FAILED pocket"; }
 fi
 
-info "chatterbox (Resemble — top quality, heavy; CPU torch)…"
-mkvenv chatterbox chatterbox-tts --extra-index-url https://download.pytorch.org/whl/cpu \
-    || { warn "chatterbox install failed"; FAILED="$FAILED chatterbox"; }
+if is_disabled kokoro; then info "kokoro disabled by config — skipped"; else
+    info "kokoro (Kokoro 82M — light, French ff_siwis)…"
+    mkvenv kokoro kokoro soundfile || { warn "kokoro install failed"; FAILED="$FAILED kokoro"; }
+fi
+
+if is_disabled piper; then info "piper disabled by config — skipped"; else
+    info "piper (Piper — fastest, fr_FR-siwis)…"
+    if mkvenv piper piper-tts; then
+        "$TTS_DIR/venvs/piper/bin/python" -m piper.download_voices --data-dir "$TTS_DIR/models/piper" fr_FR-siwis-medium >/dev/null 2>&1 \
+            || warn "piper voice download failed (will retry lazily at first use)"
+    else
+        warn "piper install failed"; FAILED="$FAILED piper"
+    fi
+fi
+
+if is_disabled chatterbox; then info "chatterbox disabled by config — skipped"; else
+    info "chatterbox (Resemble — top quality, heavy; CPU torch)…"
+    mkvenv chatterbox chatterbox-tts --extra-index-url https://download.pytorch.org/whl/cpu \
+        || { warn "chatterbox install failed"; FAILED="$FAILED chatterbox"; }
+fi
 
 # systemd user service (Linux). The daemon is stdlib-only → system python3.
 if command -v systemctl >/dev/null 2>&1; then
