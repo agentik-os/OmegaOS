@@ -8,7 +8,7 @@
 - **Projet** : OmegaOS — *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (6 Lois + 26 Règles compilées dans le binaire — `omega rules list` affiche l'ensemble courant).
 - **Owner** : agentik-os (org GitHub). Mainteneur humain : à préciser.
 - **Repo** : `github.com/agentik-os/OmegaOS` · branche `main`
-- **Forme** : produit installable (pas une lib). `npx omega-os` ou `git clone … && ./install.sh` → commande `omega`, TUI `ratatui` (7 onglets), bridge Telegram. Version workspace `0.1.5` (npm `omega-os@1.5.3`).
+- **Forme** : produit installable (pas une lib). `npx omega-os` ou `git clone … && ./install.sh` → commande `omega`, TUI `ratatui` (7 onglets), bridge Telegram. Version workspace `0.1.6` (npm `omega-os@1.5.4`).
 - **Runtime agent par défaut** : Claude Code. Codex / Gemini / GLM / Pi / Hermes installables via `omega install`.
 
 ## Stack (R-STACK)

@@ -7,6 +7,18 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+## [0.1.6] — 2026-06-11
+
+The full-system audit release: 90 adversarially-verified findings, ~70 fixes
+across the mission state machine (patrol races, worker done-signal freshness,
+progress protocol revived), the plan engine (crash-resume adoption, Guardian
+timeout, honest gates), the TUI (per-frame costs, preview fidelity), the
+Telegram layer (deposit bot shipped, /council wired), install reproducibility
+(Nova vendored, honest verify gates, safe migrations, prebuilt can no longer
+downgrade a fresh build), rmux colors via the bumped rmux-sdk pin `2488ef5`
+(redraw style continuity, OSC 10/11 replies, per-client truecolor downgrade),
+plus GUIDE.md and the doc-layer realignment. Details in the commits below.
+
 ### Added
 - **llm-council** — convene four different Claude models on one question:
   independent answers in parallel, anonymous peer review, an Opus president

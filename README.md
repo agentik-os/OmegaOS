@@ -45,7 +45,7 @@ Here is a real `omega doctor` run:
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.5
+  [+] binary           omega 0.1.6
   [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
   [+] doctrine         6 Laws + 26 Rules
