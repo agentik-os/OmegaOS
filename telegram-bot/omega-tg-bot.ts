@@ -1402,9 +1402,24 @@ function menuKb() {
     [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
     [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
     [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
+    [{ text: "🤖 NOVA OS (statut / kill-switch)", callback_data: "nav:novaos" }],
   ]);
 }
 const menuText = card("OMEGAOS — ACTION HUB", " Tap an action. Each one runs on your server via the <code>omega</code> CLI.");
+// NOVA OS control: status + the emergency kill-switch (and re-start). systemctl
+// --user needs XDG_RUNTIME_DIR; the service is the manual safety the oracle built.
+async function novaosCtl(cmd: "status" | "start" | "stop"): Promise<string> {
+  const env = `XDG_RUNTIME_DIR=/run/user/$(id -u)`;
+  if (cmd === "status") {
+    const act = (await $`bash -lc ${`${env} systemctl --user is-active omega-novaos.service`}`.nothrow().text()).trim();
+    const brain = (await $`bash -lc ${`curl -fsS --max-time 3 http://127.0.0.1:7777/health >/dev/null 2>&1 && echo OK || echo DOWN`}`.nothrow().text()).trim();
+    const eliza = (await $`bash -lc ${`curl -fsS --max-time 3 http://127.0.0.1:3000/api/server/ping >/dev/null 2>&1 && echo OK || echo DOWN`}`.nothrow().text()).trim();
+    return `Service: <b>${esc(act)}</b>\nCerveau (claude -p, :7777): <b>${esc(brain)}</b>\nElizaOS (:3000): <b>${esc(eliza)}</b>`;
+  }
+  await $`bash -lc ${`${env} systemctl --user ${cmd} omega-novaos.service`}`.nothrow().text();
+  await $`bash -lc ${`sleep ${cmd === "start" ? 12 : 2}`}`.nothrow().text();
+  return novaosCtl("status");
+}
 
 // /start — welcome + live status pulse. Greets the operator as Atlas, says what
 // they can do, and shows a one-line health snapshot. New users land here.
@@ -1616,6 +1631,10 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
     case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub registered. Run <code>/sync</code> in it to map projects → topics." : " No hub yet — run <code>/setupgroup</code> in your supergroup first."), markup: kb([[back()]]) }; }
     case "killall": return { text: card("KILL ALL SESSIONS?", " 🛑 Kills every session.\n <i>Keeps the infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:killall" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
+    case "novaos": return { text: card("🤖 NOVA OS", " Le corps public de Nova (ElizaOS + cerveau claude -p).\n\n" + await novaosCtl("status")), markup: kb([
+      [{ text: "🟢 Allumer", callback_data: "do:novaup" }, { text: "🛑 COUPER (urgence)", callback_data: "do:novadown" }],
+      [{ text: "🔄 Rafraîchir", callback_data: "nav:novaos" }, back()],
+    ]) };
     case "clean": case "cleaning": return { text: card("🧹 CLEANING", " Maintenance du VPS et des projets — choisis une action :"), markup: kb([
       [{ text: "💽 Nettoyage disque", callback_data: "nav:cleandisk" }, { text: "💾 Purge RAM", callback_data: "do:ramflush" }],
       [{ text: "🗂️ Ranger les projets (plan)", callback_data: "do:tidy" }],
@@ -1819,6 +1838,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all", "--yes"])), kb([[back("clean")]]));
+  if (ns === "do" && action === "novaup") return edit(chat, msgId, card("🤖 NOVA OS — démarrage…", await novaosCtl("start")), kb([[{ text: "🔄 Rafraîchir", callback_data: "nav:novaos" }, back("menu")]]));
+  if (ns === "do" && action === "novadown") return edit(chat, msgId, card("🛑 NOVA OS — coupé", await novaosCtl("stop")), kb([[{ text: "🟢 Rallumer", callback_data: "do:novaup" }, back("menu")]]));
   if (ns === "do" && action === "clean") return edit(chat, msgId, pre("cleanup", await omega(["cleanup", "--yes"])), kb([[back("clean")]]));
   if (ns === "do" && action === "diskclean") {
     const cmd = "echo '== Docker build cache =='; docker builder prune -f 2>&1 | tail -1; echo '== APT =='; apt-get clean && echo ok; echo '== journal =='; journalctl --vacuum-size=100M 2>&1 | tail -1; echo '== caches user =='; bash " + OMEGA_DIR + "/skills/cleanup/scripts/clean-caches.sh 2>/dev/null | grep -i purg; echo; df -h / | tail -1";
