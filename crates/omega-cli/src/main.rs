@@ -5429,6 +5429,21 @@ fn cmd_sync() -> Result<()> {
                     std::os::unix::fs::symlink(entry.path(), &link)?;
                     println!("  [+] Claude skill: {}", name.to_string_lossy());
                 }
+                // Dedupe the slash-command menu: a skill is invocable as
+                // /<name> by itself, so a bare ~/.claude/commands/<name>.md
+                // stub for the SAME name lists the command twice (the /omg-*
+                // alias stub keeps its own namespace and stays). Remove the
+                // shadowed bare stub.
+                let bare_stub = claude_dir
+                    .join("commands")
+                    .join(format!("{}.md", name.to_string_lossy()));
+                if bare_stub.exists() {
+                    let _ = std::fs::remove_file(&bare_stub);
+                    println!(
+                        "  [-] pruned duplicate command stub: {}.md (skill of the same name is linked)",
+                        name.to_string_lossy()
+                    );
+                }
             }
         }
         println!("[+] Claude Code synced (rules + skills)");
