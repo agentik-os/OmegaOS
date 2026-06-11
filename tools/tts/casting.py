@@ -117,8 +117,15 @@ def main():
             failed += 1
 
     # The bot reads this to honor «voix N» — write it even on partial failure.
+    # MERGE by number so a patch run (a few re-cast numbers) never wipes the rest.
     out = os.path.join(TTS_DIR, "casting-manifest.json")
-    json.dump(resolved, open(out, "w"), ensure_ascii=False, indent=1)
+    merged = {}
+    try:
+        merged = {x["n"]: x for x in json.load(open(out))}
+    except Exception:  # noqa: BLE001 — first run
+        pass
+    merged.update({x["n"]: x for x in resolved})
+    json.dump(sorted(merged.values(), key=lambda x: x["n"]), open(out, "w"), ensure_ascii=False, indent=1)
     log(f"done: {sent} sent, {failed} failed → manifest {out}")
     sys.exit(1 if failed and not sent else 0)
 
