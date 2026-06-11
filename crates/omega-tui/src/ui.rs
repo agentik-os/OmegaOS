@@ -922,15 +922,34 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         // TTY) we are free to make it unmistakable: any row whose leading
         // visible span is the accent blue gets a full-width highlight bar
         // (▶ marker + blue background + bold).
+        //
+        // GATED on a menu actually being open: Claude paints OTHER things in
+        // the same bright blue (the "Tip:" suggested command, e.g.
+        // "/plugin install …"), and the color-only cue turned those into
+        // phantom full-width accent bars in the mirror (reported via a
+        // Telegram screenshot, 2026-06-11). A completion menu is only ever
+        // open while the input box is being typed into, and the snapshot
+        // cursor sits in that box — so require the cursor row to be an input
+        // line whose content starts with a menu trigger (/ @ #).
         const ACCENT: PreviewColor = PreviewColor::Indexed(12); // Claude's bright-blue selection accent
+        let menu_open = app.preview_cursor.map_or(false, |(crow, _, _)| {
+            styled.get(crow as usize).map_or(false, |row| {
+                let text: String = row.iter().map(|s| s.text.as_str()).collect();
+                let after_prompt = text.trim_start().strip_prefix('❯');
+                after_prompt.map_or(false, |rest| {
+                    matches!(rest.trim_start().chars().next(), Some('/' | '@' | '#'))
+                })
+            })
+        });
         let inner_w = area.width.saturating_sub(2) as usize;
         styled
             .iter()
             .map(|row| {
-                let is_selected = row
-                    .iter()
-                    .find(|s| !s.text.trim().is_empty())
-                    .map_or(false, |s| s.fg == Some(ACCENT));
+                let is_selected = menu_open
+                    && row
+                        .iter()
+                        .find(|s| !s.text.trim().is_empty())
+                        .map_or(false, |s| s.fg == Some(ACCENT));
 
                 if is_selected {
                     // Selected line: the same highlight every other selection in
