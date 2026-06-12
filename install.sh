@@ -1751,7 +1751,7 @@ fi
 step "Phase 6.92: Nova personal-assistant layer"
 if [[ "${OMEGA_WITH_NOVA:-0}" == "1" ]]; then
     for nsk in nova-report.sh nova-send.sh nova-godmode.sh nova-composio-connect.sh \
-               nova-call-sync.py nova-call-kb.py nova-self-improve.sh; do
+               nova-call-sync.py nova-call-kb.py nova-self-improve.sh nova-notify.sh; do
         if [[ -f "$OMEGA_SRC/scripts/$nsk" ]]; then
             cp -f "$OMEGA_SRC/scripts/$nsk" "$OMEGA_DIR/bin/$nsk"
             chmod +x "$OMEGA_DIR/bin/$nsk"
