@@ -929,11 +929,25 @@ async function main() {
   let dir = null;
   const di = args.indexOf('--dir');
   if (di !== -1 && args[di + 1]) dir = args[di + 1];
+  const explicitDir = dir !== null;
   if (!dir) {
     const station = path.join(os.homedir(), 'Station');
     dir = fs.existsSync(station) ? path.join(station, 'OmegaOS') : path.join(process.cwd(), 'OmegaOS');
   }
   dir = path.resolve(dir);
+  // The DEFAULT target's parent must be writable: npx gets run from / or other
+  // read-only places (proven: "could not create work tree dir '/OmegaOS':
+  // Read-only file system" — the clone died AFTER the Telegram wizard). Fall
+  // back to ~/OmegaOS instead of dying; an explicit --dir is always respected.
+  if (!explicitDir && !fs.existsSync(path.join(dir, '.git'))) {
+    let parentWritable = true;
+    try { fs.accessSync(path.dirname(dir), fs.constants.W_OK); } catch (e) { parentWritable = false; }
+    if (!parentWritable) {
+      const fallback = path.join(os.homedir(), 'OmegaOS');
+      process.stdout.write('  ' + yel('⚠') + gray(' ' + path.dirname(dir) + ' is not writable — installing to ') + bold(fallback) + '\n\n');
+      dir = fallback;
+    }
+  }
 
   // Guided Telegram setup BEFORE the animation owns the screen (cooked input).
   // Interactive sessions only: piped/CI runs skip silently, --no-telegram opts out.
