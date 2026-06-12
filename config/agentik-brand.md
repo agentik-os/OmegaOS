@@ -14,7 +14,7 @@ negative space and a FEW characterful details. <SUBJECT> — <SCENE>. Bold graph
 monochrome, striking, premium. NOT muddy grey, NOT washed-out, NOT cluttered, NEVER two people.
 ```
 - **Pour Nova** : `<SUBJECT>` = "ONE single woman only — Nova: long flowing BLONDE hair in light/white
-  linework (NEVER solid-dark, NEVER brunette), confident gaze, fitted black outfit, AI cofounder influencer".
+  linework (NEVER solid-dark, NEVER brunette), confident gaze, fitted black outfit, Agentik cofounder, born in the binary matrix".
   Réf image obligatoire : `~/Station/Nova/presence/avatar/nova-face-3angles.jpg` (visage) ou
   `nova-fullbody-turnaround.jpg` (corps). RÈGLES DURES : Nova BLONDE toujours · UNE seule Nova.
 - **Pour Gareth / marque générique** : `<SUBJECT>` = le sujet voulu, même style.
@@ -39,3 +39,11 @@ voix. Par défaut : Nova fait des ACTIONS / b-roll (bouche fermée), la voix off
 PAR-DESSUS. Pour un vrai talking-head lip-syncé, il faut HeyGen (clé HEYGEN_API_KEY actuellement
 VIDE — à fournir) ou un modèle audio-driven ; tant qu'on ne l'a pas, prompt « mouth closed, does
 NOT talk ». Réf : reel (actions+VO) = bon ; UGC v1 (parlait) = corrigé en bouche fermée.
+
+
+## 🎛️ STACK MODÈLES (non-Google — validé 2026-06-12)
+- **Image** : `gpt_image_2` (OpenAI GPT Image 2) — cinématographique, premium, tient le perso + le blond. (nano_banana = Google → évité.)
+- **Vidéo** : `seedance_2_0` (Seedance 2.0) en défaut, `kling3_0` (Kling 3.0) en alternative — vrai mouvement cinéma. **JAMAIS Veo/Google.** L'audio Veo/Seedance est strippé (on garde la voix Nova + musique).
+- **Lip-sync (talking-head)** : HeyGen (clé `HEYGEN_API_KEY` au coffre + Composio ACTIVE) — pour quand Nova doit VRAIMENT parler face caméra, lèvres synchro. Sinon : action + voix off, bouche fermée.
+- **Voix** : ElevenLabs `PB6BdkFkZLbI39GHdnbQ` (Nova, EN native London/Paris, FR aussi). **Musique** : ElevenLabs Music darkwave/synthwave 90s.
+- Viser le CINÉMATOGRAPHIQUE : lumière dramatique, cadrage soigné, "award-winning", beau, premium.
