@@ -62,16 +62,7 @@ fn systemctl_user(args: &[&str]) -> Option<String> {
 }
 
 fn ram_available_mb() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("MemAvailable:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|kb| kb.parse::<u64>().ok())
-        })
-        .map(|kb| kb / 1024)
-        .unwrap_or(0)
+    crate::sysinfo::available_ram_mb()
 }
 
 /// The rmux daemon socket path, if present — `$RMUX_SOCKET` override, else the
@@ -268,7 +259,7 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     // 8. Memory headroom.
     let ram = ram_available_mb();
     if ram == 0 {
-        checks.push(Check::warn("memory", "/proc/meminfo unreadable"));
+        checks.push(Check::warn("memory", "memory stats unreadable (/proc/meminfo or vm_stat)"));
     } else if ram < 400 {
         checks.push(Check::warn(
             "memory",

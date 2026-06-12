@@ -106,8 +106,17 @@ impl SessionMetrics {
                     return kb / 1024;
                 }
             }
+            return 0;
         }
-        0
+        // No /proc (macOS) — `ps` reports RSS in KB.
+        std::process::Command::new("ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().ok())
+            .map(|kb| kb / 1024)
+            .unwrap_or(0)
     }
 
     pub fn detect_git_branch(cwd: &std::path::Path) -> Option<String> {

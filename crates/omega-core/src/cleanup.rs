@@ -113,18 +113,9 @@ pub async fn kill_all(mgr: &SessionManager, keep: &HashSet<String>) -> Result<Ve
     Ok(killed)
 }
 
-/// Available RAM in MB from /proc/meminfo (Linux); 0 if unreadable.
+/// Available RAM in MB (Linux /proc, macOS vm_stat); 0 if unreadable.
 fn ram_available_mb() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|s| {
-            s.lines()
-                .find(|l| l.starts_with("MemAvailable:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|kb| kb.parse::<u64>().ok())
-        })
-        .map(|kb| kb / 1024)
-        .unwrap_or(0)
+    crate::sysinfo::available_ram_mb()
 }
 
 /// The `session` field of a state JSON file, if present.
