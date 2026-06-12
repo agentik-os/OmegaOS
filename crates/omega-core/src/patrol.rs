@@ -100,6 +100,63 @@ impl Patrol {
         // JSON parse every tick. Compute it here and pass the slice down.
         let oracle_states = crate::oracle_lifecycle::OracleState::read_all(&self.config.state_dir);
 
+        // ── Broken-pane sweep: panes whose terminal object the daemon lost ──
+        // rmux (≤0.3.1) can lose a pane's in-memory terminal while the pane
+        // process keeps running (2026-06-12: recreated same-name sessions
+        // listed fine but every capture/attach/status failed with "missing
+        // pane terminal" — invisible in the TUI, unreachable by send-keys).
+        // The pane is unusable either way, so repair beats preserving it:
+        // respawn the pane (rebuilds the terminal, keeps the session and its
+        // start dir), then for agent-bearing sessions relaunch the configured
+        // agent with --continue so the conversation resumes where it stopped.
+        // System/plain-shell sessions just get their shell back.
+        for session in &sessions {
+            match mgr.capture_pane(&session.name).await {
+                Err(e) if format!("{e:#}").contains("missing pane terminal") => {}
+                _ => continue,
+            }
+            tracing::warn!(session = %session.name, "Broken pane (terminal lost) — respawning");
+            let respawned = std::process::Command::new("rmux")
+                .args(["respawn-pane", "-k", "-t", &session.name])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !respawned {
+                report.actions_taken.push(format!(
+                    "Session {}: pane terminal lost, respawn FAILED — repair manually \
+                     (rmux respawn-pane -k -t {})",
+                    session.name, session.name
+                ));
+                continue;
+            }
+            mgr.invalidate_pane(&session.name).await;
+            let relaunch_agent = session.project.is_some()
+                || matches!(session.role, SessionRole::Oracle | SessionRole::Worker);
+            if relaunch_agent {
+                // Give the respawned shell a beat before typing into it.
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let agent = crate::agents::Agent::from_name(&self.config.agent_command)
+                    .unwrap_or(crate::agents::Agent::Claude);
+                let launch = agent.launch_command_with(
+                    None,
+                    crate::agents::LaunchOptions {
+                        resume_conversation: true,
+                        ..Default::default()
+                    },
+                );
+                let _ = mgr.send_text(&session.name, &launch).await;
+            }
+            report.actions_taken.push(format!(
+                "Session {}: pane terminal lost (rmux bug) — respawned pane{}",
+                session.name,
+                if relaunch_agent {
+                    " + relaunched agent (--continue)"
+                } else {
+                    ""
+                }
+            ));
+        }
+
         // ── Worker patrol: done signals ──
         for session in &sessions {
             if session.role == SessionRole::Worker {
