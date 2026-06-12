@@ -32,3 +32,10 @@ ElevenLabs Music `POST /v1/music {prompt, music_length_ms}` (clé au coffre). St
 ## VIDÉO
 Higgsfield `cinematic_studio_video --start-image <img>` (anime une image) → `ffmpeg` (musique) →
 Remotion `~/Station/Nova/video/` (montage 1-min multi-plans + voix off Nova).
+
+## ⚠️ RÈGLE VIDÉO — pas de lèvres non-synchro (opérateur 2026-06-12)
+On ne montre JAMAIS Nova en train de mouther des mots si les lèvres ne sont pas synchro avec la
+voix. Par défaut : Nova fait des ACTIONS / b-roll (bouche fermée), la voix off ElevenLabs passe
+PAR-DESSUS. Pour un vrai talking-head lip-syncé, il faut HeyGen (clé HEYGEN_API_KEY actuellement
+VIDE — à fournir) ou un modèle audio-driven ; tant qu'on ne l'a pas, prompt « mouth closed, does
+NOT talk ». Réf : reel (actions+VO) = bon ; UGC v1 (parlait) = corrigé en bouche fermée.
