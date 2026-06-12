@@ -40,7 +40,7 @@
 - **`omnihuman`** — audio-driven (image + `--audio` de SA voix ElevenLabs → vidéo lip-syncée). **La bonne piste**, bien mieux que HeyGen sur notre style comic.
 - **`soul_cast`** — vidéo de personnage cohérent (Soul), accepte `--audio`.
 - `kling3_0` / `wan2_7` acceptent aussi `--audio` (lip-sync natif).
-- HeyGen reste dispo (clé au coffre) mais rendu moche sur le comic → **on privilégie omnihuman/soul_cast**.
+- **HeyGen = DÉPRÉCIÉ** (moche sur le comic). Lip-sync = **omnihuman** (+ --audio voix ElevenLabs Nova), point.
 
 ## 🎞️ VIDÉO — édition / amélioration
 `topaz_video` / `video_upscale` (HD/4K) · `video_deflicker` · `reframe` (recadrage format réseaux) ·

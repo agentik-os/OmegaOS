@@ -41,12 +41,16 @@ VIDE — à fournir) ou un modèle audio-driven ; tant qu'on ne l'a pas, prompt 
 NOT talk ». Réf : reel (actions+VO) = bon ; UGC v1 (parlait) = corrigé en bouche fermée.
 
 
-## 🎛️ STACK MODÈLES (non-Google — validé 2026-06-12)
-- **Image** : `gpt_image_2` (OpenAI GPT Image 2) — cinématographique, premium, tient le perso + le blond. (nano_banana = Google → évité.)
-- **Vidéo** : `seedance_2_0` (Seedance 2.0) en défaut, `kling3_0` (Kling 3.0) en alternative — vrai mouvement cinéma. **JAMAIS Veo/Google.** L'audio Veo/Seedance est strippé (on garde la voix Nova + musique).
-- **Lip-sync (talking-head)** : HeyGen ✅ TESTÉ — upload talking_photo + /v2/video/generate (clé au coffre + Composio ACTIVE) — pour quand Nova doit VRAIMENT parler face caméra, lèvres synchro. Sinon : action + voix off, bouche fermée.
-- **Voix** : ElevenLabs `PB6BdkFkZLbI39GHdnbQ` (Nova, EN native London/Paris, FR aussi). **Musique** : ElevenLabs Music darkwave/synthwave 90s.
-- Viser le CINÉMATOGRAPHIQUE : lumière dramatique, cadrage soigné, "award-winning", beau, premium.
 
 ## 🎛️ Catalogue complet des modèles
 Toutes les capacités image/vidéo/audio/lip-sync/3D pilotables : `~/.omega/branding/HIGGSFIELD-CAPABILITIES.md`. Le studio Nova, la marketing machine et NOVA OS peuvent TOUT utiliser (image gpt_image_2/seedream/flux/recraft, vidéo seedance/kling/wan, lip-sync omnihuman, upscale topaz, virality predictor brain_activity…). Non-Google, cinématographique.
+
+## 🎛️ STACK — HIGGSFIELD POUR TOUT (décision opérateur 2026-06-12)
+**Higgsfield est LE moteur unique de création de contenu.** On NE disperse PAS sur des outils tiers.
+- **Image** : `gpt_image_2` (défaut, #1 mondial) · alt `seedream_v4_5`, `flux_2`, `recraft_v4_1` (typo/logo).
+- **Vidéo** : `seedance_2_0` (défaut, #1) · `kling3_0` (alt). **Jamais Veo/Google.** Audio modèle strippé.
+- **Lip-sync (Nova parle, lèvres synchro)** : `omnihuman` (+ `--audio` de sa voix). **HeyGen = DÉPRÉCIÉ** (moche sur le comic, clé gardée mais inutilisée).
+- **Musique** : `sonilo_music` (Higgsfield, `--duration`) — darkwave/synthwave 90s.
+- **Upscale/édition** : `topaz_image`/`topaz_video`, `reframe`, détourage. **Tri viralité** : `brain_activity`.
+- **SEULE exception** : la **VOIX de Nova** reste **ElevenLabs** (`PB6BdkFkZLbI39GHdnbQ`) — c'est son identité vocale, pas un TTS générique. On la GÉNÈRE chez ElevenLabs puis on l'INJECTE dans Higgsfield (omnihuman) pour le lip-sync. Tout le reste = Higgsfield.
+Catalogue complet : `HIGGSFIELD-CAPABILITIES.md`. Non-Google, cinématographique.
