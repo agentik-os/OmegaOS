@@ -107,6 +107,13 @@ enum Commands {
         full: bool,
     },
 
+    /// Diagnose mouse support END-TO-END from the terminal you run it in:
+    /// enables mouse reporting, listens 10s, and tells you whether your
+    /// terminal actually sends wheel/click events (or arrow-key translations,
+    /// or nothing — e.g. over mosh, which never forwards the mouse handshake).
+    #[command(name = "mouse-test")]
+    MouseTest,
+
     /// Auto-discover projects on this machine (walks $HOME)
     Projects,
 
@@ -549,6 +556,7 @@ async fn main() -> Result<()> {
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::CleanJunk { force }) => cmd_clean_junk(force).await,
         Some(Commands::Clock { full }) => cmd_clock(full),
+        Some(Commands::MouseTest) => cmd_mouse_test(),
         Some(Commands::Projects) => cmd_projects(),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
@@ -3036,6 +3044,83 @@ fn cmd_clock(full: bool) -> Result<()> {
         .and_then(|c| c.timezone);
     let fmt = if full { "%H:%M %d-%b-%y" } else { "%H:%M" };
     println!("{}", omega_core::clock::now_fmt(tz.as_deref(), fmt));
+    Ok(())
+}
+
+/// `omega mouse-test` — ground-truth probe of the WHOLE input chain from the
+/// terminal emulator down to this process (the same crossterm parser the TUI
+/// uses). Recurring operator report "scroll ne marche pas" kept being blamed
+/// on rmux/the TUI when the events never left the terminal (mosh swallows the
+/// mouse handshake; some emulators translate wheel→arrows; Apple Terminal has
+/// a View → Allow Mouse Reporting toggle). This makes the layer visible.
+fn cmd_mouse_test() -> Result<()> {
+    use crossterm::event::{Event, KeyCode, MouseEventKind};
+    use std::io::Write;
+
+    println!("◆ Mouse diagnostic — scroll the wheel / swipe, click, and drag IN THIS WINDOW.");
+    println!("  Listening 10s (q to stop early)…\n");
+    crossterm::terminal::enable_raw_mode()?;
+    crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+
+    let (mut wheel, mut click, mut drag, mut arrows, mut other_keys) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut out = std::io::stdout();
+    while std::time::Instant::now() < deadline {
+        if !crossterm::event::poll(std::time::Duration::from_millis(200))? {
+            continue;
+        }
+        match crossterm::event::read()? {
+            Event::Mouse(m) => match m.kind {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    wheel += 1;
+                    let _ = write!(out, "  ← wheel ({:?})\r\n", m.kind);
+                }
+                MouseEventKind::Down(b) => {
+                    click += 1;
+                    let _ = write!(out, "  ← click ({:?})\r\n", b);
+                }
+                MouseEventKind::Drag(_) => {
+                    drag += 1;
+                }
+                _ => {}
+            },
+            Event::Key(k) => match k.code {
+                KeyCode::Up | KeyCode::Down => {
+                    arrows += 1;
+                    let _ = write!(out, "  ← arrow key ({:?}) — wheel→arrow translation?\r\n", k.code);
+                }
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Char('c') if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => break,
+                _ => other_keys += 1,
+            },
+            _ => {}
+        }
+        let _ = out.flush();
+    }
+
+    crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture)?;
+    crossterm::terminal::disable_raw_mode()?;
+
+    println!("\n━━ Verdict ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+    println!("  wheel events: {wheel} · clicks: {click} · drags: {drag} · arrow keys: {arrows} · other keys: {other_keys}");
+    if wheel > 0 {
+        println!("  ✓ Your terminal DOES send wheel events — mouse scroll works on this");
+        println!("    connection. If the omega TUI still doesn't scroll, report that.");
+    } else if click > 0 || drag > 0 {
+        println!("  ◐ Clicks arrive but NO wheel events: your terminal doesn't report the");
+        println!("    scroll wheel to apps. Use PgUp/PgDn (Mac: fn+↑ / fn+↓) in the TUI,");
+        println!("    or a terminal with full mouse reporting (iTerm2, Ghostty, kitty).");
+    } else if arrows > 0 {
+        println!("  ◐ Your terminal translates the wheel into ARROW KEYS (alternate-screen");
+        println!("    scroll). In the TUI those forward to the focused agent, not the view.");
+        println!("    Use PgUp/PgDn (Mac: fn+↑ / fn+↓), or iTerm2/Ghostty/kitty for real");
+        println!("    mouse reporting.");
+    } else {
+        println!("  ✗ NOTHING arrived: the mouse handshake never reached your terminal.");
+        println!("    Typical causes: connected over mosh (it never forwards mouse modes —");
+        println!("    use plain SSH), or mouse reporting disabled in the terminal");
+        println!("    (Apple Terminal: View → Allow Mouse Reporting).");
+    }
     Ok(())
 }
 
