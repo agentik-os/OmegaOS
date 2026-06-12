@@ -22,7 +22,7 @@ monochrome, striking, premium. NOT muddy grey, NOT washed-out, NOT cluttered, NE
   (plan ultra ; PAS l'API directe). Réf d'or validée : `nova-nature-hill.png`.
 
 ## VOIX (vidéos, voix off)
-La voix de Nova = ElevenLabs, voice_id `PB6BdkFkZLbI39GHdnbQ` (Nova, EN native London/Paris ; FR aussi via multilingual_v2), via omega-ttsd ou
+La voix de Nova = ElevenLabs, voice_id `FeJtVBW106P4mvgGebAg` (Nova, EN native London/Paris ; FR aussi via multilingual_v2), via omega-ttsd ou
 `POST api.elevenlabs.io/v1/text-to-speech/<id>`.
 
 ## MUSIQUE
@@ -50,5 +50,5 @@ Toutes les capacités image/vidéo/audio/lip-sync/3D pilotables : `~/.omega/bran
 - **Vidéo parlée** : actions bouche fermée + voix off ElevenLabs. **HeyGen BANNI, pas de talking-head lip-sync.**
 - **Musique** : `sonilo_music` (Higgsfield, `--duration`) — darkwave/synthwave 90s.
 - **Upscale/édition** : `topaz_image`/`topaz_video`, `reframe`, détourage. **Tri viralité** : `brain_activity`.
-- **SEULE exception** : la **VOIX de Nova** reste **ElevenLabs** (`PB6BdkFkZLbI39GHdnbQ`) — c'est son identité vocale, pas un TTS générique. On la GÉNÈRE chez ElevenLabs puis on l'INJECTE dans Higgsfield (omnihuman) pour le lip-sync. Tout le reste = Higgsfield.
+- **SEULE exception** : la **VOIX de Nova** reste **ElevenLabs** (`FeJtVBW106P4mvgGebAg`) — c'est son identité vocale, pas un TTS générique. On la GÉNÈRE chez ElevenLabs et on la met en voix off sur les vidéos. Tout le reste = Higgsfield.
 Catalogue complet : `HIGGSFIELD-CAPABILITIES.md`. Non-Google, cinématographique.

@@ -45,7 +45,7 @@
 
 ## 🔊 AUDIO
 **Musique = `sonilo_music`** (Higgsfield, `--duration`, darkwave/synthwave 90s) — DÉFAUT (consolidation Higgsfield). `mirelo_text_to_audio`, `inworld_text_to_speech` aussi.
-**VOIX = ElevenLabs** (voix Nova `PB6BdkFkZLbI39GHdnbQ`) — la seule exception non-Higgsfield (identité vocale), injectée dans omnihuman pour le lip-sync.
+**VOIX = ElevenLabs** (voix Nova `FeJtVBW106P4mvgGebAg`) — la seule exception non-Higgsfield (identité vocale).
 
 ## 🧊 3D
 `image_to_3d` / `multi_image_to_3d` · `sam_3_3d` · `3d_rigging` (rigger un mesh).
@@ -58,7 +58,7 @@
 ## Comment je m'en sers (workflow type)
 1. IMAGE perso cohérente → `gpt_image_2` (ou Soul) avec réf `nova-face-3angles.jpg`.
 2. MOUVEMENT → `seedance_2_0` / `kling3_0` (strip l'audio modèle).
-3. PAROLE lip-sync → `omnihuman` + `--audio` (voix ElevenLabs Nova).
-4. MUSIQUE → `sonilo_music` (Higgsfield). VOIX → ElevenLabs Nova (seule exception, → omnihuman pour lip-sync).
+3. VIDÉO PARLÉE → actions bouche fermée + voix off ElevenLabs (pas de lip-sync, HeyGen banni).
+4. MUSIQUE → `sonilo_music` (Higgsfield). VOIX → ElevenLabs Nova.
 5. POST → upscale (`topaz_video`), recadrage (`reframe`), tri viralité (`brain_activity`).
 Branding = `AGENTIK-BRAND.md`. Non-Google. Cinématographique.
