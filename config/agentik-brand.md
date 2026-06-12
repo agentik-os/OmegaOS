@@ -44,6 +44,6 @@ NOT talk ». Réf : reel (actions+VO) = bon ; UGC v1 (parlait) = corrigé en bou
 ## 🎛️ STACK MODÈLES (non-Google — validé 2026-06-12)
 - **Image** : `gpt_image_2` (OpenAI GPT Image 2) — cinématographique, premium, tient le perso + le blond. (nano_banana = Google → évité.)
 - **Vidéo** : `seedance_2_0` (Seedance 2.0) en défaut, `kling3_0` (Kling 3.0) en alternative — vrai mouvement cinéma. **JAMAIS Veo/Google.** L'audio Veo/Seedance est strippé (on garde la voix Nova + musique).
-- **Lip-sync (talking-head)** : HeyGen (clé `HEYGEN_API_KEY` au coffre + Composio ACTIVE) — pour quand Nova doit VRAIMENT parler face caméra, lèvres synchro. Sinon : action + voix off, bouche fermée.
+- **Lip-sync (talking-head)** : HeyGen ✅ TESTÉ — upload talking_photo + /v2/video/generate (clé au coffre + Composio ACTIVE) — pour quand Nova doit VRAIMENT parler face caméra, lèvres synchro. Sinon : action + voix off, bouche fermée.
 - **Voix** : ElevenLabs `PB6BdkFkZLbI39GHdnbQ` (Nova, EN native London/Paris, FR aussi). **Musique** : ElevenLabs Music darkwave/synthwave 90s.
 - Viser le CINÉMATOGRAPHIQUE : lumière dramatique, cadrage soigné, "award-winning", beau, premium.
