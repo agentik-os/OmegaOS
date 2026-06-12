@@ -1,0 +1,39 @@
+name: publish-installer
+
+# Auto-publish the npx wrapper (installer/ → npm omega-os) whenever its
+# version bumps on main. Closes the recurring gap where install.sh fixes
+# shipped via GitHub but the wizard sat unpublished for want of a local npm
+# login (the wrapper clones the repo fresh, so only installer/bin changes
+# actually need this). Idempotent: skips when npm already has the version.
+on:
+  push:
+    branches: [main]
+    paths: ['installer/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - name: Publish if the version is newer than npm
+        working-directory: installer
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node --check bin/omega-os.js
+          LOCAL=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view omega-os version 2>/dev/null || echo 0.0.0)
+          if [ "$LOCAL" = "$PUBLISHED" ]; then
+            echo "omega-os@$LOCAL already published — nothing to do"
+            exit 0
+          fi
+          npm publish
+          echo "published omega-os@$LOCAL"
