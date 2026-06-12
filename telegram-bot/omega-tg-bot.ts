@@ -805,7 +805,15 @@ async function companion(text: string, model = COMPANION_MODEL, label = "Assista
 const ATLAS_MARK = /\[\[ATLAS:([\s\S]+?)\]\]/;
 function companionBrain(chatId: number, thread: number | undefined, model?: string, label = "Assistant"): (t: string) => Promise<string> {
   return async (t: string) => {
-    const out = await companion(t, model || COMPANION_MODEL, label);
+    let out = await companion(t, model || COMPANION_MODEL, label);
+    // Deliver any files Nova attached via [[SEND: /path | caption]] — the real fix
+    // for "she said she sent the PDFs but nothing arrived" (she only output text).
+    for (const sm of out.matchAll(SEND_MARK)) {
+      const p = sm[1].trim(), cap = (sm[2] || "").trim();
+      const ok = await sendFileToChat(chatId, p, thread, cap || undefined);
+      if (!ok) await send(chatId, `⚠️ Je n'ai pas pu envoyer le fichier : <code>${esc(p)}</code> (introuvable ?)`, undefined, thread);
+    }
+    out = out.replace(SEND_MARK, "").trim();
     const m = out.match(ATLAS_MARK);
     if (!m) return out;
     const brief = m[1].trim();
@@ -871,6 +879,30 @@ async function sendVoiceNote(chat: number, ogg: Uint8Array, thread?: number, cap
   try { return await (await fetch(`${API}/sendVoice`, { method: "POST", body: fd })).json(); }
   catch (e: any) { return { ok: false, description: String(e?.message || e) }; }
 }
+// Deliver a real file Nova produced on the VPS (PDF, image, video…) to the chat.
+// Telegram method picked by extension, so a [[SEND: /path]] marker in her reply
+// actually puts the file in the operator's chat (was: she only ever sent text).
+async function sendFileToChat(chat: number, path: string, thread?: number, caption?: string): Promise<boolean> {
+  try {
+    const buf = await Bun.file(path).arrayBuffer();
+    const name = path.split("/").pop() || "file";
+    const ext = (name.split(".").pop() || "").toLowerCase();
+    const method = ["jpg", "jpeg", "png", "webp", "gif"].includes(ext) ? "sendPhoto"
+      : ["mp4", "mov", "webm"].includes(ext) ? "sendVideo"
+      : ["ogg", "mp3", "m4a", "wav"].includes(ext) ? "sendAudio"
+      : "sendDocument";
+    const field = method === "sendPhoto" ? "photo" : method === "sendVideo" ? "video" : method === "sendAudio" ? "audio" : "document";
+    const fd = new FormData();
+    fd.append("chat_id", String(chat));
+    if (thread) fd.append("message_thread_id", String(thread));
+    if (caption) fd.append("caption", caption.slice(0, 1024));
+    fd.append(field, new Blob([buf]), name);
+    const r: any = await (await fetch(`${API}/${method}`, { method: "POST", body: fd })).json();
+    return !!r?.ok;
+  } catch { return false; }
+}
+// Nova attaches files by emitting [[SEND: /abs/path | optional caption]] in her reply.
+const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
 // Voice layer over a finished companion reply. mode "both": voice note follows
 // the text. mode "voice": the placeholder shows a teaser, and is deleted once
 // the note lands (synthesis failed → the full text is restored: never lose an
@@ -2247,9 +2279,13 @@ async function agentBotMain(agentId: string) {
             }
             continue;
           }
-          const prompt = file ? withFileNote(text, file) : text;
+          // Capture what the operator is REPLYING to (text or a voice he replied to),
+          // so Nova knows the context — was only captured for Atlas, not for her.
+          const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
+          const replyNote = replyTo ? `## L'opérateur répond à CE message :\n«${replyTo.slice(0, 600)}»\n\n` : "";
+          const prompt = replyNote + (file ? withFileNote(text, file) : text);
           const ctx = histContext(chatId, thread);
-          histAppend(chatId, thread, "operator", text || "(file)", agentId);
+          histAppend(chatId, thread, "operator", (replyTo ? `(en réponse à : ${replyTo.slice(0, 100)}) ` : "") + (text || "(file)"), agentId);
           await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, companionBrain(chatId, thread, bot?.model, botName), botName, true);
           continue;
         }
