@@ -8,12 +8,12 @@
  *   npx omega-os --no-telegram  skip the guided Telegram remote-control setup
  *   npx omega-os --help
  *
- * Before the animation starts (cooked input, normal screen), an interactive
- * wizard offers the Telegram remote: BotFather walkthrough, live token
- * validation (getMe), chat-id auto-detection (getUpdates after "send your bot
- * a message"). The credentials are applied AFTER install.sh succeeds via
- * `omega telegram setup` — never during the animation, where prompts are
- * invisible.
+ * After the install succeeds (cooked input, normal screen restored), an
+ * interactive wizard offers the Telegram remote: BotFather walkthrough, live
+ * token validation (getMe), chat-id auto-detection (getUpdates after "send
+ * your bot a message") — then wires it immediately via `omega telegram
+ * setup`, against the fully-installed system. Never during the animation,
+ * where prompts are invisible.
  *
  * Zero runtime deps (Node builtins only) so npx is fast + robust. Clones the
  * PUBLIC repo agentik-os/OmegaOS and runs its install.sh.
@@ -114,14 +114,15 @@ function die(msg) { process.stdout.write('\n  ' + red('✗ ' + msg) + '\n\n'); p
 function have(cmd) { return spawnSync(cmd, ['--version'], { stdio: 'ignore' }).status === 0; }
 
 /* =========================================================================
- * TELEGRAM WIZARD — guided remote-control setup BEFORE the Matrix screen.
+ * TELEGRAM WIZARD — guided remote-control setup AFTER the install succeeds.
  *
- * Runs on the NORMAL screen with cooked input (the animation owns the TTY
- * later, where any prompt would be invisible — the exact bug class we fixed
- * in install.sh). The wizard only COLLECTS token + chat id here; the actual
- * `omega telegram setup` runs AFTER install.sh succeeds (the binary exists
- * then). Skipped silently when non-interactive (no TTY / CI / --no-telegram)
- * or when ~/.omega/telegram.toml already exists (re-install keeps it).
+ * Runs on the NORMAL screen with cooked input, once the animation has
+ * released the TTY and the whole system exists (omega binary, bot service,
+ * ~/.omega). Collect + wire happen back-to-back, so the closing "connected"
+ * line reflects the bot's REAL state — message the bot right away and it
+ * answers. Skipped silently when non-interactive (no TTY / CI /
+ * --no-telegram) or when ~/.omega/telegram.toml already exists (re-install
+ * keeps it).
  * ========================================================================= */
 
 // Never rejects. Resolves the parsed Telegram body (ok:true/false), or
@@ -317,7 +318,7 @@ async function telegramWizard() {
       }
     }
     process.stdout.write('  ' + grn('✓') + ' detected: ' + bold(who) + gray(' (chat id ' + chatId + ')') + '\n\n');
-    process.stdout.write('  ' + grn('Telegram ready') + gray(' — it will be wired automatically after the install finishes.') + '\n\n');
+    process.stdout.write('  ' + grn('Telegram ready') + gray(' — wiring it now\u2026') + '\n\n');
     // Acknowledge everything the wizard consumed: getUpdates only marks updates
     // as read on the NEXT call with offset > update_id. Without this final ack
     // the freshly started bot re-receives the user's handshake message ("hello")
@@ -411,6 +412,29 @@ function configureTelegram(tg) {
   }
 }
 
+// Post-install Telegram flow: wizard (BotFather walkthrough + live token
+// validation + chat-id detection) THEN immediate wiring — the omega binary,
+// the bot service and the config dir all exist at this point, so the
+// "connected" verdict is real. Never throws; every exit path prints the
+// manual command.
+async function finishTelegram(enabled) {
+  const tomlPath = path.join(os.homedir(), '.omega', 'telegram.toml');
+  if (fs.existsSync(tomlPath)) {
+    process.stdout.write('  ' + grn('✓') + gray(' Telegram already configured (~/.omega/telegram.toml) — keeping it') + '\n\n');
+    return;
+  }
+  if (!enabled) {
+    process.stdout.write('  ' + gray('Telegram remote not configured — later: OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <YOUR_ID> --user-id <YOUR_ID>') + '\n\n');
+    return;
+  }
+  let tg = null;
+  try { tg = await telegramWizard(); } catch (e) { tg = null; }
+  if (!tg) return; // wizard already printed the skip/manual hint
+  // Persist first (survives a crash between wizard and wiring), then wire.
+  savePendingTelegram(tg);
+  configureTelegram(tg);
+}
+
 // --- success / failure summaries (normal screen) -------------------------
 
 function printSuccess(dir) {
@@ -457,7 +481,7 @@ function doClone(dir) {
 /* =========================================================================
  * PLAIN path — original simple single-line progress bar. Kept intact.
  * ========================================================================= */
-function runPlain(dir, tg) {
+function runPlain(dir, tgEnabled) {
   const total = STEPS.length;
   let step = 0;
   bar(step, total, STEPS[0].label);
@@ -491,11 +515,10 @@ function runPlain(dir, tg) {
     if (code === 0) {
       step = total - 1; bar(step, total, 'Done');
       process.stdout.write('\n');
-      configureTelegram(tg);
-      printSuccess(dir);
+      finishTelegram(tgEnabled).then(() => printSuccess(dir));
     } else {
       process.stdout.write('\n');
-      printFailure(dir, code, lastLines.slice(-40), tg);
+      printFailure(dir, code, lastLines.slice(-40), null);
       process.exit(code || 1);
     }
   });
@@ -504,7 +527,7 @@ function runPlain(dir, tg) {
 /* =========================================================================
  * ANIMATED path — full-screen interactive Matrix rain, OMEGA bar pinned bottom.
  * ========================================================================= */
-function runAnimated(dir, tg) {
+function runAnimated(dir, tgEnabled) {
   const out = process.stdout;
   const inp = process.stdin;
 
@@ -884,11 +907,10 @@ function runAnimated(dir, tg) {
     cleanup();                   // back to normal screen
     if (code === 0) {
       banner();
-      configureTelegram(tg);
-      printSuccess(dir);
+      finishTelegram(tgEnabled).then(() => printSuccess(dir));
     } else {
       banner();
-      printFailure(dir, code, lastLines.slice(-40), tg);
+      printFailure(dir, code, lastLines.slice(-40), null);
       process.exit(code || 1);
     }
   });
@@ -949,25 +971,22 @@ async function main() {
     }
   }
 
-  // Guided Telegram setup BEFORE the animation owns the screen (cooked input).
-  // Interactive sessions only: piped/CI runs skip silently, --no-telegram opts out.
-  let tg = null;
+  // Telegram setup runs AFTER the install completes (operator request: the
+  // early wizard confused users — credentials collected before anything
+  // existed, then a 10-minute build, then the wiring. Now the whole dance
+  // happens at the end, against a fully-installed system, and the success
+  // line reflects the bot's REAL state). Interactive sessions only:
+  // piped/CI runs skip silently, --no-telegram opts out.
   const interactive = process.stdin.isTTY && process.stdout.isTTY && !process.env.CI;
-  if (interactive && !args.includes('--no-telegram')) {
-    try { tg = await telegramWizard(); } catch (e) { tg = null; }
-    // Persist the credentials NOW: a Ctrl-C during the ~8-minute build used to
-    // discard them (the pending file was only written on install *failure*).
-    // configureTelegram deletes the file once the credentials are applied.
-    if (tg) savePendingTelegram(tg);
-  }
+  const tgEnabled = interactive && !args.includes('--no-telegram');
 
-  if (shouldAnimate(args)) runAnimated(dir, tg);
-  else runPlain(dir, tg);
+  if (shouldAnimate(args)) runAnimated(dir, tgEnabled);
+  else runPlain(dir, tgEnabled);
 }
 
 if (require.main === module) {
   main().catch((err) => die(err && err.message ? err.message : String(err)));
 } else {
   // Exported for scripted smoke tests (https layer stubbed) — never used at runtime.
-  module.exports = { tgApi, telegramWizard, configureTelegram, printFailure };
+  module.exports = { tgApi, telegramWizard, configureTelegram, finishTelegram, printFailure };
 }
