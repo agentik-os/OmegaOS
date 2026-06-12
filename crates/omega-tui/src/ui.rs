@@ -116,6 +116,40 @@ use crate::theme as th;
 // `App::providers_cache`, generalized for the renderers that take no `App`.
 const RENDER_TTL: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// True when an ancestor of this process is mosh-server — the transport that
+/// silently eats the mouse handshake (mobile-shell/mosh#101). Walked once and
+/// cached for the process lifetime: ancestry can't change after spawn.
+fn under_mosh() -> bool {
+    static UNDER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *UNDER.get_or_init(|| {
+        let mut pid = std::process::id();
+        for _ in 0..16 {
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
+                return false;
+            };
+            // /proc/<pid>/stat: "pid (comm) state ppid …" — comm may contain
+            // spaces/parens, so split on the LAST ')'.
+            let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else { return false };
+            let comm = stat
+                .split_once('(')
+                .and_then(|(_, r)| r.rsplit_once(')').map(|(c, _)| c))
+                .unwrap_or("");
+            if comm.contains("mosh-server") {
+                return true;
+            }
+            let Some(ppid) = rest.split_whitespace().nth(1).and_then(|p| p.parse::<u32>().ok())
+            else {
+                return false;
+            };
+            if ppid <= 1 {
+                return false;
+            }
+            pid = ppid;
+        }
+        false
+    })
+}
+
 fn render_memo<T: Clone + 'static>(
     slot: &'static std::thread::LocalKey<
         std::cell::RefCell<Option<(std::time::Instant, T)>>,
@@ -3481,6 +3515,30 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(70)])
         .split(area);
 
+    // Transport / staleness banners — the two silent killers of "scroll ne
+    // marche pas" / "le fix ne marche pas" reports. (1) Under mosh the mouse
+    // handshake never reaches the terminal (mobile-shell/mosh#101): say so on
+    // the bar instead of letting the operator debug rmux for the third time.
+    // (2) After a deploy the running TUI keeps executing the DELETED binary —
+    // fixes silently absent until a reload; /proc/self/exe gains a
+    // " (deleted)" suffix the moment the file is replaced.
+    thread_local! {
+        static ENV_WARN_MEMO: std::cell::RefCell<Option<(std::time::Instant, Option<&'static str>)>> =
+            const { std::cell::RefCell::new(None) };
+    }
+    let env_warn: Option<&'static str> = render_memo(&ENV_WARN_MEMO, || {
+        if std::fs::read_link("/proc/self/exe")
+            .map(|p| p.to_string_lossy().ends_with(" (deleted)"))
+            .unwrap_or(false)
+        {
+            return Some("⟳ omega UPDATED — Ctrl+R to reload");
+        }
+        if under_mosh() {
+            return Some("⚠ mosh — mouse OFF (use plain SSH for wheel/select)");
+        }
+        None
+    });
+
     // Left side: Ω badge (no bg, bold) + selected session + status message
     let left = Paragraph::new(Line::from(vec![
         Span::styled(
@@ -3488,6 +3546,10 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             Style::default()
                 .fg(th::text())
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            env_warn.map(|w| format!(" {} ", w)).unwrap_or_default(),
+            Style::default().fg(th::warn()).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
         Span::styled(
