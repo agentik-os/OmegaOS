@@ -275,7 +275,7 @@ const pre = (title: string, body: string) => `<b>Ω ${esc(title)}</b>\n<pre>${es
 // HTML only supports b/i/u/s/code/pre/a — anything else stays as text.
 function mdToHtml(src: string): string {
   const codes: string[] = [];
-  const stash = (html: string) => ` ${codes.push(html) - 1} `;
+  const stash = (html: string) => `\u0000${codes.push(html) - 1}\u0000`;
   let s = src.replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, (_m, c) => stash(`<pre>${esc(String(c).replace(/\n$/, ""))}</pre>`));
   s = s.replace(/`([^`\n]+)`/g, (_m, c) => stash(`<code>${esc(String(c))}</code>`));
   s = esc(s);
@@ -287,7 +287,7 @@ function mdToHtml(src: string): string {
   s = s.replace(/(^|[^*\w])\*([^\n*]+)\*(?!\w)/g, "$1<i>$2</i>");                        // italic *…*
   s = s.replace(/(^|[^_\w])_([^\n_]+)_(?!\w)/g, "$1<i>$2</i>");                          // italic _…_
   s = s.replace(/^[ \t]*[-*+][ \t]+/gm, "• ");                                          // bullets
-  return s.replace(/ (\d+) /g, (_m, i) => (codes[+i] !== undefined ? codes[+i] : _m));
+  return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => (codes[+i] !== undefined ? codes[+i] : _m));
 }
 
 // ── Project management: "add a project" = make it MANAGED (dashboard + oracle + topic)
@@ -550,7 +550,11 @@ function projDeleteMenu(name: string): { text: string; markup: any } {
 // Project category folders under ~/Station (Partners, SideBusiness, CAIO, …), minus the OS itself.
 function stationCategories(): string[] {
   const raw = Bun.spawnSync(["bash", "-lc", `find ${homedir()}/Station -maxdepth 1 -mindepth 1 -type d 2>/dev/null | xargs -I{} basename {} | sort`]).stdout.toString().trim();
-  return raw.split("\n").filter(c => c && c !== "OmegaOS" && !c.startsWith("."));
+  const cats = raw.split("\n").filter(c => c && c !== "OmegaOS" && !c.startsWith("."));
+  // Fresh box: ~/Station doesn't exist yet, so the New-project / Import menus
+  // rendered ZERO category buttons (dead end). Offer the standard categories —
+  // createProject/import mkdir -p the chosen one, so tapping a button creates it.
+  return cats.length ? cats : ["Clients", "SideBusiness", "Lab", "LifeStyle"];
 }
 
 // New project end-to-end: folder + git + README, dashboard oracle agent, managed
@@ -647,16 +651,28 @@ function resolveClaude(): string | null {
 // so the watchdog lives in JS: runClaude kills a stuck `claude -p` after 900s
 // on every platform instead of probing for a platform timeout binary.
 const CLAUDE_TIMEOUT_MS = 900_000;
+// Personas/doctrine are loaded LAZILY with retry-while-empty: the service is
+// enabled right after Phase 4 of install.sh but the agents/*.md files and the
+// exported rules only land in Phase 5 — a load-once-at-import Atlas ran with an
+// EMPTY persona until the next restart (first-boot race). Cached once non-empty.
 let ATLAS_PROMPT = "";
-try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
-catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
+function atlasPrompt(): string {
+  if (!ATLAS_PROMPT) {
+    try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-atlas.md`, "utf8"); }
+    catch { try { ATLAS_PROMPT = readFileSync(`${OMEGA_DIR}/agents/aisb-master.md`, "utf8"); } catch {} }
+  }
+  return ATLAS_PROMPT;
+}
 // Live OmegaOS doctrine (Laws + operational Rules + orchestration + audits) pulled
 // from the SINGLE source (`omega rules context <scope>`) and injected into every
 // brain — so Atlas and the project oracles always know how OmegaOS is
 // orchestrated and which rules/audits to respect, with NO re-explaining per prompt.
 function doctrine(scope: string): string { try { return Bun.spawnSync([OMEGA, "rules", "context", scope]).stdout.toString().trim(); } catch { return ""; } }
-const ATLAS_DOCTRINE = doctrine("master");
-const ORACLE_DOCTRINE = doctrine("oracle");
+const DOCTRINE_CACHE: Record<string, string> = {};
+function doctrineCached(scope: string): string {
+  if (!DOCTRINE_CACHE[scope]) DOCTRINE_CACHE[scope] = doctrine(scope);
+  return DOCTRINE_CACHE[scope];
+}
 const IDENTITY =
   "You are ATLAS of OmegaOS — the boss the operator talks to here on Telegram. " +
   "'AISB' is your TEAM, not your name: the 14 Matrix manager agents (oracle, morpheus, seraph, keymaker, niobe, smith, architect, merovingian, neo, zion, link, construct, pythia, council) plus one dedicated oracle per project. " +
@@ -708,13 +724,18 @@ async function master(text: string): Promise<string> {
   // Headless Claude AS ATLAS, full VPS control: every tool, whole-FS
   // (--add-dir /), permissions auto-approved. It dispatches to the 14 managers /
   // project oracles (omega dispatch) or acts directly. runClaude guards a stuck run.
-  return runClaude(text, IDENTITY + ATLAS_PROMPT + "\n\n" + ATLAS_DOCTRINE, "/", "Atlas");
+  return runClaude(text, IDENTITY + atlasPrompt() + "\n\n" + doctrineCached("master"), "/", "Atlas");
 }
 
 // ── Project oracle: an agent-bot's brain. Headless Claude SCOPED to one project —
 // full project knowledge, commands the team (omega dispatch / workers / workflows)
 // for THAT project only, and refuses to touch any other project.
-let ORACLE_PERSONA = ""; try { ORACLE_PERSONA = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8"); } catch {}
+// Lazy + retry-while-empty for the same first-boot reason as atlasPrompt().
+let ORACLE_PERSONA = "";
+function oraclePersona(): string {
+  if (!ORACLE_PERSONA) { try { ORACLE_PERSONA = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8"); } catch {} }
+  return ORACLE_PERSONA;
+}
 async function projectOracle(project: string, text: string): Promise<string> {
   const dir = repoPath(project) || gitRepos().find(r => r.name.toLowerCase() === project.toLowerCase())?.path || `${homedir()}/Station`;
   const scope =
@@ -722,7 +743,7 @@ async function projectOracle(project: string, text: string): Promise<string> {
     `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 14 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
-  return runClaude(text, scope + ORACLE_PERSONA + "\n\n" + ORACLE_DOCTRINE, dir, `The ${project} oracle`, dir);
+  return runClaude(text, scope + oraclePersona() + "\n\n" + doctrineCached("oracle"), dir, `The ${project} oracle`, dir);
 }
 
 // ── COMPANION: the operator's instant personal assistant (agent-bot kind
@@ -734,7 +755,20 @@ async function projectOracle(project: string, text: string): Promise<string> {
 // ${LIFESTYLE_DIR}/PERSONA.md on every turn, and the assistant edits that file
 // itself (the shipped agents/companion.md is only the first-boot fallback).
 // Heavy project work is handed to Atlas via [[ATLAS: …]] (see companionBrain).
-const LIFESTYLE_DIR = `${homedir()}/Station/LifeStyle`;
+// Life store dir: honors the NOVA_HOME override from ~/.omega/nova-secrets.env
+// (the same knob every nova-*.sh script reads) so the interactive companion and
+// the cron touchpoints share ONE store — a hardcoded path here split Nova's
+// brain in two when the operator relocated her home. Resolved once at startup;
+// editing the secrets file needs a bot restart (like any env-style config).
+function novaHome(): string {
+  try {
+    const m = readFileSync(`${OMEGA_DIR}/nova-secrets.env`, "utf8")
+      .match(/^\s*(?:export\s+)?NOVA_HOME=["']?([^"'\n#]+)/m);
+    if (m && m[1].trim()) return m[1].trim().replace(/^~(?=\/|$)/, homedir());
+  } catch {}
+  return `${homedir()}/Station/LifeStyle`;
+}
+const LIFESTYLE_DIR = novaHome();
 const COMPANION_MODEL = "claude-haiku-4-5-20251001";
 const COMPANION_TIMEOUT_MS = 300_000; // a chat/assistant turn, not a mission — fail fast
 function companionPersona(): string {
@@ -1394,6 +1428,10 @@ const MENU: [string, string][] = [
 // the AISB Master brain instead of falling back to the menu (intelligent commands).
 const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch"]);
 function menuKb() {
+  // The NOVA OS row controls the operator-built omega-novaos.service — only
+  // show it where that unit exists (on a fresh install it was an always-broken
+  // button: status forever "inactive", start always failing).
+  const hasNovaOS = existsSync(`${homedir()}/.config/systemd/user/omega-novaos.service`);
   return kb([
     [{ text: "📖 Guide — how it works", callback_data: "nav:guide" }],
     [{ text: "🤖 Agents", callback_data: "nav:agents" }, { text: "🖥 Dashboard", callback_data: "nav:dashboard" }],
@@ -1402,7 +1440,7 @@ function menuKb() {
     [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
     [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
     [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
-    [{ text: "🤖 NOVA OS (statut / kill-switch)", callback_data: "nav:novaos" }],
+    ...(hasNovaOS ? [[{ text: "🤖 NOVA OS (status / kill-switch)", callback_data: "nav:novaos" }]] : []),
   ]);
 }
 const menuText = card("OMEGAOS — ACTION HUB", " Tap an action. Each one runs on your server via the <code>omega</code> CLI.");
@@ -1567,11 +1605,15 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "menu": case "help": case "commands": return { text: menuText, markup: menuKb() };
     case "start": case "guide": return { text: await guideCard(), markup: kb([[{ text: "📋 Open menu", callback_data: "nav:menu" }], [{ text: "🚀 Dispatch", callback_data: "nav:dispatch" }, { text: "💳 Account", callback_data: "nav:account" }]]) };
     case "agents": {
+      // The companion (Nova) link lives HERE — it is the only flow that creates
+      // a kind:"companion" agent-bot entry, so it must not depend on the
+      // optional MC dashboard being up.
+      const novaRow: Btn[] = [{ text: "💞 Link your companion (Nova)", callback_data: "agent:tglink:nova" }];
       const ags = await mcAgents();
-      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>."), markup: kb([[back()]]) };
+      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova) below."), markup: kb([novaRow, [back()]]) };
       const rows: Btn[][] = [];
       for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
-      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard)."), markup: kb([...rows, [back()]]) };
+      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot."), markup: kb([...rows, novaRow, [back()]]) };
     }
     case "dashboard": {
       await resolvePublicIP();
@@ -1868,7 +1910,10 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "agent" && action === "info") { const a = (await mcAgents()).find(x => x.id === arg); return edit(chat, msgId, `<b>🤖 ${esc(arg)}</b>\n${esc(a?.description || "(no description)")}\n\n<i>Link a dedicated Telegram bot to this agent — you'll talk to it directly (scoped to its project).</i>`, kb([[{ text: "🔗 Link Telegram", callback_data: `agent:tglink:${arg}`.slice(0, 64) }], [back("agents")]])); }
   if (ns === "agent" && action === "tglink") {
     setPending(from, "tg-link", arg);
-    return edit(chat, msgId, `<b>🔗 Link a Telegram bot — ${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nThe bot will be <b>whitelisted to you alone</b>, and when you talk to it you'll be addressing the oracle of project <b>${esc(arg)}</b> (scoped to this project only).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("agents")]]));
+    const body = /^(nova|companion)$/i.test(arg)
+      ? `<b>💞 Link your companion (Nova)</b>\n1) Create her bot via @BotFather (<code>/newbot</code> — pick her name).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nShe'll be <b>whitelisted to you alone</b>: a personal assistant who chats from your life store, remembers you, and hands heavy project work to Atlas.`
+      : `<b>🔗 Link a Telegram bot — ${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nThe bot will be <b>whitelisted to you alone</b>, and when you talk to it you'll be addressing the oracle of project <b>${esc(arg)}</b> (scoped to this project only).`;
+    return edit(chat, msgId, body, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("agents")]]));
   }
   return edit(chat, msgId, menuText, menuKb());
 }
@@ -2305,16 +2350,27 @@ async function main() {
             let botInfo: any = {};
             try { botInfo = await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json(); } catch {}
             if (!/^\d+:/.test(token) || !botInfo.ok) { await send(chatId, "❌ Invalid token (check the format <code>123456:ABC…</code> and that the bot exists).", kb([[{ text: "🔁 Retry", callback_data: `agent:tglink:${agentId}`.slice(0, 64) }]]), thread); continue; }
+            // "nova"/"companion" = the personal-assistant bot: kind:"companion"
+            // switches agentBotMain to the companion brain (persona chat over the
+            // life store) instead of a project oracle. This is the ONLY flow that
+            // creates a companion entry — without it Nova was unreachable for a
+            // fresh install (the live entry had been hand-edited).
+            const isCompanion = /^(nova|companion)$/i.test(agentId);
             // Project = the agent id if it's a known project, else the agent id itself.
-            const project = (repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId;
+            const project = isCompanion
+              ? (LIFESTYLE_DIR.split("/").pop() || "LifeStyle")
+              : ((repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId);
             const bots = loadAgentBots();
-            bots[agentId] = { token, allow: ALLOW.slice(), project };
+            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : {}) };
             saveAgentBots(bots);
             try { Bun.spawnSync(["chmod", "600", AGENT_BOTS_FILE]); } catch {}
             const spawn = spawnAgentBot(agentId);
             const me = `@${botInfo.result?.username || "?"}`;
+            const okMsg = isCompanion
+              ? `<b>💞 Companion linked</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to her: she chats from your life store (<code>${esc(LIFESTYLE_DIR)}</code>), edits her own persona (<code>PERSONA.md</code>), and hands heavy project work to Atlas.\nGive her a name + voice: just tell her.`
+              : `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`;
             await send(chatId, spawn === "ok"
-              ? `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`
+              ? okMsg
               : `<b>⚠️ Bot registered but service down</b>\n${esc(spawn)}\nCheck: <code>${process.platform === "darwin" ? `launchctl print gui/${process.getuid?.() ?? 501}/${esc(agentSvcLabel(agentId))}` : `systemctl --user status omega-tg-agent-${esc(agentId)}`}</code>`,
               kb([[{ text: "🤖 Agents", callback_data: "nav:agents" }]]), thread);
             continue;

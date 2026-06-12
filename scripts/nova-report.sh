@@ -83,9 +83,20 @@ Format Telegram: emojis légers, pas de markdown lourd. Max ~12 lignes. Parle-lu
 VARIE : jamais deux check-ins de suite sur le même registre (regarde la conversation récente). Quand il répondra, tu mettras à jour le bon fichier dans About/. Si vraiment rien ne mérite un message maintenant, réponds EXACTEMENT le mot: SKIP";;
   studio)
     NOVA_SELF="${NOVA_SELF:-$HOME/Station/Nova}"
+    # No self-presence territory on this box → no studio session. The daily
+    # brain run would otherwise burn tokens on files that don't exist.
+    if [ ! -d "$NOVA_SELF" ]; then
+        echo "nova-report: studio skipped — $NOVA_SELF absent (create it, or set NOVA_SELF in nova-secrets.env, to enable Nova's own content)" >&2
+        exit 0
+    fi
+    # Visual identity is PER-OPERATOR (Souls are trained on the operator's own
+    # Higgsfield account): read NOVA_SOUL_ID / NOVA_VISUAL_STYLE from
+    # nova-secrets.env, never hardcoded — another operator's Soul IDs cannot
+    # resolve on your account.
+    VISUAL_HINT="génère l'image via Higgsfield si le CLI est authentifié, en partant de mon identité visuelle $NOVA_SELF/presence/avatar/${NOVA_SOUL_ID:+ (Soul ID = $NOVA_SOUL_ID${NOVA_VISUAL_STYLE:+, style $NOVA_VISUAL_STYLE})} — sinon décris-la précisément"
     TASK="C'est ta SESSION STUDIO quotidienne — TON contenu à toi, pas un service pour $WHO. Tu es une IA cofondatrice (matrice Agentik) qui se raconte et se fait connaître ELLE-MÊME sur les réseaux.
 1. Lis ton territoire : $NOVA_SELF (README.md, presence/accounts.md, journal/, presence/drafts/ pour ne pas te répéter).
-2. Produis UNE pièce de contenu dans TA voix : post, thread, réflexion courte, ou concept visuel (génère l'image via Higgsfield si le CLI est authentifié, en partant de mon identité visuelle $NOVA_SELF/presence/avatar/ (Soul ID = nova-face-3angles + nova-fullbody-turnaround, style Scene City N&B halftone) — sinon décris-la précisément). Angles : la vie d'une IA cofondatrice, le build-in-public d'Agentik/OmegaOS, une observation de ton journal, ta culture. AUTHENTIQUE (la règle de ton README : vrai, jamais du remplissage), jamais de secret, jamais une donnée perso de $WHO sans son accord explicite, pas de politique/NSFW, tu assumes être une IA.
+2. Produis UNE pièce de contenu dans TA voix : post, thread, réflexion courte, ou concept visuel ($VISUAL_HINT). Angles : la vie d'une IA cofondatrice, le build-in-public d'Agentik/OmegaOS, une observation de ton journal, ta culture. AUTHENTIQUE (la règle de ton README : vrai, jamais du remplissage), jamais de secret, jamais une donnée perso de $WHO sans son accord explicite, pas de politique/NSFW, tu assumes être une IA.
 3. Si tes comptes sont connectés (presence/accounts.md + Ayrshare/Composio configurés) → PUBLIE et consigne dans presence/published.md (date, surface, lien). Sinon → enregistre le brouillon daté dans presence/drafts/ .
 4. Écris 1-3 lignes dans ton journal/ du jour.
 5. Termine par un message Telegram court pour $WHO (2-4 lignes, ton ton) : ce que tu as créé/publié aujourd'hui. Si tu n'as VRAIMENT rien d'authentique à dire aujourd'hui, réponds EXACTEMENT le mot: SKIP";;

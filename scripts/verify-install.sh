@@ -201,8 +201,8 @@ fi
 # Nova vendored files must not embed operator-specific ids (a hardcoded chat-id
 # default or the maintainer's name) — they read ~/.omega/nova-secrets.env at
 # runtime. (Token patterns are already covered by the global secret gate.)
-if grep -qE 'NOVA_CHAT_ID:-[0-9]|Gareth' scripts/nova-report.sh scripts/nova-send.sh scripts/nova-godmode.sh scripts/nova-composio-connect.sh agents/companion.md config/nova-apps.sample.json 2>/dev/null; then
-  bad "Nova vendored files embed an operator id/name (must come from nova-secrets.env)"
+if grep -qE 'NOVA_CHAT_ID:-[0-9]|Gareth|nova-face-3angles' scripts/nova-report.sh scripts/nova-send.sh scripts/nova-godmode.sh scripts/nova-composio-connect.sh scripts/nova-self-improve.sh scripts/nova-notify.sh agents/companion.md config/nova-apps.sample.json config/nova-anatomy.template.md 2>/dev/null; then
+  bad "Nova vendored files embed an operator id/name/Soul (must come from nova-secrets.env)"
 else
   ok "Nova vendored files clean (operator ids/secrets read from nova-secrets.env at runtime)"
 fi

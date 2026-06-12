@@ -38,18 +38,18 @@ while IFS='|' read -r name path; do
     git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1 || continue
     flags=""
     # uncommitted
-    [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ] && flags="${flags} ~non-commité"
+    [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ] && flags="${flags} ~uncommitted"
     # unpushed
     up="$(git -C "$path" rev-list --count @{u}..HEAD 2>/dev/null || echo 0)"
-    [ "$up" -gt 0 ] 2>/dev/null && flags="${flags} ↑${up}-non-pushé"
+    [ "$up" -gt 0 ] 2>/dev/null && flags="${flags} ↑${up}-unpushed"
     # last mission outcome
     last=""; for df in "$STATE"/oracle-${name}*.done.json; do [ -e "$df" ] || continue; [ -z "$last" ] || [ "$df" -nt "$last" ] && last="$df"; done
     if [ -n "$last" ]; then
         st="$(python3 -c "import json;print(json.load(open('$last')).get('status','?'))" 2>/dev/null)"
-        case "$st" in failed) flags="${flags} ✗mission-échouée";; blocked) flags="${flags} ‖bloqué";; pending) flags="${flags} …incomplet";; esac
+        case "$st" in failed) flags="${flags} ✗mission-failed";; blocked) flags="${flags} ‖blocked";; pending) flags="${flags} …incomplete";; esac
     fi
     # active oracle (state.json without done.json)
-    for sf in "$STATE"/oracle-${name}*.state.json; do [ -e "$sf" ] || continue; b="$(basename "$sf" .state.json)"; [ -f "$STATE/$b.done.json" ] || flags="${flags} ▸oracle-actif"; break; done
+    for sf in "$STATE"/oracle-${name}*.state.json; do [ -e "$sf" ] || continue; b="$(basename "$sf" .state.json)"; [ -f "$STATE/$b.done.json" ] || flags="${flags} ▸oracle-active"; break; done
     if [ -z "$flags" ]; then clean=$((clean+1)); else attention="${attention}
 ✗ <b>$(esc "$name")</b> —$(esc "$flags")"; fi
 done < <(python3 -c "import json;d=json.load(open('$PROJECTS_FILE'));[print(p['name']+'|'+p['path']) for p in d.get('projects',[])]" 2>/dev/null)
@@ -57,12 +57,12 @@ done < <(python3 -c "import json;d=json.load(open('$PROJECTS_FILE'));[print(p['n
 total=$(python3 -c "import json;print(len(json.load(open('$PROJECTS_FILE')).get('projects',[])))" 2>/dev/null || echo 0)
 date_str="$(date -u +%d/%m)"
 if [ -n "$attention" ]; then
-    msg="▸ <b>Briefing Atlas</b> · ${date_str}
-${clean}/${total} projets propres · à regarder :
+    msg="▸ <b>Atlas briefing</b> · ${date_str}
+${clean}/${total} projects clean · needs a look:
 ${attention}"
 else
-    msg="✓ <b>Briefing Atlas</b> · ${date_str}
-Portefeuille propre — ${total} projets, rien à signaler."
+    msg="✓ <b>Atlas briefing</b> · ${date_str}
+Portfolio clean — ${total} projects, nothing to report."
 fi
 
 if [ -n "${ATLAS:-}" ] && [ -n "${HUB:-}" ]; then chat="$HUB"; th="$ATLAS"; else chat="$DM"; th=""; fi

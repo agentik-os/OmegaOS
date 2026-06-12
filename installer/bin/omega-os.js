@@ -318,10 +318,56 @@ async function telegramWizard() {
     }
     process.stdout.write('  ' + grn('✓') + ' detected: ' + bold(who) + gray(' (chat id ' + chatId + ')') + '\n\n');
     process.stdout.write('  ' + grn('Telegram ready') + gray(' — it will be wired automatically after the install finishes.') + '\n\n');
+    // Acknowledge everything the wizard consumed: getUpdates only marks updates
+    // as read on the NEXT call with offset > update_id. Without this final ack
+    // the freshly started bot re-receives the user's handshake message ("hello")
+    // and dispatches it to the Atlas brain as if it were a real instruction.
+    if (nextOffset > 0) await tgApi(token, 'getUpdates', { offset: nextOffset, limit: 1 });
     return { token, chatId, botUser };
   } finally {
     rl.close();
   }
+}
+
+// The wizard's credentials must survive ANY interruption (Ctrl-C mid-build,
+// install failure, crash) — never make the user redo the BotFather dance.
+// Written right after the wizard succeeds, deleted only on confirmed success.
+const PENDING_TG_PATH = path.join(os.homedir(), '.omega', 'pending-telegram.txt');
+function savePendingTelegram(tg) {
+  if (!tg) return null;
+  const setupCmd = 'OMEGA_TG_TOKEN=' + tg.token + ' omega telegram setup ' + tg.chatId + ' --user-id ' + tg.chatId;
+  try {
+    fs.mkdirSync(path.dirname(PENDING_TG_PATH), { recursive: true });
+    const note = '# Run once the install succeeds — the OMEGA_TG_TOKEN env prefix keeps\n'
+      + '# the token out of `ps` output.\n';
+    fs.writeFileSync(PENDING_TG_PATH, note + setupCmd + '\n', { mode: 0o600 });
+    fs.chmodSync(PENDING_TG_PATH, 0o600); // mode option only applies on create
+    return PENDING_TG_PATH;
+  } catch (e) { return null; }
+}
+function clearPendingTelegram() { try { fs.unlinkSync(PENDING_TG_PATH); } catch (e) {} }
+
+// Is the tg-bot service actually running? (systemd user unit on Linux —
+// XDG_RUNTIME_DIR defaulted for bus-less shells; launchd LaunchAgent on macOS.)
+// Mirrors crates/omega-core/src/service.rs. Returns true/false/null(unknown).
+function tgBotServiceAlive() {
+  try {
+    if (process.platform === 'darwin') {
+      const uid = process.getuid ? process.getuid() : 501;
+      const r = spawnSync('launchctl', ['print', 'gui/' + uid + '/os.omega.tg-bot'], { encoding: 'utf8' });
+      if (r.error) return null;
+      return r.status === 0 && /state = running/.test(r.stdout || '');
+    }
+    const uid = process.getuid ? process.getuid() : null;
+    const env = Object.assign({}, process.env);
+    if (!env.XDG_RUNTIME_DIR && uid !== null && fs.existsSync('/run/user/' + uid)) {
+      env.XDG_RUNTIME_DIR = '/run/user/' + uid;
+    }
+    const r = spawnSync('systemctl', ['--user', 'is-active', 'omega-tg-bot.service'], { encoding: 'utf8', env });
+    if (r.error) return null;
+    const s = (r.stdout || '').trim();
+    return s === 'active' ? true : (s ? false : null);
+  } catch (e) { return null; }
 }
 
 // Wire the collected credentials AFTER install.sh succeeded: the omega binary
@@ -331,7 +377,8 @@ function configureTelegram(tg) {
   const omegaBin = path.join(os.homedir(), '.local', 'bin', 'omega');
   const manual = 'OMEGA_TG_TOKEN=<token> omega telegram setup ' + tg.chatId + ' --user-id ' + tg.chatId;
   if (!fs.existsSync(omegaBin)) {
-    process.stdout.write('  ' + yel('⚠ omega binary not found — finish Telegram manually: ') + cyan(manual) + '\n\n');
+    process.stdout.write('  ' + yel('⚠ omega binary not found — finish Telegram manually: ') + cyan(manual) + '\n');
+    process.stdout.write('    ' + gray('(your credentials are saved in ' + PENDING_TG_PATH + ')') + '\n\n');
     return;
   }
   // Token travels via env (OMEGA_TG_TOKEN, read by `omega telegram setup`),
@@ -341,11 +388,26 @@ function configureTelegram(tg) {
     encoding: 'utf8',
     env: Object.assign({}, process.env, { OMEGA_TG_TOKEN: tg.token }),
   });
-  if (r.status === 0) {
-    process.stdout.write('  ' + grn('✓ Telegram connected') + ' — message ' + bold('@' + tg.botUser) + ' and try: ' + cyan('status') + '\n\n');
-  } else {
+  if (r.status !== 0) {
     process.stdout.write('  ' + yel('⚠ Telegram setup did not finish: ') + gray(((r.stderr || r.stdout || '').trim() || 'unknown error').split('\n')[0]) + '\n');
     process.stdout.write('    ' + gray('Run it manually: ') + cyan(manual) + '\n\n');
+    return;
+  }
+  // The toml is written — but "connected" is only true if the bot service is
+  // actually polling (it picks the token up within ~5s). On a headless Mac the
+  // launchd bootstrap can fail (no GUI session) and the old unconditional
+  // "✓ connected" was a lie the user discovered only when the bot stayed mute.
+  clearPendingTelegram();
+  const alive = tgBotServiceAlive();
+  if (alive === false) {
+    const startHint = process.platform === 'darwin'
+      ? 'launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/os.omega.tg-bot.plist'
+      : 'systemctl --user enable --now omega-tg-bot.service';
+    process.stdout.write('  ' + yel('⚠ Telegram configured, but the bot service is NOT running.') + '\n');
+    process.stdout.write('    ' + gray('Start it: ') + cyan(startHint) + gray('   (or run in foreground: omega telegram run)') + '\n\n');
+  } else {
+    const note = alive === true ? '' : gray('  (service state unknown — if the bot stays silent, run: omega telegram run)');
+    process.stdout.write('  ' + grn('✓ Telegram connected') + ' — message ' + bold('@' + tg.botUser) + ' and try: ' + cyan('status') + note + '\n\n');
   }
 }
 
@@ -374,18 +436,9 @@ function printFailure(dir, code, lastLines, tg) {
     const setupCmd = 'OMEGA_TG_TOKEN=' + tg.token + ' omega telegram setup ' + tg.chatId + ' --user-id ' + tg.chatId;
     process.stdout.write('\n  ' + yel('⚠ Your Telegram credentials were collected but NOT applied (install failed).') + '\n');
     process.stdout.write('    ' + gray('Once the install succeeds, run: ') + cyan(setupCmd) + '\n');
-    const pendingDir = path.join(os.homedir(), '.omega');
-    const pendingPath = path.join(pendingDir, 'pending-telegram.txt');
-    try {
-      fs.mkdirSync(pendingDir, { recursive: true });
-      const note = '# Run once the install succeeds — the OMEGA_TG_TOKEN env prefix keeps\n'
-        + '# the token out of `ps` output.\n';
-      fs.writeFileSync(pendingPath, note + setupCmd + '\n', { mode: 0o600 });
-      fs.chmodSync(pendingPath, 0o600); // mode option only applies on create
-      process.stdout.write('    ' + gray('Saved to ' + pendingPath + ' (chmod 600).') + '\n');
-    } catch (e) {
-      process.stdout.write('    ' + gray('(could not save it to ' + pendingPath + ': ' + e.message + ')') + '\n');
-    }
+    const saved = savePendingTelegram(tg);
+    if (saved) process.stdout.write('    ' + gray('Saved to ' + saved + ' (chmod 600).') + '\n');
+    else process.stdout.write('    ' + gray('(could not save it to ' + PENDING_TG_PATH + ')') + '\n');
   }
   process.stdout.write('\n');
 }
@@ -888,6 +941,10 @@ async function main() {
   const interactive = process.stdin.isTTY && process.stdout.isTTY && !process.env.CI;
   if (interactive && !args.includes('--no-telegram')) {
     try { tg = await telegramWizard(); } catch (e) { tg = null; }
+    // Persist the credentials NOW: a Ctrl-C during the ~8-minute build used to
+    // discard them (the pending file was only written on install *failure*).
+    // configureTelegram deletes the file once the credentials are applied.
+    if (tg) savePendingTelegram(tg);
   }
 
   if (shouldAnimate(args)) runAnimated(dir, tg);

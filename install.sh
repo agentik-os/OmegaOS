@@ -26,7 +26,10 @@ export CI="${CI:-1}"   # many installers go non-interactive when CI is set
 # Single source of truth: the workspace Cargo.toml version. Launched via
 # curl|bash there is no Cargo.toml in $PWD yet — re-derived after the Phase 4
 # clone (cd "$OMEGA_SRC"), so the epilogue never shows a stale hardcoded number.
-OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2)"
+# `|| true`: under set -euo pipefail a missing Cargo.toml makes grep exit 2,
+# pipefail propagates it into the assignment, and errexit killed the documented
+# curl|bash path RIGHT HERE — instantly, before any output (proven empirically).
+OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2 || true)"
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 REPO_URL="https://github.com/agentik-os/OmegaOS"
@@ -71,6 +74,20 @@ omega_sudo() {
     fi
     err "sudo needs a password and no TTY is available — run 'sudo -v' first, or rerun in a terminal. (skipped: sudo $*)"
     return 1
+}
+
+# Portable timeout: GNU coreutils `timeout` is guaranteed on Linux; macOS only
+# grew a native /usr/bin/timeout in macOS 13, and older boxes have at best
+# brew's `gtimeout`. Exit code 127 from a missing binary silently disabled the
+# claude auto-install + the Agentik-Skills/OmegaMC clones on such Macs (the
+# `||`/`elif` guards turned it into misleading "no auth?" skip messages).
+# Fallback: run un-timed — strictly better than not running at all (git is
+# already prompt-proofed via GIT_TERMINAL_PROMPT=0, so clones fail fast).
+omega_timeout() {
+    if command -v timeout >/dev/null 2>&1; then timeout "$@"
+    elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$@"
+    else shift; "$@"
+    fi
 }
 
 # ─── Phase 1: Environment Detection ──────────────────────────────────────────
@@ -438,7 +455,10 @@ install_command_bot() {
               "$HOME/.config/systemd/user/default.target.wants/omega-telegram.service" 2>/dev/null || true
         systemctl --user daemon-reload 2>/dev/null || true
     fi
-    mkdir -p "$OMEGA_DIR/telegram-bot"
+    # bin/ + logs/ are created HERE (not only in Phase 5): this function runs
+    # right after Phase 4 precisely so the bot survives a Phase 5 abort — it
+    # must not depend on Phase 5's mkdir for its own copy targets.
+    mkdir -p "$OMEGA_DIR/telegram-bot" "$OMEGA_DIR/bin" "$OMEGA_DIR/logs"
     cp -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" "$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
     if [[ -f "$OMEGA_SRC/scripts/omega-tg-up.sh" ]]; then
         cp -f "$OMEGA_SRC/scripts/omega-tg-up.sh" "$OMEGA_DIR/bin/omega-tg-up.sh"
@@ -704,7 +724,7 @@ cd "$OMEGA_SRC"
 # curl|bash path: the version parse at the top of the script ran before the
 # clone existed — re-derive from the cloned Cargo.toml (still the single source
 # of truth; "unknown" only if the workspace manifest is unparseable).
-[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2)"
+[[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="$(grep -m1 '^version' Cargo.toml 2>/dev/null | cut -d'"' -f2 || true)"
 [[ -n "$OMEGA_VERSION" ]] || OMEGA_VERSION="unknown"
 if [[ -n "${PREBUILT_OK:-}" ]]; then
     ok "omega CLI already installed from prebuilt — skipping source build"
@@ -863,8 +883,10 @@ else
     info "PDF generator source not found — skipping (can be added later)"
 fi
 
-# Bridge config dir: a minimal Claude config (no hooks) so the Telegram
-# bridge's `claude --print` calls run fast (~4s vs ~11s with full settings).
+# Bridge config dir: a minimal Claude config (no hooks) for FAST `claude -p`
+# calls (~4s vs ~11s with full settings + hooks). OPT-IN — nothing consumes it
+# automatically; point a headless call at it with:
+#   CLAUDE_CONFIG_DIR=~/.omega/claude-bridge-config claude -p "…"
 # Credentials are symlinked so OAuth still works.
 BRIDGE_CFG="$OMEGA_DIR/claude-bridge-config"
 mkdir -p "$BRIDGE_CFG"
@@ -1686,7 +1708,7 @@ install_inbox_bot || true
 # (d) Claude Code agent binary — omega needs it to spawn agents.
 if ! command -v claude >/dev/null 2>&1; then
     info "Claude Code CLI absent — omega needs it to spawn agents. Attempting install..."
-    timeout 180 "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
+    omega_timeout 180 "$INSTALL_DIR/omega" install claude 2>/dev/null || info "Run 'omega install claude' (or install Claude Code manually), then authenticate with 'claude'."
 fi
 
 # (e+f) Browser stack (Xvfb + Playwright + Chromium) for PDF generation and the
@@ -1785,8 +1807,14 @@ EOF
         cat > "$OMEGA_DIR/nova-secrets.env" <<'EOF'
 # Nova secrets — local-only, NEVER committed. Read by the nova-*.sh scripts.
 # NOVA_CHAT_ID=<your numeric Telegram user id>     (required: reports + send)
+# NOVA_BOT_TOKEN=<token of Nova's OWN bot from @BotFather>  (required: reports + send
+#                — Nova needs her own bot, separate from the Atlas command bot;
+#                alternative: put the token alone in $NOVA_HOME/.bot, mode 600)
 # NOVA_OPERATOR_NAME=<how Nova calls you>           (optional)
 # NOVA_HOME=<life store dir>                        (default ~/Station/LifeStyle)
+# NOVA_SELF=<Nova's own territory>                  (default ~/Station/Nova — enables the daily studio)
+# NOVA_SOUL_ID=<your trained Higgsfield Soul id(s)> (optional: studio visuals)
+# NOVA_VISUAL_STYLE=<her visual style, free text>   (optional: studio visuals)
 # COMPOSIO_API_KEY=                                 (app connections via Composio)
 EOF
         chmod 600 "$OMEGA_DIR/nova-secrets.env"
@@ -1815,7 +1843,7 @@ EOF
         crontab -l 2>/dev/null | grep -qF "nova-call-kb.py"        || { ( crontab -l 2>/dev/null; echo "$NOVA_CALLKB_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-self-improve.sh"   || { ( crontab -l 2>/dev/null; echo "$NOVA_SELFIMPROVE_CRON" ) | crontab -; }
         crontab -l 2>/dev/null | grep -qF "nova-report.sh studio"  || { ( crontab -l 2>/dev/null; echo "$NOVA_STUDIO_CRON" ) | crontab -; }
-        ok "Nova layer installed (7 scripts + crons: reports + godmode + call-sync + call-KB + weekly self-improve + daily studio). Configure: \$EDITOR $OMEGA_DIR/nova-secrets.env"
+        ok "Nova layer installed (8 scripts + crons: reports + godmode + call-sync + call-KB + weekly self-improve + daily studio + notify). Configure NOVA_CHAT_ID + NOVA_BOT_TOKEN (her OWN @BotFather bot): \$EDITOR $OMEGA_DIR/nova-secrets.env"
     else
         ok "Nova layer installed (7 scripts; crontab unavailable — schedule nova-report.sh/nova-godmode.sh/nova-call-sync.py in your scheduler)"
     fi
@@ -1844,9 +1872,9 @@ SKILLS_REPO_DIR="$OMEGA_DIR/repos/Agentik-Skills"
 mkdir -p "$OMEGA_DIR/repos"
 if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
     ok "Agentik-Skills present ($SKILLS_REPO_DIR — update: git -C $SKILLS_REPO_DIR pull)"
-elif command -v gh >/dev/null 2>&1 && timeout 120 gh repo clone agentik-os/Agentik-Skills "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
+elif command -v gh >/dev/null 2>&1 && omega_timeout 120 gh repo clone agentik-os/Agentik-Skills "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
     ok "Agentik-Skills cloned → $SKILLS_REPO_DIR (canonical skills source)"
-elif timeout 120 git clone --depth 1 https://github.com/agentik-os/Agentik-Skills.git "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
+elif omega_timeout 120 git clone --depth 1 https://github.com/agentik-os/Agentik-Skills.git "$SKILLS_REPO_DIR" >/dev/null 2>&1; then
     ok "Agentik-Skills cloned → $SKILLS_REPO_DIR"
 else
     rm -rf "$SKILLS_REPO_DIR" 2>/dev/null || true
@@ -1884,7 +1912,7 @@ if [[ "${OMEGA_SKIP_DASHBOARD:-0}" != "1" ]]; then
     mkdir -p "$OMEGA_DIR/repos"
     if [[ -d "$MC_DIR/.git" ]]; then
         ok "OmegaMC present ($MC_DIR — update: git -C $MC_DIR pull && omega-mc-up --rebuild)"
-    elif timeout 120 git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$MC_DIR" >/dev/null 2>&1; then
+    elif omega_timeout 120 git clone --depth 1 https://github.com/agentik-os/agentik-telegram.git "$MC_DIR" >/dev/null 2>&1; then
         ok "OmegaMC cloned → $MC_DIR"
     else
         rm -rf "$MC_DIR" 2>/dev/null || true

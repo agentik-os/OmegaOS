@@ -22,6 +22,24 @@ LOG="$OMEGA/logs/nova-self-improve.log"
 CLAUDE="${NOVA_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 command -v "$CLAUDE" >/dev/null 2>&1 || CLAUDE="$(command -v claude)" || exit 0
 
+# Resolve the announce channel BEFORE the brain runs: the ANATOMY guardrail is
+# backup → modify → verify → journal → ANNOUNCE. Without a deliverable announce
+# Nova would self-modify silently every week — refuse instead. Same resolution
+# chain as nova-send.sh (env / token file / $LIFE/.bot), then the companion
+# agent-bot entry (first kind=companion in agent-bots.json).
+TOKEN="${NOVA_BOT_TOKEN:-$(cat "${NOVA_BOT_TOKEN_FILE:-$LIFE/.bot}" 2>/dev/null)}"
+[ -n "$TOKEN" ] || TOKEN="$(python3 -c '
+import json, os
+try:
+    bots = json.load(open(os.path.expanduser("~/.omega/agent-bots.json")))
+    print(next(b["token"] for b in bots.values() if isinstance(b, dict) and b.get("kind") == "companion" and b.get("token")))
+except Exception:
+    pass')"
+if [ -z "$TOKEN" ]; then
+    printf '%s self-improve skipped — no announce channel (link the companion bot, or set NOVA_BOT_TOKEN in nova-secrets.env)\n' "$(date '+%F %T')" >> "${OMEGA}/logs/nova-self-improve.log" 2>/dev/null || true
+    exit 0
+fi
+
 CTX="$(tail -n 200 "$HIST" 2>/dev/null | python3 -c '
 import sys, json
 for l in sys.stdin:
@@ -77,13 +95,5 @@ if [ "$(idle_secs)" -lt "$QUIET_SECS" ]; then
     exit 0
 fi
 
-# Companion bot token from agent-bots.json (first kind=companion entry).
-TOKEN="$(python3 -c '
-import json, os
-try:
-    bots = json.load(open(os.path.expanduser("~/.omega/agent-bots.json")))
-    print(next(b["token"] for b in bots.values() if isinstance(b, dict) and b.get("kind") == "companion" and b.get("token")))
-except Exception:
-    pass')"
-[ -n "$TOKEN" ] || exit 0
+# Announce token was resolved up-front (before the brain ran) — just deliver.
 curl -s -X POST "https://api.telegram.org/bot$TOKEN/sendMessage" -d chat_id="$NOVA_CHAT_ID" --data-urlencode text="🌱 $OUT" >/dev/null

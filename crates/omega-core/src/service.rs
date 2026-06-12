@@ -34,6 +34,24 @@ fn launchd_plist() -> std::path::PathBuf {
         .join(format!("{}.plist", TG_BOT_LAUNCHD_LABEL))
 }
 
+/// Build a `systemctl --user` Command with XDG_RUNTIME_DIR defaulted to
+/// /run/user/<uid> when the environment lacks it. cron jobs, Claude hooks and
+/// minimal SSH shells have no session-bus env, so a bare `systemctl --user`
+/// fails with "Failed to connect to bus" and EMPTY stdout — which every caller
+/// (doctor, self-heal, the TUI wizard) misread as "service not found" while
+/// the unit was in fact running (proven live 2026-06-12).
+pub fn systemctl_user_cmd() -> std::process::Command {
+    let mut cmd = std::process::Command::new("systemctl");
+    cmd.arg("--user");
+    if std::env::var_os("XDG_RUNTIME_DIR").is_none() {
+        let dir = format!("/run/user/{}", uid());
+        if std::path::Path::new(&dir).exists() {
+            cmd.env("XDG_RUNTIME_DIR", dir);
+        }
+    }
+    cmd
+}
+
 /// Status of the tg-bot service. `Some("active")` when it is running,
 /// `Some(<state>)` when the service exists but isn't running, `None` when the
 /// service manager / unit is absent (a soft condition, not an error).
@@ -55,8 +73,8 @@ pub fn tg_bot_status() -> Option<String> {
     } else {
         // `is-active` prints the state (active/inactive/failed/…) even on a
         // non-zero exit; empty stdout means systemd itself is unavailable.
-        let out = std::process::Command::new("systemctl")
-            .args(["--user", "is-active", TG_BOT_SYSTEMD_UNIT])
+        let out = systemctl_user_cmd()
+            .args(["is-active", TG_BOT_SYSTEMD_UNIT])
             .output()
             .ok()?;
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -88,8 +106,8 @@ pub fn tg_bot_start() -> bool {
             .map(|o| o.status.success())
             .unwrap_or(false)
     } else {
-        std::process::Command::new("systemctl")
-            .args(["--user", "enable", "--now", TG_BOT_SYSTEMD_UNIT])
+        systemctl_user_cmd()
+            .args(["enable", "--now", TG_BOT_SYSTEMD_UNIT])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)
@@ -106,8 +124,8 @@ pub fn tg_bot_restart() -> bool {
             .map(|o| o.status.success())
             .unwrap_or(false)
     } else {
-        std::process::Command::new("systemctl")
-            .args(["--user", "restart", TG_BOT_SYSTEMD_UNIT])
+        systemctl_user_cmd()
+            .args(["restart", TG_BOT_SYSTEMD_UNIT])
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false)

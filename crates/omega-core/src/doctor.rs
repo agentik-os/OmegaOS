@@ -46,8 +46,10 @@ impl Check {
 /// Run a `systemctl --user` query, returning its trimmed stdout (or None if
 /// systemd / the unit isn't available — a soft condition, not an error).
 fn systemctl_user(args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("systemctl")
-        .arg("--user")
+    // Via service::systemctl_user_cmd so XDG_RUNTIME_DIR is defaulted — cron /
+    // hook environments otherwise get "Failed to connect to bus" + empty stdout
+    // and misreport a RUNNING service as absent.
+    let out = crate::service::systemctl_user_cmd()
         .args(args)
         .output()
         .ok()?;
@@ -307,41 +309,59 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     {
         let omega_dir = config.state_dir.parent().map(|p| p.to_path_buf());
         let cred = omega_dir.map(|d| d.join("credentials/claude.json"));
-        match cred.and_then(|p| std::fs::read_to_string(&p).ok()) {
-            Some(content) => {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i128)
-                    .unwrap_or(0);
-                let expires = serde_json::from_str::<serde_json::Value>(&content)
-                    .ok()
-                    .and_then(|v| {
-                        // The Claude credential nests the token under `claudeAiOauth`;
-                        // fall back to a top-level field for older/alternate formats.
-                        v.get("claudeAiOauth")
-                            .and_then(|o| o.get("expiresAt"))
-                            .or_else(|| v.get("expiresAt"))
-                            .and_then(|e| e.as_i64())
-                            .map(|n| n as i128)
-                    });
-                match expires {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i128)
+            .unwrap_or(0);
+        let parse_expires = |content: &str| {
+            serde_json::from_str::<serde_json::Value>(content).ok().and_then(|v| {
+                // The Claude credential nests the token under `claudeAiOauth`;
+                // fall back to a top-level field for older/alternate formats.
+                v.get("claudeAiOauth")
+                    .and_then(|o| o.get("expiresAt"))
+                    .or_else(|| v.get("expiresAt"))
+                    .and_then(|e| e.as_i64())
+                    .map(|n| n as i128)
+            })
+        };
+        let file_expires = cred
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|c| parse_expires(&c));
+        match file_expires {
+            Some(exp) if exp < now_ms => checks.push(Check::warn(
+                "claude oauth",
+                "Claude OAuth expired — refresh required",
+            )),
+            Some(_) => checks.push(Check::ok("claude oauth", "Claude OAuth valid")),
+            // No (parseable) credential FILE. On macOS the Claude CLI stores it
+            // in the login Keychain instead — probe it before warning, so a
+            // healthy Mac doesn't report a broken credential chain.
+            None => {
+                let keychain_expires = if cfg!(target_os = "macos") {
+                    std::process::Command::new("security")
+                        .args(["find-generic-password", "-s", "Claude Code-credentials", "-w"])
+                        .output()
+                        .ok()
+                        .filter(|o| o.status.success())
+                        .and_then(|o| parse_expires(&String::from_utf8_lossy(&o.stdout)))
+                } else {
+                    None
+                };
+                match keychain_expires {
                     Some(exp) if exp < now_ms => checks.push(Check::warn(
                         "claude oauth",
-                        "Claude OAuth expired — refresh required",
+                        "Claude OAuth expired (Keychain) — run: claude → /login",
                     )),
-                    Some(_) => {
-                        checks.push(Check::ok("claude oauth", "Claude OAuth valid"))
-                    }
+                    Some(_) => checks.push(Check::ok(
+                        "claude oauth",
+                        "Claude OAuth valid (macOS Keychain)",
+                    )),
                     None => checks.push(Check::warn(
                         "claude oauth",
                         "claude.json missing/unreadable — agent CLI will fail",
                     )),
                 }
             }
-            None => checks.push(Check::warn(
-                "claude oauth",
-                "claude.json missing/unreadable — agent CLI will fail",
-            )),
         }
     }
 
