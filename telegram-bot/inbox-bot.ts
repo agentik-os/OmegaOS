@@ -21,7 +21,7 @@
  *
  * Setup:  omega-inbox-bot-up <BOT_TOKEN> [YOUR_TELEGRAM_USER_ID]
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync } from "fs";
 import { homedir } from "os";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
@@ -128,15 +128,24 @@ async function handle(msg: any) {
     return;
   }
 
-  if (msg.document && /^image\//.test(msg.document.mime_type || "")) {
-    const ext = (msg.document.file_name?.split(".").pop() || "png").toLowerCase();
+  if (msg.document) {
+    // EVERY document type — this is a deposit box. The old image-only mime
+    // filter SILENTLY dropped anything else (the operator's App Store .p8
+    // key vanished without even an error reply). Keep the original filename
+    // (sanitized) so keys/configs stay recognizable; the agent sorts them
+    // from ~/.omega/inbox/ into their final home.
+    const orig = (msg.document.file_name || "document").replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80);
+    const ext = orig.includes(".") ? orig.split(".").pop()!.toLowerCase() : "bin";
     const p = await download(msg.document.file_id, ext);
     if (p) {
-      if (caption) writeFileSync(`${p}.txt`, caption);
-      note({ ts: stamp(), kind: "document", path: p, caption });
-      console.log(`[deposit] doc ${p}`);
-      await tg("sendMessage", { chat_id: chat, text: `📥 reçu (HD) : ${p.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}` });
-    }
+      const named = p.replace(/[^/]+$/, `${stamp()}_${orig}`);
+      try { renameSync(p, named); } catch {}
+      const fin = existsSync(named) ? named : p;
+      if (caption) writeFileSync(`${fin}.txt`, caption);
+      note({ ts: stamp(), kind: "document", path: fin, caption });
+      console.log(`[deposit] doc ${fin}`);
+      await tg("sendMessage", { chat_id: chat, text: `📥 reçu : ${fin.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}` });
+    } else await tg("sendMessage", { chat_id: chat, text: "⚠️ échec du téléchargement, réessaie." });
     return;
   }
 
