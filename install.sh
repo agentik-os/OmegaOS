@@ -1966,6 +1966,14 @@ if [[ -n "${TG_BOT_WARN:-}" ]]; then
     warn "$TG_BOT_WARN"
     echo ""
 fi
+# A daemon that was already running predates the binary we just installed —
+# its in-memory code keeps any old bug (e.g. the pre-v0.1.8 rename-session
+# runtime loss) alive until it is restarted. Sessions survive nothing across
+# a daemon restart, so this is a deliberate operator action, never automatic.
+if pgrep -u "$(id -u)" -f "rmux --__internal-daemon" >/dev/null 2>&1; then
+    warn "An rmux daemon from a PREVIOUS install is still running — the updated rmux only takes effect after you restart it. When your current sessions are done: rmux kill-server   (this closes all sessions), then just run 'omega' again."
+    echo ""
+fi
 echo -e "  ${BOLD}Your 5-minute setup — in order:${NC}"
 echo ""
 echo -e "  ${BOLD}0.${NC} Reload your shell:        source $RC_FILE"
