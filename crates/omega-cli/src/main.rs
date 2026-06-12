@@ -1913,12 +1913,20 @@ async fn run_tui_loop(
                 Action::RenameSession { old, new } => {
                     let mgr = SessionManager::connect().await?;
                     match mgr.rename_session(&old, &new).await {
-                        Ok(()) => {
-                            app.status_message = Some(format!("Renamed {} → {}", old, new));
+                        // rename_session sanitizes — select/status must use the
+                        // name actually applied, not the raw modal input, or the
+                        // selection (and every later lookup) misses the session.
+                        Ok(safe) => {
+                            app.status_message = Some(format!("Renamed {} → {}", old, safe));
                             let _ = app.refresh().await;
-                            let _ = app.select_by_name(&new);
+                            let _ = app.select_by_name(&safe);
+                            // The renamed pane must reload NOW — drop the old
+                            // name's preview state instead of letting the
+                            // fail-streak walk to "(session has no pane content)".
+                            let _ = app.refresh_preview().await;
                         }
                         Err(e) => {
+                            omega_core::tuilog::log(format!("rename '{old}' → '{new}' FAILED: {e:#}"));
                             app.status_message = Some(format!("Rename failed: {}", e));
                         }
                     }
@@ -2249,7 +2257,17 @@ async fn run_tui_loop(
         }
 
         if last_refresh.elapsed() > std::time::Duration::from_secs(2) {
-            let _ = app.refresh().await;
+            // Self-healing refresh: a failure here used to be swallowed
+            // silently (`let _ =`), freezing the list on stale state with no
+            // recovery while the daemon kept running fine — the classic "my
+            // sessions disappeared from the interface" report. Log it and
+            // drop the cached daemon connection so the next tick redials.
+            if let Err(e) = app.refresh().await {
+                omega_core::tuilog::log(format!(
+                    "refresh failed: {e:#} — resetting cached daemon connection"
+                ));
+                SessionManager::reset_cached().await;
+            }
             let _ = app.refresh_preview().await;
             last_refresh = std::time::Instant::now();
         }

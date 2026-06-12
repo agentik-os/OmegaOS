@@ -1953,7 +1953,7 @@ impl App {
                     self.preview_session = Some(name.clone());
                     self.preview_fail_streak = 0;
                 }
-                Err(_) => {
+                Err(e) => {
                     // A capture can fail transiently while a pane is in
                     // transition: a claude-login pane swap, a zoom / terminal
                     // resize reflow, or a brief daemon hiccup. Do NOT flash
@@ -1964,6 +1964,12 @@ impl App {
                     self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
                     self.preview_revision = 0; // force fresh recapture next tick
                     if self.preview_fail_streak >= 3 {
+                        // Log only on the transition (not every later tick).
+                        if self.preview_fail_streak == 3 {
+                            omega_core::tuilog::log(format!(
+                                "preview: styled capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
+                            ));
+                        }
                         self.preview_content = String::from("(session has no pane content)");
                         self.preview_styled = None;
                         self.preview_cursor = None;
@@ -1994,11 +2000,16 @@ impl App {
                         self.preview_history_for = Some(name.clone());
                         self.preview_fail_streak = 0;
                     }
-                    Err(_) => {
+                    Err(e) => {
                         // Same sticky-last-good policy as the tail path: a
                         // transient capture error must not clobber the view.
                         self.preview_fail_streak = self.preview_fail_streak.saturating_add(1);
                         if self.preview_fail_streak >= 3 {
+                            if self.preview_fail_streak == 3 {
+                                omega_core::tuilog::log(format!(
+                                    "preview: history capture for '{name}' failed 3 consecutive ticks — showing placeholder; last error: {e:#}"
+                                ));
+                            }
                             self.preview_content = String::from("(session has no pane content)");
                         }
                         self.preview_history_for = None;
@@ -2028,6 +2039,14 @@ impl App {
             .sessions
             .get(self.selected)
             .map(|e| e.session.name.clone());
+
+        // Snapshot for the post-rebuild diff log: when sessions appear in /
+        // vanish from the list, the WHY ends up in ~/.omega/logs/tui.log.
+        let prev_names: std::collections::HashSet<String> = self
+            .sessions
+            .iter()
+            .map(|e| e.session.name.clone())
+            .collect();
 
         // Cached daemon socket — refresh runs every ~2s, so a fresh connect()
         // each time is wasteful. Matches refresh_preview()'s connect_cached().
@@ -2120,6 +2139,28 @@ impl App {
             }
         }
 
+        // View-diff log: record every appearance/disappearance with the list
+        // size, so "the interface lost my session" has a forensic trail.
+        let now_names: std::collections::HashSet<String> = self
+            .sessions
+            .iter()
+            .map(|e| e.session.name.clone())
+            .collect();
+        if now_names != prev_names && !prev_names.is_empty() {
+            let added: Vec<&str> = now_names
+                .difference(&prev_names)
+                .map(String::as_str)
+                .collect();
+            let removed: Vec<&str> = prev_names
+                .difference(&now_names)
+                .map(String::as_str)
+                .collect();
+            omega_core::tuilog::log(format!(
+                "session list changed: +{added:?} -{removed:?} → {} listed",
+                now_names.len()
+            ));
+        }
+
         // F-1: re-anchor the selection by NAME so a list mutation never moves
         // it off the session the user is looking at (or chatting with).
         self.reanchor_selection(selected_name.as_deref());
@@ -2147,6 +2188,11 @@ impl App {
             ) {
                 // Tab-less forced drop: set_list_focus clears the chord state
                 // so an immediate Tab isn't misread as a double-tap (AF-7).
+                omega_core::tuilog::log(format!(
+                    "selected session {:?} vanished while chat-focused — dropped to list ({} listed)",
+                    selected_name.unwrap_or("<none>"),
+                    self.sessions.len()
+                ));
                 self.set_list_focus();
                 // The user may still be typing at the dead session — open the
                 // destructive-hotkey grace so the in-flight keystream can't

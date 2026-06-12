@@ -26,6 +26,7 @@ pub fn sanitize_session_name(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len().min(MAX_SESSION_NAME_LEN));
     let mut last_dash = false;
     for ch in raw.chars() {
+        let ch = fold_accent(ch);
         if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
             out.push(ch);
             last_dash = false;
@@ -43,6 +44,29 @@ pub fn sanitize_session_name(raw: &str) -> String {
         "session".to_string()
     } else {
         trimmed
+    }
+}
+
+/// Operators name sessions in French ("Camélia") — fold the common Latin-1
+/// accents to their ASCII base letter so sanitize yields "Camelia" instead of
+/// the mid-word dash "Cam-lia" the generic collapse would produce.
+fn fold_accent(ch: char) -> char {
+    match ch {
+        'à' | 'â' | 'ä' | 'á' | 'ã' => 'a',
+        'À' | 'Â' | 'Ä' | 'Á' | 'Ã' => 'A',
+        'é' | 'è' | 'ê' | 'ë' => 'e',
+        'É' | 'È' | 'Ê' | 'Ë' => 'E',
+        'î' | 'ï' | 'í' => 'i',
+        'Î' | 'Ï' | 'Í' => 'I',
+        'ô' | 'ö' | 'ó' | 'õ' => 'o',
+        'Ô' | 'Ö' | 'Ó' | 'Õ' => 'O',
+        'ù' | 'û' | 'ü' | 'ú' => 'u',
+        'Ù' | 'Û' | 'Ü' | 'Ú' => 'U',
+        'ç' => 'c',
+        'Ç' => 'C',
+        'ñ' => 'n',
+        'Ñ' => 'N',
+        _ => ch,
     }
 }
 
@@ -162,7 +186,13 @@ pub struct SessionManager {
 // a fresh rmux daemon socket every call (~30-50ms latency per call), which
 // stacked up to >100ms perceived latency per keystroke in interactive
 // passthrough. The cached path serves the same Arc<Rmux> to every caller.
-static CACHED_MANAGER: tokio::sync::OnceCell<SessionManager> = tokio::sync::OnceCell::const_new();
+// RwLock<Option<..>> rather than OnceCell: a OnceCell pins the FIRST
+// connection forever, so once that socket goes bad (daemon restart, protocol
+// desync after a timeout) every caller is stuck on a dead connection with no
+// recovery path short of restarting the whole process. reset_cached() lets
+// the refresh loop self-heal by forcing the next connect_cached() to redial.
+static CACHED_MANAGER: tokio::sync::RwLock<Option<SessionManager>> =
+    tokio::sync::RwLock::const_new(None);
 
 impl SessionManager {
     pub async fn connect() -> Result<Self> {
@@ -181,10 +211,24 @@ impl SessionManager {
     /// subsequent call hands back a clone (Arc<Rmux> share). Use this
     /// in hot paths (per-keystroke forwarding, capture refresh).
     pub async fn connect_cached() -> Result<Self> {
-        CACHED_MANAGER
-            .get_or_try_init(|| async { Self::connect().await })
-            .await
-            .cloned()
+        if let Some(mgr) = CACHED_MANAGER.read().await.as_ref() {
+            return Ok(mgr.clone());
+        }
+        let mut guard = CACHED_MANAGER.write().await;
+        // Double-checked: another task may have connected while we waited.
+        if let Some(mgr) = guard.as_ref() {
+            return Ok(mgr.clone());
+        }
+        let mgr = Self::connect().await?;
+        *guard = Some(mgr.clone());
+        Ok(mgr)
+    }
+
+    /// Drop the process-wide cached connection so the next connect_cached()
+    /// dials the daemon fresh. Call when daemon RPCs start failing — the
+    /// cached socket may be dead (daemon restarted) or desynced.
+    pub async fn reset_cached() {
+        *CACHED_MANAGER.write().await = None;
     }
 
     pub async fn create_session(
@@ -334,24 +378,37 @@ impl SessionManager {
     }
 
     /// Rename a session via the rmux CLI (the SDK doesn't expose rename yet).
-    /// Equivalent to: rmux rename-session -t <old> <new>
-    pub async fn rename_session(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let _ = SessionName::new(new_name)
-            .context("invalid new session name")?;
+    /// Equivalent to: rmux rename-session -t <old> <safe-new>
+    ///
+    /// The new name goes through the SAME sanitize chokepoint as
+    /// create_session: every later lookup (get_session, capture, pane cache)
+    /// sanitizes the name it is given, so letting a raw name (spaces,
+    /// accents) reach rmux here made the renamed session unaddressable by the
+    /// whole TUI — listed, but no preview and no way to enter it. The old
+    /// name is passed through verbatim: it must match the daemon's exact
+    /// current key, even if that key is a dirty name from a pre-fix rename
+    /// (which is also what lets a rename repair such a session).
+    ///
+    /// Returns the sanitized name actually applied — callers must use it for
+    /// selection/status, not the raw input.
+    pub async fn rename_session(&self, old_name: &str, new_name: &str) -> Result<String> {
+        let safe = sanitize_session_name(new_name);
+        let _ = SessionName::new(&safe).context("invalid new session name")?;
         let status = tokio::process::Command::new("rmux")
-            .args(["rename-session", "-t", old_name, new_name])
+            .args(["rename-session", "-t", old_name, &safe])
             .status()
             .await
             .context("spawning rmux rename-session")?;
         if !status.success() {
             anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
         }
+        crate::tuilog::log(format!("rename: '{old_name}' → '{safe}' (raw input: '{new_name}')"));
         // Old name is no longer addressable — drop its cached pane. Also drop
         // any entry under new_name: a stale cache slot left from a prior session
         // of the same name would otherwise point at a now-different daemon pane.
         self.invalidate_pane(old_name).await;
-        self.invalidate_pane(new_name).await;
-        Ok(())
+        self.invalidate_pane(&safe).await;
+        Ok(safe)
     }
 
     pub async fn get_active_pane(&self, name: &str) -> Result<Pane> {
@@ -911,11 +968,21 @@ mod sanitize_tests {
     }
 
     #[test]
+    fn folds_accents_to_ascii() {
+        // French session names keep their letters instead of mid-word dashes
+        // ("Camélia" → "Camelia", not "Cam-lia").
+        assert_eq!(s("Camélia"), "Camelia");
+        assert_eq!(s("Éléonore à l'écran"), "Eleonore-a-l-ecran");
+        assert_eq!(s("Action Moonbase Capital"), "Action-Moonbase-Capital");
+    }
+
+    #[test]
     fn collapses_and_bounds() {
         assert_eq!(s("a   b"), "a-b"); // whitespace run → single dash
         assert_eq!(s("a:::b"), "a-b"); // punctuation run → single dash
         assert_eq!(s("--x--"), "x"); // trim edge dashes
-        assert_eq!(s("é"), "session"); // empty-after-strip → fallback
+        assert_eq!(s("é"), "e"); // accents fold to ASCII (no longer stripped)
+        assert_eq!(s("???"), "session"); // empty-after-strip → fallback
         assert_eq!(s(""), "session");
         assert!(s(&"x".repeat(200)).len() <= MAX_SESSION_NAME_LEN);
     }
