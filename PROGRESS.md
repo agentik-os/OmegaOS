@@ -1,1 +1,1 @@
-You've hit your session limit · resets 4:50am (Europe/Berlin)
+You've hit your weekly limit · resets Jun 16, 12pm (Europe/Berlin)
