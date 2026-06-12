@@ -5,7 +5,7 @@
 > **Esc** reverts to what you had. The list scroll-follows your cursor, so
 > it stays usable even on a 24-row terminal.
 
-The TUI ships 17 palettes. Your choice persists in `~/.omega/config.toml`:
+The TUI ships 23 palettes. Your choice persists in `~/.omega/config.toml`:
 
 ```toml
 [general]
@@ -17,7 +17,7 @@ in the TUI goes through semantic roles, never raw color literals.
 
 ---
 
-## The 17 themes
+## The 23 themes
 
 | Slug | Label | Identity | Best for |
 |---|---|---|---|
@@ -38,14 +38,37 @@ in the TUI goes through semantic roles, never raw color literals.
 | `crimson` | Crimson | `#FF4655` red on `#1A0508` | Dark terminals |
 | `transparent-dark` | Transparent Dark | White-ink grayscale, **no painted background** — your terminal's bg (and its transparency/blur) shows through | Dark / translucent terminals |
 | `transparent-light` | Transparent Light | Black-ink grayscale, **no painted background** | **Light terminals** |
+| `glass-cyan` | Glass Cyan | `#00FFFF` cyan, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
+| `glass-green` | Glass Green | `#00FF41` neon green, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
+| `glass-amber` | Glass Amber | `#FFB000` amber, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
+| `glass-purple` | Glass Purple | `#BD93F9` purple, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
+| `glass-pink` | Glass Pink | `#FF71CE` neon pink, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
+| `glass-blue` | Glass Blue | `#00AAFF` azure, bright inks, **no painted background** | Dark **glassy/translucent** terminals |
 
-Every theme except Omega and the two Transparent variants paints its own
-full-screen background and text color, so the TUI looks the same regardless of
-what your terminal is set to. Omega is deliberately the opposite — see
-[Omega adapts to you](#omega-adapts-to-you) — and the Transparent pair keeps
-your terminal's background (including any transparency/blur) under fixed
-white/black ink; their contrast contract is audited against the background
-they are designed for (black / white).
+Every theme except Omega, the Transparent pair, and the Glass family paints
+its own full-screen background and text color, so the TUI looks the same
+regardless of what your terminal is set to. Omega is deliberately the
+opposite — see [Omega adapts to you](#omega-adapts-to-you).
+
+The bg-less themes split by intent:
+
+- **Transparent Dark / Light** — pure white-ink / black-ink grayscale, the
+  mono option for translucent terminals.
+- **Glass family** — the same "gray chrome + one accent" model as the painted
+  themes, but with no canvas and *brighter* inks: a blurred glass background
+  is lighter than a painted near-black one, so text and the gray hierarchy
+  carry extra luminance to stay readable through the transparency.
+
+All bg-less themes keep their contrast contract: they are audited against the
+background they are designed for (black for Transparent Dark and every
+glass-*, white for Transparent Light) — and since a real glass background can
+only be *lighter* than pure black, the bright inks only gain contrast in
+practice.
+
+> Tip: the Glass family pairs with **Settings → Theme → "Theme background"**.
+> That toggle strips the painted background from ANY theme, but its grays are
+> tuned for a painted canvas; the glass-* palettes are tuned for transparency
+> from the start.
 
 ---
 

@@ -409,6 +409,59 @@ const CRIMSON: Theme = Theme {
     )
 };
 
+/// Glass family — the mono template with NO painted background, tuned for
+/// translucent / "glassy" terminals over a dark desktop (blur, acrylic, a
+/// background image). Same hierarchy as `mono`, but every ink is brighter:
+/// a blurred glass background is LIGHTER than a painted near-black canvas,
+/// so text/dim/dim2 carry extra luminance to stay readable through the
+/// transparency. Audited against pure black in the contrast tests — the
+/// darkest the glass can ever be; any lighter blur only gains contrast on
+/// these bright inks. (For mono inks without an accent, see the existing
+/// Transparent Dark / Transparent Light pair.)
+const fn glass(accent: Color) -> Theme {
+    Theme {
+        bg: None,
+        text: Color::Rgb(235, 235, 235),
+        ..mk(
+            accent,
+            lighten(accent),           // accent2 — separators / selected-field bg
+            accent,                    // success — active states wear the accent
+            Color::Rgb(255, 110, 110), // error — alert red
+            Color::Rgb(255, 165, 0),   // warn — blocked/attention badge
+            Color::Rgb(190, 190, 190), // info
+            lighten(accent),           // special
+            Color::Rgb(150, 150, 150), // dim — brighter than painted-bg themes
+            Color::Rgb(115, 115, 115), // dim2
+            Color::White,              // bright
+            Color::Black,              // sel_fg
+        )
+    }
+}
+
+/// Glass Cyan — transparent + electric cyan inks.
+const GLASS_CYAN: Theme = glass(Color::Rgb(0, 255, 255));
+
+/// Glass Green — transparent + neon green inks.
+const GLASS_GREEN: Theme = glass(Color::Rgb(0, 255, 65));
+
+/// Glass Amber — transparent + amber inks. Like Amber/Gruvbox, the orange
+/// accent collides with the mono warn orange — warn moves to the alert-red
+/// family (glyphs disambiguate warn from error within the Alerte class).
+const GLASS_AMBER: Theme = Theme {
+    warn: Color::Rgb(255, 90, 90),
+    warn_hi: Color::Rgb(255, 90, 90),
+    ..glass(Color::Rgb(255, 176, 0))
+};
+
+/// Glass Purple — transparent + Dracula-purple inks.
+const GLASS_PURPLE: Theme = glass(Color::Rgb(189, 147, 249));
+
+/// Glass Pink — transparent + neon pink inks.
+const GLASS_PINK: Theme = glass(Color::Rgb(255, 113, 206));
+
+/// Glass Blue — transparent + azure inks.
+const GLASS_BLUE: Theme = glass(Color::Rgb(0, 170, 255));
+
 // ── Registry ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -431,6 +484,12 @@ pub enum ThemeId {
     Crimson = 14,
     TransparentDark = 15,
     TransparentLight = 16,
+    GlassCyan = 17,
+    GlassGreen = 18,
+    GlassAmber = 19,
+    GlassPurple = 20,
+    GlassPink = 21,
+    GlassBlue = 22,
 }
 
 impl ThemeId {
@@ -453,6 +512,12 @@ impl ThemeId {
             ThemeId::Crimson,
             ThemeId::TransparentDark,
             ThemeId::TransparentLight,
+            ThemeId::GlassCyan,
+            ThemeId::GlassGreen,
+            ThemeId::GlassAmber,
+            ThemeId::GlassPurple,
+            ThemeId::GlassPink,
+            ThemeId::GlassBlue,
         ]
     }
 
@@ -476,6 +541,12 @@ impl ThemeId {
             ThemeId::Crimson => "crimson",
             ThemeId::TransparentDark => "transparent-dark",
             ThemeId::TransparentLight => "transparent-light",
+            ThemeId::GlassCyan => "glass-cyan",
+            ThemeId::GlassGreen => "glass-green",
+            ThemeId::GlassAmber => "glass-amber",
+            ThemeId::GlassPurple => "glass-purple",
+            ThemeId::GlassPink => "glass-pink",
+            ThemeId::GlassBlue => "glass-blue",
         }
     }
 
@@ -498,6 +569,12 @@ impl ThemeId {
             ThemeId::Crimson => "Crimson",
             ThemeId::TransparentDark => "Transparent Dark",
             ThemeId::TransparentLight => "Transparent Light",
+            ThemeId::GlassCyan => "Glass Cyan",
+            ThemeId::GlassGreen => "Glass Green",
+            ThemeId::GlassAmber => "Glass Amber",
+            ThemeId::GlassPurple => "Glass Purple",
+            ThemeId::GlassPink => "Glass Pink",
+            ThemeId::GlassBlue => "Glass Blue",
         }
     }
 
@@ -520,6 +597,12 @@ impl ThemeId {
             ThemeId::Crimson => "Mono chrome + alert red",
             ThemeId::TransparentDark => "No painted bg, white ink: the terminal transparency shows",
             ThemeId::TransparentLight => "No painted bg, black ink for light terminals",
+            ThemeId::GlassCyan => "No painted bg + cyan accent — bright inks for glassy terminals",
+            ThemeId::GlassGreen => "No painted bg + neon green — bright inks for glassy terminals",
+            ThemeId::GlassAmber => "No painted bg + amber — bright inks for glassy terminals",
+            ThemeId::GlassPurple => "No painted bg + purple — bright inks for glassy terminals",
+            ThemeId::GlassPink => "No painted bg + neon pink — bright inks for glassy terminals",
+            ThemeId::GlassBlue => "No painted bg + azure — bright inks for glassy terminals",
         }
     }
 
@@ -542,6 +625,12 @@ impl ThemeId {
             ThemeId::Crimson => &CRIMSON,
             ThemeId::TransparentDark => &TRANSPARENT_DARK,
             ThemeId::TransparentLight => &TRANSPARENT_LIGHT,
+            ThemeId::GlassCyan => &GLASS_CYAN,
+            ThemeId::GlassGreen => &GLASS_GREEN,
+            ThemeId::GlassAmber => &GLASS_AMBER,
+            ThemeId::GlassPurple => &GLASS_PURPLE,
+            ThemeId::GlassPink => &GLASS_PINK,
+            ThemeId::GlassBlue => &GLASS_BLUE,
         }
     }
 
@@ -663,8 +752,8 @@ mod tests {
     }
 
     #[test]
-    fn seventeen_themes() {
-        assert_eq!(ThemeId::all().len(), 17);
+    fn twenty_three_themes() {
+        assert_eq!(ThemeId::all().len(), 23);
     }
 
     // ── WCAG 2.x contrast contract ──────────────────────────────────────────
@@ -748,6 +837,15 @@ mod tests {
                     ThemeId::Omega => continue,
                     ThemeId::TransparentDark => Color::Rgb(0, 0, 0),
                     ThemeId::TransparentLight => Color::Rgb(255, 255, 255),
+                    // Glass family: designed for dark translucent terminals —
+                    // audited against pure black, the darkest the glass can
+                    // be; a lighter blur only gains contrast on bright inks.
+                    ThemeId::GlassCyan
+                    | ThemeId::GlassGreen
+                    | ThemeId::GlassAmber
+                    | ThemeId::GlassPurple
+                    | ThemeId::GlassPink
+                    | ThemeId::GlassBlue => Color::Rgb(0, 0, 0),
                     other => panic!("{other:?}: bg-less theme needs an assumed audit bg"),
                 },
             };

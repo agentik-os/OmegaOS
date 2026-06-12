@@ -19,8 +19,11 @@
 # TUI color theme — pick interactively in the TUI (Settings → Theme, with live
 # preview) or set the slug here. One of: omega (default), matrix, terminal,
 # amber, noir, paper, monogram, dracula, nord, gruvbox, solarized, tokyo-night,
-# synthwave, ocean, crimson, transparent-dark, transparent-light. Unknown slugs
-# fall back to omega.
+# synthwave, ocean, crimson, transparent-dark, transparent-light, glass-cyan,
+# glass-green, glass-amber, glass-purple, glass-pink, glass-blue. The glass-*
+# family paints NO background (your terminal's transparency/blur shows) with
+# bright inks tuned for dark translucent terminals. Unknown slugs fall back
+# to omega.
 # theme = "omega"
 
 # Paint the theme's full-screen background. Set to false to keep your
