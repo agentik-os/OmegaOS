@@ -179,6 +179,10 @@ def synth_elevenlabs(text: str, voice: str = "") -> bytes:
     cfg = elevenlabs_config()
     if voice:
         cfg["voice_id"] = voice
+    # Pronunciation fixes for the voice (the name is written "Agentik" but spoken
+    # "Ajentik" — soft g). Applied to the TTS text only, never the written brand.
+    import re as _re
+    text = _re.sub(r"\bAgentik\b", "Ajentik", text)
     body = {"text": text, "model_id": cfg["model_id"]}
     # Optional voice_settings passthrough from elevenlabs.json — e.g.
     # {"speed": 1.05, "stability": 0.5} to tune pace/character per machine.
