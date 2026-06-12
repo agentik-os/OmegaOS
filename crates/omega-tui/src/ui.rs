@@ -189,14 +189,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     // the active theme's canvas (None = keep the terminal's own background).
     // This is what makes themes visually distinct at a glance -- accent
     // colors alone read as near-identical between palettes.
-    if let Some(bg) = th::bg() {
-        // fg too: spans rendered without an explicit fg inherit this themed
-        // text color instead of the terminal default (which may be unreadable
-        // on the painted background -- e.g. white-on-white for Paper).
-        frame.render_widget(
-            Block::default().style(Style::default().fg(th::text()).bg(bg)),
-            frame.area(),
-        );
+    // Skippable via Settings → Theme → "Theme background": OFF keeps the
+    // terminal's own background (transparency / background image) visible.
+    if app.config.theme_background {
+        if let Some(bg) = th::bg() {
+            // fg too: spans rendered without an explicit fg inherit this themed
+            // text color instead of the terminal default (which may be unreadable
+            // on the painted background -- e.g. white-on-white for Paper).
+            frame.render_widget(
+                Block::default().style(Style::default().fg(th::text()).bg(bg)),
+                frame.area(),
+            );
+        }
     }
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -382,9 +386,19 @@ fn draw_new_project_picker(frame: &mut Frame, app: &App) {
             .borders(Borders::ALL)
             .title(title)
             .border_style(Style::default().fg(th::accent()))
-            .style(Style::default().fg(th::text()).bg(th::bg().unwrap_or(Color::Reset))),
+            .style(Style::default().fg(th::text()).bg(modal_bg(app))),
     );
     frame.render_widget(list, area);
+}
+
+/// Modal canvas color: the theme background, unless the user turned theme
+/// backgrounds off (Settings → Theme) — then fall back to the terminal's own.
+fn modal_bg(app: &App) -> Color {
+    if app.config.theme_background {
+        th::bg().unwrap_or(Color::Reset)
+    } else {
+        Color::Reset
+    }
 }
 
 /// Arrow-key overlay to pick a model from a fixed list (NO typing). Mirrors
@@ -452,7 +466,7 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
             .borders(Borders::ALL)
             .title(title)
             .border_style(Style::default().fg(th::accent()))
-            .style(Style::default().fg(th::text()).bg(th::bg().unwrap_or(Color::Reset))),
+            .style(Style::default().fg(th::text()).bg(modal_bg(app))),
     );
     // Scroll-follow: stateful render keeps the selected row visible when the
     // list is taller than the modal (15 themes vs ~10 visible rows at 80x24 —

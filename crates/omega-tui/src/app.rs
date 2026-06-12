@@ -578,6 +578,12 @@ pub fn fields_for_section(
                 options,
                 current_index,
             });
+            out.push(SettingsField::Toggle {
+                label: "Theme background (OFF = keep the terminal's own background)"
+                    .to_string(),
+                config_key: "general.theme_background".to_string(),
+                current: config.theme_background,
+            });
         }
         SettingsSection::Install => {
             // Per-agent install / uninstall buttons

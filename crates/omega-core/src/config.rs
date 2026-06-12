@@ -36,6 +36,12 @@ pub struct OmegaConfig {
     /// default "omega" palette at load time.
     #[serde(default = "default_theme")]
     pub theme: String,
+    /// Paint the active theme's background color across the whole TUI frame
+    /// (Settings → Theme). Default ON. When OFF the terminal's own background
+    /// shows through (transparency, background images, user terminal colors),
+    /// while accent/text colors still follow the theme.
+    #[serde(default = "default_theme_background")]
+    pub theme_background: bool,
     /// IANA timezone for the on-screen clock (e.g. "Europe/Paris", "America/New_York").
     /// Persisted timestamps stay UTC — this localizes ONLY the displayed clock,
     /// because a headless VPS runs in UTC and the operator usually does not.
@@ -65,6 +71,10 @@ fn default_session_shortcuts() -> bool {
 
 fn default_theme() -> String {
     "omega".to_string()
+}
+
+fn default_theme_background() -> bool {
+    true
 }
 
 /// Auto-detect the user's project root: the first existing common work
@@ -161,6 +171,7 @@ impl Default for OmegaConfig {
             auto_naming: default_auto_naming(),
             session_shortcuts: default_session_shortcuts(),
             theme: default_theme(),
+            theme_background: default_theme_background(),
             timezone: None,
             telegram: None,
         }
@@ -370,6 +381,20 @@ mod tests {
             .expect("config/default.toml must deserialize into OmegaConfig");
         assert_eq!(cfg.agent_command, "claude");
         assert_eq!(cfg.default_model, "opus");
+    }
+
+    #[test]
+    fn theme_background_defaults_on_and_round_trips() {
+        // Pre-existing configs (no theme_background key) must keep painting the
+        // background — default ON, not serde's bool default (false).
+        let cfg: OmegaConfig = toml::from_str("").unwrap();
+        assert!(cfg.theme_background);
+        // An explicit OFF survives a save/load round-trip.
+        let mut cfg = OmegaConfig::default();
+        cfg.theme_background = false;
+        let reloaded: OmegaConfig =
+            toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        assert!(!reloaded.theme_background);
     }
 
     #[test]

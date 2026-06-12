@@ -916,6 +916,11 @@ fn toggle_bool_config(key: &str) -> Result<()> {
             c.session_shortcuts = !c.session_shortcuts;
             save_omega_config(&c)?;
         }
+        "general.theme_background" => {
+            let mut c = OmegaConfig::load().unwrap_or_default();
+            c.theme_background = !c.theme_background;
+            save_omega_config(&c)?;
+        }
         "claude.dangerously_skip_permissions" => {
             let mut p = omega_core::providers::ProvidersConfig::load();
             p.claude.dangerously_skip_permissions = !p.claude.dangerously_skip_permissions;
