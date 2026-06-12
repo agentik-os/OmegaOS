@@ -232,7 +232,7 @@ install_mosh_optional() {
     elif command -v apk     >/dev/null 2>&1; then omega_sudo apk add --no-cache mosh || info "mosh skipped (sudo unavailable)"
     fi
     command -v mosh-server >/dev/null 2>&1 \
-        && ok "mosh installed — connect with 'mosh <host> -- rmux attach' for lag-free typing/streaming" \
+        && ok "mosh installed — connect with 'mosh <host> -- rmux attach' for lag-free typing/streaming (NOTE: mosh does not sync mouse-mode, so wheel-scroll/click/drag are dead over mosh — use plain SSH when you want the mouse; keyboard scroll PgUp/PgDn & Alt+Up/Down works over both)" \
         || info "mosh not installed (optional) — plain SSH still works; install mosh for smoother remote typing"
     return 0
 }

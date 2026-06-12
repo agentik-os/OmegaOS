@@ -88,6 +88,18 @@ Five tabs (cycle with arrow keys; `Tab` toggles focus between panels):
 | **Settings** | Theme gallery (live preview — see [docs/THEMES.md](docs/THEMES.md)), provider/model config, API keys, agent installs, the Monitor group (billing, accounts, bot status, provisioning keys wizard). |
 | **Help** | Keybindings and usage hints. |
 
+**Scrolling & mouse — know your transport.** Over **plain SSH** the mouse works
+end-to-end: wheel scrolls the session mirror (and the pane scrollback in a
+direct `rmux attach`), click focuses, and drag-selecting text in the mirror
+copies it to your local clipboard via OSC 52. Over **mosh** the mouse is dead
+by design — mosh does not replicate the mouse-mode handshake to your terminal
+([mosh#101](https://github.com/mobile-shell/mosh/issues/101)) — so keep a plain
+SSH profile for mouse-heavy work and use the keyboard over mosh: `PgUp`/`PgDn`
+(full-page mirror scroll, chat focus included), `Home`/`End` (top/tail),
+`Alt+↑/↓` (line scroll — also works attached directly to a session). Claude
+sessions scroll deep because OmegaOS runs them on the normal screen
+(`CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1`) with a 500k-line rmux history.
+
 ### 4b. The CLI — the ~15 you'll use daily
 
 ```bash
