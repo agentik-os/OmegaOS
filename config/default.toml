@@ -23,6 +23,12 @@
 # fall back to omega.
 # theme = "omega"
 
+# Paint the theme's full-screen background. Set to false to keep your
+# terminal's own background (transparency, background image, user colors)
+# while accent/text colors still follow the theme. Also toggleable in the
+# TUI (Settings → Theme).
+# theme_background = true
+
 # On-screen clock timezone (IANA name). A headless VPS usually runs in UTC, so
 # the status-bar clock would otherwise show UTC instead of your wall time. This
 # localizes ONLY the displayed clock — logs/state stay UTC. DST is automatic.
