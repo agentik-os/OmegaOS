@@ -47,3 +47,6 @@ NOT talk ». Réf : reel (actions+VO) = bon ; UGC v1 (parlait) = corrigé en bou
 - **Lip-sync (talking-head)** : HeyGen ✅ TESTÉ — upload talking_photo + /v2/video/generate (clé au coffre + Composio ACTIVE) — pour quand Nova doit VRAIMENT parler face caméra, lèvres synchro. Sinon : action + voix off, bouche fermée.
 - **Voix** : ElevenLabs `PB6BdkFkZLbI39GHdnbQ` (Nova, EN native London/Paris, FR aussi). **Musique** : ElevenLabs Music darkwave/synthwave 90s.
 - Viser le CINÉMATOGRAPHIQUE : lumière dramatique, cadrage soigné, "award-winning", beau, premium.
+
+## 🎛️ Catalogue complet des modèles
+Toutes les capacités image/vidéo/audio/lip-sync/3D pilotables : `~/.omega/branding/HIGGSFIELD-CAPABILITIES.md`. Le studio Nova, la marketing machine et NOVA OS peuvent TOUT utiliser (image gpt_image_2/seedream/flux/recraft, vidéo seedance/kling/wan, lip-sync omnihuman, upscale topaz, virality predictor brain_activity…). Non-Google, cinématographique.
