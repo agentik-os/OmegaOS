@@ -36,11 +36,8 @@
 | `draw_to_video` | anime un croquis | créatif |
 | `veo3_1` / `veo3` | Google | **ÉVITER (Google)** |
 
-## 🗣️ LIP-SYNC / TALKING (Nova qui parle vraiment, lèvres synchro)
-- **`omnihuman`** — audio-driven (image + `--audio` de SA voix ElevenLabs → vidéo lip-syncée). **La bonne piste**, bien mieux que HeyGen sur notre style comic.
-- **`soul_cast`** — vidéo de personnage cohérent (Soul), accepte `--audio`.
-- `kling3_0` / `wan2_7` acceptent aussi `--audio` (lip-sync natif).
-- **HeyGen = DÉPRÉCIÉ** (moche sur le comic). Lip-sync = **omnihuman** (+ --audio voix ElevenLabs Nova), point.
+## 🗣️ VIDÉO PARLÉE (décision opérateur 2026-06-13 — DÉFINITIF)
+**HeyGen = BANNI** (rendu nul sur le comic). Pas de lip-sync talking-head : Higgsfield ne fait pas d'audio-driven sur voix externe. Format unique pour TOUTE vidéo où Nova "parle" : actions/b-roll **bouche fermée** + sa **voix off ElevenLabs** par-dessus = rendu cinéma.
 
 ## 🎞️ VIDÉO — édition / amélioration
 `topaz_video` / `video_upscale` (HD/4K) · `video_deflicker` · `reframe` (recadrage format réseaux) ·
