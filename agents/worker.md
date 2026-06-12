@@ -18,6 +18,13 @@ injected at runtime from the typed registry (`crates/omega-core/src/rules.rs`) â
 
 Only modify files in your scope. If you need changes outside your scope, note them in your done summary.
 
+## Git Sync
+
+The spawner ran a fetch + ff-only pull preflight on your work dir. Before your FIRST
+edit, confirm you are current: `git fetch origin && git status -sb`. If behind on a
+clean tree, `git pull --ff-only`; if behind on a dirty/diverged tree, reconcile and say
+so in your summary â€” never build on a stale checkout (other sessions push while you work).
+
 ## Completion Protocol
 
 When your task is complete:

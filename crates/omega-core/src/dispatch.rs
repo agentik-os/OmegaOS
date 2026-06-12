@@ -349,6 +349,25 @@ impl Dispatcher {
         // Append complexity hint
         prompt.push_str(&format!("\n## Complexity: {:?}\n", decision.complexity));
 
+        // GIT SYNC PREFLIGHT (pull-before-work doctrine, runtime-enforced):
+        // every mission starts from the CURRENT origin state — the dispatcher
+        // fetches + ff-only-pulls the project dir (clean tree only; dirty or
+        // diverged is surfaced, never touched) and tells the oracle the
+        // outcome so it never assumes its checkout is fresh. (blocking git
+        // subprocesses → spawn_blocking, same pattern as amplify above)
+        let git_sync = {
+            let wp = work_path.clone();
+            tokio::task::spawn_blocking(move || crate::git_sync::pull_preflight(&wp))
+                .await
+                .unwrap_or(crate::git_sync::GitSyncOutcome::FetchFailed)
+        };
+        tracing::info!(project = %project, outcome = %git_sync.describe(), "dispatch git-sync preflight");
+        prompt.push_str(&format!(
+            "\n## Git Sync (runtime preflight)\n{}{}\nRe-run `git fetch origin && git pull --ff-only` (clean tree only) before EVERY merge, ship, or deploy phase — other sessions push while you work.\n",
+            git_sync.describe(),
+            git_sync.warning().map(|w| format!("\n{w}")).unwrap_or_default()
+        ));
+
         // THE FUNNEL — every dispatched agent (any LLM backend) MUST receive
         // its role-scoped Laws + operational rules via this single call.
         // This closes the gap where CLI/RPC-dispatched oracles previously

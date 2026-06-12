@@ -89,6 +89,10 @@ git fetch origin && git status --porcelain
   force.
 - If dirty (uncommitted/untracked changes): note them in your plan; never blow them
   away. Work around or fold them in. A pro never starts on a stale or unclean tree.
+- The dispatcher already ran this preflight for you (see "Git Sync (runtime preflight)"
+  in this brief) — but a mission lasts hours and other sessions push meanwhile, so
+  RE-RUN the fetch+pull (clean tree, ff-only) before EVERY merge, ship, or deploy
+  phase. Never overwrite work pushed by another session because your checkout went stale.
 
 **1 — ALWAYS PLAN. Build a TODO list first (TaskCreate), one entry per distinct
 requirement** — a single prompt often holds several. Never execute before the plan
@@ -191,6 +195,14 @@ in section 05 with absolute `file://` paths. If a render of the report fails, fi
 workflow/worker did, what was verified, what shipped, what remains>"`. This writes
 `~/.omega/state/oracle-{{SESSION}}.done.json` and auto-notifies the operator on
 Telegram. Be honest: `pending`/`failed`/`blocked` with `pending_actions` when not 100%.
+
+**6c — YOUR WORKERS CLOSE WITH YOU (zombie guard, runtime-enforced).** An oracle never
+leaves worker sessions behind. `omega done … done_clean` **REFUSES** while any of your
+workers is still running — wait for their done signals or close them explicitly
+(`omega kill <worker>`) first. On an accepted clean done, your FINISHED workers'
+sessions are closed automatically with yours (and patrol cascade-reaps any leftovers).
+Account for every worker you spawned before signaling done; a worker still "working"
+at report time means your mission is NOT done.
 
 Flow: **git sync → plan → (self | subagents | workflows | workers+workflows) → branch
 per worker → verify 100% → OMG audit on code → merge → write report → notify.**

@@ -2715,10 +2715,27 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
                      OMEGA_TG_TOKEN (keeps the token out of the process list) and pass only <chat_id>"
                 ),
             };
+            // The Bun bot REFUSES to serve with an empty allow-list (it controls
+            // the whole machine — omega-tg-bot.ts hard-exits on bot_token set +
+            // allow_user_ids empty). A private chat id IS the operator's user id,
+            // so default the allow-list to it instead of writing a config the
+            // bot will reject; only group ids (negative) can't be defaulted.
+            let allow_user_ids = if user_id.is_empty() && chat_id > 0 {
+                println!("[i] --user-id not given — allow-list defaulted to your chat id ({chat_id})");
+                vec![chat_id]
+            } else {
+                user_id
+            };
+            if allow_user_ids.is_empty() {
+                println!(
+                    "[!] No sender allow-list (group chat id {chat_id}): the bot will REFUSE to \
+                     serve until you re-run setup with --user-id <your_id> (it controls this machine)"
+                );
+            }
             let cfg = OmegaTelegramConfig {
                 bot_token,
                 chat_id,
-                allow_user_ids: user_id,
+                allow_user_ids,
                 relay_session,
                 label,
                 enabled: true,
@@ -2731,12 +2748,27 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             println!("  Relay session: {}", cfg.relay_session);
             println!("  Chat ID:       {}", cfg.chat_id);
             if cfg.allow_user_ids.is_empty() {
-                println!("  Sender filter: only chat_id={} accepted", cfg.chat_id);
-                println!("  [!] For shared chats, restrict further with --user-id");
+                println!("  Sender filter: NONE — bot refuses to serve until --user-id is set");
             } else {
                 println!("  Sender filter: only user_ids {:?} accepted", cfg.allow_user_ids);
             }
-            println!("\nRun the bot with:  omega telegram run");
+            // One poller per token (Telegram 409): when the installed service is
+            // already polling, it re-reads telegram.toml within ~5s — telling the
+            // user to ALSO `omega telegram run` would start a conflicting second
+            // poller. Only suggest the foreground run when no service is up.
+            match omega_core::service::tg_bot_status() {
+                Some(s) if s == "active" => {
+                    println!("\nThe bot service is running — it picks up this config within ~5s. Just message your bot.");
+                }
+                Some(other) => {
+                    println!(
+                        "\nBot service installed but {} — start it:  {}",
+                        other,
+                        omega_core::service::tg_bot_start_hint()
+                    );
+                }
+                None => println!("\nRun the bot with:  omega telegram run"),
+            }
             Ok(())
         }
         TelegramAction::Status => {
@@ -3541,6 +3573,16 @@ async fn cmd_spawn_worker(
         let _ = std::fs::remove_file(config.state_dir.join(marker));
     }
 
+    // GIT SYNC PREFLIGHT (pull-before-work doctrine): make sure the worker —
+    // and the worktree branched off this HEAD below — starts from the CURRENT
+    // origin state, not a stale checkout that silently rebuilds or overwrites
+    // what cloud sessions already pushed. ff-only on a clean tree; a dirty or
+    // diverged dir is never touched, the drift is surfaced to the worker
+    // prompt instead.
+    let git_sync = omega_core::git_sync::pull_preflight(std::path::Path::new(&work_dir));
+    eprintln!("[git-sync] {}: {}", work_dir, git_sync.describe());
+    let git_sync_warning = git_sync.warning();
+
     // --worktree: give this worker its OWN git worktree (independent HEAD + working
     // tree) so concurrent workers never race on the shared checkout. node_modules/.env
     // are symlinked in by omega-git-branch so builds/tests still work. The oracle later
@@ -3578,6 +3620,13 @@ async fn cmd_spawn_worker(
     // like Dispatcher::dispatch_worker_with_context. Without this, a worker
     // spawned via the CLI (the live path oracles use) gets NO doctrine.
     let mut full_prompt = prompt.to_string();
+    // Surface an unresolved git drift to the worker so it reconciles BEFORE
+    // editing instead of working blind on a stale/diverged checkout.
+    if let Some(warning) = &git_sync_warning {
+        full_prompt.push_str(&format!(
+            "\n\n## GIT SYNC\n{warning}\nReconcile (fetch/pull --ff-only on a clean tree) before touching any file.\n"
+        ));
+    }
     let agent_ctx = omega_core::rules::agent_context_block(omega_core::rules::RuleScope::Worker);
     if !agent_ctx.is_empty() {
         full_prompt.push_str("\n\n");
@@ -4427,6 +4476,36 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 }
             }
         }
+        // WORKER CLOSE-GATE + CASCADE (zombie-worker fix, dentistrygpt incident):
+        // an oracle may NOT close itself while its workers still run, and a
+        // clean close must take its FINISHED workers' sessions down with it —
+        // until now the auto-close killed only the oracle pane, leaving every
+        // worker session alive forever (no signal → no reaper).
+        let mut cascade_workers: Vec<String> = Vec::new();
+        if final_status == omega_core::done::DoneStatus::DoneClean {
+            if let Ok(live) = async {
+                SessionManager::connect().await?.list_sessions().await
+            }
+            .await
+            {
+                let lw = omega_core::oracle_lifecycle::live_workers_of_oracle(
+                    &config.state_dir,
+                    session,
+                    &live,
+                );
+                if !lw.running.is_empty() {
+                    anyhow::bail!(
+                        "done_clean REFUSED — {} worker(s) of this oracle still running: {}.\n\
+                         An oracle cannot close while its workers run (zombie-worker guard).\n\
+                         Wait for their done signals (omega workers), or close them explicitly \
+                         (`omega kill <worker>`), then re-run `omega done`.",
+                        lw.running.len(),
+                        lw.running.join(", ")
+                    );
+                }
+                cascade_workers = lw.terminal;
+            }
+        }
         let mut osignal =
             omega_core::done::OracleDoneSignal::new(key, project, final_status, summary);
         osignal.summary = summary.to_string();
@@ -4479,15 +4558,25 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // notifier cron before the pane is killed. (Non-clean statuses stay open so the
         // operator can inspect a failed/blocked/pending oracle.)
         if final_status == omega_core::done::DoneStatus::DoneClean {
+            // The finished workers die with their oracle — release their scope
+            // claims now (their sessions are closed below) so no file lock leaks.
+            for w in &cascade_workers {
+                let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, w);
+            }
             if let Ok(exe) = std::env::current_exe() {
                 // Session names are sanitized to [A-Za-z0-9._-] (no shell metachars),
-                // so this format is injection-safe.
+                // so this format is injection-safe. Workers first, oracle last —
+                // the oracle pane is the one running THIS command.
+                let exe = exe.to_string_lossy();
+                let worker_kills: String = cascade_workers
+                    .iter()
+                    .map(|w| format!("'{}' kill '{}' >/dev/null 2>&1; ", exe, w))
+                    .collect();
                 let _ = std::process::Command::new("bash")
                     .arg("-c")
                     .arg(format!(
-                        "sleep 3; '{}' kill '{}' >/dev/null 2>&1",
-                        exe.to_string_lossy(),
-                        session
+                        "sleep 3; {}'{}' kill '{}' >/dev/null 2>&1",
+                        worker_kills, exe, session
                     ))
                     .spawn();
             }

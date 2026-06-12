@@ -28,6 +28,13 @@ const WORKER_CLOSE_GRACE_SECS: i64 = 45;
 // reap is the backstop for a missed close, not the primary path.
 const ORACLE_CLOSE_GRACE_SECS: i64 = 120;
 
+// Orphan-worker sweep: a worker whose governing oracle is GONE (session dead)
+// while that oracle's mission is declared done_clean is a zombie — nothing
+// will ever consume its output. Generous grace after the oracle's finished_at
+// so a same-name re-dispatch (which clears the stale signal first) can never
+// race the sweep.
+const ORPHAN_WORKER_GRACE_SECS: i64 = 300;
+
 #[derive(Debug)]
 pub struct PatrolReport {
     pub total_sessions: usize,
@@ -722,6 +729,14 @@ impl Patrol {
         // ── Oracle patrol: check done signals + registry cleanup ──
         self.patrol_oracles(&mgr, &sessions, &mut report).await?;
 
+        // ── Orphan-worker sweep: workers whose done_clean oracle is gone ──
+        // The cascade close above only fires while the oracle SESSION is still
+        // alive to be reaped. When the oracle already closed (inline auto-close,
+        // manual kill, crash-after-done) its leftover workers had NO reaper at
+        // all — the 7-zombie dentistrygpt incident. Sweep them here.
+        self.sweep_orphan_workers(&mgr, &sessions, &oracle_states, &mut report)
+            .await?;
+
         // ── Oracle recovery: resurrect crashed-mid-mission oracles (guarded) ──
         let _ = self.resurrect_dead_oracles(&mut report).await;
 
@@ -745,7 +760,7 @@ impl Patrol {
 
     /// Patrol oracle sessions: check for done oracles, update registry, handle close.
     async fn patrol_oracles(
-        &self,
+        &mut self,
         mgr: &SessionManager,
         sessions: &[crate::session::OmegaSession],
         report: &mut PatrolReport,
@@ -873,6 +888,38 @@ impl Patrol {
                     // honest-done oracle never lingers as a zombie.
                     let closeable_secs = (Utc::now() - done.finished_at).num_seconds();
                     if should_reap_oracle(done.is_closeable(), closeable_secs) {
+                        // ── Cascade close — an oracle NEVER leaves orphan
+                        // workers behind. The mission is declared done_clean
+                        // and the grace elapsed: any worker session still
+                        // alive is a zombie by definition (nothing will ever
+                        // consume its output), so close them all WITH the
+                        // oracle. The `omega done` close-gate refuses
+                        // done_clean while a worker still runs, so a running
+                        // worker here means an old-binary or hand-written
+                        // signal — reaped too, loudly.
+                        let lw = crate::oracle_lifecycle::live_workers_of_oracle(
+                            &self.config.state_dir,
+                            &session.name,
+                            sessions,
+                        );
+                        for w in lw.all() {
+                            let _ = mgr.kill_session(&w).await;
+                            let _ = ScopeClaim::release(&self.config.state_dir, &w);
+                            self.stall_detector.forget(&w);
+                            WorkerCloseMarker::remove(&self.config.state_dir, &w);
+                            remove_inbox_event_markers(&self.config.state_dir, &w);
+                            let was_running = lw.running.contains(&w);
+                            tracing::info!(
+                                oracle = %session.name, worker = %w, was_running,
+                                "Cascade close: worker closed with its done_clean oracle"
+                            );
+                            report.actions_taken.push(format!(
+                                "Cascade-closed worker {} with done_clean oracle {}{}",
+                                w,
+                                session.name,
+                                if was_running { " (was still running!)" } else { "" }
+                            ));
+                        }
                         let _ = mgr.kill_session(&session.name).await;
                         // Release any scope claim the oracle still held —
                         // parity with the worker reap above (a gate-pending
@@ -915,6 +962,87 @@ impl Patrol {
                 reg.mark_status(name, *status);
             }
         });
+        Ok(())
+    }
+
+    /// Reap live WORKER sessions whose governing oracle is dead and whose
+    /// mission is over (a closeable oracle done-signal past the grace).
+    ///
+    /// Parent resolution mirrors `live_workers_of_oracle`: the OracleState
+    /// registry is authoritative; unregistered workers fall back to their
+    /// project name. The fallback is vetoed while ANY oracle session of that
+    /// project is live — a running mission may legitimately own them — and a
+    /// worker with no signal to date is left alone (resurrect handles a
+    /// crashed-mid-mission oracle; a signal-less orphan is its evidence).
+    async fn sweep_orphan_workers(
+        &mut self,
+        mgr: &SessionManager,
+        sessions: &[crate::session::OmegaSession],
+        oracle_states: &[crate::oracle_lifecycle::OracleState],
+        report: &mut PatrolReport,
+    ) -> Result<()> {
+        let live_oracles: std::collections::HashSet<&str> = sessions
+            .iter()
+            .filter(|s| s.role == SessionRole::Oracle)
+            .map(|s| s.name.as_str())
+            .collect();
+        let live_oracle_projects: std::collections::HashSet<&str> = sessions
+            .iter()
+            .filter(|s| s.role == SessionRole::Oracle)
+            .filter_map(|s| s.project.as_deref())
+            .collect();
+        let done_signals = OracleDoneSignal::read_all(&self.config.state_dir);
+
+        for w in sessions.iter().filter(|s| s.role == SessionRole::Worker) {
+            let registered_parent = oracle_states
+                .iter()
+                .find(|st| st.workers.iter().any(|e| e.session_name == w.name))
+                .map(|st| st.oracle_name.clone());
+            let (signal, governed_by) = match &registered_parent {
+                Some(oracle_name) => {
+                    if live_oracles.contains(oracle_name.as_str()) {
+                        continue; // parent alive — cascade/ack paths own this
+                    }
+                    (
+                        OracleDoneSignal::read(&self.config.state_dir, oracle_name)
+                            .ok()
+                            .flatten(),
+                        oracle_name.clone(),
+                    )
+                }
+                None => {
+                    let Some(project) = w.project.as_deref() else { continue };
+                    if live_oracle_projects.contains(project) {
+                        continue; // a live oracle of this project may own it
+                    }
+                    (
+                        done_signals
+                            .iter()
+                            .find(|d| d.project == project && d.is_closeable())
+                            .cloned(),
+                        format!("project {project}"),
+                    )
+                }
+            };
+            let Some(sig) = signal else { continue };
+            let finished_secs = (Utc::now() - sig.finished_at).num_seconds();
+            if !should_reap_orphan(sig.is_closeable(), finished_secs) {
+                continue;
+            }
+            let _ = mgr.kill_session(&w.name).await;
+            let _ = ScopeClaim::release(&self.config.state_dir, &w.name);
+            self.stall_detector.forget(&w.name);
+            WorkerCloseMarker::remove(&self.config.state_dir, &w.name);
+            remove_inbox_event_markers(&self.config.state_dir, &w.name);
+            tracing::info!(
+                worker = %w.name, governed_by = %governed_by, finished_secs,
+                "Orphan sweep: worker closed (oracle gone, mission done_clean)"
+            );
+            report.actions_taken.push(format!(
+                "Orphan sweep: closed worker {} ({} done_clean {}s ago, oracle session gone)",
+                w.name, governed_by, finished_secs
+            ));
+        }
         Ok(())
     }
 
@@ -1364,6 +1492,15 @@ fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
     closeable && secs >= ORACLE_CLOSE_GRACE_SECS
 }
 
+/// Orphan-worker predicate (pure + testable). A live worker whose governing
+/// oracle session is GONE is reaped only when that oracle's mission is over
+/// (closeable done signal) AND the generous orphan grace has elapsed since
+/// `finished_at` — a same-name re-dispatch clears the stale signal before
+/// spawning, so the sweep can never act on a superseded mission's signal.
+fn should_reap_orphan(closeable: bool, finished_secs: i64) -> bool {
+    closeable && finished_secs >= ORPHAN_WORKER_GRACE_SECS
+}
+
 /// Freshness guard predicate (pure + testable). A done signal whose
 /// `finished_at` predates the live session's spawn belongs to a PREVIOUS
 /// mission that recycled the name — patrol must never upgrade or reap on it.
@@ -1488,6 +1625,19 @@ mod tests {
     fn ignores_retrying_and_normal_output() {
         assert_eq!(detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"), None);
         assert_eq!(detect_fatal_agent_error("just working on it\n❯"), None);
+    }
+
+    #[test]
+    fn orphan_sweep_needs_closeable_signal_and_grace() {
+        // No closeable signal → never reap, however old (resurrect's domain).
+        assert!(!should_reap_orphan(false, 0));
+        assert!(!should_reap_orphan(false, ORPHAN_WORKER_GRACE_SECS * 10));
+        // Closeable but inside the grace → wait (re-dispatch race window).
+        assert!(!should_reap_orphan(true, 0));
+        assert!(!should_reap_orphan(true, ORPHAN_WORKER_GRACE_SECS - 1));
+        // Closeable + grace elapsed → reap.
+        assert!(should_reap_orphan(true, ORPHAN_WORKER_GRACE_SECS));
+        assert!(should_reap_orphan(true, ORPHAN_WORKER_GRACE_SECS + 600));
     }
 
     #[test]

@@ -624,6 +624,42 @@ impl OracleDoneSignal {
     pub fn is_closeable(&self) -> bool {
         self.status == DoneStatus::DoneClean && self.pending_actions.is_empty()
     }
+
+    /// Every CURRENT oracle done-signal in the state dir. Retired signals
+    /// (`oracle-<key>-prev<ts>.done.json`, parked by `clear` until the
+    /// notifier delivers them) describe a SUPERSEDED mission and are skipped —
+    /// acting on one (e.g. the orphan-worker sweep) would judge live workers
+    /// against a previous mission's outcome.
+    pub fn read_all(state_dir: &Path) -> Vec<Self> {
+        let mut out = Vec::new();
+        let Ok(entries) = std::fs::read_dir(state_dir) else {
+            return out;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(key) = name
+                .strip_prefix("oracle-")
+                .and_then(|r| r.strip_suffix(".done.json"))
+            else {
+                continue;
+            };
+            let retired = key
+                .rsplit_once("-prev")
+                .is_some_and(|(_, ts)| !ts.is_empty() && ts.chars().all(|c| c.is_ascii_digit()));
+            if retired {
+                continue;
+            }
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                if let Ok(sig) = serde_json::from_str::<Self>(&content) {
+                    out.push(sig);
+                }
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]

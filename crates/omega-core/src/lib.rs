@@ -5,6 +5,7 @@ pub mod amplify;
 pub mod claude_meta;
 pub mod claude_trust;
 pub mod git_status;
+pub mod git_sync;
 pub mod aisb_agents;
 pub mod audit;
 pub mod backup;

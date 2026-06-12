@@ -353,6 +353,107 @@ impl OracleState {
     }
 }
 
+/// True when a worker entry will not progress on its own (the per-entry twin
+/// of `OracleState::all_workers_terminal`).
+pub fn worker_entry_terminal(status: WorkerEntryStatus) -> bool {
+    matches!(
+        status,
+        WorkerEntryStatus::DoneClean
+            | WorkerEntryStatus::Failed
+            | WorkerEntryStatus::Blocked
+            | WorkerEntryStatus::Stalled
+    )
+}
+
+/// An oracle's LIVE worker sessions, split by whether they are finished.
+#[derive(Debug, Default)]
+pub struct LiveWorkers {
+    /// Live session but the worker is finished (terminal registry status OR a
+    /// written done-signal) — safe to cascade-close together with the oracle.
+    pub terminal: Vec<String>,
+    /// Live and still working — these BLOCK an oracle's done_clean (an oracle
+    /// may not close itself while its workers run).
+    pub running: Vec<String>,
+}
+
+impl LiveWorkers {
+    pub fn all(&self) -> Vec<String> {
+        self.terminal.iter().chain(self.running.iter()).cloned().collect()
+    }
+}
+
+/// Resolve the live worker sessions governed by `oracle_name`.
+///
+/// Authoritative source: the oracle's own `OracleState.workers` registry.
+/// Fallback (state file GC'd or never written — the exact shape of the
+/// dentistrygpt orphan incident): live `<project>-worker-*` sessions of the
+/// oracle's project that no OTHER oracle's state claims. Without the
+/// fallback, a lost state file silently exempts every worker from the
+/// close-gate and the cascade, recreating the zombie leak this exists to fix.
+pub fn live_workers_of_oracle(
+    state_dir: &Path,
+    oracle_name: &str,
+    live_sessions: &[crate::session::OmegaSession],
+) -> LiveWorkers {
+    use crate::session::{OmegaSession, SessionRole};
+
+    let live: std::collections::HashSet<&str> =
+        live_sessions.iter().map(|s| s.name.as_str()).collect();
+    let all_states = OracleState::read_all(state_dir);
+    let own_state = all_states.iter().find(|s| s.oracle_name == oracle_name);
+
+    // A worker is "finished" when its registry status is terminal or it wrote
+    // ANY done-signal (the signal marks the end of its run, whatever the
+    // verdict; spawn-time stale-clear guarantees the file postdates dispatch).
+    let finished = |name: &str, entry_status: Option<WorkerEntryStatus>| -> bool {
+        if entry_status.is_some_and(worker_entry_terminal) {
+            return true;
+        }
+        matches!(crate::done::DoneSignal::read(state_dir, name), Ok(Some(_)))
+    };
+
+    let mut out = LiveWorkers::default();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if let Some(state) = own_state {
+        for w in &state.workers {
+            if !live.contains(w.session_name.as_str()) {
+                continue;
+            }
+            seen.insert(w.session_name.clone());
+            if finished(&w.session_name, Some(w.status)) {
+                out.terminal.push(w.session_name.clone());
+            } else {
+                out.running.push(w.session_name.clone());
+            }
+        }
+    }
+
+    // Project-name fallback for unregistered live workers.
+    if let Some(project) = OmegaSession::classify(oracle_name).project {
+        let owned_elsewhere: std::collections::HashSet<&str> = all_states
+            .iter()
+            .filter(|s| s.oracle_name != oracle_name)
+            .flat_map(|s| s.workers.iter().map(|w| w.session_name.as_str()))
+            .collect();
+        for s in live_sessions {
+            if s.role != SessionRole::Worker
+                || s.project.as_deref() != Some(project.as_str())
+                || seen.contains(&s.name)
+                || owned_elsewhere.contains(s.name.as_str())
+            {
+                continue;
+            }
+            if finished(&s.name, None) {
+                out.terminal.push(s.name.clone());
+            } else {
+                out.running.push(s.name.clone());
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // God Mode State Machine: WORK → VERIFYING → DONE (loop on failure)
 // ---------------------------------------------------------------------------
