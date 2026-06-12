@@ -2164,6 +2164,24 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
                     }
                     _ => {}
                 }
+                // Meta+letter — forward WITH the meta prefix. Mac terminals
+                // send Option+←/→ as ESC b / ESC f (readline word-jump):
+                // dropping the modifier typed a literal 'b' into the agent
+                // instead of jumping a word. Full a–z so every readline meta
+                // binding (M-b/M-f word motion, M-d kill-word, …) survives.
+                let lower = c.to_ascii_lowercase();
+                if lower.is_ascii_lowercase() {
+                    const META: [&str; 26] = [
+                        "M-a", "M-b", "M-c", "M-d", "M-e", "M-f", "M-g", "M-h",
+                        "M-i", "M-j", "M-k", "M-l", "M-m", "M-n", "M-o", "M-p",
+                        "M-q", "M-r", "M-s", "M-t", "M-u", "M-v", "M-w", "M-x",
+                        "M-y", "M-z",
+                    ];
+                    return Action::ForwardKeyToSession {
+                        session,
+                        key: META[(lower as u8 - b'a') as usize],
+                    };
+                }
             }
             // Ctrl+<letter> → rmux "C-<letter>" so Ctrl+C interrupts the agent
             if ctrl {
