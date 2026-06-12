@@ -334,9 +334,9 @@ function mcRegister(name: string): "added" | "exists" | "skip" {
 }
 // Register a project as managed: dashboard entry + a Telegram topic (if the hub is a
 // forum supergroup and the bot is admin) + confirm its dedicated oracle is dispatchable.
-async function addProject(name: string): Promise<string> {
+async function addProject(name: string, dir?: string): Promise<string> {
   const dash = mcRegister(name);
-  const pdir = repoPath(name) || "";
+  const pdir = dir || repoPath(name) || "";
   recordProject(name, pdir, pdir.split("/Station/")[1]?.split("/")[0] || "");
   const g = loadGroups();
   let topicLine = "⚠️ Topic pending — switch the group to a <b>supergroup + Topics enabled</b> and add the bot as <b>admin (Manage Topics)</b>, then /setupgroup and /sync.";
@@ -1378,8 +1378,25 @@ async function resolvePublicIP(): Promise<void> {
   }
 }
 async function projectNames(): Promise<string[]> {
-  const out = await omega(["projects"]);
-  return out.split("\n").map(l => l.trim()).filter(l => /^[A-Za-z0-9]/.test(l) && !/no projects|^Tip:|discovered|containing/i.test(l)).map(l => l.split(/\s+/)[0]);
+  return (await discoverProjects()).map(p => p.name);
+}
+
+// ── Smart project discovery (the Rust walker: whole-$HOME, scored best-first).
+// Cached 2 min so paging through the Add-a-project buttons doesn't re-walk the
+// disk; already-managed projects (shared registry) are filtered out.
+type DiscProj = { name: string; path: string; container: string; stack: string[]; score: number; last_active_days: number | null };
+let discoverCache: { list: DiscProj[]; at: number } = { list: [], at: 0 };
+async function discoverProjects(fresh = false): Promise<DiscProj[]> {
+  if (!fresh && Date.now() - discoverCache.at < 120_000 && discoverCache.list.length) return discoverCache.list;
+  try {
+    const out = await omega(["projects", "--json"]);
+    const arr = JSON.parse(out.slice(out.indexOf("["))) as DiscProj[];
+    const reg = loadRegistry();
+    const knownPaths = new Set(reg.projects.map((p: any) => String(p.path)));
+    const knownNames = new Set(reg.projects.map((p: any) => String(p.name).toLowerCase()));
+    discoverCache = { list: arr.filter(p => !knownPaths.has(p.path) && !knownNames.has(p.name.toLowerCase())), at: Date.now() };
+  } catch { discoverCache = { list: [], at: Date.now() }; }
+  return discoverCache.list;
 }
 async function sessionNames(): Promise<string[]> {
   return (await omega(["list"])).split("\n").map(l => l.replace(/^[^A-Za-z0-9_-]*/, "").trim().split(/\s+/)[0]).filter(s => /^[A-Za-z0-9][\w.-]*$/.test(s));
@@ -1764,12 +1781,27 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     return edit(chat, msgId, `<b>⬇️ Import from GitHub — ${esc(arg)}</b>\nSend the repo: a <b>URL</b> (<code>https://github.com/owner/repo</code>) or an <b>owner/repo</b> slug.\n\nI clone it into <code>~/Station/${esc(arg)}/</code>, then wire the full setup — dedicated oracle, dashboard agent, Telegram topic and a <code>/{project}</code> command (private repos work via <code>gh</code>).`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]]));
   }
   if (ns === "proj" && action === "add") {
-    // Auto-detect projects (top-level git repos under Station) and offer one button each.
-    const repos = gitRepos();
-    if (!repos.length) { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Manage a project</b>\nNo project auto-detected — send the <b>name</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }
-    const rows: Btn[][] = [];
-    for (let i = 0; i < repos.length; i += 2) rows.push(repos.slice(i, i + 2).map(r => ({ text: `➕ ${r.name}`.slice(0, 28), callback_data: `proj:reg:${r.name}`.slice(0, 64) })));
-    return edit(chat, msgId, `<b>📁 Add a project</b>\n${repos.length} project(s) detected under Station — tap a button to manage it (dedicated oracle + dashboard + topic).`, kb([...rows, [{ text: "✍️ Other (type the name)", callback_data: "proj:addname" }], [back("projects")]]));
+    // Smart whole-machine discovery (Rust walker, scored best-first), already-
+    // managed projects filtered out, ONE button per project, paginated.
+    const page = Math.max(0, parseInt(arg || "0", 10) || 0);
+    const all = await discoverProjects(page === 0);
+    if (!all.length) { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Add a project</b>\nNo unmanaged project found on this machine — send the <b>name or absolute path</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }
+    const PER = 8;
+    const start = page * PER;
+    const rows: Btn[][] = all.slice(start, start + PER).map((p, i) => [{
+      text: `➕ ${p.name} · ${p.container}${p.stack.length ? " · " + p.stack[0] : ""}`.slice(0, 60),
+      callback_data: `proj:dadd:${start + i}`,
+    }]);
+    const nav: Btn[] = [];
+    if (page > 0) nav.push({ text: "« Prev", callback_data: `proj:add:${page - 1}` });
+    if (start + PER < all.length) nav.push({ text: `More (${all.length - start - PER}) »`, callback_data: `proj:add:${page + 1}` });
+    if (nav.length) rows.push(nav);
+    return edit(chat, msgId, `<b>📁 Add a project</b>\n${all.length} unmanaged project(s) discovered on this machine, best first (git/manifest markers + recent activity). Tap one to manage it (dedicated oracle + dashboard + topic).`, kb([...rows, [{ text: "✍️ Other (type the name)", callback_data: "proj:addname" }], [back("projects")]]));
+  }
+  if (ns === "proj" && action === "dadd") {
+    const p = discoverCache.list[parseInt(arg, 10)];
+    if (!p) return edit(chat, msgId, "<b>📁 Add a project</b>\nThat discovery list expired — reopen it.", kb([[{ text: "🔄 Re-discover", callback_data: "proj:add" }], [back("projects")]]));
+    return edit(chat, msgId, await addProject(p.name, p.path), kb([[{ text: "➕ Add another", callback_data: "proj:add" }, { text: "📋 Projects", callback_data: "nav:projects" }], [back("projects")]]));
   }
   if (ns === "proj" && action === "reg") return edit(chat, msgId, await addProject(arg), kb([[{ text: "📁 Add another", callback_data: "proj:add" }, { text: "📋 Projects", callback_data: "nav:projects" }], [back("projects")]]));
   if (ns === "proj" && action === "addname") { setPending(from, "add-project"); return edit(chat, msgId, "<b>📁 Manage a project</b>\nSend the <b>name</b> of the project to manage.", kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("projects")]])); }

@@ -114,8 +114,13 @@ enum Commands {
     #[command(name = "mouse-test")]
     MouseTest,
 
-    /// Auto-discover projects on this machine (walks $HOME)
-    Projects,
+    /// Auto-discover projects on this machine (smart whole-$HOME walk,
+    /// best-scored first: markers + recent activity)
+    Projects {
+        /// Machine-readable output (the Telegram bot's discovery feed)
+        #[arg(long)]
+        json: bool,
+    },
 
     /// Mark a folder as trusted in ~/.claude.json so Claude Code skips the
     /// "Do you trust the files in this folder?" dialog. Ran automatically by
@@ -557,7 +562,7 @@ async fn main() -> Result<()> {
         Some(Commands::CleanJunk { force }) => cmd_clean_junk(force).await,
         Some(Commands::Clock { full }) => cmd_clock(full),
         Some(Commands::MouseTest) => cmd_mouse_test(),
-        Some(Commands::Projects) => cmd_projects(),
+        Some(Commands::Projects { json }) => cmd_projects(json),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
@@ -2547,31 +2552,35 @@ fn cmd_trust_dir(dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_projects() -> Result<()> {
+fn cmd_projects(json: bool) -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/home"));
     let projects = omega_core::projects::discover(&home);
 
-    if projects.is_empty() {
-        println!("No projects discovered under {}", home.display());
-        println!("Tip: OmegaOS looks for directories named Projects, Code, Dev, Work, Repos, etc.");
-        println!("containing at least 2 git repos or files like package.json / Cargo.toml.");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&projects)?);
         return Ok(());
     }
 
-    println!("Discovered {} project(s):\n", projects.len());
+    if projects.is_empty() {
+        println!("No projects discovered under {}", home.display());
+        println!("Tip: a project is any directory with a .git or a build manifest");
+        println!("(package.json, Cargo.toml, pyproject.toml, go.mod, …) up to 5 levels deep.");
+        return Ok(());
+    }
 
-    let mut current = String::new();
+    println!("Discovered {} project(s), best first:\n", projects.len());
     for p in &projects {
-        if p.container != current {
-            println!("─── {} ───", p.container);
-            current = p.container.clone();
-        }
         let stack = if p.stack.is_empty() {
             String::new()
         } else {
             format!("  [{}]", p.stack.join(", "))
         };
-        println!("  {} {}{}", p.name, p.path.display(), stack);
+        let age = match p.last_active_days {
+            Some(0) => "  · today".to_string(),
+            Some(d) => format!("  · {}d", d),
+            None => String::new(),
+        };
+        println!("  {}  ({}){}{}", p.name, p.container, stack, age);
     }
     Ok(())
 }
