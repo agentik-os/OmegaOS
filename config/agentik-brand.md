@@ -52,3 +52,14 @@ Toutes les capacités image/vidéo/audio/lip-sync/3D pilotables : `~/.omega/bran
 - **Upscale/édition** : `topaz_image`/`topaz_video`, `reframe`, détourage. **Tri viralité** : `brain_activity`.
 - **SEULE exception** : la **VOIX de Nova** reste **ElevenLabs** (`FeJtVBW106P4mvgGebAg`) — c'est son identité vocale, pas un TTS générique. On la GÉNÈRE chez ElevenLabs et on la met en voix off sur les vidéos. Tout le reste = Higgsfield.
 Catalogue complet : `HIGGSFIELD-CAPABILITIES.md`. Non-Google, cinématographique.
+
+
+## 🚫 AGENTIK : JAMAIS DE LOGO (règle absolue)
+Agentik n'a PAS de logo — c'est TOUJOURS le mot « Agentik » écrit, jamais un symbole/logo/emblème. Ne génère JAMAIS de logo Agentik dans un visuel. Prompt négatif : "no logo, no emblem, no brand symbol, no icon".
+
+## 📸 RÈGLES PHOTO (posts autonomes — opérateur 2026-06-13)
+- **JAMAIS de contour/bordure** autour de la photo (pas de cadre, pas de marge blanche encadrante).
+- **JAMAIS de texte écrit EN OVERLAY** sur la photo (pas de bulles comics, pas de légende incrustée par-dessus l'image, pas de gros titres).
+- **Exception OK** : un peu de texte intégré DANS le décor (gravé sur un mur, une enseigne discrète) de temps en temps — naturel, pas du texte « comic » plaqué.
+- Sinon : pleine image, branding Agentik (Sin City moderne N&B, Nova blonde, une seule), bord à bord.
+- Prompt négatif à inclure : "no border, no frame, no caption, no overlay text, no comic text bubbles, no big title text".
