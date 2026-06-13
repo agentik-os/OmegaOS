@@ -12,14 +12,16 @@ use std::time::Duration;
 const MAX_GOAL_LEN: usize = 4000;
 
 /// Map a config `default_model` alias to the explicit model name Claude's CLI
-/// pins with `--model`. "fable" → "claude-fable-5"; "opus" → "claude-opus-4-8";
-/// any other value (including a full model name like "claude-opus-4-8" or a bare
-/// alias such as "sonnet") is passed through verbatim — the CLI accepts both
-/// aliases and full names.
+/// pins with `--model`. The default alias "opus" resolves to the 1M-context
+/// Opus 4.8 variant ("claude-opus-4-8[1m]") so every dispatched session gets the
+/// large context window without the config having to spell it out. "fable" →
+/// "claude-fable-5"; any other value (including a full model name like
+/// "claude-opus-4-8" or a bare alias such as "sonnet") is passed through
+/// verbatim — the CLI accepts aliases, full names, and the "[1m]" suffix.
 fn resolve_model_flag(default_model: &str) -> String {
     match default_model {
         "fable" => "claude-fable-5".to_string(),
-        "opus" => "claude-opus-4-8".to_string(),
+        "opus" => "claude-opus-4-8[1m]".to_string(),
         other => other.to_string(),
     }
 }
@@ -395,7 +397,7 @@ impl Dispatcher {
                 routing::Complexity::Epic => "max".to_string(),
             });
             // Pin the model explicitly so the spawned oracle never silently
-            // drifts onto the CLI's default. "opus" → claude-opus-4-8.
+            // drifts onto the CLI's default. "opus" → claude-opus-4-8[1m].
             opts.model = Some(resolve_model_flag(&self.config.default_model));
             // N5: --max-budget-usd is a no-op for interactive spawned sessions
             // (the flag only bounds non-interactive `-p` runs), so we do NOT
