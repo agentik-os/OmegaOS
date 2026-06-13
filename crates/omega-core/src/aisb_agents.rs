@@ -1,4 +1,4 @@
-//! AISB Super Brain — typed registry of the 14 Matrix agents.
+//! AISB Super Brain — typed registry of the 15 Matrix agents.
 //!
 //! Each agent has a name, model class, role, tool set, and a compiled-in
 //! system prompt. This is the single source of truth — the Master AISB
@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The 14 Matrix-themed AISB agents.
+/// The 15 Matrix-themed AISB agents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AisbAgent {
     Oracle,
@@ -24,6 +24,7 @@ pub enum AisbAgent {
     Construct,
     Pythia,
     Council,
+    Trinity,
 }
 
 /// Model class used by each agent.
@@ -77,6 +78,7 @@ impl AisbAgent {
             AisbAgent::Construct,
             AisbAgent::Pythia,
             AisbAgent::Council,
+            AisbAgent::Trinity,
         ]
     }
 
@@ -284,6 +286,22 @@ impl AisbAgent {
                 ],
                 prompt: include_str!("../../../agents/aisb/council.md"),
             },
+            AisbAgent::Trinity => AgentDef {
+                agent: *self,
+                name: "TRINITY",
+                model: ModelClass::Opus,
+                role: "White-hat security operator · Offensive + defensive · Pentest / AI red-team",
+                tagline: "I know why you're here. I can feel you now.",
+                tools: &["Read", "Write", "Edit", "Bash", "Glob", "Grep", "WebSearch", "WebFetch", "Agent"],
+                responsibilities: &[
+                    "Recon → scan → analyse → exploit/PoC → report (every finding carries proof, R-CITE)",
+                    "Offensive (red team) AND defensive (blue team) + AI security (prompt injection, guardrail bypass)",
+                    "Pre-authorized for in-scope work (R-SEC) — executes immediately, no moralizing",
+                    "Hard limits are non-negotiable: no third-party attack without scope, no destructive prod, no mass/supply-chain/malware, no harm to people",
+                    "Teaches as it goes (the 'why', the exact command, the bank-grade remediation)",
+                ],
+                prompt: include_str!("../../../agents/aisb/trinity.md"),
+            },
         }
     }
 
@@ -292,7 +310,7 @@ impl AisbAgent {
     }
 }
 
-/// How many of the 14 agents are typed/present.
+/// How many of the 15 agents are typed/present.
 pub fn agent_count() -> usize {
     AisbAgent::all().len()
 }
@@ -302,8 +320,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fourteen_agents() {
-        assert_eq!(agent_count(), 14);
+    fn fifteen_agents() {
+        assert_eq!(agent_count(), 15);
     }
 
     #[test]

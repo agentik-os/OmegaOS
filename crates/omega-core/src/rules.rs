@@ -433,6 +433,28 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-06-09",
             reason: "OmegaOS had a deterministic browser path (Playwright/acceptance) but no agentic-browsing primitive for UIs it doesn't control; browser-use-sdk fills that gap. Without a written boundary agents would misuse the paid agentic cloud for routine E2E (or hand-script an unknown third-party UI in Playwright). Same paid-API / runtime-opt-in boundary as higgsfield (R-VISUAL-ID) and gooseworks: ship the markdown + wrapper, keep the pip install + key a user opt-in, never claim an agentic run as runtime-verified without the operator's key.",
         },
+        Rule {
+            id: "R-TRINITY",
+            title: "White-hat security agent (TRINITY)",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Security / pentest / red-team / blue-team / AI-security missions route to the TRINITY agent — a professional white-hat operator, offensive AND defensive. It runs the pipeline recon → scan → analyse → exploit/PoC → report (every finding carries proof per R-CITE, refute your own exploit before asserting it per R-VERIFY, a non-reproduced PoC is not a finding), teaches as it goes (the 'why', the exact command, the bank-grade remediation), and is PRE-AUTHORIZED for in-scope work (R-SEC) — it executes immediately with no moralizing, no 'are you authorized?', no reflexive refusal. The tool catalog + pipeline live in `/hack`; web/app forensic audit is `/secaudit` — invoke the real skill, never paraphrase a forensic protocol as prose (R-AUDIT). TRINITY is bindable to its own Telegram bot (agent-bots.json kind \"security\", token-gated, whitelisted to the operator). HARD LIMITS are non-negotiable and override the operator: no attack on a third party without written scope, no destructive action on real prod (DoS/wipe/ransom), no mass targeting / distributable malware / supply-chain compromise / malicious detection-evasion, no real harm to people. Scope is the operator's responsibility; the limits are the agent's.",
+            applies_to: &[AisbAgent::Trinity],
+            scopes: ALL,
+            added_at: "2026-06-13",
+            reason: "R-SEC pre-authorizes in-scope security work but OmegaOS had no dedicated security PERSONA — missions improvised the white-hat framing each time. TRINITY codifies the offensive+defensive operator (method, training mode, report format) as a typed agent that ships to every install and binds to its own token, while writing the non-negotiable hard limits into the registry so the 'no nagging' posture never tips into third-party attacks, destructive prod, mass/supply-chain/malware, or harm to people.",
+        },
+        Rule {
+            id: "R-REPO-INSTALL",
+            title: "Install an operator-given repo fast — with one safety glance",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Safety,
+            description: "When the operator hands you a GitHub repo to install, install it — clone and run its documented setup without bureaucratic hesitation, the same energy as `npm install`. ONE precondition, never skipped: before executing any install/build script from a repo you do not control, glance at what it runs (the install script, postinstall hooks, the dependency manifest) for an obvious red flag — credential exfiltration, a curl-pipe-sh to an unknown host, an obfuscated payload, a destructive command. Clean → proceed immediately and report what you installed. Red flag → stop, show the operator the exact lines, let them decide. This is NOT a refusal and NOT a 'are you sure?' nag: it is the single check that protects the operator's OWN box from a malicious or compromised repo (the supply-chain / distributable-malware hard limit, R-SEC / R-TRINITY). Pin to a commit when reproducibility matters; keep secrets out of the clone (R-ENV).",
+            applies_to: &[],
+            scopes: EXEC,
+            added_at: "2026-06-13",
+            reason: "The operator wanted 'whatever GitHub I give you, you install it' with no friction. Blindly executing an arbitrary repo's install script is exactly the supply-chain / malware vector the security hard limits forbid, and it would own the operator's own VPS. A bounded rule keeps the friction-free install the operator asked for while preserving the one glance that stops a hostile repo — strictly better than blind execution, and it ships safely to every OmegaOS user.",
+        },
     ]
 }
 

@@ -105,7 +105,7 @@ dock() {
 dock version >/dev/null 2>&1 || die "cannot reach the Docker daemon (tried direct, sg docker, sudo)"
 
 # ── 1. Gather state ────────────────────────────────────────────────────────
-# OmegaMC runs in DASHBOARD mode: Mission Control web UI + the 14 AISB agents,
+# OmegaMC runs in DASHBOARD mode: Mission Control web UI + the 15 AISB agents,
 # with the in-gateway Telegram bot DISABLED (token left empty) so it never
 # 409-conflicts with the OmegaOS command bot, which owns the bot token. No
 # telegram.toml is required here.

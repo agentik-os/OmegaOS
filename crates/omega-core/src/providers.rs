@@ -229,7 +229,7 @@ impl ProvidersConfig {
     /// Available models for a provider (used to list options in /model UI).
     pub fn models_for(provider: &str) -> Vec<&'static str> {
         match provider {
-            "claude" => vec!["fable", "opus", "sonnet", "haiku"],
+            "claude" => vec!["opus", "sonnet", "haiku", "fable"],
             // June 2026: gpt-5.5-codex = Codex default; gpt-5.2-codex stays the
             // API-key-only fallback (5.5 needs ChatGPT sign-in).
             "codex" => vec!["gpt-5.5-codex", "gpt-5.5", "gpt-5.2-codex"],

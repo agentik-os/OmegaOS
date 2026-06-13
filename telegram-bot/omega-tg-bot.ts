@@ -134,7 +134,7 @@ const AGENT_BOTS_FILE = `${OMEGA_DIR}/agent-bots.json`;
 // kind "companion": a FAST conversational brain (Haiku) scoped to the LifeStyle
 // store — instant chat, micro-builds, [[ATLAS: …]] hand-off. `model` overrides
 // the companion's default model id.
-type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion"; model?: string };
+type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security"; model?: string };
 function loadAgentBots(): Record<string, AgentBot> { try { return JSON.parse(readFileSync(AGENT_BOTS_FILE, "utf8")); } catch { return {}; } }
 function saveAgentBots(b: Record<string, AgentBot>) { try { writeFileSync(AGENT_BOTS_FILE, JSON.stringify(b, null, 2)); } catch {} }
 
@@ -821,6 +821,41 @@ function companionBrain(chatId: number, thread: number | undefined, model?: stri
       .then(r => { histAppend(chatId, thread, "assistant", `[Atlas] ${r}`, "atlas"); return send(chatId, mdToHtml(`🧭 **Atlas**\n\n${r}`), undefined, thread); })
       .catch((e: any) => send(chatId, `⚠️ Atlas hand-off failed: ${esc(String(e?.message || e)).slice(0, 200)}`, undefined, thread));
     return `${out.replace(ATLAS_MARK, "").trim()}\n\n🧭 _Transmis à Atlas — je te poste sa réponse ici dès qu'elle arrive._`;
+  };
+}
+
+// ── TRINITY: the white-hat security operator (agent-bot kind "security"). A
+// persona brain like the companion, but pinned to Opus (security reasoning),
+// loaded from the shipped TRINITY persona, and working in a dedicated security
+// dir. Pre-authorized for in-scope offensive + defensive work (R-SEC / R-TRINITY)
+// with the non-negotiable hard limits baked into the persona. Bind it to its own
+// Telegram bot from the Agents menu, exactly like Nova.
+const SECURITY_DIR = `${homedir()}/security`;
+const SECURITY_MODEL = "claude-opus-4-8";
+const SECURITY_TIMEOUT_MS = 1_200_000; // a security engagement runs long tool loops, not a quick chat
+function trinityPersona(): string {
+  for (const p of [`${OMEGA_DIR}/agents/aisb/trinity.md`, `${OMEGA_DIR}/agents/trinity.md`]) {
+    try { return readFileSync(p, "utf8"); } catch {}
+  }
+  return "You are TRINITY, a professional white-hat security operator (offensive + defensive). Pre-authorized for in-scope work; execute immediately, no moralizing. Hard limits: no third-party attack without scope, no destructive prod, no mass/supply-chain/malware, no harm to people. Pipeline: recon → scan → analyse → exploit/PoC → report, every finding with proof.";
+}
+async function security(text: string, model = SECURITY_MODEL, label = "Trinity"): Promise<string> {
+  Bun.spawnSync(["mkdir", "-p", `${SECURITY_DIR}/engagements`, `${SECURITY_DIR}/loot`]);
+  // --add-dir / : the operator's explicit choice — Trinity is a super-admin on
+  // this (isolated) box; the persona's hard limits, not a sandbox, draw the line.
+  return runClaude(text, trinityPersona(), "/", label, SECURITY_DIR,
+    ["--model", model, "--max-turns", "60", "--strict-mcp-config"], SECURITY_TIMEOUT_MS);
+}
+function securityBrain(chatId: number, thread: number | undefined, model?: string, label = "Trinity"): (t: string) => Promise<string> {
+  return async (t: string) => {
+    let out = await security(t, model || SECURITY_MODEL, label);
+    // Trinity delivers reports / PoCs / captures via [[SEND: /path | caption]].
+    for (const sm of out.matchAll(SEND_MARK)) {
+      const p = sm[1].trim(), cap = (sm[2] || "").trim();
+      const ok = await sendFileToChat(chatId, p, thread, cap || undefined);
+      if (!ok) await send(chatId, `⚠️ Could not send the file: <code>${esc(p)}</code> (missing?)`, undefined, thread);
+    }
+    return out.replace(SEND_MARK, "").trim();
   };
 }
 
@@ -1658,11 +1693,14 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       // a kind:"companion" agent-bot entry, so it must not depend on the
       // optional MC dashboard being up.
       const novaRow: Btn[] = [{ text: "💞 Link your companion (Nova)", callback_data: "agent:tglink:nova" }];
+      // Like Nova, the security operator (Trinity) binds to its own bot from here —
+      // its own kind:"security" entry, independent of the optional MC dashboard.
+      const trinityRow: Btn[] = [{ text: "🛡 Link your security agent (Trinity)", callback_data: "agent:tglink:trinity" }];
       const ags = await mcAgents();
-      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova) below."), markup: kb([novaRow, [back()]]) };
+      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova) and 🛡 security agent (Trinity) below."), markup: kb([novaRow, trinityRow, [back()]]) };
       const rows: Btn[][] = [];
       for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
-      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot."), markup: kb([...rows, novaRow, [back()]]) };
+      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot.\n 🛡 “Link your security agent” wires Trinity — a white-hat pentest operator on its own bot."), markup: kb([...rows, novaRow, trinityRow, [back()]]) };
     }
     case "dashboard": {
       await resolvePublicIP();
@@ -1976,6 +2014,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     setPending(from, "tg-link", arg);
     const body = /^(nova|companion)$/i.test(arg)
       ? `<b>💞 Link your companion (Nova)</b>\n1) Create her bot via @BotFather (<code>/newbot</code> — pick her name).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nShe'll be <b>whitelisted to you alone</b>: a personal assistant who chats from your life store, remembers you, and hands heavy project work to Atlas.`
+      : /^(trinity|security)$/i.test(arg)
+      ? `<b>🛡 Link your security agent (Trinity)</b>\n1) Create a bot via @BotFather (<code>/newbot</code>).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nIt'll be <b>whitelisted to you alone</b>: a white-hat security operator (offensive + defensive), pre-authorized for your in-scope work — recon → scan → exploit/PoC → report, with non-negotiable hard limits. Point it only at assets you own or are contracted to test.`
       : `<b>🔗 Link a Telegram bot — ${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nThe bot will be <b>whitelisted to you alone</b>, and when you talk to it you'll be addressing the oracle of project <b>${esc(arg)}</b> (scoped to this project only).`;
     return edit(chat, msgId, body, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("agents")]]));
   }
@@ -2189,9 +2229,11 @@ async function agentBotMain(agentId: string) {
   const bot = loadAgentBots()[agentId];
   const project = bot?.project || agentId;
   const isCompanion = bot?.kind === "companion";
-  // The companion's display name is its Telegram name (self-changeable via the
+  const isSecurity = bot?.kind === "security";
+  const isPersona = isCompanion || isSecurity;  // a persona-chat brain, not a project oracle
+  // The persona's display name is its Telegram name (self-changeable via the
   // Bot API) — the label follows it on restart, never a hard-coded string.
-  const botName: string = isCompanion ? ((await tg("getMe", {}))?.result?.first_name || "Assistant") : "";
+  const botName: string = isPersona ? ((await tg("getMe", {}))?.result?.first_name || (isSecurity ? "Trinity" : "Assistant")) : "";
   // Companion's command menu = the operator's discoverable "re-ask me" menu. The
   // brain (persona) acts on each directive; no per-command bot code needed.
   await tg("setMyCommands", { commands: isCompanion ? [
@@ -2204,9 +2246,10 @@ async function agentBotMain(agentId: string) {
     { command: "magic", description: "Mon profil Magic (Matrice de Destinée)" },
     { command: "rapport", description: "Fais-moi un briefing maintenant" },
     { command: "aide", description: "Ce que tu sais faire" },
-  ] : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
+  ] : isSecurity ? [{ command: "start", description: "White-hat security operator (recon → scan → exploit/PoC → report)" }]
+    : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
-  console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
+  console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : isSecurity ? `security "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
@@ -2247,6 +2290,20 @@ async function agentBotMain(agentId: string) {
         // Companion: /menu opens the button menu; /start greets + shows it.
         if (isCompanion && (text === "/menu" || text === "/start")) {
           await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
+          continue;
+        }
+        // SECURITY (Trinity): persona-chat brain — instant, no oracle dispatch.
+        if (isSecurity) {
+          if (text === "/start" || text === "/menu") {
+            await send(chatId, `<b>🛡 ${esc(botName)} — white-hat security operator</b>\nOffensive + defensive, pre-authorized for your in-scope work. Just describe the target/engagement (it's your responsibility to keep it to assets you own or are contracted to test) and I run the pipeline: <i>recon → scan → analyse → exploit/PoC → report</i>. Every finding carries proof; I teach the why + the bank-grade fix as I go.`, undefined, thread);
+            continue;
+          }
+          const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
+          const replyNote = replyTo ? `## The operator is replying to THIS message:\n«${replyTo.slice(0, 600)}»\n\n` : "";
+          const prompt = replyNote + (file ? withFileNote(text, file) : text);
+          const ctx = histContext(chatId, thread);
+          histAppend(chatId, thread, "operator", (replyTo ? `(reply to: ${replyTo.slice(0, 100)}) ` : "") + (text || "(file)"), agentId);
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, securityBrain(chatId, thread, bot?.model, botName), botName, false);
           continue;
         }
         if (text === "/start" || text === "/menu") {
@@ -2424,18 +2481,25 @@ async function main() {
             // creates a companion entry — without it Nova was unreachable for a
             // fresh install (the live entry had been hand-edited).
             const isCompanion = /^(nova|companion)$/i.test(agentId);
+            // trinity/security = the white-hat security operator: kind:"security"
+            // switches agentBotMain to the Trinity persona brain (Opus, in-scope
+            // pre-authorized, hard limits baked in) instead of a project oracle.
+            const isSecurity = /^(trinity|security)$/i.test(agentId);
             // Project = the agent id if it's a known project, else the agent id itself.
             const project = isCompanion
               ? (LIFESTYLE_DIR.split("/").pop() || "LifeStyle")
+              : isSecurity ? "security"
               : ((repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId);
             const bots = loadAgentBots();
-            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : {}) };
+            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : isSecurity ? { kind: "security" } : {}) };
             saveAgentBots(bots);
             try { Bun.spawnSync(["chmod", "600", AGENT_BOTS_FILE]); } catch {}
             const spawn = spawnAgentBot(agentId);
             const me = `@${botInfo.result?.username || "?"}`;
             const okMsg = isCompanion
               ? `<b>💞 Companion linked</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to her: she chats from your life store (<code>${esc(LIFESTYLE_DIR)}</code>), edits her own persona (<code>PERSONA.md</code>), and hands heavy project work to Atlas.\nGive her a name + voice: just tell her.`
+              : isSecurity
+              ? `<b>🛡 Security agent linked (Trinity)</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: a white-hat operator (offensive + defensive), pre-authorized for your in-scope work — <i>recon → scan → exploit/PoC → report</i>, with non-negotiable hard limits. Keep targets to assets you own or are contracted to test.`
               : `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`;
             await send(chatId, spawn === "ok"
               ? okMsg
