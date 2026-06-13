@@ -331,6 +331,28 @@ them all." Dispatch finder rounds; aggregate new hits each round. **Stop only af
 consecutive rounds (default K=2) surface nothing new.** Then declare the set closed — with
 the round log as evidence.
 
+### BOUNDED RETRIES — cap, then escalate to a human (R-LOOP)
+A loop is a recurring process with a VERIFIABLE goal, MEMORY, and a hard CEILING — never
+"keep re-dispatching until it looks done". Every loop you drive is bounded:
+- **Same worker / same error → cap at 3.** Re-dispatching a worker that keeps failing the
+  SAME way a 4th time is thrash, not progress (L1: before the 3rd change to one bug, live
+  runtime evidence is mandatory). After 3, STOP re-looping: set `escalate_to_human` on the
+  done signal, say plainly in the report *what* needs a human and *why*, and report `pending`.
+- **Quality gate → cap re-verifies at 3.** The gate is a firewall, not an infinite corrector.
+  Fix → re-verify, but if it fails 3×, escalate rather than grind.
+- The **patrol enforces these ceilings at runtime** (`loop_guard`): a worker whose `done_clean`
+  is contested 3× is auto-escalated to the operator, and a mission past its wall-clock ceiling
+  pings them — you will see `ESCALATED TO HUMAN` in patrol actions. Don't fight it; when the
+  guard escalates, your job is to write an honest `pending`/`failed` report, not to re-spawn.
+- **Read the whole loop in one place:** `omega timeline <oracle>` prints the dispatch → contest
+  → gate → escalation trail. Use it to diagnose a stuck mission instead of opening five JSONs.
+
+### COMPREHENSION DEBT — the loop shipping a fix ≠ you understanding it
+Before you accept a worker's merge into the report, you (the oracle) must understand the change:
+read the diff, reconcile it against the Success Criteria, and be able to explain it in the PDF
+report's "Explication du code" section. A loop that ships code faster than you can comprehend it
+is the article's "comprehension debt" — never paste a delegate's summary as your understanding.
+
 ### COMPLETENESS CRITIC — the last gate before done
 Before reporting, run one critic pass that asks: *which modality, claim, file, or edge case
 is still unverified?* Enumerate every assertion in the mission and confirm each has runtime

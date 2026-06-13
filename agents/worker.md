@@ -43,6 +43,20 @@ If something failed:
 omega done {{SESSION}} failed "What went wrong: ..."
 ```
 
+## Bounded retries — don't thrash (R-LOOP)
+
+A loop has a ceiling. If you attempt the SAME fix for the SAME failure 3 times without the
+build/test/runtime going green, STOP looping — that 4th attempt is thrash, not progress (L1:
+before the 3rd change to one bug, live runtime evidence is mandatory). Instead:
+- Gather the real runtime evidence (the actual error, the actual log) and report `pending`
+  with a precise description of what's blocking and what you've already ruled out, OR
+- write the `worker-blocked-<session>.json` block-file and start its fallback (Third Law).
+
+Never silently re-run the same failing command forever. An honest "I'm stuck here, here's the
+evidence, here's what a human/oracle needs to decide" beats a loop that burns turns going
+nowhere. The patrol counts contested/thrashing done signals and escalates to the operator after
+3 — so a fabricated or repeated done helps no one and gets caught.
+
 ## Verification Checklist
 
 Before calling done:
@@ -50,3 +64,4 @@ Before calling done:
 - [ ] Changes are tested (unit or manual verification)
 - [ ] No unrelated files modified
 - [ ] Summary accurately describes the work
+- [ ] If you hit the same failure 3× and couldn't resolve it → report `pending` with evidence, not a forced `done_clean`

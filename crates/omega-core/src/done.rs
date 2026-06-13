@@ -48,9 +48,17 @@ pub struct DoneSignal {
     pub failure_mode: Option<FailureMode>,
 
     /// Retry-thrash / decision-flip counter — non-zero suggests the
-    /// worker was looping. (#167, #168)
+    /// worker was looping. (#167, #168) Cross [`crate::loop_guard::THRASH_CAP`]
+    /// and the patrol escalates the mission to the operator.
     #[serde(default)]
     pub retry_thrash_count: u32,
+
+    /// Set when the worker (or the patrol on its behalf) has decided this loop
+    /// cannot close itself and a human must look — bounded-retry exhausted,
+    /// repeated contested fabrication, etc. Surfaced in the report and by
+    /// `omega log`. serde default keeps pre-existing done.json files readable.
+    #[serde(default)]
+    pub escalate_to_human: bool,
 
     /// Ground-truth artifact citations. Each load-bearing claim in
     /// `summary` MUST map to one of these. Verified by the gate before
@@ -155,6 +163,7 @@ impl DoneSignal {
             corroboration: Vec::new(),
             failure_mode: None,
             retry_thrash_count: 0,
+            escalate_to_human: false,
             artifacts: Vec::new(),
         }
     }
@@ -176,6 +185,7 @@ impl DoneSignal {
             corroboration: Vec::new(),
             failure_mode: None,
             retry_thrash_count: 0,
+            escalate_to_human: false,
             artifacts: Vec::new(),
         }
     }

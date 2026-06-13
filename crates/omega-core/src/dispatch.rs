@@ -306,6 +306,21 @@ impl Dispatcher {
                 "cleared stale done signal from a prior mission before dispatch"
             );
         }
+        // A recycled name must start with a fresh loop timeline (R-LOOP): drop
+        // the prior mission's log, escalation record, and bounded-retry markers
+        // so `omega log` never mixes two missions and a stale escalation never
+        // haunts the new one.
+        crate::loop_guard::MissionLog::clear(&self.config.state_dir, &oracle_name);
+        crate::loop_guard::clear_gate_attempt(&self.config.state_dir, &oracle_name);
+        crate::loop_guard::MissionLog::event(
+            &self.config.state_dir,
+            &oracle_name,
+            "dispatch",
+            &format!(
+                "mission dispatched: {}",
+                mission.chars().take(140).collect::<String>()
+            ),
+        );
 
         // Classification + ship/god-mode detection run on the RAW message —
         // keyword signals ("ship", "god mode") must not be lost to

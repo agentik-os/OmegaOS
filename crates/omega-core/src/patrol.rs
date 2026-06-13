@@ -8,7 +8,7 @@ use crate::oracle_lifecycle::{
 use crate::scope::ScopeClaim;
 use crate::session::{SessionManager, SessionRole};
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use std::time::Duration;
 
 const STALL_THRESHOLD_SECS: i64 = 900; // 15 minutes without progress = stalled (file-based)
@@ -311,9 +311,55 @@ impl Patrol {
                             "CONTESTED {}: done_clean failed ground-truth — {}",
                             session.name, reason
                         ));
+                        // Loop Engineering — bounded retries then escalate. A
+                        // worker that re-writes a contested done_clean is
+                        // thrashing; count consecutive contested attempts and at
+                        // THRASH_CAP hand the loop to a human instead of letting
+                        // it re-fabricate forever (L1's "3rd change → runtime
+                        // evidence", enforced at the orchestration layer).
+                        let thrash =
+                            crate::loop_guard::bump_thrash(&self.config.state_dir, &session.name);
+                        if let Some(oracle) = self.find_parent_oracle(
+                            &session.name,
+                            &oracle_sessions,
+                            &oracle_states,
+                        ) {
+                            crate::loop_guard::MissionLog::event(
+                                &self.config.state_dir,
+                                &oracle.name,
+                                "contest",
+                                &format!(
+                                    "{} contested ({}/{}): {}",
+                                    session.name,
+                                    thrash,
+                                    crate::loop_guard::THRASH_CAP,
+                                    reason
+                                ),
+                            );
+                            if thrash >= crate::loop_guard::THRASH_CAP
+                                && crate::loop_guard::escalate_to_human(
+                                    &self.config.state_dir,
+                                    &oracle.name,
+                                    crate::loop_guard::EscalationReason::ContestedFabrication,
+                                    &format!(
+                                        "worker {} contested {}× — {}",
+                                        session.name, thrash, reason
+                                    ),
+                                )
+                            {
+                                report.actions_taken.push(format!(
+                                    "ESCALATED TO HUMAN: {} thrashed {}× (contested fabrication)",
+                                    session.name, thrash
+                                ));
+                            }
+                        }
                     } else if effective_status == DoneStatus::DoneClean {
                         let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
                         self.stall_detector.forget(&session.name);
+                        // Clean, uncontested close → the loop converged; reset
+                        // the worker's thrash counter so a future reuse of the
+                        // name starts fresh.
+                        crate::loop_guard::clear_thrash(&self.config.state_dir, &session.name);
                         // Task#6 — deterministic close: an honest worker that
                         // wrote a verified done_clean used to keep its rmux
                         // session ALIVE (the only kill_session was the idle
@@ -815,6 +861,67 @@ impl Patrol {
         Ok(report)
     }
 
+    /// Mission wall-clock breaker (Loop Engineering bounded-runtime). A running
+    /// oracle with no closeable done signal gets a timeline note at the SOFT
+    /// ceiling and an operator escalation at the HARD ceiling. Never a kill —
+    /// the goal is to force a human to LOOK at a loop that has run unusually
+    /// long, not to murder legitimately long work (L5). Soft is marker-gated so
+    /// the timeline gets one note, not one per patrol tick.
+    fn check_mission_wallclock(
+        &self,
+        session_name: &str,
+        spawned_at: Option<DateTime<Utc>>,
+        has_closeable_done: bool,
+        report: &mut PatrolReport,
+    ) {
+        use crate::loop_guard::{self, EscalationReason};
+        if has_closeable_done {
+            return;
+        }
+        let Some(start) = spawned_at else {
+            return;
+        };
+        let elapsed = (Utc::now() - start).num_seconds();
+        let hrs = elapsed / 3_600;
+        if elapsed >= loop_guard::HARD_WALLCLOCK_SECS {
+            if loop_guard::escalate_to_human(
+                &self.config.state_dir,
+                session_name,
+                EscalationReason::WallClock,
+                &format!(
+                    "running {}h with no closeable done signal (hard ceiling {}h)",
+                    hrs,
+                    loop_guard::HARD_WALLCLOCK_SECS / 3_600
+                ),
+            ) {
+                report.actions_taken.push(format!(
+                    "ESCALATED TO HUMAN: {} past hard wall-clock ceiling ({}h)",
+                    session_name, hrs
+                ));
+            }
+        } else if elapsed >= loop_guard::SOFT_WALLCLOCK_SECS {
+            // One-shot timeline note (no operator ping at soft).
+            let key = session_name.strip_prefix("oracle-").unwrap_or(session_name);
+            let marker = self
+                .config
+                .state_dir
+                .join(format!("{}.wallclock-soft", key));
+            if !marker.exists() {
+                let _ = std::fs::write(&marker, Utc::now().to_rfc3339());
+                loop_guard::MissionLog::event(
+                    &self.config.state_dir,
+                    session_name,
+                    "wallclock",
+                    &format!(
+                        "mission running {}h (soft ceiling {}h) — still no closeable done signal",
+                        hrs,
+                        loop_guard::SOFT_WALLCLOCK_SECS / 3_600
+                    ),
+                );
+            }
+        }
+    }
+
     /// Patrol oracle sessions: check for done oracles, update registry, handle close.
     async fn patrol_oracles(
         &mut self,
@@ -837,6 +944,23 @@ impl Patrol {
             if session.role != SessionRole::Oracle {
                 continue;
             }
+
+            // ── Loop Engineering: mission wall-clock breaker ──
+            // A loop with no ceiling is the article's "cognitive surrender".
+            // We do NOT kill long missions (L5 / ultracode: a 37h mission is
+            // legitimate) — at the SOFT ceiling we drop a timeline note, and
+            // only at the HARD ceiling do we ping the operator to come look.
+            let spawned_at = registry
+                .oracles
+                .iter()
+                .find(|e| e.session_name == session.name)
+                .map(|e| e.spawned_at);
+            let has_closeable_done = OracleDoneSignal::read(&self.config.state_dir, &session.name)
+                .ok()
+                .flatten()
+                .map(|d| d.is_closeable())
+                .unwrap_or(false);
+            self.check_mission_wallclock(&session.name, spawned_at, has_closeable_done, report);
 
             // Check oracle done signal
             if let Ok(Some(mut done)) =

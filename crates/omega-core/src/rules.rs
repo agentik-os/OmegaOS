@@ -455,6 +455,17 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-06-13",
             reason: "The operator wanted 'whatever GitHub I give you, you install it' with no friction. Blindly executing an arbitrary repo's install script is exactly the supply-chain / malware vector the security hard limits forbid, and it would own the operator's own VPS. A bounded rule keeps the friction-free install the operator asked for while preserving the one glance that stops a hostile repo — strictly better than blind execution, and it ships safely to every OmegaOS user.",
         },
+        Rule {
+            id: "R-LOOP",
+            title: "Loop engineering — bounded retries, escalate to a human",
+            kind: RuleKind::Rule,
+            category: RuleCategory::QualityGate,
+            description: "A loop is a recurring process with a VERIFIABLE goal, MEMORY, and a hard CEILING that hands control back to a human — never an open-ended 'keep prompting until it looks done'. Every agentic loop (a worker's /goal loop, an oracle re-dispatching a failing worker, the quality gate re-running) is bounded: cap retries on the SAME error/worker at 3 (THRASH_CAP), cap quality-gate re-verifies at 3 (GATE_RETRY_CAP), then STOP re-looping and escalate to the operator through the alert funnel — set escalate_to_human on the done signal and say plainly in the report 'this needs a human and why'. Re-attempting the same failure a 4th time is thrash, not progress (L1: before the 3rd change to one bug, live runtime evidence is mandatory). The patrol enforces these ceilings at runtime (loop_guard) and writes a per-mission timeline (`omega timeline <oracle>`) so the operator can audit the whole loop in one place — the cure for 'comprehension debt' (the loop shipped a fix ≠ you understand it). Never accept a delegate's 'done' as the verdict (R-VERIFY); never silently overrun a budget (R-BUDGET) — escalate.",
+            applies_to: &[],
+            scopes: EXEC,
+            added_at: "2026-06-13",
+            reason: "Per Loop Engineering (Addy Osmani, June 2026; the 2026 builder skill), OmegaOS DETECTED loop pathologies — thrash, contested fabrication, wall-clock overrun — but never ENFORCED a ceiling: retry_thrash_count sat unread at 0 and the quality gate ran once with no bounded correction loop, so a thrashing loop could re-fabricate or overrun indefinitely with the human still in the inner loop. R-LOOP makes the ceiling a runtime invariant (loop_guard: bounded retries → escalate_to_human → operator alert + mission timeline), turning 'detect and record' into 'bound and escalate' — the article's core lesson and the antidote to cognitive surrender.",
+        },
     ]
 }
 

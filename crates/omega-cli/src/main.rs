@@ -4177,7 +4177,7 @@ async fn cmd_timeline(oracle: &str) -> Result<()> {
             println!("\n{} event(s)", tl.events.len());
         }
         None => {
-            println!("No timeline — no OracleState for '{}'.", oracle);
+            println!("No OracleState timeline for '{}'.", oracle);
             let states = omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir);
             if states.is_empty() {
                 println!("(no oracles have written state yet)");
@@ -4188,6 +4188,23 @@ async fn cmd_timeline(oracle: &str) -> Result<()> {
                 }
             }
         }
+    }
+
+    // ── Loop-guard timeline (R-LOOP) ──
+    // The append-only loop record: dispatches, contests with their thrash
+    // count, wall-clock notes, gate verdicts, and any escalation to a human.
+    // Distinct from the OracleState replay above (which is phase-centric) —
+    // this is the bounded-retry/escalation view that mitigates comprehension
+    // debt. Only printed when there is something to show.
+    let loop_events = omega_core::loop_guard::MissionLog::read(&config.state_dir, oracle);
+    if !loop_events.is_empty()
+        || omega_core::loop_guard::EscalationRecord::read(&config.state_dir, oracle).is_some()
+    {
+        println!();
+        print!(
+            "{}",
+            omega_core::loop_guard::MissionLog::render(&config.state_dir, oracle)
+        );
     }
     Ok(())
 }

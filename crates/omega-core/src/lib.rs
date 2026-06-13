@@ -28,6 +28,7 @@ pub mod gate;
 pub mod guardian;
 pub mod inbox;
 pub mod intent;
+pub mod loop_guard;
 pub mod mcp_servers;
 pub mod metrics;
 pub mod mission;

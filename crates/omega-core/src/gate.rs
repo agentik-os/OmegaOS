@@ -606,6 +606,37 @@ impl QualityGate {
         );
         result.oracle = oracle.to_string();
         let _ = result.write(&self.state_dir);
+
+        // ── Loop Engineering: bound the gate's re-verifies (R-LOOP) ──
+        // The gate is a firewall, not a correction loop. A mission that keeps
+        // failing it should not re-verify forever — count consecutive failures
+        // and at GATE_RETRY_CAP hand the loop to a human. A pass resets the
+        // counter. Every run leaves a timeline note for `omega log`.
+        if result.overall_pass {
+            crate::loop_guard::clear_gate_attempt(&self.state_dir, oracle);
+            crate::loop_guard::MissionLog::event(&self.state_dir, oracle, "gate", "quality gate PASSED");
+        } else {
+            let attempts = crate::loop_guard::bump_gate_attempt(&self.state_dir, oracle);
+            crate::loop_guard::MissionLog::event(
+                &self.state_dir,
+                oracle,
+                "gate",
+                &format!(
+                    "quality gate FAILED (attempt {}/{})",
+                    attempts,
+                    crate::loop_guard::GATE_RETRY_CAP
+                ),
+            );
+            if attempts >= crate::loop_guard::GATE_RETRY_CAP {
+                crate::loop_guard::escalate_to_human(
+                    &self.state_dir,
+                    oracle,
+                    crate::loop_guard::EscalationReason::GateRetryCap,
+                    &format!("quality gate failed {}× — re-verify cap hit, needs a human", attempts),
+                );
+            }
+        }
+
         result
     }
 }
