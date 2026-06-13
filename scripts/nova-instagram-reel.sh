@@ -26,7 +26,7 @@ echo "$SCENE" | grep -qiE "close|portrait|face|reading|cafe|cooking|coffee|laugh
 # 2) keyframe (vertical) then Seedance motion (vertical 9:16, public CloudFront URL)
 KF=$(higgsfield generate create gpt_image_2 --prompt "$STYLE Scene: $SCENE. Vertical 9:16 composition." --image "$REF" --wait --wait-timeout 6m 2>/dev/null | grep -oE 'https://\S+' | head -1)
 [ -n "$KF" ] || { log "reel: keyframe failed"; exit 1; }
-VURL=$(higgsfield generate create seedance_2_0 --prompt "Nova: $SCENE. Black and white modern Sin City noir, blonde hair, mouth closed not talking, real dynamic cinematic motion, premium film look." --image "$KF" --duration 6 --resolution 1080p --genre noir --aspect_ratio 9:16 --wait --wait-timeout 10m 2>/dev/null | grep -oE 'https://\S+' | head -1)
+VURL=$(higgsfield generate create kling3_0 --prompt "Nova: $SCENE. Black and white modern Sin City noir, blonde hair, mouth closed not talking, real dynamic cinematic motion, premium film look." --image "$KF" --duration 6 --aspect_ratio 9:16 --mode pro --sound off --wait --wait-timeout 10m 2>/dev/null | grep -oE 'https://\S+' | head -1)
 [ -n "$VURL" ] || { log "reel: video failed"; exit 1; }
 
 # 3) caption in Nova's voice
