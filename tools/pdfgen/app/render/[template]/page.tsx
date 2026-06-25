@@ -48,6 +48,12 @@ export default async function RenderPage({
     ? (requested as (typeof THEMES)[number])
     : "agentik";
 
+  // Fall back to the URL param (the `--template` CLI flag) when the data file
+  // omits the `template` discriminant — previously that silently rendered
+  // "Unknown template". Assigning keeps the discriminated-union narrowing below.
+  if (!(data as { template?: string }).template) {
+    (data as { template?: string }).template = template;
+  }
   let body: React.ReactNode;
   if (data.template === "whitepaper") body = <Whitepaper data={data} />;
   else if (data.template === "audit") body = <AuditReport data={data} />;
