@@ -485,6 +485,10 @@ install_command_bot() {
 # OmegaOS Telegram bot launcher (systemd/launchd → here → bun). Resolves bun at
 # runtime so a bun reinstall never bricks the service.
 OMEGA_DIR="\${OMEGA_DIR:-$OMEGA_DIR}"
+# systemd's PATH lacks ~/.local/bin (omega, rmux, claude) and ~/.bun/bin, so the
+# bot's reauth flow (omega claude-login → spawns an rmux session driving \`claude
+# /login\`) failed with "Session not found" → "Link not generated". Prepend them.
+export PATH="\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH"
 # Size-cap log rotation: launchd never rotates StandardOut/ErrPath, so under
 # KeepAlive=true these grow unbounded. Rotate at every launch (KeepAlive
 # restarts make launch-time rotation effective): >5MB → COPY to <name>.1 then
