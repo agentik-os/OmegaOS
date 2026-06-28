@@ -192,6 +192,17 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "Two workers editing one file produced merge conflicts and lost work.",
         },
         Rule {
+            id: "R-SYNC",
+            title: "Sync before work — pull before you touch a project",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Safety,
+            description: "Before editing, building, or deploying ANY project, sync the local checkout with its remote FIRST: `git fetch origin && git rebase origin/<branch>` (or `git pull --ff-only`). Never start work on a stale tree — the operator and other machines (e.g. a Mac) may have pushed. Resolve the fiche to confirm the remote/branch (R-FICHE). Just before the final commit+push, fetch+rebase AGAIN and retry on non-fast-forward. Acting on a stale checkout risks overwriting or losing pushed work.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-28",
+            reason: "Work was nearly started on a stale Verba checkout after the operator pushed local Mac changes to GitHub; syncing first prevents clobbering or losing remote work.",
+        },
+        Rule {
             id: "R-RUBRIC",
             title: "Rubric before execution",
             kind: RuleKind::Rule,
