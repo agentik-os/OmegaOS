@@ -1153,6 +1153,45 @@ EOF
     fi
 done
 
+# Install the Marketing Mastery doctrine layer (R-MARKETING + R-SKILLPUB) — the
+# 12 mm-* doctrine skills (one per Part of the "Marketing Mastery" manual: 2026-27
+# foundations, positioning, why-people-buy, messaging/offer, funnel/channels,
+# content/SEO/GEO, paid ads, pricing, partnerships, selling, measure/retention,
+# novice-to-expert) + the marketing-master orchestrator that runs ALL twelve on a
+# real project as one gap-checked, self-correcting pass. OmegaOS-native (vendored
+# here, so it ships even when the private Agentik-Skills clone is unavailable);
+# the doctrine ROUTES to the existing tactical skills, it never re-implements them
+# (see docs/marketing-mastery-alignment.md). Mirrors the design loop: copy →
+# ~/.omega/skills/marketing-mastery/<name>/ + /<name> AND /omg-<name> slash stubs.
+MMK_SRC="$OMEGA_SRC/skills/marketing-mastery"
+MMK_DST="$OMEGA_DIR/skills/marketing-mastery"
+if [[ -d "$MMK_SRC" ]]; then
+    mkdir -p "$MMK_DST"
+    cp -r "$MMK_SRC"/* "$MMK_DST/"
+    find "$MMK_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    MMK_CMD="$HOME/.claude/commands"; mkdir -p "$MMK_CMD"
+    MMK_STUBS=0
+    for skill_md in "$MMK_DST"/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        name="$(basename "$(dirname "$skill_md")")"
+        for cmd in "$name" "omg-$name"; do
+            cat > "$MMK_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $name Marketing Mastery doctrine skill. Read and follow the complete instructions in:
+
+\`$MMK_DST/$name/SKILL.md\`
+
+Use every named framework, mechanism, cross-link, and (for marketing-master) the embedded Workflow it provides.
+EOF
+        done
+        MMK_STUBS=$((MMK_STUBS + 1))
+    done
+    ok "Marketing Mastery doctrine installed ($MMK_STUBS skills → /<name> + /omg-<name> in $MMK_DST/)"
+else
+    info "Marketing Mastery doctrine skills not found — skipping"
+fi
+
 # Install the llm-council skill — a 100% Claude Code-native multi-model Claude
 # deliberation council (inspired by Karpathy's LLM Council), implemented on the
 # OmegaOS Workflow primitive: four Claude models answer in parallel, peer-review
