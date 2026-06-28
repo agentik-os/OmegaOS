@@ -94,7 +94,7 @@
 /* Default page: every flow page gets these book-style margins. */
 @page {
   size: A4 portrait;
-  margin: 26mm 24mm 26mm 24mm;
+  margin: 26mm 22mm 26mm 22mm;
   background: var(--paper);
 }
 
