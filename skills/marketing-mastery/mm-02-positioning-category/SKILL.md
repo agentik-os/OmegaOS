@@ -79,7 +79,7 @@ Viser étroit a un effet contre-intuitif : **un segment étroit grandit plus vit
 
 Une nuance, parce que la vérité a deux faces ici : **Byron Sharp**, dans *How Brands Grow*, montre que la croissance long terme des grandes marques vient de la **pénétration large** (atteindre le maximum d'acheteurs), pas de la fidélisation d'une niche. Ce n'est pas contradictoire — **c'est une question de séquence**. Tu commences niche pour acquérir traction, crédibilité et machine de conversion ; tu élargis ensuite. Sharp décrit le **régime de scale**, pas celui du démarrage.
 
-> **Principe :** Commence niche pour gagner ; élargis pour grandir. Le "beachhead" (Christensen) et la "pénétration large" (Sharp) ne se contredisent pas — ils décrivent deux moments différents de la même trajectoire.
+> **Principe :** Commence niche pour gagner ; élargis pour grandir. Le "beachhead" (la tête de pont défendable) et la "pénétration large" (Sharp) ne se contredisent pas — ils décrivent deux moments différents de la même trajectoire.
 
 ### Le cas particulier du solo founder multi-produits
 
