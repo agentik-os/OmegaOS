@@ -1192,6 +1192,46 @@ else
     info "Marketing Mastery doctrine skills not found — skipping"
 fi
 
+# Install the CAIO ("Chief AI Officer On Demand") enterprise-accompaniment suite
+# (R-SKILLPUB) — the end-to-end DELIVERY CHAIN for the flagship CAIO offer: a
+# pre-sign AI-readiness gate (caio-ai-readiness-assessment) → the existing per-person
+# discovery interview + company-level workflow architect → the 4 delivery skills:
+# implementation-runbook (realize the centralized federated topology + build),
+# enablement-and-transfer (adoption + skills transfer to "operational guardians"),
+# run-and-optimize (measure ROI + 1h/week quota + expand). One function-specific
+# micro-SaaS per C-Level, inter-dashboard APIs, anti-black-box internal mastery —
+# grounded in the Marketing Mastery doctrine (marketing-master + mm-*). OmegaOS-native
+# (vendored here so it ships even when the private Agentik-Skills clone is unavailable).
+# Mirrors the design loop: copy → ~/.omega/skills/caio/<name>/ + /<name> AND /omg-<name>.
+CAIO_SRC="$OMEGA_SRC/skills/caio"
+CAIO_DST="$OMEGA_DIR/skills/caio"
+if [[ -d "$CAIO_SRC" ]]; then
+    mkdir -p "$CAIO_DST"
+    cp -r "$CAIO_SRC"/* "$CAIO_DST/"
+    find "$CAIO_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    CAIO_CMD="$HOME/.claude/commands"; mkdir -p "$CAIO_CMD"
+    CAIO_STUBS=0
+    for skill_md in "$CAIO_DST"/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        name="$(basename "$(dirname "$skill_md")")"
+        for cmd in "$name" "omg-$name"; do
+            cat > "$CAIO_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $name CAIO enterprise-accompaniment skill. Read and follow the complete instructions in:
+
+\`$CAIO_DST/$name/SKILL.md\`
+
+Use every named framework, template, reference, and the Reads/Writes/Hands-to chain contract it provides.
+EOF
+        done
+        CAIO_STUBS=$((CAIO_STUBS + 1))
+    done
+    ok "CAIO accompaniment suite installed ($CAIO_STUBS skills → /<name> + /omg-<name> in $CAIO_DST/)"
+else
+    info "CAIO accompaniment suite not found — skipping"
+fi
+
 # Install the llm-council skill — a 100% Claude Code-native multi-model Claude
 # deliberation council (inspired by Karpathy's LLM Council), implemented on the
 # OmegaOS Workflow primitive: four Claude models answer in parallel, peer-review
