@@ -1,6 +1,7 @@
 # Media Inputs
 
 How to pass reference images, videos, audio, and videos for analysis. Mirrored from MCP server media-handling logic.
+> **Audio here means a reference INPUT** — an existing audio file you feed a model (e.g. the Seedance lipsync flow below). To **generate** audio — voiceover / TTS, voice cloning, dubbing — see `references/audio-generation.md`; those are dedicated audio `job_set_type`s (`seed_audio`, `text2speech_v2`, `dubbing`, `voice_change`, …), not a media flag.
 
 ## Path or UUID — both work
 
@@ -75,6 +76,7 @@ higgsfield generate create seedance_2_0 \
 ```
 
 **Do NOT pass `--generate-audio` to `seedance_2_0`** — the model schema doesn't declare it. Use the audio media role instead.
+> To *generate* a voiceover, or to dub / re-voice a clip (audio out, not in), use the audio models — see `references/audio-generation.md`.
 
 ## Schema mismatches
 

@@ -1,8 +1,8 @@
 ---
 name: higgsfield-generate
 description: >
-  Generate brand-quality images, videos, and ads via Higgsfield (Marketing Studio: branded ads, avatars, products, hooks; Soul/Cinema/Kling models). Use when the user says "/omg-higgsfield-generate", "/higgsfield-generate", "generate an image", "make a video", "brand video", "UGC ad", "product demo", or "marketing studio". R-VISUAL-ID: the visual-generation engine; consumes Soul IDs from higgsfield-soul-id. Requires the higgsfield CLI, auth, and a paid plan.
-triggers: ["omg-higgsfield-generate","higgsfield-generate","generate image","make a video","brand video","UGC ad","product demo","marketing studio"]
+  Generate brand-quality images, videos, audio (voiceover / text-to-speech, voice cloning, and video dubbing — Seed Audio 1.0 plus ElevenLabs and other selectable TTS engines), and ads via Higgsfield (Marketing Studio: branded ads, avatars, products, hooks; Soul/Cinema/Kling models). Use when the user says "/omg-higgsfield-generate", "/higgsfield-generate", "generate an image", "make a video", "make a voiceover", "text to speech", "voice clone", "dub this video", "brand video", "UGC ad", "product demo", or "marketing studio". R-VISUAL-ID: the visual-generation engine; consumes Soul IDs from higgsfield-soul-id. Requires the higgsfield CLI, auth, and a paid plan.
+triggers: ["omg-higgsfield-generate","higgsfield-generate","generate image","make a video","make a voiceover","text to speech","voice clone","dub this video","dubbing","brand video","UGC ad","product demo","marketing studio"]
 allowed-tools: ["Bash","Read","Glob","Grep"]
 domain: visual-identity
 read_only: false
@@ -257,6 +257,60 @@ Risk: Default Mode is high, which can indicate mind-wandering.
 Open report: <report_url>
 ```
 
+## Audio generation
+
+Higgsfield generates **audio**, not only images and video — voiceover / text-to-speech, voice cloning, sound, and video dubbing. This is generation (audio **out**); it is distinct from the `--audio` *reference input* used for Seedance lipsync (audio **in** — see `references/media-inputs.md`). Voiceover is powered by **Seed Audio 1.0** and, via `text2speech_v2`, selectable engines including **ElevenLabs**. Same submit-and-wait shape as everything else: `higgsfield generate create <job_set_type> [flags] --wait`.
+
+Apply the discovery guardrail here too — list the audio roster before answering. Note that `dubbing` and `voice_change` are listed under `type: video` (they rewrite a video's voice track), so classify by intent, not by the output category:
+
+```bash
+higgsfield model list --json | jq '.[] | select(.type=="audio")'   # audio-typed models
+higgsfield model get <job_set_type> --json                          # exact params for one model
+```
+
+### Audio models (runtime-verified, CLI v0.1.40)
+
+| Job | `job_set_type` | Required / key params | Notes |
+|---|---|---|---|
+| Voiceover / TTS — Seed Audio | `seed_audio` | `--prompt` (req); `--format wav\|mp3\|pcm\|ogg_opus`; `--sample_rate 8000…48000`; `--speech_rate`/`--pitch_rate`/`--loudness_rate` | **Seed Audio 1.0** — default high-quality TTS from a script. |
+| Voiceover / TTS — multi-engine | `text2speech_v2` | `--model elevenlabs\|minimax\|seed_speech\|vibe_voice\|cozy_voice` (req); `--prompt` (req); `--voice_id` (req); `--voice_type preset\|element` (req) | **ElevenLabs = `--model elevenlabs`** — an engine option here, not a separate model id. |
+| Voiceover — Inworld | `inworld_text_to_speech` | `--prompt` (req); `--voice` (req) | Inworld TTS. |
+| Sound / SFX / ambience | `mirelo_text_to_audio` | `--prompt` (req); `--duration` (req) | Mirelo text-to-audio. |
+| Music | `sonilo_music` | run `higgsfield model get sonilo_music` | Sonilo Music. |
+| Dubbing (localize a video) | `dubbing` | `--video <path-or-id>` (req); `--target_language <code>` (req) | Re-voices a finished video in another language. `type: video`. 18 languages today (see below). |
+| Voice cloning / transfer | `voice_change` | `--video <path-or-id>` (req); `--voice_id` (req); `--voice_type preset\|element` | Swaps the speaking voice in a video for a consistent brand voice. `type: video`. |
+| Transcription (audio→text) | `speech2text` | `--audio <path-or-id>` (req) | Speech-to-text. |
+
+Media inputs (schema fields `input_video` / `input_audio`) are passed with the standard media flags `--video` / `--audio` — a local path (auto-uploaded) or an upload/job id, same as the rest of the CLI. If a flag is rejected, confirm the accepted shape with `higgsfield model get <job_set_type> --json`.
+
+### Examples (verified flags only)
+
+```bash
+# Voiceover from a script (Seed Audio 1.0) → mp3
+higgsfield generate create seed_audio --prompt "Welcome to the future of marketing." --format mp3 --wait
+
+# Voiceover via the ElevenLabs engine (voice_id + voice_type required)
+higgsfield generate create text2speech_v2 --model elevenlabs --voice_type preset --voice_id <voice_id> --prompt "..." --wait
+
+# Dub a finished video into French
+higgsfield generate create dubbing --video ./ad.mp4 --target_language fra --wait
+
+# Re-voice a video with a brand voice (voice transfer)
+higgsfield generate create voice_change --video ./ad.mp4 --voice_type preset --voice_id <voice_id> --wait
+```
+
+### Dubbing languages
+
+`higgsfield model get dubbing` enumerates **18** `target_language` codes in CLI v0.1.40: `eng, cmn, fra, hin, ita, jpn, kor, por, rus, tur, spa, deu, ara, pol, ind, fil, swe, fin`. Higgsfield markets dubbing in **50+ languages** — treat 50+ as the platform claim and these 18 as what this CLI version exposes today; re-run `model get dubbing` as the roster grows.
+
+### Getting a voice_id
+
+`text2speech_v2` and `voice_change` require a `voice_id` (with `voice_type` `preset` or `element`/custom). CLI v0.1.40 surfaces no `voices list` command — source the id from the Higgsfield voice library / app (preset) or your cloned **element** voice. Don't guess a voice_id.
+
+### When to reach for audio
+
+You can now produce the *whole* asset in one stack (R-VISUAL-ID): generate the visual (image → video) first, then **voiceover** (`seed_audio` / `text2speech_v2`) for narration, **`voice_change`** to re-voice a clip in a consistent brand voice, or **`dubbing`** to localize a finished ad into another language. Live audio runs spend credits and need `higgsfield auth login` + a paid plan; OmegaOS ships only this skill markdown and never auto-installs the CLI.
+
 ## Errors
 
 - `Missing required params: prompt` → user gave no prompt; ask for it.
@@ -274,6 +328,7 @@ Load on demand:
 - `references/model-catalog.md` — picking the right model for the task
 - `references/prompt-engineering.md` — writing prompts that work
 - `references/media-inputs.md` — image/video/audio reference flows and Virality Predictor video analysis
+- `references/audio-generation.md` — audio generation: voiceover/TTS, voice cloning, dubbing (audio out; distinct from the `--audio` reference input)
 - `references/troubleshooting.md` — common errors and fixes
 - `references/marketing-avatars.md` — preset vs custom avatars
 - `references/marketing-products.md` — URL fetch vs manual product create
