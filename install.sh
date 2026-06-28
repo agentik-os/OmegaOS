@@ -1963,7 +1963,7 @@ else
     rm -rf "$SKILLS_REPO_DIR" 2>/dev/null || true
     # Honest about the gap: this is a PRIVATE repo, so without auth a fresh box
     # lacks every skill family that lives only there — say which, and how to fix.
-    info "Agentik-Skills unavailable (private repo, no gh/git auth) — the Motion/animation skill families (hyperframes, gsap, three, animejs, lottie, waapi, css-animations, typegpu, remotion) + art-director design packs will be MISSING. Get access from the agentik-os maintainer, then: gh auth login && gh repo clone agentik-os/Agentik-Skills $SKILLS_REPO_DIR && ./install.sh"
+    info "Agentik-Skills unavailable (private repo, no gh/git auth) — the library-tier skill families that live ONLY there will be MISSING: Motion/animation (hyperframes, gsap, three, animejs, lottie, waapi, css-animations, typegpu, remotion), art-director design packs, the marketing/ads/SEO execution layer the Marketing-Mastery doctrine routes to (mk-*, ads-*, market-*, ag-seo-*), and the Method packs. The vendored canon (GTM suite, mm-* doctrine, audits, design, caio) still ships. Get access from the agentik-os maintainer, then: gh auth login && gh repo clone agentik-os/Agentik-Skills $SKILLS_REPO_DIR && ./install.sh"
 fi
 
 # Mirror the cloned library into the live skill store (Agentik-Skills mirror
