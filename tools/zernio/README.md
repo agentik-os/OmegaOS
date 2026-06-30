@@ -71,6 +71,14 @@ omega-zernio post agentik-os --text "launch" --platforms instagram --media ./sho
 omega-zernio post agentik-os --text "later" --platforms tiktok --schedule 2026-07-01T09:00:00Z
 ```
 
+> **Validator media blind spot:** `/v1/tools/validate/post` only accepts
+> `{content, platforms:[{platform}]}` — it never sees `--media`, so for
+> media-required platforms (e.g. TikTok) it reports `media required` even when
+> your post will include media. When you pass `--media`, `--dry-run` demotes that
+> specific error to an informational **note** and keeps `valid: true`; the
+> would-send `/v1/posts` body already carries `mediaItems`. Other real errors
+> still block.
+
 Media type is inferred from the extension: `jpg/jpeg/png/webp → image`,
 `gif → gif`, `mp4/mov/webm → video`, `pdf → document`. Local files are uploaded
 via `/v1/media/presign`; if the presign shape can't be resolved, the CLI degrades

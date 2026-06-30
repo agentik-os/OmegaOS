@@ -488,17 +488,44 @@ async function cmdPost(a: Args): Promise<void> {
     }>("POST", "/tools/validate/post", validateBody);
     if (!v.ok) apiErr(v, "POST /tools/validate/post");
 
+    // /v1/tools/validate/post body is only {content, platforms:[{platform}]} —
+    // it never sees the --media we passed, so it flags "media required" even
+    // when the real post WILL include media. When --media was provided, demote
+    // those specific errors to informational notes (the would-send body already
+    // carries mediaItems). Other real errors still block and still show valid.
+    const MEDIA_REQ = /requires?.*media|media.*required/i;
+    const allErrors = v.body.errors ?? [];
+    const mediaNotes = mediaItems
+      ? allErrors.filter((e) => MEDIA_REQ.test(e.error))
+      : [];
+    const realErrors = allErrors.filter((e) => !mediaNotes.includes(e));
+    const effectiveValid = realErrors.length === 0 && (v.body.valid || mediaNotes.length > 0);
+
     if (JSON_OUT(a.flags)) {
-      out({ dryRun: true, validation: v.body, wouldSend: postBody });
+      out({
+        dryRun: true,
+        validation: v.body,
+        effectiveValid,
+        mediaNotes,
+        wouldSend: postBody,
+      });
       return;
     }
     console.log("DRY RUN — nothing published.\n");
     console.log("Validation (/v1/tools/validate/post):");
-    console.log(`  valid: ${v.body.valid}`);
+    console.log(`  valid: ${effectiveValid}`);
     if (v.body.message) console.log(`  message: ${v.body.message}`);
-    if (v.body.errors?.length) {
+    if (realErrors.length) {
       console.log("  errors:");
-      for (const e of v.body.errors) console.log(`    - [${e.platform}] ${e.error}`);
+      for (const e of realErrors) console.log(`    - [${e.platform}] ${e.error}`);
+    }
+    if (mediaNotes.length) {
+      console.log("  notes:");
+      for (const e of mediaNotes) {
+        console.log(
+          `    - [${e.platform}] note: validator does not inspect media; you passed --media, the real post will include it`,
+        );
+      }
     }
     if (v.body.warnings?.length) {
       console.log("  warnings:");
