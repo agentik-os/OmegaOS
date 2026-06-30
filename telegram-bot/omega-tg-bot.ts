@@ -1395,7 +1395,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm" | "zernio-post"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm" | "kairos-day" | "kairos-cap" | "zernio-post"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -2391,9 +2391,55 @@ function preview(s: string, n: number): string {
   const t = (s || "").replace(/\s+/g, " ").trim();
   return esc(t.length > n ? t.slice(0, n).trim() + "…" : t);
 }
-function kairosFull(s: string, n = 3500): string {
+function kairosFull(s: string, n = 4000): string {
   const t = s || "";
   return esc(t.slice(0, n)) + (t.length > n ? "\n\n<i>…(tronqué)</i>" : "");
+}
+
+// ── KAIROS v2 — daily-ritual data model (mirror lib/state.ts EXACTLY) ──
+// Local YYYY-MM-DD (the app's todayStr is local-tz; mirror it so a write lands
+// on the same journal key the dashboard reads).
+function kairosToday(): string {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+}
+function kairosDateMinus(days: number): string {
+  const d = new Date(); d.setDate(d.getDate() - days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+function kairosPrevDay(date: string): string {
+  const [y, m, dd] = date.split("-").map(Number);
+  const dt = new Date(y, m - 1, dd); dt.setDate(dt.getDate() - 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+}
+// emptyDay mirror — write COMPLETE days so the app never has to default fields.
+function kairosEmptyDay(): any {
+  return { intentionRelue: false, amorcage: false, actionTexte: "", actionFaite: false, pareto: [], defi: { texte: "", fait: false }, signes: [], gratitude: ["", "", ""], sn: 0, note: "" };
+}
+// Read blob, merge a partial patch into today's Day, write the WHOLE day back
+// (RMW so the Day stays complete) via set-field --json journal.<today> <day>.
+function kairosPatchDay(patch: any): { ok: boolean; err?: string } {
+  const d = kairosGet(); if (!d) return { ok: false, err: "store injoignable" };
+  const today = kairosToday();
+  const day = { ...kairosEmptyDay(), ...(d.journal?.[today] || {}), ...patch };
+  return kairosSet(`journal.${today}`, JSON.stringify(day), true);
+}
+// piliers = the 3-pillar loop count (0..3); 3 = "BOUCLE COMPLÈTE".
+function kairosPiliers(day: any): number {
+  if (!day) return 0;
+  return (day.intentionRelue ? 1 : 0) + (day.amorcage ? 1 : 0) + (day.actionFaite ? 1 : 0);
+}
+// Streak = consecutive days with actionFaite back from today (or yesterday if
+// today is not yet done).
+function kairosStreak(journal: any): number {
+  const j = journal || {}; let count = 0; let cur = kairosToday();
+  if (!j[cur]?.actionFaite) cur = kairosPrevDay(cur);
+  while (j[cur]?.actionFaite) { count++; cur = kairosPrevDay(cur); }
+  return count;
+}
+function kairosPrettyDate(): string {
+  try { return new Date().toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" }); }
+  catch { return kairosToday(); }
 }
 
 // ── vision-field synonym map: spoken word (normalized) → vision key ──
@@ -2430,7 +2476,7 @@ function kairosLevierIds(text: string): string[] {
 }
 
 // ── TASK 3 — French natural-language intent → a typed write instruction ──
-type KairosIntent = { dot?: string; value?: string; json?: boolean; label: string; kind: "set" | "levier" | "action" | "guide"; guide?: string };
+type KairosIntent = { dot?: string; value?: string; json?: boolean; label: string; kind: "set" | "levier" | "action" | "guide" | "day"; guide?: string; summary?: string };
 function detectKairosIntent(text: string): KairosIntent | null {
   const t = text.trim();
   // A question goes to the brain, never a write ("mantra c'est quoi ?", "… ?").
@@ -2470,29 +2516,90 @@ function detectKairosIntent(text: string): KairosIntent | null {
   // have no \w boundary after "é", so \b would never fire on them.
   m = t.match(/^\s*(?:j'?ai|j\s+ai)\s+(?:fait|complété|complete|terminé|termine|fini|accompli|réalisé|realise)(?=\s|$)\s*(.+)$/is);
   if (m && m[1].trim().length >= 3) return { kind: "action", value: m[1].trim(), label: "Action du jour" };
+  // ── KAIROS v2 — daily-ritual intents (confirm-gated). Each is RMW: compute the
+  // merged today-Day NOW and carry it as one json op on journal.<today>. ──
+  const dayIntent = (apply: (cur: any) => any, label: string, summary: string): KairosIntent => {
+    const d = kairosGet(); const today = kairosToday();
+    const cur = { ...kairosEmptyDay(), ...(d?.journal?.[today] || {}) };
+    const merged = { ...cur, ...apply(cur) };
+    return { kind: "day", dot: `journal.${today}`, value: JSON.stringify(merged), json: true, label, summary };
+  };
+  // "j'ai lu/relu mon mantra" → mantraReads+1 (BEFORE intention so it wins).
+  if (/^\s*(?:j'?ai\s+)?(?:lu|relu)\s+(?:mon\s+)?mantra\b/i.test(t))
+    return dayIntent(cur => ({ mantraReads: (cur.mantraReads || 0) + 1 }), "Lecture mantra", "Lecture du mantra +1");
+  // amorçage fait.
+  if (/^\s*(?:j'?ai\s+fait\s+(?:mon\s+)?)?amor[cç]age\b/i.test(t) || /amor[cç]age\s+(?:fait|ok|fini)/i.test(t))
+    return dayIntent(() => ({ amorcage: true }), "Amorçage", "Amorçage fait");
+  // intention / cap / objectif relu (AFTER mantra).
+  if (/^\s*(?:j'?ai\s+)?(?:relu|lu)\s+(?:mon\s+)?(?:intention|cap|objectif)\b/i.test(t))
+    return dayIntent(() => ({ intentionRelue: true }), "Intention", "Intention relue");
+  // système nerveux 1-5.
+  m = t.match(/^\s*(?:syst[èe]me\s+nerveux|sn)\s*(?:[:=]|à)?\s*([1-5])\b/i) || t.match(/^\s*je\s+suis\s+à\s+([1-5])\s*(?:\/\s*5)?\b/i);
+  if (m) { const n = Number(m[1]); return dayIntent(() => ({ sn: n }), "Système nerveux", `SN : ${n}/5`); }
+  // gratitude (split into ≤3).
+  m = t.match(/^\s*(?:gratitude|reconnaissant|merci)\b.*?[:=]\s*(.+)$/i) || t.match(/^\s*je\s+suis\s+reconnaissant\b.*?(?:pour|de)\s+(.+)$/i);
+  if (m && m[1].trim().length >= 2) {
+    const g = m[1].split(/[,\n]/).map(s => s.trim()).filter(Boolean).slice(0, 3); while (g.length < 3) g.push("");
+    return dayIntent(() => ({ gratitude: g }), "Gratitude", `«${preview(g.filter(Boolean).join(", "), 120)}»`);
+  }
+  // défi du jour.
+  m = t.match(/^\s*(?:mon\s+)?d[ée]fi\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[1].trim().length >= 2 && !isQ(m[1])) { const v = m[1].trim(); return dayIntent(() => ({ defi: { texte: v, fait: false } }), "Défi", `«${preview(v, 120)}»`); }
+  // signe / synchronicité (append).
+  m = t.match(/^\s*(?:signe|j'?ai\s+(?:vu|remarqué|remarque)|synchronicit[ée])\s*(?:[:=])?\s*(.+)$/is);
+  if (m && m[1].trim().length >= 2 && !isQ(m[1])) {
+    const v = m[1].trim();
+    return dayIntent(cur => ({ signes: [...(Array.isArray(cur.signes) ? cur.signes : []), { id: Date.now(), texte: v, geste: "", active: true }] }), "Signe", `«${preview(v, 120)}»`);
+  }
+  // note du jour.
+  m = t.match(/^\s*note\s*[:=]\s*(.+)$/is);
+  if (m && m[1].trim().length >= 1) { const v = m[1].trim(); return dayIntent(() => ({ note: v }), "Note", `«${preview(v, 120)}»`); }
   return null;
 }
 
-// ── TASK 1 — compact KAIROS card (well under 4096 via previews) ──
-function kairosCard(): { text: string; markup: any } {
+// ── KAIROS v2 — chunked sender (Telegram hard limit 4096/msg) ──
+async function sendChunks(chatId: number, blocks: string[], markup: any, thread?: number) {
+  for (let i = 0; i < blocks.length; i++)
+    await send(chatId, blocks[i], i === blocks.length - 1 ? markup : undefined, thread);
+}
+// ── FEATURE 1 — FULL vision, multi-message (no truncation) ──
+// Block 1 = identity (objectif ultime + objectif + mantra). Then the 10 vision
+// champs, packed on field boundaries into blocks each kept < 3900 chars.
+function kairosVisionBlocks(): string[] {
   const d = kairosGet();
-  if (!d) return {
-    text: "⚠️ Je n'arrive pas à lire ta vision KAIROS (le store ne répond pas).",
-    markup: kb([[{ text: "🔄 Réessayer", callback_data: "nova:kairos" }]]),
-  };
+  if (!d) return ["⚠️ Store KAIROS injoignable."];
   const v = d.vision || {};
-  const visFields = KAIROS_FIELDS.filter(f => f.dot.startsWith("vision."));
-  const vis = visFields.map(f => `• <b>${esc(f.label)}</b> : ${v[f.key] ? preview(v[f.key], 60) : "—"}`).join("\n");
-  const on = new Set<string>(Array.isArray(d.leviers) ? d.leviers : []);
-  const lev = KAIROS_LEVIERS.map(l => `${on.has(l.id) ? "✅" : "⬜"} ${esc(l.label)}`).join("  ");
-  const text =
+  const out: string[] = [];
+  const b1 =
     `🧭 <b>KAIROS — ta vision</b>\n\n` +
-    `🎯 <b>Objectif ultime</b>\n${d.objectifUltime ? preview(d.objectifUltime, 160) : "—"}\n\n` +
-    `🧭 <b>Objectif</b>\n${d.objectif ? preview(d.objectif, 140) : "—"}\n\n` +
-    `🔱 <b>Mantra</b>\n${d.mantra ? preview(d.mantra, 160) : "—"}\n\n` +
-    `🌅 <b>Vision</b>\n${vis}\n\n` +
-    `⚡ <b>Leviers</b>\n${lev}\n\n` +
-    `<i>Tape un champ pour le modifier · /kairos update &lt;champ&gt; &lt;valeur&gt;</i>`;
+    `🎯 <b>Objectif ultime</b>\n${d.objectifUltime ? esc(d.objectifUltime) : "—"}\n\n` +
+    `🧭 <b>Objectif</b>\n${d.objectif ? esc(d.objectif) : "—"}\n\n` +
+    `🔱 <b>Mantra</b>\n${d.mantra ? esc(d.mantra) : "—"}`;
+  if (b1.length > 3900) for (let i = 0; i < b1.length; i += 3900) out.push(b1.slice(i, i + 3900));
+  else out.push(b1);
+  const visFields = KAIROS_FIELDS.filter(f => f.dot.startsWith("vision."));
+  let blk = `🌅 <b>Vision</b>\n`;
+  for (const f of visFields) {
+    const piece = `\n<b>${esc(f.label)}</b>\n${v[f.key] ? esc(v[f.key]) : "—"}\n`;
+    if (blk.length + piece.length > 3900) { out.push(blk.trimEnd()); blk = ""; }
+    blk += piece;
+  }
+  if (blk.trim()) out.push(blk.trimEnd());
+  return out;
+}
+// ── FEATURE 2 — KAIROS hub menu ──
+function kairosMenuKb() {
+  return kb([
+    [{ text: "📖 Ma vision", callback_data: "nova:kv" }],
+    [{ text: "📅 Aujourd'hui", callback_data: "nova:kj" }, { text: "🔥 Stats", callback_data: "nova:ks" }],
+    [{ text: "🔮 Synthèse", callback_data: "nova:ky" }, { text: "✏️ Modifier", callback_data: "nova:ke" }],
+    [{ text: "⚡ Leviers", callback_data: "nova:klv" }],
+  ]);
+}
+const KAIROS_HUB_TEXT = "🧭 <b>KAIROS</b>\nTon tableau de vision + rituel.";
+// The per-field edit grid (the old kairosCard markup — kept, retitled).
+function kairosEditGrid(): { text: string; markup: any } {
+  const visFields = KAIROS_FIELDS.filter(f => f.dot.startsWith("vision."));
   const visBtns: Btn[][] = [];
   for (let i = 0; i < visFields.length; i += 2)
     visBtns.push(visFields.slice(i, i + 2).map(f => ({ text: f.label, callback_data: `nova:kf:${f.key}` })));
@@ -2501,10 +2608,75 @@ function kairosCard(): { text: string; markup: any } {
     [{ text: "✏️ Mantra", callback_data: "nova:kf:mantra" }],
     ...visBtns,
     [{ text: "⚡ Leviers", callback_data: "nova:klv" }],
-    [{ text: "🔄 Rafraîchir", callback_data: "nova:kairos" }],
+    [{ text: "« KAIROS", callback_data: "nova:kairos" }],
+  ]);
+  return { text: "✏️ <b>Modifier</b> — choisis un champ", markup };
+}
+// ── FEATURE 3 — "Aujourd'hui" ritual card (compact summary; full text lives in
+// the vision/edit views). Writes go through kairosPatchDay then re-render. ──
+function kairosTodayView(): { text: string; markup: any } {
+  const d = kairosGet();
+  if (!d) return { text: "⚠️ Store KAIROS injoignable.", markup: kairosMenuKb() };
+  const day = { ...kairosEmptyDay(), ...(d.journal?.[kairosToday()] || {}) };
+  const ck = (b: any) => b ? "✅" : "⬜";
+  const piliers = kairosPiliers(day);
+  const boucle = piliers === 3 ? "BOUCLE COMPLÈTE ✨" : `${piliers}/3`;
+  const paretoFait = (day.pareto || []).filter((p: any) => p.fait).length;
+  const gratCount = (day.gratitude || []).filter((g: string) => g && g.trim()).length;
+  const text =
+    `📅 <b>Aujourd'hui</b> · ${esc(kairosPrettyDate())}\n\n` +
+    `🔄 <b>Boucle ${boucle}</b>\n` +
+    `🎯 Intention ${ck(day.intentionRelue)}  🌅 Amorçage ${ck(day.amorcage)}  ⚡ Action ${ck(day.actionFaite)}\n\n` +
+    `🔥 Streak : <b>${kairosStreak(d.journal)} j</b>   🧠 SN : <b>${day.sn || 0}/5</b>   📖 Mantra : <b>${day.mantraReads || 0}</b>\n` +
+    `🎯 Action : ${day.actionTexte ? preview(day.actionTexte, 120) : "—"}\n` +
+    `🏆 Défi : ${day.defi?.texte ? preview(day.defi.texte, 100) : "—"} ${ck(day.defi?.fait)}\n` +
+    `📌 Pareto : <b>${paretoFait}/${(day.pareto || []).length}</b>   🙏 Gratitude : <b>${gratCount}/3</b>   ✨ Signes : <b>${(day.signes || []).length}</b>\n` +
+    `📝 Note : ${day.note ? preview(day.note, 120) : "—"}`;
+  const markup = kb([
+    [{ text: `🎯 Intention ${ck(day.intentionRelue)}`, callback_data: "nova:kt:intentionRelue" }, { text: `🌅 Amorçage ${ck(day.amorcage)}`, callback_data: "nova:kt:amorcage" }],
+    [{ text: `⚡ Action faite ${ck(day.actionFaite)}`, callback_data: "nova:kt:actionFaite" }, { text: "📖 +1 lecture", callback_data: "nova:km" }],
+    [1, 2, 3, 4, 5].map(n => ({ text: day.sn === n ? `🔵${n}` : `${n}`, callback_data: `nova:ksn:${n}` })),
+    [{ text: "🎯 Action", callback_data: "nova:ki:action" }, { text: "🏆 Défi", callback_data: "nova:ki:defi" }],
+    [{ text: "🙏 Gratitude", callback_data: "nova:ki:gratitude" }, { text: "✨ Signe", callback_data: "nova:ki:signe" }],
+    [{ text: "📝 Note", callback_data: "nova:ki:note" }, { text: "📌 Pareto", callback_data: "nova:ki:pareto" }],
+    [{ text: "« KAIROS", callback_data: "nova:kairos" }],
   ]);
   return { text, markup };
 }
+// ── FEATURE 5 — Stats (streak, loop, 28-day sparkline, cap) ──
+function kairosStatsView(): { text: string; markup: any } {
+  const d = kairosGet();
+  if (!d) return { text: "⚠️ Store KAIROS injoignable.", markup: kairosMenuKb() };
+  const journal = d.journal || {};
+  const todayDay = { ...kairosEmptyDay(), ...(journal[kairosToday()] || {}) };
+  const sparkChars = ["·", "▪", "▰", "█"];
+  let spark = "", complete = 0;
+  for (let i = 27; i >= 0; i--) {
+    const p = kairosPiliers(journal[kairosDateMinus(i)]);
+    spark += sparkChars[p]; if (p === 3) complete++;
+  }
+  let text =
+    `🔥 <b>Stats</b>\n\n` +
+    `Streak : <b>${kairosStreak(journal)} jours</b>\n` +
+    `Boucle aujourd'hui : <b>${kairosPiliers(todayDay)}/3</b>\n` +
+    `Boucles complètes (28j) : <b>${complete}</b>\n` +
+    `Jours journalisés : <b>${Object.keys(journal).length}</b>\n` +
+    `Lectures mantra aujourd'hui : <b>${todayDay.mantraReads || 0}</b>\n\n` +
+    `<code>${spark}</code>\n<i>28 derniers jours · · ▪ ▰ █</i>`;
+  const rows: Btn[][] = [];
+  const cap = d.cap;
+  if (cap && Number(cap.target) > 0) {
+    const cur = Number(cap.current) || 0, tgt = Number(cap.target);
+    const pct = Math.max(0, Math.min(100, Math.round((cur / tgt) * 100)));
+    const filled = Math.round(pct / 10);
+    text += `\n\n📈 <b>Cap : ${esc(cap.label || "")}</b>\n${cur} / ${tgt} ${esc(cap.unit || "")} (${pct}%)\n<code>${"█".repeat(filled)}${"░".repeat(10 - filled)}</code>`;
+    rows.push([{ text: "📈 MAJ cap", callback_data: "nova:kcap" }]);
+  }
+  rows.push([{ text: "« KAIROS", callback_data: "nova:kairos" }, { text: "🔄", callback_data: "nova:ks" }]);
+  return { text, markup: kb(rows) };
+}
+// ── FEATURE 6 — Synthèse: the EXACT KAIROS mentor system prompt (verbatim) ──
+const KAIROS_SYSTEM = `Tu es KAIROS, un mentor qui réunit un stoïcien moderne, un psychologue cognitif, un stratège et un copywriter. Voix directe et chaleureuse, jamais gourou, jamais de pensée magique. Tu analyses les données de journal de la personne. Repère le pattern réel des sept derniers jours, souligne ce qui marche, et nomme avec tact toute dérive vers la passivité, c'est à dire vouloir un résultat sans déclencher de geste. Termine par une seule action concrète pour demain. Maximum 110 mots. N'utilise jamais de tirets comme ponctuation, seulement des virgules, des points ou des parenthèses. Réponds en français.`;
 // ── TASK 2 (leviers) — the toggle menu ──
 function kairosLeviersView(): { text: string; markup: any } {
   const d = kairosGet();
@@ -2538,7 +2710,7 @@ const kairosViewBtn = kb([[{ text: "🧭 Voir KAIROS", callback_data: "nova:kair
 async function handleKairosCommand(text: string, chatId: number, thread?: number) {
   const parts = text.trim().split(/\s+/);
   const sub = (parts[1] || "").toLowerCase();
-  if (!parts[1]) { const c = kairosCard(); await send(chatId, c.text, c.markup, thread); return; }
+  if (!parts[1]) { await sendChunks(chatId, kairosVisionBlocks(), kairosMenuKb(), thread); return; }
   if (sub === "help" || sub === "aide") { await send(chatId, kairosHelpText(), kairosViewBtn, thread); return; }
   if (sub === "update" || sub === "set") {
     const fieldTok = parts[2] || "";
@@ -2565,9 +2737,11 @@ async function handleKairosCommand(text: string, chatId: number, thread?: number
 // ── TASK 2 — inline-button callbacks (nova:kairos / nova:kf:<key> / nova:klv / nova:klt:<id>) ──
 async function onKairosCallback(data: string, chatId: number, msgId: number, from: number) {
   const [, ns, arg] = data.split(":");
-  // Clear any armed pending FIRST so ✖️ Annuler (→ nova:kairos) can't leave the
-  // next ordinary message wired into a field (MAJOR 1).
-  if (data === "nova:kairos") { clearPending(from); const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+  // Any KAIROS callback cancels an in-progress text-input pending, EXCEPT the ones
+  // that ARM one (kf/ki/kcap) or CONSUME one (kok). Stops a stale armed edit from
+  // capturing the operator's next ordinary message (data-corruption guard).
+  if (!(ns === "kf" || ns === "ki" || data === "nova:kcap" || data === "nova:kok")) clearPending(from);
+  if (data === "nova:kairos") { return edit(chatId, msgId, KAIROS_HUB_TEXT, kairosMenuKb()); }
   // Confirm / cancel an NL-detected write (kairos-confirm pending).
   if (data === "nova:kno") { clearPending(from); return edit(chatId, msgId, "Annulé.", undefined); }
   if (data === "nova:kok") {
@@ -2582,7 +2756,7 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
   }
   if (ns === "kf" && arg) {
     const f = kairosFieldByKey(arg);
-    if (!f) { const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+    if (!f) { const g = kairosEditGrid(); return edit(chatId, msgId, g.text, g.markup); }
     const d = kairosGet() || {};
     const curr = f.dot.startsWith("vision.") ? (d.vision?.[f.key] ?? "") : (d[f.dot] ?? "");
     setPending(from, "kairos-field", f.dot);
@@ -2600,11 +2774,102 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
     const v = kairosLeviersView();
     return edit(chatId, msgId, v.text, v.markup);
   }
+  // ── KAIROS v2 hub navigation ──
+  if (data === "nova:ke") { const g = kairosEditGrid(); return edit(chatId, msgId, g.text, g.markup); }
+  // Vision is multi-message → SEND (don't edit), then the hub menu on the last block.
+  if (data === "nova:kv") { await sendChunks(chatId, kairosVisionBlocks(), kairosMenuKb()); return; }
+  // Navigation targets — pending already cleared by the top guard (✖️ Annuler too).
+  if (data === "nova:kj") { const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup); }
+  if (data === "nova:ks") { const v = kairosStatsView(); return edit(chatId, msgId, v.text, v.markup); }
+  // ── FEATURE 3 — today quick actions (immediate writes, then re-render) ──
+  if (ns === "kt" && arg) {
+    const cur = kairosGet()?.journal?.[kairosToday()]?.[arg];
+    kairosPatchDay({ [arg]: !cur });
+    const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup);
+  }
+  if (ns === "ksn" && arg) {
+    const n = Number(arg);
+    const cur = kairosGet()?.journal?.[kairosToday()]?.sn || 0;
+    kairosPatchDay({ sn: cur === n ? 0 : n });
+    const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup);
+  }
+  if (data === "nova:km") {
+    const cur = kairosGet()?.journal?.[kairosToday()]?.mantraReads || 0;
+    kairosPatchDay({ mantraReads: cur + 1 });
+    const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup);
+  }
+  // ── FEATURE 3/4 — text-input fields: arm a kairos-day pending, then prompt ──
+  if (ns === "ki" && arg) {
+    const prompts: Record<string, string> = {
+      action: "ton action du jour", defi: "ton défi du jour",
+      gratitude: "jusqu'à 3 gratitudes, séparées par des virgules ou des retours",
+      signe: "le signe que tu as repéré", note: "ta note du jour", pareto: "une action à fort impact",
+    };
+    setPending(from, "kairos-day", arg);
+    return edit(chatId, msgId, `✏️ Envoie ${esc(prompts[arg] || arg)}.`, kb([[{ text: "✖️ Annuler", callback_data: "nova:kj" }]]));
+  }
+  // ── FEATURE 5 — update the cap value ──
+  if (data === "nova:kcap") {
+    setPending(from, "kairos-cap");
+    return edit(chatId, msgId, "📈 Nouvelle valeur du cap (un nombre, ex 25000).", kb([[{ text: "✖️ Annuler", callback_data: "nova:ks" }]]));
+  }
+  // ── FEATURE 6 — synthèse ──
+  if (data === "nova:ky") {
+    const ls = kairosGet()?.lastSynthese;
+    const text = ls?.text
+      ? `🔮 <b>Synthèse</b> · ${esc(ls.date || "")}\n\n${esc(ls.text)}`
+      : `🔮 <b>Synthèse</b>\nPas encore de synthèse.`;
+    return edit(chatId, msgId, text, kb([
+      [{ text: "🔮 Générer", callback_data: "nova:kyg" }],
+      [{ text: "« KAIROS", callback_data: "nova:kairos" }],
+    ]));
+  }
+  if (data === "nova:kyg") {
+    await edit(chatId, msgId, "🔮 Analyse en cours…", undefined);
+    try {
+    const d = kairosGet();
+    if (!d) return edit(chatId, msgId, "⚠️ Store KAIROS injoignable.", kairosMenuKb());
+    const journal = d.journal || {};
+    const last7: any[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = kairosDateMinus(i);
+      const day = { ...kairosEmptyDay(), ...(journal[date] || {}) };
+      last7.push({
+        date,
+        action: day.actionTexte || "",
+        action_faite: !!day.actionFaite,
+        pareto: (day.pareto || []).map((p: any) => ({ a: p.texte, fait: !!p.fait })),
+        defi: day.defi?.texte || "",
+        objectif_relu: !!day.intentionRelue,
+        amorcage: !!day.amorcage,
+        signes: (day.signes || []).map((s: any) => s.texte),
+        gratitude: (day.gratitude || []).filter((g: string) => g && g.trim()),
+        systeme_nerveux: day.sn || 0,
+        note: day.note || "",
+      });
+    }
+    const leviersLabels = (Array.isArray(d.leviers) ? d.leviers : []).map((id: string) => KAIROS_LEVIERS.find(l => l.id === id)?.label || id).join(", ");
+    const user =
+      `Objectif ultime : ${d.objectifUltime || "—"}\n` +
+      `Objectif 90 jours : ${d.objectif || "—"}\n` +
+      `Leviers travaillés : ${leviersLabels || "—"}\n\n` +
+      `7 derniers jours (JSON) :\n` + JSON.stringify(last7, null, 2);
+    const out = (await runClaude(user, KAIROS_SYSTEM, "/", "KAIROS", undefined, ["--model", COMPANION_MODEL, "--max-turns", "1", "--strict-mcp-config"], 120000) || "").trim();
+    if (!out) return edit(chatId, msgId, "⚠️ Synthèse indisponible (réessaie dans un instant).", kb([[{ text: "🔮 Réessayer", callback_data: "nova:kyg" }], [{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
+    kairosSet("lastSynthese", JSON.stringify({ date: kairosToday(), text: out }), true);
+    await edit(chatId, msgId, "✅ Synthèse", kb([[{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
+    return send(chatId, `🔮 <b>Synthèse</b>\n\n${esc(out)}`, kairosMenuKb());
+    } catch (e: any) {
+      return edit(chatId, msgId, `⚠️ Synthèse échouée : <i>${esc(String(e?.message || e)).slice(0, 160)}</i>`, kb([[{ text: "🔮 Réessayer", callback_data: "nova:kyg" }], [{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
+    }
+  }
 }
 
 async function onNovaCallback(data: string, chatId: number, msgId: number, from: number, botName: string, model?: string) {
   const [, ns, arg] = data.split(":");
-  if (data === "nova:kairos" || ns === "kf" || data === "nova:klv" || ns === "klt" || data === "nova:kok" || data === "nova:kno") return onKairosCallback(data, chatId, msgId, from);
+  if (data === "nova:kairos" || ns === "kf" || data === "nova:klv" || ns === "klt" || data === "nova:kok" || data === "nova:kno"
+    || data === "nova:kv" || data === "nova:kj" || data === "nova:ks" || data === "nova:ky" || data === "nova:kyg" || data === "nova:ke"
+    || ns === "kt" || ns === "ksn" || data === "nova:km" || ns === "ki" || data === "nova:kcap") return onKairosCallback(data, chatId, msgId, from);
   if (data === "nova:menu") return edit(chatId, msgId, `<b>⚡ ${esc(botName)} — menu</b>\nChoisis :`, novaMenuKb());
   if (data === "nova:connect") return edit(chatId, msgId, `<b>🔌 Connecter mes comptes</b>\nVia Composio (un seul hub d'auth). Appuie sur un service → je te renvoie le lien d'autorisation à ouvrir sur ton tél.`, novaConnectKb());
   if (ns === "conn" && arg) {
@@ -2701,7 +2966,7 @@ async function agentBotMain(agentId: string) {
         // never let /menu, /aide, /kairos… leave a field/confirm armed for the next message.
         if (isCompanion && text.startsWith("/")) {
           const kpend = getPending(from);
-          if (kpend && (kpend.kind === "kairos-field" || kpend.kind === "kairos-confirm")) {
+          if (kpend && (kpend.kind === "kairos-field" || kpend.kind === "kairos-confirm" || kpend.kind === "kairos-day" || kpend.kind === "kairos-cap")) {
             clearPending(from);
             if (text === "/annuler" || text === "/cancel") { await send(chatId, "Annulé.", undefined, thread); continue; }
           }
@@ -2753,10 +3018,52 @@ async function agentBotMain(agentId: string) {
             const r = kairosSet(kp.arg!, text);
             if (r.ok) {
               await send(chatId, `✅ <b>${esc(kairosLabelForDot(kp.arg!))}</b> mis à jour.`, undefined, thread);
-              const c = kairosCard(); await send(chatId, c.text, c.markup, thread);
+              const g = kairosEditGrid(); await send(chatId, g.text, g.markup, thread);
             } else {
               await send(chatId, `⚠️ Échec de la mise à jour : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
             }
+            continue;
+          }
+          // KAIROS v2: a pending "Aujourd'hui" field captures the next typed value
+          // (action/defi/note/gratitude/signe/pareto) — RMW the today-Day, re-render.
+          if (kp?.kind === "kairos-day" && text && !text.startsWith("/")) {
+            clearPending(from);
+            const fld = kp.arg!;
+            let r: { ok: boolean; err?: string }; let label = "";
+            if (fld === "action") { r = kairosPatchDay({ actionTexte: text, actionFaite: true }); label = "Action"; }
+            else if (fld === "defi") { r = kairosPatchDay({ defi: { texte: text, fait: false } }); label = "Défi"; }
+            else if (fld === "note") { r = kairosPatchDay({ note: text }); label = "Note"; }
+            else if (fld === "gratitude") {
+              const g = text.split(/[,\n]/).map(s => s.trim()).filter(Boolean).slice(0, 3); while (g.length < 3) g.push("");
+              r = kairosPatchDay({ gratitude: g }); label = "Gratitude";
+            } else if (fld === "signe") {
+              const day = kairosGet()?.journal?.[kairosToday()] || {};
+              const signes = Array.isArray(day.signes) ? [...day.signes] : [];
+              signes.push({ id: Date.now(), texte: text, geste: "", active: true });
+              r = kairosPatchDay({ signes }); label = "Signe";
+            } else if (fld === "pareto") {
+              const day = kairosGet()?.journal?.[kairosToday()] || {};
+              const pareto = Array.isArray(day.pareto) ? [...day.pareto] : [];
+              pareto.push({ id: Date.now(), texte: text, fait: false });
+              r = kairosPatchDay({ pareto }); label = "Pareto";
+            } else { r = { ok: false, err: "champ inconnu" }; label = fld; }
+            if (r.ok) {
+              await send(chatId, `✅ <b>${esc(label)}</b> noté.`, undefined, thread);
+              const v = kairosTodayView(); await send(chatId, v.text, v.markup, thread);
+            } else await send(chatId, `⚠️ Échec : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
+            continue;
+          }
+          // KAIROS v2: a pending cap update captures a number → write cap.current.
+          if (kp?.kind === "kairos-cap" && text && !text.startsWith("/")) {
+            clearPending(from);
+            const n = parseFloat(text.replace(/[^\d.,-]/g, "").replace(",", "."));
+            if (!isFinite(n)) { await send(chatId, "⚠️ Donne un nombre (ex 25000).", undefined, thread); continue; }
+            const cap = kairosGet()?.cap || {};
+            const r = kairosSet("cap", JSON.stringify({ ...cap, current: n }), true);
+            if (r.ok) {
+              await send(chatId, `✅ <b>Cap</b> mis à jour.`, undefined, thread);
+              const v = kairosStatsView(); await send(chatId, v.text, v.markup, thread);
+            } else await send(chatId, `⚠️ Échec : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
             continue;
           }
           // KAIROS: French NL intents. `guide` just replies; set/levier/action are
@@ -2777,6 +3084,8 @@ async function agentBotMain(agentId: string) {
                 const now = new Date();
                 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
                 payload = { ops: [{ dot: `journal.${today}.actionTexte`, value: intent.value!, json: false }, { dot: `journal.${today}.actionFaite`, value: "true", json: true }], label: "Action du jour", summary: `Action du jour : «${preview(intent.value!, 120)}»` };
+              } else if (intent.kind === "day") {
+                payload = { ops: [{ dot: intent.dot!, value: intent.value!, json: true }], label: intent.label, summary: intent.summary || "" };
               }
               if (payload) {
                 setPending(from, "kairos-confirm", JSON.stringify(payload));
@@ -2836,6 +3145,23 @@ async function main() {
   if (process.argv.includes("--selftest-zernio")) {
     const v = await zernioHome();
     process.stdout.write(JSON.stringify({ text: v.text, markup: v.markup }, null, 2) + "\n");
+    process.exit(0);
+  }
+  // SELF-TEST: `bun omega-tg-bot.ts --selftest-kairos` runs the REAL detectKairosIntent
+  // over a few French phrases and prints {input → kind/label} — a NO-token, NO-poll
+  // debug affordance so the KAIROS v2 ritual NL detector is verifiable at runtime.
+  // detectKairosIntent only READS the store (kairosGet) for day intents, never writes.
+  if (process.argv.includes("--selftest-kairos")) {
+    const cases = [
+      "j'ai lu mon mantra", "amorçage fait", "j'ai relu mon intention", "sn 4",
+      "je suis à 2/5", "gratitude: ma santé, mon équipe", "mon défi est tenir 3h de deep work",
+      "signe: une plume sur le trottoir", "note: journée dense", "c'est quoi mon défi ?",
+      "mon mantra est je crée ma chance", "j'ai fait 3 cold calls",
+    ];
+    for (const c of cases) {
+      const i = detectKairosIntent(c);
+      process.stdout.write(`${JSON.stringify(c)} → ${i ? `${i.kind}${i.label ? " / " + i.label : ""}` : "null"}\n`);
+    }
     process.exit(0);
   }
   // AGENT MODE: this process is a dedicated per-agent bot (own token + project oracle).
