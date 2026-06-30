@@ -379,6 +379,17 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "Agents pushed to the wrong remote, used the wrong git identity, and guessed credential paths. One authoritative project record removes the guessing.",
         },
         Rule {
+            id: "R-PROJ",
+            title: "Never confuse projects",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Safety,
+            description: "Each project is a hermetically isolated world. Never mix data, identities, credentials, emails, domains, inboxes, repos, accounts, or context between projects. Before using any address, account, domain, mailbox, secret, or path, confirm it belongs to THE project at hand — never carry a value over from another project or from the ambient session (e.g. the session userEmail, a nearby .env, another project's git identity) just because it is close at hand. When an identifier's project ownership is unproven, verify it (resolve the fiche, R-FICHE) or ask — do not assume. A value that fits one project is wrong by default for every other. Cross-project bleed is a Safety failure, not a cosmetic slip.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-06-30",
+            reason: "On Verba (an Agentik OS project) outbound, the assistant repeatedly suggested routing investor replies to team@loumna.com — an unrelated project's email lifted from session context — risking cross-project leakage. The operator demanded a standing guard so projects are never conflated again.",
+        },
+        Rule {
             id: "R-PDF",
             title: "PDFs go through the OmegaOS pdfgen",
             kind: RuleKind::Rule,
