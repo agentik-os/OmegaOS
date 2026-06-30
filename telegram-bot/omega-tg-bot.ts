@@ -2737,9 +2737,11 @@ async function handleKairosCommand(text: string, chatId: number, thread?: number
 // ── TASK 2 — inline-button callbacks (nova:kairos / nova:kf:<key> / nova:klv / nova:klt:<id>) ──
 async function onKairosCallback(data: string, chatId: number, msgId: number, from: number) {
   const [, ns, arg] = data.split(":");
-  // Clear any armed pending FIRST so ✖️ Annuler (→ nova:kairos) can't leave the
-  // next ordinary message wired into a field (MAJOR 1).
-  if (data === "nova:kairos") { clearPending(from); return edit(chatId, msgId, KAIROS_HUB_TEXT, kairosMenuKb()); }
+  // Any KAIROS callback cancels an in-progress text-input pending, EXCEPT the ones
+  // that ARM one (kf/ki/kcap) or CONSUME one (kok). Stops a stale armed edit from
+  // capturing the operator's next ordinary message (data-corruption guard).
+  if (!(ns === "kf" || ns === "ki" || data === "nova:kcap" || data === "nova:kok")) clearPending(from);
+  if (data === "nova:kairos") { return edit(chatId, msgId, KAIROS_HUB_TEXT, kairosMenuKb()); }
   // Confirm / cancel an NL-detected write (kairos-confirm pending).
   if (data === "nova:kno") { clearPending(from); return edit(chatId, msgId, "Annulé.", undefined); }
   if (data === "nova:kok") {
@@ -2776,9 +2778,9 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
   if (data === "nova:ke") { const g = kairosEditGrid(); return edit(chatId, msgId, g.text, g.markup); }
   // Vision is multi-message → SEND (don't edit), then the hub menu on the last block.
   if (data === "nova:kv") { await sendChunks(chatId, kairosVisionBlocks(), kairosMenuKb()); return; }
-  // Navigation targets also clear any armed pending so ✖️ Annuler truly cancels.
-  if (data === "nova:kj") { clearPending(from); const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup); }
-  if (data === "nova:ks") { clearPending(from); const v = kairosStatsView(); return edit(chatId, msgId, v.text, v.markup); }
+  // Navigation targets — pending already cleared by the top guard (✖️ Annuler too).
+  if (data === "nova:kj") { const v = kairosTodayView(); return edit(chatId, msgId, v.text, v.markup); }
+  if (data === "nova:ks") { const v = kairosStatsView(); return edit(chatId, msgId, v.text, v.markup); }
   // ── FEATURE 3 — today quick actions (immediate writes, then re-render) ──
   if (ns === "kt" && arg) {
     const cur = kairosGet()?.journal?.[kairosToday()]?.[arg];
@@ -2824,6 +2826,7 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
   }
   if (data === "nova:kyg") {
     await edit(chatId, msgId, "🔮 Analyse en cours…", undefined);
+    try {
     const d = kairosGet();
     if (!d) return edit(chatId, msgId, "⚠️ Store KAIROS injoignable.", kairosMenuKb());
     const journal = d.journal || {};
@@ -2851,10 +2854,14 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
       `Objectif 90 jours : ${d.objectif || "—"}\n` +
       `Leviers travaillés : ${leviersLabels || "—"}\n\n` +
       `7 derniers jours (JSON) :\n` + JSON.stringify(last7, null, 2);
-    const out = await runClaude(user, KAIROS_SYSTEM, "/", "KAIROS", undefined, ["--model", COMPANION_MODEL, "--max-turns", "1", "--strict-mcp-config"], 120000);
+    const out = (await runClaude(user, KAIROS_SYSTEM, "/", "KAIROS", undefined, ["--model", COMPANION_MODEL, "--max-turns", "1", "--strict-mcp-config"], 120000) || "").trim();
+    if (!out) return edit(chatId, msgId, "⚠️ Synthèse indisponible (réessaie dans un instant).", kb([[{ text: "🔮 Réessayer", callback_data: "nova:kyg" }], [{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
     kairosSet("lastSynthese", JSON.stringify({ date: kairosToday(), text: out }), true);
     await edit(chatId, msgId, "✅ Synthèse", kb([[{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
     return send(chatId, `🔮 <b>Synthèse</b>\n\n${esc(out)}`, kairosMenuKb());
+    } catch (e: any) {
+      return edit(chatId, msgId, `⚠️ Synthèse échouée : <i>${esc(String(e?.message || e)).slice(0, 160)}</i>`, kb([[{ text: "🔮 Réessayer", callback_data: "nova:kyg" }], [{ text: "« KAIROS", callback_data: "nova:kairos" }]]));
+    }
   }
 }
 
