@@ -261,7 +261,7 @@ function zPlatforms(s: string): string[] {
     [/tiktok/i, "tiktok"],
     [/instagram|insta/i, "instagram"],
     [/youtube/i, "youtube"],
-    [/twitter|(?:^|\W)x(?:$|\W)/i, "twitter"],
+    [/twitter|x\.com/i, "twitter"],
     [/linkedin/i, "linkedin"],
     [/facebook/i, "facebook"],
     [/threads/i, "threads"],
@@ -1771,7 +1771,10 @@ async function zernioConnect(profileId: string, platform: string): Promise<{ tex
   const pr = await zernio(["profiles", "--json"]);
   const pj = pr.ok ? zjson(pr.out) : null;
   const profiles: any[] = Array.isArray(pj) ? pj : (pj?.profiles || []);
-  const name = profiles.find(p => p._id === profileId)?.name || profileId;
+  const prof = pr.ok ? profiles.find(p => p._id === profileId) : null;
+  if (!prof?.name)
+    return { text: card("ZERNIO — CONNECT", " ⚠️ Profil introuvable — rouvre /zernio et reessaie."), markup: kb([[{ text: "« Zernio", callback_data: "nav:zernio" }]]) };
+  const name = prof.name;
   const r = await zernio(["connect", String(name), platform, "--json"]);
   const j = r.ok ? zjson(r.out) : null;
   const authUrl: string = j?.authUrl || "";
