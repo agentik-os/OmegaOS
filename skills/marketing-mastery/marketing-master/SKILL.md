@@ -118,6 +118,7 @@ export const meta = {
     { title: "GapCheck" },
     { title: "Correct" },
     { title: "Verify" },
+    { title: "Loop" },
     { title: "Report" },
   ],
 };
@@ -255,13 +256,22 @@ const verdicts = await parallel(openGaps.map(async (g, i) => {
 const K = 2;
 let residual = audits.flatMap((a) => (a.gaps || []).map((x) => ({ part: a.part, ...x })));
 for (let k = 0; k < K; k++) {
+  // Re-audit only the parts that were not aligned. NOTE: corrections are PROPOSED to an artifact
+  // (not necessarily applied to the live page), so the re-audit reflects the proposed end-state.
+  const reAuditParts = PARTS.filter((p) => audits.find((a) => a.part === p.n && !a.aligned));
   const reAudit = await pipeline(
-    PARTS.filter((p) => audits.find((a) => a.part === p.n && !a.aligned)),
-    (part) => agent(auditPart(part) + `\n\nNOTE: corrections were applied; re-score and list ONLY NEW residual gaps.`, { model: "opus" })
+    reAuditParts,
+    (part) => agent(auditPart(part) + `\n\nNOTE: corrections were applied/proposed; re-score and list ONLY the residual gaps that REMAIN open for this Part.`, { model: "opus" })
+      .then((raw) => ({ part: part.n, raw }))
   );
-  const fresh = reAudit.flatMap((r) => { try { return JSON.parse(r.slice(r.indexOf("{"), r.lastIndexOf("}") + 1)).gaps || []; } catch { return []; } });
+  const fresh = reAudit.flatMap(({ part, raw }) => {
+    try { return (JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1)).gaps || []).map((g) => ({ part, ...g })); }
+    catch { return [{ part, what: "re-audit JSON unparseable", evidence: raw.slice(0, 200), severity: "high" }]; }
+  });
+  // Replace ONLY the re-audited parts' residual gaps; keep gaps from parts not re-audited (L4: never silently drop).
+  const reAuditedPartNums = new Set(reAuditParts.map((p) => p.n));
+  residual = residual.filter((g) => !reAuditedPartNums.has(g.part)).concat(fresh);
   if (fresh.length === 0) break;        // dry
-  residual = fresh;
 }
 
 // ---- Phase 6: REPORT — branded PDF via the OmegaOS pdfgen (R-PDF) ------------
@@ -274,19 +284,22 @@ AUDITS: ${JSON.stringify(audits)}`,
   { model: "opus" }
 );
 
+// --template=doc expects a single markdown `body` string (DocData), NOT a sections[] array.
+const reportBody = [
+  `## Per-Part alignment\n\n` + audits.map((a) =>
+    `- Partie ${a.part} — ${a.skill}: ${a.aligned ? "ALIGNED" : "GAP"} (${a.score}/100)`).join("\n"),
+  `## Gaps found\n\n` + (audits.flatMap((a) =>
+    (a.gaps || []).map((g) => `- P${a.part} [${g.severity}] ${g.what} — ${g.evidence}`)).join("\n") || "Aucun."),
+  `## Corrections verified\n\n` + (verdicts.map((v) =>
+    `- P${v.part} ${v.ratified ? "RATIFIED" : "REJECTED"} (${v.votes}) — ${v.change}`).join("\n") || "Aucune."),
+  `## Residual gaps\n\n` + (residual.map((r) => `- P${r.part} — ${r.what}`).join("\n") || "Aucun."),
+  `## 90-day plan (mm-12)\n\n` + plan90,
+].join("\n\n");
 const reportData = {
+  template: "doc",
   title: "Marketing Mastery — Alignment Report",
   subtitle: PROD_URL,
-  sections: [
-    { heading: "Per-Part alignment", body: audits.map((a) =>
-        `Partie ${a.part} — ${a.skill}: ${a.aligned ? "ALIGNED" : "GAP"} (${a.score}/100)`).join("\n") },
-    { heading: "Gaps found", body: audits.flatMap((a) =>
-        (a.gaps || []).map((g) => `P${a.part} [${g.severity}] ${g.what} — ${g.evidence}`)).join("\n") },
-    { heading: "Corrections verified", body: verdicts.map((v) =>
-        `P${v.part} ${v.ratified ? "RATIFIED" : "REJECTED"} (${v.votes}) — ${v.change}`).join("\n") },
-    { heading: "Residual gaps", body: residual.map((r) => `P${r.part} — ${r.what}`).join("\n") || "None." },
-    { heading: "90-day plan (mm-12)", body: plan90 },
-  ],
+  body: reportBody,
 };
 const dataPath = `${ART_DIR}/marketing-master-report.json`;
 const outPath  = `${ART_DIR}/marketing-master-report.pdf`;

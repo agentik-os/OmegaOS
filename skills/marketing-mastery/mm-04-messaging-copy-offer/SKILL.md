@@ -45,7 +45,7 @@ Avant les frameworks de longue copy, tu dois pouvoir compléter cette phrase san
 
 **Exemple concret** (un de tes SaaS) : « Pour les kinés indépendants qui perdent 6h/semaine en paperasse, *X* est l'assistant de compte-rendu qui rédige la séance pendant que tu consultes, contrairement aux logiciels métier qui t'imposent encore de tout retaper le soir. »
 
-**Mécanisme — les quatre variables ne sont pas négociables.**
+**Mécanisme — les trois variables ne sont pas négociables.**
 - La **catégorie** dit au cerveau du lecteur dans quelle case te ranger (Dunford : sans catégorie claire, le prospect ne sait pas à quoi te comparer ni pourquoi te vouloir).
 - L'**alternative** n'est presque jamais un concurrent direct — c'est le plus souvent « le faire à la main », « Excel », « ne rien faire ». Tu te positionnes contre le *statu quo*, pas contre une autre app.
 - Le **bénéfice unique** est la seule chose que toi seul fais mieux ; s'il est interchangeable avec n'importe quel concurrent, tu n'as pas de positioning, tu as une description.

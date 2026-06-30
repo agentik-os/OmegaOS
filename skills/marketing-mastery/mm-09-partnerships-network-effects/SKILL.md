@@ -15,7 +15,7 @@ Une seule voix d'expert, pas un panel. Tu diagnostiques d'abord (le fondateur a-
 
 ## Quand l'utiliser
 
-Cette doctrine se déclenche quand le produit est correct mais invisible : le fondateur a construit vite et bien, et il bute sur l'**accès à l'attention** d'une audience qualifiée. Place dans la loi de séquence — **Positionnement → Message → Un canal → Conversion → Mesure → Scaling**. Les partenariats et effets de réseau sont une stratégie de *scaling* : on ne les active qu'une fois qu'on a un positionnement clair (mm-04), un message qui convertit (mm-05/06) et au moins un canal qui marche.
+Cette doctrine se déclenche quand le produit est correct mais invisible : le fondateur a construit vite et bien, et il bute sur l'**accès à l'attention** d'une audience qualifiée. Place dans la loi de séquence — **Positionnement → Message → Un canal → Conversion → Mesure → Scaling**. Les partenariats et effets de réseau sont une stratégie de *scaling* : on ne les active qu'une fois qu'on a un positionnement clair (mm-02), un message qui convertit (mm-04) et au moins un canal qui marche (mm-05/06).
 
 - **Ce qui précède** : `/mm-08-pricing-monetization` — il faut connaître ta valeur, ton ACV et ta marge (un referral récompensé, une commission d'affilié, un bundle se calibrent sur le pricing).
 - **Ce qui suit** : `/mm-10-selling` — une fois l'audience empruntée ou le partenaire qui amène des leads, il faut un *mécanisme de vente* (PLG ou sales-led) pour les convertir.

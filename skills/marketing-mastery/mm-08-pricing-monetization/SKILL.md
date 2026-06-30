@@ -78,7 +78,7 @@ Règle de survie : **ne laisse jamais ton coût de tokens dépasser ~20-30 % du 
 
 Tu sous-tarifes par peur du « non ». Mais un prix trop bas crée **trois problèmes** : il signale un produit cheap, il attire les pires clients (ceux qui churnent et se plaignent le plus), et il t'interdit d'investir dans le produit. **Si personne ne refuse jamais ton prix, il est trop bas.** Vise un **taux de refus sain** — autour de **20-30 % de prospects qualifiés** qui trouvent ça « trop cher » signifie que tu es à peu près au bon endroit.
 
-Méthode concrète pour un premier prix : **pose ta fourchette par la valeur** (combien ça vaut pour le client), **vérifie le plancher** (coûts), **regarde la balise concurrentielle**, puis **place-toi délibérément dans le haut** de ce que tu oses. Les founders se trompent de prix dans **95 % des cas vers le bas.**
+Méthode concrète pour un premier prix : **pose ta fourchette par la valeur** (combien ça vaut pour le client), **vérifie le plancher** (coûts), **regarde la balise concurrentielle**, puis **place-toi délibérément dans le haut** de ce que tu oses. Les founders se trompent de prix presque toujours **vers le bas** — la sous-tarification est l'erreur quasi universelle du fondateur.
 
 Pour **augmenter** : c'est l'opération la plus rentable et la plus sous-utilisée. Ce qui la rend acceptable :
 
@@ -93,7 +93,7 @@ Pour **augmenter** : c'est l'opération la plus rentable et la plus sous-utilis�
 
 > valeur = (résultat rêvé × probabilité perçue de l'atteindre) ÷ (délai × effort/sacrifice)
 
-Tu augmentes la valeur perçue en agissant sur ces **quatre leviers** — **garanties** (probabilité), **onboarding rapide** (délai), **done-for-you** (effort) — sans jamais toucher au prix. Une offre devient « **grand slam** » quand elle est si chargée de valeur que dire non semble stupide. **Le prix n'est jamais le problème ; c'est presque toujours l'offre qui est trop faible.** Mécanisme : quand un prospect résiste, le réflexe naïf est de baisser le numérateur (le prix) ; Hormozi inverse — tu gonfles le numérateur de la valeur et tu réduis ses dénominateurs (délai, effort), et la même somme devient évidente.
+Tu augmentes la valeur perçue en agissant sur ces **quatre leviers** — **amplifier le résultat rêvé** (le numérateur), **garanties** (probabilité), **onboarding rapide** (délai), **done-for-you** (effort) — sans jamais toucher au prix. Une offre devient « **grand slam** » quand elle est si chargée de valeur que dire non semble stupide. **Le prix n'est jamais le problème ; c'est presque toujours l'offre qui est trop faible.** Mécanisme : quand un prospect résiste, le réflexe naïf est de baisser le numérateur (le prix) ; Hormozi inverse — tu gonfles le numérateur de la valeur et tu réduis ses dénominateurs (délai, effort), et la même somme devient évidente.
 
 ### NRR : où se gagne vraiment l'argent
 
@@ -130,7 +130,7 @@ Quand on t'invoque, tu livres dans cet ordre :
 
 ## VERIFY (avant de conclure)
 
-- Fidèle à la doctrine et aux **vrais chiffres** (1 % McKinsey, capture 10-30 %, Economist 59/125/125, ~10 mois pour 12, coût tokens <20-30 % du prix, refus 20-30 %, 95 % trop bas, NRR 110-130 %, value equation des quatre leviers) ?
+- Fidèle à la doctrine et aux **vrais chiffres** (1 % McKinsey, capture 10-30 %, Economist 59/125/125, ~10 mois pour 12, coût tokens <20-30 % du prix, refus 20-30 %, sous-tarification quasi systématique, NRR 110-130 %, value equation des quatre leviers) ?
 - Cadres **sélectionnés selon le diagnostic**, pas tous listés ?
 - **Mécanisme avant tactique** partout ?
 - **Leviers honnêtes uniquement** — pas de fausse rareté, de leurre mensonger, ni de stat inventée ?
