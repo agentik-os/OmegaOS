@@ -234,6 +234,44 @@ async function omega(args: string[]): Promise<string> {
 }
 const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// ── Zernio CLI (multi-channel publishing over the omega-zernio REST CLI) ───────
+// Shell out exactly like omega(), but keep stdout/stderr separate: `--json` prints
+// pretty-printed JSON (an object OR a bare array) to stdout, while errors (missing
+// key, unresolved project) land on stderr after a non-zero exit. The CLI owns the
+// ZERNIO_API_KEY — the bot never prints or embeds it.
+const ZERNIO_BIN = `${homedir()}/.local/bin/omega-zernio`;
+async function zernio(args: string[]): Promise<{ ok: boolean; out: string; err: string }> {
+  try {
+    const r = existsSync(ZERNIO_BIN)
+      ? await $`${ZERNIO_BIN} ${args}`.quiet().nothrow()
+      : await $`bun ${OMEGA_DIR}/skills/zernio/cli.ts ${args}`.quiet().nothrow();
+    return { ok: r.exitCode === 0, out: r.stdout.toString().trim(), err: r.stderr.toString().trim() };
+  } catch (e: any) { return { ok: false, out: "", err: e?.message || String(e) }; }
+}
+function zjson(s: string): any { try { return JSON.parse(s); } catch { return null; } }
+// The connect-grid platforms (the CLI accepts more — reddit/telegram/discord/… —
+// but these are the ones the operator drives from the menu).
+const ZERNIO_PLATFORMS = ["tiktok", "instagram", "youtube", "twitter", "linkedin", "facebook", "threads", "pinterest"];
+const PLAT_EMOJI: Record<string, string> = { tiktok: "🎵", instagram: "📸", youtube: "▶️", twitter: "🐦", linkedin: "💼", facebook: "📘", threads: "🧵", pinterest: "📌", reddit: "👽", telegram: "✈️", discord: "🎮", bluesky: "🦋", snapchat: "👻", whatsapp: "💬", googlebusiness: "🏢", xads: "📊" };
+// A Zernio account's profileId is returned as an object {_id,name} (or, defensively, a bare id string).
+const zProfileId = (a: any): string => (typeof a?.profileId === "string" ? a.profileId : a?.profileId?._id) || "";
+// Scan a free-text fragment ("sur instagram et tiktok") for known platform words.
+function zPlatforms(s: string): string[] {
+  const map: [RegExp, string][] = [
+    [/tiktok/i, "tiktok"],
+    [/instagram|insta/i, "instagram"],
+    [/youtube/i, "youtube"],
+    [/twitter|(?:^|\W)x(?:$|\W)/i, "twitter"],
+    [/linkedin/i, "linkedin"],
+    [/facebook/i, "facebook"],
+    [/threads/i, "threads"],
+    [/pinterest/i, "pinterest"],
+  ];
+  const found: string[] = [];
+  for (const [re, p] of map) if (re.test(s) && !found.includes(p)) found.push(p);
+  return found;
+}
+
 // ── Visual grammar: one branded look across every message. Telegram HTML supports
 // only b/i/u/s/code/pre/a/blockquote (+ <blockquote expandable>) — so the kit is an
 // Ω-ruled header, colored status dots, a block score-bar, and expandable detail.
@@ -1357,7 +1395,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm" | "zernio-post"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -1510,7 +1548,7 @@ const MENU: [string, string][] = [
 ];
 // Commands with a dedicated button view/handler. Anything NOT here is routed to
 // the AISB Master brain instead of falling back to the menu (intelligent commands).
-const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch"]);
+const KNOWN = new Set<string>([...MENU.map(([c]) => c), "setupgroup", "sync", "dispatch", "zernio"]);
 function menuKb() {
   // The NOVA OS row controls the operator-built omega-novaos.service — only
   // show it where that unit exists (on a fresh install it was an always-broken
@@ -1523,6 +1561,7 @@ function menuKb() {
     [{ text: "📁 Projects", callback_data: "nav:projects" }, { text: "🔍 Audits", callback_data: "nav:audits" }],
     [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
     [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
+    [{ text: "🌀 Zernio — publish", callback_data: "nav:zernio" }],
     [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
     ...(hasNovaOS ? [[{ text: "🤖 NOVA OS (status / kill-switch)", callback_data: "nav:novaos" }]] : []),
   ]);
@@ -1683,6 +1722,79 @@ async function modelProviderView(provider: string, banner = ""): Promise<{ text:
   return { text: card(`MODEL — ${provider.toUpperCase()}`, body), markup: kb([...rows, ...keyRow, [{ text: "« Providers", callback_data: "nav:model" }]]) };
 }
 
+// ── Zernio views (built from the omega-zernio --json CLI) ─────────────────────
+// Top-level: each Zernio profile (project) + its connected channels, one button
+// per project. Never crashes — a CLI error (missing key) renders as text.
+async function zernioHome(): Promise<{ text: string; markup: any }> {
+  const pr = await zernio(["profiles", "--json"]);
+  if (!pr.ok) return { text: card("ZERNIO — PUBLISH", ` ⚠️ Zernio CLI error:\n<pre>${esc((pr.err || pr.out || "no output").slice(0, 700))}</pre>\n\n <i>Set ZERNIO_API_KEY in ~/.omega/secrets and retry.</i>`), markup: kb([[back()]]) };
+  const pj = zjson(pr.out);
+  const profiles: any[] = Array.isArray(pj) ? pj : (pj?.profiles || []);
+  const ac = await zernio(["accounts", "--json"]);
+  const aj = ac.ok ? zjson(ac.out) : null;
+  const accounts: any[] = Array.isArray(aj) ? aj : (aj?.accounts || []);
+  const lines = profiles.map(p => {
+    const conn = accounts.filter(a => zProfileId(a) === p._id);
+    const tags = conn.length ? conn.map(a => PLAT_EMOJI[a.platform] || "•").join(" ") : "<i>no channels</i>";
+    return ` 📛 <b>${esc(p.name)}</b>${p.isDefault ? " <i>·default</i>" : ""} — ${tags}`;
+  });
+  const body = (lines.length ? lines.join("\n") : " <i>No Zernio profile yet.</i>") +
+    `\n\n <i>Tap a project to connect channels. To publish, type e.g.</i>\n <code>publie sur instagram et tiktok pour &lt;projet&gt;: ton texte</code>`;
+  const rows: Btn[][] = profiles.map(p => [{ text: `📛 ${p.name}`.slice(0, 30), callback_data: `zernio:prof:${p._id}`.slice(0, 64) }]);
+  rows.push([back()]);
+  return { text: card("ZERNIO — MULTI-CHANNEL PUBLISHING", body), markup: kb(rows) };
+}
+// Per-project: connected channels + a 2-wide connect grid (✓ already-connected,
+// ➕ not yet — both tappable so a re-connect is always possible).
+async function zernioProjectView(profileId: string): Promise<{ text: string; markup: any }> {
+  const pr = await zernio(["profiles", "--json"]);
+  const pj = pr.ok ? zjson(pr.out) : null;
+  const profiles: any[] = Array.isArray(pj) ? pj : (pj?.profiles || []);
+  const name = profiles.find(p => p._id === profileId)?.name || profileId;
+  const ac = await zernio(["accounts", "--json"]);
+  const aj = ac.ok ? zjson(ac.out) : null;
+  const accounts: any[] = Array.isArray(aj) ? aj : (aj?.accounts || []);
+  const conn = accounts.filter(a => zProfileId(a) === profileId);
+  const connSet = new Set(conn.map(a => a.platform));
+  const chLines = conn.length
+    ? conn.map(a => ` ${PLAT_EMOJI[a.platform] || "•"} <b>${esc(a.platform)}</b>${a.username ? ` @${esc(String(a.username).replace(/^@/, ""))}` : ""} — ${esc(a.platformStatus || (a.isActive ? "active" : "inactive"))}`).join("\n")
+    : " <i>No channel connected yet.</i>";
+  const rows: Btn[][] = [];
+  for (let i = 0; i < ZERNIO_PLATFORMS.length; i += 2)
+    rows.push(ZERNIO_PLATFORMS.slice(i, i + 2).map(pl => ({ text: `${connSet.has(pl) ? "✓" : "➕"} ${pl}`.slice(0, 28), callback_data: `zernio:conn:${profileId}:${pl}`.slice(0, 64) })));
+  rows.push([{ text: "« Zernio", callback_data: "nav:zernio" }]);
+  return { text: card(`ZERNIO — ${String(name).toUpperCase()}`.slice(0, 48), `${chLines}\n\n <i>Tap a platform to connect (✓ = re-connect).</i>`), markup: kb(rows) };
+}
+// Connect: resolve profile→name, fetch the hosted OAuth authUrl, render it as a
+// tap-to-open URL button (Telegram inline url button).
+async function zernioConnect(profileId: string, platform: string): Promise<{ text: string; markup: any }> {
+  const pr = await zernio(["profiles", "--json"]);
+  const pj = pr.ok ? zjson(pr.out) : null;
+  const profiles: any[] = Array.isArray(pj) ? pj : (pj?.profiles || []);
+  const name = profiles.find(p => p._id === profileId)?.name || profileId;
+  const r = await zernio(["connect", String(name), platform, "--json"]);
+  const j = r.ok ? zjson(r.out) : null;
+  const authUrl: string = j?.authUrl || "";
+  if (!/^https?:\/\//.test(authUrl))
+    return { text: card(`ZERNIO — CONNECT ${platform.toUpperCase()}`, ` ⚠️ Could not get an authorization link:\n<pre>${esc((r.err || r.out || "no output").slice(0, 600))}</pre>`), markup: kb([[{ text: "« Back", callback_data: `zernio:prof:${profileId}` }]]) };
+  return {
+    text: card(`ZERNIO — CONNECT ${platform.toUpperCase()}`, ` 🔗 Connect <b>${esc(platform)}</b> to <b>${esc(String(name))}</b>.\n Tap below to authorize. The account attaches to this project's Zernio profile.`),
+    markup: kb([[{ text: `🔗 Authorize ${platform}`, url: authUrl }], [{ text: "« Back", callback_data: `zernio:prof:${profileId}` }]]),
+  };
+}
+// Render a dry-run validation result as a preview card body.
+function zernioPreviewBody(project: string, platforms: string[], postText: string, dj: any): string {
+  const v = dj?.validation || {};
+  const ok = dj?.effectiveValid ?? v?.valid;
+  const errs = (v?.errors || []).map((e: any) => ` 🔴 [${esc(e.platform)}] ${esc(e.error)}`);
+  const warns = (v?.warnings || []).map((w: any) => ` 🟡 [${esc(w.platform)}] ${esc(w.warning)}`);
+  const snippet = postText.length > 280 ? postText.slice(0, 280) + "…" : postText;
+  return ` Project: <b>${esc(project)}</b>\n Channels: ${platforms.map(p => `${PLAT_EMOJI[p] || "•"} ${p}`).join("  ")}\n Validation: ${ok ? "🟢 ready" : "🔴 has issues"}` +
+    (errs.length ? `\n${errs.join("\n")}` : "") +
+    (warns.length ? `\n${warns.join("\n")}` : "") +
+    `\n\n <i>Text:</i>\n<blockquote>${esc(snippet)}</blockquote>\n\n <i>Confirm to publish for real, or cancel.</i>`;
+}
+
 // ── views ────────────────────────────────────────────────────────────────────
 async function view(name: string): Promise<{ text: string; markup: any }> {
   switch (name) {
@@ -1755,6 +1867,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       const body = ` omega sessions run on:\n <b>claude</b> · <code>${esc(active || "default")}</code>\n\n Pick a provider to view and change its model.`;
       return { text: card("MODEL / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     }
+    case "zernio": return await zernioHome();
     case "skills": return { text: pre("Skills", Bun.spawnSync(["ls", "-1", `${OMEGA_DIR}/skills`]).stdout.toString().trim() || "(none)"), markup: kb([[back()]]) };
     case "dispatch": return { text: card("DISPATCH", " Send: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>\n Launches a dedicated oracle on the VPS."), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
     case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
@@ -1780,6 +1893,27 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
 async function onCallback(data: string, chat: number, msgId: number, from: number) {
   const [ns, action, ...rest] = data.split(":"); const arg = rest.join(":");
   if (ns === "nav") { const v = await view(action); return edit(chat, msgId, v.text, v.markup); }
+  if (ns === "zernio") {
+    if (action === "prof") { const v = await zernioProjectView(rest[0] || ""); return edit(chat, msgId, v.text, v.markup); }
+    if (action === "conn") { const v = await zernioConnect(rest[0] || "", rest[1] || ""); return edit(chat, msgId, v.text, v.markup); }
+    if (action === "pub") {
+      const backRow = kb([[{ text: "« Zernio", callback_data: "nav:zernio" }]]);
+      if (rest[0] === "no") { clearPending(from); return edit(chat, msgId, card("ZERNIO — PUBLISH", " ❌ Annulé."), backRow); }
+      const p = getPending(from);
+      if (!p || p.kind !== "zernio-post" || !p.arg) return edit(chat, msgId, card("ZERNIO — PUBLISH", " ⏳ Rien à publier (la demande a expiré). Relance la commande."), backRow);
+      const d = zjson(p.arg) || {};
+      clearPending(from);
+      await edit(chat, msgId, card("ZERNIO — PUBLISH", ` ⏳ Publishing <b>${esc(d.project || "?")}</b> → ${esc(d.platforms || "?")} …`));
+      const res = await zernio(["post", String(d.project), "--text", String(d.text), "--platforms", String(d.platforms), "--json"]);
+      const rj = res.ok ? zjson(res.out) : null;
+      if (res.ok && rj?.posted) {
+        const post = rj.post || {};
+        return edit(chat, msgId, card("ZERNIO — PUBLISHED", ` ✅ Published to ${esc(d.platforms || "?")}.\n 🆔 <code>${esc(post._id || "?")}</code>${post.status ? `\n status: ${esc(post.status)}` : ""}`), backRow);
+      }
+      return edit(chat, msgId, card("ZERNIO — PUBLISH", ` 🔴 Publish failed:\n<pre>${esc((res.err || res.out || "no output").slice(0, 800))}</pre>`), backRow);
+    }
+    return;
+  }
   if (ns === "status" && action === "fix") {
     // Collect current doctor warnings/fails → dispatch an OmegaOS oracle to fix
     // them (a real tracked session; the Monitor relays the result back here).
@@ -2692,6 +2826,15 @@ async function agentBotMain(agentId: string) {
 
 // ── poll loop ────────────────────────────────────────────────────────────────
 async function main() {
+  // SELF-TEST: `bun omega-tg-bot.ts --selftest-zernio` renders the real /zernio menu
+  // (text + inline_keyboard) to stdout as JSON and exits — a debug affordance (like
+  // --version) so the oracle can capture the actual operator view after deploy with
+  // NO Telegram token and NO poll loop. Only needs OMEGA_DIR + the zernio() shell-out.
+  if (process.argv.includes("--selftest-zernio")) {
+    const v = await zernioHome();
+    process.stdout.write(JSON.stringify({ text: v.text, markup: v.markup }, null, 2) + "\n");
+    process.exit(0);
+  }
   // AGENT MODE: this process is a dedicated per-agent bot (own token + project oracle).
   if (process.env.OMEGA_AGENT_BOT) return agentBotMain(process.env.OMEGA_AGENT_BOT);
   // Wait for a token so the systemd service can be enabled at install time and
@@ -2898,6 +3041,30 @@ async function main() {
             await brainReply(chatId, msg.message_id, thread, file ? withFileNote(text, file) : text);
           }
         } else {
+          // Zernio publish intent (FR/EN): "publie sur instagram et tiktok pour gta6: TEXTE".
+          // Explicit verb + `pour|for <projet>:` + body. Matched here BEFORE the generic
+          // mission dispatch so it routes to a dry-run preview + confirm instead of an oracle.
+          const zm = text.match(/^\s*(?:publie|poste|publish|post)\b([\s\S]*?)\b(?:pour|for)\s+([^\s:]+)\s*:\s*([\s\S]+)$/i);
+          const zplats = zm ? zPlatforms(zm[1]) : [];
+          if (zm && zplats.length) {
+            const project = zm[2].trim(), postText = zm[3].trim(), csv = zplats.join(",");
+            const ph = await send(chatId, card("ZERNIO — PREVIEW", ` ⏳ Validating <b>${esc(project)}</b> → ${zplats.map(p => `${PLAT_EMOJI[p] || "•"} ${p}`).join("  ")} …`), undefined, thread);
+            const dr = await zernio(["post", project, "--text", postText, "--platforms", csv, "--dry-run", "--json"]);
+            const dj = dr.ok ? zjson(dr.out) : null;
+            const mid = ph?.result?.message_id;
+            if (!dj) {
+              const errText = card("ZERNIO — PREVIEW", ` 🔴 Could not validate (project resolved? key set?):\n<pre>${esc((dr.err || dr.out || "no output").slice(0, 800))}</pre>`);
+              if (mid) await edit(chatId, mid, errText, kb([[{ text: "« Zernio", callback_data: "nav:zernio" }]]), thread);
+              else await send(chatId, errText, kb([[{ text: "« Zernio", callback_data: "nav:zernio" }]]), thread);
+              continue;
+            }
+            setPending(from, "zernio-post", JSON.stringify({ project, platforms: csv, text: postText }));
+            const preview = card("ZERNIO — PREVIEW", zernioPreviewBody(project, zplats, postText, dj));
+            const confirm = kb([[{ text: "✅ Publier", callback_data: "zernio:pub:go" }, { text: "❌ Annuler", callback_data: "zernio:pub:no" }]]);
+            if (mid) await edit(chatId, mid, preview, confirm, thread);
+            else await send(chatId, preview, confirm, thread);
+            continue;
+          }
           // Free text in a project TOPIC = a MISSION → ONE real oracle session
           // (omega dispatch <project>); elsewhere / atlas topic → ATLAS. Fragments
           // belonging to one ask (album photos, caption-split prompts) are buffered
