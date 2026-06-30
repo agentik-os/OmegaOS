@@ -1357,7 +1357,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -2135,6 +2135,7 @@ function novaMenuKb() {
     [{ text: "🔌 Connecter mes comptes", callback_data: "nova:connect" }],
     [{ text: "📰 Actus Anthropic", callback_data: "nova:do:actus" }, { text: "📊 Rapport now", callback_data: "nova:do:rapport" }],
     [{ text: "🎯 Objectifs", callback_data: "nova:do:objectifs" }, { text: "🧠 Profil", callback_data: "nova:do:profil" }],
+    [{ text: "🧭 KAIROS", callback_data: "nova:kairos" }],
     [{ text: "🔮 Magic", callback_data: "nova:do:magic" }, { text: "🗣️ Interview", callback_data: "nova:do:interview" }],
     [{ text: "🔊 Voix (mode + moteur)", callback_data: "nova:voice" }],
   ]);
@@ -2191,8 +2192,263 @@ async function novaComposioConnect(app: string): Promise<{ url?: string; msg: st
   if (/API_KEY manquante|COMPOSIO_API_KEY/i.test(out)) return { msg: `🔑 Il me faut d'abord ta <b>clé Composio</b>. Récupère-la sur app.composio.dev (Settings → API Keys) et colle-la moi ici (ex: « ma clé composio: xxxx ») — je la range et on réessaie.` };
   return { msg: `⚠️ Composio n'a pas renvoyé d'URL pour ${esc(app)} :\n<pre>${esc(out).slice(0, 400)}</pre>` };
 }
+// ── KAIROS (Nova ⇄ KairosOS shared store) ────────────────────────────────────
+// Gareth's KairosOS growth dashboard and Nova read/write the SAME Convex blob via
+// the ~/.omega/bin/nova-kairos.sh bridge (get | set-field [--json] <dotpath> <value>).
+// Everything here is additive: a /kairos card, per-field inline edit, French
+// natural-language intents, and a /kairos update shorthand — all funnelled through
+// that one bridge. Values are esc()'d into HTML; bridge args are passed as argv
+// elements (never a shell string), so operator text can never inject.
+const NOVA_KAIROS = `${OMEGA_DIR}/bin/nova-kairos.sh`;
+type KairosField = { key: string; dot: string; label: string };
+// key = the SHORT callback token (≤64-byte data); dot = the nova-kairos dotpath.
+// Labels are copied verbatim from the KairosOS app so Nova mirrors the dashboard.
+const KAIROS_FIELDS: KairosField[] = [
+  { key: "objectifUltime", dot: "objectifUltime", label: "🎯 Objectif ultime" },
+  { key: "objectif", dot: "objectif", label: "🧭 Objectif" },
+  { key: "mantra", dot: "mantra", label: "🔱 Mantra" },
+  { key: "richesse", dot: "vision.richesse", label: "Richesse et liberté" },
+  { key: "idees", dot: "vision.idees", label: "Vision et idées" },
+  { key: "musique", dot: "vision.musique", label: "Musique électronique" },
+  { key: "presence", dot: "vision.presence", label: "Présence et charisme" },
+  { key: "femme", dot: "vision.femme", label: "La relation que j'attire" },
+  { key: "temps", dot: "vision.temps", label: "Temps et bonheur" },
+  { key: "positive", dot: "vision.positive", label: "Pensée positive" },
+  { key: "interessant", dot: "vision.interessant", label: "Intéressant et intéressé" },
+  { key: "adore", dot: "vision.adore", label: "Lien et sympathie" },
+  { key: "exploration", dot: "vision.exploration", label: "Exploration et découverte" },
+];
+type Levier = { id: string; n: string; label: string; desc: string };
+const KAIROS_LEVIERS: Levier[] = [
+  { id: "clarte", n: "01", label: "Clarté", desc: "Objectif chirurgical" },
+  { id: "amorcage", n: "02", label: "Amorçage", desc: "Visualisation quotidienne" },
+  { id: "prophetie", n: "03", label: "Prophétie", desc: "Posture de celui qui gagne" },
+  { id: "action", n: "04", label: "Action", desc: "Surface de chance" },
+  { id: "environnement", n: "05", label: "Environnement", desc: "Fréquentations et inputs" },
+];
+const kairosFieldByKey = (key: string) => KAIROS_FIELDS.find(f => f.key === key);
+const kairosLabelForDot = (dot: string) => KAIROS_FIELDS.find(f => f.dot === dot)?.label || dot;
+// Normalize a French word for fuzzy matching: lowercase, strip accents + apostrophes.
+const kairosNorm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/['’]/g, "").trim();
+
+// ── read/write through the bridge (argv array → no shell injection) ──
+function kairosGet(): any | null {
+  try {
+    const r = Bun.spawnSync(["bash", NOVA_KAIROS, "get"], { env: { ...process.env, HOME: homedir() }, timeout: 25000 });
+    if (r.exitCode !== 0) return null;
+    return JSON.parse(r.stdout.toString());
+  } catch { return null; }
+}
+function kairosSet(dot: string, value: string, json = false): { ok: boolean; err?: string } {
+  try {
+    const args = json
+      ? ["bash", NOVA_KAIROS, "set-field", "--json", dot, value]
+      : ["bash", NOVA_KAIROS, "set-field", dot, value];
+    const r = Bun.spawnSync(args, { env: { ...process.env, HOME: homedir() }, timeout: 25000 });
+    return r.exitCode === 0 ? { ok: true } : { ok: false, err: r.stderr.toString().trim() };
+  } catch (e: any) { return { ok: false, err: String(e?.message || e) }; }
+}
+
+// ── format helpers (Telegram hard limit = 4096 chars; previews keep us ~1.7k) ──
+function preview(s: string, n: number): string {
+  const t = (s || "").replace(/\s+/g, " ").trim();
+  return esc(t.length > n ? t.slice(0, n).trim() + "…" : t);
+}
+function kairosFull(s: string, n = 3500): string {
+  const t = s || "";
+  return esc(t.slice(0, n)) + (t.length > n ? "\n\n<i>…(tronqué)</i>" : "");
+}
+
+// ── vision-field synonym map: spoken word (normalized) → vision key ──
+const KAIROS_VISION_SYNONYMS: Record<string, string[]> = {
+  richesse: ["richesse", "argent", "money", "finance", "fortune", "liberte"],
+  idees: ["idee", "opportunite", "creativite", "inspiration"],
+  musique: ["musique", "music", "son", "dj", "prod", "production", "beat"],
+  presence: ["presence", "charisme", "eloquence", "voix", "parole"],
+  femme: ["femme", "relation", "amour", "couple", "partenaire", "relationnel"],
+  temps: ["temps", "time", "bonheur", "repos", "equilibre"],
+  positive: ["positive", "positivite", "mental", "mindset", "optimisme", "pensee"],
+  interessant: ["interessant", "interesse", "curiosite", "curieux", "interet"],
+  adore: ["lien", "sympathie", "social", "generosite", "gens"],
+  exploration: ["exploration", "decouverte", "voyage", "nouveaute", "aventure", "explorer"],
+};
+// "liberte" lives in richesse AND (conceptually) temps; first-match (insertion order)
+// wins → bare "liberté" resolves to richesse. Documented & acceptable.
+function kairosVisionKey(word: string): string | undefined {
+  const w = kairosNorm(word);
+  const cand = [w, w.replace(/s$/, "")];  // try plural and singular (but not "temps"→"temp" losing a real key — "temps" stays a candidate)
+  for (const [key, syns] of Object.entries(KAIROS_VISION_SYNONYMS))
+    if (syns.some(s => cand.includes(s))) return key;
+  return undefined;
+}
+// Parse a free phrase for known levier ids/labels/numbers → unique id array.
+function kairosLevierIds(text: string): string[] {
+  const norm = kairosNorm(text);
+  const ids: string[] = [];
+  for (const lv of KAIROS_LEVIERS) {
+    const aliases = [lv.id, kairosNorm(lv.label), lv.n, lv.n.replace(/^0+/, "")].filter(Boolean);
+    if (aliases.some(a => new RegExp(`\\b${a}\\b`).test(norm))) ids.push(lv.id);
+  }
+  return ids;
+}
+
+// ── TASK 3 — French natural-language intent → a typed write instruction ──
+type KairosIntent = { dot?: string; value?: string; json?: boolean; label: string; kind: "set" | "levier" | "action" | "guide"; guide?: string };
+function detectKairosIntent(text: string): KairosIntent | null {
+  const t = text.trim();
+  const facets = "richesse, idées, musique, présence, femme, temps, positivité, intéressant, lien, exploration";
+  const visionGuide = `Quelle facette ? ${facets}. Ex : « ma vision de la richesse est … »`;
+  let m: RegExpMatchArray | null;
+  // Objectif ultime BEFORE the generic objectif (anchored, explicit connector).
+  m = t.match(/^\s*mon\s+objectif\s+ultime\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "objectifUltime", value: m[1].trim(), label: "Objectif ultime" };
+  m = t.match(/^\s*mon\s+objectif\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "objectif", value: m[1].trim(), label: "Objectif" };
+  m = t.match(/^\s*(?:mon\s+)?mantra\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "mantra", value: m[1].trim(), label: "Mantra" };
+  // Vision <champ> est X — map the champ word to a vision key; unknown champ → guide (no silent write).
+  m = t.match(/^\s*ma\s+vision\s+(?:de\s+la\s+|de\s+l'?|de\s+|du\s+|des\s+|pour\s+|sur\s+|en\s+|envers\s+)?([\wàâçéèêëîïôûùü'’-]+)\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[2].trim().length >= 2) {
+    const key = kairosVisionKey(m[1]);
+    if (key) { const f = kairosFieldByKey(key)!; return { kind: "set", dot: f.dot, value: m[2].trim(), label: f.label }; }
+    return { kind: "guide", label: "Vision", guide: visionGuide };
+  }
+  // Bare "ma vision est X" — ambiguous → guide, never a silent write.
+  m = t.match(/^\s*ma\s+vision\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m) return { kind: "guide", label: "Vision", guide: visionGuide };
+  // Leviers.
+  m = t.match(/^\s*mes\s+leviers?\s*(?:sont|c'?est|:|=)\s*(.+)$/is);
+  if (m) {
+    const ids = kairosLevierIds(m[1]);
+    if (ids.length) return { kind: "levier", value: JSON.stringify(ids), label: "Leviers" };
+    return { kind: "guide", label: "Leviers", guide: "Tes 5 leviers : Clarté, Amorçage, Prophétie, Action, Environnement. Ex : « mes leviers sont clarté, action »" };
+  }
+  // Action du jour ("j'ai fait …").
+  // Lookahead (not \b): verbs ending in an accented char (complété/terminé/réalisé)
+  // have no \w boundary after "é", so \b would never fire on them.
+  m = t.match(/^\s*(?:j'?ai|j\s+ai)\s+(?:fait|complété|complete|terminé|termine|fini|accompli|réalisé|realise)(?=\s|$)\s*(.+)$/is);
+  if (m && m[1].trim().length >= 3) return { kind: "action", value: m[1].trim(), label: "Action du jour" };
+  return null;
+}
+
+// ── TASK 1 — compact KAIROS card (well under 4096 via previews) ──
+function kairosCard(): { text: string; markup: any } {
+  const d = kairosGet();
+  if (!d) return {
+    text: "⚠️ Je n'arrive pas à lire ta vision KAIROS (le store ne répond pas).",
+    markup: kb([[{ text: "🔄 Réessayer", callback_data: "nova:kairos" }]]),
+  };
+  const v = d.vision || {};
+  const visFields = KAIROS_FIELDS.filter(f => f.dot.startsWith("vision."));
+  const vis = visFields.map(f => `• <b>${esc(f.label)}</b> : ${v[f.key] ? preview(v[f.key], 60) : "—"}`).join("\n");
+  const on = new Set<string>(Array.isArray(d.leviers) ? d.leviers : []);
+  const lev = KAIROS_LEVIERS.map(l => `${on.has(l.id) ? "✅" : "⬜"} ${esc(l.label)}`).join("  ");
+  const text =
+    `🧭 <b>KAIROS — ta vision</b>\n\n` +
+    `🎯 <b>Objectif ultime</b>\n${d.objectifUltime ? preview(d.objectifUltime, 160) : "—"}\n\n` +
+    `🧭 <b>Objectif</b>\n${d.objectif ? preview(d.objectif, 140) : "—"}\n\n` +
+    `🔱 <b>Mantra</b>\n${d.mantra ? preview(d.mantra, 160) : "—"}\n\n` +
+    `🌅 <b>Vision</b>\n${vis}\n\n` +
+    `⚡ <b>Leviers</b>\n${lev}\n\n` +
+    `<i>Tape un champ pour le modifier · /kairos update &lt;champ&gt; &lt;valeur&gt;</i>`;
+  const visBtns: Btn[][] = [];
+  for (let i = 0; i < visFields.length; i += 2)
+    visBtns.push(visFields.slice(i, i + 2).map(f => ({ text: f.label, callback_data: `nova:kf:${f.key}` })));
+  const markup = kb([
+    [{ text: "✏️ Objectif ultime", callback_data: "nova:kf:objectifUltime" }, { text: "✏️ Objectif", callback_data: "nova:kf:objectif" }],
+    [{ text: "✏️ Mantra", callback_data: "nova:kf:mantra" }],
+    ...visBtns,
+    [{ text: "⚡ Leviers", callback_data: "nova:klv" }],
+    [{ text: "🔄 Rafraîchir", callback_data: "nova:kairos" }],
+  ]);
+  return { text, markup };
+}
+// ── TASK 2 (leviers) — the toggle menu ──
+function kairosLeviersView(): { text: string; markup: any } {
+  const d = kairosGet();
+  const on = new Set<string>(Array.isArray(d?.leviers) ? d!.leviers : []);
+  const text = "⚡ <b>Leviers</b> — tes 5 leviers d'attraction. Tape pour activer/désactiver.";
+  const markup = kb([
+    ...KAIROS_LEVIERS.map(l => [{ text: `${on.has(l.id) ? "✅" : "⬜"} ${l.n} ${l.label}`, callback_data: `nova:klt:${l.id}` }]),
+    [{ text: "« Retour", callback_data: "nova:kairos" }],
+  ]);
+  return { text, markup };
+}
+// Resolve a /kairos-update field token (lowercased) → a nova-kairos dotpath.
+function kairosResolveField(field: string): string | null {
+  const f = field.toLowerCase();
+  if (f === "objectifultime") return "objectifUltime";
+  if (f === "objectif") return "objectif";
+  if (f === "mantra") return "mantra";
+  if (f === "leviers" || f === "levier") return "leviers";
+  if (f.startsWith("vision.")) return kairosFieldByKey(f.slice(7))?.dot || null;
+  return kairosFieldByKey(f)?.dot || null;
+}
+function kairosHelpText(): string {
+  return card("KAIROS — aide",
+    ` 🧭 <b>/kairos</b> — voir ta vision (carte + boutons d'édition)\n` +
+    ` ✏️ <b>/kairos update &lt;champ&gt; &lt;valeur&gt;</b> — modifier un champ\n` +
+    ` ⚡ <b>/kairos update leviers clarté, action</b> — régler tes leviers`,
+    `<b>Champs :</b> objectifUltime, objectif, mantra, richesse, idees, musique, presence, femme, temps, positive, interessant, adore, exploration (ou <code>vision.&lt;champ&gt;</code>), leviers.\n\n💬 Tu peux aussi me parler : « mon mantra est … », « ma vision de la richesse est … », « mes leviers sont clarté, action », « j'ai fait … ».`);
+}
+const kairosViewBtn = kb([[{ text: "🧭 Voir KAIROS", callback_data: "nova:kairos" }]]);
+// ── TASK 4 — /kairos (+ /vision) command, with `update`/`help` shorthands ──
+async function handleKairosCommand(text: string, chatId: number, thread?: number) {
+  const parts = text.trim().split(/\s+/);
+  const sub = (parts[1] || "").toLowerCase();
+  if (!parts[1]) { const c = kairosCard(); await send(chatId, c.text, c.markup, thread); return; }
+  if (sub === "help" || sub === "aide") { await send(chatId, kairosHelpText(), kairosViewBtn, thread); return; }
+  if (sub === "update" || sub === "set") {
+    const fieldTok = parts[2] || "";
+    const dot = fieldTok ? kairosResolveField(fieldTok) : null;
+    // Value = the raw remainder after the field token (preserve casing/spacing).
+    const idx = fieldTok ? text.indexOf(fieldTok) : -1;
+    const value = idx >= 0 ? text.slice(idx + fieldTok.length).trim() : "";
+    if (!dot) { await send(chatId, kairosHelpText(), kairosViewBtn, thread); return; }
+    if (dot === "leviers") {
+      const ids = kairosLevierIds(value);
+      if (!ids.length) { await send(chatId, "⚡ Donne au moins un levier : Clarté, Amorçage, Prophétie, Action, Environnement.", kairosViewBtn, thread); return; }
+      const r = kairosSet("leviers", JSON.stringify(ids), true);
+      await send(chatId, r.ok ? `✅ <b>Leviers</b> mis à jour.` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kb([[{ text: "⚡ Voir leviers", callback_data: "nova:klv" }]]), thread);
+      return;
+    }
+    if (!value) { await send(chatId, kairosHelpText(), kairosViewBtn, thread); return; }
+    const r = kairosSet(dot, value);
+    await send(chatId, r.ok ? `✅ <b>${esc(kairosLabelForDot(dot))}</b> mis à jour : «${preview(value, 120)}»` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kairosViewBtn, thread);
+    return;
+  }
+  // Unknown subcommand → usage.
+  await send(chatId, kairosHelpText(), kairosViewBtn, thread);
+}
+// ── TASK 2 — inline-button callbacks (nova:kairos / nova:kf:<key> / nova:klv / nova:klt:<id>) ──
+async function onKairosCallback(data: string, chatId: number, msgId: number, from: number) {
+  const [, ns, arg] = data.split(":");
+  if (data === "nova:kairos") { const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+  if (ns === "kf" && arg) {
+    const f = kairosFieldByKey(arg);
+    if (!f) { const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+    const d = kairosGet() || {};
+    const curr = f.dot.startsWith("vision.") ? (d.vision?.[f.key] ?? "") : (d[f.dot] ?? "");
+    setPending(from, "kairos-field", f.dot);
+    return edit(chatId, msgId,
+      `✏️ <b>${esc(f.label)}</b>\n\nActuel :\n${curr ? kairosFull(curr) : "—"}\n\n<i>Envoie la nouvelle valeur (texte). /annuler pour annuler.</i>`,
+      kb([[{ text: "✖️ Annuler", callback_data: "nova:kairos" }]]));
+  }
+  if (data === "nova:klv") { const v = kairosLeviersView(); return edit(chatId, msgId, v.text, v.markup); }
+  if (ns === "klt" && arg) {
+    if (!KAIROS_LEVIERS.some(l => l.id === arg)) { const v = kairosLeviersView(); return edit(chatId, msgId, v.text, v.markup); }
+    const d = kairosGet() || {};
+    const cur = new Set<string>(Array.isArray(d.leviers) ? d.leviers : []);
+    cur.has(arg) ? cur.delete(arg) : cur.add(arg);
+    kairosSet("leviers", JSON.stringify([...cur]), true);
+    const v = kairosLeviersView();
+    return edit(chatId, msgId, v.text, v.markup);
+  }
+}
+
 async function onNovaCallback(data: string, chatId: number, msgId: number, from: number, botName: string, model?: string) {
   const [, ns, arg] = data.split(":");
+  if (data === "nova:kairos" || ns === "kf" || data === "nova:klv" || ns === "klt") return onKairosCallback(data, chatId, msgId, from);
   if (data === "nova:menu") return edit(chatId, msgId, `<b>⚡ ${esc(botName)} — menu</b>\nChoisis :`, novaMenuKb());
   if (data === "nova:connect") return edit(chatId, msgId, `<b>🔌 Connecter mes comptes</b>\nVia Composio (un seul hub d'auth). Appuie sur un service → je te renvoie le lien d'autorisation à ouvrir sur ton tél.`, novaConnectKb());
   if (ns === "conn" && arg) {
@@ -2234,6 +2490,9 @@ async function agentBotMain(agentId: string) {
   // The persona's display name is its Telegram name (self-changeable via the
   // Bot API) — the label follows it on restart, never a hard-coded string.
   const botName: string = isPersona ? ((await tg("getMe", {}))?.result?.first_name || (isSecurity ? "Trinity" : "Assistant")) : "";
+  // Restore any pending typed-reply flow (e.g. a mid-edit KAIROS field) across a
+  // service restart — the companion process never called this (only master's main()).
+  loadPending();
   // Companion's command menu = the operator's discoverable "re-ask me" menu. The
   // brain (persona) acts on each directive; no per-command bot code needed.
   await tg("setMyCommands", { commands: isCompanion ? [
@@ -2245,6 +2504,7 @@ async function agentBotMain(agentId: string) {
     { command: "objectifs", description: "Mes objectifs + challenge-moi dessus" },
     { command: "magic", description: "Mon profil Magic (Matrice de Destinée)" },
     { command: "rapport", description: "Fais-moi un briefing maintenant" },
+    { command: "kairos", description: "🧭 Ma vision KAIROS — voir & modifier" },
     { command: "aide", description: "Ce que tu sais faire" },
   ] : isSecurity ? [{ command: "start", description: "White-hat security operator (recon → scan → exploit/PoC → report)" }]
     : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
@@ -2287,6 +2547,11 @@ async function agentBotMain(agentId: string) {
           else await send(chatId, "L'appel vocal n'est pas configuré sur cette machine (state/nova-call.json absent).", undefined, thread);
           continue;
         }
+        // Companion: /kairos (+ /vision) — view & edit Gareth's KAIROS vision store.
+        if (isCompanion && (text === "/kairos" || text.startsWith("/kairos ") || text === "/vision" || text.startsWith("/vision "))) {
+          await handleKairosCommand(text, chatId, thread);
+          continue;
+        }
         // Companion: /menu opens the button menu; /start greets + shows it.
         if (isCompanion && (text === "/menu" || text === "/start")) {
           await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
@@ -2313,6 +2578,49 @@ async function agentBotMain(agentId: string) {
         // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
         // History gives it the running conversation; the brain itself is stateless.
         if (isCompanion) {
+          // KAIROS: a pending field-edit captures the next typed value (highest priority).
+          const kp = getPending(from);
+          if (kp?.kind === "kairos-field") {
+            if (text.startsWith("/annuler") || text.startsWith("/cancel")) {
+              clearPending(from); await send(chatId, "Annulé.", undefined, thread); continue;
+            }
+            if (text && !text.startsWith("/")) {
+              clearPending(from);
+              const r = kairosSet(kp.arg!, text);
+              if (r.ok) {
+                await send(chatId, `✅ <b>${esc(kairosLabelForDot(kp.arg!))}</b> mis à jour.`, undefined, thread);
+                const c = kairosCard(); await send(chatId, c.text, c.markup, thread);
+              } else {
+                await send(chatId, `⚠️ Échec de la mise à jour : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
+              }
+              continue;
+            }
+          }
+          // KAIROS: French natural-language intents → typed write (anchored; non-matches fall through to the brain).
+          if (text && !text.startsWith("/")) {
+            const intent = detectKairosIntent(text);
+            if (intent) {
+              if (intent.kind === "guide") { await send(chatId, `🧭 <b>${esc(intent.label)}</b>\n${esc(intent.guide!)}`, undefined, thread); continue; }
+              if (intent.kind === "set") {
+                const r = kairosSet(intent.dot!, intent.value!);
+                await send(chatId, r.ok ? `✅ <b>${esc(intent.label)}</b> mis à jour : «${preview(intent.value!, 120)}»` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kairosViewBtn, thread);
+                continue;
+              }
+              if (intent.kind === "levier") {
+                const r = kairosSet("leviers", intent.value!, true);
+                await send(chatId, r.ok ? `✅ <b>Leviers</b> mis à jour.` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kb([[{ text: "⚡ Voir leviers", callback_data: "nova:klv" }]]), thread);
+                continue;
+              }
+              if (intent.kind === "action") {
+                const now = new Date();
+                const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+                const r1 = kairosSet(`journal.${today}.actionTexte`, intent.value!);
+                const r2 = kairosSet(`journal.${today}.actionFaite`, "true", true);
+                await send(chatId, (r1.ok && r2.ok) ? `✅ <b>Action du jour</b> notée : «${preview(intent.value!, 120)}»` : `⚠️ Échec : <i>${esc(r1.err || r2.err || "").slice(0, 200)}</i>`, undefined, thread);
+                continue;
+              }
+            }
+          }
           // «clé elevenlabs: sk_…» pasted in chat → store it, engine turns on live.
           const keyM = text.match(/cl[ée]\s*elevenlabs\s*[:=]?\s*([A-Za-z0-9_-]{16,})/i);
           if (keyM) {
