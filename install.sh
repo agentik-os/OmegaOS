@@ -758,6 +758,13 @@ if [[ -f "$OMEGA_SRC/tools/tts/install-tts.sh" ]]; then
     bash "$OMEGA_SRC/tools/tts/install-tts.sh" || info "TTS bench setup had warnings (non-fatal — omega-ttsd serves whatever installed)"
 fi
 
+# Zernio social-publishing CLI (omega-zernio) — pure Bun, zero npm deps; posts
+# to social channels via the Zernio REST API, one profile per project. Reads
+# ZERNIO_API_KEY from ~/.omega/secrets/integrations.env at runtime.
+if [[ -f "$OMEGA_SRC/tools/zernio/install-zernio.sh" ]]; then
+    bash "$OMEGA_SRC/tools/zernio/install-zernio.sh" || info "Zernio CLI setup had warnings (non-fatal)"
+fi
+
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
 step "Phase 5: Configuring OmegaOS"
