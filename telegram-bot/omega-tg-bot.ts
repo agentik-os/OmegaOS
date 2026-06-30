@@ -1357,7 +1357,7 @@ function extractJson(out: string): any {
 // never hijacks an ordinary message after a long gap.
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
-type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field"; ts: number; arg?: string };
+type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm"; ts: number; arg?: string };
 const pending = new Map<number, Pending>();
 function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
 function loadPending() {
@@ -2272,8 +2272,8 @@ const KAIROS_VISION_SYNONYMS: Record<string, string[]> = {
   adore: ["lien", "sympathie", "social", "generosite", "gens"],
   exploration: ["exploration", "decouverte", "voyage", "nouveaute", "aventure", "explorer"],
 };
-// "liberte" lives in richesse AND (conceptually) temps; first-match (insertion order)
-// wins → bare "liberté" resolves to richesse. Documented & acceptable.
+// "liberte" is intentionally listed ONLY under richesse (not temps): a bare
+// "liberté" resolves to richesse. Documented & acceptable.
 function kairosVisionKey(word: string): string | undefined {
   const w = kairosNorm(word);
   const cand = [w, w.replace(/s$/, "")];  // try plural and singular (but not "temps"→"temp" losing a real key — "temps" stays a candidate)
@@ -2296,20 +2296,25 @@ function kairosLevierIds(text: string): string[] {
 type KairosIntent = { dot?: string; value?: string; json?: boolean; label: string; kind: "set" | "levier" | "action" | "guide"; guide?: string };
 function detectKairosIntent(text: string): KairosIntent | null {
   const t = text.trim();
+  // A question goes to the brain, never a write ("mantra c'est quoi ?", "… ?").
+  if (t.endsWith("?")) return null;
+  // A captured value that is itself a question word is a question, not a new value.
+  const isQ = (v: string) => /^(c'?est\s+)?(quoi|qui|quand|comment|pourquoi|o[uù]|combien|quel)\b/i.test(v.trim());
   const facets = "richesse, idées, musique, présence, femme, temps, positivité, intéressant, lien, exploration";
   const visionGuide = `Quelle facette ? ${facets}. Ex : « ma vision de la richesse est … »`;
   let m: RegExpMatchArray | null;
   // Objectif ultime BEFORE the generic objectif (anchored, explicit connector).
   m = t.match(/^\s*mon\s+objectif\s+ultime\s*(?:est|c'?est|:|=)\s*(.+)$/is);
-  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "objectifUltime", value: m[1].trim(), label: "Objectif ultime" };
+  if (m && m[1].trim().length >= 2 && !isQ(m[1])) return { kind: "set", dot: "objectifUltime", value: m[1].trim(), label: "Objectif ultime" };
   m = t.match(/^\s*mon\s+objectif\s*(?:est|c'?est|:|=)\s*(.+)$/is);
-  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "objectif", value: m[1].trim(), label: "Objectif" };
+  if (m && m[1].trim().length >= 2 && !isQ(m[1])) return { kind: "set", dot: "objectif", value: m[1].trim(), label: "Objectif" };
   m = t.match(/^\s*(?:mon\s+)?mantra\s*(?:est|c'?est|:|=)\s*(.+)$/is);
-  if (m && m[1].trim().length >= 2) return { kind: "set", dot: "mantra", value: m[1].trim(), label: "Mantra" };
-  // Vision <champ> est X — map the champ word to a vision key; unknown champ → guide (no silent write).
-  m = t.match(/^\s*ma\s+vision\s+(?:de\s+la\s+|de\s+l'?|de\s+|du\s+|des\s+|pour\s+|sur\s+|en\s+|envers\s+)?([\wàâçéèêëîïôûùü'’-]+)\s*(?:est|c'?est|:|=)\s*(.+)$/is);
-  if (m && m[2].trim().length >= 2) {
-    const key = kairosVisionKey(m[1]);
+  if (m && m[1].trim().length >= 2 && !isQ(m[1])) return { kind: "set", dot: "mantra", value: m[1].trim(), label: "Mantra" };
+  // Vision <champ> est X — capture the WHOLE champ phrase (lazy), then scan each
+  // word for a known vision key (first hit wins); unknown champ → guide (no write).
+  m = t.match(/^\s*ma\s+vision\s+(?:de\s+la\s+|de\s+l'?|de\s+|du\s+|des\s+|pour\s+|sur\s+|en\s+|envers\s+)?(.+?)\s*(?:est|c'?est|:|=)\s*(.+)$/is);
+  if (m && m[2].trim().length >= 2 && !isQ(m[2])) {
+    const key = m[1].split(/\s+/).map(w => kairosVisionKey(w)).find(Boolean);
     if (key) { const f = kairosFieldByKey(key)!; return { kind: "set", dot: f.dot, value: m[2].trim(), label: f.label }; }
     return { kind: "guide", label: "Vision", guide: visionGuide };
   }
@@ -2423,7 +2428,21 @@ async function handleKairosCommand(text: string, chatId: number, thread?: number
 // ── TASK 2 — inline-button callbacks (nova:kairos / nova:kf:<key> / nova:klv / nova:klt:<id>) ──
 async function onKairosCallback(data: string, chatId: number, msgId: number, from: number) {
   const [, ns, arg] = data.split(":");
-  if (data === "nova:kairos") { const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+  // Clear any armed pending FIRST so ✖️ Annuler (→ nova:kairos) can't leave the
+  // next ordinary message wired into a field (MAJOR 1).
+  if (data === "nova:kairos") { clearPending(from); const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
+  // Confirm / cancel an NL-detected write (kairos-confirm pending).
+  if (data === "nova:kno") { clearPending(from); return edit(chatId, msgId, "Annulé.", undefined); }
+  if (data === "nova:kok") {
+    const p = getPending(from);
+    if (p?.kind !== "kairos-confirm") return edit(chatId, msgId, "⏳ Expiré — refais ta demande.", undefined);
+    clearPending(from);
+    let payload: any; try { payload = JSON.parse(p.arg!); } catch { return edit(chatId, msgId, "⚠️ Erreur interne.", undefined); }
+    let ok = true, err = "";
+    for (const op of payload.ops) { const r = kairosSet(op.dot, op.value, !!op.json); if (!r.ok) { ok = false; err = r.err || ""; } }
+    return edit(chatId, msgId, ok ? `✅ <b>${esc(payload.label)}</b> enregistré.` : `⚠️ Échec : <i>${esc(err).slice(0, 200)}</i>`,
+      kb([[{ text: "🧭 Voir KAIROS", callback_data: "nova:kairos" }]]));
+  }
   if (ns === "kf" && arg) {
     const f = kairosFieldByKey(arg);
     if (!f) { const c = kairosCard(); return edit(chatId, msgId, c.text, c.markup); }
@@ -2448,7 +2467,7 @@ async function onKairosCallback(data: string, chatId: number, msgId: number, fro
 
 async function onNovaCallback(data: string, chatId: number, msgId: number, from: number, botName: string, model?: string) {
   const [, ns, arg] = data.split(":");
-  if (data === "nova:kairos" || ns === "kf" || data === "nova:klv" || ns === "klt") return onKairosCallback(data, chatId, msgId, from);
+  if (data === "nova:kairos" || ns === "kf" || data === "nova:klv" || ns === "klt" || data === "nova:kok" || data === "nova:kno") return onKairosCallback(data, chatId, msgId, from);
   if (data === "nova:menu") return edit(chatId, msgId, `<b>⚡ ${esc(botName)} — menu</b>\nChoisis :`, novaMenuKb());
   if (data === "nova:connect") return edit(chatId, msgId, `<b>🔌 Connecter mes comptes</b>\nVia Composio (un seul hub d'auth). Appuie sur un service → je te renvoie le lien d'autorisation à ouvrir sur ton tél.`, novaConnectKb());
   if (ns === "conn" && arg) {
@@ -2491,8 +2510,9 @@ async function agentBotMain(agentId: string) {
   // Bot API) — the label follows it on restart, never a hard-coded string.
   const botName: string = isPersona ? ((await tg("getMe", {}))?.result?.first_name || (isSecurity ? "Trinity" : "Assistant")) : "";
   // Restore any pending typed-reply flow (e.g. a mid-edit KAIROS field) across a
-  // service restart — the companion process never called this (only master's main()).
-  loadPending();
+  // service restart — only the companion uses pending here (master calls it in main()).
+  // Project agent-bots must NOT load/compete on the shared tg-pending.json.
+  if (isCompanion) loadPending();
   // Companion's command menu = the operator's discoverable "re-ask me" menu. The
   // brain (persona) acts on each directive; no per-command bot code needed.
   await tg("setMyCommands", { commands: isCompanion ? [
@@ -2540,6 +2560,15 @@ async function agentBotMain(agentId: string) {
         // Any attachment (photo / document / video / audio) → download it locally; aggregated with the text below.
         const file = (msg.photo || msg.document || msg.video || msg.audio) ? await saveIncomingFile(msg) : "";
         if (!text && !file) continue;
+        // A slash command cancels any in-progress KAIROS edit/confirm (mirror the master loop):
+        // never let /menu, /aide, /kairos… leave a field/confirm armed for the next message.
+        if (isCompanion && text.startsWith("/")) {
+          const kpend = getPending(from);
+          if (kpend && (kpend.kind === "kairos-field" || kpend.kind === "kairos-confirm")) {
+            clearPending(from);
+            if (text === "/annuler" || text === "/cancel") { await send(chatId, "Annulé.", undefined, thread); continue; }
+          }
+        }
         // Companion: /call hands over the live-call button, no brain round-trip.
         if (isCompanion && text === "/call") {
           const rows = novaCallButton();
@@ -2578,45 +2607,44 @@ async function agentBotMain(agentId: string) {
         // COMPANION: instant chat — no mission aggregation, no oracle dispatch.
         // History gives it the running conversation; the brain itself is stateless.
         if (isCompanion) {
-          // KAIROS: a pending field-edit captures the next typed value (highest priority).
+          // KAIROS: a pending field-edit captures the next typed value (highest
+          // priority; /annuler + any slash already handled by the top guard).
+          // The inline-edit path stays IMMEDIATE (operator explicitly armed it).
           const kp = getPending(from);
-          if (kp?.kind === "kairos-field") {
-            if (text.startsWith("/annuler") || text.startsWith("/cancel")) {
-              clearPending(from); await send(chatId, "Annulé.", undefined, thread); continue;
+          if (kp?.kind === "kairos-field" && text && !text.startsWith("/")) {
+            clearPending(from);
+            const r = kairosSet(kp.arg!, text);
+            if (r.ok) {
+              await send(chatId, `✅ <b>${esc(kairosLabelForDot(kp.arg!))}</b> mis à jour.`, undefined, thread);
+              const c = kairosCard(); await send(chatId, c.text, c.markup, thread);
+            } else {
+              await send(chatId, `⚠️ Échec de la mise à jour : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
             }
-            if (text && !text.startsWith("/")) {
-              clearPending(from);
-              const r = kairosSet(kp.arg!, text);
-              if (r.ok) {
-                await send(chatId, `✅ <b>${esc(kairosLabelForDot(kp.arg!))}</b> mis à jour.`, undefined, thread);
-                const c = kairosCard(); await send(chatId, c.text, c.markup, thread);
-              } else {
-                await send(chatId, `⚠️ Échec de la mise à jour : <i>${esc(r.err || "erreur").slice(0, 300)}</i>`, undefined, thread);
-              }
-              continue;
-            }
+            continue;
           }
-          // KAIROS: French natural-language intents → typed write (anchored; non-matches fall through to the brain).
+          // KAIROS: French NL intents. `guide` just replies; set/levier/action are
+          // FUZZY → propose a one-tap Confirm card, never a silent write. Explicit
+          // paths (/kairos update …, inline-edit) stay immediate.
           if (text && !text.startsWith("/")) {
             const intent = detectKairosIntent(text);
             if (intent) {
               if (intent.kind === "guide") { await send(chatId, `🧭 <b>${esc(intent.label)}</b>\n${esc(intent.guide!)}`, undefined, thread); continue; }
+              let payload: { ops: { dot: string; value: string; json: boolean }[]; label: string; summary: string } | null = null;
               if (intent.kind === "set") {
-                const r = kairosSet(intent.dot!, intent.value!);
-                await send(chatId, r.ok ? `✅ <b>${esc(intent.label)}</b> mis à jour : «${preview(intent.value!, 120)}»` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kairosViewBtn, thread);
-                continue;
-              }
-              if (intent.kind === "levier") {
-                const r = kairosSet("leviers", intent.value!, true);
-                await send(chatId, r.ok ? `✅ <b>Leviers</b> mis à jour.` : `⚠️ Échec : <i>${esc(r.err || "").slice(0, 200)}</i>`, kb([[{ text: "⚡ Voir leviers", callback_data: "nova:klv" }]]), thread);
-                continue;
-              }
-              if (intent.kind === "action") {
+                payload = { ops: [{ dot: intent.dot!, value: intent.value!, json: false }], label: intent.label, summary: `«${preview(intent.value!, 120)}»` };
+              } else if (intent.kind === "levier") {
+                const ids: string[] = JSON.parse(intent.value!);
+                const labels = ids.map(id => KAIROS_LEVIERS.find(l => l.id === id)?.label || id).join(", ");
+                payload = { ops: [{ dot: "leviers", value: intent.value!, json: true }], label: "Leviers", summary: esc(labels) };
+              } else if (intent.kind === "action") {
                 const now = new Date();
                 const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-                const r1 = kairosSet(`journal.${today}.actionTexte`, intent.value!);
-                const r2 = kairosSet(`journal.${today}.actionFaite`, "true", true);
-                await send(chatId, (r1.ok && r2.ok) ? `✅ <b>Action du jour</b> notée : «${preview(intent.value!, 120)}»` : `⚠️ Échec : <i>${esc(r1.err || r2.err || "").slice(0, 200)}</i>`, undefined, thread);
+                payload = { ops: [{ dot: `journal.${today}.actionTexte`, value: intent.value!, json: false }, { dot: `journal.${today}.actionFaite`, value: "true", json: true }], label: "Action du jour", summary: `Action du jour : «${preview(intent.value!, 120)}»` };
+              }
+              if (payload) {
+                setPending(from, "kairos-confirm", JSON.stringify(payload));
+                await send(chatId, `🧭 <b>${esc(payload.label)}</b>\n${payload.summary}\n\n<i>Je note ça ?</i>`,
+                  kb([[{ text: "✅ Confirmer", callback_data: "nova:kok" }, { text: "✖️ Annuler", callback_data: "nova:kno" }]]), thread);
                 continue;
               }
             }
