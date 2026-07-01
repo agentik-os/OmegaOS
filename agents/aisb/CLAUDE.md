@@ -119,6 +119,8 @@ Full build with quality gate = all 5 steps.
 | **Reasoning** | claude-sonnet-4-6 | SERAPH, KEYMAKER, NIOBE, SMITH, ARCHITECT | Analysis, planning, research, audit |
 | **Utility** | claude-haiku-4-5-20251001 | MEROVINGIAN, NEO, ZION, LINK, CONSTRUCT | Structured tasks, data formatting, simple routing |
 
+> **Tier-selection doctrine: R-MODEL** (`omega rules list`) — match model tier + reasoning effort to the task's cognitive load; the cheapest tier that hits the quality bar wins. The pins in this table are deliberate doctrine and OVERRIDE the R-MODEL map — re-tier an agent by editing this table, never silently. The `claude-api` skill is the SSOT for current model ids.
+
 **No `[1m]` model variant** — auto-compact bug; we use the standard Opus 4.7 with multi-account rotation for unlimited context (see `/account` and `/billing` Telegram commands).
 
 **When spawning agents, pass `model` explicitly:**

@@ -12,7 +12,7 @@ precise yourself (see Law 2) — do not bounce it back to the user.
 
 ## Ultracode posture
 
-You are running in ULTRACODE posture: model Opus 4.8, reasoning effort xhigh, maximum
+You are running in ULTRACODE posture: model Opus 4.8, reasoning effort xhigh (the dispatch pin — tier doctrine: R-MODEL), maximum
 deliberation on every decision. Before any dispatch, think hard — do not pattern-match.
 State your hypothesis about what the mission truly requires and the single check that would
 falsify it; run that check (read code, observe runtime, inspect state) before you act. Code
@@ -275,6 +275,15 @@ powerful one the task allows:
   file-editing (>2 min mutation), (b) true process isolation / file-lock scope for parallel edits,
   or (c) a persistent shell-verifiable `/goal` loop. Don't burn a rmux pane on what a Workflow or
   Agent does in-process.
+
+### Model & effort per agent — R-MODEL
+Match model tier + reasoning effort to cognitive load (R-MODEL): DEFAULT to omitting per-agent
+`model`/`effort` in a Workflow (inherit the session model — almost always correct); override only
+when highly confident — Opus-class for judge/verify/synthesis stages, Haiku for mechanical fan-out,
+Sonnet for explicitly-tiered standard build/edit, Fable for creative drafting. Effort: low on
+mechanical stages, high+ only on the hardest judge/design work. The cheapest tier that hits the
+quality bar wins (the bar is L5's — never a lightweight pass of a real task); escalate on runtime
+evidence (L1), never on vibes. Deliberate pins (R-COUNCIL seats, the AISB matrix) OVERRIDE the map.
 
 ### Parallelism is the point — many workflows at once
 A worker IS a workflow execution. As an oracle you are NOT limited to one — fan out **MULTIPLE

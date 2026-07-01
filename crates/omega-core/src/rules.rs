@@ -152,7 +152,7 @@ pub fn all_rules() -> Vec<Rule> {
             title: "Workflow-first orchestration",
             kind: RuleKind::Rule,
             category: RuleCategory::Orchestration,
-            description: "Reach for the most powerful primitive a task allows: Workflow (default for review / research / design / audit / multi-angle — fan-out → adversarially verify → synthesize, in-process), Agent (one fast read-only question), `omega spawn-worker` (long file edits, worktree isolation, or a persistent goal-loop). An oracle orchestrates and never edits project code itself; a worker leans on Workflow/Agent to fan out heavy sub-tasks (parallel + adversarial-verify + synthesize) instead of grinding linearly — workers ARE Opus-4.8 workflows. Parallelize file-disjoint work; serialize anything sharing files. Synthesis is your own job — never paste a delegate's summary as the verdict.",
+            description: "Reach for the most powerful primitive a task allows: Workflow (default for review / research / design / audit / multi-angle — fan-out → adversarially verify → synthesize, in-process), Agent (one fast read-only question), `omega spawn-worker` (long file edits, worktree isolation, or a persistent goal-loop). An oracle orchestrates and never edits project code itself; a worker leans on Workflow/Agent to fan out heavy sub-tasks (parallel + adversarial-verify + synthesize) instead of grinding linearly — workers ARE full-power workflows (model tier per R-MODEL). Parallelize file-disjoint work; serialize anything sharing files. Synthesis is your own job — never paste a delegate's summary as the verdict.",
             applies_to: &[],
             scopes: &[RuleScope::Master, RuleScope::Oracle, RuleScope::Worker],
             added_at: "2026-05-29",
@@ -487,6 +487,17 @@ pub fn all_rules() -> Vec<Rule> {
             scopes: EXEC,
             added_at: "2026-06-13",
             reason: "Per Loop Engineering (Addy Osmani, June 2026; the 2026 builder skill), OmegaOS DETECTED loop pathologies — thrash, contested fabrication, wall-clock overrun — but never ENFORCED a ceiling: retry_thrash_count sat unread at 0 and the quality gate ran once with no bounded correction loop, so a thrashing loop could re-fabricate or overrun indefinitely with the human still in the inner loop. R-LOOP makes the ceiling a runtime invariant (loop_guard: bounded retries → escalate_to_human → operator alert + mission timeline), turning 'detect and record' into 'bound and escalate' — the article's core lesson and the antidote to cognitive surrender.",
+        },
+        Rule {
+            id: "R-MODEL",
+            title: "Right model & reasoning-effort for the task",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Match the Claude model tier AND reasoning effort to the task's cognitive load — never habit, never inertia. Tiers: Opus 4.8 (claude-opus-4-8) = hardest reasoning — oracle/orchestration brains, adversarial verify/judge stages, architecture, security analysis, final synthesis. Sonnet 5 (claude-sonnet-5) = the balanced pick when a standard build/edit sub-agent is explicitly tiered. Haiku 4.5 (claude-haiku-4-5) = cheap high-volume mechanical fan-out — file-by-file transforms, grep/extract/classify, label/format passes, structured extraction. Fable 5 (claude-fable-5) = creative/expressive drafting — naming, copy hooks, narrative. In a Workflow, DEFAULT to omitting per-agent model/effort (inherit the session model — almost always correct); override only when highly confident a different tier fits. Reasoning effort: omitted = inherit the session/dispatch effort; when you set it, low for mechanical stages, medium as the balanced baseline, high/xhigh/max for the hardest verify/judge/design. The map guides the tier you CHOOSE at dispatch/spawn/Workflow time — never re-tier a running session mid-mission. Start at the map's tier for the load; the cheapest tier that hits the quality bar is the correct call (it keeps missions inside the R-BUDGET cap — the bar itself is L5's: cost-matching is never an excuse for a 'lightweight' pass of a real task), and escalate the moment a cheaper tier demonstrably fails on runtime evidence (L1), never on vibes. Use live model ids — never a retired id; deliberately pinned older-but-live models (R-COUNCIL's seats, the AISB matrix table) are doctrine that OVERRIDES this map — re-tier them by editing their own doc, never silently. The claude-api skill is the SSOT for ids/pricing/limits/caching — on any divergence from the ids above, the skill wins; consult it, never guess. Complements R-ORCH (which primitive) and R-COUNCIL (which owns council composition).",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-07-02",
+            reason: "rules.rs had R-STACK (languages), R-ORCH (which primitive), R-COUNCIL (multi-model for high-stakes), R-BUDGET (the cap) — but nothing matched the Claude model tier + reasoning effort to the cognitive load of a task, so agents defaulted to the session model by habit: max effort on mechanical fan-out and, worse, cheap passes on judge stages. R-MODEL makes quality-matched AND cost-matched model choice an injected, scoped doctrine.",
         },
     ]
 }
