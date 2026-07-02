@@ -80,6 +80,13 @@ pub enum Action {
     /// Projects tab: open the selected project in a terminal — attach to its
     /// Oracle session if one is alive, otherwise spawn a shell in its dir.
     OpenProject { name: String, path: String, oracle_session: Option<String> },
+    /// Marketing tab: open a marketing-scoped Claude session for the selected
+    /// project. `cwd` is the project's `marketing/` dir so the agent starts
+    /// there; `prompt` is the scoped "talk only marketing" system prompt.
+    OpenMarketingSession { name: String, cwd: String, prompt: String },
+    /// Marketing tab: run `omega-zernio publish <slug> --dry-run` for the
+    /// selected project in a fresh session (the "p → publier (dry-run)" action).
+    MarketingPublishDryRun { slug: String, cwd: String },
     /// Projects tab: dispatch `omega planner` for the selected project.
     RunPlannerForProject { name: String, path: String },
     /// Projects tab: register an existing folder into the project registry
@@ -381,6 +388,16 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
             } else {
                 for _ in 0..lines {
                     if down { app.agentic_tab_next(); } else { app.agentic_tab_prev(); }
+                }
+            }
+        }
+        Tab::Marketing => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.marketing_tab_next(); } else { app.marketing_tab_prev(); }
                 }
             }
         }
@@ -1231,6 +1248,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_next(),
                 Tab::Settings => app.settings_tab_next(),
                 Tab::Agentic => app.agentic_tab_next(),
+                Tab::Marketing => app.marketing_tab_next(),
                 Tab::Help => app.scroll_detail_down(1),
             }
             Action::None
@@ -1269,6 +1287,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Settings => app.settings_tab_prev(),
                 Tab::Agentic => app.agentic_tab_prev(),
+                Tab::Marketing => app.marketing_tab_prev(),
                 Tab::Help => app.scroll_detail_up(1),
             }
             Action::None
@@ -1497,8 +1516,53 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     Action::None
                 }
             }
+            Tab::Marketing => {
+                // Enter opens a marketing-scoped Claude session for the selected
+                // project, cwd = its marketing/ dir. No focus dance — the list is
+                // the primary surface and "Enter → parler marketing" is the whole
+                // point of the tab.
+                match app.selected_marketing_project() {
+                    Some(p) => {
+                        let cwd = p.marketing_dir().to_string_lossy().to_string();
+                        let prompt = format!(
+                            "Tu es l'opérateur marketing de {name}. Tu travailles \
+UNIQUEMENT sur son marketing: lis {path}/marketing/ (00-context…05-calendar), \
+utilise `omega-zernio` pour publier et `higgsfield generate create` pour les \
+visuels. Montre l'agenda du jour, propose/exécute les posts. Ne touche pas au \
+code produit.",
+                            name = p.name,
+                            path = p.path.to_string_lossy(),
+                        );
+                        Action::OpenMarketingSession {
+                            name: format!("mkt-{}", p.slug),
+                            cwd,
+                            prompt,
+                        }
+                    }
+                    None => {
+                        app.status_message =
+                            Some("No marketing project selected (F5 to scan)".to_string());
+                        Action::None
+                    }
+                }
+            }
             Tab::Help => Action::None,
         },
+
+        // Marketing tab: 'p' → publish dry-run for the selected project.
+        KeyCode::Char('p') if app.tab == Tab::Marketing => {
+            match app.selected_marketing_project() {
+                Some(p) => Action::MarketingPublishDryRun {
+                    slug: p.slug.clone(),
+                    cwd: p.marketing_dir().to_string_lossy().to_string(),
+                },
+                None => {
+                    app.status_message =
+                        Some("No marketing project selected (F5 to scan)".to_string());
+                    Action::None
+                }
+            }
+        }
 
         // Settings tab → Monitor group: letter shortcuts (only when the cursor
         // sits in the Monitor group, so they don't fire while editing providers).

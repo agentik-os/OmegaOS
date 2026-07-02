@@ -122,6 +122,11 @@ enum Commands {
         json: bool,
     },
 
+    /// Marketing — list marketing-enabled projects and their status.
+    /// A project is marketing-enabled when it has a `marketing/` directory.
+    #[command(subcommand)]
+    Marketing(MarketingAction),
+
     /// Mark a folder as trusted in ~/.claude.json so Claude Code skips the
     /// "Do you trust the files in this folder?" dialog. Ran automatically by
     /// every agent launch command right before `claude` starts (concurrent
@@ -563,6 +568,7 @@ async fn main() -> Result<()> {
         Some(Commands::Clock { full }) => cmd_clock(full),
         Some(Commands::MouseTest) => cmd_mouse_test(),
         Some(Commands::Projects { json }) => cmd_projects(json),
+        Some(Commands::Marketing(action)) => cmd_marketing(action),
         Some(Commands::TrustDir { dir }) => cmd_trust_dir(dir.as_deref()),
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
@@ -1608,6 +1614,9 @@ async fn run_tui_loop(
                     if app.tab == omega_tui::app::Tab::Agentic {
                         app.refresh_projects();
                     }
+                    if app.tab == omega_tui::app::Tab::Marketing {
+                        app.refresh_marketing();
+                    }
                     if app.status_message == before_refresh {
                         app.status_message = Some("Refreshed".to_string());
                         // fix7-T4: the ack is a deliberate user action — it
@@ -2050,6 +2059,63 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::OpenMarketingSession { name, cwd, prompt } => {
+                    let mgr = SessionManager::connect().await?;
+                    // If a marketing session for this project already exists, just
+                    // re-attach (idempotent — avoids stacking duplicates).
+                    let existing = mgr
+                        .list_sessions()
+                        .await
+                        .map(|ss| ss.iter().any(|s| s.name == name))
+                        .unwrap_or(false);
+                    if existing {
+                        app.status_message = Some(format!("Attaching to {}", name));
+                        auto_focus_chat(app, &name).await;
+                    } else {
+                        match mgr
+                            .create_session_with_agent(
+                                &name,
+                                Some(&cwd),
+                                omega_core::agents::Agent::Claude,
+                                Some(&prompt),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                app.status_message =
+                                    Some(format!("💬 {} — marketing session, opening chat…", name));
+                                auto_focus_chat(app, &name).await;
+                            }
+                            Err(e) => {
+                                app.status_message =
+                                    Some(format!("Marketing session failed: {}", e));
+                            }
+                        }
+                    }
+                }
+                Action::MarketingPublishDryRun { slug, cwd } => {
+                    let mgr = SessionManager::connect().await?;
+                    let session = format!("mkt-{}-publish", slug);
+                    let cmd = format!(
+                        "bash -c {}",
+                        shell_escape_for_bash(&format!(
+                            "cd {} 2>/dev/null; omega-zernio publish {} --dry-run; \
+echo; echo '─── dry-run done ───'; exec bash",
+                            cwd, slug
+                        ))
+                    );
+                    match mgr.create_session(&session, Some(&cwd), Some(&cmd)).await {
+                        Ok(_) => {
+                            app.status_message =
+                                Some(format!("Publish dry-run for {} ({})", slug, session));
+                            auto_focus_chat(app, &session).await;
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Dry-run spawn failed for {}: {}", slug, e));
+                        }
+                    }
+                }
                 Action::RunPlannerForProject { name, path } => {
                     let mgr = SessionManager::connect().await?;
                     let safe = name
@@ -2206,6 +2272,16 @@ async fn run_tui_loop(
             // user lands with guidance instead of an empty bar. Skip if the
             // action handler already set a meaningful message this iteration
             // (e.g. a dispatch/login that also switched to the Sessions tab).
+            // Lazy-load marketing projects on first entry to the Marketing tab
+            // (the fs + crontab scan is heavier than the registry, so we defer
+            // it off startup). Reload only if empty — F5 forces a full refresh.
+            if app.tab != tab_before
+                && app.tab == omega_tui::app::Tab::Marketing
+                && app.marketing_projects.is_empty()
+            {
+                app.refresh_marketing();
+            }
+
             if app.tab != tab_before
                 && app.status_message == status_before
                 // FIX-G (D-8): never overwrite an async sticky notice still
@@ -2221,6 +2297,7 @@ async fn run_tui_loop(
                     Tab::Menu => "↑/↓ select · Enter run · or press the shortcut key shown".to_string(),
                     Tab::Settings => "↑/↓ Monitor + Settings sections · Enter/Tab edit · L login · T telegram · B billing".to_string(),
                     Tab::Agentic => "↑/↓ Agentic + Projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
+                    Tab::Marketing => "↑/↓ projects · Enter parler marketing · p publier · F5 refresh".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });
             }
@@ -2606,6 +2683,64 @@ fn cmd_projects(json: bool) -> Result<()> {
         println!("  {}  ({}){}{}", p.name, p.container, stack, age);
     }
     Ok(())
+}
+
+#[derive(Subcommand)]
+enum MarketingAction {
+    /// List marketing-enabled projects and their status (content ✓, calendar
+    /// posts, daily-engine on/off). Add `--json` for the machine feed that
+    /// Telegram / Nova consume.
+    List {
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+        /// Also fetch connected-account counts (calls omega-zernio; slower).
+        #[arg(long)]
+        accounts: bool,
+    },
+}
+
+fn cmd_marketing(action: MarketingAction) -> Result<()> {
+    match action {
+        MarketingAction::List { json, accounts } => {
+            let mut projects = omega_core::marketing::list_marketing_projects();
+            if accounts {
+                for p in projects.iter_mut() {
+                    p.accounts = omega_core::marketing::project_accounts(&p.slug);
+                }
+            }
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&projects)?);
+                return Ok(());
+            }
+
+            if projects.is_empty() {
+                println!("No marketing-enabled projects found.");
+                println!("A project is marketing-enabled once it has a marketing/ directory");
+                println!("(set OMEGA_STATION_DIR to scan a different projects root).");
+                return Ok(());
+            }
+
+            println!("Marketing projects ({}):\n", projects.len());
+            for p in &projects {
+                let posts = if p.calendar_posts > 0 {
+                    format!("  · {} posts", p.calendar_posts)
+                } else if p.has_content {
+                    "  · calendar (0 posts)".to_string()
+                } else {
+                    "  · no calendar".to_string()
+                };
+                let engine = if p.engine_on { "  · engine ON" } else { "" };
+                let accts = match p.accounts {
+                    Some(n) => format!("  · {} accounts", n),
+                    None => String::new(),
+                };
+                println!("  {} {}{}{}{}", p.glyph(), p.name, posts, engine, accts);
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Subcommand)]

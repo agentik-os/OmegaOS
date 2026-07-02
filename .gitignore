@@ -34,3 +34,8 @@ playwright-report/
 test-results/
 .playwright-mcp/
 .planner-cache/
+
+# operator-specific marketing data — never ship to the public OmegaOS repo
+/marketing/
+/tools/marketing-machine/projects.tsv
+/docs/marketing-machine-upgrade-research.md

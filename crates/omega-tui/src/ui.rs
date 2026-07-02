@@ -218,6 +218,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Menu => draw_menu(frame, app, chunks[1]),
         Tab::Agentic => draw_info(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
+        Tab::Marketing => draw_marketing(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
     }
 
@@ -732,13 +733,14 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Agentic", "Settings", "Help"];
+    let titles = vec!["Sessions", "Menu", "Agentic", "Settings", "Marketing", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
         Tab::Agentic => 2,
         Tab::Settings => 3,
-        Tab::Help => 4,
+        Tab::Marketing => 4,
+        Tab::Help => 5,
     };
 
     let tabs = Tabs::new(titles)
@@ -2857,6 +2859,192 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
                 .border_style(Style::default().fg(detail_border)),
         );
     frame.render_widget(paragraph, split[1]);
+}
+
+/// Marketing tab — 25/75 split: left = selectable list of marketing-enabled
+/// projects (status glyph + name + posts), right = the selected project's
+/// detail + an ACTIONS block. Symmetric to the Agentic tab (`draw_info`), same
+/// theme grammar. Fast/local status only (see `omega_core::marketing`).
+fn draw_marketing(frame: &mut Frame, app: &mut App, area: Rect) {
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
+
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { th::accent() } else { th::dim() };
+    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
+
+    // ── Left: selectable project list ────────────────────────────────────────
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(ListItem::new(Line::from("")));
+    items.push(group_header("Marketing"));
+    let mut rendered_selected = 1usize;
+    if app.marketing_projects.is_empty() {
+        items.push(section_row(
+            "(no marketing projects — F5 to scan)".to_string(),
+            true,
+            list_focused,
+        ));
+        rendered_selected = items.len() - 1;
+    } else {
+        for (i, p) in app.marketing_projects.iter().enumerate() {
+            let current = i == app.marketing_selected;
+            if current {
+                rendered_selected = items.len();
+            }
+            let posts = if p.calendar_posts > 0 {
+                format!(" · {}p", p.calendar_posts)
+            } else {
+                String::new()
+            };
+            items.push(section_row(
+                format!("{} {}{}", p.glyph(), p.name, posts),
+                current,
+                current && list_focused,
+            ));
+        }
+    }
+
+    let list_title = if list_focused {
+        " ▶ FOCUSED Marketing — ↑/↓ select, Tab → detail "
+    } else {
+        " Marketing — Tab to focus list "
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+    let mut state = ListState::default().with_selected(Some(rendered_selected));
+    frame.render_stateful_widget(list, split[0], &mut state);
+
+    // ── Right: detail of the selected project ────────────────────────────────
+    let lines = render_marketing_detail(app);
+    let section_label = app
+        .selected_marketing_project()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "Marketing".to_string());
+
+    app.detail_max_scroll =
+        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+
+    let detail_title = if app.detail_focused {
+        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list] ", section_label)
+    } else {
+        format!(" {} ", section_label)
+    };
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
+    frame.render_widget(paragraph, split[1]);
+}
+
+/// Right-pane detail for the selected marketing project (status + ACTIONS).
+fn render_marketing_detail(app: &App) -> Vec<Line<'static>> {
+    let Some(p) = app.selected_marketing_project() else {
+        return vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No marketing project selected.",
+                Style::default().fg(th::dim()),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  A project is marketing-enabled once it has a marketing/ directory.",
+                Style::default().fg(th::dim()),
+            )),
+            Line::from(Span::styled(
+                "  Press F5 to scan for projects.",
+                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+            )),
+        ];
+    };
+
+    let field = |label: &str| {
+        Span::styled(
+            format!("  {:20}", label),
+            Style::default().fg(th::accent2()),
+        )
+    };
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!("  {} ", p.glyph())),
+            Span::styled(
+                p.name.clone(),
+                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![field("Path"), Span::raw(p.path.to_string_lossy().to_string())]),
+        Line::from(vec![field("Slug"), Span::raw(p.slug.clone())]),
+        Line::from(vec![
+            field("Calendar posts"),
+            Span::raw(if p.has_content {
+                p.calendar_posts.to_string()
+            } else {
+                "— (no calendar)".to_string()
+            }),
+        ]),
+        Line::from(vec![
+            field("Daily engine"),
+            if p.engine_on {
+                Span::styled("ON", Style::default().fg(th::success()).add_modifier(Modifier::BOLD))
+            } else {
+                Span::styled("off", Style::default().fg(th::dim()))
+            },
+        ]),
+        Line::from(vec![
+            field("Accounts"),
+            match p.accounts {
+                Some(n) => Span::raw(n.to_string()),
+                None => Span::styled("…", Style::default().fg(th::dim())),
+            },
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─── Actions ───",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw("💬 Parler marketing (session scopée)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  p      ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw("publier (dry-run)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  F5     ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw("refresh"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─── Quick paths ───",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            field("Marketing dir"),
+            Span::raw(p.marketing_dir().to_string_lossy().to_string()),
+        ]),
+        Line::from(vec![
+            field("Calendar (90d)"),
+            Span::raw(p.calendar_md().to_string_lossy().to_string()),
+        ]),
+    ];
+    lines.push(Line::from(""));
+    lines
 }
 
 /// Returns (lines, selected_agent_line) for auto-scroll.

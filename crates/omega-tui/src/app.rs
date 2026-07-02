@@ -33,6 +33,7 @@ pub enum Tab {
     Menu,
     Agentic,
     Settings,
+    Marketing,
     Help,
 }
 
@@ -1194,6 +1195,10 @@ pub struct App {
     pub projects_selected: usize,
     /// Cached project registry for the Projects tab.
     pub project_registry: omega_core::project_manager::ProjectRegistry,
+    /// Marketing tab — selected project index.
+    pub marketing_selected: usize,
+    /// Cached marketing-enabled projects (loaded on tab entry / F5).
+    pub marketing_projects: Vec<omega_core::marketing::MarketingProject>,
     /// Two-press confirm for "Delete forever" (Projects tab 'D'): holds the
     /// project name armed by the first press; second 'D' on the same name fires
     /// the destructive HardDeleteProject. Cleared on cursor move, Esc, and tab
@@ -1291,6 +1296,10 @@ impl App {
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
+            marketing_selected: 0,
+            // Loaded lazily on first Marketing-tab entry / F5 (scans the fs +
+            // crontab — heavier than the registry, so not eager at startup).
+            marketing_projects: Vec::new(),
             project_delete_pending: None,
             monitor_disconnect_armed: false,
             providers_cache: None,
@@ -1327,6 +1336,63 @@ impl App {
 
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
         self.project_registry.projects.get(self.projects_selected)
+    }
+
+    /// (Re)load the marketing-enabled projects (Marketing tab entry / F5).
+    /// Fetches the connected-account count for the currently-selected project
+    /// only (on-demand, brief blocking — never for the whole list).
+    pub fn refresh_marketing(&mut self) {
+        self.marketing_projects = omega_core::marketing::list_marketing_projects();
+        if self.marketing_selected >= self.marketing_projects.len() {
+            self.marketing_selected = self.marketing_projects.len().saturating_sub(1);
+        }
+        self.load_selected_marketing_accounts();
+    }
+
+    pub fn selected_marketing_project(
+        &self,
+    ) -> Option<&omega_core::marketing::MarketingProject> {
+        self.marketing_projects.get(self.marketing_selected)
+    }
+
+    /// Fetch + cache the connected-account count for the selected project (only
+    /// if not already cached). Called on nav-change / refresh — never per-frame.
+    pub fn load_selected_marketing_accounts(&mut self) {
+        let idx = self.marketing_selected;
+        let Some(p) = self.marketing_projects.get(idx) else {
+            return;
+        };
+        if p.accounts.is_some() {
+            return;
+        }
+        let slug = p.slug.clone();
+        let count = omega_core::marketing::project_accounts(&slug);
+        if let Some(p) = self.marketing_projects.get_mut(idx) {
+            // `Some(count)` on success; leave `None` so the pane shows "…" and a
+            // later refresh can retry.
+            p.accounts = count;
+        }
+    }
+
+    pub fn marketing_tab_next(&mut self) {
+        if self.marketing_projects.is_empty() {
+            return;
+        }
+        self.marketing_selected =
+            (self.marketing_selected + 1) % self.marketing_projects.len();
+        self.load_selected_marketing_accounts();
+    }
+
+    pub fn marketing_tab_prev(&mut self) {
+        if self.marketing_projects.is_empty() {
+            return;
+        }
+        self.marketing_selected = if self.marketing_selected == 0 {
+            self.marketing_projects.len() - 1
+        } else {
+            self.marketing_selected - 1
+        };
+        self.load_selected_marketing_accounts();
     }
 
     /// Select a session by name (used after creating a session to auto-focus it).
@@ -2336,7 +2402,8 @@ impl App {
             Tab::Sessions => Tab::Menu,
             Tab::Menu => Tab::Agentic,
             Tab::Agentic => Tab::Settings,
-            Tab::Settings => Tab::Help,
+            Tab::Settings => Tab::Marketing,
+            Tab::Marketing => Tab::Help,
             Tab::Help => Tab::Sessions,
         };
     }
@@ -2348,7 +2415,8 @@ impl App {
             Tab::Menu => Tab::Sessions,
             Tab::Agentic => Tab::Menu,
             Tab::Settings => Tab::Agentic,
-            Tab::Help => Tab::Settings,
+            Tab::Marketing => Tab::Settings,
+            Tab::Help => Tab::Marketing,
         };
     }
 

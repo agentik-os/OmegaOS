@@ -808,7 +808,7 @@ function novaHome(): string {
 }
 const LIFESTYLE_DIR = novaHome();
 const COMPANION_MODEL = "claude-haiku-4-5-20251001";
-const COMPANION_TIMEOUT_MS = 300_000; // a chat/assistant turn, not a mission — fail fast
+const COMPANION_TIMEOUT_MS = 900_000; // Nova does real multi-file work (prayers, KAIROS, edits), not just quick chat — 300s was killing legit tasks mid-way; watchdog still recovers.
 function companionPersona(): string {
   for (const p of [`${LIFESTYLE_DIR}/PERSONA.md`, `${OMEGA_DIR}/agents/companion.md`]) {
     try { return readFileSync(p, "utf8"); } catch {}
@@ -1538,6 +1538,7 @@ const MENU: [string, string][] = [
   ["model", "AI provider + model"],
   ["skills", "Installed skills"],
   ["dispatch", "Dispatch a mission to an oracle"],
+  ["marketing", "Marketing machine — agenda du jour, calendriers 90j, publication"],
   ["setupgroup", "Register this group as the project hub"],
   ["sync", "Sync projects ↔ Telegram topics"],
   ["topic", "Toggle a project's Telegram topic on/off"],
@@ -1562,6 +1563,7 @@ function menuKb() {
     [{ text: "💳 Account", callback_data: "nav:account" }, { text: "🧠 Model", callback_data: "nav:model" }],
     [{ text: "🧩 Skills", callback_data: "nav:skills" }, { text: "🚀 Dispatch", callback_data: "nav:dispatch" }],
     [{ text: "🌀 Zernio — publish", callback_data: "nav:zernio" }],
+    [{ text: "🚀 Marketing", callback_data: "nav:marketing" }],
     [{ text: "👥 Group hub", callback_data: "nav:setupgroup" }, { text: "🧹 Clean", callback_data: "nav:clean" }],
     ...(hasNovaOS ? [[{ text: "🤖 NOVA OS (status / kill-switch)", callback_data: "nav:novaos" }]] : []),
   ]);
@@ -1798,6 +1800,57 @@ function zernioPreviewBody(project: string, platforms: string[], postText: strin
     `\n\n <i>Text:</i>\n<blockquote>${esc(snippet)}</blockquote>\n\n <i>Confirm to publish for real, or cancel.</i>`;
 }
 
+// ── Marketing hub (nav:marketing) ─────────────────────────────────────────────
+// Thin, defensive list built from `omega marketing list --json`: one button per
+// marketing-enabled project → a per-project mini-menu. Never crashes — a CLI
+// error renders as text (mirrors the zernio nav pattern).
+const MKT_GLYPH = (p: any): string =>
+  p?.has_content ? (p?.engine_on ? "🟢" : "🟡") : "⚪";
+async function marketingList(): Promise<any[]> {
+  try {
+    const raw = await omega(["marketing", "list", "--json"]);
+    const j = zjson(raw);
+    return Array.isArray(j) ? j : [];
+  } catch { return []; }
+}
+async function marketingHome(): Promise<{ text: string; markup: any }> {
+  const projects = await marketingList();
+  if (!projects.length)
+    return {
+      text: card("MARKETING", " <i>No marketing-enabled project found.</i>\n A project is marketing-enabled once it has a <code>marketing/</code> directory."),
+      markup: kb([[back()]]),
+    };
+  const lines = projects.map(p => {
+    const posts = p.calendar_posts ? ` — ${p.calendar_posts} posts` : (p.has_content ? " — calendar" : " — no calendar");
+    const eng = p.engine_on ? " · engine ON" : "";
+    return ` ${MKT_GLYPH(p)} <b>${esc(String(p.name))}</b>${posts}${eng}`;
+  });
+  const rows: Btn[][] = projects.map(p => [{
+    text: `${MKT_GLYPH(p)} ${p.name}`.slice(0, 30),
+    callback_data: `mkt:open:${p.slug}`.slice(0, 64),
+  }]);
+  rows.push([back()]);
+  return { text: card("MARKETING — PROJECTS", lines.join("\n")), markup: kb(rows) };
+}
+// Per-project mini-menu: status + quick actions (calendar / publish next / talk).
+async function marketingProjectView(slug: string): Promise<{ text: string; markup: any }> {
+  const projects = await marketingList();
+  const p = projects.find(x => x.slug === slug);
+  if (!p)
+    return { text: card("MARKETING", " ⚠️ Projet introuvable — rouvre le hub Marketing."), markup: kb([[{ text: "« Marketing", callback_data: "nav:marketing" }]]) };
+  const body =
+    ` ${MKT_GLYPH(p)} <b>${esc(String(p.name))}</b>\n` +
+    ` 📅 Calendar: ${p.has_content ? `${p.calendar_posts} posts` : "<i>none</i>"}\n` +
+    ` ⚙️ Daily engine: ${p.engine_on ? "🟢 ON" : "⚪ off"}\n` +
+    ` 📁 <code>${esc(String(p.path))}/marketing/</code>\n\n` +
+    ` <i>To publish, use the Zernio hub or type:</i>\n <code>publie sur instagram pour ${esc(String(p.slug))}: ton texte</code>`;
+  const rows: Btn[][] = [
+    [{ text: "🌀 Zernio (publish)", callback_data: "nav:zernio" }, { text: "🔄 Refresh", callback_data: `mkt:open:${p.slug}`.slice(0, 64) }],
+    [{ text: "« Marketing", callback_data: "nav:marketing" }],
+  ];
+  return { text: card(`MARKETING — ${String(p.name).toUpperCase()}`.slice(0, 48), body), markup: kb(rows) };
+}
+
 // ── views ────────────────────────────────────────────────────────────────────
 async function view(name: string): Promise<{ text: string; markup: any }> {
   switch (name) {
@@ -1871,6 +1924,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       return { text: card("MODEL / PROVIDERS", body), markup: kb([...rows, [{ text: "🔄 Refresh", callback_data: "nav:model" }, back()]]) };
     }
     case "zernio": return await zernioHome();
+    case "marketing": return await marketingHome();
     case "skills": return { text: pre("Skills", Bun.spawnSync(["ls", "-1", `${OMEGA_DIR}/skills`]).stdout.toString().trim() || "(none)"), markup: kb([[back()]]) };
     case "dispatch": return { text: card("DISPATCH", " Send: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>\n Launches a dedicated oracle on the VPS."), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
     case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
@@ -1914,6 +1968,16 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
         return edit(chat, msgId, card("ZERNIO — PUBLISHED", ` ✅ Published to ${esc(d.platforms || "?")}.\n 🆔 <code>${esc(post._id || "?")}</code>${post.status ? `\n status: ${esc(post.status)}` : ""}`), backRow);
       }
       return edit(chat, msgId, card("ZERNIO — PUBLISH", ` 🔴 Publish failed:\n<pre>${esc((res.err || res.out || "no output").slice(0, 800))}</pre>`), backRow);
+    }
+    return;
+  }
+  if (ns === "mkt") {
+    // Marketing hub — defensive: any failure falls back to the hub text.
+    try {
+      if (action === "open") { const v = await marketingProjectView(rest[0] || ""); return edit(chat, msgId, v.text, v.markup); }
+    } catch {
+      const v = await marketingHome();
+      return edit(chat, msgId, v.text, v.markup);
     }
     return;
   }
@@ -3353,6 +3417,12 @@ async function main() {
             const q = a.join(" ").trim();
             if (!q) await send(chatId, card("COUNCIL", " ⚖️ Send: <code>/council &lt;decision or question&gt;</code>\n Convenes the multi-model judge panel (@council, llm-council skill) and reports the verdict + dissent."), undefined, thread);
             else await brainReply(chatId, msg.message_id, thread, `Convene the @council (the llm-council skill — multi-model judge panel) on the following high-stakes question, then report the final verdict AND the dissent: ${q}`);
+          }
+          // /marketing — MENU advertises it, so short-circuit the generic view() and
+          // route to the brain (full VPS): today's human tasks + auto count + CAIO status.
+          else if (cmd === "marketing") {
+            const q = a.join(" ").trim();
+            await brainReply(chatId, msg.message_id, thread, `MARKETING MACHINE. Read ~/Station/SideBusiness/MARKETING-AGENDA-90J.md (J1=2026-07-02, compute today's day) and report CONCISELY: (1) today's 🙋 human tasks (project · platform · ~min · what to do), (2) how many 🤖 posts auto-publish today, (3) CAIO engine status (tail ~/.omega/logs/caio-daily.log + count pending in Site/marketing/04-publishing/daily-engine/sent-log.json). Then, if the operator added a request, act on it: "${q || "(no extra request — just the daily marketing brief)"}". Per-project calendars live at <Projet>/marketing/05-calendar/calendar-90d.md; publish via omega-zernio.`);
           }
           else if (KNOWN.has(cmd)) { const v = await view(cmd); await send(chatId, v.text, v.markup, thread); }
           else if (projectForCommand(cmd)) {
