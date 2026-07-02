@@ -1128,6 +1128,35 @@ EOF
     fi
 done
 
+# Install the thinking-mode micro-skills (Master-level, like /popper): /10x
+# ambition reframe, /pitch 30-second pitch, /ghost persona simulator. Mirrors
+# the maintenance loop: copy -> ~/.omega/skills/<name>/ + /<name> and
+# /omg-<name> slash stubs.
+for TSK in 10x pitch ghost; do
+    TSK_SRC="$OMEGA_SRC/skills/$TSK"
+    TSK_DST="$OMEGA_DIR/skills/$TSK"
+    if [[ -d "$TSK_SRC" ]]; then
+        mkdir -p "$TSK_DST"
+        cp -r "$TSK_SRC"/* "$TSK_DST/"
+        find "$TSK_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+        TCMD="$HOME/.claude/commands"; mkdir -p "$TCMD"
+        for cmd in "$TSK" "omg-$TSK"; do
+            cat > "$TCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $TSK thinking skill. Read and follow the complete instructions in:
+
+\`$TSK_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        ok "Thinking skill installed: $TSK → ~/.omega/skills/$TSK/ (/$TSK + /omg-$TSK)"
+    else
+        info "Thinking skill $TSK not found — skipping"
+    fi
+done
+
 # Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
 # visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
 # OmegaOS conventions — plus the OmegaOS-native `diagram` visual skill. Prompt-only
