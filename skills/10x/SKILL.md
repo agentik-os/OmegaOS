@@ -35,7 +35,7 @@ List every constraint the plan assumes — stated or implied. Classify each:
 - **REAL** — physics, public law and regulation, or user-stated facts (cash actually in the bank today, signed contracts). Binding. Respected, never argued away.
 - **ASSUMED** — habit ("I have always charged X"), fear ("nobody would pay more"), convention ("how it is done in this industry"), identity ("I am not the type who hires").
 
-Decision test, per constraint: what evidence makes this binding TODAY? No evidence → ASSUMED. The ASSUMED column is the raw material of the reframe; the REAL column is the boundary it must honor. A one-line idea is the normal input, so most entries are yours, not the user's: prefix every entry the user did not state with (inferred). REAL admits only user-stated facts or public law/physics — cash or contracts you do not know become a single "UNKNOWN — confirm" line, never a guessed REAL. Tag habit | fear | convention | identity only when the user's own words evidence it; otherwise tag convention (inferred).
+Decision test, per constraint: what evidence makes this binding TODAY? No evidence → ASSUMED. The ASSUMED column is the raw material of the reframe; the REAL column is the boundary it must honor. A one-line idea is the normal input, so most entries are yours, not the user's: prefix every entry the user did not state with (inferred). REAL admits only user-stated facts or public law/physics — cash or contracts you do not know become a single "UNKNOWN (confirm)" line, never a guessed REAL. Tag habit | fear | convention | identity only when the user's own words evidence it; otherwise tag convention (inferred).
 
 ### 3. 10x reframe — pick the 2-3 axes that fit best
 
@@ -82,7 +82,7 @@ Emit exactly this block, every section filled. The block is the whole reply — 
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-10x THINKING — [idea, 3-6 words]
+10x THINKING · [idea, 3-6 words]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 1x VERDICT: [sound | weak — flaw in one line]
@@ -91,9 +91,9 @@ THE CEILING
   [the number/scope silently assumed + where it came from]
 
 CONSTRAINT LEDGER
-  REAL:     [constraint] — [why it binds today; user-stated or public law/physics only]
-  ASSUMED:  [constraint] — [habit | fear | convention | identity — user-evidenced, else convention (inferred)]
-  UNKNOWN — confirm: [fact only the user can know: cash today, signed contracts]
+  REAL:     [constraint] · [why it binds today; user-stated or public law/physics only]
+  ASSUMED:  [constraint] · [habit | fear | convention | identity — user-evidenced, else convention (inferred)]
+  UNKNOWN (confirm): [fact only the user can know: cash today, signed contracts]
   (one line per constraint, REAL:/ASSUMED: prefix repeated on each; (inferred) marks entries the user never stated)
 
 THE {N}x VERSION   (axes: [2-3 chosen axes])   [N<10 only when a REAL constraint caps it — name that constraint on this line]
@@ -103,7 +103,7 @@ THE {N}x VERSION   (axes: [2-3 chosen axes])   [N<10 only when a REAL constraint
   Reaches: [distribution mechanism]
 
 WHAT BREAKS FIRST
-  [ops | trust | cash | tech] — [why this one hits before the others]
+  [ops | trust | cash | tech] · [why this one hits before the others]
 
 RISKIEST ASSUMPTION
   [the one belief the {N}x version stands on]

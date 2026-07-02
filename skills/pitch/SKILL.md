@@ -32,7 +32,7 @@ From whatever the user gave — idea text, a repo (read the README and the core 
 - **PAIN** — the problem as the WHO feels it, in their words, costed when the source allows.
 - **MECHANISM** — how the solution works: ONE mechanism, not a category. "Watches your Stripe webhooks and retries failed charges" beats "an AI billing platform".
 - **PROOF** — the single strongest TRUE item the source actually shows: a number, traction, a credential, a verifiably working demo. One. PROOF is never inferred — `[ASSUMED]` is banned outright on numbers, users, revenue, and logos; nothing verifiable in the source → PROOF is `none yet` (the Output Format shows the form).
-- **ASK** — what you want from the listener: money, a meeting, a signup. Specific or it does not count. No `--audience` given → hard default to the demo-day ask (step 4); never ask the user to choose.
+- **ASK** — what you want from the listener: money, a meeting, a signup. Specific or it does not count. An ask stated in the source is used as-is — it is sourced material, never tagged `[ASSUMED]`. Only when no ask is derivable from the source and no `--audience` is given → default to the demo-day ask (step 4); never ask the user to choose.
 
 Missing WHO, PAIN, MECHANISM, or ASK → infer the strongest HONEST candidate and list the inference solely under ASSUMPTIONS, keyed by material name — never inside beat text. An assumed mechanism is inference; a fabricated metric is a lie.
 
@@ -67,7 +67,7 @@ If the user names an audience, retune PROOF and ASK to it — the other beats ba
 - **partner** — proof: the asset you bring them; ask: the specific integration or intro.
 - **recruiter** — proof: the shipped result; ask: the role or the conversation you want.
 
-No audience named → deliver immediately with the demo-day default: the ASK beat is a specific, dated meeting or demo ("give me 15 minutes Thursday to show you the demo"), listed as `[ASSUMED] ASK` under ASSUMPTIONS with the standing retune line shown in the Output Format. Never ask which audience first.
+No audience named → deliver immediately. If the source states an ask, keep it as-is — it is sourced, appears nowhere under ASSUMPTIONS, and the ASSUMPTIONS terminator ("none, all five materials came from the source") stays reachable on a bare `/pitch` run. Only when no ask is derivable from the source does the demo-day default fire: the ASK beat becomes a specific, dated meeting or demo ("give me 15 minutes Thursday to show you the demo"), listed as `[ASSUMED] ASK` under ASSUMPTIONS with the standing retune line shown in the Output Format. Never ask which audience first.
 
 ### 5. Deliver
 
@@ -80,7 +80,7 @@ Emit the Output Format block below: the labeled 30s pitch with total word count 
 Emit exactly this block. Beat text is clean speakable words only — `[ASSUMED]` never appears inside a beat or the one-liner; every inference is listed solely under ASSUMPTIONS, keyed by material name (WHO/PAIN/MECHANISM/PROOF/ASK).
 
 ```
-PITCH (30s) — [total] words · ~[n]s spoken
+PITCH (30s) · [total] words · ~[n]s spoken
 ──────────────────────────────────────────
 HOOK     ([n]w)  [text]
 PROBLEM  ([n]w)  [text]
@@ -98,8 +98,8 @@ DELIVERY NOTES
 
 ASSUMPTIONS
 - [ASSUMED] [material]: [what was inferred, and from what]
-- [ASSUMED] ASK: demo-day default — rerun with --audience investor|client|partner|recruiter to retune PROOF+ASK   <- mandatory whenever no --audience was given
-(or: none — all five materials came from the source)
+- [ASSUMED] ASK: demo-day default (rerun with --audience investor|client|partner|recruiter to retune PROOF+ASK)   <- mandatory whenever the ask was defaulted (no ask in the source and no --audience)
+(or: none, all five materials came from the source)
 ```
 
 Proof-present and proof-absent runs emit the same structure. The PROOF-absent form changes exactly two things — the PROOF line reads `none yet` (words reallocated per step 2) and the `Go get:` note becomes mandatory. It never fills the beat with an assumed number, never drops the beat, never shrinks the block.
@@ -114,6 +114,7 @@ Proof-present and proof-absent runs emit the same structure. The PROOF-absent fo
 - `[ASSUMED]` marks inference on WHO/PAIN/MECHANISM/ASK only, and only under ASSUMPTIONS. Numbers, users, revenue, logos: real or absent — never assumed.
 - One mechanism. If it cannot be said in one clause, the pitch is not ready — tell the user that instead of shipping mush.
 - The word budget is hard. Negotiating it is answering a different question.
+- R-NODASH: emitted pitch text (beats, one-liner, notes) uses human punctuation only: comma, period, colon, parentheses. Strip every em or en dash before delivering.
 
 **Anti-patterns — each forces a rewrite**
 

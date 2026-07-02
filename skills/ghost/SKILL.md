@@ -46,7 +46,7 @@ Emit exactly this simulation block — four sections, this order, nothing else i
 
 ```
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-GHOST — SIMULATION (one persona, not user research)
+GHOST · SIMULATION (one persona, not user research)
 Persona: [who]   ·   Artifact: [what they reacted to]
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -71,14 +71,14 @@ IN-CHARACTER REACTION
   Walk-away triggers:
     - [...]
 
-VERDICT — [BUY | NO-BUY | CONDITIONAL: one verifiable deliverable + deadline]
+VERDICT: [BUY | NO-BUY | CONDITIONAL: one verifiable deliverable + deadline]
   Commitment: [amount / meeting / signature / share — or the exit line; on CONDITIONAL, the booked follow-up]
 
 DEBRIEF (out of character)
   1. [on NO-BUY/CONDITIONAL: the fix most likely to flip the verdict · on BUY: what nearly lost them]
   2. [fix]
   3. [fix]
-  This was a simulation of one persona — validate with real users.
+  This was a simulation of one persona: validate with real users.
 ```
 
 ---
