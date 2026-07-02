@@ -3877,6 +3877,16 @@ async fn cmd_spawn_worker(
     // like Dispatcher::dispatch_worker_with_context. Without this, a worker
     // spawned via the CLI (the live path oracles use) gets NO doctrine.
     let mut full_prompt = prompt.to_string();
+    // SESSION IDENTITY — a worker must know its own deterministic name: it is the
+    // join key for its rmux session, its Claude conversation (--name, resumable),
+    // and every state file the engine polls (worker-<name>.done.json etc.). Without
+    // this a worker only knows its name if the oracle happened to paste it.
+    full_prompt.push_str(&format!(
+        "\n\n## SESSION IDENTITY\nYou are worker `{worker_name}` — this exact string is your rmux session name, \
+         your Claude conversation name (resumable via `claude --resume {worker_name}`), and the key for your \
+         state files in ~/.omega/state/. Use it verbatim in every `omega done {worker_name} …` / \
+         `omega progress {worker_name} …` call — never a paraphrase.\n"
+    ));
     // Surface an unresolved git drift to the worker so it reconciles BEFORE
     // editing instead of working blind on a stale/diverged checkout.
     if let Some(warning) = &git_sync_warning {
@@ -3908,6 +3918,11 @@ async fn cmd_spawn_worker(
         let mut opts = omega_core::agents::LaunchOptions::default();
         opts.permission_mode = Some("bypassPermissions".to_string());
         opts.disallowed_tools = Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string());
+        // Claude-side session label (`--name`): mirror the rmux session name so the
+        // conversation is addressable/resumable by the SAME deterministic identity
+        // (`claude --resume <name>`, searchable in /resume) — oracles already get
+        // this in dispatch_oracle; workers were anonymous on the Claude side.
+        opts.session_name = Some(worker_name.clone());
         // NOT bare: --bare skips OAuth credential loading in Claude Code >= 2.1.x
         // (runtime-verified 2026-06-05: `claude --bare --print` -> "Not logged in"
         // while plain `claude --print` succeeds on an OAuth-only host), so hermetic

@@ -357,7 +357,10 @@ impl WorkerRuntime for RmuxRuntime<'_> {
         // `omega done <session> …` invocation (with the exact session baked in) is the
         // signal the engine polls for. This is the #1 reason a build "never finishes".
         full_brief.push_str(&format!(
-            "\n\n## SIGNAL COMPLETION — REQUIRED (the build engine BLOCKS until you do this)\n\
+            "\n\n## SESSION IDENTITY\nYou are worker `{session}` — this exact string is your rmux \
+             session name, your Claude conversation name (resumable via `claude --resume {session}`), \
+             and the key for your state files in ~/.omega/state/. Use it verbatim in every omega call.\n\
+             \n## SIGNAL COMPLETION — REQUIRED (the build engine BLOCKS until you do this)\n\
              This is an AUTOMATED build step. As your VERY LAST action, after your Verify \
              command passes, you MUST run exactly:\n  \
              omega done {session} done_clean \"<one-line summary of what you changed>\"\n\
@@ -373,9 +376,14 @@ impl WorkerRuntime for RmuxRuntime<'_> {
             full_brief.push_str(&ctx);
         }
         let cwd = cwd.to_string_lossy();
+        // Claude-side session label (`--name`): mirror the rmux session name so the
+        // step-worker's conversation is addressable/resumable by the same
+        // deterministic identity (non-Claude providers ignore the field).
+        let mut opts = crate::agents::LaunchOptions::default();
+        opts.session_name = Some(session.clone());
         if let Err(e) = self
             .mgr
-            .create_session_with_agent(&session, Some(&cwd), self.agent, Some(&full_brief))
+            .create_agent_session_with_opts(&session, &cwd, self.agent, Some(&full_brief), opts)
             .await
         {
             // Roll back the scope claim so a failed spawn doesn't lock files forever.

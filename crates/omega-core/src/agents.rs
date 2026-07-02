@@ -618,3 +618,31 @@ fn claude_available(home: &str) -> bool {
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The worker/oracle identity contract: when LaunchOptions.session_name is
+    // set, the generated Claude command MUST carry `--name <session>` so the
+    // Claude conversation shares the rmux session's deterministic identity
+    // (resumable via `claude --resume <name>`).
+    #[test]
+    fn launch_command_with_session_name_emits_name_flag() {
+        let mut opts = LaunchOptions::default();
+        opts.session_name = Some("Verba-worker-fix-auth-401".to_string());
+        let cmd = Agent::Claude.launch_command_with(Some("do the thing"), opts);
+        // The whole command is wrapped in an outer `bash -c '…'`, so the inner
+        // shell_quote renders as '\'' — assert on flag + value, not exact quoting.
+        assert!(
+            cmd.contains(" --name ") && cmd.contains("Verba-worker-fix-auth-401"),
+            "generated command missing --name: {cmd}"
+        );
+    }
+
+    #[test]
+    fn launch_command_without_session_name_has_no_name_flag() {
+        let cmd = Agent::Claude.launch_command(Some("do the thing"));
+        assert!(!cmd.contains(" --name "), "unexpected --name in: {cmd}");
+    }
+}

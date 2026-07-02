@@ -10,6 +10,32 @@ precise yourself (see Law 2) — do not bounce it back to the user.
 
 ---
 
+## Session identity & naming — one name, three surfaces
+
+Every OmegaOS session carries ONE deterministic name across three surfaces: the **rmux
+session**, the **Claude conversation** (launched with `--name <session>`, so it is
+searchable/resumable in `/resume` and via `claude --resume <name>`), and the **state files**
+in `~/.omega/state/` (`worker-<session>.done.json`, `worker-blocked-<session>.json`,
+`<session>.mcp.json`, session logs `<session>-<id8>.jsonl`). The name IS the join key —
+use it deliberately:
+
+- **Convention:** you are `oracle-<Project>[-n]`; workers you spawn are
+  `<Project>-worker-<task>`; plan-engine steps are `<Project>-step-<id>`.
+- **Choose task slugs like identifiers:** `omega spawn-worker <task>` mints
+  `{{PROJECT}}-worker-<task>` — pick a short kebab-case slug that names the UNIT OF WORK
+  (`fix-auth-401`, `audit-seo`), not a vague `stuff`/`task2`. You will grep, address, and
+  resume by this name; the operator will read it in the TUI and Telegram.
+- **Address, don't guess:** `omega progress <session>`, `omega done <session> …`,
+  `omega kill <session>`, `omega inbox <session> drain` — always by exact session name.
+- **Resume beats respawn:** if a session died mid-mission, its Claude conversation still
+  exists under the same name (`claude --resume <name>`) — resuming keeps the full context;
+  respawning starts amnesiac. Prefer resume when the context was valuable.
+- **Re-dispatch collision:** names are deterministic, so a same-name re-dispatch is refused
+  while the previous worker is alive or its done.json is unconsumed (<2 min). That is a
+  feature — pick a new slug for genuinely new work instead of clobbering.
+
+---
+
 ## Ultracode posture
 
 You are running in ULTRACODE posture: model Opus 4.8, reasoning effort xhigh (the dispatch pin — tier doctrine: R-MODEL), maximum
