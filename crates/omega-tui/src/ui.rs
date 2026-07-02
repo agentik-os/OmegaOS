@@ -3014,6 +3014,19 @@ fn render_marketing_detail(app: &App) -> Vec<Line<'static>> {
         ]),
         Line::from(""),
         Line::from(Span::styled(
+            "  ─── Marketing machine ───",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            field("Layers"),
+            Span::styled(format!("context {}   ", if p.has_context { "✓" } else { "·" }), Style::default().fg(if p.has_context { th::success() } else { th::dim() })),
+            Span::styled(format!("strategy {}   ", if p.has_strategy { "✓" } else { "·" }), Style::default().fg(if p.has_strategy { th::success() } else { th::dim() })),
+            Span::styled(format!("copy {}   ", if p.has_copy { "✓" } else { "·" }), Style::default().fg(if p.has_copy { th::success() } else { th::dim() })),
+            Span::styled(format!("visual {}   ", if p.has_visual { "✓" } else { "·" }), Style::default().fg(if p.has_visual { th::success() } else { th::dim() })),
+            Span::styled(format!("branding {}", if p.has_branding { "✓" } else { "·" }), Style::default().fg(if p.has_branding { th::success() } else { th::dim() })),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
             "  ─── Actions ───",
             Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
         )),

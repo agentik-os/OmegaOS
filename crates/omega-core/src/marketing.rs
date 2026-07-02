@@ -32,6 +32,16 @@ pub struct MarketingProject {
     /// Connected social accounts — `None` in the list (populated on-demand only
     /// via `project_accounts`, never per-frame).
     pub accounts: Option<usize>,
+    /// 00-context filled (product-marketing.md present + non-trivial).
+    pub has_context: bool,
+    /// 01-strategy filled (gtm-strategy.md or content-strategy.md).
+    pub has_strategy: bool,
+    /// 02-copy filled (copywriting.md or social-content.md).
+    pub has_copy: bool,
+    /// 03-visual-identity filled (DA.md).
+    pub has_visual: bool,
+    /// 06-branding filled (SOCIAL-BRAND-BOOK.md or tokens.json).
+    pub has_branding: bool,
 }
 
 /// The projects root to scan for `marketing/` subdirs. Configurable via
@@ -158,7 +168,23 @@ fn build(name: String, path: PathBuf, crontab: &str) -> MarketingProject {
         calendar_posts,
         engine_on,
         accounts: None,
+        has_context: layer_filled(&marketing, "00-context", &["product-marketing.md"]),
+        has_strategy: layer_filled(&marketing, "01-strategy", &["gtm-strategy.md", "content-strategy.md"]),
+        has_copy: layer_filled(&marketing, "02-copy", &["copywriting.md", "social-content.md"]),
+        has_visual: layer_filled(&marketing, "03-visual-identity", &["DA.md"]),
+        has_branding: layer_filled(&marketing, "06-branding", &["SOCIAL-BRAND-BOOK.md", "tokens.json"]),
     }
+}
+
+/// A marketing layer is "filled" if any of the named files exists in the given
+/// subdir AND is non-trivial (>300 bytes — past the scaffold skeleton). Fast + local.
+fn layer_filled(marketing: &Path, sub: &str, files: &[&str]) -> bool {
+    let dir = marketing.join(sub);
+    files.iter().any(|f| {
+        std::fs::metadata(dir.join(f))
+            .map(|m| m.is_file() && m.len() > 300)
+            .unwrap_or(false)
+    })
 }
 
 /// List marketing-enabled projects: the UNION of the project registry and a

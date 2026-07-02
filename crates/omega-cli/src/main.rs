@@ -2737,6 +2737,11 @@ fn cmd_marketing(action: MarketingAction) -> Result<()> {
                     None => String::new(),
                 };
                 println!("  {} {}{}{}{}", p.glyph(), p.name, posts, engine, accts);
+                let ck = |b: bool| if b { "✓" } else { "·" };
+                println!(
+                    "      context {}  strategy {}  copy {}  visual {}  branding {}",
+                    ck(p.has_context), ck(p.has_strategy), ck(p.has_copy), ck(p.has_visual), ck(p.has_branding)
+                );
             }
             Ok(())
         }
