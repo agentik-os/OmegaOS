@@ -827,14 +827,30 @@ function lifestyleContext(): string {
     return out ? `## LifeStyle store (${LIFESTYLE_DIR} — the operator's life, your working context)\n${out}` : "";
   } catch { return ""; }
 }
+const MAX_TURNS_ERR = /reached max turns/i;
 async function companion(text: string, model = COMPANION_MODEL, label = "Assistant"): Promise<string> {
   Bun.spawnSync(["mkdir", "-p", `${LIFESTYLE_DIR}/notes`, `${LIFESTYLE_DIR}/builds`]);
   // --strict-mcp-config with no --mcp-config = zero MCP servers (startup cost);
   // --max-turns caps a runaway tool loop. --add-dir / = the assistant is a
   // super-admin on the VPS (the operator's explicit choice) — the persona, not
   // a sandbox, draws the line between its work and the oracles' project code.
-  return runClaude(text, companionPersona() + "\n\n" + lifestyleContext(), "/", label, LIFESTYLE_DIR,
-    ["--model", model, "--max-turns", "24", "--strict-mcp-config"], COMPANION_TIMEOUT_MS);
+  const sys = companionPersona() + "\n\n" + lifestyleContext();
+  const args = ["--model", model, "--max-turns", "50", "--strict-mcp-config"];
+  let out = await runClaude(text, sys, "/", label, LIFESTYLE_DIR, args, COMPANION_TIMEOUT_MS);
+  // Hitting the turn cap makes the CLI print "Error: Reached max turns (N)" as
+  // its whole result — the work already done would be discarded and the raw
+  // error relayed to the operator. Salvage it: --continue resumes the most
+  // recent session in LIFESTYLE_DIR (the one that just capped) and asks it to
+  // wrap up with the turns it has.
+  if (MAX_TURNS_ERR.test(out)) {
+    out = await runClaude(
+      "Tu viens d'être coupée par la limite de tours. NE relance PAS de longue exploration : termine proprement avec ce que tu as déjà — finalise les fichiers en cours si besoin, puis donne ta réponse finale à l'opérateur.",
+      sys, "/", label, LIFESTYLE_DIR, [...args, "--continue"], COMPANION_TIMEOUT_MS);
+    if (MAX_TURNS_ERR.test(out)) {
+      out = `(${label} : la tâche est trop lourde pour le chat — elle a épuisé 2×50 tours. Le travail partiel est dans ${LIFESTYLE_DIR}. Reformule en plus petit, ou confie-la à Atlas.)`;
+    }
+  }
+  return out;
 }
 // Companion reply post-processing: strip the [[ATLAS: …]] marker from what the
 // operator sees, and fire the brief at the REAL Atlas brain (master — full VPS
