@@ -302,6 +302,17 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "Consistent language + a closing French recap is a standing user convention the model won't do unprompted.",
         },
         Rule {
+            id: "R-NODASH",
+            title: "No em-dash in copy",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Reporting,
+            description: "Never use the em-dash ',' (U+2014) or en-dash (U+2013) as punctuation in ANY marketing content: copywriting, posts (organic + ads), captions, text baked onto images and videos, brand books, calendars, briefs, emails, landing copy. Applies to all projects, always. That long dash reads as AI-written and breaks the human copy voice the operator requires; he will not tolerate it anywhere. Replace with human punctuation by meaning: comma, period (two short sentences), colon, or parentheses. Regular hyphens in compound words (build-in-public, on-device) stay. Every skill or agent that writes or generates visible text re-reads its output and strips every em or en dash before delivering; each project marketing/06-branding/prompt-library/kill-list.md lists it explicitly.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-07-02",
+            reason: "A Verba post and several sent examples contained the long dash, an instant AI tell that broke the intended human tone; the operator demanded it never appear anywhere in content, so it is encoded as a hard compiled rule across OmegaOS and the marketing machine.",
+        },
+        Rule {
             id: "R-PROD",
             title: "Prod-verify deployed work",
             kind: RuleKind::Rule,
