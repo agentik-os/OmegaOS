@@ -289,6 +289,267 @@ fn parse_accounts_json(text: &str) -> Option<usize> {
     }
 }
 
+// ===========================================================================
+// Capabilities registry — the anti-forgetting SSOT (capabilities.toml)
+// ===========================================================================
+
+/// One capability group (the inventory's spine).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CapabilityGroup {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub order: u32,
+}
+
+/// One capability row — mirrors a [[capability]] block in capabilities.toml.
+/// All non-id fields default so a partial/older manifest still parses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Capability {
+    pub id: String,
+    #[serde(default)]
+    pub group: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub does: String,
+    #[serde(default)]
+    pub run: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub inputs: Vec<String>,
+    #[serde(default)]
+    pub layer: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub deps: Vec<String>,
+    #[serde(default)]
+    pub paid: bool,
+    #[serde(default)]
+    pub skill: String,
+    #[serde(default)]
+    pub notes: String,
+}
+
+/// The whole parsed capabilities.toml manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CapabilitiesRegistry {
+    #[serde(default)]
+    pub schema: String,
+    #[serde(default, rename = "group")]
+    pub groups: Vec<CapabilityGroup>,
+    #[serde(default, rename = "capability")]
+    pub capabilities: Vec<Capability>,
+}
+
+impl CapabilitiesRegistry {
+    /// Capabilities for a group id, in file order.
+    pub fn in_group<'a>(&'a self, group_id: &str) -> Vec<&'a Capability> {
+        self.capabilities.iter().filter(|c| c.group == group_id).collect()
+    }
+    /// Groups sorted by their `order` field (then name).
+    pub fn groups_ordered(&self) -> Vec<&CapabilityGroup> {
+        let mut g: Vec<&CapabilityGroup> = self.groups.iter().collect();
+        g.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.name.cmp(&b.name)));
+        g
+    }
+    /// Count by status across all capabilities.
+    pub fn status_counts(&self) -> (usize, usize, usize) {
+        let mut built = 0;
+        let mut partial = 0;
+        let mut missing = 0;
+        for c in &self.capabilities {
+            match c.status.as_str() {
+                "built" => built += 1,
+                "partial" => partial += 1,
+                "missing" => missing += 1,
+                _ => {}
+            }
+        }
+        (built, partial, missing)
+    }
+}
+
+/// Locate `capabilities.toml`. Order: `OMEGA_MKT_CAPS` env override, then the
+/// repo path relative to the running exe (…/OmegaOS/tools/marketing-machine/),
+/// then a scan up from the current dir, then a couple of well-known checkouts.
+pub fn capabilities_toml_path() -> Option<PathBuf> {
+    // 1. Explicit override.
+    if let Ok(p) = std::env::var("OMEGA_MKT_CAPS") {
+        let p = p.trim();
+        if !p.is_empty() {
+            let pb = PathBuf::from(p);
+            if pb.is_file() {
+                return Some(pb);
+            }
+        }
+    }
+    let rel = Path::new("tools")
+        .join("marketing-machine")
+        .join("capabilities.toml");
+
+    // 2. Relative to the running executable: …/OmegaOS/target/<profile>/omega.
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(|p| p.to_path_buf());
+        while let Some(d) = dir {
+            let cand = d.join(&rel);
+            if cand.is_file() {
+                return Some(cand);
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+
+    // 3. Walk up from the current working dir.
+    if let Ok(cwd) = std::env::current_dir() {
+        let mut dir = Some(cwd);
+        while let Some(d) = dir {
+            let cand = d.join(&rel);
+            if cand.is_file() {
+                return Some(cand);
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+
+    // 4. Well-known checkouts.
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
+    for base in [
+        home.join("Station").join("SideBusiness").join("OmegaOS"),
+        home.join("OmegaOS"),
+    ] {
+        let cand = base.join(&rel);
+        if cand.is_file() {
+            return Some(cand);
+        }
+    }
+    None
+}
+
+/// Load + parse the capabilities registry. Returns `Ok(None)` if the manifest
+/// is absent (graceful degradation), `Err` only on a real parse failure.
+pub fn load_capabilities() -> anyhow::Result<Option<CapabilitiesRegistry>> {
+    let Some(path) = capabilities_toml_path() else {
+        return Ok(None);
+    };
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+    let reg: CapabilitiesRegistry = toml::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("parsing {}: {e}", path.display()))?;
+    Ok(Some(reg))
+}
+
+/// A per-layer, per-project view for `omega marketing status`: which capability
+/// groups are built / partial / missing FOR THIS PROJECT, cross-referencing the
+/// filesystem status against the registry.
+#[derive(Debug, Clone, Serialize)]
+pub struct GroupStatus {
+    pub group: String,
+    pub name: String,
+    /// Whether this project has the artifact(s) this group represents.
+    pub present: bool,
+    /// Human note (e.g. which file drives the flag).
+    pub detail: String,
+}
+
+/// Cross-reference a project's filesystem layers against the group inventory.
+pub fn project_group_status(p: &MarketingProject) -> Vec<GroupStatus> {
+    let g = |group: &str, name: &str, present: bool, detail: &str| GroupStatus {
+        group: group.to_string(),
+        name: name.to_string(),
+        present,
+        detail: detail.to_string(),
+    };
+    vec![
+        g("research-strategy", "Research & Strategy", p.has_context || p.has_strategy,
+          if p.has_context { "00-context filled" } else { "00-context/product-marketing.md missing" }),
+        g("copy", "Copy", p.has_copy,
+          if p.has_copy { "02-copy filled" } else { "02-copy (copywriting/social-content) missing" }),
+        g("branding", "Branding", p.has_branding,
+          if p.has_branding { "06-branding (tokens/brand-book) present" } else { "06-branding missing" }),
+        g("visual-image", "Visual — Image", p.has_visual,
+          if p.has_visual { "03-visual-identity/DA.md present" } else { "03-visual-identity/DA.md missing" }),
+        g("calendar", "Calendar", p.has_content,
+          if p.calendar_posts > 0 { "calendar-90d.json with posts" }
+          else if p.has_content { "calendar present (0 posts)" } else { "no calendar" }),
+        g("publishing", "Publishing", p.engine_on,
+          if p.engine_on { "daily-engine wired" } else { "no daily-engine" }),
+    ]
+}
+
+/// The next-best-action for a project, from a deterministic top-down rule list
+/// over its filesystem status. Returns `(id, why, command)`.
+pub fn next_best_action(p: &MarketingProject) -> (String, String, String) {
+    let mk = |id: &str, why: &str, cmd: &str| (id.to_string(), why.to_string(), cmd.to_string());
+
+    if !p.has_context {
+        return mk(
+            "product-marketing-context",
+            "No 00-context/product-marketing.md — the SSOT every other layer reads.",
+            "/omg-product-marketing-context",
+        );
+    }
+    if !p.has_strategy {
+        return mk(
+            "content-strategy",
+            "Context is set but no 01-strategy — pillars/clusters drive the calendar.",
+            "/omg-content-strategy",
+        );
+    }
+    if !p.has_branding {
+        return mk(
+            "brand-setup",
+            "No 06-branding — tokens.json/SOCIAL-BRAND-BOOK.md gate every generation.",
+            "/omg-brand-identity  (then compile 06-branding: tokens.json + SOCIAL-BRAND-BOOK.md)",
+        );
+    }
+    if !p.has_copy {
+        return mk(
+            "copy",
+            "Branding is set but 02-copy is empty — no posts/hooks to schedule.",
+            "/omg-social-content",
+        );
+    }
+    if !p.has_content || p.calendar_posts == 0 {
+        return mk(
+            "calendar",
+            "Copy exists but the 90-day calendar has no posts to run.",
+            "/omg-content-strategy  (produce 05-calendar/calendar-90d.json)",
+        );
+    }
+    // Content is ready. Are accounts connected? `Some(0)` = definitely none;
+    // `None` = unknown (zernio absent / timed out) — don't force a connect step
+    // on an unknown, especially when the engine is already wired.
+    if matches!(p.accounts, Some(0)) {
+        return mk(
+            "connect-accounts",
+            "Content is ready but no social account is connected — nothing can publish.",
+            &format!("omega-zernio connect {} <platform>", p.slug),
+        );
+    }
+    if p.accounts.is_none() && !p.engine_on {
+        return mk(
+            "connect-accounts",
+            "Content is ready but no account is confirmed connected — connect one to publish.",
+            &format!("omega-zernio connect {} <platform>", p.slug),
+        );
+    }
+    if !p.engine_on {
+        return mk(
+            "activate-engine",
+            "Connected with content, but the daily engine is off — activate it to publish.",
+            &format!("omega marketing run {} --dry-run   (then --publish / cron)", p.slug),
+        );
+    }
+    mk(
+        "publish",
+        "Fully wired (content + accounts + engine). Run the day and publish.",
+        &format!("omega marketing run {} --publish", p.slug),
+    )
+}
+
 /// Convenience paths surfaced in the detail pane.
 impl MarketingProject {
     pub fn marketing_dir(&self) -> PathBuf {

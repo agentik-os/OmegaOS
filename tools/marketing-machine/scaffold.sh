@@ -23,7 +23,7 @@ scaffold() {
   ROOT="$1"; NAME="$2"; SLUG="$3"; local M="$ROOT/marketing"
   echo "### $NAME  ($ROOT)"
   [ -d "$ROOT" ] || { echo "  !! project dir missing, skipping"; return 0; }
-  mkdir -p "$M"/{00-context,01-strategy,02-copy,03-visual-identity/higgsfield,04-publishing,05-calendar}
+  mkdir -p "$M"/{00-context,01-strategy,02-copy,03-visual-identity/higgsfield,04-publishing/daily-engine,05-calendar,06-branding/prompt-library,06-branding/templates/stills}
 
   w "$M/README.md" <<EOF
 # Marketing Machine — $NAME
@@ -466,6 +466,285 @@ status: to-fill
 ## Hebdo (répartir dans la semaine)
 - [ ] <ex : 1 vidéo/selfie fondateur> (MANUEL, alimente les posts vidéo)
 - [ ] <ex : 1 prise de parole perso / retour terrain>
+EOF
+
+  # ---------- 05-calendar/calendar-90d.json (canonical machine calendar) ----------
+  # This is the calendar the Rust core (marketing.rs) prefers and both daily
+  # engines read. Superset schema: days[].posts[].{slot,platform,pillar,mode,
+  # text,hashtags,visualPrompt,cta}. Empty until content-strategy fills it.
+  w "$M/05-calendar/calendar-90d.json" <<EOF
+{
+  "schema": "marketing-machine/calendar-90d@2026-07",
+  "project": "$NAME",
+  "profileSlug": "$SLUG",
+  "timezone": "Europe/Paris",
+  "horizonDays": 90,
+  "_note": "Canonical 90-day plan. Each day: {dayOffset, date?, posts:[{slot,platform,pillar,mode,text,hashtags,visualPrompt,cta}]}. mode = auto|manual. Read by omega marketing + the daily engine. Filled by /omg-content-strategy.",
+  "days": []
+}
+EOF
+
+  # ---------- 06-branding (the token SSOT — read before ANY generation) ----------
+  w "$M/06-branding/SOCIAL-BRAND-BOOK.md" <<EOF
+---
+project: $NAME
+layer: branding
+produced_by: brand-identity (/omg-brand-identity) + art-director-content-engine (compile from 03-visual-identity/DA.md)
+schema: social-brand-book@2026-07
+status: to-fill
+---
+# Social Brand Book — $NAME
+
+> The 10-section master brand doc for social/marketing generation. Compiled from
+> \`03-visual-identity/DA.md\`. Every image/video/avatar generation obeys this + \`tokens.json\`.
+
+## 1. Canvas & formats (aspect ratios per platform: 9:16 / 4:5 / 1:1 / 16:9)
+## 2. Safe zones & caption reserve (where text/UI never overlaps)
+## 3. Typography (display / body / caption, sizes, tracking)
+## 4. Color roles (bg / ink / accent / signal — hex + usage)
+## 5. Motion language (easing, durations, transitions — if video)
+## 6. Photography / illustration style
+## 7. Template registry (the reusable Still archetypes → templates/)
+## 8. Logo usage (clear space, min size, do/don't)
+## 9. Avatar / persona (→ avatar-persona.md)
+## 10. Governance (kill-list, validation gate, pattern-ledger loop)
+EOF
+
+  w "$M/06-branding/tokens.json" <<EOF
+{
+  "\$schema": "branding-tokens@2026-07",
+  "project": "$NAME",
+  "_note": "Machine-readable brand tokens. READ BEFORE ANY generation. Fill from 03-visual-identity/DA.md + /omg-brand-identity.",
+  "status": "to-fill",
+  "color": { "bg": "", "ink": "", "accent": "", "signal": "", "palette": [] },
+  "type": { "display": "", "body": "", "caption": "", "scale": [] },
+  "motion": { "easing": "", "durationMs": null, "transitions": [] },
+  "canvas": { "formats": ["9:16", "4:5", "1:1", "16:9"], "safeZonePct": null, "captionReservePct": null },
+  "photo": { "style": "", "lighting": "", "grade": "" },
+  "logo": { "src": "", "clearSpace": "", "minSizePx": null },
+  "avatar": { "soulId": null, "heygenAvatarId": null, "mode": "scene-led" }
+}
+EOF
+
+  w "$M/06-branding/design-guidelines.md" <<EOF
+---
+project: $NAME
+layer: branding
+status: to-fill
+---
+# Design Guidelines — $NAME
+## Grid & layout
+## Safe zones (per format)
+## Type scale (display → caption)
+## Logo spec (clear space, min size)
+## DO / DON'T (anti-generic guardrails)
+EOF
+
+  w "$M/06-branding/avatar-persona.md" <<EOF
+---
+project: $NAME
+layer: branding
+produced_by: higgsfield-soul-id (image face) + HeyGen (talking-head)
+status: to-fill
+note: Set ids only if this brand needs a recurring face/character. Scene-led brands leave them null (a valid choice — document why).
+---
+# Avatar / Persona — $NAME
+
+## Recurring avatar? [ ] yes  [ ] no (scene-led)
+## If yes — persona sheet (role, vibe, demographic, personality)
+## Soul-ID (Higgsfield image identity)
+- soul_id: \`<from higgsfield-soul-id, or null>\`
+## HeyGen (talking-head video)
+- heygen_avatar_id: \`<from HeyGen, or null>\`
+- voice_id: \`<ElevenLabs / HeyGen voice, or null>\`
+EOF
+
+  # ----- 06-branding/prompt-library (pre-filled per-brand generation prompts) -----
+  w "$M/06-branding/prompt-library/image-higgsfield.md" <<EOF
+---
+project: $NAME
+layer: branding/prompt-library
+model: nano_banana_2 (default) / soul_2_0 / flux_2
+status: to-fill
+---
+# Image prompts (Higgsfield) — $NAME
+> Pre-filled, brand-locked image prompts. Encode tokens.json (palette, type feel,
+> photo style, canvas). One block per content pillar.
+
+## Base system (prepended to every image gen)
+\`\`\`
+[Brand visual law from tokens.json + SOCIAL-BRAND-BOOK.md: palette, type feel, mood,
+ composition, photography style, DO/DON'T, aspect ratio, what to never render.]
+\`\`\`
+
+## Per-pillar prompt presets
+EOF
+
+  w "$M/06-branding/prompt-library/video-higgsfield.md" <<EOF
+---
+project: $NAME
+layer: branding/prompt-library
+model: seedance_2_0 / kling_3_0 / veo_3_1 / marketing-studio
+status: to-fill
+---
+# Video prompts (Higgsfield) — $NAME
+> Brand-locked video/clip prompts + keyframe guidance. Hook in frame 1, beat grid <=5s.
+
+## Base system
+## Per-format presets (Reel 9:16 / Story / TV-spot 16:9)
+EOF
+
+  w "$M/06-branding/prompt-library/avatar-heygen.md" <<EOF
+---
+project: $NAME
+layer: branding/prompt-library
+engine: HeyGen (HEYGEN_API_KEY) — talking-head UGC
+status: to-fill
+note: Runner not yet built (capabilities.toml U2 = missing). This is the spec the runner will consume.
+---
+# HeyGen avatar prompts — $NAME
+> Talking-head UGC clips with word-timing captions. 3-layout alternator (front / lower-third / split).
+
+## Avatar id + voice (from avatar-persona.md)
+## Script template (hook → value → CTA), <=60s
+## Caption style (word-timed, safe-zone aware)
+EOF
+
+  w "$M/06-branding/prompt-library/flux-brand.json" <<EOF
+{
+  "\$schema": "flux-brand@2026-07",
+  "project": "$NAME",
+  "_note": "Flux 2 brand params (style refs, LoRA/refs, negative prompt). Fill from tokens.json.",
+  "status": "to-fill",
+  "styleRefs": [],
+  "negativePrompt": "",
+  "guidance": null
+}
+EOF
+
+  # kill-list carries the R-NODASH line (the one coded guard the engines enforce).
+  w "$M/06-branding/prompt-library/kill-list.md" <<EOF
+---
+project: $NAME
+layer: branding/prompt-library
+status: active
+---
+# Prompt kill-list — $NAME
+> Words/patterns BANNED from generated copy + prompts. Scanned by the validation gate.
+
+## R-NODASH — never emit em-dashes (—) or en-dashes (–) in any generated copy or caption.
+## Generic AI tells (ban): "elevate", "unlock", "seamless", "game-changer", "in today's fast-paced world", "revolutionize", "empower", "leverage" (as verb), emoji-stuffing.
+## Brand-specific bans (fill): <words/claims this brand must never make>
+EOF
+
+  w "$M/06-branding/templates/README.md" <<EOF
+# Still templates — $NAME
+> The six reusable \`<Still>\` archetypes (Cover / Big-Stat / Step / Quote / Chart / CTA)
+> as HyperFrames HTML / Remotion. Consumed by the daily engine + carousel system.
+> v1: skeleton only — actual template code is P1-2 (see AUDIT.md / BACKLOG).
+
+- \`design.md\` — the shared design contract (grid, tokens, safe zones).
+- \`frame.md\` — per-frame composition rules.
+- \`stills/\` — one file per archetype (to be coded).
+EOF
+
+  w "$M/06-branding/templates/design.md" <<EOF
+---
+project: $NAME
+layer: branding/templates
+status: to-fill
+---
+# Template design contract — $NAME
+> Shared grid + token bindings every Still archetype obeys. Reads 06-branding/tokens.json.
+EOF
+
+  w "$M/06-branding/templates/frame.md" <<EOF
+---
+project: $NAME
+layer: branding/templates
+status: to-fill
+---
+# Frame composition rules — $NAME
+> Per-frame rules (title zone, caption reserve, logo lockup) for the Still archetypes.
+EOF
+
+  w "$M/06-branding/templates/stills/README.md" <<EOF
+# Still archetypes — $NAME
+> Cover · Big-Stat · Step · Quote · Chart · CTA. Code lands in P1-2.
+EOF
+
+  w "$M/06-branding/pattern-ledger.md" <<EOF
+---
+project: $NAME
+layer: branding
+schema: pattern-ledger@2026-07
+status: empty
+---
+# Pattern ledger — $NAME
+> Win/lose metrics log. Promote winners; retire any pattern that loses twice.
+> Empty until real platform metrics exist (L2 — no fabricated data).
+
+| date | asset | pillar | format | platform | metric | verdict (promote/retire/watch) |
+|---|---|---|---|---|---|---|
+EOF
+
+  w "$M/06-branding/VALIDATED-STYLE.md" <<EOF
+---
+project: $NAME
+layer: branding
+status: to-validate
+---
+# Validated style — $NAME
+> Operator-locked style choices. NOT valid until the operator signs below.
+> The daily engine checks this file exists before publishing.
+
+## Locked choices
+- <fill after operator review>
+
+## Sign-off
+- validated_by: \`<operator>\`
+- validated_at: \`<date — unsigned until then>\`
+EOF
+
+  # ---------- 04-publishing/daily-engine (portable engine stub) ----------
+  w "$M/04-publishing/daily-engine/README.md" <<EOF
+---
+project: $NAME
+layer: publishing/daily-engine
+status: stub
+---
+# Daily engine — $NAME
+
+> Renders + publishes this project's day from \`05-calendar/calendar-90d.json\`,
+> obeying \`06-branding/tokens.json\` + \`VALIDATED-STYLE.md\`.
+>
+> v1 = STUB. A per-project engine is a temporary fork; the PORTABLE engine
+> (\`omega marketing run <project>\`) is the target that reads calendar-90d.json
+> for ANY project — see BACKLOG (P0-2 schema unification, P0-4 portable runner).
+
+## Wire the engine (once built)
+\`\`\`bash
+omega marketing run $SLUG --dry-run     # render, don't publish
+omega marketing run $SLUG --publish     # render + omega-zernio post
+\`\`\`
+
+## Inputs
+- \`../../05-calendar/calendar-90d.json\` (what to post)
+- \`../../06-branding/tokens.json\` (how it looks)
+- \`../../06-branding/VALIDATED-STYLE.md\` (must exist + be signed)
+
+## State
+- \`sent-log.json\` — { produced: [dayOffset...], published: [dayOffset...] }
+EOF
+
+  w "$M/04-publishing/daily-engine/sent-log.json" <<EOF
+{
+  "schema": "daily-engine/sent-log@2026-07",
+  "project": "$NAME",
+  "_note": "Engine state. produced = days rendered; published = days sent. Written by the engine, do not hand-edit while it runs.",
+  "produced": [],
+  "published": []
+}
 EOF
   echo
 }

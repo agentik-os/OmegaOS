@@ -2698,6 +2698,41 @@ enum MarketingAction {
         #[arg(long)]
         accounts: bool,
     },
+    /// Print the capabilities registry (capabilities.toml) grouped, with run
+    /// commands. THE anti-forgetting command — everything the machine can do.
+    Capabilities {
+        /// Filter to a single group id (e.g. visual-image, publishing).
+        #[arg(long)]
+        group: Option<String>,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Per-project layer + capability status: which groups are built / missing
+    /// for this project (cross-references the registry against the filesystem).
+    Status {
+        /// Project name or slug (case-insensitive).
+        project: String,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// The single next-best action for a project + the exact command to run
+    /// (deterministic rules over the project's marketing state).
+    Next {
+        /// Project name or slug (case-insensitive).
+        project: String,
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check integration keys/tools present + working (zernio, higgsfield,
+    /// HeyGen, ElevenLabs, bun, ffmpeg) — OK/missing per dependency.
+    Doctor {
+        /// Machine-readable JSON output.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn cmd_marketing(action: MarketingAction) -> Result<()> {
@@ -2745,7 +2780,305 @@ fn cmd_marketing(action: MarketingAction) -> Result<()> {
             }
             Ok(())
         }
+        MarketingAction::Capabilities { group, json } => cmd_marketing_capabilities(group, json),
+        MarketingAction::Status { project, json } => cmd_marketing_status(&project, json),
+        MarketingAction::Next { project, json } => cmd_marketing_next(&project, json),
+        MarketingAction::Doctor { json } => cmd_marketing_doctor(json),
     }
+}
+
+/// Resolve a project by name or slug (case-insensitive), fetching accounts so
+/// next-best-action can reason about connectivity.
+fn find_marketing_project(
+    query: &str,
+) -> Option<omega_core::marketing::MarketingProject> {
+    let q = query.to_lowercase();
+    let projects = omega_core::marketing::list_marketing_projects();
+    projects
+        .into_iter()
+        .find(|p| p.name.to_lowercase() == q || p.slug.to_lowercase() == q)
+}
+
+fn cmd_marketing_capabilities(group: Option<String>, json: bool) -> Result<()> {
+    let reg = match omega_core::marketing::load_capabilities()? {
+        Some(r) => r,
+        None => {
+            if json {
+                println!("null");
+            } else {
+                println!("No capabilities.toml found.");
+                println!("Expected at tools/marketing-machine/capabilities.toml in the OmegaOS repo");
+                println!("(override with OMEGA_MKT_CAPS=/path/to/capabilities.toml).");
+            }
+            return Ok(());
+        }
+    };
+
+    if json {
+        // Optionally narrow to a group.
+        if let Some(gid) = group.as_deref() {
+            let caps: Vec<_> = reg.in_group(gid).into_iter().cloned().collect();
+            println!("{}", serde_json::to_string_pretty(&caps)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&reg)?);
+        }
+        return Ok(());
+    }
+
+    let (built, partial, missing) = reg.status_counts();
+    println!(
+        "Marketing Machine — capabilities registry ({} capabilities: {} built · {} partial · {} missing)\n",
+        reg.capabilities.len(),
+        built,
+        partial,
+        missing
+    );
+
+    let glyph = |s: &str| match s {
+        "built" => "🟢",
+        "partial" => "🟡",
+        "missing" => "🔴",
+        _ => "⚪",
+    };
+
+    for grp in reg.groups_ordered() {
+        if let Some(ref only) = group {
+            if &grp.id != only {
+                continue;
+            }
+        }
+        let caps = reg.in_group(&grp.id);
+        if caps.is_empty() {
+            continue;
+        }
+        println!("── {} ({}) ──", grp.name, grp.id);
+        for c in caps {
+            let paid = if c.paid { " 💲" } else { "" };
+            println!("  {} {:<6} {}{}", glyph(&c.status), c.id, c.name, paid);
+            if !c.does.is_empty() {
+                println!("        {}", c.does);
+            }
+            if !c.run.is_empty() {
+                println!("        run: {}", c.run);
+            }
+        }
+        println!();
+    }
+
+    if let Some(only) = group {
+        if reg.in_group(&only).is_empty() {
+            println!("(no capabilities in group '{}')", only);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_marketing_status(project: &str, json: bool) -> Result<()> {
+    let mut p = match find_marketing_project(project) {
+        Some(p) => p,
+        None => {
+            if json {
+                println!("null");
+            } else {
+                println!("No marketing project matches '{}'.", project);
+                println!("Run `omega marketing list` to see available projects.");
+            }
+            return Ok(());
+        }
+    };
+    // Accounts inform the calendar/publishing view.
+    p.accounts = omega_core::marketing::project_accounts(&p.slug);
+    let groups = omega_core::marketing::project_group_status(&p);
+
+    if json {
+        let out = serde_json::json!({
+            "project": p.name,
+            "slug": p.slug,
+            "path": p.path,
+            "calendarPosts": p.calendar_posts,
+            "engineOn": p.engine_on,
+            "accounts": p.accounts,
+            "groups": groups,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!("{} {}  ({})", p.glyph(), p.name, p.slug);
+    println!("  path: {}", p.path.display());
+    let accts = match p.accounts {
+        Some(n) => n.to_string(),
+        None => "unknown".to_string(),
+    };
+    println!(
+        "  calendar posts: {}   engine: {}   connected accounts: {}\n",
+        p.calendar_posts,
+        if p.engine_on { "ON" } else { "off" },
+        accts
+    );
+    println!("  Per-group status (against the capabilities registry):");
+    for g in &groups {
+        let mark = if g.present { "✓" } else { "✗" };
+        println!("    {} {:<22} {}", mark, g.name, g.detail);
+    }
+    Ok(())
+}
+
+fn cmd_marketing_next(project: &str, json: bool) -> Result<()> {
+    let mut p = match find_marketing_project(project) {
+        Some(p) => p,
+        None => {
+            if json {
+                println!("null");
+            } else {
+                println!("No marketing project matches '{}'.", project);
+                println!("Run `omega marketing list` to see available projects.");
+            }
+            return Ok(());
+        }
+    };
+    p.accounts = omega_core::marketing::project_accounts(&p.slug);
+    let (id, why, cmd) = omega_core::marketing::next_best_action(&p);
+
+    if json {
+        let out = serde_json::json!({
+            "project": p.name,
+            "slug": p.slug,
+            "nextBestAction": { "id": id, "why": why, "command": cmd },
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
+    println!("{} {} — next best action:\n", p.glyph(), p.name);
+    println!("  ▸ {}", id);
+    println!("    why: {}", why);
+    println!("    run: {}", cmd);
+    Ok(())
+}
+
+fn cmd_marketing_doctor(json: bool) -> Result<()> {
+    use std::process::Command;
+
+    // (name, ok, detail)
+    let mut checks: Vec<(String, bool, String)> = Vec::new();
+
+    // Read integrations.env once (values never printed — presence only).
+    let env_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/home"))
+        .join(".omega")
+        .join("secrets")
+        .join("integrations.env");
+    let env_raw = std::fs::read_to_string(&env_path).unwrap_or_default();
+    let key_set = |name: &str| -> bool {
+        env_raw.lines().any(|l| {
+            let l = l.trim();
+            if let Some(rest) = l.strip_prefix(name) {
+                rest.starts_with('=') && rest.len() > 1 && !rest.trim_end().ends_with('=')
+            } else {
+                false
+            }
+        }) || std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false)
+    };
+    let bin_present = |bin: &str| -> bool {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {}", bin))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+
+    // --- Binaries / tools ---
+    checks.push((
+        "bun".into(),
+        bin_present("bun"),
+        "video/engine runtime".into(),
+    ));
+    checks.push((
+        "ffmpeg".into(),
+        bin_present("ffmpeg"),
+        "video mux + audio ducking".into(),
+    ));
+    let hf = bin_present("higgsfield");
+    checks.push(("higgsfield CLI".into(), hf, "image/video/soul engine".into()));
+
+    // --- zernio key ---
+    checks.push((
+        "ZERNIO_API_KEY".into(),
+        key_set("ZERNIO_API_KEY"),
+        "publishing to 15+ networks".into(),
+    ));
+
+    // --- higgsfield account status (live if the CLI + keys are present) ---
+    let hf_keys = key_set("HIGGSFIELD_API_KEY_ID") && key_set("HIGGSFIELD_API_KEY_SECRET");
+    checks.push((
+        "HIGGSFIELD_API_KEY_ID/SECRET".into(),
+        hf_keys,
+        "higgsfield API credentials".into(),
+    ));
+    if hf && hf_keys {
+        // Best-effort live check: `higgsfield account` — bounded, non-fatal.
+        let ok = Command::new("higgsfield")
+            .arg("account")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        checks.push((
+            "higgsfield account".into(),
+            ok,
+            if ok { "credits/account reachable".into() } else { "CLI present but account call failed (login/credits?)".into() },
+        ));
+    }
+
+    // --- HeyGen / ElevenLabs / ARTLIST / Tella ---
+    checks.push((
+        "HEYGEN_API_KEY".into(),
+        key_set("HEYGEN_API_KEY"),
+        "talking-head UGC avatars".into(),
+    ));
+    checks.push((
+        "ELEVENLABS_API_KEY".into(),
+        key_set("ELEVENLABS_API_KEY"),
+        "branded VO + music beds".into(),
+    ));
+    checks.push((
+        "ARTLIST_API_KEY".into(),
+        key_set("ARTLIST_API_KEY"),
+        "licensed music (no runner yet)".into(),
+    ));
+    checks.push((
+        "TELLA_API_KEY".into(),
+        key_set("TELLA_API_KEY"),
+        "screen recording (no runner yet)".into(),
+    ));
+
+    if json {
+        let arr: Vec<_> = checks
+            .iter()
+            .map(|(n, ok, d)| serde_json::json!({ "name": n, "ok": ok, "detail": d }))
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "checks": arr }))?);
+        return Ok(());
+    }
+
+    println!("Marketing Machine — doctor (integration keys/tools)\n");
+    let mut missing = 0;
+    for (name, ok, detail) in &checks {
+        if *ok {
+            println!("  ✓ {:<32} {}", name, detail);
+        } else {
+            missing += 1;
+            println!("  ✗ {:<32} MISSING — {}", name, detail);
+        }
+    }
+    println!();
+    if missing == 0 {
+        println!("All checked dependencies present.");
+    } else {
+        println!("{} dependency/dependencies missing (keys live in ~/.omega/secrets/integrations.env).", missing);
+    }
+    Ok(())
 }
 
 #[derive(Subcommand)]
