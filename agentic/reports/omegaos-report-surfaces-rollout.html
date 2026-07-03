@@ -166,16 +166,19 @@
   <li><span class="pill ok">SYNTAX</span> <code>bash -n</code> vert sur install.sh et verify-install.sh.</li>
   <li><span class="pill ok">DOCTOR</span> avant : <code>[!] 6 Laws + 33 Rules (expected 6 + 32)</code> + dérive R-HTML ; après swap du binaire : doctrine verte 6 + 35 (section 06 pour l'état final).</li>
   <li><span class="pill ok">LIVE</span> cette page : publiée par l'outil Artifact depuis la session oracle, en suivant le protocole du skill livré (preuve de bout en bout de la surface 1 ; son fichier commité est la surface 2).</li>
+  <li><span class="pill ok">83/100</span> /codeaudit (grade A, confiance haute) sur le diff complet : zéro régression de blocs adjacents ; ses 2 findings MEDIUM de doctrine (route web-artifacts-builder non conditionnelle, phrase non définie) corrigés en <code>d9df411</code> avant le push.</li>
+  <li><span class="pill ok">89/100</span> /uiuxaudit (grade A) sur cette page même, rendue en Playwright dans les deux thèmes : 7/9 claims PASS ; le HIGH (impression depuis un navigateur sombre) et les MEDIUM (lang, thead/scope, mesure) corrigés avant cette re-publication v2.</li>
+  <li><span class="pill ok">PARITY</span> <code>./scripts/verify-install.sh</code> : INSTALL PARITY OK après push ; gitleaks sur les 4 commits de mission : aucune fuite.</li>
 </ul>
 
 <h2 id="shas"><span class="k">06</span>Commits et liens</h2>
 <div class="tablebox"><table>
   <thead><tr><th scope="col">Repo</th><th scope="col">Commit</th><th scope="col">Contenu</th></tr></thead>
   <tr><td>OmegaOS</td><td class="num">c905bff</td><td>feat(rules): R-ARTIFACT + R-HTML compilées, EXPECTED_OPS 35</td></tr>
-  <tr><td>OmegaOS</td><td class="num">6013fba</td><td>feat(skills): artifact-design, surface de rapport live</td></tr>
-  <tr><td>OmegaOS</td><td class="num">14a07b6 / 93f5b26</td><td>merges des deux branches worker sur main</td></tr>
-  <tr><td>OmegaOS</td><td class="num">(v2)</td><td>jumeau HTML de ce rapport + SHAs finaux après push (re-publication au même URL)</td></tr>
-  <tr><td>Agentik-Skills</td><td class="num">(v2)</td><td>miroir artifact-design/ poussé sur la bibliothèque</td></tr>
+  <tr><td>OmegaOS</td><td class="num">6dade12</td><td>feat(skills): artifact-design, surface de rapport live (rebase du 6013fba)</td></tr>
+  <tr><td>OmegaOS</td><td class="num">d9df411</td><td>fix(doctrine): route web-artifacts-builder conditionnelle + phrase corrigée (codeaudit F-3/F-4)</td></tr>
+  <tr><td>OmegaOS</td><td class="num">f478513</td><td>feat(report-surfaces): page de preuve + verdicts d'audit + miroirs de règles ; poussé, origin/main vérifié par ls-remote</td></tr>
+  <tr><td>Agentik-Skills</td><td class="num">774980b</td><td>miroir artifact-design/ poussé sur la bibliothèque (ls-remote authentifié vérifié)</td></tr>
 </table></div>
 
 <h2 id="limites"><span class="k">07</span>Limites et périmètre</h2>
@@ -185,5 +188,5 @@
   <li>La génération visuelle du contenu reste soumise à R-CITE : chaque affirmation de cette page porte sa preuve (fichier:ligne, sonde, source datée).</li>
 </ul>
 
-<p class="sub footnote">oracle-OmegaOS · mission « 3e surface de rapport » · v1 pré-push, re-publiée en v2 avec les SHAs d'origine après le push. Jumeau hors-ligne : <code>agentic/reports/omegaos-report-surfaces-rollout.html</code>.</p>
+<p class="sub footnote">oracle-OmegaOS · mission « 3e surface de rapport » · v2, re-publiée au même URL après le push (la v1 pré-push reste dans l'historique de versions de l'artifact : c'est la démonstration du versionnage). Jumeau hors-ligne : <code>agentic/reports/omegaos-report-surfaces-rollout.html</code>.</p>
 </div>
