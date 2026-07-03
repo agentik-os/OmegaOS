@@ -103,6 +103,8 @@ def write_report(
             for w in words:
                 lines.append(f"  [{w['start']:6.2f}s] {w['word']}")
             lines.append("```")
+        else:
+            lines.append("_(hook transcription skipped or unavailable — no word-level transcript.)_")
         lines.append("")
         lines.append(_pending(
             "Frame-by-frame interpretation: what visual change happens at each "

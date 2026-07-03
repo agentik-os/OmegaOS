@@ -31,9 +31,15 @@ def analyse_hook(
     out_dir: Path,
     backend: str | None = None,
     api_key: str | None = None,
+    transcribe: bool = True,
     full_video_duration: float = 0.0,
 ) -> dict:
-    """Run hook microscope. Returns {frames, words, segments, ran}."""
+    """Run hook microscope. Returns {frames, words, segments, ran}.
+
+    transcribe=False guarantees zero network egress: no API key lookup, no
+    hook-audio extraction, no Whisper call. Hook frames are still extracted
+    either way.
+    """
     if full_video_duration > 0 and full_video_duration < 30.0:
         return {"frames": [], "words": [], "segments": [], "ran": False,
                 "skipped_reason": "video <30s"}
@@ -48,30 +54,31 @@ def analyse_hook(
 
     words: list[dict] = []
     segments: list[dict] = []
-    if backend is None or api_key is None:
-        backend, api_key = load_api_key()
+    if transcribe:
+        if backend is None or api_key is None:
+            backend, api_key = load_api_key()
 
-    if backend and api_key:
-        try:
-            if shutil.which("ffmpeg") is None:
-                raise SystemExit("ffmpeg required for hook microscope")
-            hook_audio = out_dir / "hook_audio.mp3"
-            subprocess.run([
-                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                "-i", str(Path(video_path).resolve()),
-                "-vn", "-acodec", "libmp3lame", "-ar", "16000",
-                "-ac", "1", "-b:a", "64k",
-                "-t", str(HOOK_DURATION_SECONDS),
-                str(hook_audio.resolve()),
-            ], check=True, capture_output=True)
-            segments, _, words = transcribe_audio(
-                hook_audio, backend=backend, api_key=api_key,
-                word_timestamps=True,
-            )
-        except SystemExit as exc:
-            print(f"[hook] whisper failed: {exc}", file=sys.stderr)
-        except subprocess.CalledProcessError as exc:
-            print(f"[hook] ffmpeg slice failed: {exc.stderr}", file=sys.stderr)
+        if backend and api_key:
+            try:
+                if shutil.which("ffmpeg") is None:
+                    raise SystemExit("ffmpeg required for hook microscope")
+                hook_audio = out_dir / "hook_audio.mp3"
+                subprocess.run([
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(Path(video_path).resolve()),
+                    "-vn", "-acodec", "libmp3lame", "-ar", "16000",
+                    "-ac", "1", "-b:a", "64k",
+                    "-t", str(HOOK_DURATION_SECONDS),
+                    str(hook_audio.resolve()),
+                ], check=True, capture_output=True)
+                segments, _, words = transcribe_audio(
+                    hook_audio, backend=backend, api_key=api_key,
+                    word_timestamps=True,
+                )
+            except SystemExit as exc:
+                print(f"[hook] whisper failed: {exc}", file=sys.stderr)
+            except subprocess.CalledProcessError as exc:
+                print(f"[hook] ffmpeg slice failed: {exc.stderr}", file=sys.stderr)
 
     return {
         "frames": hook_frames,

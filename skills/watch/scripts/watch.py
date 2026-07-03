@@ -165,6 +165,7 @@ def main() -> int:
         hook_result = analyse_hook(
             video_path, work,
             backend=hook_backend, api_key=hook_key,
+            transcribe=not args.no_whisper,
             full_video_duration=full_duration,
         )
     else:
