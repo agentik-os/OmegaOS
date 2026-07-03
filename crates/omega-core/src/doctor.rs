@@ -141,10 +141,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 3. Doctrine integrity (6 Laws + 35 operational rules — R-HTML + R-ARTIFACT
+    // 3. Doctrine integrity (6 Laws + 36 operational rules — R-SECRETS-VAULT
     // added 2026-07-03; bump EXPECTED_OPS whenever rules.rs ships a new rule).
     const EXPECTED_LAWS: usize = 6;
-    const EXPECTED_OPS: usize = 35;
+    const EXPECTED_OPS: usize = 36;
     let laws = crate::rules::laws().len();
     let ops = crate::rules::operational_rules().len();
     if laws == EXPECTED_LAWS && ops == EXPECTED_OPS {

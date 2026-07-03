@@ -1214,6 +1214,35 @@ else
     info "artifact-design skill not found — skipping"
 fi
 
+# Install the secrets-vault skill (/secrets-vault + /omg-secrets-vault) — R-SECRETS-VAULT.
+# Encrypted-in-repo secret recovery (SOPS + age): a fresh clone + one master key restores
+# every secret. Pure bash + sops + age wrappers (no node/bun/python on the recovery path).
+# NOTE: install.sh does NOT auto-install sops/age or generate the master key — those are an
+# operator opt-in (the master key is the crown jewel; it is never minted by an installer and
+# never committed). The skill ships as markdown + bin/ scripts only.
+SV_SRC="$OMEGA_SRC/skills/secrets-vault"
+SV_DST="$OMEGA_DIR/skills/secrets-vault"
+if [[ -d "$SV_SRC" ]]; then
+    mkdir -p "$SV_DST/bin"
+    cp -r "$SV_SRC"/* "$SV_DST/"
+    find "$SV_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    ACMD="$HOME/.claude/commands"; mkdir -p "$ACMD"
+    for cmd in "secrets-vault" "omg-secrets-vault"; do
+        cat > "$ACMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the secrets-vault skill. Read and follow the complete instructions in:
+
+\`$SV_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+    done
+    ok "secrets-vault skill installed: /secrets-vault + /omg-secrets-vault → ~/.omega/skills/secrets-vault/ (encrypted secret recovery; sops+age are an operator opt-in)"
+else
+    info "secrets-vault skill not found — skipping"
+fi
+
 # Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
 # visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
 # OmegaOS conventions — plus the OmegaOS-native `diagram` visual skill. Prompt-only
