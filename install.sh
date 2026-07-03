@@ -1186,6 +1186,34 @@ else
     info "watch skill not found — skipping"
 fi
 
+# Install the artifact-design live-report skill (/artifact-design + /omg-artifact-design)
+# — surface 1 of the OmegaOS report router (R-ARTIFACT). A pure protocol layer over the
+# NATIVE Claude Code Artifact tool: publishes deliverable reports as live claude.ai
+# Artifacts. Nothing external is installed and there are no runtime deps — the skill
+# ships as markdown only and orchestrates capabilities already in the harness.
+ARTD_SRC="$OMEGA_SRC/skills/artifact-design"
+ARTD_DST="$OMEGA_DIR/skills/artifact-design"
+if [[ -d "$ARTD_SRC" ]]; then
+    mkdir -p "$ARTD_DST"
+    cp -r "$ARTD_SRC"/* "$ARTD_DST/"
+    find "$ARTD_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    ACMD="$HOME/.claude/commands"; mkdir -p "$ACMD"
+    for cmd in "artifact-design" "omg-artifact-design"; do
+        cat > "$ACMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the artifact-design skill. Read and follow the complete instructions in:
+
+\`$ARTD_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+    done
+    ok "artifact-design skill installed: /artifact-design + /omg-artifact-design → ~/.omega/skills/artifact-design/ (live artifact reports)"
+else
+    info "artifact-design skill not found — skipping"
+fi
+
 # Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
 # visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
 # OmegaOS conventions — plus the OmegaOS-native `diagram` visual skill. Prompt-only

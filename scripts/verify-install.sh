@@ -165,6 +165,7 @@ if [ -f skills/linear/SKILL.md ] && [ -f skills/linear/RULES.md ] && grep -q "sk
 if [ -f skills/linear-setup/SKILL.md ] && grep -q "skills/linear-setup" install.sh && grep -q "omg-linear-setup" install.sh; then ok "/omg-linear-setup wizard shipped + installed"; else bad "linear-setup skill not shipped/wired in install.sh"; fi
 if [ -f skills/10x/SKILL.md ] && [ -f skills/pitch/SKILL.md ] && [ -f skills/ghost/SKILL.md ] && grep -q "for TSK in 10x pitch ghost" install.sh; then ok "thinking micro-skills (/10x /pitch /ghost) shipped + wired"; else bad "thinking micro-skills missing or not wired in install.sh"; fi
 if [ -f skills/watch/SKILL.md ] && [ -f skills/watch/scripts/watch.py ] && [ -f skills/watch/LICENSE ] && grep -q 'WATCH_SRC="$OMEGA_SRC/skills/watch"' install.sh && grep -q "omg-watch" install.sh; then ok "watch video-analysis skill (/watch /omg-watch) shipped + wired"; else bad "watch skill missing or not wired in install.sh"; fi
+if [ -f skills/artifact-design/SKILL.md ] && grep -q 'ARTD_SRC="$OMEGA_SRC/skills/artifact-design"' install.sh && grep -q "omg-artifact-design" install.sh; then ok "artifact-design skill (/artifact-design /omg-artifact-design) shipped + wired"; else bad "artifact-design skill missing or not wired in install.sh"; fi
 # Linear skill must not LEAK a maintainer-private path (it may mention them in
 # negative "does NOT read ~/.claude" prose; only a real ~/.claude/ or /home/hacker
 # path token is a leak). Check for the home-dir literal specifically.
