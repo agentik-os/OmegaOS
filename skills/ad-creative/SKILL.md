@@ -50,6 +50,8 @@ Gather this context (ask if not provided):
 - Compliance requirements? (Industry regulations, platform policies)
 - Any mandatory elements? (Brand name, trademark symbols, disclaimers)
 
+**Reference videos:** when the user supplies competitor or reference video ads, run /watch on them first (the canonical video-analysis primitive of the marketing machine). Each report.md (0-10s hook microscope, transcript, pacing) becomes part of the creative brief: observed hooks, cut rhythm, and on-screen text patterns to beat.
+
 ---
 
 ## How This Skill Works

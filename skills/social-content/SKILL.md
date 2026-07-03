@@ -44,6 +44,8 @@ Gather this context (ask if not provided):
 - Do you have existing content to repurpose?
 - Can you create video content?
 
+**Reference videos:** for short-form video work, when reference or competitor videos exist (TikTok, Reels, Shorts links or local files), run /watch on them first; the marketing machine treats /watch as its canonical video-analysis primitive. The hook microscope output (0-10s frames plus exact opening words) and pacing data become the brief for hooks and structure, and feed the Reverse Engineering Viral Content section below.
+
 ---
 
 ## Platform Quick Reference

@@ -37,8 +37,9 @@ reproduce on **any** fresh install, with or without Agentik-Skills access.
 | GTM suite (R-MARKETING) | launch-strategy · product-marketing-context · cold-email · social-content · ad-creative · content-strategy · market-research · marketing-strategist | `GTMK` loop | `/omg-<name>` |
 | Visual-identity pair (R-VISUAL-ID) | higgsfield-soul-id · higgsfield-generate | `GTMK` loop | `/omg-<name>` |
 | Marketing-Mastery doctrine | marketing-master + mm-01 … mm-12 (13) | `MMK` loop → `skills/marketing-mastery/<name>/` | `/omg-<name>` + `/<name>` |
+| Video-analysis primitive (R-MARKETING) | watch | dedicated `WATCH_SRC` block | `/omg-watch` + `/watch` |
 
-**23 canon skills — present in BOTH SSOTs, install.sh-wired, `/omg-*` routable.**
+**24 canon skills — present in BOTH SSOTs, install.sh-wired, `/omg-*` routable.**
 
 ### Tier 2 — MIRRORED LIBRARY (operator-only; auth-gated)
 Live only in SSOT-1 (Agentik-Skills) under their category folders. At install time
@@ -75,6 +76,7 @@ runtime-verifiable without the operator's own credentials:
 - **higgsfield-soul-id / higgsfield-generate** → higgsfield CLI (curl|sh) + paid plan.
 - **browser-use** (agentic) → `BROWSER_USE_API_KEY` + pip venv at `~/.omega/skills/browser-use/.venv`.
 - **meta_ads_*** (library) → Meta Ad Library / Marketing API access.
+- **watch** (Tier-1 vendored) → ffmpeg + yt-dlp on PATH (apt/pipx, runtime install, never auto-installed); optional Whisper fallback via GROQ_API_KEY or OPENAI_API_KEY (env, then ~/.config/watch/.env, then ~/.omega/secrets/integrations.env), runtime opt-in; the captions path needs no key. /watch is the canonical video-analysis primitive: competitor hook analysis feeding ads-hooks, ads-video, ad-creative, scriptwriter, social-content, YoutubeContent, art-director-content-engine.
 
 ## `.agents/product-marketing.md`
 
