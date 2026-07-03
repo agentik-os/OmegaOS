@@ -510,6 +510,28 @@ pub fn all_rules() -> Vec<Rule> {
             added_at: "2026-07-02",
             reason: "rules.rs had R-STACK (languages), R-ORCH (which primitive), R-COUNCIL (multi-model for high-stakes), R-BUDGET (the cap) — but nothing matched the Claude model tier + reasoning effort to the cognitive load of a task, so agents defaulted to the session model by habit: max effort on mechanical fan-out and, worse, cheap passes on judge stages. R-MODEL makes quality-matched AND cost-matched model choice an injected, scoped doctrine.",
         },
+        Rule {
+            id: "R-ARTIFACT",
+            title: "Reports default to a live Artifact (3-surface router)",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Reporting,
+            description: "Deliverable reports (audit, research memo, strategy doc, mission recap, brief) route across THREE surfaces. (1) DEFAULT — a report asked for with no format specified ships as a LIVE ARTIFACT: load the artifact-design skill, write ONE self-contained HTML under the project deliverable folder (`agentic/reports/` where the convention exists), publish it with the native Artifact tool, and hand back the live URL plus the file path. Artifacts are private to the author on claude.ai (org-shareable, versioned republish at a stable URL; Team/Enterprise beta). The page follows the artifact contract: content-only HTML (no doctype/html/head/body wrapper), inline CSS/JS with zero external hosts (strict CSP), both themes via token-level `prefers-color-scheme` plus `:root[data-theme]` overrides, premium reading bar, zero em/en dashes in visible copy (R-NODASH). Complex interactive artifacts (state, routing, shadcn/ui) go through web-artifacts-builder and publish its bundle.html. (2) HTML (R-HTML) — when the operator wants a FILE (attachment, email, repo doc, offline reading) or the session has NO Artifact tool (headless `claude -p` and cron runs lack it — runtime-verified 2026-07-03), ship the self-contained HTML and say which surface fired. (3) PDF — ONLY on explicit ask, via `omega pdf` (R-PDF). Never claim a live URL without having published it (L1); a session without the Artifact tool falls back to surface 2 and says so, never fabricates.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-07-03",
+            reason: "Operator directive (2026-07-03): a report asked for with no format should land as a live claude.ai artifact — instantly viewable, versioned, shareable — with HTML the offline twin and PDF explicit-only. Runtime research proved the native Artifact tool and bundled artifact-design skill exist in entitled interactive sessions and are absent headless, so the router encodes the real capability boundary instead of assuming one surface fits every session.",
+        },
+        Rule {
+            id: "R-HTML",
+            title: "HTML is the offline report surface (single self-contained file)",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Reporting,
+            description: "A report delivered as a FILE ships as ONE self-contained HTML (inline CSS, no external assets/CDN, opens offline anywhere), styled to be genuinely pleasant to read: clear typography, a sticky/linked table of contents for long docs, readable tables, scorebars/badges, print-friendly `@media print`. Write it under the project's deliverable folder (`agentic/reports/` where the convention exists) and tell the operator the path. Within the report router (R-ARTIFACT), HTML is surface 2: the generic 'give me a report' ask goes to a live artifact FIRST when the session has the Artifact tool; HTML is the default whenever a file is wanted (attachment, email, repo-committed doc, offline reading) and the universal fallback when the artifact surface is unavailable (headless/cron sessions). The artifact path keeps an HTML twin anyway — the same self-contained file is what gets published live. Markdown may be the intermediate; the THING HANDED OVER is HTML. PDF (and docx/pptx) only on explicit ask — PDF via `omega pdf`, never hand-rolled (R-PDF). When unsure whether a doc counts as a report, default to the router's surface 1.",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-07-02",
+            reason: "The operator saw a large market-research deliverable rendered as HTML and asked that reports default to it over PDF (2026-07-02) — self-contained, instantly viewable, cheaper than a PDF pipeline. Compiled into the registry on 2026-07-03 (it lived only as a hand-written md, failing the registry-markdown parity gate) and reworded as surface 2 of the R-ARTIFACT router when the live-artifact surface shipped.",
+        },
     ]
 }
 
