@@ -37,14 +37,14 @@ reverse) splits the doctrine.
 | A report, no format named | 1: live artifact, plus its HTML twin kept under agentic/reports/ (or the project deliverable folder) |
 | A FILE is wanted (attachment, email, repo doc, offline reading) | 2: self-contained HTML only (R-HTML) |
 | An explicit PDF ask | 3: omega pdf (R-PDF), never a hand-rolled generator |
-| A complex interactive app artifact (state, routing, shadcn/ui) | web-artifacts-builder skill, then publish its bundle.html via the Artifact tool |
+| A complex interactive app artifact (state, routing, shadcn/ui) | web-artifacts-builder skill (IF installed: local-only today, not shipped by install.sh), then publish its bundle.html via the Artifact tool |
 
 Reading the table: surface 1 is the DEFAULT for any deliverable report where the operator
 did not name a format. It is not exclusive: the artifact and its committed HTML twin are
 the same file, so surface 1 always produces surface 2 as a side effect. Surfaces 2 and 3
 fire only on an explicit signal (a file is wanted, a PDF is asked for). The fourth row is
 an escalation, not a surface: when a report needs real interactivity beyond what one
-hand-written page carries, build it with web-artifacts-builder first, then publish the
+hand-written page carries, build it with web-artifacts-builder first (if installed), then publish the
 resulting bundle.html through the exact same protocol below.
 
 ## 2. Preconditions
@@ -145,7 +145,7 @@ French artifacts. Code and identifiers stay English.
 
 ## 7. References (reuse, never duplicate: R-KARPATHY)
 
-- `~/.omega/skills/web-artifacts-builder/SKILL.md`: multi-component React/Vite builds
+- `~/.omega/skills/web-artifacts-builder/SKILL.md` (if installed; not yet shipped by install.sh): multi-component React/Vite builds
   bundled into one self-contained bundle.html (it carries its own init and bundle
   scripts and its own verification checklist).
 - `~/.omega/skills/high-end-visual-design/SKILL.md`: the premium taste engine and its
