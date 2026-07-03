@@ -36,7 +36,7 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
     """Return (backend, api_key). Prefers Groq, falls back to OpenAI.
 
     Lookup order per key: environment variable, then ~/.config/watch/.env,
-    then ./.env, then ~/.omega/secrets/integrations.env (OmegaOS standard,
+    then ~/.omega/secrets/integrations.env (OmegaOS standard,
     gitignored, outside the repo).
 
     If `preferred` is "groq" or "openai", only that backend's key is considered.
@@ -66,7 +66,6 @@ def load_api_key(preferred: str | None = None) -> tuple[str, str] | tuple[None, 
 
     dotenv_paths = [
         Path.home() / ".config" / "watch" / ".env",
-        Path.cwd() / ".env",
         Path.home() / ".omega" / "secrets" / "integrations.env",
     ]
 
