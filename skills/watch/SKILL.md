@@ -262,7 +262,7 @@ If you already watched a video this session and the user asks a follow-up, do **
 - When ingest is consented to: reads and writes pages under `$VAULT_DIR/wiki/` (entities, concepts, sources, index.md) and appends to `$VAULT_DIR/log.md` — following the actions defined by the vault's Ingest op (or a generic fallback if no `CLAUDE.md` is present)
 
 **What this skill does NOT do:**
-- Does not upload the video itself to any API — only the extracted audio goes out, and only when native captions are missing AND Whisper is not disabled with `--no-whisper`
+- Does not upload the video itself to any API. The hook microscope uploads the first 10 seconds of audio whenever an API key is available and transcription is enabled (any video 30 seconds or longer); the full video's audio is uploaded only when native captions are missing and Whisper is not disabled. `--no-whisper` guarantees zero audio egress. `--whisper <backend>` restricts all egress to that backend only
 - Does not access any platform account (no login, no session cookies, no posting)
 - Does not share API keys between providers (Groq key only goes to `api.groq.com`, OpenAI key only goes to `api.openai.com`)
 - Does not log, cache, or write API keys to stdout, stderr, or output files
@@ -280,7 +280,7 @@ Runtime opt-in, same shape as the browser-use / higgsfield dependencies (R-VISUA
 
 - **install.sh ships only this markdown + the python scripts + the cookie helper.** It never apt-installs ffmpeg/yt-dlp, never injects yt-dlp plugins, never provisions a key. Install the runtime deps once per box: `sudo apt-get install -y ffmpeg pipx && pipx install yt-dlp` (Linux; macOS uses brew via scripts/setup.py).
 - **Keys come only from the environment or key files** - lookup order: env var, then `~/.config/watch/.env`, then `~/.omega/secrets/integrations.env` (gitignored, outside the repo). Never the repo, never a log line.
-- **Data egress:** video/audio goes to api.groq.com or api.openai.com ONLY when the Whisper fallback actually runs (no captions available, or hook-microscope word timing on captioned videos 30s+). The captions-first path sends nothing anywhere. Pass --no-whisper to guarantee zero egress.
+- **Data egress:** the hook microscope uploads the first 10s of audio to api.groq.com or api.openai.com whenever an API key is available and transcription is enabled, on any video 30s+, regardless of whether captions exist. The full video's audio goes to the same APIs only when native captions are missing and Whisper is not disabled. Pass --no-whisper for zero egress. Pass --whisper groq or --whisper openai to restrict all egress to that backend only.
 - **The shipped verifiable contract** is: this SKILL.md + scripts present, /watch and /omg-watch resolving, `python3 scripts/watch.py --help` exiting 0. A live transcription is NOT runtime-verifiable without the operator's key; never claim one as verified absent a key.
 
 ## YouTube on servers and datacenter IPs

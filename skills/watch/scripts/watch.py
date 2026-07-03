@@ -167,6 +167,7 @@ def main() -> int:
             backend=hook_backend, api_key=hook_key,
             transcribe=not args.no_whisper,
             full_video_duration=full_duration,
+            preferred=args.whisper,
         )
     else:
         hook_result = {"frames": [], "words": [], "segments": [], "ran": False,

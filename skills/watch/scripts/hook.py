@@ -33,12 +33,17 @@ def analyse_hook(
     api_key: str | None = None,
     transcribe: bool = True,
     full_video_duration: float = 0.0,
+    preferred: str | None = None,
 ) -> dict:
     """Run hook microscope. Returns {frames, words, segments, ran}.
 
     transcribe=False guarantees zero network egress: no API key lookup, no
     hook-audio extraction, no Whisper call. Hook frames are still extracted
     either way.
+
+    preferred, when set (a forced --whisper backend), restricts any internal
+    key lookup to that backend only. A missing key for a forced backend skips
+    transcription instead of silently falling back to a different provider.
     """
     if full_video_duration > 0 and full_video_duration < 30.0:
         return {"frames": [], "words": [], "segments": [], "ran": False,
@@ -56,7 +61,13 @@ def analyse_hook(
     segments: list[dict] = []
     if transcribe:
         if backend is None or api_key is None:
-            backend, api_key = load_api_key()
+            backend, api_key = load_api_key(preferred)
+            if preferred and not (backend and api_key):
+                print(
+                    f"[hook] --whisper {preferred} forced but its API key is missing, "
+                    "skipping hook transcription",
+                    file=sys.stderr,
+                )
 
         if backend and api_key:
             try:

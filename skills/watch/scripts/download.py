@@ -7,9 +7,11 @@ transcribe.py can parse them without needing Whisper.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -85,12 +87,23 @@ def download_url(url: str, out_dir: Path) -> dict:
     ]
 
     # yt-dlp may exit non-zero if a subtitle variant fails (e.g. 429) even when
-    # the video itself downloaded fine. Treat "video file present" as success.
-    result = subprocess.run(cmd, stdout=sys.stderr, stderr=sys.stderr)
+    # the video itself downloaded fine. Treat "video file present" as success,
+    # but only a video file THIS run produced; a non-zero exit must not let a
+    # stale video.* left over from a prior run in a reused --out-dir pass as one.
+    run_start = time.time()
+    result = subprocess.run(cmd, stdout=sys.stderr, stderr=subprocess.PIPE, text=True)
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
     video = _pick_video(out_dir)
     if video is None:
         raise SystemExit(
             f"yt-dlp did not produce a video file in {out_dir} (exit {result.returncode})"
+        )
+    if result.returncode != 0 and os.path.getmtime(video) < run_start:
+        raise SystemExit(
+            f"yt-dlp failed (exit {result.returncode}) in {out_dir}; the only video "
+            f"file present is stale, left over from a previous run: "
+            f"{(result.stderr or '').strip()[-800:]}"
         )
 
     subtitle = _pick_subtitle(out_dir)

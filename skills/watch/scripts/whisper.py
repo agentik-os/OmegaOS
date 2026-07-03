@@ -285,9 +285,13 @@ def transcribe_video(
     """Run the full flow: extract audio → upload → parse segments.
 
     Returns (segments, backend_used). Raises SystemExit on any failure.
+
+    If `backend` is forced by the caller, the key lookup is restricted to
+    that backend only, so a forced backend can never be paired with a
+    different provider's key.
     """
     if backend is None or api_key is None:
-        detected_backend, detected_key = load_api_key()
+        detected_backend, detected_key = load_api_key(preferred=backend)
         backend = backend or detected_backend
         api_key = api_key or detected_key
 
