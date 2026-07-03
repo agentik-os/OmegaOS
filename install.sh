@@ -1157,6 +1157,35 @@ EOF
     fi
 done
 
+# Install the watch video-analysis skill (/watch + /omg-watch) — vendored from
+# taoufik123-collab/claude-watch @ 7871c7e (MIT). Ships SKILL.md + python
+# scripts + the cookie-harvest helper. External runtime deps (ffmpeg, yt-dlp,
+# deno, optional bgutil PoT provider, optional GROQ/OPENAI key for the Whisper
+# fallback) are documented in the SKILL and installed at runtime — NEVER here
+# (same boundary as browser-use / higgsfield / diagram).
+WATCH_SRC="$OMEGA_SRC/skills/watch"
+WATCH_DST="$OMEGA_DIR/skills/watch"
+if [[ -d "$WATCH_SRC" ]]; then
+    mkdir -p "$WATCH_DST"
+    cp -r "$WATCH_SRC"/* "$WATCH_DST/"
+    find "$WATCH_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    WCMD="$HOME/.claude/commands"; mkdir -p "$WCMD"
+    for cmd in "watch" "omg-watch"; do
+        cat > "$WCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the watch video-analysis skill. Read and follow the complete instructions in:
+
+\`$WATCH_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+    done
+    ok "watch skill installed: /watch + /omg-watch → ~/.omega/skills/watch/ (video analysis)"
+else
+    info "watch skill not found — skipping"
+fi
+
 # Install the marketing / go-to-market suite (R-MARKETING) + the Higgsfield
 # visual-identity pair (R-VISUAL-ID) — 10 vendored third-party skills adapted to
 # OmegaOS conventions — plus the OmegaOS-native `diagram` visual skill. Prompt-only
