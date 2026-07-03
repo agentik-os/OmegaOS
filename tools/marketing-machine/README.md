@@ -64,3 +64,11 @@ The per-project `04-publishing/calendar.json` is the queue feeding these.
   generation, not runtime-verifiable without operator credentials.
 - **zernio** publishing requires the operator's OAuth-connected accounts. Key lives in
   `~/.omega/secrets/integrations.env` (`ZERNIO_API_KEY`), never in the repo.
+
+## Growth kit
+
+`growth/GROWTH-KIT.md` distills the growth mechanics (X teardown of @tibo_maker + @antinertia,
+and the IG/YouTube/TikTok/LinkedIn multi-platform analysis) into a runnable, project-agnostic
+playbook: the per-platform hook engine, the carousel system (IG + LinkedIn), the comment-to-DM
+demo-and-capture loop, the build-in-public engine, named series formats, and per-platform
+protocols. Every content skill and daily engine reads it before producing. No em-dash (R-NODASH).
