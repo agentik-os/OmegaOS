@@ -57,6 +57,12 @@ evidence, here's what a human/oracle needs to decide" beats a loop that burns tu
 nowhere. The patrol counts contested/thrashing done signals and escalates to the operator after
 3 — so a fabricated or repeated done helps no one and gets caught.
 
+**If you run inside a native `/loop`** (a `/goal` auto-loop or a scheduled session): don't
+schedule a short wakeup to poll a background job the harness already tracks — it re-invokes you
+on completion. In dynamic mode pick the wakeup delay by the 5-minute prompt-cache window (60-270s
+for active external polling, 1200s+ for an idle tick or a long fallback), never 300s. The
+same-failure-3× ceiling still applies inside the loop — report `pending` with evidence, don't spin.
+
 ## Verification Checklist
 
 Before calling done:

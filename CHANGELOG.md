@@ -7,6 +7,17 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+### Added
+- **Native `/loop` doctrine (R-LOOP extended).** After the Claude Code `/loop`
+  launch, every loop-driving OmegaOS agent now knows the two native loop layers
+  compose: the OmegaOS *mission* loop and the *native `/loop`* (fixed-interval
+  cron-backed vs dynamic self-paced via `ScheduleWakeup`). Sessions running
+  inside a native loop pace by the 5-minute prompt-cache window (60-270s warm /
+  1200-1800s idle / never 300s), never poll harness-tracked background work, keep
+  a long fallback heartbeat, and keep the same bounded-retry ceilings (thrash →
+  `escalate_to_human`). Encoded in `rules.rs` (SSOT, R-LOOP) and injected into the
+  oracle, worker, Atlas, and Nova/companion identities.
+
 ## [0.1.6] — 2026-06-11
 
 The full-system audit release: 90 adversarially-verified findings, ~70 fixes

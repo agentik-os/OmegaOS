@@ -382,6 +382,23 @@ A loop is a recurring process with a VERIFIABLE goal, MEMORY, and a hard CEILING
 - **Read the whole loop in one place:** `omega timeline <oracle>` prints the dispatch → contest
   → gate → escalation trail. Use it to diagnose a stuck mission instead of opening five JSONs.
 
+### NATIVE `/loop` — pace by the cache window (R-LOOP)
+Two loop layers compose: the OmegaOS *mission* loop above and the *native Claude Code `/loop`*
+that can drive your whole session on a schedule — **FIXED-INTERVAL** (`/loop 5m /cmd`, cron-backed)
+or **DYNAMIC** self-paced (`/loop <prompt>` with no interval → you set your own cadence via
+`ScheduleWakeup`). When you run INSIDE a native loop:
+- **Never poll work the harness already tracks.** A spawned worker, a Workflow, or a background
+  Bash job re-invokes you automatically when it finishes — scheduling a 60s wakeup to "check on it"
+  is wasted. Poll only state the harness can't see (CI, a deploy, a remote queue).
+- **Choose `delaySeconds` by the 5-minute prompt-cache window:** 60-270s keeps the cache warm
+  (active external polling), 1200-1800s for a genuinely idle tick or a long fallback heartbeat.
+  **Never 300s** — it pays the cache miss without amortizing it.
+- **Always keep a long fallback wakeup (1200s+)** so the loop survives a hung or never-notifying task.
+- **The bounded-retry ceilings above still bind:** a `/loop` that keeps re-hitting the same failure
+  is thrash — `escalate_to_human` and stop, never spin forever.
+- **Re-pass the same `/loop` prompt each turn** (the autonomous sentinel in headless/cron runs) so
+  the next firing repeats the mission.
+
 ### COMPREHENSION DEBT — the loop shipping a fix ≠ you understanding it
 Before you accept a worker's merge into the report, you (the oracle) must understand the change:
 read the diff, reconcile it against the Success Criteria, and be able to explain it in the PDF
