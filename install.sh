@@ -1064,6 +1064,45 @@ else
     info "Audit skills not found — skipping"
 fi
 
+# Install the Agent-Ecosystem Watch skill (daily Claude/agents X veille → report
+# + gated auto-publish to @Agentik_os via zernio). Copy → ~/.omega/skills/<name>,
+# keep scripts executable, register /<name> + /omg-<name> stubs, and install a
+# DISARMED daily cron (publishing stays off until the operator `touch`es the
+# armed flag — the kill-switch). Reads SCRAPECREATORS_API_KEY + ZERNIO_API_KEY
+# from ~/.omega/secrets/ (never the repo, R-ENV). Idempotent + non-fatal.
+EW_SRC="$OMEGA_SRC/skills/agent-ecosystem-watch"
+EW_DST="$OMEGA_DIR/skills/agent-ecosystem-watch"
+if [[ -d "$EW_SRC" ]]; then
+    mkdir -p "$EW_DST"
+    cp -r "$EW_SRC"/* "$EW_DST/"
+    chmod +x "$EW_DST"/scripts/*.sh "$EW_DST"/scripts/*.py 2>/dev/null || true
+    EW_CMD_DST="$HOME/.claude/commands"; mkdir -p "$EW_CMD_DST"
+    for cmd in "ecosystem-watch" "omg-ecosystem-watch"; do
+        cat > "$EW_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+Run or inspect the Agent-Ecosystem Watch. Read and follow:
+
+\`$EW_DST/SKILL.md\`
+
+Run: \`bash $EW_DST/scripts/watch-run.sh\` (EW_MOCK=1 to smoke-test without publishing).
+Arm auto-publish: \`touch \$HOME/.omega/state/ecosystem-watch/armed\`; disarm: \`rm\` it.
+EOF
+    done
+    # DISARMED daily cron at 08:00. PATH prepend fixes cron missing ~/.local/bin
+    # (claude/omega-zernio live there). Idempotent: drop any prior line first.
+    EW_CRON="0 8 * * * PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin OMEGA_DIR=\$HOME/.omega bash \$HOME/.omega/skills/agent-ecosystem-watch/scripts/watch-run.sh >> \$HOME/.omega/logs/ecosystem-watch.cron.log 2>&1"
+    if command -v crontab >/dev/null 2>&1; then
+        ( crontab -l 2>/dev/null | grep -v 'agent-ecosystem-watch/scripts/watch-run.sh'; echo "$EW_CRON" ) | crontab - 2>/dev/null \
+            && ok "Agent-Ecosystem Watch installed → $EW_DST/ (/ecosystem-watch, daily cron 08:00, DISARMED)" \
+            || ok "Agent-Ecosystem Watch installed → $EW_DST/ (cron add skipped)"
+    else
+        ok "Agent-Ecosystem Watch installed → $EW_DST/ (no crontab; run manually or add cron)"
+    fi
+else
+    info "Agent-Ecosystem Watch skill not found — skipping"
+fi
+
 # Install the design skills (generative UI/UX, aesthetics, image-to-code).
 # Curated set: taste-skill, minimalist-ui, industrial-brutalist-ui,
 # high-end-visual-design, image-to-code, design-system, stitch-design-taste,
