@@ -3,7 +3,20 @@ name: artifact-design
 description: Publishes deliverable reports (audit, research memo, strategy doc, mission recap, dashboard, brief) as LIVE claude.ai Artifacts via the native Artifact tool; surface 1 of the OmegaOS report router (R-ARTIFACT). Use when the user says "report", "live report", "publish an artifact", "make this a report", "dashboard report", "share a page", or in French "rapport", "rapport live", "publie un artifact", "fais-moi un rapport", "tableau de bord". NOT for explicit PDF asks (omega pdf, R-PDF), plain file-only asks (R-HTML), generating videos or images, or scripted browser E2E.
 ---
 
-# artifact-design: publish deliverable reports as live claude.ai Artifacts
+# artifact-design: publish deliverable reports as LOCAL self-hosted Artifacts (Tailscale)
+
+> **DOCTRINE OVERRIDE (2026-07-03, authoritative, mirrors R-ARTIFACT).** "Artifact" means a LOCAL,
+> self-hosted page on the machine, reachable over Tailscale (like kairos), NOT a claude.ai-account
+> artifact. DEFAULT surface = drop a standalone self-contained HTML into `~/.omega/artifacts/`, which is
+> served tailnet-only by `tailscale serve --bg --https=8443 ~/.omega/artifacts`, live at
+> `https://station.tail64d114.ts.net:8443/<file>.html` (update the `/index.html` listing, verify HTTP 200,
+> hand back that URL + the repo file path). The claude.ai native Artifact tool is permitted ONLY when the
+> active account is `x@agentik-os.com` (check with
+> `python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude.json'))).get('oauthAccount',{}).get('emailAddress'))"`);
+> on any other account, never publish to claude.ai. If already published to the wrong account, redact by
+> republishing the same URL (Artifact tool `url` param) with a tombstone, then ask the operator to delete
+> the shell from the UI. Everything below about the native tool applies ONLY inside that single-account
+> exception; the design contract (self-contained HTML, both themes, R-NODASH kill pass) is unchanged.
 
 ## 0. What this is
 
@@ -34,7 +47,7 @@ reverse) splits the doctrine.
 
 | Ask | Surface |
 | --- | --- |
-| A report, no format named | 1: live artifact, plus its HTML twin kept under agentic/reports/ (or the project deliverable folder) |
+| A report, no format named | 1: LOCAL self-hosted artifact in ~/.omega/artifacts served over Tailscale (:8443), plus its HTML twin under agentic/reports/. claude.ai native tool ONLY on account x@agentik-os.com |
 | A FILE is wanted (attachment, email, repo doc, offline reading) | 2: self-contained HTML only (R-HTML) |
 | An explicit PDF ask | 3: omega pdf (R-PDF), never a hand-rolled generator |
 | A complex interactive app artifact (state, routing, shadcn/ui) | web-artifacts-builder skill (IF installed: local-only today, not shipped by install.sh), then publish its bundle.html via the Artifact tool |
