@@ -1103,6 +1103,48 @@ else
     info "Agent-Ecosystem Watch skill not found — skipping"
 fi
 
+# ── Claude Changelog Adopt ─────────────────────────────────────────────────
+# The self-improvement loop: reads the OFFICIAL Claude Code changelog daily,
+# diffs it against the last version OmegaOS absorbed, classifies each NEW entry
+# for an OmegaOS/agent improvement, gates it adversarially, writes an HTML
+# report + Telegram alert, and (only when ARMED) dispatches vetted, in-scope
+# adoptions to an oracle behind the quality gate. DISARMED daily cron by default
+# (self-modification stays off until the operator `touch`es the armed flag).
+# No API keys — reads the public GitHub changelog + local claude/omega. Idempotent.
+CA_SRC="$OMEGA_SRC/skills/changelog-adopt"
+CA_DST="$OMEGA_DIR/skills/changelog-adopt"
+if [[ -d "$CA_SRC" ]]; then
+    mkdir -p "$CA_DST"
+    cp -r "$CA_SRC"/* "$CA_DST/"
+    chmod +x "$CA_DST"/scripts/*.sh "$CA_DST"/scripts/*.py 2>/dev/null || true
+    CA_CMD_DST="$HOME/.claude/commands"; mkdir -p "$CA_CMD_DST"
+    for cmd in "changelog-adopt" "omg-changelog-adopt"; do
+        cat > "$CA_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+Run or inspect Claude Changelog Adopt — the OmegaOS self-improvement loop that
+absorbs the official Claude Code changelog. Read and follow:
+
+\`$CA_DST/SKILL.md\`
+
+Run: \`bash $CA_DST/scripts/adopt-run.sh\` (CA_DRYRUN=1 = report only, never dispatch).
+Arm gated auto-adoption: \`touch \$HOME/.omega/state/changelog-adopt/armed\`; disarm: \`rm\` it.
+EOF
+    done
+    # DISARMED daily cron at 08:15. PATH prepend fixes cron missing ~/.local/bin
+    # (claude/omega live there). Idempotent: drop any prior line first.
+    CA_CRON="15 8 * * * PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin OMEGA_DIR=\$HOME/.omega bash \$HOME/.omega/skills/changelog-adopt/scripts/adopt-run.sh >> \$HOME/.omega/logs/changelog-adopt.cron.log 2>&1"
+    if command -v crontab >/dev/null 2>&1; then
+        ( crontab -l 2>/dev/null | grep -v 'changelog-adopt/scripts/adopt-run.sh'; echo "$CA_CRON" ) | crontab - 2>/dev/null \
+            && ok "Claude Changelog Adopt installed → $CA_DST/ (/changelog-adopt, daily cron 08:15, DISARMED)" \
+            || ok "Claude Changelog Adopt installed → $CA_DST/ (cron add skipped)"
+    else
+        ok "Claude Changelog Adopt installed → $CA_DST/ (no crontab; run manually or add cron)"
+    fi
+else
+    info "Claude Changelog Adopt skill not found — skipping"
+fi
+
 # Install the design skills (generative UI/UX, aesthetics, image-to-code).
 # Curated set: taste-skill, minimalist-ui, industrial-brutalist-ui,
 # high-end-visual-design, image-to-code, design-system, stitch-design-taste,

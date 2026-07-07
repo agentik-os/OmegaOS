@@ -17,6 +17,17 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   a long fallback heartbeat, and keep the same bounded-retry ceilings (thrash →
   `escalate_to_human`). Encoded in `rules.rs` (SSOT, R-LOOP) and injected into the
   oracle, worker, Atlas, and Nova/companion identities.
+- **Claude Changelog Adopt (`/changelog-adopt`) — the self-improvement loop.**
+  A daily, DISARMED-by-default pass that reads the OFFICIAL Claude Code changelog
+  (`anthropics/claude-code`, @claudecodelog as mirror), diffs it against the last
+  version OmegaOS absorbed, classifies each NEW entry for an OmegaOS/agent
+  improvement (opus), adversarially gates the proposals (opus, anti-fabrication),
+  writes a self-contained HTML report + Telegram alert, and — only when ARMED —
+  dispatches vetted, in-scope adoptions (doctrine/agents/skills/install.sh, never
+  core-Rust) to an oracle behind the quality gate (In-Review handoff, never
+  auto-Done). This is the standing, automatic version of the manual `/loop`→R-LOOP
+  adoption above. Skill + scripts + disarmed 08:15 cron shipped via install.sh;
+  first real run classified `/review`→`/code-review` as a high-relevance adoption.
 
 ## [0.1.6] — 2026-06-11
 
