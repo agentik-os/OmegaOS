@@ -98,6 +98,11 @@ pin_clone() {
   fi
 
   # Fresh clone. Prefer a shallow fetch-by-SHA to avoid pulling full history.
+  # Destructive-fallback guard: only rm -rf "$dest" below if THIS run created it.
+  # A pre-existing non-git directory (dest exists but has no .git — we passed the
+  # check above) must never be destroyed.
+  local we_created=0
+  [ -e "$dest" ] || we_created=1
   mkdir -p "$dest"
   if git init -q "$dest" >/dev/null 2>&1 \
      && git -C "$dest" remote add origin "$url" >/dev/null 2>&1 \
@@ -108,6 +113,10 @@ pin_clone() {
   fi
 
   # Fallback: full clone then detach (some hosts refuse fetch-by-SHA).
+  if [ "$we_created" -ne 1 ]; then
+    warn "$(basename "$dest"): pre-existing non-git directory — refusing to rm -rf; skipping"
+    return 1
+  fi
   rm -rf "$dest"
   if git clone "$url" "$dest" >/dev/null 2>&1 \
      && git -C "$dest" checkout --detach "$sha" >/dev/null 2>&1; then
@@ -149,7 +158,16 @@ if pin_clone "$SUPERPOWERS_REPO" "$SP_DIR" "$SUPERPOWERS_PIN"; then
   mkdir -p "$(dirname "$CLAUDE_SETTINGS")"
   [ -f "$CLAUDE_SETTINGS" ] || echo '{}' > "$CLAUDE_SETTINGS"
   if command -v jq >/dev/null 2>&1; then
-    TMP="$(mktemp)"
+    # Never replace a dotfile-manager symlink with a regular file: resolve it to
+    # its real target so the mv rewrites the file the symlink points at.
+    [ -L "$CLAUDE_SETTINGS" ] && CLAUDE_SETTINGS="$(readlink -f "$CLAUDE_SETTINGS")"
+    # Preserve the file's mode across the mv (mktemp defaults to 600; don't let
+    # the merge silently tighten or loosen the user's chosen mode).
+    orig_mode="$(stat -c %a "$CLAUDE_SETTINGS" 2>/dev/null || echo 600)"
+    # Same-directory temp so the final mv is an atomic same-filesystem rename
+    # (a cross-fs /tmp mktemp would make mv a non-atomic copy). Fall back to a
+    # plain mktemp if the same-dir template fails.
+    TMP="$(mktemp "${CLAUDE_SETTINGS}.XXXXXX" 2>/dev/null || mktemp)"
     if jq --arg cmd "$HOOK_CMD" '
           .hooks = (.hooks // {})
           | .hooks.SessionStart = ((.hooks.SessionStart // [])
@@ -157,7 +175,9 @@ if pin_clone "$SUPERPOWERS_REPO" "$SP_DIR" "$SUPERPOWERS_PIN"; then
               + [{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":$cmd}]}])
         ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null \
        && [ -s "$TMP" ] && jq empty "$TMP" >/dev/null 2>&1; then
-      mv "$TMP" "$CLAUDE_SETTINGS" && ok "superpowers SessionStart hook registered (additive merge)"
+      mv "$TMP" "$CLAUDE_SETTINGS" \
+        && chmod "$orig_mode" "$CLAUDE_SETTINGS" 2>/dev/null \
+        && ok "superpowers SessionStart hook registered (additive merge)"
     else
       rm -f "$TMP"; warn "superpowers hook merge skipped (jq error) — skills still linked"
     fi
@@ -188,6 +208,17 @@ if pin_clone "$GSTACK_REPO" "$GS_DIR" "$GSTACK_PIN"; then
   if ! command -v bun >/dev/null 2>&1; then
     warn "bun not found — gstack setup skipped (build needs bun). Install bun, then: cd $GS_DIR && ./setup --prefix --no-plan-tune-hooks"
   else
+    # An inherited, non-writable PLAYWRIGHT_BROWSERS_PATH (e.g. a root-owned
+    # /Tool/ms-playwright from a parent env) makes gstack setup's chromium
+    # install EACCES-fail and link 0 skills. Unset it for THIS process only when
+    # its dir is not writable (or does not exist and its parent is not writable).
+    if [ -n "${PLAYWRIGHT_BROWSERS_PATH:-}" ]; then
+      if [ -d "$PLAYWRIGHT_BROWSERS_PATH" ]; then
+        [ -w "$PLAYWRIGHT_BROWSERS_PATH" ] || { info "PLAYWRIGHT_BROWSERS_PATH ($PLAYWRIGHT_BROWSERS_PATH) not writable — unsetting for gstack setup"; unset PLAYWRIGHT_BROWSERS_PATH; }
+      elif [ ! -w "$(dirname "$PLAYWRIGHT_BROWSERS_PATH")" ]; then
+        info "PLAYWRIGHT_BROWSERS_PATH ($PLAYWRIGHT_BROWSERS_PATH) parent not writable — unsetting for gstack setup"; unset PLAYWRIGHT_BROWSERS_PATH
+      fi
+    fi
     # --prefix         → namespace as gstack-* (flat mode would collide with the
     #                    existing design + diagram skills)
     # --no-plan-tune-hooks → skip the only interactive settings.json prompt
@@ -216,6 +247,32 @@ if pin_clone "$GSTACK_REPO" "$GS_DIR" "$GSTACK_PIN"; then
 else
   warn "gstack: clone failed — collection not installed (rerun to retry)"
 fi
+
+# ─── Convergence guard (heal OmegaOS skill links after gstack relink) ─────────
+# gstack setup silently invokes bin/gstack-relink, which rm -f's ANY flat
+# ~/.claude/skills symlink whose basename matches one of its skill names, with NO
+# provenance check (runtime-proven: it deleted the pre-existing OmegaOS `diagram`
+# link; `design` survives only because it is in relink's skip-list). ~/.omega/skills
+# is the source of truth and `omega sync` links each of its dirs into
+# ~/.claude/skills create-if-missing — replicate that exact semantic here so THIS
+# phase always converges: anything relink removed (or never linked) comes back in
+# the same run, every run. Runs unconditionally, even when gstack setup failed or
+# was skipped.
+healed=0
+if [ -d "$OMEGA_DIR/skills" ]; then
+  mkdir -p "$CLAUDE_SKILLS"
+  for od in "$OMEGA_DIR/skills"/*/; do
+    [ -d "$od" ] || continue
+    oname="$(basename "$od")"
+    otarget="$CLAUDE_SKILLS/$oname"
+    if [ ! -e "$otarget" ] && [ ! -L "$otarget" ]; then
+      ln -sfn "${od%/}" "$otarget" && healed=$((healed + 1))
+    fi
+  done
+fi
+[ "$healed" -gt 0 ] \
+  && ok "healed $healed ~/.omega/skills link(s) (gstack relink removes colliding flat names)" \
+  || info "omega skill links complete (nothing to heal)"
 
 # ─── Epilogue ────────────────────────────────────────────────────────────────
 sp_n="$(ls -d "$CLAUDE_SKILLS"/using-superpowers 2>/dev/null | wc -l | tr -d ' ')"

@@ -73,6 +73,14 @@ best-effort, a Playwright Chromium and an emoji font, via its own `./setup`.
 The gstack clone MUST live exactly at `~/.claude/skills/gstack` because gstack
 skills hardcode that path internally.
 
+In total the install adds **70** new `~/.claude/skills` entries: 14 superpowers
+skill symlinks, the 1 `gstack` clone directory (which doubles as the `/gstack`
+router skill), 54 `gstack-*` skill directories, and the 1 `_gstack-command`
+root-skill alias that gstack-relink creates. Every other `~/.claude/skills`
+entry (the OmegaOS skills linked from `~/.omega/skills`) is preserved, and the
+heal step guarantees all of them keep a live link (see "Collision guard and
+self-heal" in section 6).
+
 ## 3. Pinned SHAs, versions, and why we pin
 
 | Collection | Repo | Pin SHA | Version |
@@ -140,6 +148,42 @@ into `~/.omega`) never touches them while the clone exists.
   `~/.claude/skills` already contains a brainstorm/superpower entry. Because this
   Phase 6.91 install creates those entries, that companion branch becomes a
   no-op. No edit to companion-tools is needed or made.
+- **PLAYWRIGHT_BROWSERS_PATH guard.** Before gstack `./setup` runs, the
+  installer checks `PLAYWRIGHT_BROWSERS_PATH`: if it is set to a directory that
+  is not writable (or does not exist and its parent is not writable), it is
+  `unset` for this process only. An inherited, root-owned path (e.g. a parent
+  env exporting `/Tool/ms-playwright`) otherwise makes setup's Chromium install
+  EACCES-fail and link zero skills. Runtime-proven on a box where that path was
+  inherited: without the guard, 0 gstack skills linked.
+
+### Collision guard and self-heal
+
+gstack `./setup` silently invokes `bin/gstack-relink` (its own self-healing
+pass). `gstack-relink` walks every gstack skill basename and, in `--prefix`
+mode, calls `_cleanup_skill_entry "$SKILLS_DIR/<basename>"` on the FLAT name,
+which does `[ -L "$entry" ] && rm -f "$entry"` with NO provenance check. It does
+not verify the symlink is a gstack link, so it will delete ANY pre-existing
+`~/.claude/skills/<name>` symlink whose basename collides with a gstack skill
+name, unless that name is in relink's hardcoded skip-list
+(`bin|browse|design|docs|extension|lib|node_modules|scripts|test`).
+
+Runtime-proven consequence: the pre-existing OmegaOS `~/.claude/skills/diagram`
+link (into `~/.omega/skills/diagram`) was deleted on every setup run, because
+`diagram` is a gstack skill name and is NOT in the skip-list. `design` survived
+only because it IS in the skip-list. A one-time re-link is therefore not a fix:
+relink deletes the colliding flat name again on the very next run.
+
+The installer converges instead. `~/.omega/skills` is the source of truth, and
+`omega sync` links each of its directories into `~/.claude/skills`
+create-if-missing. The Phase 6.91 script replicates that exact semantic in a
+final, unconditional heal step (it runs even when gstack setup failed or was
+skipped): for every `~/.omega/skills/<name>` with no `~/.claude/skills/<name>`
+entry, it recreates the symlink. Anything relink removed (or never linked) comes
+back in the same run, every run. Convergence guarantee: after any setup/relink
+pass, a full sync-parity holds (0 omega skills missing a claude-side link), and
+a second run is idempotent (settings.json byte-identical, no skill-count change),
+even though relink deletes the colliding flat names again mid-run and the heal
+step restores them before the run ends. The final state is what converges.
 
 ## 7. Doctrine reconciliation (R-CLI, R-BROWSER, R-TEST)
 
