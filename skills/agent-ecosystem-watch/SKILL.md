@@ -40,7 +40,7 @@ Publishing to the public @Agentik_os account requires ALL of:
 - a real ScrapeCreators key (mock runs never publish).
 - the adversarial gate returned `keep=true` for that tweet.
 - the tweet fingerprint is not already in the seen-store (never tweet the same idea twice).
-- the daily cap (`EW_DAILY_TWEET_CAP`, default 2) is not exhausted.
+- the daily cap (`EW_DAILY_TWEET_CAP`, default 5) is not exhausted.
 - no em/en dash, <= 280 chars, carries its source URL (enforced in shell too, R-NODASH).
 
 Integration of a finding into OmegaOS itself is always a human call: the report proposes
@@ -54,7 +54,7 @@ EW_MOCK=1 bash scripts/watch-run.sh          # fixtures, never publishes (smoke 
 EW_ZERNIO_DRYRUN=1 bash scripts/watch-run.sh # validate zernio post without publishing
 ```
 
-Env knobs: `EW_DAILY_TWEET_CAP` (2), `EW_DAYS` (2), `EW_ANALYZE_MODEL` (claude-sonnet-5),
+Env knobs: `EW_DAILY_TWEET_CAP` (5), `EW_DAYS` (2), `EW_ANALYZE_MODEL` (claude-sonnet-5),
 `EW_GATE_MODEL` (claude-opus-4-8), `EW_ZERNIO_PROJECT` (agentik-os), `EW_TOPICS_FILE`.
 
 ## Arm / disarm
