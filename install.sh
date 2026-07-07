@@ -2089,6 +2089,20 @@ else
     info "Companion skill packs deferred (planning-with-files, claude-mem, superpowers, …). Add: OMEGA_WITH_COMPANION=1 ./install.sh"
 fi
 
+# ─── Phase 6.91: Third-party skill collections (superpowers + gstack) ───────
+# Two MIT skill packs, pinned to reviewed SHAs, ALWAYS-ON (opt-out
+# OMEGA_SKIP_THIRD_PARTY=1): obra/superpowers (14 process skills + SessionStart
+# hook, additively merged into ~/.claude/settings.json) and garrytan/gstack
+# (50+ gstack-* namespaced skills + the browse binary, built by its own setup).
+# Best-effort: a network/chromium failure warns and never aborts the install.
+# Update path + doctrine: docs/third-party-skills.md.
+step "Phase 6.91: Third-party skill collections (superpowers + gstack)"
+if [[ "${OMEGA_SKIP_THIRD_PARTY:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-third-party-skills.sh" ]]; then
+    bash "$OMEGA_SRC/scripts/install-third-party-skills.sh" || info "third-party skills step had warnings (non-fatal)"
+else
+    info "Third-party skill collections skipped (OMEGA_SKIP_THIRD_PARTY=1 or script missing)"
+fi
+
 # ─── Phase 6.92: Nova — personal-assistant layer (opt-in) ────────────────────
 # Nova is the operator's PERSONAL companion: the fallback persona
 # (agents/companion.md — shipped with the other agent prompts above), proactive

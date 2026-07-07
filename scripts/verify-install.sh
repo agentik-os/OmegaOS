@@ -185,6 +185,11 @@ if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; th
 # OMEGA_WITH_COMPANION=1) — the gate asserts the opt-in branch exists; it must
 # never claim a default install provisions it.
 if [ -f scripts/install-companion-tools.sh ] && grep -q "install-companion-tools.sh" install.sh && grep -q "OMEGA_WITH_COMPANION" install.sh; then ok "companion tools (planning-with-files/higgsfield/claude-mem/superpowers/mempalace/remotion) available OPT-IN (deferred by default — OMEGA_WITH_COMPANION=1)"; else bad "companion-tools installer not shipped/wired (opt-in branch) in install.sh"; fi
+# Third-party skill collections (obra/superpowers + garrytan/gstack): shipped,
+# wired ALWAYS-ON (opt-out OMEGA_SKIP_THIRD_PARTY=1), pinned to full 40-hex SHAs.
+if [ -f scripts/install-third-party-skills.sh ] && grep -q "install-third-party-skills.sh" install.sh && grep -q "OMEGA_SKIP_THIRD_PARTY" install.sh; then ok "third-party skill collections (superpowers + gstack) wired ALWAYS-ON (opt-out OMEGA_SKIP_THIRD_PARTY=1)"; else bad "third-party skills installer not shipped/wired (opt-out branch) in install.sh"; fi
+if grep -qE 'SUPERPOWERS_PIN:-[0-9a-f]{40}' scripts/install-third-party-skills.sh && grep -qE 'GSTACK_PIN:-[0-9a-f]{40}' scripts/install-third-party-skills.sh; then ok "third-party pins are full 40-hex SHAs (reproducible)"; else bad "third-party pins are not full 40-hex SHAs (reproducibility broken)"; fi
+if [ -f docs/third-party-skills.md ] && grep -q "third-party-skills" docs/third-party-skills.md; then ok "third-party skills doctrine shipped (docs/third-party-skills.md)"; else bad "docs/third-party-skills.md missing"; fi
 # Browser engine for the Quality Arsenal audits (uiux/flow/a11y/perf, browser-tester)
 # + CDP/DevTools automation. HONEST contract: install.sh defers the ~150MB
 # Chromium + apt deps by default (opt-in OMEGA_WITH_BROWSER=1) — a default
