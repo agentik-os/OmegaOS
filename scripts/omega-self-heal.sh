@@ -18,6 +18,29 @@ OMEGA="${OMEGA_BIN:-$HOME/.local/bin/omega}"
 OUT="$("$OMEGA" doctor --fix 2>&1)"
 echo "$OUT"
 
+# 1b) Heal ~/.claude/skills links (create-if-missing, never overwrite).
+# gstack's bin/gstack-relink rm -f's any flat ~/.claude/skills/<name> symlink
+# whose basename collides with a gstack skill name, with NO provenance check
+# (runtime-proven: it deleted our `diagram` link). That relink can re-fire
+# OUTSIDE install-third-party-skills.sh — /gstack-upgrade re-runs ./setup, and
+# `gstack-config set skill_prefix` re-runs it too — so the install-phase heal
+# alone does not cover a later re-fire. Replicate `omega sync`'s exact semantic
+# (the source of truth is ~/.omega/skills): for every ~/.omega/skills/<name>
+# with no ~/.claude/skills/<name> entry, recreate the symlink. Never overwrites
+# anything existing, so any deletion auto-repairs within the 3h cron cadence.
+healed=0
+if [ -d "$HOME/.omega/skills" ]; then
+    mkdir -p "$HOME/.claude/skills"
+    for od in "$HOME/.omega/skills"/*/; do
+        [ -d "$od" ] || continue
+        target="$HOME/.claude/skills/$(basename "$od")"
+        if [ ! -e "$target" ] && [ ! -L "$target" ]; then
+            ln -sfn "${od%/}" "$target" && healed=$((healed + 1))
+        fi
+    done
+fi
+[ "$healed" -gt 0 ] && echo "self-heal: healed $healed claude skill link(s)"
+
 # 2) Count warnings/fails REMAINING after the fix pass.
 REMAIN="$("$OMEGA" doctor 2>&1 | grep -cE '^\s*\[[!x]\]')"
 [ "${REMAIN:-0}" -gt 0 ] 2>/dev/null || { echo "self-heal: clean"; exit 0; }

@@ -185,6 +185,16 @@ a second run is idempotent (settings.json byte-identical, no skill-count change)
 even though relink deletes the colliding flat names again mid-run and the heal
 step restores them before the run ends. The final state is what converges.
 
+**Durability against a re-fire outside the install phase.** The relink is not
+confined to `install-third-party-skills.sh`: `/gstack-upgrade` re-runs `./setup`
+(which invokes `gstack-relink`), and `gstack-config set skill_prefix` re-runs it
+too, so a colliding flat link can be deleted long after install. That vector is
+now closed at runtime: `scripts/omega-self-heal.sh` (cron `OMEGA-CRON-SELFHEAL-v1`,
+every 3h) carries the same create-if-missing heal loop, so any such deletion is
+auto-repaired within 3h — and immediately by `omega sync` or by re-running this
+phase. `~/.omega/skills` remains the single source of truth; the heal never
+overwrites an existing entry.
+
 ## 7. Doctrine reconciliation (R-CLI, R-BROWSER, R-TEST)
 
 gstack ships `/gstack-browse`, a local agentic browser controller that, like
