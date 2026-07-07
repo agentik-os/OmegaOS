@@ -1103,6 +1103,49 @@ else
     info "Agent-Ecosystem Watch skill not found — skipping"
 fi
 
+# Install the Growth Engine skill (bounded, gated X engagement for @Agentik_os).
+# Copy → ~/.omega/skills, set up the Bun+Playwright runtime (~/.omega/lib/growth-engine),
+# register /<name> stubs, install a DISARMED daily cron. Engagement never runs without
+# BOTH the armed flag AND a valid X session (~/.omega/secrets/x-session.json) — see the
+# skill's x-session-setup.sh. Deliberately low-volume; mass automation is refused.
+EG_SRC="$OMEGA_SRC/skills/growth-engine"
+EG_DST="$OMEGA_DIR/skills/growth-engine"
+if [[ -d "$EG_SRC" ]]; then
+    mkdir -p "$EG_DST"
+    cp -r "$EG_SRC"/* "$EG_DST/"
+    chmod +x "$EG_DST"/scripts/*.sh "$EG_DST"/scripts/*.py "$EG_DST"/scripts/*.mjs 2>/dev/null || true
+    # Bun + Playwright runtime home for the engagement executor.
+    if command -v bun >/dev/null 2>&1; then
+        mkdir -p "$OMEGA_DIR/lib/growth-engine"
+        ( cd "$OMEGA_DIR/lib/growth-engine" && { [[ -d node_modules/playwright ]] || bun add playwright@1.60.0 >/dev/null 2>&1; } ) || true
+        cp -f "$EG_DST/scripts/playwright-engage.mjs" "$OMEGA_DIR/lib/growth-engine/" 2>/dev/null || true
+    fi
+    EGC_DST="$HOME/.claude/commands"; mkdir -p "$EGC_DST"
+    for cmd in "growth-engine" "omg-growth-engine"; do
+        cat > "$EGC_DST/$cmd.md" <<EOF
+# /$cmd
+
+Run or inspect the Growth Engine (bounded, gated X engagement). Read and follow:
+
+\`$EG_DST/SKILL.md\`
+
+Setup the X session once: \`bash $EG_DST/scripts/x-session-setup.sh <auth_token> <ct0>\`.
+Run: \`bash $EG_DST/scripts/engage-run.sh\` (EG_MOCK=1 to smoke-test).
+Arm: \`touch \$HOME/.omega/state/growth-engine/armed\`; disarm (kill-switch): \`rm\` it.
+EOF
+    done
+    EG_CRON="0 9 * * * PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin OMEGA_DIR=\$HOME/.omega bash \$HOME/.omega/skills/growth-engine/scripts/engage-run.sh >> \$HOME/.omega/logs/growth-engine.cron.log 2>&1"
+    if command -v crontab >/dev/null 2>&1; then
+        ( crontab -l 2>/dev/null | grep -v 'growth-engine/scripts/engage-run.sh'; echo "$EG_CRON" ) | crontab - 2>/dev/null \
+            && ok "Growth Engine installed → $EG_DST/ (/growth-engine, daily cron 09:00, DISARMED, needs X session)" \
+            || ok "Growth Engine installed → $EG_DST/ (cron add skipped)"
+    else
+        ok "Growth Engine installed → $EG_DST/ (no crontab)"
+    fi
+else
+    info "Growth Engine skill not found — skipping"
+fi
+
 # ── Claude Changelog Adopt ─────────────────────────────────────────────────
 # The self-improvement loop: reads the OFFICIAL Claude Code changelog daily,
 # diffs it against the last version OmegaOS absorbed, classifies each NEW entry
