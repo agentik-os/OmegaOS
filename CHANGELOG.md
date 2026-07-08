@@ -7,6 +7,18 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+### Changed
+- **R-MODEL: Mythos safety boundary.** Fable 5 (`claude-fable-5`) ships safety
+  classifiers that decline cybersecurity / bio / chem / model-distillation work
+  (`stop_reason: "refusal"`). On the raw API a server-side fallback re-serves on
+  Opus 4.8, but in an agent context a refusal is an ABORT (L5). R-MODEL now
+  DISQUALIFIES Fable 5 from security/pentest/red-team missions (R-SEC, R-TRINITY,
+  /hack, /secaudit) and bio/chem/distillation work — tier them to Opus 4.8 — and
+  treats a false-positive classifier block on benign adjacent work as a re-tier
+  signal, not a done. Sourced from a Fable-5 self-improving-systems article and
+  verified against the claude-api SSOT (the article's "~5× Opus cost" claim was
+  wrong — Fable 5 is ~2×; the classifier-decline behavior was confirmed).
+
 ### Added
 - **Native `/loop` doctrine (R-LOOP extended).** After the Claude Code `/loop`
   launch, every loop-driving OmegaOS agent now knows the two native loop layers
