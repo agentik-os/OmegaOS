@@ -250,16 +250,12 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                 if rect_hit(app.sessions_preview_area, mouse.column, mouse.row) {
                     if matches!(app.session_focus, SessionFocus::List) {
                         // fix6-T5: the click is the mouse twin of the keyboard
-                        // Enter — apply the same post-drop-grace rule (T4):
-                        // re-entry only when the selection still equals the
-                        // pinned chord session, else swallow with a notice.
+                        // Enter — apply the same post-drop-grace rule: no
+                        // re-entry while the grace is open, swallow with a
+                        // notice instead.
                         if app.in_post_drop_grace() {
-                            if grace_pinned_reentry_ok(app) {
-                                app.end_post_drop_grace();
-                            } else {
-                                grace_swallow_notice(app, "click");
-                                return Action::None;
-                            }
+                            grace_swallow_notice(app, "click");
+                            return Action::None;
                         }
                         // Use the canonical focus path (follow_tail = true) so a
                         // mouse click behaves like the keyboard Enter — entering
@@ -287,19 +283,15 @@ fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
                                 && matches!(app.session_focus, SessionFocus::List) =>
                         {
                             if app.in_post_drop_grace() {
-                                if grace_pinned_reentry_ok(app) {
-                                    app.end_post_drop_grace();
-                                } else {
-                                    grace_swallow_notice(app, "click");
-                                    return Action::None;
-                                }
+                                grace_swallow_notice(app, "click");
+                                return Action::None;
                             }
                             app.enter_chat_focus();
                         }
                         Some(idx) => {
                             // Selecting via click moves the cursor exactly like
-                            // keyboard ↑/↓, so it ends the grace + chord the
-                            // same way (fix6-T6).
+                            // keyboard ↑/↓, so it ends the grace the same way
+                            // (fix6-T6).
                             app.end_post_drop_grace();
                             app.selected = idx;
                             // Tab-less focus change — set_list_focus keeps the
@@ -1063,16 +1055,13 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         if !nav {
             match key.code {
                 KeyCode::Enter | KeyCode::Tab => {
-                    if grace_pinned_reentry_ok(app) {
-                        // Deliberate re-entry to the same session — end the
-                        // grace and let the arm below enter chat (T4).
-                        app.end_post_drop_grace();
-                    } else {
-                        return grace_swallow_notice(
-                            app,
-                            if key.code == KeyCode::Enter { "Enter" } else { "Tab" },
-                        );
-                    }
+                    // The only remaining focus drop is a session vanishing
+                    // under the cursor — re-entry would aim the in-flight
+                    // keystream at whatever slid into the selection.
+                    return grace_swallow_notice(
+                        app,
+                        if key.code == KeyCode::Enter { "Enter" } else { "Tab" },
+                    );
                 }
                 KeyCode::Char(c) => {
                     let mut buf = [0u8; 4];
@@ -1337,7 +1326,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         // (single Tab → list, Tab-Tab → fullscreen; "/" is
                         // forwarded to the agent, not captured).
                         app.status_message = Some(
-                            "Focus: chat — keys forward to agent (Tab → list · Tab-Tab → fullscreen · Esc → list)".to_string(),
+                            "Focus: chat — keys forward to agent (Tab → list · Tab-Tab → fullscreen)".to_string(),
                         );
                     }
                     Action::None
@@ -1862,42 +1851,16 @@ code produit.",
                 Action::None
             } else if app.tab == Tab::Sessions {
                 // Chat/ChatFullscreen Esc never reaches here — the router
-                // short-circuits into handle_key_chat, which owns chat Esc:
-                // it swallows the dead-session Esc too (AF-5) instead of
-                // re-dispatching it into this quit arm.
+                // short-circuits into handle_key_chat, which forwards Esc to
+                // the agent's PTY and swallows the dead-session Esc (AF-5)
+                // instead of re-dispatching it into this quit arm. The old
+                // Esc-Esc literal-ESC chord (DESIGN-014) is gone with it: a
+                // chat Esc IS the literal ESC now, so there is nothing left
+                // for a second Esc to rescue.
                 //
-                // Esc-Esc literal-ESC chord (DESIGN-014/FIX-11): a second Esc
-                // right after an Esc that dropped chat focus forwards a REAL
-                // ESC to the agent and returns to chat. This is the
-                // legacy-deliverable hatch: terminals without the kitty
-                // protocol deliver Alt+Esc as a split ESC ESC pair, which
-                // would otherwise land here and QUIT the whole TUI.
-                if let Some(armed_on) = app.take_esc_chord() {
-                    // FIX-H (D-10): the chord target was pinned at ARM time —
-                    // only fire if the selection still IS that session, so a
-                    // vanish-clamp between the two Escs can't forward the
-                    // literal ESC into a neighbor's PTY (and enter ITS chat).
-                    match app.selected_session() {
-                        Some(entry) if entry.session.name == armed_on => {
-                            let session = entry.session.name.clone();
-                            app.enter_chat_focus();
-                            app.status_message = Some("ESC → agent".to_string());
-                            return Action::ForwardKeyToSession { session, key: "Escape" };
-                        }
-                        _ => {
-                            app.status_message = Some(format!(
-                                "Esc-Esc dropped — '{}' is gone",
-                                armed_on
-                            ));
-                            return Action::None;
-                        }
-                    }
-                }
-                // DESIGN-015: inside the post-drop grace a stray Esc must not
-                // quit the TUI in one press. FIX-D (D-5): with the grace
-                // (800ms) longer than the chord window (300ms), a SLOW second
-                // Esc of a taught Esc-Esc gesture lands here — swallowed with
-                // a notice instead of quitting the whole TUI.
+                // DESIGN-015: inside the post-drop grace (a session vanished
+                // under the cursor mid-keystream) a stray Esc must not quit
+                // the TUI in one press — swallowed with a notice instead.
                 if app.in_post_drop_grace() {
                     return grace_swallow_notice(app, "Esc");
                 }
@@ -1924,18 +1887,6 @@ fn grace_swallow_notice(app: &mut App, key: &str) -> Action {
         key
     ));
     Action::None
-}
-
-/// fix6-T4: re-entry into chat during the post-drop grace is allowed only
-/// when the current selection still equals the session pinned at Esc time
-/// (`chat_esc_at`, FIX-H) — selection unchanged means the keystream resumes
-/// into the same PTY it was aimed at, so Enter/Tab/click is retarget-safe.
-/// A vanish-drop sets no pin, so its grace swallows re-entry unconditionally.
-fn grace_pinned_reentry_ok(app: &App) -> bool {
-    match (&app.chat_esc_at, app.selected_session()) {
-        (Some((_, pinned)), Some(entry)) => entry.session.name == *pinned,
-        _ => false,
-    }
 }
 
 /// Move the settings field cursor to the next/previous actionable field,
@@ -2015,9 +1966,11 @@ fn open_dashboard_action(app: &mut App) -> Action {
 /// is forwarded one-by-one so plan mode, OAuth code paste, and choice
 /// menus work natively inside the agent.
 ///
+/// Esc is NOT TUI-local: it forwards a real ESC to the agent so modal
+/// programs (vim, less, fzf, Claude's prompts) can be escaped from inside
+/// the session. Tab is the way back to the list.
+///
 /// TUI-local keys (never forwarded):
-///   Esc           → back to session list (F-2; interrupt agent = Ctrl+C,
-///                    literal ESC to the agent = Alt+Esc or Esc-Esc)
 ///   Tab           → cycle focus (List → Chat → Fullscreen → List)
 ///   Alt+Up/Down   → scroll preview
 ///   PageUp/Down   → scroll preview
@@ -2034,9 +1987,9 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // (Tab, q, arrows all work again). No recursion: focus is now List,
             // so handle_key_normal won't route back into the chat handler.
             app.set_list_focus();
-            // EXCEPT Esc (AF-5): chat Esc means "back to the list", and the
-            // focus reset above already delivered that. Re-dispatching it would
-            // hit the Sessions-tab quit arm and close the whole TUI in ONE press.
+            // EXCEPT Esc (AF-5): chat Esc forwards to the agent's PTY, and
+            // there is no PTY left to forward to. Re-dispatching it would hit
+            // the Sessions-tab quit arm and close the whole TUI in ONE press.
             if key.code == KeyCode::Esc {
                 app.status_message = Some("Focus: session list".to_string());
                 return Action::None;
@@ -2065,7 +2018,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             // FIX-7/DESIGN-016: in chat focus '.' is forwarded to the PTY —
             // the unlock toggle only exists in list focus, so say so.
             app.status_message =
-                Some("Session is protected (Esc, then . to unlock)".to_string());
+                Some("Session is protected (Tab, then . to unlock)".to_string());
             return Action::None;
         }
         app.set_list_focus();
@@ -2164,39 +2117,12 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         // still submits.
         KeyCode::Enter if shift || alt => Action::InsertNewlineToSession { session },
         KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
-        // Alt+Esc → literal ESC to the agent's PTY (AF-1): vim/less and other
-        // modal programs inside a shell session need a real ESC; plain Esc is
-        // TUI-local (back to list) and Ctrl+C only interrupts.
-        KeyCode::Esc if alt => Action::ForwardKeyToSession { session, key: "Escape" },
-        KeyCode::Esc => {
-            // Esc = back to the session list — matches the title hint, the Help
-            // tab, and the layered-Esc pattern on every other tab (F-2). NOT
-            // forwarded: interrupting the agent stays available via Ctrl+C (C-c),
-            // a literal ESC via Alt+Esc above or the Esc-Esc chord below.
-            // set_list_focus clears the Tab-chord state so a Tab right after
-            // (inside the 400ms double-tap window) reads as a fresh first tap,
-            // not the second half of a Tab-Tab (AF-7).
-            app.set_list_focus();
-            // Arm the Esc-Esc literal-ESC chord (DESIGN-014): a second Esc
-            // inside the window forwards a real ESC to this agent — the
-            // legacy-deliverable hatch for terminals whose Alt+Esc arrives as
-            // a split ESC ESC pair (which would otherwise quit the TUI via
-            // the Sessions quit arm). FIX-H (D-10): pin THIS session as the
-            // chord target so a vanish-clamp before the second Esc can't
-            // retarget a neighbor. Also open the destructive-hotkey grace
-            // (DESIGN-015) so the rest of an in-flight keystream can't land
-            // on q/x/Enter in list mode.
-            app.chat_esc_at = Some((std::time::Instant::now(), session.clone()));
-            app.focus_drop_at = Some(std::time::Instant::now());
-            // DESIGN-018: teach the recovery keys in-context, not Help-only.
-            // FIX-E (D-6): list-focus-true copy — Ctrl+C here opens the
-            // New-Claude prompt (the interrupt forward is chat-focus only),
-            // so teach the keys that actually work from the list.
-            app.status_message = Some(
-                "Focus: session list (Esc Esc = ESC to agent · Enter = back to chat)".to_string(),
-            );
-            Action::None
-        }
+        // Esc (plain or Alt) → literal ESC to the agent's PTY, ALWAYS.
+        // Modal programs inside the session — vim, less, fzf, Claude's own
+        // prompts and permission dialogs — need a real ESC, and swallowing it
+        // TUI-side left the user stuck inside them. Leaving the session is
+        // Tab (list) / Ctrl+X (close), so Esc never has to double as "back".
+        KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
         KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
         KeyCode::Left if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-b" },
@@ -2581,28 +2507,36 @@ mod tests {
         app
     }
 
-    // AF-7/AF-3/CA-2 regression: Tab → Esc → Tab inside the 400ms double-tap
-    // window must end on Chat (fresh first tap), NOT ChatFullscreen (the Esc
-    // used to leave the chord state stale, so the next Tab read as tap #2).
+    // Esc belongs to the AGENT, not the TUI: modal programs inside the session
+    // (vim, less, fzf, Claude's own prompts) are escaped from inside. Leaving
+    // the session is Tab. Regression: Esc used to drop to the list, which left
+    // the user stuck inside any prompt that reads ESC.
     #[test]
-    fn chat_esc_returns_to_list_and_clears_tab_chord() {
+    fn chat_esc_forwards_to_agent_and_stays_in_chat() {
         let mut app = chat_app("oracle-Demo-1");
-        app.session_focus = SessionFocus::List;
-        app.handle_tab_in_sessions(); // Tab #1: List → Chat, chord armed
-        assert_eq!(app.session_focus, SessionFocus::Chat);
-
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None));
-        assert_eq!(app.session_focus, SessionFocus::List);
-        assert!(app.last_tab_press.is_none(), "Esc must clear last_tab_press");
-        assert!(app.tab_seq_start.is_none(), "Esc must clear tab_seq_start");
-
-        app.handle_tab_in_sessions(); // Tab right after Esc, inside the window
+        assert!(
+            matches!(act, Action::ForwardKeyToSession { ref session, key }
+                if session == "oracle-Demo-1" && key == "Escape"),
+            "chat Esc must forward rmux \"Escape\" to the focused session"
+        );
         assert_eq!(
             app.session_focus,
             SessionFocus::Chat,
-            "post-Esc Tab must navigate, not complete a stale Tab-Tab chord"
+            "Esc must not exit chat focus — Tab does that"
         );
+        assert!(!app.should_quit, "chat Esc must never quit the TUI");
+        assert!(!app.in_post_drop_grace(), "no focus drop → no grace");
+    }
+
+    // Tab (not Esc) is the way out of a session, and it must leave no stale
+    // double-tap state behind (AF-7/AF-3/CA-2): Tab → Tab inside the 400ms
+    // window from the LIST must navigate, not read as tap #2 of a Tab-Tab.
+    #[test]
+    fn chat_tab_returns_to_list() {
+        let mut app = chat_app("oracle-Demo-1");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::List);
     }
 
     // F-12/DESIGN-004 regression: a protected session must NEVER die from a
@@ -2746,36 +2680,40 @@ mod tests {
         assert_eq!(app.menu_confirm_pending, None, "tab switch must disarm");
     }
 
-    // DESIGN-014/FIX-11: Esc-Esc inside the window = literal ESC to the agent
-    // (the legacy-deliverable Alt+Esc), NOT a TUI quit — and focus returns to
-    // chat so the gesture is "send ESC", not "leave then send".
+    // The DESIGN-014 Esc-Esc chord is gone: a chat Esc IS the literal ESC now.
+    // Legacy terminals deliver Alt+Esc as a split ESC ESC pair — both halves
+    // must forward to the agent and neither may quit the TUI (the old hazard).
     #[test]
-    fn esc_esc_chord_forwards_literal_escape_not_quit() {
+    fn repeated_chat_esc_forwards_each_time_and_never_quits() {
         let mut app = chat_app("oracle-Demo-1");
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
 
-        let act = handle_key(&mut app, esc);
-        assert!(matches!(act, Action::None));
-        assert_eq!(app.session_focus, SessionFocus::List);
-
-        // Second Esc right after (split ESC ESC delivery lands exactly here).
-        let act = handle_key(&mut app, esc);
-        assert!(
-            matches!(act, Action::ForwardKeyToSession { key, .. } if key == "Escape"),
-            "second Esc must forward rmux \"Escape\""
-        );
-        assert!(!app.should_quit, "Esc-Esc must never quit the TUI");
-        assert_eq!(app.session_focus, SessionFocus::Chat, "chord returns to chat");
+        for press in 1..=2 {
+            let act = handle_key(&mut app, esc);
+            assert!(
+                matches!(act, Action::ForwardKeyToSession { key, .. } if key == "Escape"),
+                "Esc #{press} must forward rmux \"Escape\""
+            );
+            assert!(!app.should_quit, "Esc #{press} must never quit the TUI");
+            assert_eq!(app.session_focus, SessionFocus::Chat);
+        }
     }
 
-    // DESIGN-015/NR-2: Esc-then-type must not fall through to the destructive
-    // single-key list hotkeys (x kill / q quit) inside the grace window; a
-    // deliberate navigation key re-enables them. (Enter on the UNCHANGED
-    // selection re-enters chat since fix6-T4 — covered by its own tests.)
+    /// The only remaining non-deliberate focus drop: the focused session
+    /// vanished under the cursor (App::refresh clamps to the list and opens
+    /// the DESIGN-015 grace). Mirrors that arm for the grace tests below.
+    fn vanish_drop(app: &mut App) {
+        app.set_list_focus();
+        app.focus_drop_at = Some(std::time::Instant::now());
+    }
+
+    // DESIGN-015/NR-2: a vanish-drop mid-keystream must not let the in-flight
+    // keys fall through to the destructive single-key list hotkeys (x kill /
+    // q quit); a deliberate navigation key re-enables them.
     #[test]
-    fn esc_then_type_grace_blocks_destructive_hotkeys() {
+    fn vanish_drop_grace_blocks_destructive_hotkeys() {
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        vanish_drop(&mut app);
         assert_eq!(app.session_focus, SessionFocus::List);
 
         let act = handle_key(&mut app, press('x'));
@@ -2794,11 +2732,10 @@ mod tests {
     #[test]
     fn post_drop_grace_expires_after_window() {
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        vanish_drop(&mut app);
         // Backdate the drop beyond the 800ms window (FIX-D widened it).
         app.focus_drop_at = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_millis(900));
-        app.chat_esc_at = None;
         let act = handle_key(&mut app, press('q'));
         assert!(matches!(act, Action::Quit), "expired grace must restore q");
     }
@@ -2884,83 +2821,35 @@ mod tests {
         assert_eq!(app.menu_confirm_pending, None, "Esc must disarm the menu confirm");
     }
 
-    // FIX-B + FIX-H (D-9): a tab switch (leave_tab) cancels every armed
-    // confirm AND the Esc-Esc chord arm — none may survive into a tab where
-    // their context is invisible.
+    // FIX-B (D-9): a tab switch (leave_tab) cancels every armed confirm —
+    // none may survive into a tab where its context is invisible.
     #[test]
-    fn tab_switch_cancels_all_armed_confirms_and_esc_chord() {
+    fn tab_switch_cancels_all_armed_confirms() {
         let mut app = test_app();
         app.tab = Tab::Agentic;
         app.project_delete_pending = Some("Demo".into());
         app.settings_confirm_pending = Some((0, "[Uninstall] demo".into()));
         app.monitor_disconnect_armed = true;
-        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
         assert_eq!(app.project_delete_pending, None);
         assert_eq!(app.settings_confirm_pending, None);
         assert!(!app.monitor_disconnect_armed);
-        assert!(app.chat_esc_at.is_none(), "stale chord arm must not survive a tab switch");
     }
 
-    // FIX-D (D-5): a SLOW second Esc — chord window (300ms) expired, grace
-    // (800ms) not — must be swallowed WITH a notice (D-11), never quit the
-    // TUI whose status bar just taught "Esc Esc = ESC to agent".
+    // FIX-D (D-5/D-11): an in-flight Esc landing in the list right after a
+    // vanish-drop must be swallowed WITH a notice, never quit the TUI — the
+    // keystream was aimed at a session that died, not at the quit hotkey.
     #[test]
-    fn slow_second_esc_swallowed_with_notice_not_quit() {
+    fn esc_in_vanish_grace_swallowed_with_notice_not_quit() {
         let mut app = chat_app("oracle-Demo-1");
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        handle_key(&mut app, esc); // chat → list: arms chord + grace
-        // Backdate both stamps 400ms: chord stale, grace still open.
-        let t = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(400))
-            .unwrap();
-        app.chat_esc_at = Some((t, "oracle-Demo-1".into()));
-        app.focus_drop_at = Some(t);
+        vanish_drop(&mut app);
 
-        let act = handle_key(&mut app, esc);
-        assert!(matches!(act, Action::None), "slow second Esc must not act");
-        assert!(!app.should_quit, "slow second Esc must NOT quit the TUI");
+        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(act, Action::None), "the in-grace Esc must not act");
+        assert!(!app.should_quit, "the in-grace Esc must NOT quit the TUI");
         assert!(
             app.status_message.as_deref().unwrap_or("").contains("ignored"),
             "the swallow must be announced, got {:?}",
-            app.status_message
-        );
-    }
-
-    // FIX-H (D-10): the chord target is pinned at ARM time — if the armed
-    // session vanished and a NEIGHBOR clamped into its slot before the
-    // second Esc, the literal ESC is dropped with a notice, not forwarded
-    // into the neighbor's PTY.
-    #[test]
-    fn esc_chord_dropped_when_pinned_target_vanished() {
-        let mut app = chat_app("oracle-Demo-1");
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        handle_key(&mut app, esc); // arms the chord on oracle-Demo-1
-        // The session vanishes; a neighbor clamps into the selected slot.
-        app.sessions.clear();
-        app.sessions.push(SessionEntry {
-            session: OmegaSession::classify("neighbor"),
-            progress: None,
-            is_current: false,
-            is_protected: false,
-            tree_prefix: String::new(),
-        });
-        app.selected = 0;
-
-        let act = handle_key(&mut app, esc); // second Esc, inside the window
-        assert!(
-            !matches!(act, Action::ForwardKeyToSession { .. }),
-            "ESC must NOT forward into the neighbor's PTY"
-        );
-        assert!(!app.should_quit, "the dropped chord must not fall through to quit");
-        assert_eq!(
-            app.session_focus,
-            SessionFocus::List,
-            "must not enter the neighbor's chat"
-        );
-        assert!(
-            app.status_message.as_deref().unwrap_or("").contains("oracle-Demo-1"),
-            "the drop notice must name the vanished target, got {:?}",
             app.status_message
         );
     }
@@ -3043,7 +2932,7 @@ mod tests {
     fn grace_swallows_unguarded_modal_openers() {
         for key in ['c', 'C', 'g', 'p', 'G', 't', 'h', 'd', 'r'] {
             let mut app = chat_app("oracle-Demo-1");
-            handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+            vanish_drop(&mut app);
             assert_eq!(app.session_focus, SessionFocus::List);
             let act = handle_key(&mut app, press(key));
             assert!(matches!(act, Action::None), "'{key}' must be swallowed in the grace");
@@ -3079,55 +2968,29 @@ mod tests {
         assert_eq!(app.status_message.as_deref(), Some("Cancelled"));
     }
 
-    // fix6-T4: the taught "Enter = back to chat" works during the grace when
-    // the selection still equals the session pinned by the deliberate Esc —
-    // re-entry into the SAME chat is retarget-safe and ends the grace.
+    // fix6-T4: inside a vanish-drop grace, Enter/Tab stay swallowed — the
+    // session the keystream was aimed at is gone, and whatever clamped into
+    // the selected slot must not receive the in-flight keys. A deliberate
+    // navigation key (↑/↓) ends the grace and restores re-entry.
     #[test]
-    fn grace_enter_reenters_chat_when_selection_matches_pin() {
+    fn grace_enter_and_tab_swallowed_until_navigation() {
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert_eq!(app.session_focus, SessionFocus::List);
+        vanish_drop(&mut app);
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None));
-        assert_eq!(
-            app.session_focus,
-            SessionFocus::Chat,
-            "Enter on the pinned selection must re-enter chat"
-        );
-        assert!(!app.in_post_drop_grace(), "deliberate re-entry ends the grace");
-    }
-
-    // fix6-T4: with no pin (vanish-drop grace) or a mismatched pin (the armed
-    // session vanished, a neighbor clamped in), Enter/Tab stay swallowed.
-    #[test]
-    fn grace_enter_swallowed_without_matching_pin() {
-        // Vanish-style grace: no chat_esc_at pin at all.
-        let mut app = chat_app("oracle-Demo-1");
-        app.session_focus = SessionFocus::List;
-        app.focus_drop_at = Some(std::time::Instant::now());
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "unpinned grace Enter must be swallowed");
+        assert!(matches!(act, Action::None), "in-grace Enter must be swallowed");
         assert_eq!(app.session_focus, SessionFocus::List);
 
-        // Pin mismatch: armed on oracle-Demo-1, a neighbor clamped into the slot.
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        app.sessions.clear();
-        app.sessions.push(SessionEntry {
-            session: OmegaSession::classify("neighbor"),
-            progress: None,
-            is_current: false,
-            is_protected: false,
-            tree_prefix: String::new(),
-        });
-        app.selected = 0;
+        vanish_drop(&mut app);
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "mismatched-pin Tab must be swallowed");
-        assert_eq!(
-            app.session_focus,
-            SessionFocus::List,
-            "must not enter the neighbor's chat"
-        );
+        assert!(matches!(act, Action::None), "in-grace Tab must be swallowed");
+        assert_eq!(app.session_focus, SessionFocus::List);
+
+        // ↑/↓ proves a human is driving the list: the grace ends, Enter works.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert!(!app.in_post_drop_grace(), "navigation ends the grace");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.session_focus, SessionFocus::Chat, "Enter re-enters chat after nav");
     }
 
     fn left_click(column: u16) -> MouseEvent {
@@ -3150,21 +3013,13 @@ mod tests {
     }
 
     // fix6-T5: a preview-panel click is the mouse twin of the keyboard Enter —
-    // it obeys the same grace rule (pinned-session exemption, else swallow).
+    // it obeys the same grace rule: swallowed with a notice while the grace
+    // that followed a vanish-drop is open.
     #[test]
-    fn grace_click_applies_pinned_reentry_rule() {
-        // Pinned + unchanged selection → the click re-enters chat.
+    fn grace_click_swallowed_with_notice() {
         let mut app = chat_app("oracle-Demo-1");
         seed_sessions_geometry(&mut app);
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        handle_event(&mut app, Event::Mouse(left_click(40)));
-        assert_eq!(app.session_focus, SessionFocus::Chat, "pinned click re-enters chat");
-
-        // No pin (vanish grace) → swallowed with a notice.
-        let mut app = chat_app("oracle-Demo-1");
-        seed_sessions_geometry(&mut app);
-        app.session_focus = SessionFocus::List;
-        app.focus_drop_at = Some(std::time::Instant::now());
+        vanish_drop(&mut app);
         handle_event(&mut app, Event::Mouse(left_click(40)));
         assert_eq!(app.session_focus, SessionFocus::List, "unpinned click must be swallowed");
         assert!(
@@ -3217,13 +3072,12 @@ mod tests {
     }
 
     // fix6-T6: scrolling the list moves the selection like keyboard ↑/↓, so it
-    // must end the grace AND the Esc-Esc chord — otherwise Esc→scroll→Esc hit
-    // the FIX-H mismatch arm claiming the (alive) armed session is gone.
+    // must end the grace the same way.
     #[test]
-    fn list_scroll_ends_grace_and_chord_like_arrow_keys() {
+    fn list_scroll_ends_grace_like_arrow_keys() {
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(app.in_post_drop_grace() && app.chat_esc_at.is_some());
+        vanish_drop(&mut app);
+        assert!(app.in_post_drop_grace());
         let scroll = MouseEvent {
             kind: MouseEventKind::ScrollDown,
             column: 5, // over the list, not the preview
@@ -3231,33 +3085,29 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         handle_event(&mut app, Event::Mouse(scroll));
-        assert!(app.chat_esc_at.is_none(), "scroll must clear the chord pin");
         assert!(!app.in_post_drop_grace(), "scroll must end the grace");
     }
 
     // fix6-T7: direct tab writers route through leave_tab — F1→Help and the
-    // non-Sessions Esc→Sessions jump must clear armed confirms + chord state.
+    // non-Sessions Esc→Sessions jump must clear armed confirms + Tab chord.
     #[test]
     fn f1_and_esc_jump_run_leave_tab_hygiene() {
-        // F1 from Menu with an armed confirm + chord.
+        // F1 from Menu with an armed confirm.
         let mut app = test_app();
         app.tab = Tab::Menu;
         app.menu_confirm_pending = Some(MenuAction::KillAll);
-        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
         handle_key(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(app.tab, Tab::Help);
         assert_eq!(app.menu_confirm_pending, None, "F1 must disarm via leave_tab");
-        assert!(app.chat_esc_at.is_none(), "F1 must clear the chord pin");
 
-        // Esc→Sessions jump from a non-Sessions tab clears the chord state.
+        // Esc→Sessions jump from a non-Sessions tab clears the Tab chord.
         let mut app = test_app();
         app.tab = Tab::Agentic;
-        app.chat_esc_at = Some((std::time::Instant::now(), "a".into()));
         app.last_tab_press = Some(std::time::Instant::now());
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.tab, Tab::Sessions);
         assert!(
-            app.chat_esc_at.is_none() && app.last_tab_press.is_none(),
+            app.last_tab_press.is_none(),
             "the Esc jump must run leave_tab hygiene"
         );
     }
@@ -3271,7 +3121,7 @@ mod tests {
     #[test]
     fn grace_passes_ctrl_commands_but_swallows_typed_input() {
         let mut app = chat_app("oracle-Demo-1");
-        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        vanish_drop(&mut app);
         assert!(app.in_post_drop_grace(), "precondition: grace is open");
 
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));

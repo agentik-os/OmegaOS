@@ -8,18 +8,10 @@ use omega_core::session::{OmegaSession, SessionManager, SessionRole};
 /// DESIGN-015 post-drop grace: destructive single-key hotkeys are ignored
 /// this long after a non-deliberate chat-focus drop.
 pub(crate) const GRACE_MS: u64 = 800;
-/// DESIGN-014 Esc-Esc chord window: a second Esc inside this window forwards
-/// a literal ESC to the agent.
-pub(crate) const ESC_CHORD_MS: u64 = 300;
 /// FIX-2 minimum display time for async-origin sticky status notices.
 pub(crate) const STICKY_MS: u64 = 2000;
 /// Tab double-tap window (Sessions menu toggle + 2col fullscreen).
 pub(crate) const DOUBLE_TAP_MS: u64 = 400;
-
-// FIX-D (D-5) — load-bearing: the grace MUST outlast the chord window so a
-// slow second Esc lands in a swallow band (chord expired, grace not) instead
-// of quitting the TUI while the status bar still teaches "Esc Esc = ESC".
-const _: () = assert!(GRACE_MS > ESC_CHORD_MS);
 
 /// True while `t` is less than `ms` milliseconds in the past — the single
 /// idiom behind every input-timing window above.
@@ -1147,19 +1139,10 @@ pub struct App {
     /// terminal when the TUI runs nested).
     pub pending_clipboard: Option<String>,
     pub session_focus: SessionFocus,
-    /// Set when a chat Esc just dropped focus to the list — arms the Esc-Esc
-    /// literal-ESC chord (DESIGN-014): a second Esc inside the window forwards
-    /// a real ESC to the agent instead of falling through to the quit arm.
-    /// Legacy terminals deliver Alt+Esc as a split ESC ESC pair, so without
-    /// this chord the "literal ESC" gesture would QUIT the TUI.
-    /// FIX-H (D-10): carries the session NAME the chord was armed on, pinned
-    /// at arm time — the fire site verifies it still matches the selection so
-    /// a vanish-clamp between the two Escs can't retarget a neighbor's PTY.
-    pub chat_esc_at: Option<(std::time::Instant, String)>,
     /// Set when chat focus was dropped without a deliberate navigation key
-    /// (session vanished mid-typing, or Esc-from-chat) — destructive single-key
-    /// hotkeys (q / x / Enter / Esc-quit) are ignored while inside the grace
-    /// window so an in-flight keystream can't kill/quit (DESIGN-015 / NEW-3).
+    /// (the session vanished mid-typing) — destructive single-key hotkeys
+    /// (q / x / Enter / Esc-quit) are ignored while inside the grace window
+    /// so an in-flight keystream can't kill/quit (DESIGN-015 / NEW-3).
     pub focus_drop_at: Option<std::time::Instant>,
     /// Async-origin status notices (vanish, forwarder errors) keep a minimum
     /// display time (`STICKY_MS` from this set-instant): the keypress TTL
@@ -1283,7 +1266,6 @@ impl App {
             preview_screen_rows: Vec::new(),
             pending_clipboard: None,
             session_focus: SessionFocus::List,
-            chat_esc_at: None,
             focus_drop_at: None,
             status_sticky_at: None,
             status_sticky_msg: None,
@@ -1589,33 +1571,15 @@ impl App {
     }
 
     /// DESIGN-015: true while inside the destructive-hotkey grace that
-    /// follows a non-deliberate focus drop (vanish, Esc-from-chat).
-    /// FIX-D (D-5): the grace (`GRACE_MS`) is deliberately LONGER than the
-    /// Esc-Esc chord window (`ESC_CHORD_MS`, `take_esc_chord`) — pinned by
-    /// the const assertion next to the constants — so a slow second Esc lands
-    /// in a swallow band — chord expired, grace not — instead of quitting the
-    /// TUI while the status bar is still teaching "Esc Esc = ESC to agent".
+    /// follows a non-deliberate focus drop (the focused session vanished).
     pub fn in_post_drop_grace(&self) -> bool {
         self.focus_drop_at.is_some_and(|t| within(t, GRACE_MS))
     }
 
-    /// A deliberate navigation key ends the grace window (and the Esc-Esc
-    /// chord arm) early — the user is demonstrably interacting with the list.
+    /// A deliberate navigation key ends the grace window early — the user is
+    /// demonstrably interacting with the list.
     pub fn end_post_drop_grace(&mut self) {
         self.focus_drop_at = None;
-        self.chat_esc_at = None;
-    }
-
-    /// DESIGN-014: consume the Esc-Esc chord arm. Returns the session the
-    /// chord was ARMED on when the second Esc arrives within the window —
-    /// FIX-H (D-10): the caller must verify it still matches the current
-    /// selection before forwarding, so a vanish-clamp between the two Escs
-    /// can't forward the literal ESC into a NEIGHBOR's PTY.
-    pub fn take_esc_chord(&mut self) -> Option<String> {
-        self.chat_esc_at
-            .take()
-            .filter(|(t, _)| within(*t, ESC_CHORD_MS))
-            .map(|(_, name)| name)
     }
 
     /// Handle a Tab press in the Sessions tab.
@@ -2382,18 +2346,15 @@ impl App {
 
     /// Shared tab-switch hygiene: leaving a tab cancels EVERY armed two-press
     /// confirm (FIX-1 + FIX-B — an armed destructive state must not survive
-    /// into a tab where its context is invisible), clears the Tab chord so it
-    /// can't leak into another tab's double-tap detection (FIX-4 —
-    /// `handle_tab_in_2col` shares `last_tab_press`), and clears the Esc-Esc
-    /// chord arm (FIX-H/D-9 — a stale arm must not replay a literal ESC into
-    /// chat after a tab round-trip).
+    /// into a tab where its context is invisible) and clears the Tab chord so
+    /// it can't leak into another tab's double-tap detection (FIX-4 —
+    /// `handle_tab_in_2col` shares `last_tab_press`).
     pub(crate) fn leave_tab(&mut self) {
         self.menu_confirm_pending = None;
         self.project_delete_pending = None;
         self.settings_confirm_pending = None;
         self.monitor_disconnect_armed = false;
         self.reset_tab_chord();
-        self.chat_esc_at = None;
     }
 
     pub fn next_tab(&mut self) {

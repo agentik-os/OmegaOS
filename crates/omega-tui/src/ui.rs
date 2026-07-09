@@ -927,7 +927,7 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_hint = match app.session_focus {
         crate::app::SessionFocus::List if master_cta => "LIST  ★ Enter: connect Telegram  x:kill",
         crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
-        _ => "CHAT (Esc → list to manage)",
+        _ => "CHAT (Tab → list to manage)",
     };
     let list = List::new(items)
         .block(
@@ -3489,8 +3489,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
         key("Shift+Tab", "Forward to Claude (cycle modes)"),
-        key("Esc", "Back to the session list"),
-        key("Esc Esc / Alt+Esc", "Send a literal ESC to the agent (vim/less)"),
+        key("Esc", "Sent to the agent (escape vim/less/prompts) — Tab goes back"),
         key("Ctrl+X", "Close (kill) the focused session"),
         key("Ctrl+R", "Reload the TUI (re-exec the binary)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
