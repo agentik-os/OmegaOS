@@ -23,7 +23,19 @@ scaffold() {
   ROOT="$1"; NAME="$2"; SLUG="$3"; local M="$ROOT/marketing"
   echo "### $NAME  ($ROOT)"
   [ -d "$ROOT" ] || { echo "  !! project dir missing, skipping"; return 0; }
-  mkdir -p "$M"/{00-context,01-strategy,02-copy,03-visual-identity/higgsfield,04-publishing/daily-engine,05-calendar,06-branding/prompt-library,06-branding/templates/stills}
+  mkdir -p "$M"/{00-context/swipe,01-strategy,02-copy,03-visual-identity/higgsfield,04-publishing/daily-engine,05-calendar,06-branding/prompt-library,06-branding/templates/stills}
+
+  # --- the outlier engine's swipe feed (G11) — seed only, never clobbered ---
+  w "$M/00-context/swipe/channels.txt" <<EOF
+# Swipe feed for the outlier engine (tools/marketing-machine/growth/OUTLIER-ENGINE.md).
+# One YouTube @handle per line. Track ~40 channels in ONE lane, not 40 lanes.
+# Find lanes you don't track yet:  bin/outlier discover "<query>"
+# Then:  bin/outlier scan --channels marketing/00-context/swipe/channels.txt && bin/outlier score
+#
+# outlier score = video views / that channel's median views.
+#   >= 10x  a signal, something in that video worked
+#   >= 30x  a format to reskin THIS WEEK (the window is ~2 weeks)
+EOF
 
   w "$M/README.md" <<EOF
 # Marketing Machine — $NAME

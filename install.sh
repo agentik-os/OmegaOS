@@ -765,6 +765,20 @@ if [[ -f "$OMEGA_SRC/tools/zernio/install-zernio.sh" ]]; then
     bash "$OMEGA_SRC/tools/zernio/install-zernio.sh" || info "Zernio CLI setup had warnings (non-fatal)"
 fi
 
+# Marketing-machine CLIs (outlier = research engine, superx = X analytics shim).
+# Symlinked, not copied, so `git pull` updates them in place. `outlier` needs
+# yt-dlp at runtime; `superx` needs SUPERX_API_KEY. Both degrade with a clear
+# error when their dependency is absent, so neither blocks the install.
+if [[ -d "$OMEGA_SRC/tools/marketing-machine/bin" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    for _mm_bin in "$OMEGA_SRC/tools/marketing-machine/bin"/*; do
+        [[ -f "$_mm_bin" ]] || continue
+        chmod +x "$_mm_bin"
+        ln -sf "$_mm_bin" "$HOME/.local/bin/$(basename "$_mm_bin")"
+    done
+    unset _mm_bin
+fi
+
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
 step "Phase 5: Configuring OmegaOS"

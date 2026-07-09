@@ -1284,6 +1284,21 @@ paid = false
 skill = ""
 notes = "Two schemas (md vs json)."
 
+[[capability]]
+id = "P7"
+group = "publishing"
+name = "superx-analytics"
+does = "X/Twitter post analytics totals (impressions, engagements, follower change) from SuperX"
+run = "tools/marketing-machine/bin/superx posts:analytics | jq '.data.totals'"
+kind = "cli"
+inputs = []
+layer = "04-publishing"
+status = "partial"
+deps = ["SUPERX_API_KEY (~/.omega/secrets/superx.env)", "jq"]
+paid = true
+skill = ""
+notes = "curl wrapper on api.superx.so/v1 — vendor npm pkg superx-cli is UNPUBLISHED (404, 2026-07-08). Needs sxk_ key from SuperX app -> Account -> Developers. Not yet runtime-verified (awaiting key). Docs: superx.so/developers."
+
 # ===========================================================================
 # 1.10 Growth / Playbooks / Outreach
 # ===========================================================================
@@ -1436,6 +1451,48 @@ deps = ["bun", "yt-dlp"]
 paid = false
 skill = "watch"
 notes = "Canonical video-analysis primitive; feeds ads-hooks, ads-video, ad-creative, scriptwriter, social-content."
+
+[[capability]]
+id = "G11"
+group = "growth"
+name = "outlier-engine (research engine)"
+does = "Swipe feed of tracked channels -> outlier score (views / channel median) -> what format to copy this week"
+run = "tools/marketing-machine/bin/outlier {scan|score|discover|report|doctor}"
+kind = "cli"
+inputs = ["00-context/swipe/channels.txt"]
+layer = "00-context"
+status = "built"
+deps = ["bun", "yt-dlp"]
+paid = false
+notes = "Free + keyless: yt-dlp --flat-playlist on the /shorts tab (~0.7s/channel, verified live 2026-07-09). YouTube Shorts ONLY: the videos tab no longer returns view counts and per-video extraction is bot-blocked from this VPS. TikTok/IG need a paid source (Apify live; SCRAPECREATORS_API_KEY present but OUT OF CREDITS, HTTP 402) and are NOT wired. Method: growth/OUTLIER-ENGINE.md."
+
+[[capability]]
+id = "G12"
+group = "growth"
+name = "format library"
+does = "The 7 recurring short-form shapes (POV, what-if, invisible-force, satisfying-process, 1-vs-escalation, creature-reveal, day-in-the-life) as reskinnable templates"
+run = "read growth/OUTLIER-ENGINE.md §3"
+kind = "doc"
+inputs = ["outlier score output"]
+layer = "01-strategy"
+status = "built"
+deps = []
+paid = false
+notes = "Topic dies in a week, format repeats for months. Grows by one row every time `outlier score` surfaces a shape not yet listed. The durable half of the engine."
+
+[[capability]]
+id = "G13"
+group = "growth"
+name = "publish-and-learn loop"
+does = "Publish -> re-scan your OWN channel at 48h -> score against your own median -> promote/retire in the pattern ledger"
+run = "omega-zernio post … ; bin/outlier scan --out swipe/self.json ; bin/outlier report --alert"
+kind = "engine"
+inputs = ["04-publishing", "06-branding/pattern-ledger.md"]
+layer = "04-publishing"
+status = "partial"
+deps = ["omega-zernio", "yt-dlp", "omega-alert-send.sh"]
+paid = false
+notes = "Replaces the article's Make scenario. Wires the outlier score into B7's existing promote/retire rule (>=10x own median = promote + follow-up in 48h; fails twice = retire). partial: the commands run, the cron + ledger write-back are not yet automated per project."
 
 # ===========================================================================
 # 1.11 Orchestration / Meta

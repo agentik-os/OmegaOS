@@ -14,6 +14,7 @@ Governing rules: **R-MARKETING** (GTM suite + dependency order), **R-VISUAL-ID**
 marketing/
   README.md                       # status board + pipeline for this project
   00-context/                     # product-marketing-context, market-research, competitors, personas
+    swipe/                        # outlier engine: channels.txt (tracked) + swipe.json (scored)
   01-strategy/                    # gtm, content-strategy, launch-strategy
   02-copy/                        # copywriting, ad-creative, social-content, cold-email
   03-visual-identity/             # DA.md (direction artistique)
@@ -25,6 +26,22 @@ marketing/
 beyond the classic GTM suite are **03-visual-identity** (DA → Higgsfield system/preprompt/
 avatar so generation is on-brand and identity-faithful) and **04-publishing** (the zernio
 queue that turns validated content into scheduled posts).
+
+## Research first (the outlier engine)
+
+Before writing a single short-form video, find the format that is **already** winning. The
+outlier score is `video views / that channel's median views`: >=10x is a signal, >=30x is a
+format to reskin this week. Free and keyless (`yt-dlp` on the `/shorts` tab).
+
+```bash
+bin/outlier doctor                                        # check the data sources
+bin/outlier discover "POV you are the last human"         # find channels to track
+bin/outlier scan --channels marketing/00-context/swipe/channels.txt
+bin/outlier score                                         # what to copy, and how badly
+```
+
+Method, prompts, format library and the publish-and-learn loop: **`growth/OUTLIER-ENGINE.md`**.
+Scope: YouTube Shorts only. TikTok/Instagram need a paid source and are not wired yet.
 
 ## Scaffold
 
