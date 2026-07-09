@@ -467,6 +467,17 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "The assistant wrongly concluded publishing was not wired — it checked the empty `zernio.env` instead of the real `ZERNIO_API_KEY` in `integrations.env` — and started building a bespoke Composio/Graph-API poster for @agentik_os when Zernio already had the account connected and active. The operator mandated that ALL posting AND ads route through Zernio henceforth, so the publishing funnel is never re-derived or hand-rolled again. Complements R-MARKETING (what to produce) and R-VISUAL-ID (the visual half): R-ZERNIO owns the distribution step.",
         },
         Rule {
+            id: "R-ZERNFLOW",
+            title: "Chatbot / DM-automation engagement goes through ZernFlow",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "INBOUND social engagement automation — visual chatbot flows, live-chat inbox, drip sequences, broadcasts, comment-to-DM, A/B-tested message paths across Instagram / Facebook / Telegram / Twitter-X / Bluesky / Reddit — routes to ZernFlow (the vendored open-source ManyChat alternative), NEVER a hand-rolled DM bot or a bespoke Graph-API automation. ZernFlow is a self-hosted Next.js + Supabase app (upstream github.com/zernio-dev/zernflow, pinned commit in `tools/zernflow/README.md`), powered by Zernio for OAuth/messaging — the INBOUND twin of R-ZERNIO (which owns OUTBOUND publish & ads via the `omega-zernio` CLI): same Zernio account, opposite direction. A DEDICATED Supabase project backs it (ref `mbsncijxqvawawpgjbkp`, org Agentik OS, eu-west-1, 23 RLS tables already migrated); its keys live in `~/.omega/secrets/zernflow.env` and the account-wide Supabase Management token (`sbp_…`) lives SEPARATELY in `~/.omega/secrets/supabase.env` — different scope, never co-located, never in the repo (R-ENV / R-PROJ / L0). External-dependency boundary (same as higgsfield / browser-use): OmegaOS ships the tool markdown + `tools/zernflow/install-zernflow.sh` but does NOT clone/build the app on every `install.sh` run — the clone + npm install + Vercel deploy are a runtime OPT-IN, so a live ZernFlow is not runtime-verifiable without running the installer and (optionally) deploying with `vercel --prod --token=$VERCEL_TOKEN` (R-VERCEL). Verify a deploy on the real golden path, not a green build (R-PROD / L1).",
+            applies_to: &[],
+            scopes: ALL,
+            added_at: "2026-07-09",
+            reason: "The operator vendored ZernFlow (github.com/zernio-dev/zernflow) into the OmegaOS toolset and provisioned a dedicated Supabase backend for it. Without a written rule, agents would either re-derive a bespoke DM/comment-automation bot (the exact hand-rolled-poster footgun R-ZERNIO was written to kill, one layer in) or confuse it with the outbound `omega-zernio` publishing CLI. R-ZERNFLOW pins the boundary: inbound engagement automation → ZernFlow; outbound publish/ads → Zernio; same account, opposite direction. It also records the ship-markdown / opt-in-install / secrets-out-of-repo boundary so the paid/heavy app dependency stays explicit like higgsfield and browser-use.",
+        },
+        Rule {
             id: "R-BROWSER",
             title: "When to use browser-use (agentic) vs Playwright (scripted)",
             kind: RuleKind::Rule,

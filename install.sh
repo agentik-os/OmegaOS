@@ -765,6 +765,15 @@ if [[ -f "$OMEGA_SRC/tools/zernio/install-zernio.sh" ]]; then
     bash "$OMEGA_SRC/tools/zernio/install-zernio.sh" || info "Zernio CLI setup had warnings (non-fatal)"
 fi
 
+# ZernFlow (R-ZERNFLOW) — inbound engagement automation (chatbot flows, inbox,
+# comment-to-DM), the self-hosted ManyChat alternative. A full Next.js app, so
+# — like higgsfield / browser-use — it is a runtime OPT-IN, NOT auto-cloned or
+# built here. The tool markdown + installer ship in the repo; run it explicitly:
+#   bash tools/zernflow/install-zernflow.sh   (clone pinned + .env + npm install)
+if [[ -f "$OMEGA_SRC/tools/zernflow/install-zernflow.sh" ]]; then
+    info "ZernFlow available (opt-in) — bash tools/zernflow/install-zernflow.sh to set it up"
+fi
+
 # Marketing-machine CLIs (outlier = research engine, superx = X analytics shim).
 # Symlinked, not copied, so `git pull` updates them in place. `outlier` needs
 # yt-dlp at runtime; `superx` needs SUPERX_API_KEY. Both degrade with a clear
