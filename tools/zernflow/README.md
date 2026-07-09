@@ -61,21 +61,37 @@ npm run dev      # local, http://localhost:3000
 Then in the app **Settings** UI, paste the workspace-level keys ZernFlow expects
 at runtime (Zernio API key, optional AI Gateway key).
 
-## Deploy (opt-in, Vercel)
+## Deploy (Vercel — LIVE)
 
-Not deployed by default. When you want it live, deploy to Vercel WITH the token
-(R-VERCEL — the VPS is headless):
+**Live:** https://zernflow-ten.vercel.app
+
+- **Vercel team:** agentik-oss-projects (`team_WrIUaFWi6SG4SUo5yK0NpHjc`)
+- **Vercel project:** `zernflow` (`prj_1I8Sg0kVVeYM90khXXgdHF2Cj9Q9`)
+- **Token/scope:** `~/.omega/secrets/vercel-agentik-os.env` (R-VERCEL — always
+  `--token`, the VPS is headless).
+- **Env vars set in Vercel (Production):** `NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`,
+  `NEXT_PUBLIC_APP_URL` — sourced from `~/.omega/secrets/zernflow.env`.
+
+Redeploy after a code or env change:
 
 ```bash
+source ~/.omega/secrets/vercel-agentik-os.env
 cd ~/.omega/repos/zernflow
-vercel --prod --token=$VERCEL_TOKEN
+vercel deploy --prod --yes --scope "$VERCEL_TEAM_ID" --token "$VERCEL_TOKEN"
 ```
 
 `vercel.json` declares two per-minute crons (`/api/cron/jobs`,
-`/api/cron/sequences`) guarded by `CRON_SECRET`. Set the env vars from
-`~/.omega/secrets/zernflow.env` in the Vercel project, then prod-verify the
-golden path (R-PROD / L1): sign-up → create workspace → connect a channel via
-Zernio → build a flow → the inbox receives a message.
+`/api/cron/sequences`) guarded by `CRON_SECRET` (needs a Pro team — accepted on
+agentik-oss-projects). Prod-verified 2026-07-09 (R-PROD / L1): `/` and `/login`
+→ 200, login page renders with a clean console, `/api/cron/jobs` → 401 without
+the secret and `{"processed":0,...}` with it. Remaining golden path is
+operator-driven: sign-up → create workspace → connect a channel via Zernio →
+build a flow → inbox receives a message.
+
+Note: Vercel could not auto-connect the upstream Git repo (`zernio-dev/zernflow`,
+no write access), so deploys are **CLI-driven from `~/.omega/repos/zernflow`**,
+not git-push-triggered.
 
 ## Files
 
