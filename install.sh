@@ -1246,6 +1246,39 @@ else
     info "Design skills not found — skipping"
 fi
 
+# Install the design-intelligence skill pack — 133 vendored UX-process,
+# interaction-design, AI-product-design, prompt-architecture, AI-alignment,
+# agent-orchestration and AI-evaluation skills (Owl-Listener/ai-design-skills
+# @f41b650 + Owl-Listener/designer-skills @acc3e57, both MIT) plus Anthropic's
+# frontend-design (@9d2f1ae). They COMPLEMENT the visual-generation skills
+# (high-end-visual-design, motion, theme-factory, higgsfield-*) and the forensic
+# audits — the R-DESIGN doctrine rule routes a design request to the right one.
+# Mirrors the Agentik-Skills pattern: flatten each <skill>/ into a TOP-LEVEL
+# ~/.omega/skills/<name>/ (skip any name OmegaOS already vendors as canon), then
+# the `omega sync` step symlinks each into ~/.claude/skills so the Skill tool
+# sees them. No slash-stubs on purpose: 134 skills self-advertise via their
+# descriptions + the router (avoids ~/.claude/commands namespace collisions).
+DI_SRC="$OMEGA_SRC/skills/design-intelligence"
+if [[ -d "$DI_SRC" ]]; then
+    DI_N=0
+    for skill_md in "$DI_SRC"/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        di_dir="$(dirname "$skill_md")"; di_name="$(basename "$di_dir")"
+        [[ -d "$OMEGA_SRC/skills/$di_name" ]] && continue   # OmegaOS-vendored = canon, skip
+        mkdir -p "$OMEGA_DIR/skills/$di_name"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$di_dir/" "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
+        else
+            cp -r "$di_dir/." "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
+        fi
+        find "$OMEGA_DIR/skills/$di_name" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+        DI_N=$((DI_N + 1))
+    done
+    ok "Design-intelligence pack installed ($DI_N skills → ~/.omega/skills/ ; routed by R-DESIGN)"
+else
+    info "Design-intelligence pack not found — skipping"
+fi
+
 # Install the maintenance skills (cleanup, project-tidy) — VPS/disk cleanup +
 # project tidying (docs/ + agentic/ convention, doc↔app coherence). Portable
 # scripts (no machine-specific paths). Mirrors the design loop: copy →

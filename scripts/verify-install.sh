@@ -227,6 +227,12 @@ if [ "$N_AUDITS" -ge 23 ] && grep -q "skills/audits" install.sh; then ok "Qualit
 # Design skills (generative UI/UX) shipped + wired.
 N_DESIGN=$(ls -d skills/design/*/ 2>/dev/null | wc -l)
 if [ "$N_DESIGN" -ge 8 ] && grep -q "skills/design" install.sh; then ok "Design skills shipped + wired ($N_DESIGN)"; else bad "design skills missing or not wired in install.sh ($N_DESIGN dirs, need >=8)"; fi
+# design-intelligence pack (vendored UX-process / interaction / AI-product /
+# prompt-arch / alignment / agent-orchestration / eval skills) shipped + wired,
+# routed by the R-DESIGN doctrine rule.
+N_DI=$(ls -d skills/design-intelligence/*/ 2>/dev/null | wc -l)
+if [ "$N_DI" -ge 120 ] && grep -qE 'DI_SRC=.*skills/design-intelligence' install.sh; then ok "design-intelligence pack shipped + wired ($N_DI skills)"; else bad "design-intelligence pack missing or not wired in install.sh ($N_DI dirs, need >=120)"; fi
+if grep -q '"R-DESIGN"' crates/omega-core/src/rules.rs; then ok "R-DESIGN router rule present in the registry (rules.rs SSOT)"; else bad "R-DESIGN router rule missing from rules.rs"; fi
 # Design skills must not leak the maintainer's identity/paths.
 if grep -rqE 'Gareth|/home/hacker' skills/design/ 2>/dev/null; then bad "design skills leak Gareth/home path"; else ok "design skills clean (no Gareth/home leak)"; fi
 # PDF generator shipped + wired (all branded PDF output depends on it).
