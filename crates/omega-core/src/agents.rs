@@ -169,8 +169,12 @@ impl Agent {
             Agent::Claude => Some(
                 "T=$(mktemp) && curl -fsSL https://claude.ai/install.sh -o \"$T\" && bash \"$T\"; rm -f \"$T\"",
             ),
+            // Official standalone installer (same shape as Claude's above), NOT
+            // `npm i -g @openai/codex`: the npm build lacks the managed standalone
+            // package at ~/.codex/packages/standalone that `codex remote-control`
+            // requires, so an npm-installed Codex cannot be driven from the phone.
             Agent::Codex => Some(
-                "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @openai/codex; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @openai/codex; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
+                "T=$(mktemp) && curl -fsSL https://chatgpt.com/codex/install.sh -o \"$T\" && CODEX_NON_INTERACTIVE=1 sh \"$T\"; rm -f \"$T\"",
             ),
             Agent::Gemini => Some(
                 "if command -v npm >/dev/null 2>&1; then mkdir -p \"$HOME/.npm-global\" && npm install -g --prefix \"$HOME/.npm-global\" @google/gemini-cli; elif [ -x \"$HOME/.bun/bin/bun\" ]; then \"$HOME/.bun/bin/bun\" add -g @google/gemini-cli; else echo 'Need Node.js or bun first (run: curl -fsSL https://bun.sh/install | bash)'; exit 1; fi",
@@ -197,7 +201,11 @@ impl Agent {
             // OmegaOS itself installs into it). Uninstalling the CLI must not wipe
             // the user's whole config. Config can be removed by hand if desired.
             Agent::Claude => Some("rm -f \"$(command -v claude)\""),
-            Agent::Codex => Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @openai/codex"),
+            // Standalone install (see install_command): drop the binary + the
+            // managed package tree, keep ~/.codex (auth + config), same as Claude.
+            Agent::Codex => Some(
+                "rm -f \"$(command -v codex)\" && rm -rf \"$HOME/.codex/packages/standalone\"",
+            ),
             Agent::Gemini => Some("npm uninstall -g --prefix \"$HOME/.npm-global\" @google/gemini-cli"),
             Agent::Pi => Some("rm -f $(which pi) && rm -rf ~/.pi"),
             Agent::Hermes => Some("rm -f $(which hermes) && rm -rf ~/.hermes"),
@@ -435,13 +443,31 @@ impl Agent {
                     None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }
             }
+            // Codex panes run unattended like every other OmegaOS agent pane, so
+            // they get the same no-approval posture Claude gets above
+            // (--dangerously-skip-permissions). Codex's equivalent is
+            // --dangerously-bypass-approvals-and-sandbox: without it every
+            // model-issued command stops the pane on a y/n prompt nobody is
+            // watching. Same trust boundary as the Claude arm, stated explicitly.
             Agent::Codex => match initial_prompt {
                 Some(p) => format!(
                     "bash -c {}",
-                    shell_quote(&format!("{}codex {}; exec bash", env_prefix, shell_quote(p)))
+                    shell_quote(&format!(
+                        "{}codex --dangerously-bypass-approvals-and-sandbox {}; exec bash",
+                        env_prefix,
+                        shell_quote(p)
+                    ))
                 ),
-                None if env_prefix.is_empty() => "codex".to_string(),
-                None => format!("bash -c {}", shell_quote(&format!("{}codex; exec bash", env_prefix))),
+                None if env_prefix.is_empty() => {
+                    "codex --dangerously-bypass-approvals-and-sandbox".to_string()
+                }
+                None => format!(
+                    "bash -c {}",
+                    shell_quote(&format!(
+                        "{}codex --dangerously-bypass-approvals-and-sandbox; exec bash",
+                        env_prefix
+                    ))
+                ),
             },
             Agent::Gemini => {
                 // Try alias first, fall back to npm-global, fall back to plain gemini
