@@ -988,13 +988,34 @@ if [[ -f "$ALERTSEND_SRC" ]]; then
     ok "Alert sender installed: $OMEGA_DIR/bin/omega-alert-send.sh"
 fi
 
-for hs in omega-atlas-brief omega-clean-projects; do
+for hs in omega-atlas-brief omega-clean-projects omega-open; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"
         ln -sf "$OMEGA_DIR/bin/$hs.sh" "$INSTALL_DIR/$hs" 2>/dev/null || true
     fi
 done
 [[ -f "$OMEGA_DIR/bin/omega-atlas-brief.sh" ]] && ok "Atlas briefing + project cleaner installed"
+[[ -f "$OMEGA_DIR/bin/omega-open.sh" ]] && ok "Project launcher installed: omega-open (pick a project, then the agent: claude/codex/glm/...)"
+
+# Artifact rotation — the daily report skills (ecosystem-watch, changelog-adopt,
+# growth-engine, marketing board) each write one file per day into
+# $OMEGA_DIR/artifacts and never clean up, so the served artifact directory grows
+# without bound. This keeps the KEEP most recent of every report family and moves
+# the rest to artifacts/_archive/ (never deletes). Cron at 07:50, BEFORE the report
+# crons (08:00 / 08:15 / 09:00), so each morning starts from a tidy directory.
+ROTATE_SRC="$OMEGA_SRC/scripts/omega-artifacts-rotate.sh"
+if [[ -f "$ROTATE_SRC" ]]; then
+    cp "$ROTATE_SRC" "$OMEGA_DIR/bin/omega-artifacts-rotate.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-artifacts-rotate.sh"
+    if command -v crontab >/dev/null 2>&1; then
+        ROT_CRON='50 7 * * * PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin bash $HOME/.omega/bin/omega-artifacts-rotate.sh >> $HOME/.omega/logs/artifacts-rotate.cron.log 2>&1'
+        ( crontab -l 2>/dev/null | grep -v 'omega-artifacts-rotate.sh'; echo "$ROT_CRON" ) | crontab - 2>/dev/null \
+            && ok "Artifact rotation installed (daily cron 07:50, keeps the 2 newest of each report family)" \
+            || ok "Artifact rotation installed (cron add skipped)"
+    else
+        ok "Artifact rotation installed (no crontab; run ~/.omega/bin/omega-artifacts-rotate.sh manually)"
+    fi
+fi
 
 # Install the self-heal daemon (cron → `omega doctor --fix`; alerts Telegram if
 # warnings remain so the operator can tap /status → Fix it). Keeps the system
