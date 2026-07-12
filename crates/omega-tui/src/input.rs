@@ -1661,7 +1661,7 @@ code produit.",
             app.status_message = Some("Session name for new Claude (Enter, Esc to cancel)".to_string());
             Action::None
         }
-        KeyCode::Char('C') => {
+        KeyCode::Char('o') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("codex".to_string());
             app.status_message = Some("Session name for new Codex (Enter, Esc to cancel)".to_string());

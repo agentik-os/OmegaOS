@@ -3435,7 +3435,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     ];
 
     let launchers = [
-        ("c", "Claude"), ("C", "Codex"), ("g", "Gemini"),
+        ("c", "Claude"), ("o", "Codex"), ("g", "Gemini"),
         ("p", "Pi"), ("h", "Hermes"), ("G", "GLM"), ("t", "Terminal"),
     ];
     let mut row = vec![Span::raw("    ")];
