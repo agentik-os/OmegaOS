@@ -1909,13 +1909,32 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       const mp = loadProjects();
       const abots = loadAgentBots();
       const hasBot = (n: string) => !!(abots[projId(n)] || abots[n]);
+      // Projects are GROUPED BY CATEGORY (the Station folder they live in), not
+      // flat-alphabetical: with 15+ projects a flat list is unreadable and hides
+      // which client/side-business a project belongs to. Category comes from the
+      // path (Station/<Category>/<project>) via loadProjects().
+      const CAT_ORDER = ["Partners", "SideBusiness"];   // the two real buckets first, rest after
+      const catOf = (n: string) => mp[n].category || "Autres";
       const names = Object.keys(mp).sort();
+      const cats = [...new Set(names.map(catOf))].sort((a, b) => {
+        const ia = CAT_ORDER.indexOf(a), ib = CAT_ORDER.indexOf(b);
+        if (ia !== -1 || ib !== -1) return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+        return a.localeCompare(b);
+      });
+      const CAT_ICON: Record<string, string> = { Partners: "🤝", SideBusiness: "🚀" };
       // 🔕 = Telegram topic OFF · 🤖 = a dedicated agent-bot is linked.
-      const list = names.length
-        ? names.map(n => `${mp[n].telegram ? "•" : "🔕"} <b>${esc(n)}</b> <i>(${esc(mp[n].category || "?")})</i>${hasBot(n) ? " 🤖" : ""}`).join("\n")
-        : "<i>No managed project yet — add one (📁) or create one (➕).</i>";
       const rows: Btn[][] = [];
-      for (let i = 0; i < names.length; i += 2) rows.push(names.slice(i, i + 2).map(n => ({ text: `${mp[n].telegram ? "📦" : "🔕"} ${n}${hasBot(n) ? " 🤖" : ""}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
+      const blocks: string[] = [];
+      for (const c of cats) {
+        const inCat = names.filter(n => catOf(n) === c);
+        blocks.push(`${CAT_ICON[c] || "📂"} <b>${esc(c.toUpperCase())}</b> <i>(${inCat.length})</i>\n` + inCat
+          .map(n => `   ${mp[n].telegram ? "•" : "🔕"} ${esc(n)}${hasBot(n) ? " 🤖" : ""}`).join("\n"));
+        for (let i = 0; i < inCat.length; i += 2)
+          rows.push(inCat.slice(i, i + 2).map(n => ({ text: `${mp[n].telegram ? "📦" : "🔕"} ${n}${hasBot(n) ? " 🤖" : ""}`.slice(0, 28), callback_data: `proj:open:${n}`.slice(0, 64) })));
+      }
+      const list = names.length
+        ? blocks.join("\n\n")
+        : "<i>No managed project yet — add one (📁) or create one (➕).</i>";
       return { text: card(`PROJECTS — ${names.length}`, list), markup: kb([...rows, [{ text: "➕ New", callback_data: "proj:new" }, { text: "📁 Add existing", callback_data: "proj:add" }], [{ text: "⬇️ Import from GitHub", callback_data: "proj:import" }], [{ text: "🔧 Git", callback_data: "git:list" }, { text: "🔁 Sync", callback_data: "nav:sync" }], [back()]]) };
     }
     case "audits": {
