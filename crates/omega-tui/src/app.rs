@@ -278,7 +278,7 @@ impl MenuAction {
     pub fn shortcut(&self) -> &'static str {
         match self {
             MenuAction::NewClaude => "c",
-            MenuAction::NewCodex => "C",
+            MenuAction::NewCodex => "o",
             MenuAction::NewGemini => "g",
             MenuAction::NewPi => "p",
             MenuAction::NewHermes => "h",
