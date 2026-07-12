@@ -988,7 +988,7 @@ if [[ -f "$ALERTSEND_SRC" ]]; then
     ok "Alert sender installed: $OMEGA_DIR/bin/omega-alert-send.sh"
 fi
 
-for hs in omega-atlas-brief omega-clean-projects omega-open; do
+for hs in omega-atlas-brief omega-clean-projects omega-open omega-agent-bot; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"
         ln -sf "$OMEGA_DIR/bin/$hs.sh" "$INSTALL_DIR/$hs" 2>/dev/null || true
@@ -996,6 +996,7 @@ for hs in omega-atlas-brief omega-clean-projects omega-open; do
 done
 [[ -f "$OMEGA_DIR/bin/omega-atlas-brief.sh" ]] && ok "Atlas briefing + project cleaner installed"
 [[ -f "$OMEGA_DIR/bin/omega-open.sh" ]] && ok "Project launcher installed: omega-open (pick a project, then the agent: claude/codex/glm/...)"
+[[ -f "$OMEGA_DIR/bin/omega-agent-bot.sh" ]] && ok "Agent-bot wiring installed: omega-agent-bot <project> <token> (--list shows which projects lack one)"
 
 # Artifact rotation — the daily report skills (ecosystem-watch, changelog-adopt,
 # growth-engine, marketing board) each write one file per day into
