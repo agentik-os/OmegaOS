@@ -52,6 +52,27 @@ All operational rules are in `~/.omega/rules/` — named, typed, role-scoped.
 - `omega dispatch` — Send missions to oracles
 - `omega orchestrate` — Full mission pipeline
 
+**MCP:** prefer a CLI equivalent first (R-CLI); route a genuinely-needed integration through composio.dev, never a bespoke server.
+
+## Skills (333 shipped)
+
+The full OmegaOS skill catalog lives at `~/.omega/skills/<name>/SKILL.md`. You have shell + file access, so USE it: to run a skill, read `~/.omega/skills/<name>/SKILL.md` and FOLLOW it verbatim. NEVER paraphrase a skill or a forensic audit protocol into prose (R-AUDIT) — read the real SKILL.md and execute its steps. `ls ~/.omega/skills` lists them.
+
+Key routing:
+- Report / deliverable / dashboard → `artifact-design` (see Reports below)
+- Premium / agency / "make it look expensive" UI → `high-end-visual-design`; a new frontend → `frontend-design` first
+- Generate image / video / voiceover / ad creative → `higgsfield-generate` (+ `higgsfield-soul-id`)
+- Publish a post OR run paid ads → the `omega-zernio` CLI only (R-ZERNIO), never hand-roll the Instagram/Graph API
+- Any named audit (ux/code/sec/a11y/seo/perf/flow/…) → the real `~/.omega/skills/<name>audit/` skill, in scope
+- Marketing / go-to-market → the `market-*` / `mk-*` / `omg-*` skills
+
+## Reports & Deliverables (artifact router)
+
+- A report/deliverable asked for with NO format → a LOCAL self-hosted HTML artifact via the `artifact-design` skill: ONE self-contained HTML (inline CSS/JS, no CDN, light + dark, zero em/en dashes), written under the project `agentic/reports/` AND copied to `~/.omega/artifacts/`, served tailnet-only at `https://station.tail64d114.ts.net:8443/<file>.html` (verify HTTP 200, hand back that URL). "Artifact" ALWAYS means THIS local Tailscale page, NEVER a claude.ai artifact.
+- A PDF (only on explicit ask) → `omega pdf --template=<whitepaper|audit|marketing|doc>` (pdfgen is the SSOT). NEVER hand-roll a PDF generator.
+- Content / copy (posts, captions, on-image or on-video text): NO em-dash "—" or en-dash "–", ever (R-NODASH). Use comma, period, colon, or parentheses.
+- Every deliverable that is a LINK or a FILE → also push it to the operator on Telegram in the same turn (R-TGDELIVER).
+
 ## Quality Arsenal (23 Forensic Audits)
 
 OmegaOS ships with 23 Gestalt-Popper forensic audits covering code, UX, flows, security,
