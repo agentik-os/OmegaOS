@@ -212,6 +212,40 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
+    // 4b. Codex: installed AND logged in. The check above only covers the
+    // DEFAULT agent (claude), so a broken Codex — the `o` launcher — stayed
+    // invisible until a pane came up dead. Auth lives in ~/.codex/auth.json:
+    // `auth_mode` is "chatgpt" for a subscription login, or an OPENAI_API_KEY.
+    {
+        let codex = crate::agents::Agent::Codex;
+        if !codex.is_available() {
+            let hint = codex
+                .install_command()
+                .map(|c| format!(" — {}", c))
+                .unwrap_or_default();
+            checks.push(Check::warn("codex", format!("codex not on PATH{}", hint)));
+        } else {
+            let auth = crate::credentials::legacy_path_for("codex")
+                .and_then(|p| std::fs::read_to_string(&p).ok())
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
+            match auth {
+                Some(a)
+                    if a.get("auth_mode").and_then(|v| v.as_str()) == Some("chatgpt")
+                        || a.get("tokens").is_some() =>
+                {
+                    checks.push(Check::ok("codex", "codex available, ChatGPT login"))
+                }
+                Some(a) if a.get("OPENAI_API_KEY").and_then(|v| v.as_str()).is_some() => {
+                    checks.push(Check::ok("codex", "codex available, API key"))
+                }
+                _ => checks.push(Check::warn(
+                    "codex",
+                    "codex installed but not logged in — run: codex login",
+                )),
+            }
+        }
+    }
+
     // 5. State dir writable.
     let probe = config.state_dir.join(".doctor-probe");
     match std::fs::write(&probe, b"ok").and_then(|_| std::fs::remove_file(&probe)) {

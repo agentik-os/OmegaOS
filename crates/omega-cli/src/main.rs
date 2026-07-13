@@ -2642,12 +2642,21 @@ fn cmd_trust_dir(dir: Option<&str>) -> Result<()> {
         Some(d) => std::path::PathBuf::from(d),
         None => std::env::current_dir()?,
     };
-    // Canonicalize so "." / relative paths land on the same key claude uses.
+    // Canonicalize so "." / relative paths land on the same key the agents use.
+    // Codex keys its trust table by the canonical path (on macOS /tmp/x is
+    // stored as /private/tmp/x), so this is load-bearing, not cosmetic.
     let dir = dir.canonicalize().unwrap_or(dir);
     match omega_core::claude_trust::trust_dir(&dir) {
-        Ok(true) => println!("trusted: {}", dir.display()),
-        Ok(false) => println!("already trusted: {}", dir.display()),
-        Err(e) => println!("trust-dir skipped ({}): {}", dir.display(), e),
+        Ok(true) => println!("trusted (claude): {}", dir.display()),
+        Ok(false) => println!("already trusted (claude): {}", dir.display()),
+        Err(e) => println!("trust-dir skipped, claude ({}): {}", dir.display(), e),
+    }
+    // Codex has the same blocking trust prompt in a different store — one
+    // command trusts the folder for both agents (see codex_trust.rs).
+    match omega_core::codex_trust::trust_dir(&dir) {
+        Ok(true) => println!("trusted (codex): {}", dir.display()),
+        Ok(false) => println!("already trusted (codex): {}", dir.display()),
+        Err(e) => println!("trust-dir skipped, codex ({}): {}", dir.display(), e),
     }
     Ok(())
 }

@@ -443,32 +443,35 @@ impl Agent {
                     None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }
             }
-            // Codex panes run unattended like every other OmegaOS agent pane, so
-            // they get the same no-approval posture Claude gets above
-            // (--dangerously-skip-permissions). Codex's equivalent is
-            // --dangerously-bypass-approvals-and-sandbox: without it every
-            // model-issued command stops the pane on a y/n prompt nobody is
-            // watching. Same trust boundary as the Claude arm, stated explicitly.
-            Agent::Codex => match initial_prompt {
-                Some(p) => format!(
-                    "bash -c {}",
-                    shell_quote(&format!(
-                        "{}codex --dangerously-bypass-approvals-and-sandbox {}; exec bash",
-                        env_prefix,
-                        shell_quote(p)
-                    ))
-                ),
-                None if env_prefix.is_empty() => {
-                    "codex --dangerously-bypass-approvals-and-sandbox".to_string()
+            Agent::Codex => {
+                // Same two guards Claude gets, for the same two reasons:
+                //
+                // (1) trust prefix — Codex blocks on "Do you trust the contents
+                //     of this directory?" BEFORE rendering anything. A detached
+                //     omega pane has nobody to press Enter, so the session looks
+                //     dead. Pre-trust the cwd in ~/.codex/config.toml first
+                //     (codex_trust.rs). Best-effort: an old omega binary without
+                //     the subcommand just skips it and the prompt shows once.
+                // (2) --no-alt-screen — render inline instead of on the alternate
+                //     screen, so the conversation flows into rmux's scrollback and
+                //     scrolls in the panel (Claude's CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1).
+                //
+                // --dangerously-bypass-approvals-and-sandbox is Codex's
+                // --dangerously-skip-permissions: an omega pane is unattended, so a
+                // per-command approval prompt is a hang, not a safety net.
+                let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
+                let args = format!(
+                    "{}{}codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
+                    env_prefix, trust_prefix,
+                );
+                match initial_prompt {
+                    Some(p) => format!(
+                        "bash -c {}",
+                        shell_quote(&format!("{} {}; exec bash", args, shell_quote(p)))
+                    ),
+                    None => format!("bash -c {}", shell_quote(&format!("{}; exec bash", args))),
                 }
-                None => format!(
-                    "bash -c {}",
-                    shell_quote(&format!(
-                        "{}codex --dangerously-bypass-approvals-and-sandbox; exec bash",
-                        env_prefix
-                    ))
-                ),
-            },
+            }
             Agent::Gemini => {
                 // Try alias first, fall back to npm-global, fall back to plain gemini
                 let gemini_bin = format!("{}/.npm-global/bin/gemini", home);
@@ -602,6 +605,7 @@ impl Agent {
             Agent::Claude => claude_available(&home),
             Agent::Codex => {
                 has_cmd("codex")
+                    || std::path::Path::new(&format!("{}/.local/bin/codex", home)).exists()
                     || std::path::Path::new(&format!("{}/.npm-global/bin/codex", home)).exists()
             }
             Agent::Gemini => {
