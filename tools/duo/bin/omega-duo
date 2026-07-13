@@ -1,0 +1,284 @@
+#!/usr/bin/env bun
+/**
+ * omega-duo — the deterministic muscle of the Claude⇄Codex binome.
+ *
+ * ONE responsibility: run a code task on the best available agent (Codex first,
+ * Claude on fallback) and report HONESTLY which agent did it. It knows nothing
+ * about strategy, plans, or verdicts — that lives in the /duo skill. This binary
+ * only executes and reports.
+ *
+ * The skill drives it; it never drives the skill.
+ *
+ *   omega-duo run    --task <file.md> --cwd <dir> [--mode plan|code|review] [--agent codex|claude]
+ *   omega-duo status                # is Codex marked exhausted this window?
+ *   omega-duo reset                 # clear the exhausted flag (re-enable Codex)
+ *
+ * stdout on `run` is a single JSON line:
+ *   { agent, ok, output, fell_back, reason, exit_code, log }
+ *
+ * WHY a binary and not skill prose: quota detection + fallback is control flow
+ * that must be deterministic and testable. A model improvising an error-parser
+ * is exactly the silent-failure vector this replaces (R-KARPATHY simplicity,
+ * L1 runtime-truth).
+ */
+
+import { spawn } from "node:child_process";
+import { mkdirSync, appendFileSync, writeFileSync, existsSync, readFileSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+
+const OMEGA_DIR = process.env.OMEGA_DIR || join(homedir(), ".omega");
+const LOG_DIR = join(OMEGA_DIR, "logs", "duo");
+const STATE_DIR = join(OMEGA_DIR, "state");
+const EXHAUSTED_FLAG = join(STATE_DIR, "duo-codex-exhausted");
+
+// ── Quota-vs-code-error detection ────────────────────────────────────────────
+// A quota/limit failure triggers fallback; ANY OTHER failure (compile error,
+// red test, bad path) is a real task failure and must surface as-is — masking a
+// code bug behind "oh, the quota" is the trap we refuse to fall into.
+//
+// This regex is a BEST-EFFORT guess: the exact string Codex emits when a
+// ChatGPT plan is exhausted is not knowable without hitting the ceiling. So we
+// ALSO log every Codex failure verbatim to LOG_DIR — the first real limit hit
+// gives us the true string to tighten this against real evidence, not a guess.
+const QUOTA_RE =
+  /(usage limit|rate.?limit|quota|too many requests|429|out of (credits|tokens)|insufficient.quota|plan limit|resets? (at|in)|try again (later|in))/i;
+
+// The interactive `codex` may be a shell function injecting a profile; call the
+// real binary. Overridable for tests / non-standard installs.
+const CODEX_BIN = process.env.DUO_CODEX_BIN || "codex";
+const CLAUDE_BIN = process.env.DUO_CLAUDE_BIN || "claude";
+
+function ts(): string {
+  // Date is fine here (real binary, not a replayable workflow script).
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function ensureDirs() {
+  for (const d of [LOG_DIR, STATE_DIR]) mkdirSync(d, { recursive: true });
+}
+
+function codexExhausted(): { exhausted: boolean; until: string | null } {
+  if (!existsSync(EXHAUSTED_FLAG)) return { exhausted: false, until: null };
+  const raw = readFileSync(EXHAUSTED_FLAG, "utf8").trim();
+  // Flag body may hold an ISO reset time. If present and passed, auto-clear.
+  const until = raw || null;
+  if (until) {
+    const t = Date.parse(until);
+    if (!Number.isNaN(t) && Date.now() >= t) {
+      try { unlinkSync(EXHAUSTED_FLAG); } catch {}
+      return { exhausted: false, until: null };
+    }
+  }
+  return { exhausted: true, until };
+}
+
+function markExhausted(until: string | null) {
+  ensureDirs();
+  writeFileSync(EXHAUSTED_FLAG, until || "", "utf8");
+}
+
+interface RunResult {
+  ok: boolean;
+  output: string;
+  exitCode: number;
+}
+
+function runProcess(bin: string, argv: string[], cwd: string, stdin: string): Promise<RunResult> {
+  return new Promise((resolve) => {
+    const child = spawn(bin, argv, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d.toString()));
+    child.stderr.on("data", (d) => (err += d.toString()));
+    child.on("error", (e) => {
+      resolve({ ok: false, output: `spawn error: ${e.message}`, exitCode: 127 });
+    });
+    child.on("close", (code) => {
+      const combined = (out + (err ? "\n[stderr]\n" + err : "")).trim();
+      resolve({ ok: code === 0, output: combined, exitCode: code ?? 1 });
+    });
+    if (stdin) child.stdin.write(stdin);
+    child.stdin.end();
+  });
+}
+
+// Codex argv per mode. `plan` and `review` are READ-ONLY (no edits): the skill
+// uses Codex to critique a plan or review a diff. `code` is the only writing
+// mode and gets full-auto so it can actually edit files unattended.
+function codexArgv(mode: string, taskText: string): string[] {
+  const base = ["exec", "--skip-git-repo-check"];
+  if (mode === "code") {
+    // Bypass Codex's bwrap workspace sandbox. On this operator-owned VPS the
+    // network namespace is locked down, so bwrap's loopback setup fails
+    // ("RTM_NEWADDR: Operation not permitted") and --full-auto can't write a
+    // single file. Bypassing matches how Claude already runs here
+    // (--dangerously-skip-permissions): same trust boundary, same box, the
+    // operator owns it. DUO_CODEX_FULL_AUTO=1 forces the sandboxed path back
+    // on a host where bwrap works.
+    if (process.env.DUO_CODEX_FULL_AUTO === "1") return [...base, "--full-auto", taskText];
+    return [...base, "--dangerously-bypass-approvals-and-sandbox", taskText];
+  }
+  // plan / review: read-only sandbox, no approvals needed to read + reason.
+  return [...base, "--sandbox", "read-only", taskText];
+}
+
+function claudeArgv(taskText: string): string[] {
+  // Headless one-shot. The skill already injected role framing into taskText.
+  return ["-p", taskText, "--dangerously-skip-permissions"];
+}
+
+async function cmdRun(args: Record<string, string>) {
+  ensureDirs();
+  const taskFile = args.task;
+  const cwd = args.cwd || process.cwd();
+  const mode = args.mode || "code";
+  const forced = args.agent; // optional: force one agent, skip routing
+  if (!taskFile || !existsSync(taskFile)) {
+    console.log(JSON.stringify({ agent: null, ok: false, output: `task file not found: ${taskFile}`, fell_back: false, reason: "bad-input", exit_code: 2, log: null }));
+    process.exit(2);
+  }
+  const taskText = readFileSync(taskFile, "utf8");
+  const logFile = join(LOG_DIR, `${ts()}-${mode}.log`);
+  const logLine = (s: string) => appendFileSync(logFile, s + "\n");
+  logLine(`# omega-duo run mode=${mode} cwd=${cwd} task=${taskFile}`);
+
+  const { exhausted, until } = codexExhausted();
+  const wantCodex = forced ? forced === "codex" : !exhausted;
+
+  // ── Attempt Codex first (unless forced to claude or already exhausted) ──────
+  if (wantCodex && forced !== "claude") {
+    logLine(`## codex attempt`);
+    const r = await runProcess(CODEX_BIN, codexArgv(mode, taskText), cwd, "");
+    logLine(`codex exit=${r.exitCode} ok=${r.ok}`);
+    logLine(r.output);
+    if (r.ok) {
+      console.log(JSON.stringify({ agent: "codex", ok: true, output: r.output, fell_back: false, reason: null, exit_code: 0, log: logFile }));
+      return;
+    }
+    // Failed. Quota → fall back to Claude. Otherwise it's a REAL task failure.
+    const isQuota = QUOTA_RE.test(r.output);
+    if (!isQuota) {
+      logLine(`codex failed NON-quota → surfacing as task failure`);
+      console.log(JSON.stringify({ agent: "codex", ok: false, output: r.output, fell_back: false, reason: "codex-task-failure", exit_code: r.exitCode, log: logFile }));
+      process.exit(1);
+    }
+    logLine(`codex QUOTA detected → marking exhausted, falling back to claude`);
+    // Best-effort: pull a reset timestamp out of the message if Codex gave one.
+    const m = r.output.match(/resets? (?:at|in) ([^\n.]+)/i);
+    markExhausted(m ? m[1].trim() : "");
+    // fall through to claude below, with fell_back=true
+    const c = await runProcess(CLAUDE_BIN, claudeArgv(taskText), cwd, "");
+    logLine(`## claude fallback exit=${c.exitCode} ok=${c.ok}`);
+    logLine(c.output);
+    console.log(JSON.stringify({ agent: "claude", ok: c.ok, output: c.output, fell_back: true, reason: "codex-quota-exhausted", exit_code: c.exitCode, log: logFile }));
+    process.exit(c.ok ? 0 : 1);
+  }
+
+  // ── Claude (forced, or Codex already exhausted this window) ─────────────────
+  const reason = forced === "claude" ? "forced-claude" : "codex-quota-exhausted";
+  logLine(`## claude (${reason}${until ? `, resets ${until}` : ""})`);
+  const c = await runProcess(CLAUDE_BIN, claudeArgv(taskText), cwd, "");
+  logLine(`claude exit=${c.exitCode} ok=${c.ok}`);
+  logLine(c.output);
+  console.log(JSON.stringify({ agent: "claude", ok: c.ok, output: c.output, fell_back: reason === "codex-quota-exhausted", reason, exit_code: c.exitCode, log: logFile }));
+  process.exit(c.ok ? 0 : 1);
+}
+
+function parseArgs(argv: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i].startsWith("--")) {
+      const key = argv[i].slice(2);
+      const val = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[++i] : "true";
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+// ── Self-test: proves quota-detection + fallback WITHOUT any real API call ────
+// Uses fake codex/claude scripts so the control flow is exercised for real
+// (L1 runtime-truth: the regex and the branch are run, not asserted on faith).
+async function cmdSelftest() {
+  const { mkdtempSync, chmodSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "duo-selftest-"));
+  const fakeQuotaCodex = join(dir, "codex-quota");
+  const fakeOkCodex = join(dir, "codex-ok");
+  const fakeFailCodex = join(dir, "codex-fail");
+  const fakeClaude = join(dir, "claude");
+  writeFileSync(fakeQuotaCodex, `#!/usr/bin/env bash\necho "Error: You've hit your usage limit. Resets at 2030-01-01T00:00:00Z"; exit 1\n`);
+  writeFileSync(fakeOkCodex, `#!/usr/bin/env bash\necho "codex did the work"; exit 0\n`);
+  writeFileSync(fakeFailCodex, `#!/usr/bin/env bash\necho "error[E0382]: borrow of moved value"; exit 1\n`);
+  writeFileSync(fakeClaude, `#!/usr/bin/env bash\necho "claude did the work"; exit 0\n`);
+  for (const f of [fakeQuotaCodex, fakeOkCodex, fakeFailCodex, fakeClaude]) chmodSync(f, 0o755);
+  const task = join(dir, "task.md");
+  writeFileSync(task, "do the thing");
+
+  let pass = 0, fail = 0;
+  const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log(`  ok   ${name}`); } else { fail++; console.log(`  FAIL ${name}`); } };
+
+  // 1. Codex succeeds → agent=codex, no fallback.
+  const clean = join(dir, "state-clean");
+  let out = await captureRun({ task, cwd: dir }, { DUO_CODEX_BIN: fakeOkCodex, DUO_CLAUDE_BIN: fakeClaude, OMEGA_DIR: clean });
+  check("codex-ok → agent=codex", out.agent === "codex" && out.ok && !out.fell_back);
+
+  // 2. Codex quota → fallback to claude, flagged.
+  const q = join(dir, "state-quota");
+  out = await captureRun({ task, cwd: dir, mode: "code" }, { DUO_CODEX_BIN: fakeQuotaCodex, DUO_CLAUDE_BIN: fakeClaude, OMEGA_DIR: q });
+  check("codex-quota → fell back to claude", out.agent === "claude" && out.fell_back && out.reason === "codex-quota-exhausted");
+  check("codex-quota → exhausted flag written", existsSync(join(q, "state", "duo-codex-exhausted")));
+
+  // 3. Codex NON-quota failure → surfaces as task failure, NO fallback.
+  const f = join(dir, "state-fail");
+  out = await captureRun({ task, cwd: dir }, { DUO_CODEX_BIN: fakeFailCodex, DUO_CLAUDE_BIN: fakeClaude, OMEGA_DIR: f });
+  check("codex code-error → NO fallback (surfaced)", out.agent === "codex" && !out.ok && !out.fell_back && out.reason === "codex-task-failure");
+
+  // 4. Once exhausted flag set (reused q dir), next run skips Codex entirely.
+  out = await captureRun({ task, cwd: dir }, { DUO_CODEX_BIN: fakeQuotaCodex, DUO_CLAUDE_BIN: fakeClaude, OMEGA_DIR: q });
+  check("exhausted flag → skips codex, uses claude", out.agent === "claude" && out.fell_back);
+
+  console.log(`\nself-test: ${pass} passed, ${fail} failed`);
+  process.exit(fail === 0 ? 0 : 1);
+}
+
+// Run the bridge in a subprocess so the self-test exercises the REAL binary
+// end-to-end (argv parsing, spawn, JSON emit), not just an internal function.
+function captureRun(args: Record<string, string>, env: Record<string, string>): Promise<any> {
+  return new Promise((resolve) => {
+    const argv = ["run"];
+    for (const [k, v] of Object.entries(args)) { argv.push(`--${k}`, v); }
+    const child = spawn(process.execPath, [__filename, ...argv], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.on("data", (d) => (out += d.toString()));
+    child.on("close", () => {
+      try { resolve(JSON.parse(out.trim().split("\n").pop() as string)); }
+      catch { resolve({ parse_error: true, raw: out }); }
+    });
+  });
+}
+
+// ── Entry ─────────────────────────────────────────────────────────────────
+const [cmd, ...rest] = process.argv.slice(2);
+switch (cmd) {
+  case "run":
+    await cmdRun(parseArgs(rest));
+    break;
+  case "status": {
+    const { exhausted, until } = codexExhausted();
+    console.log(JSON.stringify({ codex_exhausted: exhausted, resets: until }));
+    break;
+  }
+  case "reset":
+    if (existsSync(EXHAUSTED_FLAG)) unlinkSync(EXHAUSTED_FLAG);
+    console.log(JSON.stringify({ reset: true }));
+    break;
+  case "--self-test":
+  case "selftest":
+    await cmdSelftest();
+    break;
+  default:
+    console.error("usage: omega-duo <run|status|reset|--self-test> [--task f --cwd d --mode m --agent a]");
+    process.exit(2);
+}

@@ -1233,6 +1233,52 @@ else
     info "Claude Changelog Adopt skill not found — skipping"
 fi
 
+# Install the /duo binome (Claude stratège ⇄ Codex/Sol coder, auto-fallback on
+# Codex quota). Two pieces: the deterministic bridge `omega-duo` (Bun) symlinked
+# onto the PATH, and the /duo skill copied → ~/.omega/skills/duo. The bridge's
+# self-test proves quota-detection + fallback with NO real API call; run it if
+# bun is present. Registers /duo + /omg-duo stubs. Idempotent + non-fatal.
+DUO_SRC="$OMEGA_SRC/tools/duo"
+DUO_SKILL_SRC="$OMEGA_SRC/skills/duo"
+DUO_SKILL_DST="$OMEGA_DIR/skills/duo"
+if [[ -d "$DUO_SRC" ]]; then
+    # Bridge → ~/.omega/skills/duo/bin + symlink into ~/.local/bin.
+    mkdir -p "$DUO_SKILL_DST/bin"
+    cp -f "$DUO_SRC/bin/omega-duo" "$DUO_SKILL_DST/bin/omega-duo"
+    chmod +x "$DUO_SKILL_DST/bin/omega-duo"
+    [[ -f "$DUO_SKILL_SRC/SKILL.md" ]] && cp -f "$DUO_SKILL_SRC/SKILL.md" "$DUO_SKILL_DST/SKILL.md"
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$DUO_SKILL_DST/bin/omega-duo" "$HOME/.local/bin/omega-duo"
+    # Prove the fallback logic actually works (no API call). Non-fatal.
+    if command -v bun >/dev/null 2>&1; then
+        if "$DUO_SKILL_DST/bin/omega-duo" --self-test >/dev/null 2>&1; then
+            ok "omega-duo bridge self-test passed (quota-detect + fallback verified)"
+        else
+            info "omega-duo bridge self-test FAILED — inspect ~/.omega/skills/duo/bin/omega-duo"
+        fi
+    else
+        info "bun not found — omega-duo installed but self-test skipped"
+    fi
+    # /duo + /omg-duo slash stubs.
+    DUO_CMD_DST="$HOME/.claude/commands"; mkdir -p "$DUO_CMD_DST"
+    for cmd in "duo" "omg-duo"; do
+        cat > "$DUO_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+Binome Claude (stratège) ⇄ Codex/Sol (coder), avec bascule auto sur Claude si le
+quota Codex est épuisé. Read and follow:
+
+\`$DUO_SKILL_DST/SKILL.md\`
+
+Bridge: \`omega-duo run --task <file.md> --cwd <projet> --mode <plan|code|review>\`
+Status: \`omega-duo status\` · Re-enable Codex: \`omega-duo reset\`
+EOF
+    done
+    ok "/duo binome installed → $DUO_SKILL_DST/ (bridge omega-duo, /duo + /omg-duo)"
+else
+    info "/duo binome not found — skipping"
+fi
+
 # Install the design skills (generative UI/UX, aesthetics, image-to-code).
 # Curated set: taste-skill, minimalist-ui, industrial-brutalist-ui,
 # high-end-visual-design, image-to-code, design-system, stitch-design-taste,
