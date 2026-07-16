@@ -205,6 +205,18 @@ enum Commands {
     /// Sync OmegaOS config into all LLM config directories (symlinks)
     Sync,
 
+    /// Update OmegaOS to the latest version (fetch + fast-forward + reinstall).
+    /// Your ~/.omega state — secrets, projects, Telegram config — is preserved.
+    Update {
+        /// Report what an update WOULD do, then exit. Changes nothing.
+        #[arg(long)]
+        check: bool,
+        /// The OmegaOS checkout to update. Defaults to $OMEGA_SRC, the current
+        /// directory, then the usual install locations.
+        #[arg(long)]
+        dir: Option<String>,
+    },
+
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
     InstallBindings,
 
@@ -585,6 +597,7 @@ async fn main() -> Result<()> {
         Some(Commands::Rules { action }) => cmd_rules(action),
         Some(Commands::Audit { action }) => cmd_audit(action),
         Some(Commands::Sync) => cmd_sync(),
+        Some(Commands::Update { check, dir }) => cmd_update(check, dir.as_deref()),
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -6032,6 +6045,176 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
 /// source-dir convention), the CWD, then the known checkout locations (the
 /// same candidate list doctor.rs uses for bot parity). A candidate counts
 /// only if it actually looks like the repo (OMEGA.md + crates/omega-core).
+/// `omega update [--check] [--dir <path>]` — bring this install up to date.
+///
+/// The update path already existed (`npx omega-os` re-runs `git pull --ff-only`
+/// + `install.sh`) but it was unnamed, undocumented, and it *died* on a dirty or
+/// diverged checkout with a raw git error. This is the same mechanism as a real
+/// command that REFUSES rather than breaks: local work is never touched, never
+/// stashed, never discarded — it is reported and the update stops.
+///
+/// `install.sh` is idempotent and guards every user file (`config.toml`,
+/// `telegram.toml`, secrets, `projects.json`), so re-running it is safe.
+fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
+    let src = match dir {
+        Some(d) => {
+            let p = std::path::PathBuf::from(d);
+            if !p.join("OMEGA.md").is_file() {
+                anyhow::bail!("{} is not an OmegaOS checkout (no OMEGA.md)", p.display());
+            }
+            p
+        }
+        None => resolve_omega_src().ok_or_else(|| {
+            anyhow::anyhow!(
+                "no OmegaOS checkout found.\n\
+                 Looked at $OMEGA_SRC, the current directory, ~/Station/SideBusiness/OmegaOS, \
+                 ~/Station/OmegaOS and ~/OmegaOS.\n\
+                 Pass --dir <path>, or install fresh with:  npx omega-os"
+            )
+        })?,
+    };
+
+    let git = |args: &[&str]| -> String {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&src)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+
+    if !src.join(".git").exists() {
+        anyhow::bail!(
+            "{} has no .git — it cannot be updated in place.\n\
+             Reinstall with:  npx omega-os",
+            src.display()
+        );
+    }
+
+    println!("◆ OmegaOS checkout: {}", src.display());
+    println!("  installed: v{}", env!("CARGO_PKG_VERSION"));
+
+    let branch = {
+        let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        if b.is_empty() || b == "HEAD" { "main".to_string() } else { b }
+    };
+
+    println!("  fetching origin/{}…", branch);
+    let fetch = std::process::Command::new("git")
+        .args(["fetch", "origin", &branch])
+        .current_dir(&src)
+        .output()?;
+    if !fetch.status.success() {
+        anyhow::bail!(
+            "git fetch failed — check network/credentials:\n{}",
+            String::from_utf8_lossy(&fetch.stderr).trim()
+        );
+    }
+
+    let behind = git(&["rev-list", "--count", &format!("HEAD..origin/{}", branch)]);
+    let ahead = git(&["rev-list", "--count", &format!("origin/{}..HEAD", branch)]);
+    let dirty = !git(&["status", "--porcelain"]).is_empty();
+    let behind_n: usize = behind.parse().unwrap_or(0);
+    let ahead_n: usize = ahead.parse().unwrap_or(0);
+
+    // Report the FULL state before deciding anything — a dirty tree is what
+    // blocks an update, so it must be visible even when already up to date.
+    let up_to_date = behind_n == 0 && ahead_n == 0;
+    if up_to_date {
+        println!("  up to date with origin/{}", branch);
+    } else {
+        println!("  {} commit(s) behind, {} ahead", behind_n, ahead_n);
+    }
+    if dirty {
+        println!("  local changes: present (never touched by update)");
+    }
+
+    if check {
+        println!(
+            "\n(--check: nothing changed){}",
+            if dirty || ahead_n > 0 {
+                " — an update would stop, see above"
+            } else if behind_n > 0 {
+                " — an update would fast-forward + reinstall"
+            } else {
+                ""
+            }
+        );
+        return Ok(());
+    }
+
+    if up_to_date && !dirty {
+        println!("✓ already up to date — nothing to do");
+        return Ok(());
+    }
+
+    // REFUSE rather than clobber. `git pull --ff-only` would abort here anyway,
+    // but with a raw git error and no way forward — say what to do instead.
+    if dirty {
+        anyhow::bail!(
+            "local changes in {} — update stopped so nothing of yours is lost.\n\
+             Commit or stash them, then re-run `omega update`:\n\
+               git -C {} status\n\
+               git -C {} stash",
+            src.display(),
+            src.display(),
+            src.display()
+        );
+    }
+    if ahead_n > 0 {
+        anyhow::bail!(
+            "your checkout has {} local commit(s) not on origin/{} — update stopped.\n\
+             Push or rebase them first:\n\
+               git -C {} log --oneline origin/{}..HEAD",
+            ahead_n,
+            branch,
+            src.display(),
+            branch
+        );
+    }
+
+    if behind_n > 0 {
+        println!("  fast-forwarding…");
+        let ff = std::process::Command::new("git")
+            .args(["merge", "--ff-only", &format!("origin/{}", branch)])
+            .current_dir(&src)
+            .output()?;
+        if !ff.status.success() {
+            anyhow::bail!(
+                "fast-forward failed:\n{}",
+                String::from_utf8_lossy(&ff.stderr).trim()
+            );
+        }
+    }
+
+    // install.sh rebuilds the binary from the pulled source and re-applies every
+    // asset. It is idempotent and never clobbers user state.
+    let installer = src.join("install.sh");
+    if !installer.is_file() {
+        anyhow::bail!("{} has no install.sh", src.display());
+    }
+    println!("  running install.sh (this rebuilds the binary from source)…\n");
+    // OMEGA_FROM_SOURCE (install.sh's existing switch): `main` is normally
+    // AHEAD of the latest release tag, and install.sh's "prefer source" gate
+    // only triggers when a local target/release build already exists. Without
+    // this, updating a fresh clone fetches the prebuilt artifact from that
+    // OLDER tag and installs it over the source we just fast-forwarded — an
+    // update that hands back older code (seen live 2026-07-16: the installed
+    // binary knew 32 of 45 rules and exported stale doctrine over the current
+    // one). Build from source so the binary matches the commit we pulled.
+    let status = std::process::Command::new("bash")
+        .arg(&installer)
+        .current_dir(&src)
+        .env("OMEGA_FROM_SOURCE", "1")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("install.sh failed — your previous install is untouched");
+    }
+
+    println!("\n✓ OmegaOS updated. Restart a running TUI (Menu → R) to pick up the new binary.");
+    Ok(())
+}
+
 fn resolve_omega_src() -> Option<std::path::PathBuf> {
     let mut candidates: Vec<std::path::PathBuf> = Vec::new();
     if let Ok(src) = std::env::var("OMEGA_SRC") {

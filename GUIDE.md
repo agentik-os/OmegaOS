@@ -373,6 +373,28 @@ git clone https://github.com/agentik-os/OmegaOS && cd OmegaOS && ./install.sh
 doctrine, the agents, all shipped skills, the Telegram bot services, the
 self-healing crons, shell integration, and the hardened terminal config.
 
+### Updating an existing box
+
+```bash
+omega update           # fetch + fast-forward + rebuild + reinstall
+omega update --check   # report only — changes nothing
+omega update --dir /path/to/OmegaOS   # when the checkout isn't where it looks
+```
+
+`omega update` is the supported way to move an install forward. It always
+rebuilds from source, so you get exactly the commit you pulled — `main` runs
+ahead of the latest release tag, and the prebuilt artifact from that tag would
+be OLDER than the code you just fetched.
+
+Your `~/.omega` state survives: `config.toml`, `telegram.toml`, secrets and
+`projects.json` are all guarded by the installer and never clobbered.
+
+The update **refuses rather than clobbers**. Local changes or unpushed commits
+in the checkout stop it with the exact git command to resolve them — it will
+never stash, reset or discard your work. (`npx omega-os` also updates an
+existing clone, but it dies on a dirty checkout with a raw git error and can
+clone a second copy if run from a different directory — prefer `omega update`.)
+
 **What is local secret state** — recreated per machine, never in any repo:
 `~/.omega/credentials/` (OAuth tokens, API keys), `telegram.toml`,
 `deposit.toml`, `agent-bots.json` (per-project bot tokens),

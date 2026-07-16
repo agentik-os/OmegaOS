@@ -28,6 +28,23 @@ cd OmegaOS
 
 The installer downloads prebuilt `rmux` + `omega` binaries for your platform when a release is published (verified by checksum), and falls back to building from source otherwise — so a fresh clone always reproduces the system, just faster when a binary exists. Force a source build with `OMEGA_FROM_SOURCE=1 ./install.sh`.
 
+## Updating
+
+```
+omega update           # fetch + fast-forward + reinstall
+omega update --check   # what would change? (touches nothing)
+```
+
+It updates the checkout it finds (`$OMEGA_SRC`, the current directory, then
+`~/Station/SideBusiness/OmegaOS`, `~/Station/OmegaOS`, `~/OmegaOS` — or pass
+`--dir`), rebuilds from source, and re-runs the installer. Your `~/.omega`
+state is preserved: secrets, projects, Telegram config and `config.toml` are
+never overwritten.
+
+If you have local changes or unpushed commits in the checkout, the update
+**stops and tells you** rather than touching your work — commit, stash or push,
+then re-run it.
+
 ## First 5 minutes
 
 The stack installs itself; only the personal pieces are left. **`omega guide`
