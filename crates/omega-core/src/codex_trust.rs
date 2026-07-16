@@ -84,6 +84,35 @@ pub fn trust_dir(dir: &Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// True if Codex is authenticated via a ChatGPT session (`auth_mode = "chatgpt"`
+/// in `~/.codex/auth.json`), as opposed to an API key. Best-effort: returns
+/// `false` if the file is missing or unreadable.
+///
+/// OmegaOS injects `OPENAI_API_KEY` into a Codex pane so API-key users work, but
+/// that env var OVERRIDES a `codex login` ChatGPT session — and if the injected
+/// key is wrong or out of quota, every Codex pane dies with 401 / "quota
+/// exceeded". So when a ChatGPT session is present we must NOT inject the key.
+pub fn is_chatgpt_session() -> bool {
+    let Some(home) = dirs::home_dir() else {
+        return false;
+    };
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| home.join(".codex"));
+    let auth_path = codex_home.join("auth.json");
+    let Ok(raw) = std::fs::read_to_string(&auth_path) else {
+        return false;
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| {
+            v.get("auth_mode")
+                .and_then(|m| m.as_str())
+                .map(|m| m == "chatgpt")
+        })
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use toml_edit::{value, DocumentMut, Item, Table};

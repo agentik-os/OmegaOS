@@ -261,7 +261,18 @@ impl Agent {
         };
         match self {
             Agent::Claude => pick(&["ANTHROPIC_API_KEY"]),
-            Agent::Codex => pick(&["OPENAI_API_KEY", "OPENAI_BASE_URL"]),
+            // Codex authenticates via `codex login` (~/.codex/auth.json). When the
+            // user is on a ChatGPT session, injecting OPENAI_API_KEY OVERRIDES that
+            // session and, if the key is wrong or out of quota, breaks every Codex
+            // pane (401 / "quota exceeded"). So inject the API key only when there
+            // is NO ChatGPT session to protect (API-key users still get their key).
+            Agent::Codex => {
+                if crate::codex_trust::is_chatgpt_session() {
+                    String::new()
+                } else {
+                    pick(&["OPENAI_API_KEY", "OPENAI_BASE_URL"])
+                }
+            }
             Agent::Gemini => pick(&["GOOGLE_API_KEY", "GEMINI_API_KEY"]),
             // GLM = Claude Code redirected to Z.AI; it reads ANTHROPIC_AUTH_TOKEN
             // (falling back to GLM_API_KEY). Inject GLM_API_KEY so the GLM arm's
