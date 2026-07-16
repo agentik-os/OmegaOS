@@ -134,7 +134,9 @@ const AGENT_BOTS_FILE = `${OMEGA_DIR}/agent-bots.json`;
 // kind "companion": a FAST conversational brain (Haiku) scoped to the LifeStyle
 // store — instant chat, micro-builds, [[ATLAS: …]] hand-off. `model` overrides
 // the companion's default model id.
-type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security"; model?: string };
+// `agent` pins which provider this project's bot dispatches on (default claude);
+// a trailing "… avec codex" in a message still overrides it per mission.
+type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security"; model?: string; agent?: AgentPick };
 function loadAgentBots(): Record<string, AgentBot> { try { return JSON.parse(readFileSync(AGENT_BOTS_FILE, "utf8")); } catch { return {}; } }
 function saveAgentBots(b: Record<string, AgentBot>) { try { writeFileSync(AGENT_BOTS_FILE, JSON.stringify(b, null, 2)); } catch {} }
 
@@ -685,6 +687,19 @@ function resolveClaude(): string | null {
   for (const c of candidates) if (c && existsSync(c)) return (CLAUDE_RESOLVED = c);
   return null;
 }
+let CODEX_RESOLVED = "";
+function resolveCodex(): string | null {
+  if (CODEX_RESOLVED) return CODEX_RESOLVED;
+  const envBin = process.env.CODEX_BIN;
+  const candidates = [
+    envBin ? (envBin.includes("/") ? envBin : Bun.which(envBin)) : null,
+    `${homedir()}/.local/bin/codex`,
+    Bun.which("codex"),
+    `${homedir()}/.npm-global/bin/codex`,
+  ];
+  for (const c of candidates) if (c && existsSync(c)) return (CODEX_RESOLVED = c);
+  return null;
+}
 // `timeout` is GNU coreutils and absent on stock macOS (brew ships `gtimeout`),
 // so the watchdog lives in JS: runClaude kills a stuck `claude -p` after 900s
 // on every platform instead of probing for a platform timeout binary.
@@ -725,8 +740,46 @@ async function runClaude(text: string, systemPrompt: string, addDir: string, who
   if (!claude) {
     return "Claude Code not found — install + log in on this machine:  omega install claude  then  claude  →  /login";
   }
+  return runAgentProc(
+    claude,
+    ["-p", text, "--append-system-prompt", systemPrompt, "--add-dir", addDir, "--dangerously-skip-permissions", ...extraArgs],
+    who, cwd, timeoutMs, "claude",
+  );
+}
+
+// The Codex half of the same funnel. Two differences from Claude, both forced
+// by the CLI: Codex has no --append-system-prompt (the role framing is
+// prepended to the task text, the way the /duo bridge already does it) and no
+// --add-dir (`exec` is scoped to its cwd, so addDir becomes the cwd).
+//
+// --dangerously-bypass-approvals-and-sandbox is Codex's --dangerously-skip-
+// permissions: a bot-driven run is unattended, so an approval prompt is a hang,
+// and on this VPS Codex's bwrap sandbox cannot set up loopback anyway (see
+// tools/duo/bin/omega-duo).
+//
+// Model and reasoning effort are NOT passed: ~/.codex/config.toml is the
+// operator's SSOT (gpt-5.6-sol at `ultra`) and overriding it here would
+// downgrade the run.
+async function runCodex(text: string, systemPrompt: string, addDir: string, who: string, cwd?: string, timeoutMs = CLAUDE_TIMEOUT_MS): Promise<string> {
+  const codex = resolveCodex();
+  if (!codex) {
+    return "Codex not found — install + log in on this machine:  omega install codex  then  codex  →  /login";
+  }
+  const task = systemPrompt.trim() ? `${systemPrompt.trim()}\n\n---\n\n${text}` : text;
+  return runAgentProc(
+    codex,
+    ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", task],
+    who, cwd || addDir, timeoutMs, "codex",
+  );
+}
+
+// Shared spawn + watchdog + drain for every headless agent call. One
+// implementation so Claude and Codex cannot drift apart on timeout handling,
+// kill escalation or empty-output diagnostics. `label` names the binary in the
+// operator-facing messages.
+async function runAgentProc(bin: string, argv: string[], who: string, cwd: string | undefined, timeoutMs: number, label: string): Promise<string> {
   try {
-    const proc = Bun.spawn([claude, "-p", text, "--append-system-prompt", systemPrompt, "--add-dir", addDir, "--dangerously-skip-permissions", ...extraArgs], {
+    const proc = Bun.spawn([bin, ...argv], {
       cwd, env: { ...process.env, OMEGA_DIR }, stdin: "ignore", stdout: "pipe", stderr: "pipe",
     });
     // Race the run against the watchdog instead of awaiting the streams after a
@@ -746,14 +799,15 @@ async function runClaude(text: string, systemPrompt: string, addDir: string, who
           res(null);
         }, timeoutMs);
       })]);
-      if (!r) return `(${who}: claude timed out after ${timeoutMs / 1000}s and was killed — try again or split the request.)`;
+      if (!r) return `(${who}: ${label} timed out after ${timeoutMs / 1000}s and was killed — try again or split the request.)`;
       const o = r.out.trim();
       if (o) return o;
-      // Empty stdout = claude failed (not logged in, crashed). Surface the stderr
-      // tail instead of a blind "returned nothing" — diagnosable from the phone.
+      // Empty stdout = the agent failed (not logged in, crashed). Surface the
+      // stderr tail instead of a blind "returned nothing" — diagnosable from
+      // the phone.
       const tail = r.err.trim().split("\n").slice(-3).join(" · ").slice(0, 300);
       return tail
-        ? `(${who} returned nothing — claude said: ${tail})`
+        ? `(${who} returned nothing — ${label} said: ${tail})`
         : `(${who} returned nothing — try again or use /menu)`;
     } finally { clearTimeout(watchdog); }
   } catch (e: any) { return `${who} error: ${e?.message || e}`; }
@@ -774,14 +828,18 @@ function oraclePersona(): string {
   if (!ORACLE_PERSONA) { try { ORACLE_PERSONA = readFileSync(`${OMEGA_DIR}/agents/aisb/oracle.md`, "utf8"); } catch {} }
   return ORACLE_PERSONA;
 }
-async function projectOracle(project: string, text: string): Promise<string> {
+async function projectOracle(project: string, text: string, agent: "claude" | "codex" = "claude"): Promise<string> {
   const dir = repoPath(project) || gitRepos().find(r => r.name.toLowerCase() === project.toLowerCase())?.path || `${homedir()}/Station`;
   const scope =
     `You are the ORACLE of the project "${project}" — its dedicated orchestrator. Your ENTIRE world is this project at ${dir}: you have full knowledge of its code, history and state, and you orchestrate ONLY this project. ` +
     `You command the AISB team FOR ${project}: dispatch missions with \`omega dispatch ${project} "<mission>"\` (spawns oracle-${project}-<n> + workers/workflows), and use the 14 Matrix managers, workers and dynamic workflows — always in service of ${project} and nothing else. ` +
     `ORCHESTRATE, don't grind: for anything non-trivial, break it into a DYNAMIC WORKFLOW (fan-out → adversarially verify → synthesize) and/or workers/sub-tasks, each driven by a SMALL goal to reach (R-ORCH / R-GOAL). Define the success goal first, then dispatch and verify. ` +
     `STRICT SCOPE: never work on, modify, or discuss another project. If asked about anything outside ${project}, say it is out of scope and refocus on ${project}. Speak in the first person as the ${project} oracle.\n\n`;
-  return runClaude(text, scope + oraclePersona() + "\n\n" + doctrineCached("oracle"), dir, `The ${project} oracle`, dir);
+  const sys = scope + oraclePersona() + "\n\n" + doctrineCached("oracle");
+  const who = `The ${project} oracle${agent === "codex" ? " (Codex)" : ""}`;
+  return agent === "codex"
+    ? runCodex(text, sys, dir, who, dir)
+    : runClaude(text, sys, dir, who, dir);
 }
 
 // ── COMPANION: the operator's instant personal assistant (agent-bot kind
@@ -1171,8 +1229,31 @@ function rehydrateWatching() {
 // pollProgress as the oracle calls `omega progress`, finalized into the report by
 // pollReports). `extra` is dispatched to the oracle (history/reply context) but NOT
 // shown on the card. Returns "" because the card is sent here directly.
-async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined, extra = ""): Promise<string> {
-  const out = await omega(["dispatch", project, `${extra}${mission}`]);
+type AgentPick = "claude" | "codex";
+
+// The operator picks the provider inline, in the language they actually type:
+// "fix the flaky test avec codex", "… with claude". FR + EN both, since the
+// operator writes both here.
+//
+// Deliberately anchored to the END of the message: an unanchored /with codex/
+// would eat the provider out of a legitimate mission ("compare our output with
+// codex"), silently rerouting it. A trailing directive is how a human writes
+// the instruction, and a false positive there costs nothing.
+//
+// "chatgpt" and "sol" map to Codex (`sol` is Codex's default model,
+// gpt-5.6-sol); "opus" maps to Claude. Returns the mission with the directive
+// stripped, so the agent never reads "avec codex" as part of its task.
+const AGENT_HINT_RE = /[\s,—-]*\b(?:avec|via|sur|en|with|using|on)\s+(codex|chatgpt|sol|claude|opus)\b\s*[.!]?\s*$/i;
+function extractAgentPick(text: string): { text: string; agent?: AgentPick } {
+  const m = text.match(AGENT_HINT_RE);
+  if (!m) return { text };
+  const w = m[1].toLowerCase();
+  const agent: AgentPick = w === "codex" || w === "chatgpt" || w === "sol" ? "codex" : "claude";
+  return { text: text.slice(0, m.index).trim() || text, agent };
+}
+
+async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined, extra = "", agent?: AgentPick): Promise<string> {
+  const out = await omega(["dispatch", project, `${extra}${mission}`, ...(agent ? ["--agent", agent] : [])]);
   const m = out.match(/Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)/) || out.match(/oracle=(oracle-[A-Za-z0-9._-]+)/);
   if (!m) return card(`DISPATCH ${project.toUpperCase()} — FAILED`, ` ❌ <pre>${esc(out).slice(0, 600)}</pre>`);
   const oracle = m[1];
@@ -1193,7 +1274,7 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
 const AGGREGATE_MS = 8000;
 type Fragments = { texts: string[]; files: string[]; quoted: string; lastMsgId: number; timer?: ReturnType<typeof setTimeout> };
 const fragments = new Map<string, Fragments>();
-function queueMissionFragment(chat: number, thread: number | undefined, text: string, file: string, replyTo: string, msgId: number, fixedProject?: string) {
+function queueMissionFragment(chat: number, thread: number | undefined, text: string, file: string, replyTo: string, msgId: number, fixedProject?: string, fixedAgent?: AgentPick) {
   const key = `${chat}:${thread ?? 0}:${fixedProject || ""}`;
   const f = fragments.get(key) || { texts: [], files: [], quoted: "", lastMsgId: msgId };
   if (text) f.texts.push(text);
@@ -1202,10 +1283,10 @@ function queueMissionFragment(chat: number, thread: number | undefined, text: st
   f.lastMsgId = msgId;
   react(chat, msgId, "👀"); // received & buffering — the 🚀 lands at flush time
   if (f.timer) clearTimeout(f.timer);
-  f.timer = setTimeout(() => { fragments.delete(key); flushMission(chat, thread, f, fixedProject).catch((e: any) => console.error("flushMission:", e?.message || e)); }, AGGREGATE_MS);
+  f.timer = setTimeout(() => { fragments.delete(key); flushMission(chat, thread, f, fixedProject, fixedAgent).catch((e: any) => console.error("flushMission:", e?.message || e)); }, AGGREGATE_MS);
   fragments.set(key, f);
 }
-async function flushMission(chat: number, thread: number | undefined, f: Fragments, fixedProject?: string) {
+async function flushMission(chat: number, thread: number | undefined, f: Fragments, fixedProject?: string, fixedAgent?: AgentPick) {
   let text = f.texts.join("\n\n");
   if (f.files.length) {
     const many = f.files.length > 1;
@@ -1213,9 +1294,12 @@ async function flushMission(chat: number, thread: number | undefined, f: Fragmen
   }
   if (!text) return;
   // AGENT MODE: fixed project — direct dispatch, no topic routing / history.
+  // The bot's configured `agent` is the default; a trailing "… avec codex"
+  // overrides it for this one mission.
   if (fixedProject) {
     react(chat, f.lastMsgId, "🚀");
-    const r = await dispatchToOracle(fixedProject, text, chat, thread);
+    const picked = extractAgentPick(text);
+    const r = await dispatchToOracle(fixedProject, picked.text, chat, thread, "", picked.agent || fixedAgent);
     if (r) await send(chat, r, undefined, thread);
     return;
   }
@@ -1228,7 +1312,7 @@ async function flushMission(chat: number, thread: number | undefined, f: Fragmen
   const quoted = f.quoted ? `## The operator is replying to this message:\n«${f.quoted}»\n\n` : "";
   const extra = `${ctx}${quoted}`;
   histAppend(chat, thread, "operator", f.quoted ? `(in reply to: ${f.quoted.slice(0, 120)}) ${text}` : text, proj || "atlas");
-  if (proj) { react(chat, f.lastMsgId, "🚀"); const r = await dispatchToOracle(proj, text, chat, thread, extra); if (r) await send(chat, r, undefined, thread); }
+  if (proj) { react(chat, f.lastMsgId, "🚀"); const picked = extractAgentPick(text); const r = await dispatchToOracle(proj, picked.text, chat, thread, extra, picked.agent); if (r) await send(chat, r, undefined, thread); }
   else await brainReply(chat, f.lastMsgId, thread, `${extra}${text}`);
 }
 // Live progress: read each tracked oracle's progress.json and EDIT its card.
@@ -2120,7 +2204,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     // Primary action: dispatch a mission to the project's dedicated oracle. Plus the
     // Telegram toggle, the dedicated-bot link, Git, and Delete.
     return edit(chat, msgId, `<b>${tgOn ? "📦" : "🔕"} ${esc(arg)}</b>${mp ? `\n<i>${esc(mp.category || "")}</i> · <code>${esc(mp.dir || "")}</code>\nTelegram: ${tgOn ? "🔔 <b>ON</b> (synced topic + shown)" : "🔕 <b>OFF</b> (no topic, dimmed)"}${botLine}` : ""}`, kb([
-      [{ text: "🚀 Dispatch mission", callback_data: `proj:oracle:${arg}`.slice(0, 64) }],
+      [{ text: "🚀 Dispatch — Claude", callback_data: `proj:oracle:${arg}`.slice(0, 64) },
+       { text: "🚀 Dispatch — Codex", callback_data: `proj:oraclex:${arg}`.slice(0, 64) }],
       [{ text: tgOn ? "🔕 Telegram: turn OFF" : "🔔 Telegram: turn ON", callback_data: `proj:tg${tgOn ? "off" : "on"}:${arg}`.slice(0, 64) }],
       [{ text: bot ? "🤖 Dedicated bot — manage" : "🔗 Link a Telegram bot", callback_data: `proj:${bot ? "bot" : "botlink"}:${arg}`.slice(0, 64) }],
       [{ text: "🔧 Git", callback_data: `git:menu:${arg}`.slice(0, 64) }, { text: "🗑 Delete", callback_data: `proj:del:${arg}`.slice(0, 64) }],
@@ -2188,9 +2273,14 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     ]));
   }
   if (ns === "proj" && action === "delallgo") return edit(chat, msgId, await deleteProject(arg, "all"), kb([[{ text: "📋 Projects", callback_data: "nav:projects" }]]));
-  if (ns === "proj" && action === "oracle") {
-    setPending(from, "oracle-prompt", arg);
-    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+  // "oracle" = Claude, "oraclex" = Codex. The provider rides in the pending arg
+  // as "<project>|codex" (project names are alnum+dash, so "|" cannot collide);
+  // a bare "<project>" stays Claude, which keeps old pending entries valid.
+  if (ns === "proj" && (action === "oracle" || action === "oraclex")) {
+    const ag: AgentPick = action === "oraclex" ? "codex" : "claude";
+    setPending(from, "oracle-prompt", ag === "codex" ? `${arg}|codex` : arg);
+    const label = ag === "codex" ? "Codex (gpt-5.6-sol)" : "Claude (Opus 4.8)";
+    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b> · <i>${label}</i>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
   }
   // Reply to a finished report: the next message continues this project's oracle, with
   // the conversation history (incl. the report just sent) as context.
@@ -3229,7 +3319,7 @@ async function agentBotMain(agentId: string) {
         }
         // A message to a project agent-bot = a MISSION → ONE real oracle session.
         // Album / caption-split fragments are buffered and flushed together.
-        queueMissionFragment(chatId, thread, text, file, "", msg.message_id, project);
+        queueMissionFragment(chatId, thread, text, file, "", msg.message_id, project, bot?.agent);
       } catch (e: any) { console.error("agent-bot update error:", e?.message || e); }
     }
   }
@@ -3369,9 +3459,12 @@ async function main() {
             continue;
           }
           if (p.kind === "oracle-prompt") {
-            const proj = p.arg || "";
+            // "<project>" (Claude) or "<project>|codex" — see the proj:oracle[x] handler.
+            const [proj, ag] = (p.arg || "").split("|");
+            const picked = extractAgentPick(text);
+            const agent: AgentPick = picked.agent || (ag === "codex" ? "codex" : "claude");
             react(chatId, msg.message_id, "🚀");
-            await send(chatId, await dispatchToOracle(proj, text, chatId, thread), undefined, thread);
+            await send(chatId, await dispatchToOracle(proj, picked.text, chatId, thread, "", agent), undefined, thread);
             continue;
           }
           if (p.kind === "tg-link") {
