@@ -4063,15 +4063,94 @@ async fn cmd_plan_run(path: &str) -> Result<()> {
     Ok(())
 }
 
+/// A live "still working" beat for long, silent CLI waits: a rotating glyph,
+/// growing dots and elapsed seconds on one rewritten line.
+///
+/// Why: `dispatch` blocks ~17s on the amplify Brain pass (a full opus call,
+/// dispatch.rs:348) BEFORE the oracle exists, and printed nothing until
+/// "◆ Oracle dispatched" — a measured 17s of pure silence on every mission
+/// over 40 chars. The wait is inherent to the LLM call (sonnet is only ~2x
+/// faster and yields a poorer brief), so we make it honest instead of shorter.
+/// Mirrors the Telegram `brainReply` beat (omega-tg-bot.ts:1437).
+///
+/// stderr + TTY-only BY DESIGN: piped, scripted and bot-captured output stays
+/// byte-identical to before.
+///
+/// KNOWN, ACCEPTED: tracing also writes stderr, so a log record emitted while
+/// the beat is live lands on the beat's line (measured: 2 per dispatch — the
+/// stale-done-signal WARN and the git-sync INFO). The record is never lost or
+/// erased, only prefixed by the current frame. Fixing it properly means
+/// wrapping the global tracing writer to erase the line before each record —
+/// a 57-command blast radius for a one-command cosmetic, so it is deliberately
+/// NOT done here.
+struct Beat {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Beat {
+    fn start(label: &'static str) -> Self {
+        use std::io::IsTerminal;
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if !std::io::stderr().is_terminal() {
+            return Beat { stop, handle: None };
+        }
+        let flag = stop.clone();
+        let handle = tokio::spawn(async move {
+            use std::io::Write;
+            use std::sync::atomic::Ordering;
+            const FRAMES: [char; 4] = ['◐', '◓', '◑', '◒'];
+            let t0 = std::time::Instant::now();
+            let mut tick = 0usize;
+            while !flag.load(Ordering::Relaxed) {
+                let secs = t0.elapsed().as_secs();
+                let dots = ".".repeat((secs as usize % 3) + 1);
+                // \r + erase-line: rewrite in place, never scroll the pane.
+                eprint!(
+                    "\r\x1b[2K  {} {}{}  {}s",
+                    FRAMES[tick % FRAMES.len()],
+                    label,
+                    dots,
+                    secs
+                );
+                let _ = std::io::stderr().flush();
+                tick += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            // Clear our line here — inside the task — so we can never race a
+            // half-written frame against the caller's output.
+            eprint!("\r\x1b[2K");
+            let _ = std::io::stderr().flush();
+        });
+        Beat {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    async fn stop(mut self) {
+        self.stop
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.await;
+        }
+    }
+}
+
 async fn cmd_dispatch(project: &str, mission: &str, agent: Option<&str>) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
     let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, config.clone());
 
-    let oracle_name = dispatcher
+    // The beat must stop on the error path too, so bind the Result first
+    // rather than `?`-ing straight through and leaving a live beat behind.
+    let beat = Beat::start("briefing the oracle");
+    let dispatched = dispatcher
         .dispatch_oracle_with_agent(project, mission, agent)
-        .await?;
+        .await;
+    beat.stop().await;
+    let oracle_name = dispatched?;
 
     // Create session log
     let sessions_dir = config.state_dir.join("sessions");
