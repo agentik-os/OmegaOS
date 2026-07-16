@@ -230,6 +230,10 @@ enum Commands {
         project: String,
         /// Mission description
         mission: String,
+        /// Agent for THIS mission (claude, codex, gemini, pi, hermes, glm).
+        /// Defaults to the configured agent_command.
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Run a full orchestrated mission end-to-end (classify → plan → dispatch → monitor → gate)
@@ -585,7 +589,9 @@ async fn main() -> Result<()> {
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
         Some(Commands::Kill { name }) => cmd_kill(&name).await,
-        Some(Commands::Dispatch { project, mission }) => cmd_dispatch(&project, &mission).await,
+        Some(Commands::Dispatch { project, mission, agent }) => {
+            cmd_dispatch(&project, &mission, agent.as_deref()).await
+        }
         Some(Commands::Orchestrate { project, mission, dir, timeout, no_gate }) => {
             cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await
         }
@@ -4035,13 +4041,15 @@ async fn cmd_plan_run(path: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_dispatch(project: &str, mission: &str) -> Result<()> {
+async fn cmd_dispatch(project: &str, mission: &str, agent: Option<&str>) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
     let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, config.clone());
 
-    let oracle_name = dispatcher.dispatch_oracle(project, mission).await?;
+    let oracle_name = dispatcher
+        .dispatch_oracle_with_agent(project, mission, agent)
+        .await?;
 
     // Create session log
     let sessions_dir = config.state_dir.join("sessions");

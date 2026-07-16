@@ -230,10 +230,22 @@ impl Dispatcher {
         }
     }
 
-    pub async fn dispatch_oracle(
+    /// Dispatch using the configured default agent (`config.agent_command`).
+    pub async fn dispatch_oracle(&self, project: &str, mission: &str) -> Result<String> {
+        self.dispatch_oracle_with_agent(project, mission, None).await
+    }
+
+    /// Dispatch, optionally overriding the agent for THIS mission only.
+    ///
+    /// `agent_override` is the per-mission provider pick (e.g. the operator
+    /// asking Atlas for "this mission on Codex"). `None` keeps the configured
+    /// default, so the global `agent_command` stays the fallback rather than
+    /// something every caller has to know about.
+    pub async fn dispatch_oracle_with_agent(
         &self,
         project: &str,
         mission: &str,
+        agent_override: Option<&str>,
     ) -> Result<String> {
         // An oracle is scoped to a DECLARED project. A project not present in the
         // config may still be auto-discovered under the user's projects root —
@@ -396,10 +408,22 @@ impl Dispatcher {
         }
 
         // Claude-only smart spawn (2026-w20 features): /goal + --effort +
-        // budget caps. Gemini/Codex/GLM/Pi/Hermes fall back to the bare
-        // launcher with the same prompt.
-        let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-            .unwrap_or(crate::agents::Agent::Claude);
+        // budget caps. Gemini/GLM/Pi/Hermes fall back to the bare launcher
+        // with the same prompt; Codex gets its own parity lane below.
+        //
+        // The per-mission override wins over the configured default; an
+        // unknown name is a caller error, so fail loud rather than silently
+        // dispatching the mission onto the wrong provider.
+        let agent = match agent_override {
+            Some(name) => crate::agents::Agent::from_name(name).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown agent '{}' — expected one of: claude, codex, gemini, pi, hermes, glm, shell",
+                    name
+                )
+            })?,
+            None => crate::agents::Agent::from_name(&self.config.agent_command)
+                .unwrap_or(crate::agents::Agent::Claude),
+        };
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             // Ultracode posture: the oracle is the strategic brain — it reasons
@@ -529,13 +553,25 @@ impl Dispatcher {
                 )
                 .await?;
         } else {
+            // Non-Claude oracles (Codex/GLM/Gemini/Pi/Hermes).
+            //
+            // They still get the FULL prompt — mission + git-sync preflight +
+            // the role-scoped Laws/Rules funnel above — because the doctrine is
+            // plain text, not a Claude flag. What they do NOT get is /goal:
+            // it is a Claude Code slash command with no equivalent elsewhere,
+            // so the mission runs one-shot and is verified afterwards rather
+            // than self-looping.
+            //
+            // Model and reasoning effort are deliberately NOT injected here.
+            // Codex reads its own ~/.codex/config.toml (the operator's SSOT,
+            // e.g. gpt-5.6-sol at `ultra`); forcing providers.toml's value on
+            // top of it would silently DOWNGRADE the oracle rather than pin it.
+            //
+            // Use the RESOLVED agent, not config.agent_command: with a
+            // per-mission --agent override those two differ, and reading the
+            // config here would silently dispatch onto the wrong provider.
             self.session_mgr
-                .create_agent_session(
-                    &oracle_name,
-                    &work_dir,
-                    &self.config.agent_command,
-                    Some(&prompt),
-                )
+                .create_agent_session(&oracle_name, &work_dir, agent.name(), Some(&prompt))
                 .await?;
         }
 
