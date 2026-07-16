@@ -216,7 +216,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.tab {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
-        Tab::Agentic => draw_info(frame, app, chunks[1]),
+        Tab::Projects => draw_info(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Marketing => draw_marketing(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
@@ -266,6 +266,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         }
         InputMode::SelectModel(..) => {
             draw_model_picker(frame, app);
+        }
+        InputMode::ProjectOpenAgent(..) => {
+            draw_project_open_agent_picker(frame, app);
         }
         InputMode::ProjectDelete(..) => {
             draw_project_delete_picker(frame, app);
@@ -476,6 +479,50 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
     let mut state = ListState::default();
     state.select(Some(sel));
     frame.render_stateful_widget(list, area, &mut state);
+}
+
+/// Open-project agent picker — which agent runs the NEW blank session opened
+/// on a project. ↑/↓ or 1/2, Enter, Esc. Non-destructive → accent border.
+fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
+    let (name, sel): (&str, usize) = match &app.input_mode {
+        InputMode::ProjectOpenAgent(name, _path, sel) => (name.as_str(), *sel),
+        _ => return,
+    };
+    let options = [
+        "1. Claude Code — Opus 4.8",
+        "2. Codex — OpenAI",
+        "   Cancel",
+    ];
+    let area = centered_rect(60, 22, frame.area());
+    frame.render_widget(Clear, area);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = options
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == sel {
+                Style::default()
+                    .fg(th::sel_fg())
+                    .bg(th::accent())
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(th::bright())
+            };
+            let row = format!("{} {}", if i == sel { "▶" } else { " " }, opt);
+            let pad = if i == sel { inner_w.saturating_sub(row.chars().count()) } else { 0 };
+            ListItem::new(Line::from(Span::styled(
+                format!("{}{}", row, " ".repeat(pad)),
+                style,
+            )))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" ▶ Open {} — new session — ↑/↓ or 1/2, Enter, Esc ", name))
+            .border_style(Style::default().fg(th::accent())),
+    );
+    frame.render_widget(list, area);
 }
 
 /// Project delete menu — the SAME three escalating tiers as the Telegram bot
@@ -733,11 +780,11 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Agentic", "Settings", "Marketing", "Help"];
+    let titles = vec!["Sessions", "Menu", "Projects", "Settings", "Marketing", "Help"];
     let selected = match app.tab {
         Tab::Sessions => 0,
         Tab::Menu => 1,
-        Tab::Agentic => 2,
+        Tab::Projects => 2,
         Tab::Settings => 3,
         Tab::Marketing => 4,
         Tab::Help => 5,
@@ -2114,11 +2161,11 @@ fn short_num(n: u64) -> String {
     }
 }
 
-/// Build the unified Agentic-tab left list: a top-padding blank, the Agentic
+/// Build the unified Projects-tab left list: a top-padding blank, the System
 /// info group, a blank gap, then the Projects group. Returns (items,
 /// flat_selected) — the rendered row index of the cursor for `ListState`
 /// scroll tracking.
-fn build_agentic_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
+fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     let list_focused = !app.detail_focused;
     let mut items: Vec<ListItem> = Vec::new();
     let mut flat_selected = 0usize;
@@ -2126,10 +2173,13 @@ fn build_agentic_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // Top padding.
     items.push(ListItem::new(Line::from("")));
 
-    // ── Group 1: Agentic info sections ───────────────────────────────────────
-    items.push(group_header("Agentic"));
+    // ── Group 1: System info sections ────────────────────────────────────────
+    // Named "System" (not "Projects") so it never collides with the tab name:
+    // the tab is Projects, and these rows are the Atlas/Oracle/Workers/Rules
+    // status readouts, not projects.
+    items.push(group_header("System"));
     for (i, sec) in InfoSection::all().iter().enumerate() {
-        let current = app.agentic_group == 0 && i == app.info_section_selected;
+        let current = app.projects_group == 0 && i == app.info_section_selected;
         if current {
             flat_selected = items.len();
         }
@@ -2142,7 +2192,7 @@ fn build_agentic_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // ── Group 2: Projects ────────────────────────────────────────────────────
     items.push(group_header("Projects"));
     if app.project_registry.projects.is_empty() {
-        let current = app.agentic_group == 1;
+        let current = app.projects_group == 1;
         if current {
             flat_selected = items.len();
         }
@@ -2153,7 +2203,7 @@ fn build_agentic_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
         ));
     } else {
         for (i, project) in app.project_registry.projects.iter().enumerate() {
-            let current = app.agentic_group == 1 && i == app.projects_selected;
+            let current = app.projects_group == 1 && i == app.projects_selected;
             if current {
                 flat_selected = items.len();
             }
@@ -2758,9 +2808,9 @@ fn mask_key(key: &str) -> String {
 }
 
 fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Detail + label depend on the group: the Agentic info group renders the
+    // Detail + label depend on the group: the System info group renders the
     // info sections, the Projects group renders the selected project's detail.
-    let on_projects = app.agentic_on_projects();
+    let on_projects = app.on_projects_group();
     let (lines, scroll_target) = if on_projects {
         (render_project_detail(app), 0usize)
     } else {
@@ -2821,13 +2871,13 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { th::accent() } else { th::dim() };
     let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
 
-    // ── Left: grouped list (Agentic info group + Projects group) ─────────────
-    let (items, rendered_selected) = build_agentic_list(app);
+    // ── Left: grouped list (System info group + Projects group) ──────────────
+    let (items, rendered_selected) = build_projects_list(app);
 
     let list_title = if list_focused {
-        " ▶ FOCUSED Agentic — ↑/↓ select, Tab → focus detail "
+        " ▶ FOCUSED Projects — ↑/↓ select, Tab → focus detail "
     } else {
-        " Agentic — Tab to focus list "
+        " Projects — Tab to focus list "
     };
     let list = List::new(items)
         .block(
@@ -2863,7 +2913,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Marketing tab — 25/75 split: left = selectable list of marketing-enabled
 /// projects (status glyph + name + posts), right = the selected project's
-/// detail + an ACTIONS block. Symmetric to the Agentic tab (`draw_info`), same
+/// detail + an ACTIONS block. Symmetric to the Projects tab (`draw_info`), same
 /// theme grammar. Fast/local status only (see `omega_core::marketing`).
 fn draw_marketing(frame: &mut Frame, app: &mut App, area: Rect) {
     let split = Layout::default()
@@ -3413,7 +3463,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Esc", cy),
             Span::styled("  = back", wh),
         ]),
-        Line::from(Span::styled("    Same pattern on Sessions, Settings, Agentic.", gr)),
+        Line::from(Span::styled("    Same pattern on Sessions, Settings, Projects.", gr)),
         Line::from(""),
 
         section("Sessions"),
@@ -3470,7 +3520,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("x", "Clear selected text field (press twice)"),
         Line::from(""),
 
-        section("Agentic → Projects group"),
+        section("Projects → Projects group"),
         key("↑ / ↓", "Browse projects"),
         key("Enter", "Focus detail; Enter again → open in terminal"),
         key("d", "Dispatch oracle to selected project"),
@@ -3481,7 +3531,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("D", "Quick delete local (press twice)"),
         Line::from(""),
 
-        section("Agentic"),
+        section("Projects → System group"),
         key("↑ / ↓", "Navigate sub-sections (or AISB agents in detail)"),
         key("[  /  ]", "Previous / next sub-section"),
         Line::from(""),
@@ -3633,6 +3683,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             InputMode::ProjectDelete(..) => {
                 ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())
+            }
+            InputMode::ProjectOpenAgent(..) => {
+                ("Open project — pick agent — ↑/↓ or 1/2, Enter, Esc", String::new())
             }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);

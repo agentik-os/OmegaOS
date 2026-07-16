@@ -77,9 +77,11 @@ pub enum Action {
     /// Menu → Restart OmegaOS: tear down the terminal and re-exec the
     /// `omega menu` binary in place (picks up a freshly-built binary).
     Restart,
-    /// Projects tab: open the selected project in a terminal — attach to its
-    /// Oracle session if one is alive, otherwise spawn a shell in its dir.
-    OpenProject { name: String, path: String, oracle_session: Option<String> },
+    /// Projects tab: open the selected project in a terminal as a NEW blank
+    /// session running `agent`, in the project's dir. Never re-attaches to an
+    /// existing session — the Sessions tab already does that, and silently
+    /// re-attaching is what made "open" feel broken.
+    OpenProject { name: String, path: String, agent: omega_core::agents::Agent },
     /// Marketing tab: open a marketing-scoped Claude session for the selected
     /// project. `cwd` is the project's `marketing/` dir so the agent starts
     /// there; `prompt` is the scoped "talk only marketing" system prompt.
@@ -373,13 +375,13 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 }
             }
         }
-        Tab::Agentic => {
+        Tab::Projects => {
             if app.detail_focused {
                 if down { app.scroll_detail_down(lines); }
                 else { app.scroll_detail_up(lines); }
             } else {
                 for _ in 0..lines {
-                    if down { app.agentic_tab_next(); } else { app.agentic_tab_prev(); }
+                    if down { app.projects_tab_next(); } else { app.projects_tab_prev(); }
                 }
             }
         }
@@ -804,6 +806,58 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
             })
         }
+        InputMode::ProjectOpenAgent(name, path, sel) => {
+            // Claude · Codex · Cancel. Enter/1/2 spawn a NEW blank session.
+            const COUNT: usize = 3;
+            let open = |sel: usize| -> Action {
+                match sel {
+                    0 => Action::OpenProject {
+                        name: name.clone(),
+                        path: path.clone(),
+                        agent: omega_core::agents::Agent::Claude,
+                    },
+                    1 => Action::OpenProject {
+                        name: name.clone(),
+                        path: path.clone(),
+                        agent: omega_core::agents::Agent::Codex,
+                    },
+                    _ => Action::None,
+                }
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::ProjectOpenAgent(name, path, (sel + 1) % COUNT);
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { COUNT - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::ProjectOpenAgent(name, path, next);
+                    Action::None
+                }
+                KeyCode::Char('1') => {
+                    app.input_mode = InputMode::Normal;
+                    open(0)
+                }
+                KeyCode::Char('2') => {
+                    app.input_mode = InputMode::Normal;
+                    open(1)
+                }
+                KeyCode::Enter => {
+                    app.input_mode = InputMode::Normal;
+                    if sel >= 2 {
+                        app.status_message = Some("Cancelled".to_string());
+                    }
+                    open(sel)
+                }
+                _ => Action::None,
+            }
+        }
+
         InputMode::ProjectDelete(name, sel) => {
             const COUNT: usize = 4; // 3 tiers + cancel
             match key.code {
@@ -1114,7 +1168,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "In session — Tab: back to list · Ctrl+X: close session · Tab-Tab: hide/show menu".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Agentic) {
+            } else if matches!(app.tab, Tab::Settings | Tab::Projects) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on the Settings group, snap cursor to the
@@ -1147,7 +1201,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Scroll: depends on the active tab + focus. PageUp/PageDown super-
         // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(app.preview_inner_height.max(10));
@@ -1155,7 +1209,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(app.preview_inner_height.max(10));
@@ -1163,7 +1217,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects) {
                 app.detail_scroll = 0;
             } else {
                 app.scroll_preview_home();
@@ -1171,7 +1225,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Agentic) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects) {
                 // Jump to the renderer-published bound, not a huge sentinel:
                 // u16::MAX/2 scrolled the Paragraph ~32k lines past its
                 // content — an empty panel only Home could recover.
@@ -1220,10 +1274,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
                 return Action::None;
             }
-            // Agentic tab + detail focused: Projects group → scroll the project
+            // Projects tab + detail focused: Projects group → scroll the project
             // detail; info group → navigate AISB agents (on that section) or scroll.
-            if app.tab == Tab::Agentic && app.detail_focused {
-                if app.agentic_on_projects() {
+            if app.tab == Tab::Projects && app.detail_focused {
+                if app.on_projects_group() {
                     app.scroll_detail_down(1);
                 } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_next();
@@ -1236,7 +1290,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
                 Tab::Settings => app.settings_tab_next(),
-                Tab::Agentic => app.agentic_tab_next(),
+                Tab::Projects => app.projects_tab_next(),
                 Tab::Marketing => app.marketing_tab_next(),
                 Tab::Help => app.scroll_detail_down(1),
             }
@@ -1261,8 +1315,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
                 return Action::None;
             }
-            if app.tab == Tab::Agentic && app.detail_focused {
-                if app.agentic_on_projects() {
+            if app.tab == Tab::Projects && app.detail_focused {
+                if app.on_projects_group() {
                     app.scroll_detail_up(1);
                 } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
                     app.select_info_agent_prev();
@@ -1275,7 +1329,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Sessions => app.select_prev(),
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Settings => app.settings_tab_prev(),
-                Tab::Agentic => app.agentic_tab_prev(),
+                Tab::Projects => app.projects_tab_prev(),
                 Tab::Marketing => app.marketing_tab_prev(),
                 Tab::Help => app.scroll_detail_up(1),
             }
@@ -1285,11 +1339,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Left/Right inside Info navigates between sub-sections (independent of agent sub-cursor)
         // We use a separate explicit handler via PgUp/PgDn — but since arrow keys are taken
         // for tabs, users can use Home/End or [/] to jump between sub-sections:
-        KeyCode::Char('[') if app.tab == Tab::Agentic && !app.agentic_on_projects() => {
+        KeyCode::Char('[') if app.tab == Tab::Projects && !app.on_projects_group() => {
             app.select_info_prev();
             Action::None
         }
-        KeyCode::Char(']') if app.tab == Tab::Agentic && !app.agentic_on_projects() => {
+        KeyCode::Char(']') if app.tab == Tab::Projects && !app.on_projects_group() => {
             app.select_info_next();
             Action::None
         }
@@ -1459,8 +1513,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     }
                 }
             }
-            Tab::Agentic => {
-                if app.agentic_on_projects() {
+            Tab::Projects => {
+                if app.on_projects_group() {
                     // ── Projects group ──
                     if app.project_registry.projects.is_empty() {
                         // Empty registry: Enter opens the same add-project modal
@@ -1479,13 +1533,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         );
                         Action::None
                     } else {
-                        // Detail focused → Enter opens the project in a terminal.
+                        // Detail focused → Enter asks WHICH agent to open the
+                        // project with, then spawns a new blank session.
                         match app.selected_project() {
-                            Some(p) => Action::OpenProject {
-                                name: p.name.clone(),
-                                path: p.path.to_string_lossy().to_string(),
-                                oracle_session: p.oracle_session.clone(),
-                            },
+                            Some(p) => {
+                                let name = p.name.clone();
+                                let path = p.path.to_string_lossy().to_string();
+                                app.input_mode = InputMode::ProjectOpenAgent(name, path, 0);
+                                app.status_message =
+                                    Some("Open project — pick an agent (↑/↓, Enter, Esc)".to_string());
+                                Action::None
+                            }
                             None => {
                                 app.status_message = Some("No project selected".to_string());
                                 Action::None
@@ -1493,7 +1551,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         }
                     }
                 } else {
-                    // ── Agentic info group: Enter focuses the detail panel so
+                    // ── System info group: Enter focuses the detail panel so
                     // users can browse Oracle/Workers/Rules content. ──
                     if !app.detail_focused {
                         app.detail_focused = true;
@@ -1565,7 +1623,7 @@ code produit.",
         // Projects tab: 'n' opens a guided "register existing folder" modal
         // (the in-TUI replacement for the `omega project add` CLI hint). For a
         // green-field scaffold the Menu tab's New-project wizard still applies.
-        KeyCode::Char('n') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('n') if app.tab == Tab::Projects && app.on_projects_group() => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::AddProjectPath;
             app.status_message =
@@ -1610,7 +1668,7 @@ code produit.",
         }
         // Projects tab: 'x' opens the DELETE menu — the same three escalating
         // tiers as the Telegram bot (visible options, no hidden hotkey-guessing).
-        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Projects && app.on_projects_group() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     app.input_mode = InputMode::ProjectDelete(name, 0);
@@ -1622,7 +1680,7 @@ code produit.",
                 }
             }
         }
-        KeyCode::Char('T') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('T') if app.tab == Tab::Projects && app.on_projects_group() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => Action::ToggleProjectTelegram { name },
                 None => {
@@ -1634,7 +1692,7 @@ code produit.",
         // Projects tab: 'D' = Delete forever (two-press confirm) — removes the
         // project from OmegaOS AND deletes its local folder. Distinct from 'x'
         // (registry-only removal). First press arms it; second 'D' fires.
-        KeyCode::Char('D') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('D') if app.tab == Tab::Projects && app.on_projects_group() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     if app.project_delete_pending.as_deref() == Some(name.as_str()) {
@@ -1675,7 +1733,7 @@ code produit.",
         }
         // Projects tab: 'p' runs the planner for the selected project
         // (the global 'p' = new Pi session applies on every other tab).
-        KeyCode::Char('p') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('p') if app.tab == Tab::Projects && app.on_projects_group() => {
             match app.selected_project() {
                 Some(p) => Action::RunPlannerForProject {
                     name: p.name.clone(),
@@ -1716,7 +1774,7 @@ code produit.",
 
         // Projects tab: 'd' pre-fills the dispatch with the selected project,
         // skipping the project-name step → straight to mission entry.
-        KeyCode::Char('d') if app.tab == Tab::Agentic && app.agentic_on_projects() => {
+        KeyCode::Char('d') if app.tab == Tab::Projects && app.on_projects_group() => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     app.input_buffer = String::new();
@@ -2417,6 +2475,62 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
+    // Opening a project spawns a NEW session with the PICKED agent — it must
+    // never silently re-attach to an existing/oracle session (that regression
+    // made "open project" look like it did nothing).
+    #[test]
+    fn open_project_picker_emits_picked_agent() {
+        let mut app = test_app();
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        // Default selection (0) → Claude.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        let action = handle_key(&mut app, enter);
+        match action {
+            Action::OpenProject { name, path, agent } => {
+                assert_eq!(name, "Verba");
+                assert_eq!(path, "/tmp/verba");
+                assert_eq!(agent, omega_core::agents::Agent::Claude);
+            }
+            _ => panic!("expected OpenProject with Claude"),
+        }
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // Down → Codex.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match handle_key(&mut app, enter) {
+            Action::OpenProject { agent, .. } => {
+                assert_eq!(agent, omega_core::agents::Agent::Codex);
+            }
+            _ => panic!("expected OpenProject with Codex"),
+        }
+    }
+
+    // '2' is the digit shortcut for Codex; Esc and the Cancel row open nothing.
+    #[test]
+    fn open_project_picker_shortcuts_and_cancel() {
+        let mut app = test_app();
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        match handle_key(&mut app, press('2')) {
+            Action::OpenProject { agent, .. } => {
+                assert_eq!(agent, omega_core::agents::Agent::Codex)
+            }
+            _ => panic!("expected OpenProject with Codex via '2'"),
+        }
+
+        // Cancel row (index 2) → no session opened.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 2);
+        let action = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(action, Action::None), "Cancel must not open a session");
+
+        // Esc → no session opened.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        let action = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(action, Action::None), "Esc must not open a session");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
     // Up from the first item wraps to the last (matches the SelectModel picker).
     #[test]
     fn dispatch_picker_wraps_at_edges() {
@@ -2772,8 +2886,8 @@ mod tests {
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // arm
         assert_eq!(app.session_focus, SessionFocus::List);
         handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Menu
-        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Agentic
-        assert_eq!(app.tab, Tab::Agentic);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Projects
+        assert_eq!(app.tab, Tab::Projects);
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(
             !app.detail_fullscreen,
@@ -2791,7 +2905,7 @@ mod tests {
 
         // project_delete_pending (Projects tab 'D' — the rm -rf class).
         let mut app = test_app();
-        app.tab = Tab::Agentic;
+        app.tab = Tab::Projects;
         app.project_delete_pending = Some("Demo".into());
         assert!(matches!(handle_key(&mut app, esc), Action::None));
         assert_eq!(app.project_delete_pending, None, "Esc must disarm 'D'");
@@ -2826,7 +2940,7 @@ mod tests {
     #[test]
     fn tab_switch_cancels_all_armed_confirms() {
         let mut app = test_app();
-        app.tab = Tab::Agentic;
+        app.tab = Tab::Projects;
         app.project_delete_pending = Some("Demo".into());
         app.settings_confirm_pending = Some((0, "[Uninstall] demo".into()));
         app.monitor_disconnect_armed = true;
@@ -3102,7 +3216,7 @@ mod tests {
 
         // Esc→Sessions jump from a non-Sessions tab clears the Tab chord.
         let mut app = test_app();
-        app.tab = Tab::Agentic;
+        app.tab = Tab::Projects;
         app.last_tab_press = Some(std::time::Instant::now());
         handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert_eq!(app.tab, Tab::Sessions);

@@ -23,7 +23,7 @@ pub(crate) fn within(t: std::time::Instant, ms: u64) -> bool {
 pub enum Tab {
     Sessions,
     Menu,
-    Agentic,
+    Projects,
     Settings,
     Marketing,
     Help,
@@ -94,7 +94,12 @@ pub enum InputMode {
     /// the shared `ProjectRegistry` — the SAME source the Telegram dispatch
     /// picker uses — so the added-projects list stays in sync across surfaces.
     DispatchProject(Vec<String>, usize),
-    /// Project delete menu (Agentic → Projects 'x') — the SAME three escalating
+    /// Open-project agent picker (Projects tab → Enter on a project). Holds
+    /// (project name, project path, selected index). Opening a project ALWAYS
+    /// starts a NEW blank session with the picked agent — re-entering an
+    /// existing session is the Sessions tab's job, not this one.
+    ProjectOpenAgent(String, String, usize),
+    /// Project delete menu (Projects tab → Projects group 'x') — the SAME three escalating
     /// tiers as the Telegram bot's delete menu (omega → local → all), executed
     /// through the bot's one-shot CLI (one canonical deletion impl).
     /// Holds (project name, selected index).
@@ -1042,11 +1047,11 @@ pub struct App {
     /// the cred-group step, read by the CreateProject handler). None = default.
     pub new_project_cred_group: Option<String>,
     pub info_section_selected: usize,
-    /// Which group of the Agentic tab the cursor is on: 0 = Agentic info
+    /// Which group of the Projects tab the cursor is on: 0 = System info
     /// sections (`InfoSection`/`info_section_selected`), 1 = Projects
     /// (`project_registry`/`projects_selected`). One continuous left list,
     /// separated by a blank gap + `─── Projects ───` header.
-    pub agentic_group: u8,
+    pub projects_group: u8,
     /// When the AISB Agents sub-section is active, which agent is highlighted.
     pub info_agent_selected: usize,
     pub should_quit: bool,
@@ -1238,7 +1243,7 @@ impl App {
             session_filter: None,
             new_project_cred_group: None,
             info_section_selected: 0,
-            agentic_group: 0,
+            projects_group: 0,
             info_agent_selected: 0,
             should_quit: false,
             status_message: None,
@@ -2361,8 +2366,8 @@ impl App {
         self.leave_tab();
         self.tab = match self.tab {
             Tab::Sessions => Tab::Menu,
-            Tab::Menu => Tab::Agentic,
-            Tab::Agentic => Tab::Settings,
+            Tab::Menu => Tab::Projects,
+            Tab::Projects => Tab::Settings,
             Tab::Settings => Tab::Marketing,
             Tab::Marketing => Tab::Help,
             Tab::Help => Tab::Sessions,
@@ -2374,8 +2379,8 @@ impl App {
         self.tab = match self.tab {
             Tab::Sessions => Tab::Help,
             Tab::Menu => Tab::Sessions,
-            Tab::Agentic => Tab::Menu,
-            Tab::Settings => Tab::Agentic,
+            Tab::Projects => Tab::Menu,
+            Tab::Settings => Tab::Projects,
             Tab::Marketing => Tab::Settings,
             Tab::Help => Tab::Marketing,
         };
@@ -2401,58 +2406,58 @@ impl App {
         InfoSection::all()[self.info_section_selected.min(InfoSection::all().len() - 1)]
     }
 
-    /// True when the Agentic-tab cursor sits on a Projects-group row.
-    pub fn agentic_on_projects(&self) -> bool {
-        self.agentic_group == 1
+    /// True when the Projects-tab cursor sits on a Projects-group row.
+    pub fn on_projects_group(&self) -> bool {
+        self.projects_group == 1
     }
 
-    /// Number of navigable rows in the Agentic Projects group (≥1 so the empty
+    /// Number of navigable rows in the Projects group (≥1 so the empty
     /// "(no projects)" placeholder row stays selectable).
-    fn agentic_proj_len(&self) -> usize {
+    fn projects_len(&self) -> usize {
         self.project_registry.projects.len().max(1)
     }
 
-    /// Advance the unified Agentic-tab cursor: walks the info sections, then the
+    /// Advance the unified Projects-tab cursor: walks the info sections, then the
     /// project list, then wraps back to the first info section.
-    pub fn agentic_tab_next(&mut self) {
+    pub fn projects_tab_next(&mut self) {
         let ilen = InfoSection::all().len();
-        let plen = self.agentic_proj_len();
-        if self.agentic_group == 0 {
+        let plen = self.projects_len();
+        if self.projects_group == 0 {
             if self.info_section_selected + 1 < ilen {
                 self.info_section_selected += 1;
             } else {
-                self.agentic_group = 1;
+                self.projects_group = 1;
                 self.projects_selected = 0;
             }
         } else if self.projects_selected + 1 < plen {
             self.projects_selected += 1;
         } else {
-            self.agentic_group = 0;
+            self.projects_group = 0;
             self.info_section_selected = 0;
         }
-        self.on_agentic_nav_change();
+        self.on_projects_nav_change();
     }
 
-    pub fn agentic_tab_prev(&mut self) {
+    pub fn projects_tab_prev(&mut self) {
         let ilen = InfoSection::all().len();
-        let plen = self.agentic_proj_len();
-        if self.agentic_group == 0 {
+        let plen = self.projects_len();
+        if self.projects_group == 0 {
             if self.info_section_selected > 0 {
                 self.info_section_selected -= 1;
             } else {
-                self.agentic_group = 1;
+                self.projects_group = 1;
                 self.projects_selected = plen.saturating_sub(1);
             }
         } else if self.projects_selected > 0 {
             self.projects_selected -= 1;
         } else {
-            self.agentic_group = 0;
+            self.projects_group = 0;
             self.info_section_selected = ilen.saturating_sub(1);
         }
-        self.on_agentic_nav_change();
+        self.on_projects_nav_change();
     }
 
-    fn on_agentic_nav_change(&mut self) {
+    fn on_projects_nav_change(&mut self) {
         self.info_agent_selected = 0;
         self.detail_scroll = 0;
         self.project_delete_pending = None;

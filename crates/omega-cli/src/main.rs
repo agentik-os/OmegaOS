@@ -1611,7 +1611,7 @@ async fn run_tui_loop(
                     let before_refresh = app.status_message.clone();
                     let _ = app.refresh().await;
                     let _ = app.refresh_preview().await;
-                    if app.tab == omega_tui::app::Tab::Agentic {
+                    if app.tab == omega_tui::app::Tab::Projects {
                         app.refresh_projects();
                     }
                     if app.tab == omega_tui::app::Tab::Marketing {
@@ -2020,42 +2020,47 @@ async fn run_tui_loop(
                     terminal.clear()?;
                     app.status_message = Some("Redrawn (Ctrl+L)".to_string());
                 }
-                Action::OpenProject { name, path, oracle_session } => {
+                Action::OpenProject { name, path, agent } => {
                     let mgr = SessionManager::connect().await?;
-                    // Attach to the project's Oracle session if it is alive.
-                    let alive = if let Some(ref oracle) = oracle_session {
-                        mgr.list_sessions()
-                            .await
-                            .map(|ss| ss.iter().any(|s| &s.name == oracle))
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
-                    if let (true, Some(oracle)) = (alive, oracle_session.clone()) {
-                        app.status_message = Some(format!("Attaching to oracle {}", oracle));
-                        auto_focus_chat(app, &oracle).await;
-                    } else {
-                        // No live oracle → open a shell in the project dir.
-                        let safe = name
-                            .chars()
-                            .filter(|c| c.is_alphanumeric() || *c == '-')
-                            .take(24)
-                            .collect::<String>();
-                        let session = format!("{}-shell", safe);
-                        let cmd = format!(
-                            "bash -c {}",
-                            shell_escape_for_bash(&format!("cd {} 2>/dev/null; exec bash", path))
-                        );
-                        match mgr.create_session(&session, Some(&path), Some(&cmd)).await {
-                            Ok(_) => {
-                                app.status_message =
-                                    Some(format!("Opened shell in {} ({})", name, session));
-                                auto_focus_chat(app, &session).await;
-                            }
-                            Err(e) => {
-                                app.status_message =
-                                    Some(format!("Could not open {}: {}", name, e));
-                            }
+                    // Opening a project ALWAYS spawns a NEW blank session with
+                    // the picked agent. It deliberately does NOT re-attach to
+                    // the project's live oracle: re-entering an existing
+                    // session is the Sessions tab's job, and silently
+                    // attaching made "open" look like it did nothing.
+                    let safe = name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric() || *c == '-')
+                        .take(24)
+                        .collect::<String>();
+                    let base = format!("{}-{}", safe, agent.name());
+                    // Uniquify so repeated opens stack instead of colliding
+                    // with (or silently reusing) an earlier session.
+                    let taken: Vec<String> = mgr
+                        .list_sessions()
+                        .await
+                        .map(|ss| ss.iter().map(|s| s.name.clone()).collect())
+                        .unwrap_or_default();
+                    let mut session = base.clone();
+                    let mut n = 2;
+                    while taken.iter().any(|t| t == &session) {
+                        session = format!("{}-{}", base, n);
+                        n += 1;
+                    }
+                    match mgr
+                        .create_session_with_agent(&session, Some(&path), agent, None)
+                        .await
+                    {
+                        Ok(_) => {
+                            app.status_message = Some(format!(
+                                "▶ {} — new {} session ({})",
+                                name,
+                                agent.name(),
+                                session
+                            ));
+                            auto_focus_chat(app, &session).await;
+                        }
+                        Err(e) => {
+                            app.status_message = Some(format!("Could not open {}: {}", name, e));
                         }
                     }
                 }
@@ -2261,10 +2266,10 @@ echo; echo '─── dry-run done ───'; exec bash",
                 terminal.clear()?;
             }
 
-            // Entering the Agentic tab (which now hosts the Projects group) →
+            // Entering the Projects tab (which hosts the Projects group) →
             // reload the registry so projects added via `omega project add` in
             // another shell show up without restart.
-            if app.tab == omega_tui::app::Tab::Agentic && tab_before != omega_tui::app::Tab::Agentic {
+            if app.tab == omega_tui::app::Tab::Projects && tab_before != omega_tui::app::Tab::Projects {
                 app.refresh_projects();
             }
 
@@ -2296,7 +2301,7 @@ echo; echo '─── dry-run done ───'; exec bash",
                     Tab::Sessions => "↑/↓ select · Enter/Tab chat · c/C/g new agent · x kill · . lock · F5 refresh".to_string(),
                     Tab::Menu => "↑/↓ select · Enter run · or press the shortcut key shown".to_string(),
                     Tab::Settings => "↑/↓ Monitor + Settings sections · Enter/Tab edit · L login · T telegram · B billing".to_string(),
-                    Tab::Agentic => "↑/↓ Agentic + Projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
+                    Tab::Projects => "↑/↓ System + Projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
                     Tab::Marketing => "↑/↓ projects · Enter parler marketing · p publier · F5 refresh".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });
