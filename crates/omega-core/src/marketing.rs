@@ -32,6 +32,14 @@ pub struct MarketingProject {
     /// Connected social accounts — `None` in the list (populated on-demand only
     /// via `project_accounts`, never per-frame).
     pub accounts: Option<usize>,
+    /// Whether a lookup has already been ATTEMPTED for this project.
+    ///
+    /// `accounts` alone cannot express "we asked and it failed": it stays
+    /// `None`, so a zernio that is absent or erroring (e.g. HTTP 402) was
+    /// re-shelled on every single cursor move, forever — the Marketing tab's
+    /// navigation lag. A refresh rebuilds this vec, which resets the flag, so
+    /// F5 still retries.
+    pub accounts_tried: bool,
     /// 00-context filled (product-marketing.md present + non-trivial).
     pub has_context: bool,
     /// 01-strategy filled (gtm-strategy.md or content-strategy.md).
@@ -168,6 +176,7 @@ fn build(name: String, path: PathBuf, crontab: &str) -> MarketingProject {
         calendar_posts,
         engine_on,
         accounts: None,
+        accounts_tried: false,
         has_context: layer_filled(&marketing, "00-context", &["product-marketing.md"]),
         has_strategy: layer_filled(&marketing, "01-strategy", &["gtm-strategy.md", "content-strategy.md"]),
         has_copy: layer_filled(&marketing, "02-copy", &["copywriting.md", "social-content.md"]),
@@ -243,28 +252,29 @@ pub fn project_accounts(slug: &str) -> Option<usize> {
         let json = std::process::Command::new("omega-zernio")
             .args(["accounts", &slug, "--json"])
             .output();
+        // The plain-text fallback exists for a zernio that PRINTS non-JSON, not
+        // for a zernio that FAILS: when the command itself exits non-zero (not
+        // installed, HTTP 402/401, network down) re-running the identical
+        // command without --json cannot succeed — it just doubles the cost of
+        // every lookup. So only fall back when the JSON call ran fine and the
+        // output merely wasn't parseable.
         let count = match json {
             Ok(o) if o.status.success() => {
                 let text = String::from_utf8_lossy(&o.stdout);
                 parse_accounts_json(&text).or_else(|| {
-                    // Not JSON — fall through to line count below.
-                    None
+                    let plain = std::process::Command::new("omega-zernio")
+                        .args(["accounts", &slug])
+                        .output()
+                        .ok()?;
+                    if !plain.status.success() {
+                        return None;
+                    }
+                    let text = String::from_utf8_lossy(&plain.stdout);
+                    Some(text.lines().filter(|l| !l.trim().is_empty()).count())
                 })
             }
             _ => None,
         };
-        let count = count.or_else(|| {
-            let plain = std::process::Command::new("omega-zernio")
-                .args(["accounts", &slug])
-                .output()
-                .ok()?;
-            if !plain.status.success() {
-                return None;
-            }
-            let text = String::from_utf8_lossy(&plain.stdout);
-            let n = text.lines().filter(|l| !l.trim().is_empty()).count();
-            Some(n)
-        });
         let _ = tx.send(count);
     });
     rx.recv_timeout(std::time::Duration::from_secs(4))

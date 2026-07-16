@@ -2475,6 +2475,34 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
+    // The tab bar reads Sessions · Projects · Marketing · Menu · Help · Settings,
+    // and Right/Left walk it in that visual order. Locked down because the order
+    // used to live in three hand-kept lists that drifted apart.
+    #[test]
+    fn tab_order_matches_the_bar_and_cycles_both_ways() {
+        let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
+        assert_eq!(
+            titles,
+            vec!["Sessions", "Projects", "Marketing", "Menu", "Help", "Settings"]
+        );
+        for (i, t) in Tab::ORDER.iter().enumerate() {
+            assert_eq!(t.index(), i, "{} must sit at bar position {}", t.title(), i);
+        }
+
+        // Right walks forward and wraps.
+        let mut app = test_app();
+        app.tab = Tab::Sessions;
+        for expected in Tab::ORDER.iter().skip(1).chain(std::iter::once(&Tab::Sessions)) {
+            app.next_tab();
+            assert_eq!(app.tab, *expected, "next_tab landed on the wrong tab");
+        }
+        // Left walks back and wraps.
+        for expected in Tab::ORDER.iter().rev() {
+            app.prev_tab();
+            assert_eq!(app.tab, *expected, "prev_tab landed on the wrong tab");
+        }
+    }
+
     // Opening a project spawns a NEW session with the PICKED agent — it must
     // never silently re-attach to an existing/oracle session (that regression
     // made "open project" look like it did nothing).
@@ -2885,8 +2913,7 @@ mod tests {
         // following Right reaches the normal handler, not the chat handler).
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)); // arm
         assert_eq!(app.session_focus, SessionFocus::List);
-        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Menu
-        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Projects
+        handle_key(&mut app, KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)); // → Projects (a 2col tab)
         assert_eq!(app.tab, Tab::Projects);
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert!(

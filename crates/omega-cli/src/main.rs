@@ -1218,7 +1218,16 @@ async fn run_tui_loop(
         };
         // 60 FPS while interacting, ~15 FPS at rest (cuts idle render CPU ~4×).
         let tick_rate = if interacting { TICK_ACTIVE } else { TICK_IDLE };
-        if !event_pending && last_preview_refresh.elapsed() >= preview_refresh_interval {
+        // Only the Sessions tab renders the preview (draw_sessions_right), so
+        // only it needs the rmux capture. Ungated, navigating Marketing or
+        // Projects fired a capture RPC every 16ms for a pane nobody was
+        // looking at — arrow keys mark the loop "interacting", so browsing
+        // those tabs pinned the fast cadence. Same gate as the meta/git
+        // refreshes above.
+        if !event_pending
+            && app.tab == omega_tui::app::Tab::Sessions
+            && last_preview_refresh.elapsed() >= preview_refresh_interval
+        {
             let _ = app.refresh_preview().await;
             last_preview_refresh = std::time::Instant::now();
         }

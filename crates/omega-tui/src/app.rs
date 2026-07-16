@@ -29,6 +29,37 @@ pub enum Tab {
     Help,
 }
 
+impl Tab {
+    /// Left-to-right order of the tab bar — the ONE source of truth. The bar
+    /// labels, the highlighted index and Left/Right cycling all derive from
+    /// this array, so a reorder is a single edit here. (They used to be three
+    /// hand-kept lists, which is how the bar and the enum drifted apart.)
+    pub const ORDER: [Tab; 6] = [
+        Tab::Sessions,
+        Tab::Projects,
+        Tab::Marketing,
+        Tab::Menu,
+        Tab::Help,
+        Tab::Settings,
+    ];
+
+    pub fn title(&self) -> &'static str {
+        match self {
+            Tab::Sessions => "Sessions",
+            Tab::Projects => "Projects",
+            Tab::Marketing => "Marketing",
+            Tab::Menu => "Menu",
+            Tab::Help => "Help",
+            Tab::Settings => "Settings",
+        }
+    }
+
+    /// Position in the tab bar.
+    pub fn index(&self) -> usize {
+        Self::ORDER.iter().position(|t| t == self).unwrap_or(0)
+    }
+}
+
 /// Claude OAuth re-login progress, surfaced in the Monitor → Account view.
 /// Driven asynchronously: the engine call runs off the event loop and writes
 /// the result back into `App::reauth_status` via a shared sink (see main.rs).
@@ -1349,15 +1380,20 @@ impl App {
         let Some(p) = self.marketing_projects.get(idx) else {
             return;
         };
-        if p.accounts.is_some() {
+        // Ask ONCE per project per refresh. Guarding on `accounts.is_some()`
+        // alone meant a failed lookup (zernio absent/paused/offline) stayed
+        // `None` and was re-shelled on EVERY cursor move — two subprocesses per
+        // arrow key, which is what made this tab crawl.
+        if p.accounts.is_some() || p.accounts_tried {
             return;
         }
         let slug = p.slug.clone();
         let count = omega_core::marketing::project_accounts(&slug);
         if let Some(p) = self.marketing_projects.get_mut(idx) {
-            // `Some(count)` on success; leave `None` so the pane shows "…" and a
-            // later refresh can retry.
+            // `Some(count)` on success; `None` still shows "…" in the pane, and
+            // a refresh rebuilds the vec (clearing `accounts_tried`) to retry.
             p.accounts = count;
+            p.accounts_tried = true;
         }
     }
 
@@ -2364,26 +2400,14 @@ impl App {
 
     pub fn next_tab(&mut self) {
         self.leave_tab();
-        self.tab = match self.tab {
-            Tab::Sessions => Tab::Menu,
-            Tab::Menu => Tab::Projects,
-            Tab::Projects => Tab::Settings,
-            Tab::Settings => Tab::Marketing,
-            Tab::Marketing => Tab::Help,
-            Tab::Help => Tab::Sessions,
-        };
+        let i = self.tab.index();
+        self.tab = Tab::ORDER[(i + 1) % Tab::ORDER.len()];
     }
 
     pub fn prev_tab(&mut self) {
         self.leave_tab();
-        self.tab = match self.tab {
-            Tab::Sessions => Tab::Help,
-            Tab::Menu => Tab::Sessions,
-            Tab::Projects => Tab::Menu,
-            Tab::Settings => Tab::Projects,
-            Tab::Marketing => Tab::Settings,
-            Tab::Help => Tab::Marketing,
-        };
+        let i = self.tab.index();
+        self.tab = Tab::ORDER[(i + Tab::ORDER.len() - 1) % Tab::ORDER.len()];
     }
 
     pub fn select_info_next(&mut self) {

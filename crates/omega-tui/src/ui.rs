@@ -780,15 +780,9 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["Sessions", "Menu", "Projects", "Settings", "Marketing", "Help"];
-    let selected = match app.tab {
-        Tab::Sessions => 0,
-        Tab::Menu => 1,
-        Tab::Projects => 2,
-        Tab::Settings => 3,
-        Tab::Marketing => 4,
-        Tab::Help => 5,
-    };
+    // Both derive from Tab::ORDER — reorder the tab bar there, not here.
+    let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
+    let selected = app.tab.index();
 
     let tabs = Tabs::new(titles)
         .block(
