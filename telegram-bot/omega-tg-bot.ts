@@ -1568,6 +1568,73 @@ async function startLogin(chat: number, msgId: number, from: number, switchAcct:
     kb([[{ text: "🔐 Open & authorize", url }], [{ text: "✖ Cancel", callback_data: "acct:cancel" }]]));
 }
 
+// ── Codex (ChatGPT) account / device-code re-login ───────────────────────────
+// The twin of the Claude flow above, deliberately NOT a copy of it:
+// `codex login --device-auth` prints a STATIC url + a one-time code and then
+// polls for the approval itself, so there is no code to paste back — step 2 is
+// a status CHECK, not a submission. Hence no `setPending` here.
+//
+// It also DELETES ~/.codex/auth.json the instant it starts (measured, codex
+// v0.144.5) — before any approval, and even if the operator never gives one. So
+// a bare button would log the operator out on a stray tap and take /duo down
+// with it. `omega codex-login` backs the credentials up and
+// `omega codex-login-status` restores them when the flow is abandoned; the
+// confirm step below makes that cost explicit BEFORE the choice is made.
+async function codexStatus(): Promise<string> {
+  try {
+    const r = await $`codex login status`.quiet().nothrow();
+    const out = (r.stdout.toString() + r.stderr.toString()).trim();
+    return /Logged in/i.test(out) ? out.split("\n")[0].trim() : "not logged in";
+  } catch { return "unknown"; }
+}
+async function codexBlock(): Promise<string> {
+  const st = await codexStatus();
+  return `\n\n<b>🤖 CODEX (ChatGPT)</b>\n ${/Logged in/i.test(st) ? "🟢" : "🔴"} ${esc(st)}`;
+}
+async function codexConfirm(chat: number, msgId: number) {
+  const st = await codexStatus();
+  return edit(chat, msgId, card("CODEX — RE-LOGIN?",
+    ` Now: <code>${esc(st)}</code>\n\n` +
+    ` ⚠️ <b>Starting logs you out of Codex immediately</b> — before you approve anything.\n` +
+    ` Your credentials are backed up first and put back if you don't finish, but <b>/duo is down until you do</b>.\n\n` +
+    ` Start only if you can approve in a browser now (~1 min, 2FA needed).`),
+    kb([[{ text: "✅ Start", callback_data: "acct:codexgo" }], [{ text: "✖ Cancel", callback_data: "nav:account" }]]));
+}
+async function startCodexLogin(chat: number, msgId: number) {
+  await edit(chat, msgId, card("CODEX — RE-LOGIN",
+    " ⏳ <b>Starting the device flow…</b>\n <i>A few seconds.</i>"), kb([[back("account")]]));
+  const j = extractJson(await omega(["codex-login"]));
+  if (!j?.ok || !j?.code || !/^https?:\/\//.test(String(j?.url || "")))
+    return edit(chat, msgId, card("CODEX — RE-LOGIN",
+      ` ❌ <b>Flow didn't start.</b>\n <code>${esc(String(j?.error || "no code returned"))}</code>\n` +
+      ` <i>Your previous login was restored.</i>`),
+      kb([[{ text: "🔄 Retry", callback_data: "acct:codexgo" }], [back("account")]]));
+  // Both buttons settle the flow: "I approved" confirms it landed, "Cancel"
+  // reaches the same engine, which finds us logged out and restores the backup.
+  return edit(chat, msgId, card("CODEX — RE-LOGIN",
+    ` 🔗 <b>1.</b> Open the link, sign in to ChatGPT.\n` +
+    ` 🔑 <b>2.</b> Enter this one-time code:\n\n <code>${esc(String(j.code))}</code>\n\n` +
+    ` ✅ <b>3.</b> Tap “I approved” below.`,
+    "<i>Code expires in 15 min. Abandon it and your previous login comes back.</i>"),
+    kb([
+      [{ text: "🔐 Open & approve", url: String(j.url) }],
+      [{ text: "✅ I approved", callback_data: `acct:codexdone:${j.pid}` }],
+      [{ text: "✖ Cancel (restore)", callback_data: `acct:codexdone:${j.pid}` }],
+    ]));
+}
+async function finishCodexLogin(chat: number, msgId: number, pid: string) {
+  const j = extractJson(await omega(["codex-login-status", "--pid", pid]));
+  const restored = !!j?.restored;
+  const inNow = !!j?.ok;
+  const body = inNow && !restored
+    ? ` 🟢 <b>Logged in.</b>\n <code>${esc(String(j?.status || ""))}</code>`
+    : restored
+      ? ` ↩️ <b>Not approved — previous login restored.</b>\n <code>${esc(String(j?.status || ""))}</code>`
+      : ` 🔴 <b>Not logged in.</b>\n <code>${esc(String(j?.status || j?.error || "?"))}</code>`;
+  return edit(chat, msgId, card("CODEX — RE-LOGIN", body),
+    kb([[{ text: "🔄 Re-login", callback_data: "acct:codex" }], [back("account")]]));
+}
+
 function dashboardURL(): { url: string; pw: string } {
   const mc = readKV(MC_ENV, /^([A-Z_]+)=(.*)$/);
   const host = mc.HOSTNAME?.trim();
@@ -2029,8 +2096,9 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     // Account: the two actions the operator actually needs — Login (re-auth) and
     // Usage — plus Refresh/Back. (Switch / email / billing / service-accounts were
     // noise; their callback handlers stay for /-command access but are off the view.)
-    case "account": return { text: await accountStatus(), markup: kb([
+    case "account": return { text: await accountStatus() + await codexBlock(), markup: kb([
       [{ text: "🔐 Login / Re-auth", callback_data: "acct:login" }, { text: "📊 Usage tokens", callback_data: "acct:usage" }],
+      [{ text: "🤖 Codex re-login", callback_data: "acct:codex" }],
       [{ text: "🔄 Refresh", callback_data: "nav:account" }, back()],
     ]) };
     case "model": {
@@ -2306,6 +2374,9 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "usage") return edit(chat, msgId, pre("Usage tokens", await omega(["usage"])), kb([[{ text: "🔄 Refresh", callback_data: "acct:usage" }, back("account")]]));
   if (ns === "acct" && action === "billing") return edit(chat, msgId, pre("Billing", await omega(["monitor"])), kb([[back("account")]]));
   if (ns === "acct" && action === "accounts") return edit(chat, msgId, await serviceAccounts(), kb([[{ text: "🔄 Refresh", callback_data: "acct:accounts" }, back("account")]]));
+  if (ns === "acct" && action === "codex") return codexConfirm(chat, msgId);
+  if (ns === "acct" && action === "codexgo") return startCodexLogin(chat, msgId);
+  if (ns === "acct" && action === "codexdone") return finishCodexLogin(chat, msgId, arg);
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all", "--yes"])), kb([[back("clean")]]));
   if (ns === "do" && action === "novaup") return edit(chat, msgId, card("🤖 NOVA OS — démarrage…", await novaosCtl("start")), kb([[{ text: "🔄 Rafraîchir", callback_data: "nav:novaos" }, back("menu")]]));

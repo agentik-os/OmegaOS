@@ -542,6 +542,27 @@ enum Commands {
         /// The OAuth code from the browser (may include a `#state` suffix).
         code: String,
     },
+
+    /// Start a Codex (ChatGPT) device-code re-login: back up the current
+    /// credentials, spawn the waiting flow, and print the URL + one-time code as
+    /// JSON (`{"ok":true,"url":...,"code":...,"pid":N}`). Headless — the shared
+    /// engine for the TUI and the Telegram bridge.
+    ///
+    /// DESTRUCTIVE BY NATURE: `codex login --device-auth` drops the existing
+    /// login the moment it starts, so this backs it up first and
+    /// `codex-login-status` restores it if the flow is abandoned.
+    #[command(name = "codex-login")]
+    CodexLogin,
+
+    /// Settle a Codex device-code re-login: report whether it landed, and if it
+    /// did not, restore the pre-flow credentials and kill the waiting process.
+    /// Prints `{"ok":bool,"status":...,"restored":bool}`.
+    #[command(name = "codex-login-status")]
+    CodexLoginStatus {
+        /// PID from `codex-login`, so an abandoned flow is cleaned up.
+        #[arg(long)]
+        pid: Option<u32>,
+    },
 }
 
 #[tokio::main]
@@ -695,6 +716,8 @@ async fn main() -> Result<()> {
         Some(Commands::PlanRun { path }) => cmd_plan_run(&path).await,
         Some(Commands::ClaudeLogin) => cmd_claude_login().await,
         Some(Commands::ClaudeLoginCode { code }) => cmd_claude_login_code(&code).await,
+        Some(Commands::CodexLogin) => cmd_codex_login().await,
+        Some(Commands::CodexLoginStatus { pid }) => cmd_codex_login_status(pid).await,
     }
 }
 
@@ -3895,6 +3918,54 @@ async fn cmd_claude_login() -> Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// `omega codex-login` — start the Codex device-code re-login and print the
+/// URL + one-time code. See `omega_core::codex_login` for why this is not
+/// shaped like the Claude flow (no code to paste back) and why it backs the
+/// credentials up first (the flow logs you out the instant it starts).
+async fn cmd_codex_login() -> Result<()> {
+    // The engine is blocking (spawn + poll a log file) → keep it off the runtime.
+    match tokio::task::spawn_blocking(omega_core::codex_login::start).await {
+        Ok(Ok(d)) => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": true, "url": d.url, "code": d.code, "pid": d.pid })
+            );
+            Ok(())
+        }
+        Ok(Err(e)) => {
+            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            std::process::exit(1);
+        }
+        Err(e) => {
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": format!("join failed: {}", e) })
+            );
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `omega codex-login-status [--pid N]` — settle the device-code flow: report
+/// success, or restore the pre-flow credentials when it was abandoned.
+async fn cmd_codex_login_status(pid: Option<u32>) -> Result<()> {
+    let (st, restored) =
+        tokio::task::spawn_blocking(move || omega_core::codex_login::finish(pid)).await?;
+    let ok = matches!(st, omega_core::codex_login::LoginStatus::LoggedIn { .. });
+    let label = match &st {
+        omega_core::codex_login::LoginStatus::LoggedIn { mode } => format!("logged in using {mode}"),
+        omega_core::codex_login::LoginStatus::NotLoggedIn => "not logged in".to_string(),
+    };
+    println!(
+        "{}",
+        serde_json::json!({ "ok": ok, "status": label, "restored": restored })
+    );
+    if !ok {
+        std::process::exit(1);
+    }
+    Ok(())
 }
 
 /// `omega claude-login-code <code>` — finish the OAuth re-login by pasting the
