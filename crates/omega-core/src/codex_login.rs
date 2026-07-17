@@ -113,13 +113,16 @@ fn parse_code(out: &str) -> Option<String> {
     None
 }
 
-/// Back the live credentials up so an abandoned flow is recoverable. A missing
-/// auth.json (already logged out) is not an error — there is simply nothing to
-/// lose, and we record that by removing any stale backup.
+/// Back the live credentials up so an abandoned flow is recoverable.
+///
+/// A missing auth.json means we are ALREADY logged out — most likely because an
+/// earlier flow ate it and never settled. Any existing backup is then the last
+/// known-good credential and the operator's only way back, so it is deliberately
+/// LEFT ALONE: clearing it here would destroy the very safety net this module
+/// exists to hold. Returns whether a fresh backup was taken.
 fn backup_credentials() -> Result<bool> {
     std::fs::create_dir_all(omega_state()).ok();
     if !auth_path().exists() {
-        let _ = std::fs::remove_file(backup_path());
         return Ok(false);
     }
     std::fs::copy(auth_path(), backup_path()).context("backing up ~/.codex/auth.json")?;
@@ -173,7 +176,7 @@ pub fn status() -> LoginStatus {
 /// the flow is killed and the credentials are put straight back: we never leave
 /// the operator logged out because of a parse failure.
 pub fn start() -> Result<DeviceLogin> {
-    let had_creds = backup_credentials()?;
+    backup_credentials()?;
     std::fs::create_dir_all(omega_state()).ok();
     let log = std::fs::File::create(log_path()).context("creating the codex-login log")?;
     let err_log = log.try_clone()?;
@@ -207,9 +210,10 @@ pub fn start() -> Result<DeviceLogin> {
 
     let _ = child.kill();
     let _ = child.wait();
-    if had_creds {
-        restore_credentials()?;
-    }
+    // Restore unconditionally, not just when WE took the backup: an earlier
+    // flow may have left one behind, and it is still the best credential we
+    // know of. No-ops when there is nothing to restore.
+    restore_credentials()?;
     let tail = std::fs::read_to_string(log_path())
         .map(|s| strip_ansi(&s).trim().chars().rev().take(300).collect::<String>())
         .unwrap_or_default()
@@ -241,7 +245,14 @@ pub fn finish(pid: Option<u32>) -> (LoginStatus, bool) {
             .output();
     }
     let restored = restore_credentials().unwrap_or(false);
-    (status(), restored)
+    let settled = status();
+    // Once auth.json holds the credentials again the backup has done its job —
+    // drop it rather than leave a second copy of live OAuth tokens on disk. Kept
+    // untouched if the restore did NOT land, since it is then still the only way back.
+    if matches!(settled, LoginStatus::LoggedIn { .. }) {
+        let _ = std::fs::remove_file(backup_path());
+    }
+    (settled, restored)
 }
 
 #[cfg(test)]
