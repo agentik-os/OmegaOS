@@ -77,11 +77,11 @@ async function transcribeVoice(fileId: string): Promise<string> {
   try {
     const gf = await tg("getFile", { file_id: fileId });
     const fp = gf?.result?.file_path; if (!fp) return "";
-    const audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`)).arrayBuffer();
+    const audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`, { signal: AbortSignal.timeout(30_000) })).arrayBuffer();
     const fd = new FormData();
     fd.append("file", new Blob([audio]), "voice.ogg");
     fd.append("model", "whisper-1");
-    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${OPENAI_KEY}` }, body: fd });
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${OPENAI_KEY}` }, body: fd, signal: AbortSignal.timeout(120_000) });
     const j: any = await r.json();
     return (j?.text || "").trim();
   } catch { return ""; }
@@ -109,7 +109,7 @@ async function saveIncomingFile(msg: any): Promise<string> {
     const ext = (fp.match(/\.[A-Za-z0-9]+$/) || [photo ? ".jpg" : ""])[0];
     const base = orig || `tg-${msg.chat?.id}-${msg.message_id}${ext}`;
     const dest = `${OMEGA_DIR}/state/tg-media/${msg.chat?.id}-${msg.message_id}-${base}`;
-    const data = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`)).arrayBuffer();
+    const data = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`, { signal: AbortSignal.timeout(60_000) })).arrayBuffer();
     await Bun.write(dest, data); // creates parent dirs
     return dest;
   } catch (e: any) { console.error("saveIncomingFile:", e?.message || e); return ""; }
@@ -181,7 +181,14 @@ function saveGroups(g: Groups) { try { writeFileSync(GROUPS_FILE, JSON.stringify
 // ── Telegram API ─────────────────────────────────────────────────────────────
 async function tg(method: string, body: any, _retry = 0): Promise<any> {
   try {
-    const r = await fetch(`${API}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    // Client-side abort so a silently half-open TCP connection can NEVER hang the
+    // single poll loop forever. getUpdates long-polls up to body.timeout seconds
+    // server-side; give the socket 20s of extra slack, then abort → caught below →
+    // {ok:false} → the loop sleeps 2s and retries. Without this, an un-timed fetch
+    // on getUpdates could freeze Atlas "alive but deaf" (systemd still `active`,
+    // Restart=always never firing) until a manual restart.
+    const slackMs = 20_000 + (typeof body?.timeout === "number" ? body.timeout * 1000 : 0);
+    const r = await fetch(`${API}/${method}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(slackMs) });
     const j = await r.json();
     // Respect Telegram rate limits (429): back off for retry_after, then retry once or twice.
     if (!j.ok && r.status === 429 && _retry < 2) {
@@ -3544,7 +3551,7 @@ async function main() {
             await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
             // Validate the token via getMe before wiring anything.
             let botInfo: any = {};
-            try { botInfo = await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json(); } catch {}
+            try { botInfo = await (await fetch(`https://api.telegram.org/bot${token}/getMe`, { signal: AbortSignal.timeout(10_000) })).json(); } catch {}
             if (!/^\d+:/.test(token) || !botInfo.ok) { await send(chatId, "❌ Invalid token (check the format <code>123456:ABC…</code> and that the bot exists).", kb([[{ text: "🔁 Retry", callback_data: `agent:tglink:${agentId}`.slice(0, 64) }]]), thread); continue; }
             // "nova"/"companion" = the personal-assistant bot: kind:"companion"
             // switches agentBotMain to the companion brain (persona chat over the

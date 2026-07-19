@@ -1028,6 +1028,18 @@ if [[ -f "$SELFHEAL_SRC" ]]; then
     ok "Self-heal daemon installed: $OMEGA_DIR/bin/omega-self-heal.sh"
 fi
 
+# Install the Atlas liveness watchdog. The master Telegram bot runs a SINGLE poll
+# loop; `omega doctor`/self-heal only check the systemd `active` state, which stays
+# true even when the loop is wedged on a network await — Atlas goes "alive but deaf"
+# and nothing restarts it. This probe uses getWebhookInfo (no getUpdates conflict)
+# to detect a non-draining backlog and restarts the unit, with a busy-guard + cooldown.
+LIVENESS_SRC="$OMEGA_SRC/scripts/omega-atlas-liveness.sh"
+if [[ -f "$LIVENESS_SRC" ]]; then
+    cp "$LIVENESS_SRC" "$OMEGA_DIR/bin/omega-atlas-liveness.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-atlas-liveness.sh"
+    ok "Atlas liveness watchdog installed: $OMEGA_DIR/bin/omega-atlas-liveness.sh"
+fi
+
 # Install the git branch-per-worker orchestration helpers (oracles isolate parallel
 # workers on omega/* branches then merge them back — safe, never force/push). On PATH.
 for gh in omega-git-branch omega-git-merge; do
@@ -1938,6 +1950,7 @@ DONENOTIFY_CRON="* * * * * $OMEGA_DIR/bin/omega-done-notify.sh >> $OMEGA_DIR/log
 STUCK_CRON="* * * * * $OMEGA_DIR/bin/omega-stuck-oracle-alert.sh >> $OMEGA_DIR/logs/omega-stuck-alert.log 2>&1   # OMEGA-CRON-STUCK-ALERT-v1"
 BRIEF_CRON="0 8 * * * $OMEGA_DIR/bin/omega-atlas-brief.sh >> $OMEGA_DIR/logs/omega-atlas-brief.log 2>&1   # OMEGA-CRON-ATLAS-BRIEF-v1"
 SELFHEAL_CRON="0 */3 * * * $OMEGA_DIR/bin/omega-self-heal.sh >> $OMEGA_DIR/logs/omega-self-heal.log 2>&1   # OMEGA-CRON-SELFHEAL-v1"
+LIVENESS_CRON="*/2 * * * * $OMEGA_DIR/bin/omega-atlas-liveness.sh >> $OMEGA_DIR/logs/atlas-liveness.log 2>&1   # OMEGA-CRON-ATLAS-LIVENESS-v1"
 # Telegram media inbox purge: images received via the bot land in state/tg-media
 # for the dispatched oracle to Read; they are transient — purge anything older
 # than 7 days, daily. Strictly scoped to that one directory (cannot touch projects).
@@ -1984,6 +1997,12 @@ if command -v crontab >/dev/null 2>&1; then
     elif [[ -f "$OMEGA_DIR/bin/omega-self-heal.sh" ]]; then
         ( crontab -l 2>/dev/null; echo "$SELFHEAL_CRON" ) | crontab -
         ok "Self-heal daemon scheduled (every 3h → omega doctor --fix + alert)"
+    fi
+    if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-ATLAS-LIVENESS-v1"; then
+        ok "Atlas liveness watchdog already scheduled"
+    elif [[ -f "$OMEGA_DIR/bin/omega-atlas-liveness.sh" ]]; then
+        ( crontab -l 2>/dev/null; echo "$LIVENESS_CRON" ) | crontab -
+        ok "Atlas liveness watchdog scheduled (every 2 min → restart if alive-but-deaf)"
     fi
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-TGMEDIA-PURGE-v1"; then
         ok "Telegram media purge already scheduled"
