@@ -1417,6 +1417,47 @@ EOF
     fi
 done
 
+# Install Stax — the dashboard vision structure (panels-inside-panels UX framework).
+# 1) clone/refresh the framework checkout (tracks agentik-os/stax LATEST main — cheap,
+#    git only, no app build); 2) install the /stax converter skill + slash stubs;
+#    3) register the daily auto-sync cron. The skill reads ~/.omega/repos/stax live.
+if [[ -f "$OMEGA_SRC/tools/stax/install-stax.sh" ]]; then
+    bash "$OMEGA_SRC/tools/stax/install-stax.sh" || info "Stax framework clone had warnings (non-fatal)"
+fi
+STAX_SRC="$OMEGA_SRC/skills/stax"
+STAX_DST="$OMEGA_DIR/skills/stax"
+if [[ -d "$STAX_SRC" ]]; then
+    mkdir -p "$STAX_DST"
+    cp -r "$STAX_SRC"/* "$STAX_DST/"
+    find "$STAX_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    STAX_CMD_DST="$HOME/.claude/commands"; mkdir -p "$STAX_CMD_DST"
+    for cmd in "stax" "omg-stax"; do
+        cat > "$STAX_CMD_DST/$cmd.md" <<EOF
+# /$cmd
+
+Convert a project to the Stax panel grammar (the dashboard vision structure). Read and
+follow the complete instructions in:
+
+\`$STAX_DST/SKILL.md\`
+
+Scaffold: \`bash $STAX_DST/scripts/stax-scaffold.sh <target-dir>\`. Use every reference,
+the conversion playbook, and the live framework at \$HOME/.omega/repos/stax.
+EOF
+    done
+    # Daily auto-sync at 07:20 (Europe/Paris). PATH prepend so cron sees ~/.local/bin
+    # (omega/git). Idempotent: drop any prior line first, ff-only, Telegram-notify on change.
+    STAX_CRON="20 7 * * * PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin OMEGA_DIR=\$HOME/.omega bash \$HOME/.omega/skills/stax/scripts/stax-sync.sh >> \$HOME/.omega/logs/stax-sync.cron.log 2>&1   # OMEGA-CRON-STAX-SYNC-v1"
+    if command -v crontab >/dev/null 2>&1; then
+        ( crontab -l 2>/dev/null | grep -v 'OMEGA-CRON-STAX-SYNC-v1'; echo "$STAX_CRON" ) | crontab - 2>/dev/null \
+            && ok "Stax installed → $STAX_DST/ (/stax + /omg-stax, daily sync 07:20 → main)" \
+            || ok "Stax installed → $STAX_DST/ (cron add skipped)"
+    else
+        ok "Stax installed → $STAX_DST/ (no crontab; run stax-sync.sh manually)"
+    fi
+else
+    info "Stax skill not found — skipping"
+fi
+
 # Install the watch video-analysis skill (/watch + /omg-watch) — vendored from
 # taoufik123-collab/claude-watch @ 7871c7e (MIT). Ships SKILL.md + python
 # scripts + the cookie-harvest helper. External runtime deps (ffmpeg, yt-dlp,
