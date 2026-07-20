@@ -63,7 +63,7 @@ exact API is in `references/api-reference.md`. Summary:
 | **1 · BLUEPRINT** | Every panel type: `panelType`, `resourceKey`, `size`, parent/drill, title/breadcrumb source, footer action, preview-vs-pin, URL, all states. | the `PanelRegistry` map + drill graph |
 | **2 · SCAFFOLD** | Vendor the engine + shell + tokens into the target (mechanical). | working empty Stax workspace |
 | **3 · PORT** | Convert every page/route/modal/tab into panel types + intent calls. | the app, on the panel grammar |
-| **4 · THEME** | Map the brand onto the semantic tokens; per-panel container queries. | branded, token-driven UI |
+| **4 · THEME** | Adopt the WhitePaper design system (tokens + stax-ui chrome + serif/mono type); swap only `--accent` for the brand; per-panel container queries. | Stax-looking, token-driven UI |
 | **5 · VERIFY** | Laws test-kit + `validate()`==[] + runtime (URL restore, back/forward, focus, compact, states). | a conformance pass (evidence, not vibes) |
 
 ### Phase 2 — scaffold (mechanical, do this to unblock the port)
@@ -74,9 +74,15 @@ bash ~/.omega/skills/stax/scripts/stax-scaffold.sh <target-project-dir>
 
 It vendors `panels-core` + `panels-react` (rewriting the `@frameword/*` import to a
 local path — zero deps beyond React), drops in a `stax/` shell (Sidebar / breadcrumb
-Topbar / `ColumnHost` + `PushHost` Stage / `Panel` header-body-footer), `tokens.css`,
-and a `registry.tsx` stub. React 18/19 + TS. After it runs, the app has a live empty
-panel workspace; Phase 3 fills the registry with the real domain.
+Topbar / `ColumnHost` + `PushHost` Stage / `Panel` header-body-footer), **the WhitePaper
+design system** (`tokens.css` = palette + Inter/Newsreader/Geist Mono fonts, `stax-ui.css`
+= the shell/panel chrome: dot-grid stage, 14px card panels, mono eyebrows, serif titles,
+accent footers), and a `registry.tsx` stub. React 18/19 + TS. After it runs, the app both
+behaves AND looks like Stax; Phase 3 fills the registry with the real domain.
+
+**The design IS part of Stax, not just the mechanic.** A conversion adopts the WhitePaper
+look by default (see `references/design-system.md`); you only swap the `--accent` token for
+the brand — the whole system follows (Law 5). Do NOT ship a bare/generic shell.
 
 ### Phase 3 — the porting map (the heart of "convert any project")
 

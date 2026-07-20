@@ -35,11 +35,17 @@ if [[ -d "$TARGET/src" ]]; then DST="$TARGET/src/stax"; else DST="$TARGET/stax";
 mkdir -p "$DST"
 c_info "scaffolding into $DST"
 
-# 1) Vendor the engine (import rewritten to the local file — no npm package needed).
+# 1) Vendor the engine (import rewritten to the local file — no npm package needed)
+#    + the WhitePaper design system (tokens.css + stax-ui.css) so the app WEARS the
+#    Stax look, not just its mechanic.
 cp -f "$CORE" "$DST/panels-core.ts"
 sed 's#@frameword/panels-core#./panels-core#g' "$REACT" > "$DST/panels-react.tsx"
 [[ -f "$TOKENS" ]] && cp -f "$TOKENS" "$DST/tokens.css"
-c_ok "engine vendored: panels-core.ts, panels-react.tsx, tokens.css (refreshed from main)"
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$SKILL_DIR/assets/stax-ui.css" ]]; then cp -f "$SKILL_DIR/assets/stax-ui.css" "$DST/stax-ui.css"; fi
+# keep a fresh tokens snapshot from the skill assets if the framework copy was missing
+[[ ! -f "$DST/tokens.css" && -f "$SKILL_DIR/assets/tokens.css" ]] && cp -f "$SKILL_DIR/assets/tokens.css" "$DST/tokens.css"
+c_ok "engine + design system vendored: panels-core.ts, panels-react.tsx, tokens.css, stax-ui.css"
 
 # 2) Generic shell (only if absent).
 write_if_absent(){ # $1 path ; stdin = content
@@ -215,47 +221,12 @@ export function Stax() {
 EOF
 
 write_if_absent "$DST/stax.css" <<'EOF'
+/* The Stax WhitePaper design system. tokens.css = the palette + fonts (swap the
+   accent and the whole system follows); stax-ui.css = the shell/panel chrome
+   (dot-grid stage, card panels, mono eyebrows, serif titles, accent footers).
+   Add your app-specific panel-body styles below the imports. */
 @import "./tokens.css";
-
-.stax-root { display: flex; height: 100vh; background: var(--background); color: var(--foreground); }
-.stax-sidebar { width: 220px; flex: none; border-right: 1px solid var(--border);
-  background: var(--sidebar); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
-.stax-space-btn { text-align: left; padding: 8px 12px; border: 0; border-radius: var(--radius);
-  background: transparent; color: var(--foreground); font: inherit; cursor: pointer; }
-.stax-space-btn:hover { background: var(--muted); }
-.stax-space-btn[data-active="true"] { background: var(--secondary); font-weight: 600; }
-
-.stax-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.stax-topbar { height: 48px; flex: none; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; padding: 0 16px; }
-.stax-breadcrumb { display: flex; align-items: center; gap: 6px; font-size: 13px; }
-.stax-crumb { border: 0; background: transparent; color: var(--muted-foreground);
-  cursor: pointer; padding: 2px 4px; border-radius: var(--radius-sm); font: inherit; }
-.stax-crumb:hover { color: var(--foreground); background: var(--muted); }
-.stax-sep { color: var(--border); }
-
-.stax-stage { flex: 1; display: flex; align-items: stretch; gap: 0;
-  overflow-x: auto; overflow-y: hidden; scroll-behavior: smooth; }
-.stax-stage.stax-push { overflow-x: hidden; }
-.stax-stage.stax-push .stax-panel { width: 100% !important; }
-
-.stax-panel { flex: none; display: flex; flex-direction: column; min-width: 0;
-  border-right: 1px solid var(--border); background: var(--card); }
-.stax-panel[data-role="root"] { position: sticky; left: 0; z-index: 2; }
-.stax-panel[data-reference="true"] { background: var(--secondary); }
-.stax-panel[data-focused="true"] { box-shadow: inset 0 2px 0 0 var(--accent); }
-.stax-panel-head { height: 44px; flex: none; display: flex; align-items: center;
-  justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--border); }
-.stax-panel-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.stax-panel-ctrls { display: flex; gap: 2px; flex: none; }
-.stax-ico { border: 0; background: transparent; cursor: pointer; color: var(--muted-foreground);
-  width: 26px; height: 26px; border-radius: var(--radius-sm); font-size: 13px; }
-.stax-ico:hover { background: var(--muted); color: var(--foreground); }
-.stax-panel-body { flex: 1; overflow-y: auto; overflow-x: hidden; container-type: inline-size; }
-.stax-panel-foot { flex: none; border-top: 1px solid var(--border); padding: 12px;
-  display: flex; gap: 8px; justify-content: flex-end; background: var(--card); }
-
-.stax-empty, .stax-missing { padding: 32px; color: var(--muted-foreground); }
+@import "./stax-ui.css";
 EOF
 
 cat <<NEXT
