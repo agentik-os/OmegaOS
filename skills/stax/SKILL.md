@@ -52,7 +52,25 @@ It is **not** a universal replacement for pages/tabs/dialogs. Reject panelizatio
 
 Run **Phase 0** and end with `GO` / `ADAPT` / `DO NOT USE` before touching code (L2).
 
-## The conversion pipeline (run in order)
+## PRIMARY PATH — `stax-migrate` (the official engine)
+
+The framework now ships **`stax-migrate`** — a zero-dep Node CLI that drives a
+provably-lossless refonte with two file-backed matrices (feature + pixel-level element)
+and a hard `done` gate that refuses to advance while any row is unmigrated. **Prefer it
+over the manual pipeline below** for any real conversion — it replaces "restyled by eye"
+with the canonical `design-spec.md` contract and greps the new app for drift. Full guide:
+`references/stax-migrate.md`; the pixel contract: `references/design-spec.md`.
+
+```sh
+M=~/.omega/repos/stax/frameword/packages/stax-migrate/index.mjs
+node "$M" init /path/to/legacy-app     # 9 phase briefs + design-spec + matrices
+cd /path/to/legacy-app && node "$M" next   # then: run . --agent claude → done → repeat
+```
+
+The manual pipeline below remains valid for a quick prototype, a teaching walk-through, or
+where a Node CLI can't run — but it carries no coverage guarantee.
+
+## The manual conversion pipeline (fallback)
 
 Full detail + the paste-ready prompts are in `references/conversion-playbook.md`. The
 exact API is in `references/api-reference.md`. Summary:
