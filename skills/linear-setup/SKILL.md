@@ -629,6 +629,7 @@ Copy L34D's route exactly. The only adaptations:
 - **Linear headers are forwarded** — `uploadData.headers` contains required auth headers for S3
 - **Non-blocking screenshot uploads** — if upload fails, issue is still created
 - **projectId is optional** — only include if `LINEAR_PROJECT_ID` env var is set
+- **NO rate limit on feedback routes** — do NOT wrap the feedback POST handlers (auth or public) in `checkRateLimit`/`feedbackRateLimit`. Feedback is low-volume, high-value; a limit blocks a user mid-review-session after only a few submissions. Honeypot (public) handles spam. Never add a 429 path here.
 
 #### NEW in v2.1 — `lib/feedback-scope.ts` helper (REQUIRED)
 
@@ -790,7 +791,7 @@ Copy L34D's public button exactly. Key differences from dashboard widget:
 - **Floating pill button** — `fixed bottom-6 left-6 z-50`, rounded-full, bg-primary
 - **Honeypot field** — hidden input for spam protection
 - **Posts to `/api/feedback/public`** instead of `/api/feedback`
-- **Handles 429 (rate limit)** — shows "too many submissions" toast
+- **No rate limit** — feedback routes are not rate-limited (see Key Rules for API Route); the honeypot field handles spam
 - **Same targeting/screenshot/AI flow** as dashboard widget
 
 ### 6B: Public API Route — `/api/feedback/public/route.ts`
