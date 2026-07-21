@@ -15,7 +15,7 @@ domain: frontend
 read_only: false
 argument-hint: "<path to the project to convert>  (defaults to the cwd project)"
 source: github.com/agentik-os/stax (agentik-os SSOT — tracks main, never a frozen pin)
-license: proprietary (Agentik OS)
+license: MIT (Agentik OS)
 ---
 
 > **OmegaOS skill — the dashboard vision structure.** Converts any app to the Stax

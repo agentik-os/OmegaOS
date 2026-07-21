@@ -10,7 +10,7 @@ UI derives from a single serializable, URL-synced workspace state.
 - **Tracking:** **latest `main`** — NOT a frozen pin. This is the deliberate opposite of
   the pinned `tools/zernflow` / higgsfield installers: Stax is our evolving dashboard
   vision, so OmegaOS follows main and auto-syncs daily.
-- **License:** proprietary (Agentik OS).
+- **License:** MIT (Agentik OS).
 
 ## What ships where
 

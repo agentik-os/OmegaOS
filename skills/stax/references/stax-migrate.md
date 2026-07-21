@@ -63,3 +63,13 @@ React / Express / Rails-ish). For a monorepo, `init` the app package, not the re
 Only for a quick, non-guaranteed prototype, a teaching walk-through, or when a Node CLI
 can't run. For any real conversion the operator cares about, use `stax-migrate` — the
 coverage + design gates are the whole point of "lose nothing, provably".
+
+## Update — v0.3.1 (framework main dac8d6e, 2026-07-21)
+
+The engine gained the **integration contract** (adoption *levels*, and the data layer as
+law) and **anti-gaming gates**: `done` now requires real `evidence` on every row marked
+`migrated` (a bare `status=migrated` no longer passes), keeps **deletion memory** (a row
+removed once can't quietly reappear), enforces **starter scope**, and writes a **phase-8
+artifact**. The 9 phases and commands above are unchanged — always read the live
+`README.md` + `index.mjs` under `~/.omega/repos/stax/frameword/packages/stax-migrate/`, and
+run `node "$M" status` to see the current gate state. License is now **MIT**.
