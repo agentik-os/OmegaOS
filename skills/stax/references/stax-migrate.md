@@ -73,3 +73,14 @@ removed once can't quietly reappear), enforces **starter scope**, and writes a *
 artifact**. The 9 phases and commands above are unchanged — always read the live
 `README.md` + `index.mjs` under `~/.omega/repos/stax/frameword/packages/stax-migrate/`, and
 run `node "$M" status` to see the current gate state. License is now **MIT**.
+
+## Update — framework main ede3952 (2026-07-23)
+
+- **Design:** panel bar height **56 → 44**, foot padding **11/14 → 7/14**, the per-panel
+  **search moved into the foot** (far-left ⌕), and the foot enforces ONE primary CTA +
+  secondary red-on-hover. `design-spec.md`, `assets/styles-reference.css`, `assets/stax-ui.css`
+  refreshed accordingly. tokens.css unchanged.
+- **New:** `create-stax-app` (`frameword/packages/create-stax-app`) — an official
+  scaffolder for a fresh Stax app; the workspace is now an **API** (registry/bridge/layouts/
+  verify gate), plus a storage adapter, workspace undo, and an a11y baseline. Prefer
+  `create-stax-app` for a brand-new app; keep `stax-migrate` for converting a legacy one.
