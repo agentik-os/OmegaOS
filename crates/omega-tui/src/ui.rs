@@ -1,6 +1,6 @@
 use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, MonitorSection, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
 use omega_core::done::DoneStatus;
-use omega_core::session::{PreviewColor, SessionRole};
+use omega_core::session::{PreviewColor, PreviewSpan, SessionRole};
 
 /// Map a preview color to a ratatui Color, PRESERVING depth so the emitted
 /// escape matches the terminal's capability. ANSI 0–15 → the 16-color named
@@ -51,6 +51,179 @@ fn preview_fg_color(c: PreviewColor, has_explicit_bg: bool) -> Color {
         PreviewColor::Indexed(0) if has_explicit_bg => Color::Black,
         PreviewColor::Indexed(15) if has_explicit_bg => Color::White,
         other => preview_to_color(other),
+    }
+}
+
+/// Backgrounds are always explicit. Keep ANSI black/white literal instead of
+/// applying the foreground safety mapping in `preview_to_color`.
+fn preview_bg_color(c: PreviewColor) -> Color {
+    match c {
+        PreviewColor::Indexed(0) => Color::Black,
+        PreviewColor::Indexed(15) => Color::White,
+        other => preview_to_color(other),
+    }
+}
+
+/// Resolve the source terminal's default foreground when a mirrored span has
+/// an explicit background. `Color::Reset` would resolve against the OUTER
+/// terminal instead: a light outer theme supplies a dark default foreground,
+/// which made Codex's dark composer (`bg=rgb(30,30,30), fg=default`) render as
+/// an unreadable black band. Pick whichever of black/white has more contrast
+/// with the source background so nested TUIs remain readable on either theme.
+fn preview_default_fg_for_bg(bg: PreviewColor) -> Color {
+    let (r, g, b) = preview_rgb(bg);
+    let linear = |channel: u8| {
+        let value = f64::from(channel) / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let luminance = 0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b);
+
+    // Black and white have equal WCAG contrast at relative luminance ~0.179.
+    if luminance > 0.179 {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
+/// Approximate a preview color as RGB for contrast selection. RGB and the
+/// xterm 256-color cube are exact; ANSI 0-15 use the conventional palette
+/// because their real values are owned by the outer terminal and unavailable
+/// in an rmux snapshot.
+fn preview_rgb(color: PreviewColor) -> (u8, u8, u8) {
+    match color {
+        PreviewColor::Rgb(r, g, b) => (r, g, b),
+        PreviewColor::Indexed(index @ 0..=15) => {
+            const ANSI: [(u8, u8, u8); 16] = [
+                (0, 0, 0),
+                (128, 0, 0),
+                (0, 128, 0),
+                (128, 128, 0),
+                (0, 0, 128),
+                (128, 0, 128),
+                (0, 128, 128),
+                (192, 192, 192),
+                (128, 128, 128),
+                (255, 0, 0),
+                (0, 255, 0),
+                (255, 255, 0),
+                (0, 0, 255),
+                (255, 0, 255),
+                (0, 255, 255),
+                (255, 255, 255),
+            ];
+            ANSI[usize::from(index)]
+        }
+        PreviewColor::Indexed(index @ 16..=231) => {
+            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let cube = index - 16;
+            (
+                LEVELS[usize::from(cube / 36)],
+                LEVELS[usize::from((cube % 36) / 6)],
+                LEVELS[usize::from(cube % 6)],
+            )
+        }
+        PreviewColor::Indexed(index) => {
+            let gray = 8 + (index - 232) * 10;
+            (gray, gray, gray)
+        }
+    }
+}
+
+/// Convert one captured rmux span into its ratatui style. Kept as a helper so
+/// the default-foreground/explicit-background contract has direct regression
+/// tests instead of depending on a full live daemon fixture.
+fn preview_span_style(sp: &PreviewSpan) -> Style {
+    let mut style = Style::default();
+    if let Some(c) = sp.fg {
+        style = style.fg(preview_fg_color(c, sp.bg.is_some()));
+    } else if let Some(bg) = sp.bg {
+        style = style.fg(preview_default_fg_for_bg(bg));
+    }
+    if let Some(c) = sp.bg {
+        style = style.bg(preview_bg_color(c));
+    }
+    if sp.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if sp.dim {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    if sp.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if sp.underline {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style
+}
+
+#[cfg(test)]
+mod preview_style_tests {
+    use super::*;
+
+    fn span(fg: Option<PreviewColor>, bg: Option<PreviewColor>, dim: bool) -> PreviewSpan {
+        PreviewSpan {
+            text: "Summarize recent commits".to_string(),
+            fg,
+            bg,
+            bold: false,
+            dim,
+            italic: false,
+            underline: false,
+        }
+    }
+
+    #[test]
+    fn codex_dark_composer_gets_an_explicit_light_foreground() {
+        // Codex 0.145 emits this exact combination after rmux reports its
+        // white-on-black fallback palette: RGB(30,30,30), default fg, DIM.
+        let style = preview_span_style(&span(None, Some(PreviewColor::Rgb(30, 30, 30)), true));
+
+        assert_eq!(style.fg, Some(Color::White));
+        assert_eq!(style.bg, Some(Color::Rgb(30, 30, 30)));
+        assert!(style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn light_explicit_background_gets_a_dark_foreground() {
+        let style = preview_span_style(&span(None, Some(PreviewColor::Rgb(245, 245, 245)), false));
+
+        assert_eq!(style.fg, Some(Color::Black));
+        assert_eq!(style.bg, Some(Color::Rgb(245, 245, 245)));
+    }
+
+    #[test]
+    fn ansi_black_and_white_backgrounds_remain_explicit_and_contrasted() {
+        let dark = preview_span_style(&span(None, Some(PreviewColor::Indexed(0)), false));
+        let light = preview_span_style(&span(None, Some(PreviewColor::Indexed(15)), false));
+
+        assert_eq!((dark.fg, dark.bg), (Some(Color::White), Some(Color::Black)));
+        assert_eq!((light.fg, light.bg), (Some(Color::Black), Some(Color::White)));
+    }
+
+    #[test]
+    fn explicit_foreground_is_preserved_over_an_explicit_background() {
+        let style = preview_span_style(&span(
+            Some(PreviewColor::Rgb(195, 147, 255)),
+            Some(PreviewColor::Rgb(30, 30, 30)),
+            false,
+        ));
+
+        assert_eq!(style.fg, Some(Color::Rgb(195, 147, 255)));
+        assert_eq!(style.bg, Some(Color::Rgb(30, 30, 30)));
+    }
+
+    #[test]
+    fn terminal_defaults_stay_unstyled_without_an_explicit_background() {
+        let style = preview_span_style(&span(None, None, false));
+
+        assert_eq!(style.fg, None);
+        assert_eq!(style.bg, None);
     }
 }
 
@@ -1289,33 +1462,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     } else {
                         let spans: Vec<Span> = row
                             .iter()
-                            .map(|sp| {
-                                let mut style = Style::default();
-                                if let Some(c) = sp.fg {
-                                    // bg-aware: keeps the reverse-video swap
-                                    // (black-on-gray) visible — see
-                                    // preview_fg_color.
-                                    style = style.fg(preview_fg_color(c, sp.bg.is_some()));
-                                }
-                                if let Some(c) = sp.bg {
-                                    style = style.bg(preview_to_color(c));
-                                }
-                                if sp.bold {
-                                    style = style.add_modifier(Modifier::BOLD);
-                                }
-                                // DIM/ITALIC/UNDERLINE pass through so Claude's
-                                // secondary (dim) text reads as secondary here too.
-                                if sp.dim {
-                                    style = style.add_modifier(Modifier::DIM);
-                                }
-                                if sp.italic {
-                                    style = style.add_modifier(Modifier::ITALIC);
-                                }
-                                if sp.underline {
-                                    style = style.add_modifier(Modifier::UNDERLINED);
-                                }
-                                Span::styled(sp.text.clone(), style)
-                            })
+                            .map(|sp| Span::styled(sp.text.clone(), preview_span_style(sp)))
                             .collect();
                         Line::from(spans)
                     }
