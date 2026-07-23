@@ -115,3 +115,9 @@
 .stax-panel-body::-webkit-scrollbar, .stax-rail::-webkit-scrollbar, .stax-breadcrumb::-webkit-scrollbar { width: 9px; height: 9px; }
 .stax-panel-body::-webkit-scrollbar-thumb, .stax-rail::-webkit-scrollbar-thumb { background: color-mix(in oklab, var(--foreground) 14%, transparent); border-radius: 9999px; border: 3px solid transparent; background-clip: padding-box; }
 .stax-panel-body, .stax-rail { scrollbar-width: thin; scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent) transparent; }
+
+/* mobile drawer variant of the sidebar — the desktop 18px group gap is far too airy in
+   an off-canvas drawer (single-item groups float). Use it via class .stax-sidebar-drawer. */
+.stax-sidebar-drawer { gap: 2px; }
+.stax-sidebar-drawer .stax-group { gap: 1px; }
+.stax-sidebar-drawer .stax-group-title { margin: 14px 0 3px; }
