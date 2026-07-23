@@ -39,8 +39,8 @@ When building any UI, check in this order:
 ## shadcn Studio Credentials
 
 ```
-Email:       x@agentik-os.com
-License Key: 2827A4BA-8C9C-46D0-95AF-C50401C56BD1
+Email:       <your-shadcn-account-email>
+License Key: <SHADCN_STUDIO_LICENSE_KEY>   # keep the real key OUT of the repo — read it from ~/.omega/secrets at runtime
 ```
 
 **Registry config for `components.json`:**

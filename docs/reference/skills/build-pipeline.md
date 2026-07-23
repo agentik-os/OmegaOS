@@ -215,7 +215,7 @@ npx shadcn@latest add @ss-components/component-name
 npx shadcn@latest add @ss-blocks/block-name
 npx shadcn@latest add @ss-themes/theme-name
 ```
-Credentials: `EMAIL=x@agentik-os.com`, `LICENSE_KEY=2827A4BA-8C9C-46D0-95AF-C50401C56BD1`
+Credentials: `EMAIL=<your-shadcn-account-email>`, `LICENSE_KEY=<SHADCN_STUDIO_LICENSE_KEY>`   (keep the real key OUT of the repo — read from ~/.omega/secrets at runtime)
 
 ### Design Quality Bar — Vercel/Linear/v0 Standard
 
