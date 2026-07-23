@@ -1107,16 +1107,19 @@ if [[ -f "$SELFHEAL_SRC" ]]; then
     ok "Self-heal daemon installed: $OMEGA_DIR/bin/omega-self-heal.sh"
 fi
 
-# Install the Atlas liveness watchdog. The master Telegram bot runs a SINGLE poll
-# loop; `omega doctor`/self-heal only check the systemd `active` state, which stays
-# true even when the loop is wedged on a network await — Atlas goes "alive but deaf"
-# and nothing restarts it. This probe uses getWebhookInfo (no getUpdates conflict)
-# to detect a non-draining backlog and restarts the unit, with a busy-guard + cooldown.
+# Install the Telegram liveness watchdog. EVERY bot — the master (Atlas) and each
+# project agent bot — runs the SAME poll-loop core; `omega doctor`/self-heal only
+# check the systemd `active` state, which stays true even when the loop is wedged
+# on a network await, so a bot goes "alive but deaf" and nothing restarts it. This
+# probe uses getWebhookInfo (no getUpdates conflict) to detect a non-draining
+# backlog and restarts the unit, with a busy-guard + per-unit cooldown. It covers
+# the agent bots too: watching the master alone left the project bots running the
+# exact un-timed-fetch code this watchdog exists for, with no way back.
 LIVENESS_SRC="$OMEGA_SRC/scripts/omega-atlas-liveness.sh"
 if [[ -f "$LIVENESS_SRC" ]]; then
     cp "$LIVENESS_SRC" "$OMEGA_DIR/bin/omega-atlas-liveness.sh"
     chmod +x "$OMEGA_DIR/bin/omega-atlas-liveness.sh"
-    ok "Atlas liveness watchdog installed: $OMEGA_DIR/bin/omega-atlas-liveness.sh"
+    ok "Telegram liveness watchdog installed (master + agent bots): $OMEGA_DIR/bin/omega-atlas-liveness.sh"
 fi
 
 # Install the git branch-per-worker orchestration helpers (oracles isolate parallel

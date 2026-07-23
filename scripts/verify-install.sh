@@ -268,6 +268,13 @@ else ok "marketing-machine payload carries NO credentials (keys stay in secrets/
 if grep -q 'published_at' install.sh && grep -q 'is newer than release' install.sh; then
   ok "prebuilt freshness gate present (never installs a release older than the source)"
 else bad "install.sh can still install a stale prebuilt over newer source"; fi
+# Telegram liveness watchdog must cover the AGENT bots, not just the master: they
+# run the same poll-loop core, so watching omega-tg-bot.service alone left every
+# project bot able to go "alive but deaf" with nothing to recover it.
+if [ -f scripts/omega-atlas-liveness.sh ] && grep -q 'agent-bots.json' scripts/omega-atlas-liveness.sh \
+   && grep -q 'omega-tg-agent-%s.service' scripts/omega-atlas-liveness.sh; then
+  ok "telegram liveness watchdog covers master + agent bots"
+else bad "liveness watchdog watches the master only — agent bots can go deaf unrecovered"; fi
 # Binary replacement must survive a RUNNING omega (patrol/bot/TUI hold the inode).
 if grep -q 'install_binary()' install.sh && ! grep -qE '^\s*cp target/release/(omega|rmux) ' install.sh; then
   ok "binaries installed atomically (survives Text file busy on update)"
