@@ -49,6 +49,27 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}==> $*${NC}"; }
 
+# Install an executable OVER a possibly-RUNNING one.
+#
+# `cp`/`install` open the destination for writing, which the kernel refuses with
+# ETXTBSY ("Text file busy") while any process still executes that exact inode —
+# and on an UPDATE that is the normal case: the patrol daemon, the Telegram
+# bridge, a master session or an open TUI are all running `omega`. Under
+# `set -euo pipefail` that failure killed the entire install (and `omega update`
+# then reported "install.sh failed" with the binary half-replaced).
+#
+# `mv` is a rename(2): it swaps the directory entry and leaves the old inode
+# alive for whoever is still running it, so the replace always succeeds and
+# running processes keep their old image until they restart. Copy to a sibling
+# temp first (same filesystem — a rename across devices would fail).
+install_binary() {
+    local src="$1" dst="$2"
+    mkdir -p "$(dirname "$dst")"
+    cp -f "$src" "$dst.new"
+    chmod 0755 "$dst.new"
+    mv -f "$dst.new" "$dst"
+}
+
 # Privileged command runner — the ONE way this script touches sudo that can
 # ever PROMPT (sole exception: the system-wide rmux config block in Phase 5
 # uses raw `sudo` but self-gates on `sudo -n true`, so it never prompts). Tries
@@ -356,12 +377,13 @@ maybe_install_prebuilt() {
         *) info "No prebuilt for $os/$arch — building from source"; return 0 ;;
     esac
 
-    local tag
-    tag="$(curl -fsSL "https://api.github.com/repos/agentik-os/OmegaOS/releases/latest" 2>/dev/null \
-            | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
+    local api tag published
+    api="$(curl -fsSL "https://api.github.com/repos/agentik-os/OmegaOS/releases/latest" 2>/dev/null)" || true
+    tag="$(printf '%s' "$api" | grep -m1 '"tag_name"' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')" || true
     [[ -n "$tag" ]] || { info "No published release yet — building from source"; return 0; }
+    published="$(printf '%s' "$api" | grep -m1 '"published_at"' | sed -E 's/.*"published_at": *"([^"]+)".*/\1/')" || true
 
-    # Freshness gate: a checkout that already has a local release build is a
+    # Freshness gate A — a checkout that already has a local release build is a
     # dev/operator box — that build reflects HEAD, while the prebuilt reflects
     # the (older) release tag. Installing the prebuilt here silently DOWNGRADES
     # the binary that was just built from newer commits at the same version
@@ -371,6 +393,28 @@ maybe_install_prebuilt() {
     if [[ -x "$OMEGA_SRC/target/release/omega" ]]; then
         info "Local release build present — preferring source build over prebuilt $tag"
         return 0
+    fi
+
+    # Freshness gate B — NEVER install a prebuilt older than the source we are
+    # installing FROM. Gate A only covers boxes that already built once; a fresh
+    # `npx omega-os` clone has no target/release, so it took the fast path and
+    # got the release artifact even when `main` was weeks ahead of the last tag
+    # (seen live 2026-07-23: v0.1.8 was published 2026-06-12 while main carried
+    # the Marketing tab, the Projects tab and the agent picker — the operator
+    # installed a 6-week-old menu, and since the workspace version was STILL
+    # 0.1.8 `omega --version` reported the same number for both). Compare the
+    # release date against the HEAD commit date of the checkout: source newer
+    # → build from source. Works on the shallow `--depth 1` clone npx makes.
+    if [[ -n "$published" && -n "$OMEGA_SRC" && -d "$OMEGA_SRC/.git" ]] && command -v git >/dev/null 2>&1; then
+        local head_date
+        # Force UTC on BOTH sides (GitHub publishes Zulu; a commit carries its
+        # author's offset), then compare only YYYY-MM-DDTHH:MM:SS so the two
+        # timezone suffixes ("Z" vs "+00:00") can never skew the string compare.
+        head_date="$(TZ=UTC git -C "$OMEGA_SRC" log -1 --date=iso-strict-local --format=%cd 2>/dev/null)" || true
+        if [[ -n "$head_date" && "${head_date:0:19}" > "${published:0:19}" ]]; then
+            info "Source ($head_date) is newer than release $tag ($published) — building from source"
+            return 0
+        fi
     fi
 
     local base tarball tmp
@@ -397,8 +441,8 @@ maybe_install_prebuilt() {
     [[ -f "$tmp/omega" && -f "$tmp/rmux" ]] || { info "Prebuilt missing binaries — building from source"; rm -rf "$tmp"; return 0; }
 
     mkdir -p "$INSTALL_DIR"
-    install -m 0755 "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
-    install -m 0755 "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
+    install_binary "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
+    install_binary "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"
     rm -rf "$tmp"
 
@@ -433,7 +477,7 @@ else
     cd "$RMUX_BUILD_DIR"
     cargo build --release 2>&1 | tail -3
     mkdir -p "$INSTALL_DIR"
-    cp target/release/rmux "$INSTALL_DIR/rmux"
+    install_binary target/release/rmux "$INSTALL_DIR/rmux"
     cd -
     rm -rf "$RMUX_BUILD_DIR"
     ok "rmux installed to $INSTALL_DIR/rmux"
@@ -740,7 +784,7 @@ else
     # build only if the lockfile is somehow absent/out of sync.
     cargo build --release --locked 2>&1 | tail -3 || cargo build --release 2>&1 | tail -3
     mkdir -p "$INSTALL_DIR"
-    cp target/release/omega "$INSTALL_DIR/omega"
+    install_binary target/release/omega "$INSTALL_DIR/omega"
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
@@ -774,18 +818,53 @@ if [[ -f "$OMEGA_SRC/tools/zernflow/install-zernflow.sh" ]]; then
     info "ZernFlow available (opt-in) — bash tools/zernflow/install-zernflow.sh to set it up"
 fi
 
-# Marketing-machine CLIs (outlier = research engine, superx = X analytics shim).
-# Symlinked, not copied, so `git pull` updates them in place. `outlier` needs
-# yt-dlp at runtime; `superx` needs SUPERX_API_KEY. Both degrade with a clear
-# error when their dependency is absent, so neither blocks the install.
-if [[ -d "$OMEGA_SRC/tools/marketing-machine/bin" ]]; then
-    mkdir -p "$HOME/.local/bin"
-    for _mm_bin in "$OMEGA_SRC/tools/marketing-machine/bin"/*; do
-        [[ -f "$_mm_bin" ]] || continue
-        chmod +x "$_mm_bin"
-        ln -sf "$_mm_bin" "$HOME/.local/bin/$(basename "$_mm_bin")"
+# ─── Marketing Machine (R-MARKETING) — full setup, ZERO credentials ──────────
+# The machine is three things and ALL of them must survive without a repo
+# checkout: the capabilities registry (the anti-forgetting SSOT that
+# `omega marketing capabilities` reads), the per-project scaffolder, and the
+# two CLIs. Only the CLIs used to be wired, so on a fresh box `omega marketing
+# capabilities` fell back to hunting for a checkout in two hardcoded paths and
+# found nothing (the registry, the scaffolder and the growth kit were simply
+# absent from ~/.omega). Install the whole payload; credentials are NEVER part
+# of it — every integration key stays in ~/.omega/secrets/integrations.env and
+# `omega marketing doctor` just REPORTS which are missing.
+MM_SRC="$OMEGA_SRC/tools/marketing-machine"
+MM_DST="$OMEGA_DIR/marketing-machine"
+if [[ -d "$MM_SRC" ]]; then
+    mkdir -p "$MM_DST"
+    # Registry + scaffolder + manifest + docs + growth kit.
+    for _mm_f in capabilities.toml scaffold.sh projects.tsv README.md AUDIT.md BACKLOG.md; do
+        [[ -f "$MM_SRC/$_mm_f" ]] && cp -f "$MM_SRC/$_mm_f" "$MM_DST/$_mm_f"
     done
-    unset _mm_bin
+    unset _mm_f
+    [[ -f "$MM_DST/scaffold.sh" ]] && chmod +x "$MM_DST/scaffold.sh"
+    if [[ -d "$MM_SRC/growth" ]]; then
+        mkdir -p "$MM_DST/growth"
+        cp -f "$MM_SRC/growth"/*.md "$MM_DST/growth/" 2>/dev/null || true
+    fi
+    # CLIs (outlier = research engine, superx = X analytics shim). `outlier`
+    # needs yt-dlp at runtime; `superx` needs SUPERX_API_KEY. Both degrade with
+    # a clear error when their dependency is absent, so neither blocks install.
+    if [[ -d "$MM_SRC/bin" ]]; then
+        mkdir -p "$MM_DST/bin" "$HOME/.local/bin"
+        # Symlink from the CHECKOUT when it persists (a dev box: `git pull`
+        # then updates the CLIs in place, the original intent), but from the
+        # installed copy when the source is the throwaway curl|bash clone in
+        # /tmp — those symlinks used to dangle the moment /tmp was cleared.
+        _mm_link_src="$MM_SRC/bin"
+        [[ "$OMEGA_SRC" == /tmp/omega-build ]] && _mm_link_src="$MM_DST/bin"
+        for _mm_bin in "$MM_SRC/bin"/*; do
+            [[ -f "$_mm_bin" ]] || continue
+            chmod +x "$_mm_bin"
+            cp -f "$_mm_bin" "$MM_DST/bin/$(basename "$_mm_bin")"
+            chmod +x "$MM_DST/bin/$(basename "$_mm_bin")"
+            ln -sf "$_mm_link_src/$(basename "$_mm_bin")" "$HOME/.local/bin/$(basename "$_mm_bin")"
+        done
+        unset _mm_bin _mm_link_src
+    fi
+    ok "Marketing Machine installed → $MM_DST/ (registry + scaffolder + growth kit + CLIs; keys stay in secrets/)"
+else
+    info "Marketing Machine payload not found — skipping"
 fi
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────

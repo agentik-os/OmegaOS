@@ -435,6 +435,19 @@ pub fn capabilities_toml_path() -> Option<PathBuf> {
             return Some(cand);
         }
     }
+
+    // 5. The INSTALLED copy — last, so a checkout always wins (an operator
+    // editing the registry sees it immediately, without reinstalling). This is
+    // what makes the registry work on a machine that has no checkout at all, or
+    // whose checkout lives somewhere step 4 never guesses: install.sh drops the
+    // whole marketing-machine payload here.
+    let omega_dir = std::env::var("OMEGA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".omega"));
+    let installed = omega_dir.join("marketing-machine").join("capabilities.toml");
+    if installed.is_file() {
+        return Some(installed);
+    }
     None
 }
 

@@ -242,6 +242,37 @@ if [ -f docs/reference/oauth/claude-oauth.sh ] && grep -q "claude-oauth.sh" inst
 # Reference docs tree shipped + wired (`omega docs` + $HOME Claude sessions read it).
 if [ -d docs ] && [ -f docs/ARCHITECTURE.md ] && grep -q "OMEGA_SRC/docs" install.sh; then ok "reference docs shipped + wired in install.sh"; else bad "docs tree not shipped/wired in install.sh"; fi
 
+# Marketing Machine (R-MARKETING) — the WHOLE payload must ship, not just the
+# CLIs: `omega marketing capabilities/status/next` reads capabilities.toml, and
+# a fresh box has no checkout to fall back on. Credentials are deliberately NOT
+# part of the payload (keys stay in ~/.omega/secrets/integrations.env).
+mm_missing=""
+for f in capabilities.toml scaffold.sh projects.tsv README.md AUDIT.md growth/GROWTH-KIT.md growth/OUTLIER-ENGINE.md; do
+  [ -f "tools/marketing-machine/$f" ] || mm_missing="$mm_missing $f"
+done
+if [ -n "$mm_missing" ]; then bad "marketing-machine payload incomplete:$mm_missing"; else ok "marketing-machine payload complete (registry + scaffolder + growth kit)"; fi
+if grep -q 'MM_DST="\$OMEGA_DIR/marketing-machine"' install.sh && grep -q 'cp -f "\$MM_SRC/\$_mm_f"' install.sh; then
+  ok "marketing-machine installed to ~/.omega by install.sh (checkout-independent)"
+else bad "marketing-machine payload not copied into ~/.omega by install.sh"; fi
+if grep -q 'marketing-machine' crates/omega-core/src/marketing.rs && grep -q '\.join("marketing-machine")' crates/omega-core/src/marketing.rs; then
+  ok "capabilities registry resolves the installed ~/.omega copy (no checkout needed)"
+else bad "capabilities_toml_path has no ~/.omega fallback — breaks on a checkout-less box"; fi
+if grep -rqE 'API_KEY *= *["'"'"'][A-Za-z0-9_-]{16,}' tools/marketing-machine/ 2>/dev/null; then
+  bad "marketing-machine payload contains a hardcoded credential"
+else ok "marketing-machine payload carries NO credentials (keys stay in secrets/)"; fi
+
+# Prebuilt-release freshness gate: a fresh clone must NEVER be handed a release
+# artifact older than the source it was cloned from (2026-07-23: v0.1.8 from
+# 12 June was installed over a main carrying the July menu — same version
+# string, so nothing looked wrong).
+if grep -q 'published_at' install.sh && grep -q 'is newer than release' install.sh; then
+  ok "prebuilt freshness gate present (never installs a release older than the source)"
+else bad "install.sh can still install a stale prebuilt over newer source"; fi
+# Binary replacement must survive a RUNNING omega (patrol/bot/TUI hold the inode).
+if grep -q 'install_binary()' install.sh && ! grep -qE '^\s*cp target/release/(omega|rmux) ' install.sh; then
+  ok "binaries installed atomically (survives Text file busy on update)"
+else bad "install.sh still cp's over a possibly-running binary (ETXTBSY aborts the install)"; fi
+
 # 10b. No SKILL.md leaks a maintainer-private ~/.claude or /home/hacker path that
 #      install.sh does NOT create. OmegaOS ships on a blank VPS: an audit skill that
 #      shells out to `~/.claude/lib/hinge-analyzer.sh` or reads `~/.claude/DEPRECATED.md`
