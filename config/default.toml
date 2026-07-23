@@ -3,9 +3,14 @@
 # an empty or partial file is valid — uncomment only what you want to override.
 # (Fields are top-level, not nested under a table.)
 
-# The agent runtime CLI and the default model it runs.
+# The default agent runtime CLI. Codex/Sol (OpenAI) is the built-in default —
+# every oracle, worker, orchestrate, team spawn, patrol re-spawn and plain
+# Telegram dispatch uses it when no `--agent` is given. Switch the global default
+# back to Claude by uncommenting the line below. Either way you can still choose
+# per mission: `omega dispatch <proj> "…" --agent claude`, the /duo binome, the
+# TUI agent picker, or a trailing "… avec claude" in a Telegram message.
 # agent_command = "claude"
-# default_model = "opus"
+# default_model = "opus"   # (Claude-only: the model tier when the agent is Claude)
 
 # Root that holds your project category folders (customers/ side-business/
 # tools/). Auto-detected per-user if omitted — never hardcoded.

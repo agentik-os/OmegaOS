@@ -945,6 +945,41 @@ else
     ok "Config already exists: $OMEGA_DIR/config.toml"
 fi
 
+# ─── Default agent → Codex/Sol (operator directive: codex everywhere) ────────
+# The built-in default is now Codex, but an EXISTING install carries an explicit
+# `agent_command = "claude"` (older installs wrote it), and cp above never
+# overwrites a config that already exists — so `omega update` alone would leave
+# the old default in place. This one-time, guarded migration flips it:
+#   - ONLY when Codex actually runs on this box (never strand dispatch on a
+#     machine without codex — it falls back to leaving Claude and says so),
+#   - ONLY a DEFAULT value ("claude", or a commented/absent line) — a deliberate
+#     non-claude choice (glm/gemini/pi) is never touched,
+#   - ONCE — a stamp file means that if the operator later chooses Claude on
+#     purpose, we never re-flip it out from under them.
+AGENT_MIG_STAMP="$OMEGA_DIR/state/.default-agent-codex.done"
+CFG="$OMEGA_DIR/config.toml"
+if [[ -f "$CFG" && ! -f "$AGENT_MIG_STAMP" ]]; then
+    mkdir -p "$OMEGA_DIR/state"
+    cur="$(grep -oP '^\s*agent_command\s*=\s*"\K[^"]+' "$CFG" 2>/dev/null | head -1 || true)"
+    if command -v codex >/dev/null 2>&1; then
+        if [[ -z "$cur" || "$cur" == "claude" ]]; then
+            if grep -qE '^\s*#?\s*agent_command\s*=' "$CFG"; then
+                # Replace the first active-or-commented agent_command line in place.
+                perl -0pi -e 's/^\s*#?\s*agent_command\s*=.*$/agent_command = "codex"/m unless our $done++;' "$CFG"
+            else
+                # No line at all → insert right after the first line (top-level key).
+                perl -0pi -e 's/\n/\nagent_command = "codex"\n/ unless our $done++;' "$CFG"
+            fi
+            ok "Default agent → Codex/Sol (was ${cur:-default}) in $CFG"
+        else
+            ok "Default agent kept: '$cur' (deliberate non-default — not touched)"
+        fi
+    else
+        info "Default agent stays Claude — Codex not installed here (run: omega install codex, then set agent_command = \"codex\")"
+    fi
+    touch "$AGENT_MIG_STAMP"
+fi
+
 # Clock timezone hint. The on-screen clock follows the system zone by default;
 # a headless VPS is usually UTC, so the operator (elsewhere) sees a wrong wall
 # time. We can't auto-detect where the human is — just flag it and show the knob.

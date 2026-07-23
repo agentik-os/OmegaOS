@@ -94,8 +94,8 @@ if [ -z "$AGENT" ]; then
   echo "  ${dim}$DIR${r}"
   echo ""
   echo "  ${b}Quel agent ?${r}"
-  echo "   ${b}1${r}  claude   ${dim}Claude Code, le defaut (raisonnement lourd)${r}"
-  echo "   ${b}2${r}  codex    ${dim}Codex (OpenAI)${r}"
+  echo "   ${b}1${r}  codex    ${dim}Codex (OpenAI / Sol), le defaut (meilleur pour coder)${r}"
+  echo "   ${b}2${r}  claude   ${dim}Claude Code (raisonnement lourd)${r}"
   echo "   ${b}3${r}  glm      ${dim}GLM (Z.AI), worker code${r}"
   echo "   ${b}4${r}  gemini   ${dim}Gemini (Google)${r}"
   echo "   ${b}5${r}  pi       ${dim}Pi${r}"
@@ -103,7 +103,7 @@ if [ -z "$AGENT" ]; then
   echo ""
   read -rp "  numero [1] > " a
   case "${a:-1}" in
-    1|"") AGENT=claude ;; 2) AGENT=codex ;; 3) AGENT=glm ;;
+    1|"") AGENT=codex ;; 2) AGENT=claude ;; 3) AGENT=glm ;;
     4) AGENT=gemini ;;   5) AGENT=pi ;;    6) AGENT=shell ;;
     *) echo "  choix invalide."; exit 1 ;;
   esac

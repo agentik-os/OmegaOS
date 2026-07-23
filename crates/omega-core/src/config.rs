@@ -164,7 +164,13 @@ impl Default for OmegaConfig {
             locks_dir: omega_dir.join("locks"),
             projects_dir: default_projects_dir(),
             projects: Vec::new(),
-            agent_command: "claude".to_string(),
+            // Operator directive: Codex/Sol is the default coding agent everywhere
+            // (oracles, workers, orchestrate, team, patrol re-spawn, and the plain
+            // Telegram dispatch all resolve THIS field when no --agent is given).
+            // Claude stays available (per-mission `--agent claude`, the /duo binome,
+            // the agent picker) and remains the safe fallback when an agent name is
+            // misconfigured or Codex is absent — see the parse-fallbacks below.
+            agent_command: "codex".to_string(),
             default_model: "opus".to_string(),
             aisb_agent: default_aisb_agent(),
             auto_spawn_master: default_auto_master(),
@@ -379,7 +385,7 @@ mod tests {
         // silently discard the whole config on a fresh install.
         let cfg: OmegaConfig = toml::from_str(include_str!("../../../config/default.toml"))
             .expect("config/default.toml must deserialize into OmegaConfig");
-        assert_eq!(cfg.agent_command, "claude");
+        assert_eq!(cfg.agent_command, "codex");
         assert_eq!(cfg.default_model, "opus");
     }
 
@@ -403,7 +409,7 @@ mod tests {
         // instead of nuking the whole file.
         let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
         assert_eq!(cfg.default_model, "sonnet"); // overridden
-        assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
+        assert_eq!(cfg.agent_command, "codex"); // still the default, not empty
     }
 
     #[test]
@@ -431,7 +437,7 @@ mod tests {
     fn absent_config_is_default_not_error() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = OmegaConfig::load_from(&tmp.path().join("nonexistent.toml")).unwrap();
-        assert_eq!(cfg.agent_command, "claude");
+        assert_eq!(cfg.agent_command, "codex");
     }
 
     #[test]

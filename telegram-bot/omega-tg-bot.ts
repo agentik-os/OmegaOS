@@ -2279,8 +2279,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     // Primary action: dispatch a mission to the project's dedicated oracle. Plus the
     // Telegram toggle, the dedicated-bot link, Git, and Delete.
     return edit(chat, msgId, `<b>${tgOn ? "📦" : "🔕"} ${esc(arg)}</b>${mp ? `\n<i>${esc(mp.category || "")}</i> · <code>${esc(mp.dir || "")}</code>\nTelegram: ${tgOn ? "🔔 <b>ON</b> (synced topic + shown)" : "🔕 <b>OFF</b> (no topic, dimmed)"}${botLine}` : ""}`, kb([
-      [{ text: "🚀 Dispatch — Claude", callback_data: `proj:oracle:${arg}`.slice(0, 64) },
-       { text: "🚀 Dispatch — Codex", callback_data: `proj:oraclex:${arg}`.slice(0, 64) }],
+      [{ text: "🚀 Dispatch — Codex", callback_data: `proj:oraclex:${arg}`.slice(0, 64) },
+       { text: "🚀 Dispatch — Claude", callback_data: `proj:oracle:${arg}`.slice(0, 64) }],
       [{ text: tgOn ? "🔕 Telegram: turn OFF" : "🔔 Telegram: turn ON", callback_data: `proj:tg${tgOn ? "off" : "on"}:${arg}`.slice(0, 64) }],
       [{ text: bot ? "🤖 Dedicated bot — manage" : "🔗 Link a Telegram bot", callback_data: `proj:${bot ? "bot" : "botlink"}:${arg}`.slice(0, 64) }],
       [{ text: "🔧 Git", callback_data: `git:menu:${arg}`.slice(0, 64) }, { text: "🗑 Delete", callback_data: `proj:del:${arg}`.slice(0, 64) }],

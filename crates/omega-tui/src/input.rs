@@ -807,19 +807,19 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             })
         }
         InputMode::ProjectOpenAgent(name, path, sel) => {
-            // Claude · Codex · Cancel. Enter/1/2 spawn a NEW blank session.
+            // Codex (default) · Claude · Cancel. Enter/1/2 spawn a NEW blank session.
             const COUNT: usize = 3;
             let open = |sel: usize| -> Action {
                 match sel {
                     0 => Action::OpenProject {
                         name: name.clone(),
                         path: path.clone(),
-                        agent: omega_core::agents::Agent::Claude,
+                        agent: omega_core::agents::Agent::Codex,
                     },
                     1 => Action::OpenProject {
                         name: name.clone(),
                         path: path.clone(),
-                        agent: omega_core::agents::Agent::Codex,
+                        agent: omega_core::agents::Agent::Claude,
                     },
                     _ => Action::None,
                 }
@@ -2511,40 +2511,40 @@ mod tests {
         let mut app = test_app();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-        // Default selection (0) → Claude.
+        // Default selection (0) → Codex (the operator-wide default).
         app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
         let action = handle_key(&mut app, enter);
         match action {
             Action::OpenProject { name, path, agent } => {
                 assert_eq!(name, "Verba");
                 assert_eq!(path, "/tmp/verba");
-                assert_eq!(agent, omega_core::agents::Agent::Claude);
-            }
-            _ => panic!("expected OpenProject with Claude"),
-        }
-        assert!(matches!(app.input_mode, InputMode::Normal));
-
-        // Down → Codex.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        match handle_key(&mut app, enter) {
-            Action::OpenProject { agent, .. } => {
                 assert_eq!(agent, omega_core::agents::Agent::Codex);
             }
             _ => panic!("expected OpenProject with Codex"),
         }
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // Down → Claude.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match handle_key(&mut app, enter) {
+            Action::OpenProject { agent, .. } => {
+                assert_eq!(agent, omega_core::agents::Agent::Claude);
+            }
+            _ => panic!("expected OpenProject with Claude"),
+        }
     }
 
-    // '2' is the digit shortcut for Codex; Esc and the Cancel row open nothing.
+    // '1' → Codex (default), '2' → Claude; Esc and the Cancel row open nothing.
     #[test]
     fn open_project_picker_shortcuts_and_cancel() {
         let mut app = test_app();
         app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        match handle_key(&mut app, press('2')) {
+        match handle_key(&mut app, press('1')) {
             Action::OpenProject { agent, .. } => {
                 assert_eq!(agent, omega_core::agents::Agent::Codex)
             }
-            _ => panic!("expected OpenProject with Codex via '2'"),
+            _ => panic!("expected OpenProject with Codex via '1'"),
         }
 
         // Cancel row (index 2) → no session opened.
