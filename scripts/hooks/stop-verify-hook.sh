@@ -63,12 +63,65 @@ mutations = 0      # Write/Edit/NotebookEdit/apply_patch calls
 tool_calls = 0     # every tool call, plan tools excluded
 plan_ever = False  # did this session EVER open a tracked plan?
 
+# Verification evidence, matched ONLY against what actually ran: the command of
+# a shell tool call, or the OUTPUT a tool returned. Never against prose.
+#
+# The bare words "verify"/"verified" are deliberately NOT in here. They used to
+# be, and it silently disabled this whole check: the SessionStart contract this
+# repo injects says "VERIFY against runtime", that text is stored in the
+# transcript as a hook attachment, and the old whole-line scan matched it at
+# line 10 of EVERY session — so `verified` was true before the session had done
+# anything. An agent's own claim that it verified something is worth nothing
+# here (L1); only a command and its output count.
 VERIFY_RE = re.compile(
-    r"verified|\bverify\b|build (?:passed|succeeded)|0 errors?\b|tests? passed|"
-    r"cargo (?:build|test|check)|npm run build|pnpm build|bun run build|pytest|"
-    r"HTTP/[\d.]+ 200|\b200 OK\b",
+    r"build (?:passed|succeeded)|0 errors?\b|tests? passed|test result: ok|"
+    r"cargo (?:build|test|check|clippy)|npm (?:run build|test)|pnpm (?:build|test)|"
+    r"bun (?:run build|test)|yarn (?:build|test)|pytest|go (?:build|test)|"
+    r"HTTP/[\d.]+ 200|\b200 OK\b|passed;\s*0 failed",
     re.I,
 )
+
+SHELL_TOOLS = ("Bash", "shell", "exec_command", "run_terminal_cmd", "local_shell")
+
+
+def evidence(rec):
+    """(ran_a_command, text) — what counts as runtime evidence in one record.
+
+    Shell COMMANDS (something was actually executed) and tool RESULTS (what came
+    back). Hook attachments, injected context and assistant prose are excluded on
+    purpose: an agent asserting that it verified something is not evidence (L1).
+
+    The bar is deliberately "did you run ANYTHING after your last edit", not "did
+    you run a build". Demanding `cargo build` after a markdown edit is a false
+    positive, and a guard that cries wolf gets ignored.
+    """
+    if not isinstance(rec, dict):
+        return False, ""
+    if rec.get("type") == "attachment" or "attachment" in rec:
+        return False, ""
+    ran = False
+    out = []
+
+    def visit(obj):
+        nonlocal ran
+        if isinstance(obj, dict):
+            t = obj.get("type")
+            if t == "tool_use" and (obj.get("name") or "") in SHELL_TOOLS:
+                ran = True
+                inp = obj.get("input")
+                if isinstance(inp, dict):
+                    out.append(str(inp.get("command") or ""))
+            elif t == "tool_result":
+                out.append(json.dumps(obj.get("content") or ""))
+            else:
+                for v in obj.values():
+                    visit(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                visit(v)
+
+    visit(rec)
+    return ran, "\n".join(out)
 
 def walk(obj):
     """Yield every tool_use block in a transcript record."""
@@ -123,10 +176,13 @@ try:
                     if name in ("Write", "Edit", "NotebookEdit", "apply_patch"):
                         edited = True
                         mutations += 1
-            if not verified and VERIFY_RE.search(line):
-                # Cheap whole-record scan: build logs, test output and prod
-                # probes land in tool_result text, not in a tool name.
-                verified = True
+                        # Evidence is only evidence for the code that existed
+                        # when it was gathered. A new edit invalidates it.
+                        verified = False
+            if not verified:
+                ran, text = evidence(rec)
+                if ran or VERIFY_RE.search(text):
+                    verified = True
 except Exception:
     sys.exit(0)
 
@@ -197,11 +253,11 @@ else:
         )
     if edited and not verified:
         faults.append(
-            "· UNVERIFIED EDITS (L1/L4). Code was edited but no verification ran: no build, "
-            "no test, no runtime output anywhere in the transcript.\n"
-            "  Run the real check now (cargo build / npm run build / the test suite / an "
-            "HTTP probe of the deployed route), read the actual output, fix what it reports. "
-            "A green diff is not a green build."
+            "· NOTHING WAS RUN AFTER THE LAST EDIT (L1/L4). Files were changed and then not "
+            "a single command was executed against them.\n"
+            "  Run the real check now — the build, the test suite, the script you just wrote, "
+            "an HTTP probe of the route you touched — read the actual output, fix what it "
+            "reports. A green diff is not a green build."
         )
     if faults:
         reason = "STOP REFUSED — the mission is not finishable yet:\n\n" + "\n\n".join(faults)
