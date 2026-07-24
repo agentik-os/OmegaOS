@@ -54,6 +54,47 @@ fn preview_fg_color(c: PreviewColor, has_explicit_bg: bool) -> Color {
     }
 }
 
+/// Return the WCAG contrast ratio for two captured terminal colours.  The
+/// source terminal may use ANSI names or the xterm palette, so this is an
+/// intentionally conservative approximation used only to reject unsafe
+/// foregrounds, never to recolour readable output.
+fn preview_contrast_ratio(fg: PreviewColor, bg: PreviewColor) -> f64 {
+    let relative_luminance = |color: PreviewColor| {
+        let (r, g, b) = preview_rgb(color);
+        let linear = |channel: u8| {
+            let value = f64::from(channel) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    };
+    let fg_l = relative_luminance(fg);
+    let bg_l = relative_luminance(bg);
+    (fg_l.max(bg_l) + 0.05) / (fg_l.min(bg_l) + 0.05)
+}
+
+/// Pick a literal terminal-safe foreground when a nested TUI supplied a
+/// colour that is too close to its own background.  This fixes black-on-dark
+/// and white-on-light spans as well as arbitrary RGB pairs, while preserving
+/// the original colour whenever it already meets AA contrast.
+fn contrast_safe_preview_fg(fg: PreviewColor, bg: PreviewColor) -> Color {
+    if preview_contrast_ratio(fg, bg) >= 4.5 {
+        return preview_fg_color(fg, true);
+    }
+    let (black, white) = (
+        preview_contrast_ratio(PreviewColor::Indexed(0), bg),
+        preview_contrast_ratio(PreviewColor::Indexed(15), bg),
+    );
+    if black >= white {
+        Color::Black
+    } else {
+        Color::White
+    }
+}
+
 /// Backgrounds are always explicit. Keep ANSI black/white literal instead of
 /// applying the foreground safety mapping in `preview_to_color`.
 fn preview_bg_color(c: PreviewColor) -> Color {
@@ -140,7 +181,10 @@ fn preview_rgb(color: PreviewColor) -> (u8, u8, u8) {
 fn preview_span_style(sp: &PreviewSpan) -> Style {
     let mut style = Style::default();
     if let Some(c) = sp.fg {
-        style = style.fg(preview_fg_color(c, sp.bg.is_some()));
+        style = style.fg(match sp.bg {
+            Some(bg) => contrast_safe_preview_fg(c, bg),
+            None => preview_fg_color(c, false),
+        });
     } else if let Some(bg) = sp.bg {
         style = style.fg(preview_default_fg_for_bg(bg));
     }
@@ -150,7 +194,16 @@ fn preview_span_style(sp: &PreviewSpan) -> Style {
     if sp.bold {
         style = style.add_modifier(Modifier::BOLD);
     }
-    if sp.dim {
+    // DIM reduces perceived luminance. Keep it only when the already-selected
+    // foreground has a generous contrast margin; this prevents dim ANSI text
+    // from disappearing on light Termius palettes or bright basic terminals.
+    let dim_safe = match (sp.fg, sp.bg) {
+        (Some(fg), Some(bg)) => preview_contrast_ratio(fg, bg) >= 7.0,
+        (None, Some(bg)) => preview_contrast_ratio(PreviewColor::Indexed(15), bg) >= 7.0
+            || preview_contrast_ratio(PreviewColor::Indexed(0), bg) >= 7.0,
+        _ => true,
+    };
+    if sp.dim && dim_safe {
         style = style.add_modifier(Modifier::DIM);
     }
     if sp.italic {
@@ -216,6 +269,36 @@ mod preview_style_tests {
 
         assert_eq!(style.fg, Some(Color::Rgb(195, 147, 255)));
         assert_eq!(style.bg, Some(Color::Rgb(30, 30, 30)));
+    }
+
+    #[test]
+    fn unsafe_explicit_foreground_is_replaced_by_a_contrasting_one() {
+        // Codex can emit a literal black foreground while its composer owns a
+        // dark RGB surface. Never pass that pair through to a light or dark
+        // outer terminal where the text becomes invisible.
+        let dark = preview_span_style(&span(
+            Some(PreviewColor::Rgb(0, 0, 0)),
+            Some(PreviewColor::Rgb(30, 30, 30)),
+            false,
+        ));
+        assert_eq!(dark.fg, Some(Color::White));
+
+        let light = preview_span_style(&span(
+            Some(PreviewColor::Rgb(255, 255, 255)),
+            Some(PreviewColor::Rgb(245, 245, 245)),
+            false,
+        ));
+        assert_eq!(light.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn dim_is_removed_when_it_would_erase_a_low_margin_foreground() {
+        let style = preview_span_style(&span(
+            Some(PreviewColor::Rgb(90, 90, 90)),
+            Some(PreviewColor::Rgb(30, 30, 30)),
+            true,
+        ));
+        assert!(!style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

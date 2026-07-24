@@ -470,9 +470,17 @@ impl Agent {
                 // --dangerously-bypass-approvals-and-sandbox is Codex's
                 // --dangerously-skip-permissions: an omega pane is unattended, so a
                 // per-command approval prompt is a hang, not a safety net.
+                //
+                // NO_COLOR is intentional here. Codex's interactive composer
+                // paints a full-width RGB(30,30,30) surface even when the outer
+                // terminal is light (Termius, basic ANSI terminals, etc.). Its
+                // default foreground then inherits the outer palette and can
+                // become black-on-black. Omega owns the surrounding TUI palette,
+                // while Codex remains fully usable in monochrome; this removes
+                // the opaque band at the source and keeps the session portable.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
                 let args = format!(
-                    "{}{}codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
+                    "{}{}NO_COLOR=1 codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
                     env_prefix, trust_prefix,
                 );
                 match initial_prompt {
@@ -685,5 +693,14 @@ mod tests {
     fn launch_command_without_session_name_has_no_name_flag() {
         let cmd = Agent::Claude.launch_command(Some("do the thing"));
         assert!(!cmd.contains(" --name "), "unexpected --name in: {cmd}");
+    }
+
+    #[test]
+    fn codex_launch_disables_unsafe_full_width_color_surface() {
+        let cmd = Agent::Codex.launch_command(None);
+        assert!(
+            cmd.contains("NO_COLOR=1 codex") && cmd.contains("--no-alt-screen"),
+            "Codex launch must be terminal-safe: {cmd}"
+        );
     }
 }
