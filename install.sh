@@ -2375,7 +2375,12 @@ step "Phase 6.5: Self-containment"
 HOOKS_DST="$OMEGA_DIR/hooks"
 mkdir -p "$HOOKS_DST"
 if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
+    # *.sh AND *.py — omega_plan_state.py is the transcript parser both the
+    # finish-guard and the SessionStart contract import. Copying only *.sh
+    # shipped two hooks that silently fail open on a fresh box (they exit 0 when
+    # the import fails), i.e. no enforcement at all, with nothing to see.
     cp -f "$OMEGA_SRC/scripts/hooks/"*.sh "$HOOKS_DST/" 2>/dev/null && chmod +x "$HOOKS_DST/"*.sh 2>/dev/null
+    cp -f "$OMEGA_SRC/scripts/hooks/"*.py "$HOOKS_DST/" 2>/dev/null || true
     CLAUDE_SETTINGS="$HOME/.claude/settings.json"
     mkdir -p "$HOME/.claude"
     [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"

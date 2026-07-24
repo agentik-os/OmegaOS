@@ -451,6 +451,21 @@ else
   ok "behavioral build/deserialize gates skipped (VERIFY_FAST or no cargo)"
 fi
 
+# 10c. Anti-abandon hook payload — every hook file exists AND install.sh copies
+# its extension AND registers it. install.sh used to copy only *.sh, which
+# silently dropped the shared parser both finish hooks import; they fail open on
+# import error, so the enforcement vanished with nothing to see. Assert the whole
+# chain so that class of bug is caught here instead of in production.
+HOOK_PARITY_OK=1
+for f in stop-verify-hook.sh omega-session-contract.sh omega-prompt-scan.sh omega-plan-mirror.sh omega_plan_state.py; do
+  [ -f "scripts/hooks/$f" ] || { bad "hook payload missing from repo: scripts/hooks/$f"; HOOK_PARITY_OK=0; }
+done
+grep -q 'scripts/hooks/"\*\.py' install.sh || { bad "install.sh does not copy scripts/hooks/*.py (shared parser would not ship)"; HOOK_PARITY_OK=0; }
+for marker in stop-verify-hook omega-session-contract omega-prompt-scan omega-plan-mirror; do
+  grep -q "$marker" install.sh || { bad "install.sh never registers $marker"; HOOK_PARITY_OK=0; }
+done
+[ "$HOOK_PARITY_OK" = "1" ] && ok "anti-abandon hooks shipped, copied (*.sh + *.py) and registered by install.sh"
+
 # 11. New self-healing assets shipped + wired (token-refresh, shared-credential, scrollback alias).
 if [ -f scripts/omega-token-refresh.sh ] && grep -q "omega-token-refresh.sh" install.sh; then ok "token-refresh helper shipped + wired in install.sh"; else bad "token-refresh helper not shipped/wired in install.sh"; fi
 if grep -q "OMEGA-CRON-TOKEN-REFRESH-v1" install.sh; then ok "token-refresh cron scheduled by install.sh"; else bad "token-refresh cron not in install.sh"; fi
