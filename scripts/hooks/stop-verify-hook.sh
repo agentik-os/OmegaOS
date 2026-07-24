@@ -59,6 +59,9 @@ if not tp or not os.path.isfile(tp):
 created, status_of, todos = [], {}, None
 edited = False
 verified = False
+mutations = 0      # Write/Edit/NotebookEdit/apply_patch calls
+tool_calls = 0     # every tool call, plan tools excluded
+plan_ever = False  # did this session EVER open a tracked plan?
 
 VERIFY_RE = re.compile(
     r"verified|\bverify\b|build (?:passed|succeeded)|0 errors?\b|tests? passed|"
@@ -98,21 +101,28 @@ try:
                     inp = {}
                 if name == "TaskCreate":
                     created.append(inp.get("subject") or "(untitled task)")
+                    plan_ever = True
                 elif name == "TaskUpdate":
                     tid = str(inp.get("taskId") or "")
                     st = inp.get("status")
                     if tid and st:
                         status_of[tid] = st
+                    plan_ever = True
                 elif name == "TodoWrite":
                     t = inp.get("todos")
                     if isinstance(t, list):
                         todos = t
+                    plan_ever = True
                 elif name == "update_plan":       # Codex
                     t = inp.get("plan") or inp.get("steps")
                     if isinstance(t, list):
                         todos = t
-                elif name in ("Write", "Edit", "NotebookEdit", "apply_patch"):
-                    edited = True
+                    plan_ever = True
+                else:
+                    tool_calls += 1
+                    if name in ("Write", "Edit", "NotebookEdit", "apply_patch"):
+                        edited = True
+                        mutations += 1
             if not verified and VERIFY_RE.search(line):
                 # Cheap whole-record scan: build logs, test output and prod
                 # probes land in tool_result text, not in a tool name.
@@ -137,6 +147,26 @@ elif created:
         if st not in ("completed", "deleted"):
             open_items.append(subject)
 
+# ── 2. Real work, but no tracked plan was ever opened ────────────────────────
+#
+# This is the hole the first two checks cannot see: a session that never calls
+# a plan tool has no open tasks to inspect, so a multi-part mission can lose its
+# tail tasks silently. Thresholds are deliberately conservative — a chat turn or
+# a one-file lookup does 0-2 tool calls and must never be blocked. A false
+# positive costs one round-trip in which the agent enumerates what it did, which
+# is the exact step (L6.1) that was being skipped.
+def _int_env(key, default):
+    try:
+        return int(os.environ.get(key) or default)
+    except ValueError:
+        return default
+
+MIN_MUTATIONS = _int_env("OMEGA_FINISH_GUARD_MIN_MUTATIONS", 3)
+MIN_TOOL_CALLS = _int_env("OMEGA_FINISH_GUARD_MIN_TOOLS", 15)
+planless_work = (not plan_ever) and (
+    mutations >= MIN_MUTATIONS or tool_calls >= MIN_TOOL_CALLS
+)
+
 reason = None
 if open_items:
     shown = "\n".join("  - " + str(s)[:110] for s in open_items[:8])
@@ -151,14 +181,30 @@ if open_items:
         "blocked and why. If 3+ open tasks are file-disjoint, fan them out now (R-ORCH) "
         "instead of grinding through them one at a time."
     ) % (len(open_items), shown, more)
-elif edited and not verified:
-    reason = (
-        "STOP REFUSED — L1/L4 (runtime is the only truth). This session edited code but no "
-        "verification ran: no build, no test, no runtime output anywhere in the transcript.\n\n"
-        "Run the real check now (cargo build / npm run build / the test suite / an HTTP probe "
-        "of the deployed route), read the actual output, fix what it reports, and only then "
-        "finish. A green diff is not a green build."
-    )
+else:
+    faults = []
+    if planless_work:
+        faults.append(
+            "· NO TRACKED PLAN (R-PLAN). This session ran %d tool call(s) and %d file "
+            "mutation(s) without ever opening one. Nothing recorded what the prompt asked "
+            "for, so nothing can prove the tail tasks were not dropped — which is exactly "
+            "how they get dropped.\n"
+            "  Do this now: re-read the ORIGINAL prompt, TaskCreate one task per distinct "
+            "thing it asked for (in the operator's own order, one per ask), mark the ones "
+            "you genuinely finished AND verified as completed, then execute every task that "
+            "is left. If it turns out everything really is done, the plan costs you one "
+            "message and proves it." % (tool_calls, mutations)
+        )
+    if edited and not verified:
+        faults.append(
+            "· UNVERIFIED EDITS (L1/L4). Code was edited but no verification ran: no build, "
+            "no test, no runtime output anywhere in the transcript.\n"
+            "  Run the real check now (cargo build / npm run build / the test suite / an "
+            "HTTP probe of the deployed route), read the actual output, fix what it reports. "
+            "A green diff is not a green build."
+        )
+    if faults:
+        reason = "STOP REFUSED — the mission is not finishable yet:\n\n" + "\n\n".join(faults)
 
 if not reason:
     sys.exit(0)
