@@ -737,8 +737,10 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Open-project agent picker — which agent runs the NEW blank session opened
-/// on a project. ↑/↓ or 1/2, Enter, Esc. Non-destructive → accent border.
+/// Open-project picker — how to open a project: a NEW blank session under the
+/// picked agent (1/2), or hand it to the project's own oracle (3), which asks
+/// for a mission and dispatches. ↑/↓ or 1/2/3, Enter, Esc. Non-destructive →
+/// accent border.
 fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
     let (name, sel): (&str, usize) = match &app.input_mode {
         InputMode::ProjectOpenAgent(name, _path, sel) => (name.as_str(), *sel),
@@ -747,6 +749,7 @@ fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
     let options = [
         "1. Codex — OpenAI (Sol) — default",
         "2. Claude Code — Opus 5",
+        "3. Oracle — the project's own orchestrator (asks for a mission)",
         "   Cancel",
     ];
     let area = centered_rect(60, 22, frame.area());
@@ -3936,7 +3939,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())
             }
             InputMode::ProjectOpenAgent(..) => {
-                ("Open project — pick agent — ↑/↓ or 1/2, Enter, Esc", String::new())
+                ("Open project — agent or oracle — ↑/↓ or 1/2/3, Enter, Esc", String::new())
             }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);

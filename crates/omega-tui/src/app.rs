@@ -390,6 +390,29 @@ fn section_for(session: &OmegaSession) -> String {
     }
 }
 
+/// Section ordering for the Sessions tab: your own shells first, then the
+/// project sections (alphabetical among themselves), then the machinery.
+/// Keyed off the same match as `section_for` so the two can't drift.
+fn section_rank(session: &OmegaSession) -> u8 {
+    use omega_core::session::SessionRole;
+    match (&session.role, &session.project) {
+        (SessionRole::Home, _) => 0,
+        (SessionRole::Oracle | SessionRole::Worker, Some(_)) => 1,
+        (SessionRole::System, _) => 2,
+        _ => 3,
+    }
+}
+
+/// Ordering INSIDE a project section: the oracle heads its own workers.
+fn role_rank(session: &OmegaSession) -> u8 {
+    use omega_core::session::SessionRole;
+    match session.role {
+        SessionRole::Oracle => 0,
+        SessionRole::Worker => 1,
+        _ => 2,
+    }
+}
+
 /// Which side of the Sessions tab has keyboard focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionFocus {
@@ -2132,7 +2155,7 @@ impl App {
         // login session open, run /login, and close on success.
         let hidden_prefixes = ["omega-telegram-bridge"];
         let filter_lc = self.session_filter.as_ref().map(|q| q.to_lowercase());
-        let sessions: Vec<_> = raw_sessions
+        let mut sessions: Vec<_> = raw_sessions
             .into_iter()
             .filter(|s| !hidden_prefixes.iter().any(|p| s.name.starts_with(p)))
             .filter(|s| match &filter_lc {
@@ -2140,6 +2163,18 @@ impl App {
                 None => true,
             })
             .collect();
+        // Group-by below only cuts when the section CHANGES between two adjacent
+        // rows, so an unsorted list makes one project surface as several separate
+        // blocks scattered down the tab. Sort by section first — Home, then the
+        // projects alphabetically, then System/Other — and inside a section put
+        // the oracle above the workers it dispatched, each set name-ordered.
+        sessions.sort_by(|a, b| {
+            section_rank(a)
+                .cmp(&section_rank(b))
+                .then_with(|| section_for(a).cmp(&section_for(b)))
+                .then_with(|| role_rank(a).cmp(&role_rank(b)))
+                .then_with(|| a.name.cmp(&b.name))
+        });
 
         // Status badges (done/blocked) for the list — read once per refresh.
         // A worker-blocked signal wins over a stale done.json.

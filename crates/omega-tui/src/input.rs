@@ -807,8 +807,12 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             })
         }
         InputMode::ProjectOpenAgent(name, path, sel) => {
-            // Codex (default) · Claude · Cancel. Enter/1/2 spawn a NEW blank session.
-            const COUNT: usize = 3;
+            // Codex (default) · Claude · Oracle · Cancel. Enter/1/2 spawn a NEW blank
+            // session; 3 hands the project to its dedicated oracle instead — it drops
+            // straight into the mission prompt for THIS project, reusing the whole
+            // dispatch path (no project-picking step, since we already know which one).
+            const COUNT: usize = 4;
+            const ORACLE: usize = 2;
             let open = |sel: usize| -> Action {
                 match sel {
                     0 => Action::OpenProject {
@@ -847,9 +851,23 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                     app.input_mode = InputMode::Normal;
                     open(1)
                 }
+                KeyCode::Char('3') => {
+                    app.status_message =
+                        Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::DispatchMission(name);
+                    Action::None
+                }
+                KeyCode::Enter if sel == ORACLE => {
+                    app.status_message =
+                        Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
+                    app.input_buffer = String::new();
+                    app.input_mode = InputMode::DispatchMission(name);
+                    Action::None
+                }
                 KeyCode::Enter => {
                     app.input_mode = InputMode::Normal;
-                    if sel >= 2 {
+                    if sel > ORACLE {
                         app.status_message = Some("Cancelled".to_string());
                     }
                     open(sel)
