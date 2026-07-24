@@ -746,7 +746,7 @@ fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
     };
     let options = [
         "1. Codex — OpenAI (Sol) — default",
-        "2. Claude Code — Opus 4.8",
+        "2. Claude Code — Opus 5",
         "   Cancel",
     ];
     let area = centered_rect(60, 22, frame.area());

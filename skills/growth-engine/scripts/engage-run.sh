@@ -23,7 +23,7 @@ REPLIES_CAP="${EG_REPLIES_CAP:-6}"; LIKES_CAP="${EG_LIKES_CAP:-15}"; DAYS="${EG_
 DATE="$(date +%Y-%m-%d)"; RUN="$STATE/runs/$DATE"
 LOG="$OMEGA_DIR/logs/growth-engine.log"
 ALERT="$(command -v omega-alert-send.sh || echo "$HOME/Station/SideBusiness/OmegaOS/scripts/omega-alert-send.sh")"
-ANALYZE_MODEL="${EG_ANALYZE_MODEL:-claude-sonnet-5}"; GATE_MODEL="${EG_GATE_MODEL:-claude-opus-4-8}"
+ANALYZE_MODEL="${EG_ANALYZE_MODEL:-claude-sonnet-5}"; GATE_MODEL="${EG_GATE_MODEL:-claude-opus-5}"
 mkdir -p "$RUN/raw" "$(dirname "$LOG")" "$STATE"; touch "$SEEN"
 
 log(){ printf '%s | %s\n' "$(date -Is)" "$*" | tee -a "$LOG" >&2; }

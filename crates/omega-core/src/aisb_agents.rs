@@ -278,7 +278,7 @@ impl AisbAgent {
                 tagline: "Comprehension is not requisite for cooperation.",
                 tools: &["Read", "Bash", "Glob", "Grep", "Agent", "WebSearch"],
                 responsibilities: &[
-                    "Convenes four Claude models (Opus 4.8 / Sonnet 4.6 / Haiku 4.5 / Fable 5) in parallel on a high-stakes or contested call",
+                    "Convenes four Claude models (Opus 5 / Sonnet 4.6 / Haiku 4.5 / Fable 5) in parallel on a high-stakes or contested call",
                     "Has them peer-review each other ANONYMOUSLY, blind to model identity (aligns with R-VERIFY)",
                     "An Opus president synthesizes the verdict with confidence + recorded dissent",
                     "AUTO on irreversible / prod-wide / architecture / cross-project calls + conflicting verification verdicts",

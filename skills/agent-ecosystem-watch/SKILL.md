@@ -55,7 +55,7 @@ EW_ZERNIO_DRYRUN=1 bash scripts/watch-run.sh # validate zernio post without publ
 ```
 
 Env knobs: `EW_DAILY_TWEET_CAP` (5), `EW_DAYS` (2), `EW_ANALYZE_MODEL` (claude-sonnet-5),
-`EW_GATE_MODEL` (claude-opus-4-8), `EW_ZERNIO_PROJECT` (agentik-os), `EW_TOPICS_FILE`.
+`EW_GATE_MODEL` (claude-opus-5), `EW_ZERNIO_PROJECT` (agentik-os), `EW_TOPICS_FILE`.
 
 ## Arm / disarm
 

@@ -7,8 +7,8 @@ description: "Binome Claude (stratège) ⇄ Codex/Sol (coder). Claude planifie, 
 
 Claude reste **stratège et arbitre**. Codex (modèle `gpt-5.6-sol`) est le **coder**.
 Le muscle déterministe est le binaire `omega-duo` : Claude ne lance **jamais** `codex`
-en direct, il passe toujours par le bridge, qui gère la détection de quota et la
-bascule automatique sur Claude.
+en direct. Le bridge vérifie l'authentification réelle, la lecture du worktree, le
+sandbox, les mutations interdites et la détection de quota avant de rapporter le résultat.
 
 ## Quand l'utiliser
 
@@ -20,21 +20,42 @@ Router du trivial vers Codex gaspille son quota (routage explicite, R-BUDGET).
 
 ## Le bridge
 
-Résolu dans l'ordre : `omega-duo` sur le PATH, sinon `~/.omega/skills/duo/bin/omega-duo`,
-sinon `~/Station/SideBusiness/OmegaOS/tools/duo/bin/omega-duo`.
+Résolu dans l'ordre : `omega-duo` sur le PATH, sinon
+`<OMEGA_DIR>/skills/duo/bin/omega-duo`, sinon
+`~/Station/SideBusiness/OmegaOS/tools/duo/bin/omega-duo`. Le répertoire canonique est
+`$OMEGA_DIR` s'il est défini, sinon `~/OmegaOS/System` s'il existe, sinon `~/.omega`.
 
 ```
 omega-duo run --task <file.md> --cwd <projet> --mode <plan|code|review> [--agent codex|claude]
-  → une ligne JSON : { agent, ok, output, fell_back, reason, exit_code, log }
+  → une ligne JSON : { agent, ok, output, fell_back, reason, exit_code, log,
+                       sandbox_degraded,
+                       capabilities: { shell_exec, worktree_read } }
 ```
 
-- `mode plan` / `mode review` → Codex en **lecture seule** (il critique, il n'édite pas).
+- `mode plan` / `mode review` → l'essai zéro utilise toujours le mode natif
+  en lecture seule (`Codex --sandbox read-only` ou `Claude --permission-mode plan`)
+  et prouve la lecture du dépôt.
 - `mode code` → Codex en **full-auto** (il édite les fichiers).
 - `fell_back: true` → le quota Codex était épuisé, **Claude** a fait le travail. Tu DOIS
-  le dire à l'opérateur dans ta réponse (bascule visible, pas silencieuse).
+  le dire à l'opérateur. Le résultat est `single_model`, jamais une validation indépendante.
+- `sandbox_degraded: true` → un essai natif exécuté n'a pas pu prouver la lecture du
+  dépôt. Alors seulement, le bridge a utilisé un accès externe gardé et vérifié le
+  worktree avant/après. Tu DOIS le signaler.
+- `capabilities.shell_exec` et `capabilities.worktree_read` doivent être `true`. Sinon,
+  ou si `ok` vaut `false`, **STOP** : ne lis pas `output` comme une critique ou revue valide.
+- `reason: "codex-unauthenticated"` → session Codex inutilisable. **STOP**, demande une
+  réparation de l'authentification. Ce cas ne bascule jamais sur Claude et ne consomme pas
+  le drapeau de quota.
 
-Les tâches passent par **fichiers** (jamais en argv : un gros prompt en argument est
-tronqué). Écris-les dans un dossier scratch, p.ex. `agentic/duo/<slug>/`.
+L'appelant fournit un **fichier**, puis le bridge transmet son contenu aux agents sur
+stdin, jamais en argv. Écris les tâches dans un dossier scratch, p.ex.
+`agentic/duo/<slug>/`.
+
+L'état d'un enfant en cours reste observation-only. Pour annuler un login Codex,
+utilise `omega codex-login-abort --pid <n>` avec le PID retourné par
+`codex-login`. Le chemin vérifie l'identité et les argv exacts, attend le sentinel
+de sortie, puis restaure seulement une topologie réellement perturbée. Si la phase
+Telegram possède le bouton Cancel, elle doit être repointée vers cette commande.
 
 ## La boucle (obligatoire, dans l'ordre)
 
@@ -51,7 +72,8 @@ puis colle le plan. Lance :
 ```
 omega-duo run --task agentic/duo/<slug>/critique-task.md --cwd <projet> --mode plan
 ```
-Lis la critique dans `output`. Codex connaît le code : prends ses objections au sérieux.
+Vérifie d'abord `ok`, `sandbox_degraded` et les deux `capabilities`. Lis ensuite la
+critique dans `output`. Une critique sans lecture prouvée du worktree n'est pas une critique.
 
 ### 3. Plan v2 (Claude)
 Intègre la critique (ou justifie en 1 ligne pourquoi tu l'écartes — L2, pas de
@@ -83,14 +105,30 @@ Tu n'as **rien** à parser toi-même. Si `fell_back: true` revient, dis-le simpl
 
 Codex est alors marqué indisponible pour la session (`omega-duo status` le montre) et les
 étapes suivantes basculent direct sur Claude, sans retaper la limite. `omega-duo reset`
-le réarme si besoin.
+le réarme si besoin. Cette bascule ne satisfait pas un contrôle obligatoire à deux modèles.
+
+Une erreur `codex-unauthenticated` est différente : pas de fallback, pas de marquage quota,
+pas de résultat vert. Répare l'authentification Codex avant de reprendre la boucle. Le
+probe live `omega doctor --deep` est une action explicite qui peut consommer du quota.
 
 ## Périmètre
 
 - **Gemini** n'est pas câblé ici (redondant avec Codex, non utilisé). Le bridge a une
   table d'agents : l'ajouter plus tard = une entrée, pas une refonte.
-- Codex tourne en sandbox (`read-only` pour plan/review, full-auto pour code) : il
-  n'exfiltre pas et n'édite pas hors mode `code`.
+- Le mode natif en lecture seule est toujours l'essai zéro pour plan/review. Un `bwrap`
+  absent ou impossible à lancer est une dépendance inconnue, jamais une preuve que le
+  sandbox Codex est cassé, et ne déclenche pas le mode dégradé. Claude essaie de même
+  `--permission-mode plan` avant tout accès gardé.
+- Après l'échec démontré du probe natif, le bridge annonce `sandbox_degraded: true`,
+  applique une garde worktree et échoue sur toute mutation observée. Cette garde couvre
+  le worktree, l'index, les fichiers ignorés ou non suivis, les dossiers vides et les
+  métadonnées Git complètes, y compris le git-dir. Le mode dégradé échoue fermé si
+  aucun watcher live ne peut être établi. Elle ne garantit ni l'isolation réseau, ni
+  les écritures hors dépôt.
+- Un échec réseau/provider, une réponse 5xx, une réponse malformée ou un marker
+  absent ne constitue pas une preuve de refus sandbox et ne déclenche jamais le
+  bypass. Le mode natif compare l'état observable par Git, donc un artefact ignoré
+  modifié par un writer externe ne rend pas une revue native invalide.
 
 ## Rappels
 

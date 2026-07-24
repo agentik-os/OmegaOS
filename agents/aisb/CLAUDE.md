@@ -96,8 +96,8 @@ Full build with quality gate = all 5 steps.
 
 | # | Codename | subagent_type | Model | Pipeline | Owns Omega rules |
 |---|----------|---------------|-------|----------|------------------|
-| 1 | **ORACLE** | `oracle` | claude-opus-4-8 | Brain | R-13 close coherence, R-18 dispatch decision |
-| 2 | **MORPHEUS** | `morpheus` | claude-opus-4-8 | Execute | R-18 hybrid dispatch, R-33 batch dispatch, R-24 autonomous fixer |
+| 1 | **ORACLE** | `oracle` | claude-opus-5 | Brain | R-13 close coherence, R-18 dispatch decision |
+| 2 | **MORPHEUS** | `morpheus` | claude-opus-5 | Execute | R-18 hybrid dispatch, R-33 batch dispatch, R-24 autonomous fixer |
 | 3 | **SERAPH** | `seraph` | claude-sonnet-4-6 | Audit | R-21 multi-grader, R-22 regression, R-29 confidence, R-30 adversarial, R-34 schema, R-35 citations |
 | 4 | **KEYMAKER** | `keymaker` | claude-sonnet-4-6 | Plan | R-19 rubric, R-23 deps-graph, R-26 mission DAG |
 | 5 | **NIOBE** | `niobe` | claude-sonnet-4-6 | Research | audit-selector.py, Pythia gap-analysis collaboration |
@@ -108,14 +108,14 @@ Full build with quality gate = all 5 steps.
 | 10 | **ZION** | `zion` | claude-haiku-4-5-20251001 | Dashboard | R-28 cost tracking surface, R-27 registry stats |
 | 11 | **LINK** | `link` | claude-haiku-4-5-20251001 | Communicate | R-20 webhook bridge, notify-bot.sh, Telegram reports |
 | 12 | **CONSTRUCT** | `construct` | claude-haiku-4-5-20251001 | Design | R-32 skill-search BM25, audit-gather/* |
-| 13 | **PYTHIA** | (cron-only, no subagent_type) | claude-opus-4-8 | Watch | Weekly Anthropic docs + GitHub diff, R-XX gap analysis |
-| 14 | **COUNCIL** | `council` | claude-opus-4-8 | Multi-model council | R-COUNCIL: 4 Claude models -> blind peer-review -> Opus president, recorded dissent (Claude-native, no API keys) |
+| 13 | **PYTHIA** | (cron-only, no subagent_type) | claude-opus-5 | Watch | Weekly Anthropic docs + GitHub diff, R-XX gap analysis |
+| 14 | **COUNCIL** | `council` | claude-opus-5 | Multi-model council | R-COUNCIL: 4 Claude models -> blind peer-review -> Opus president, recorded dissent (Claude-native, no API keys) |
 
 ### Model Tiers (May 2026)
 
 | Tier | Model | Agents | Why |
 |------|-------|--------|-----|
-| **Critical** | claude-opus-4-8 | ORACLE, MORPHEUS, PYTHIA (analysis runs), COUNCIL | Brain + code implementation + system-evolution proposals — quality matters most |
+| **Critical** | claude-opus-5 | ORACLE, MORPHEUS, PYTHIA (analysis runs), COUNCIL | Brain + code implementation + system-evolution proposals — quality matters most |
 | **Reasoning** | claude-sonnet-4-6 | SERAPH, KEYMAKER, NIOBE, SMITH, ARCHITECT | Analysis, planning, research, audit |
 | **Utility** | claude-haiku-4-5-20251001 | MEROVINGIAN, NEO, ZION, LINK, CONSTRUCT | Structured tasks, data formatting, simple routing |
 
@@ -125,7 +125,7 @@ Full build with quality gate = all 5 steps.
 
 **When spawning agents, pass `model` explicitly:**
 ```
-Agent(subagent_type="morpheus", model="claude-opus-4-8", prompt="...")
+Agent(subagent_type="morpheus", model="claude-opus-5", prompt="...")
 Agent(subagent_type="seraph",   model="claude-sonnet-4-6", prompt="...")
 Agent(subagent_type="zion",     model="claude-haiku-4-5-20251001", prompt="...")
 ```

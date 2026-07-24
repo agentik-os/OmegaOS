@@ -364,7 +364,7 @@ function mcRegister(name: string): "added" | "exists" | "skip" {
     const entry =
 `  ${id}:
     description: "Project oracle for ${name} — dedicated orchestrator (multi-session); Atlas dispatches this project's missions here."
-    model: "claude-opus-4-8"
+    model: "claude-opus-5"
     image: "omega-mc-agent:latest"
     workspace: ${id}
     claude_md: "${id}/CLAUDE.md"
@@ -950,6 +950,9 @@ function companionBrain(chatId: number, thread: number | undefined, model?: stri
 // with the non-negotiable hard limits baked into the persona. Bind it to its own
 // Telegram bot from the Agents menu, exactly like Nova.
 const SECURITY_DIR = `${homedir()}/security`;
+// Deliberately NOT Opus 5 (R-MODEL): Opus 5 ships elevated cyber classifiers that
+// decline security work with stop_reason:refusal — an ABORT, never a PASS. Opus 4.8
+// is the SSOT-recommended target for cyber-category work. Everything else runs Opus 5.
 const SECURITY_MODEL = "claude-opus-4-8";
 const SECURITY_TIMEOUT_MS = 1_200_000; // a security engagement runs long tool loops, not a quick chat
 function trinityPersona(): string {
@@ -1616,8 +1619,7 @@ async function startCodexLogin(chat: number, msgId: number) {
       ` ❌ <b>Flow didn't start.</b>\n <code>${esc(String(j?.error || "no code returned"))}</code>\n` +
       ` <i>Your previous login was restored.</i>`),
       kb([[{ text: "🔄 Retry", callback_data: "acct:codexgo" }], [back("account")]]));
-  // Both buttons settle the flow: "I approved" confirms it landed, "Cancel"
-  // reaches the same engine, which finds us logged out and restores the backup.
+  // Approval observes the flow; Cancel explicitly aborts the owned supervisor.
   return edit(chat, msgId, card("CODEX — RE-LOGIN",
     ` 🔗 <b>1.</b> Open the link, sign in to ChatGPT.\n` +
     ` 🔑 <b>2.</b> Enter this one-time code:\n\n <code>${esc(String(j.code))}</code>\n\n` +
@@ -1626,7 +1628,7 @@ async function startCodexLogin(chat: number, msgId: number) {
     kb([
       [{ text: "🔐 Open & approve", url: String(j.url) }],
       [{ text: "✅ I approved", callback_data: `acct:codexdone:${j.pid}` }],
-      [{ text: "✖ Cancel (restore)", callback_data: `acct:codexdone:${j.pid}` }],
+      [{ text: "✖ Cancel (abort + restore)", callback_data: `acct:codexabort:${j.pid}` }],
     ]));
 }
 async function finishCodexLogin(chat: number, msgId: number, pid: string) {
@@ -1638,6 +1640,18 @@ async function finishCodexLogin(chat: number, msgId: number, pid: string) {
     : restored
       ? ` ↩️ <b>Not approved — previous login restored.</b>\n <code>${esc(String(j?.status || ""))}</code>`
       : ` 🔴 <b>Not logged in.</b>\n <code>${esc(String(j?.status || j?.error || "?"))}</code>`;
+  return edit(chat, msgId, card("CODEX — RE-LOGIN", body),
+    kb([[{ text: "🔄 Re-login", callback_data: "acct:codex" }], [back("account")]]));
+}
+
+async function abortCodexLogin(chat: number, msgId: number, pid: string) {
+  const j = extractJson(await omega(["codex-login-abort", "--pid", pid]));
+  const body =
+    " " + (j?.ok ? "🟡" : "🔴") + " <b>" +
+    (j?.aborted ? "Flow aborted." : "Flow was not aborted.") + "</b>\n" +
+    " <code>ok=" + String(!!j?.ok) + " aborted=" + String(!!j?.aborted) +
+    " restored=" + String(!!j?.restored) + "</code>\n" +
+    " <code>" + esc(String(j?.status || j?.error || "?")) + "</code>";
   return edit(chat, msgId, card("CODEX — RE-LOGIN", body),
     kb([[{ text: "🔄 Re-login", callback_data: "acct:codex" }], [back("account")]]));
 }
@@ -1847,7 +1861,7 @@ const MODEL_FALLBACK: Record<string, string[]> = {
 const PROVIDER_ICON: Record<string, string> = { claude: "🟣", codex: "🟢", gemini: "🔵", glm: "🟡", openrouter: "🌐" };
 // Claude alias → full model id the omega-mc yaml uses (mirror of dispatch.rs + the
 // dashboard's model convention). Anything not aliased is passed through verbatim.
-const CLAUDE_FULL_ID: Record<string, string> = { opus: "claude-opus-4-8", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5" };
+const CLAUDE_FULL_ID: Record<string, string> = { opus: "claude-opus-5", sonnet: "claude-sonnet-4-6", haiku: "claude-haiku-4-5" };
 async function listProviders(): Promise<string[]> {
   const out = await omega(["config", "models"]);
   const ps = out.split("\n").map(s => s.trim()).filter(s => /^[a-z]+$/.test(s));
@@ -2354,7 +2368,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && (action === "oracle" || action === "oraclex")) {
     const ag: AgentPick = action === "oraclex" ? "codex" : "claude";
     setPending(from, "oracle-prompt", ag === "codex" ? `${arg}|codex` : arg);
-    const label = ag === "codex" ? "Codex (gpt-5.6-sol)" : "Claude (Opus 4.8)";
+    const label = ag === "codex" ? "Codex (gpt-5.6-sol)" : "Claude (Opus 5)";
     return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b> · <i>${label}</i>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
   }
   // Reply to a finished report: the next message continues this project's oracle, with
@@ -2384,6 +2398,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "acct" && action === "codex") return codexConfirm(chat, msgId);
   if (ns === "acct" && action === "codexgo") return startCodexLogin(chat, msgId);
   if (ns === "acct" && action === "codexdone") return finishCodexLogin(chat, msgId, arg);
+  if (ns === "acct" && action === "codexabort") return abortCodexLogin(chat, msgId, arg);
   if (ns === "acct" && action === "cancel") { clearPending(from); return edit(chat, msgId, "Cancelled.", kb([[back("account")]])); }
   if (ns === "do" && action === "killall") return edit(chat, msgId, pre("kill-all", await omega(["kill-all", "--yes"])), kb([[back("clean")]]));
   if (ns === "do" && action === "novaup") return edit(chat, msgId, card("🤖 NOVA OS — démarrage…", await novaosCtl("start")), kb([[{ text: "🔄 Rafraîchir", callback_data: "nav:novaos" }, back("menu")]]));

@@ -77,8 +77,8 @@ CA_DRYRUN=1 bash scripts/adopt-run.sh     # never dispatches even if armed (repo
 CA_FORCE_VERSION=2.1.100 bash scripts/adopt-run.sh   # re-process everything newer than X (backfill)
 ```
 
-Env knobs: `CA_CHANGELOG_URL` (GitHub raw default), `CA_CLASSIFY_MODEL` (claude-opus-4-8),
-`CA_GATE_MODEL` (claude-opus-4-8), `CA_DAILY_ADOPT_CAP` (3), `CA_DISPATCH_PROJECT` (OmegaOS),
+Env knobs: `CA_CHANGELOG_URL` (GitHub raw default), `CA_CLASSIFY_MODEL` (claude-opus-5),
+`CA_GATE_MODEL` (claude-opus-5), `CA_DAILY_ADOPT_CAP` (3), `CA_DISPATCH_PROJECT` (OmegaOS),
 `CA_SEED_VERSIONS` (1 — how many latest versions the FIRST run treats as new).
 
 ## Arm / disarm

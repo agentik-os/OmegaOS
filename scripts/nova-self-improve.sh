@@ -61,7 +61,7 @@ ${CTX:-(vide)}
 2. AMÉLIORE : choisis 0 à 3 améliorations CHIRURGICALES (1 problème observé = 1 modif) et applique-les en respectant LES GARDE-FOUS d'ANATOMY.md : backup → modif → vérif syntaxe → entrée datée dans SELF-IMPROVEMENT.md. Persona, prompts de nudge/briefing, prompt de l'agent d'appel, DIGEST_PROMPT… tout ce qui est À TOI dans ANATOMY.md.
 3. ANNONCE : termine par le message Telegram pour l'opérateur (2-5 lignes, ton ton à toi) : ce que tu as changé et pourquoi — c'est ta SEULE sortie texte. Si tu n'as RIEN changé (rien d'observé qui le mérite), réponds EXACTEMENT le mot: SKIP"
 
-OUT="$("$CLAUDE" -p "$PROMPT" --append-system-prompt "$(cat "$LIFE/PERSONA.md" 2>/dev/null || cat "$OMEGA/agents/companion.md" 2>/dev/null)" --add-dir / --dangerously-skip-permissions --model claude-opus-4-8 --max-turns 40 --strict-mcp-config 2>>"$LOG")"
+OUT="$("$CLAUDE" -p "$PROMPT" --append-system-prompt "$(cat "$LIFE/PERSONA.md" 2>/dev/null || cat "$OMEGA/agents/companion.md" 2>/dev/null)" --add-dir / --dangerously-skip-permissions --model claude-opus-5 --max-turns 40 --strict-mcp-config 2>>"$LOG")"
 OUT="$(printf '%s' "$OUT" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 printf '%s self-improve ran (%s chars)\n' "$(date '+%F %T')" "${#OUT}" >> "$LOG"
 

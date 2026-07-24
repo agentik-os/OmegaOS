@@ -2,10 +2,10 @@
 name: llm-council
 description: >
   Convene a multi-model Claude COUNCIL for a high-stakes, ambiguous, or irreversible decision —
-  or whenever you want a genuine second opinion. Four different Claude models (Opus 4.8, Sonnet 4.6,
+  or whenever you want a genuine second opinion. Four different Claude models (Opus 5, Sonnet 4.6,
   Haiku 4.5, Fable 5) answer the SAME question independently and in parallel, then peer-review each
   other ANONYMOUSLY (answers shown as Response A/B/C, model identity hidden, so no model is favored
-  by name), and an Opus 4.8 president synthesizes the final verdict WHILE surfacing the dissent.
+  by name), and an Opus 5 president synthesizes the final verdict WHILE surfacing the dissent.
   Inspired by Karpathy's LLM Council, re-implemented on the OmegaOS Workflow primitive. 100%
   Claude Code-native — NO API KEYS, no OpenRouter, no external provider, no extra cost: the members
   run as in-process Workflow sub-agents through your EXISTING Claude Code session. Use when the user
@@ -35,7 +35,7 @@ verdict that explicitly preserves the dissent. The whole council runs **in-proce
 
 | | Karpathy's LLM Council | OmegaOS `llm-council` |
 |---|---|---|
-| Members | GPT / Gemini / Grok / Claude via **OpenRouter** | **Four Claude models** (Opus 4.8, Sonnet 4.6, Haiku 4.5, Fable 5) |
+| Members | GPT / Gemini / Grok / Claude via **OpenRouter** | **Four Claude models** (Opus 5, Sonnet 4.6, Haiku 4.5, Fable 5) |
 | Auth | An **OpenRouter API key** + per-provider keys/billing | **None** — your existing logged-in Claude Code session |
 | Runtime | A Python web app calling external HTTP APIs | **In-process Workflow `agent()` sub-agents** |
 | Extra cost | Per-token charges on each external provider | **None beyond the base Claude Code token/subscription** |
@@ -75,7 +75,7 @@ of each other's responses. Each is a Workflow `agent()` pinned to a specific mod
 
 | Seat | Model id | Why it's on the council |
 |---|---|---|
-| Opus 4.8 | `opus` | Deepest reasoning, the frontier seat |
+| Opus 5 | `opus` | Deepest reasoning, the frontier seat |
 | Sonnet 4.6 | `claude-sonnet-4-6` | Strong generalist, different training balance |
 | Haiku 4.5 | `claude-haiku-4-5` | Fast, terse — a useful contrarian on over-thinking |
 | Fable 5 | `claude-fable-5` | The most powerful tier — independent high-capability lens |
@@ -94,9 +94,9 @@ Each reviewer returns, for the three anonymized peers: a **ranking** (best → w
 justification each, the **strongest single point** any peer made, and the **most important flaw or
 omission** across them.
 
-### Stage 3 — The President synthesizes (Opus 4.8)
+### Stage 3 — The President synthesizes (Opus 5)
 
-A final **Opus 4.8** president receives **all four original answers** plus **all four peer-reviews**
+A final **Opus 5** president receives **all four original answers** plus **all four peer-reviews**
 and writes the verdict. The president does NOT just pick a winner — it **reconciles** the council into
 one answer and **explicitly records where the council disagreed**. Erasing the minority view is
 forbidden (this mirrors R-COUNCIL / R-VERIFY: dissent is signal, not noise).
@@ -141,7 +141,7 @@ const QUESTION = `<<<PASTE THE USER'S QUESTION OR DECISION HERE>>>`;
 
 // The four council seats. Order is fixed → the run is deterministic.
 const SEATS = [
-  { name: "Opus 4.8",   model: "opus" },
+  { name: "Opus 5",     model: "opus" },
   { name: "Sonnet 4.6", model: "claude-sonnet-4-6" },
   { name: "Haiku 4.5",  model: "claude-haiku-4-5" },
   { name: "Fable 5",    model: "claude-fable-5" },
@@ -194,12 +194,12 @@ const reviews = await parallel(
 );
 // reviews[i] is seat i's blind ranking + critique of the other three (string).
 
-// ---- Stage 3: the PRESIDENT synthesizes (Opus 4.8) ------------------------
+// ---- Stage 3: the PRESIDENT synthesizes (Opus 5) ------------------------
 const dossier = SEATS.map((seat, i) =>
   `## Member ${i + 1} — ${seat.name}\n### Answer\n${answers[i]}\n### This member's peer-review of the others\n${reviews[i]}`
 ).join("\n\n");
 
-const presidentPrompt = `You are the PRESIDENT of an LLM council (model: Opus 4.8). Four members each
+const presidentPrompt = `You are the PRESIDENT of an LLM council (model: Opus 5). Four members each
 answered the question independently, then blind-peer-reviewed each other. Synthesize the FINAL answer.
 Do not merely pick a winner — reconcile the council into one coherent recommendation, give the
 reasoning it converged on (citing the strongest peer-reviewed points), and EXPLICITLY preserve the
@@ -238,7 +238,7 @@ return verdict;
 **Decision:** *"Should the three client apps share one monorepo, or stay as three separate repos?"*
 
 **Stage 1 — independent answers (sketch):**
-- *Opus 4.8* → Monorepo: atomic cross-app refactors, one CI, shared design system; flags tooling cost.
+- *Opus 5* → Monorepo: atomic cross-app refactors, one CI, shared design system; flags tooling cost.
 - *Sonnet 4.6* → Polyrepo: independent deploy cadences and blast-radius isolation; flags drift.
 - *Haiku 4.5* → "Depends on team size; under ~6 devs, monorepo wins on overhead." (terse contrarian)
 - *Fable 5* → Monorepo with enforced package boundaries; warns the real risk is CI scaling, not layout.

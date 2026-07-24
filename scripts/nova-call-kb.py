@@ -109,7 +109,7 @@ def main() -> None:
     aid = agent_id()
     t0 = time.time()
     digest = subprocess.run(
-        [CLAUDE, "-p", DIGEST_PROMPT, "--model", "claude-opus-4-8",
+        [CLAUDE, "-p", DIGEST_PROMPT, "--model", "claude-opus-5",
          "--dangerously-skip-permissions", "--max-turns", "40"],
         cwd=STATION, capture_output=True, text=True, timeout=1800,
     ).stdout.strip()

@@ -22,10 +22,77 @@
 //! change Claude account-switching.
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use serde_json::Value;
+use std::cmp::Ordering;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::providers::ProvidersConfig;
+
+static UNIQUE_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Structural validity of a Codex `auth.json`, without exposing credential
+/// contents. A valid ChatGPT credential has all three OAuth token fields; a
+/// valid API-key credential has a non-empty `OPENAI_API_KEY`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexCredentialValidity {
+    Missing,
+    Invalid,
+    Valid,
+}
+
+/// Safe metadata used to compare Codex credential copies. This deliberately
+/// contains no token, account, email, or API-key value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexCredentialInspection {
+    pub validity: CodexCredentialValidity,
+    pub last_refresh: Option<DateTime<Utc>>,
+    pub modified: Option<SystemTime>,
+}
+
+impl CodexCredentialInspection {
+    pub fn is_valid(&self) -> bool {
+        self.validity == CodexCredentialValidity::Valid
+    }
+}
+
+/// Which credential copy won a Codex reconciliation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodexReconcileAction {
+    NoValidCredential,
+    Unchanged,
+    RepairedNativeLink,
+    AdoptedNative,
+    AdoptedCandidate,
+}
+
+/// Safe, read-only description of the Codex native/canonical topology.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexTopologyReport {
+    pub native_path: PathBuf,
+    pub canonical_path: PathBuf,
+    pub native_exists: bool,
+    pub canonical_exists: bool,
+    pub native_is_symlink: bool,
+    pub native_links_to_canonical: bool,
+    pub native_validity: CodexCredentialValidity,
+    pub canonical_validity: CodexCredentialValidity,
+    pub split: bool,
+}
+
+/// Result of reconciling Codex credentials. Quarantine paths are safe to print;
+/// their file contents are not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexReconcileReport {
+    pub action: CodexReconcileAction,
+    pub quarantined: Vec<PathBuf>,
+    pub topology: CodexTopologyReport,
+}
 
 /// Secrets-at-rest: chmod a file to 0600 (owner read/write only). No-op target
 /// must already exist. Called before the atomic rename on every credential write
@@ -42,15 +109,32 @@ pub(crate) fn chmod_600(_path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn chmod_700(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+#[cfg(not(unix))]
+fn chmod_700(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Manager for ~/.omega/credentials/ — every provider's creds + saved accounts.
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
     base_dir: PathBuf,
+    codex_home: PathBuf,
 }
 
 impl CredentialStore {
     pub fn new() -> Result<Self> {
-        let base = omega_dir().join("credentials");
+        Self::from_roots(&omega_dir(), &codex_home_dir())
+    }
+
+    /// Build a store with explicit Omega and Codex roots. This is the fully
+    /// deterministic constructor for login flows and tests.
+    pub(crate) fn from_roots(root: &Path, codex_home: &Path) -> Result<Self> {
+        let base = root.join("credentials");
         std::fs::create_dir_all(base.join("accounts"))
             .with_context(|| format!("creating {}", base.display()))?;
         // The credentials tree holds OAuth tokens + API keys — owner-only (0700)
@@ -61,7 +145,10 @@ impl CredentialStore {
             let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
             let _ = std::fs::set_permissions(base.join("accounts"), std::fs::Permissions::from_mode(0o700));
         }
-        Ok(Self { base_dir: base })
+        Ok(Self {
+            base_dir: base,
+            codex_home: codex_home.to_path_buf(),
+        })
     }
 
     /// Path to the active credentials file for a provider.
@@ -175,6 +262,10 @@ impl CredentialStore {
     /// canonical file in ~/.omega/credentials/. Creates parent dirs as needed.
     /// No-op if the legacy path already points to the canonical file.
     pub fn ensure_legacy_symlink(&self, provider: &str) -> Result<()> {
+        if provider == "codex" {
+            self.reconcile_codex()?;
+            return Ok(());
+        }
         let Some(legacy) = legacy_path_for(provider) else {
             return Ok(());
         };
@@ -246,6 +337,251 @@ impl CredentialStore {
         Ok(())
     }
 
+    /// Reconcile Codex's native `auth.json` with Omega's canonical credential.
+    /// A valid, semantically newer native file wins. When semantic timestamps
+    /// are not comparable, a strictly newer filesystem mtime decides instead.
+    /// The final native path is atomically restored as a symlink to canonical.
+    pub fn reconcile_codex(&self) -> Result<CodexReconcileReport> {
+        self.reconcile_codex_inner(None)
+    }
+
+    /// Reconcile an additional candidate (normally a device-flow backup)
+    /// alongside the native and canonical copies. The candidate is promoted only
+    /// when it is the only valid copy or is strictly fresher by the same
+    /// `last_refresh`-first ordering. Every distinct losing copy is preserved in
+    /// the owner-only quarantine before topology is changed.
+    pub fn reconcile_codex_candidate(&self, candidate: &Path) -> Result<CodexReconcileReport> {
+        self.reconcile_codex_inner(Some(candidate))
+    }
+
+    /// Inspect Codex's current native/canonical topology without changing it.
+    pub fn codex_topology(&self) -> CodexTopologyReport {
+        codex_topology_for_paths(
+            &self.codex_home.join("auth.json"),
+            &self.active_path("codex"),
+        )
+    }
+
+    #[cfg(not(unix))]
+    fn reconcile_codex_inner(&self, _candidate: Option<&Path>) -> Result<CodexReconcileReport> {
+        anyhow::bail!(
+            "Codex credential reconciliation is unsupported on this platform: \
+             a safe single-copy native/canonical symlink topology requires Unix"
+        )
+    }
+
+    #[cfg(unix)]
+    fn reconcile_codex_inner(&self, candidate: Option<&Path>) -> Result<CodexReconcileReport> {
+        let _lock = self.lock_codex_reconciliation()?;
+        let native = self.codex_home.join("auth.json");
+        let canonical = self.active_path("codex");
+        let native_was_linked = path_links_to(&native, &canonical);
+
+        if let Some(parent) = native.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        if let Some(parent) = canonical.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+
+        let mut quarantined = Vec::new();
+        let mut action = if native_was_linked {
+            CodexReconcileAction::Unchanged
+        } else {
+            CodexReconcileAction::RepairedNativeLink
+        };
+
+        // Codex refreshes auth.json without taking Omega's reconciliation lock.
+        // Never rename a symlink over an observed regular file: first move the
+        // exact native path to a durable, recognizable sibling, then create the
+        // symlink with create-new semantics. A concurrent replacement therefore
+        // either becomes the captured file or makes symlink(2) return EEXIST and
+        // is captured on the next iteration. No native credential is overwritten.
+        for _ in 0..32 {
+            let mut pending = pending_native_captures(&native)?;
+            pending.extend(capture_native_and_restore_link(&native, &canonical)?);
+            pending.sort();
+            pending.dedup();
+
+            let canonical_copy = read_codex_copy(&canonical);
+            let extra_copy = candidate.map(read_codex_copy);
+            let native_copies = pending
+                .iter()
+                .filter_map(|path| {
+                    let metadata = std::fs::symlink_metadata(path).ok()?;
+                    if metadata.file_type().is_symlink() {
+                        let _ = std::fs::remove_file(path);
+                        return None;
+                    }
+                    Some((path.clone(), read_codex_copy(path)))
+                })
+                .collect::<Vec<_>>();
+
+            if native_copies.iter().any(|(_, copy)| copy.bytes.is_none()) {
+                anyhow::bail!(
+                    "cannot restore Codex topology because a captured native credential is unreadable"
+                );
+            }
+
+            let mut choices = Vec::new();
+            if canonical_copy.inspection.is_valid() {
+                choices.push((CodexCopySource::Canonical, &canonical_copy));
+            }
+            for (_, copy) in &native_copies {
+                if copy.inspection.is_valid() {
+                    choices.push((CodexCopySource::Native, copy));
+                }
+            }
+            if let Some(copy) = extra_copy
+                .as_ref()
+                .filter(|copy| copy.inspection.is_valid())
+            {
+                choices.push((CodexCopySource::Candidate, copy));
+            }
+
+            let winner = choices.into_iter().reduce(|current, next| {
+                if compare_codex_copies(next.1, current.1) == Ordering::Greater {
+                    next
+                } else {
+                    current
+                }
+            });
+
+            if let Some((winner_source, winner)) = winner {
+                let winner_bytes = winner
+                    .bytes
+                    .as_deref()
+                    .context("valid Codex credential had no readable bytes")?;
+                let mut quarantined_contents: Vec<Vec<u8>> = Vec::new();
+
+                let copies = std::iter::once(("canonical", &canonical_copy))
+                    .chain(native_copies.iter().map(|(_, copy)| ("native", copy)))
+                    .chain(extra_copy.as_ref().map(|copy| ("candidate", copy)));
+                for (label, copy) in copies {
+                    let Some(bytes) = copy.bytes.as_deref() else {
+                        continue;
+                    };
+                    if bytes == winner_bytes
+                        || quarantined_contents
+                            .iter()
+                            .any(|existing| existing.as_slice() == bytes)
+                    {
+                        continue;
+                    }
+                    let saved = self.quarantine_codex_copy(label, bytes)?;
+                    quarantined_contents.push(bytes.to_vec());
+                    quarantined.push(saved);
+                }
+
+                if canonical_copy.bytes.as_deref() != Some(winner_bytes) {
+                    atomic_replace_resolved(&canonical, winner_bytes)?;
+                }
+                action = match winner_source {
+                    CodexCopySource::Native => CodexReconcileAction::AdoptedNative,
+                    CodexCopySource::Candidate => CodexReconcileAction::AdoptedCandidate,
+                    CodexCopySource::Canonical => action,
+                };
+            } else {
+                let mut quarantined_contents: Vec<Vec<u8>> = Vec::new();
+                let invalid_copies = native_copies
+                    .iter()
+                    .map(|(_, copy)| ("native-invalid", copy))
+                    .chain(extra_copy.as_ref().map(|copy| ("candidate-invalid", copy)));
+                for (label, copy) in invalid_copies {
+                    if let Some(bytes) = copy.bytes.as_deref() {
+                        let canonical_already_preserves_bytes =
+                            label != "candidate-invalid"
+                                && canonical_copy.bytes.as_deref() == Some(bytes);
+                        if canonical_already_preserves_bytes
+                            || quarantined_contents
+                                .iter()
+                                .any(|existing| existing.as_slice() == bytes)
+                        {
+                            continue;
+                        }
+                        quarantined.push(self.quarantine_codex_copy(label, bytes)?);
+                        quarantined_contents.push(bytes.to_vec());
+                    }
+                }
+                action = CodexReconcileAction::NoValidCredential;
+            }
+
+            // A pending capture is removed only after its contents have either
+            // won the atomic canonical write or reached owner-only quarantine.
+            for (path, _) in native_copies {
+                std::fs::remove_file(&path)
+                    .with_context(|| format!("removing reconciled capture {}", path.display()))?;
+            }
+
+            if path_links_to(&native, &canonical) {
+                return Ok(CodexReconcileReport {
+                    action,
+                    quarantined,
+                    topology: self.codex_topology(),
+                });
+            }
+        }
+
+        anyhow::bail!("Codex kept replacing auth.json while Omega restored canonical topology")
+    }
+
+    fn lock_codex_reconciliation(&self) -> Result<std::fs::File> {
+        let omega_root = self
+            .base_dir
+            .parent()
+            .context("credential store has no Omega root")?;
+        let locks = omega_root.join("locks");
+        std::fs::create_dir_all(&locks).with_context(|| format!("creating {}", locks.display()))?;
+        chmod_700(&locks).with_context(|| format!("chmod 700 {}", locks.display()))?;
+        let path = locks.join("codex-credentials.lock");
+        let file = secret_open_options()
+            .create_new(false)
+            .create(true)
+            .open(&path)
+            .with_context(|| format!("opening {}", path.display()))?;
+        chmod_600(&path).with_context(|| format!("chmod 600 {}", path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("locking {}", path.display()))?;
+        Ok(file)
+    }
+
+    fn quarantine_codex_copy(&self, label: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let root = self.base_dir.join("quarantine");
+        let dir = root.join("codex");
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+        chmod_700(&root).with_context(|| format!("chmod 700 {}", root.display()))?;
+        chmod_700(&dir).with_context(|| format!("chmod 700 {}", dir.display()))?;
+
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        for _ in 0..32 {
+            let serial = UNIQUE_FILE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+            let filename = format!(
+                "{}-{}-{}-{}.json",
+                stamp,
+                std::process::id(),
+                serial,
+                sanitize(label)
+            );
+            let path = dir.join(filename);
+            match atomic_create_new_secret(&path, bytes) {
+                Ok(()) => return Ok(path),
+                Err(e)
+                    if e.downcast_ref::<std::io::Error>()
+                        .is_some_and(|io| io.kind() == std::io::ErrorKind::AlreadyExists) =>
+                {
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        anyhow::bail!("could not allocate a unique Codex quarantine path")
+    }
+
     pub fn base_dir(&self) -> &Path {
         &self.base_dir
     }
@@ -301,14 +637,476 @@ fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodexCopySource {
+    Canonical,
+    Native,
+    Candidate,
+}
+
+struct CodexCopy {
+    bytes: Option<Vec<u8>>,
+    inspection: CodexCredentialInspection,
+}
+
+/// Resolve Codex's native home. A non-empty `CODEX_HOME` wins; otherwise use
+/// the native CLI default under the current user's home.
+pub fn codex_home_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("CODEX_HOME") {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    dirs::home_dir().unwrap_or_default().join(".codex")
+}
+
+/// Inspect a Codex credential file without returning or formatting any secret.
+pub fn inspect_codex_credential(path: &Path) -> CodexCredentialInspection {
+    read_codex_copy(path).inspection
+}
+
+/// Whether `candidate` is structurally valid, distinct, and strictly fresher
+/// than `baseline`. Two parsed `last_refresh` values outrank filesystem mtime;
+/// one-sided or absent semantic timestamps use a strictly newer mtime. A valid
+/// candidate is fresh relative to a missing or invalid baseline.
+pub fn codex_credential_fresh_relative(candidate: &Path, baseline: &Path) -> bool {
+    let candidate = read_codex_copy(candidate);
+    if !candidate.inspection.is_valid() {
+        return false;
+    }
+    let baseline = read_codex_copy(baseline);
+    if !baseline.inspection.is_valid() {
+        return true;
+    }
+    if candidate.bytes == baseline.bytes {
+        return false;
+    }
+    match (
+        &candidate.inspection.last_refresh,
+        &baseline.inspection.last_refresh,
+    ) {
+        (Some(candidate), Some(baseline)) => candidate > baseline,
+        _ => matches!(
+            (
+                candidate.inspection.modified,
+                baseline.inspection.modified,
+            ),
+            (Some(candidate), Some(baseline)) if candidate > baseline
+        ),
+    }
+}
+
+fn read_codex_copy(path: &Path) -> CodexCopy {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let validity = if e.kind() == std::io::ErrorKind::NotFound {
+                CodexCredentialValidity::Missing
+            } else {
+                CodexCredentialValidity::Invalid
+            };
+            return CodexCopy {
+                bytes: None,
+                inspection: CodexCredentialInspection {
+                    validity,
+                    last_refresh: None,
+                    modified,
+                },
+            };
+        }
+    };
+
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return CodexCopy {
+            bytes: Some(bytes),
+            inspection: CodexCredentialInspection {
+                validity: CodexCredentialValidity::Invalid,
+                last_refresh: None,
+                modified,
+            },
+        };
+    };
+
+    let last_refresh = match value.get("last_refresh") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(raw)) => match DateTime::parse_from_rfc3339(raw) {
+            Ok(timestamp) => Some(timestamp.with_timezone(&Utc)),
+            Err(_) => {
+                return CodexCopy {
+                    bytes: Some(bytes),
+                    inspection: CodexCredentialInspection {
+                        validity: CodexCredentialValidity::Invalid,
+                        last_refresh: None,
+                        modified,
+                    },
+                };
+            }
+        },
+        Some(_) => {
+            return CodexCopy {
+                bytes: Some(bytes),
+                inspection: CodexCredentialInspection {
+                    validity: CodexCredentialValidity::Invalid,
+                    last_refresh: None,
+                    modified,
+                },
+            };
+        }
+    };
+
+    let non_empty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+    };
+    let tokens_valid = value
+        .get("tokens")
+        .and_then(Value::as_object)
+        .is_some_and(|tokens| {
+            ["id_token", "access_token", "refresh_token"]
+                .iter()
+                .all(|field| non_empty(tokens.get(*field)))
+        });
+    let api_key_valid = non_empty(value.get("OPENAI_API_KEY"));
+    let mode = value.get("auth_mode").and_then(Value::as_str);
+    let structurally_valid = match mode {
+        Some("chatgpt") => tokens_valid,
+        Some("apikey") | Some("api_key") => api_key_valid,
+        _ => tokens_valid || api_key_valid,
+    };
+
+    CodexCopy {
+        bytes: Some(bytes),
+        inspection: CodexCredentialInspection {
+            validity: if structurally_valid {
+                CodexCredentialValidity::Valid
+            } else {
+                CodexCredentialValidity::Invalid
+            },
+            last_refresh,
+            modified,
+        },
+    }
+}
+
+fn compare_codex_copies(left: &CodexCopy, right: &CodexCopy) -> Ordering {
+    if left.bytes == right.bytes {
+        return Ordering::Equal;
+    }
+    let modified = || match (left.inspection.modified, right.inspection.modified) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        _ => Ordering::Equal,
+    };
+    match (
+        &left.inspection.last_refresh,
+        &right.inspection.last_refresh,
+    ) {
+        (Some(left), Some(right)) => {
+            let semantic = left.cmp(right);
+            if semantic != Ordering::Equal {
+                return semantic;
+            }
+            modified()
+        }
+        _ => modified(),
+    }
+}
+
+fn codex_topology_for_paths(native: &Path, canonical: &Path) -> CodexTopologyReport {
+    let native_meta = std::fs::symlink_metadata(native).ok();
+    let canonical_meta = std::fs::symlink_metadata(canonical).ok();
+    let native_exists = native_meta.is_some();
+    let canonical_exists = canonical_meta.is_some();
+    let native_is_symlink = native_meta
+        .as_ref()
+        .is_some_and(|metadata| metadata.file_type().is_symlink());
+    let native_links_to_canonical = path_links_to(native, canonical);
+    CodexTopologyReport {
+        native_path: native.to_path_buf(),
+        canonical_path: canonical.to_path_buf(),
+        native_exists,
+        canonical_exists,
+        native_is_symlink,
+        native_links_to_canonical,
+        native_validity: inspect_codex_credential(native).validity,
+        canonical_validity: inspect_codex_credential(canonical).validity,
+        split: native_exists && canonical_exists && !native_links_to_canonical,
+    }
+}
+
+fn path_links_to(path: &Path, expected: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(target) = std::fs::read_link(path) else {
+        return false;
+    };
+    let resolved_target = if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    let expected = absolute_path(expected);
+    absolute_path(&resolved_target) == expected
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    }
+}
+
+fn resolved_write_target(path: &Path) -> Result<PathBuf> {
+    let mut current = absolute_path(path);
+    for _ in 0..32 {
+        let metadata = match std::fs::symlink_metadata(&current) {
+            Ok(metadata) => metadata,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(current),
+            Err(e) => {
+                return Err(e).with_context(|| format!("inspecting {}", current.display()));
+            }
+        };
+        if !metadata.file_type().is_symlink() {
+            return Ok(current);
+        }
+        let target = std::fs::read_link(&current)
+            .with_context(|| format!("reading symlink {}", current.display()))?;
+        current = if target.is_absolute() {
+            target
+        } else {
+            current
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(target)
+        };
+    }
+    anyhow::bail!("Codex canonical credential symlink chain is too deep")
+}
+
+fn unique_sibling(path: &Path, suffix: &str) -> PathBuf {
+    let serial = UNIQUE_FILE_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("credential");
+    path.with_file_name(format!(
+        ".{}.{}.{}.{}",
+        name,
+        suffix,
+        std::process::id(),
+        serial
+    ))
+}
+
+fn secret_open_options() -> OpenOptions {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+}
+
+fn atomic_replace_resolved(path: &Path, bytes: &[u8]) -> Result<()> {
+    let target = resolved_write_target(path)?;
+    let parent = target
+        .parent()
+        .context("Codex canonical credential has no parent directory")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let staged = unique_sibling(&target, "omega-adopt");
+    let mode = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let result = (|| -> Result<()> {
+        let mut file = secret_open_options()
+            .open(&staged)
+            .with_context(|| format!("creating {}", staged.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing {}", staged.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", staged.display()))?;
+        drop(file);
+        if let Some(permissions) = mode {
+            std::fs::set_permissions(&staged, permissions)
+                .with_context(|| format!("preserving mode on {}", staged.display()))?;
+        } else {
+            chmod_600(&staged).with_context(|| format!("chmod 600 {}", staged.display()))?;
+        }
+        std::fs::rename(&staged, &target)
+            .with_context(|| format!("renaming {} -> {}", staged.display(), target.display()))?;
+        sync_parent(parent);
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+fn atomic_create_new_secret(path: &Path, bytes: &[u8]) -> Result<()> {
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "quarantine path already exists",
+        )
+        .into());
+    }
+    let parent = path.parent().context("quarantine path has no parent")?;
+    let staged = unique_sibling(path, "omega-quarantine");
+    let result = (|| -> Result<()> {
+        let mut file = secret_open_options()
+            .open(&staged)
+            .with_context(|| format!("creating {}", staged.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing {}", staged.display()))?;
+        file.sync_all()
+            .with_context(|| format!("syncing {}", staged.display()))?;
+        drop(file);
+        chmod_600(&staged).with_context(|| format!("chmod 600 {}", staged.display()))?;
+        if std::fs::symlink_metadata(path).is_ok() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "quarantine path already exists",
+            )
+            .into());
+        }
+        std::fs::rename(&staged, path)
+            .with_context(|| format!("renaming {} -> {}", staged.display(), path.display()))?;
+        sync_parent(parent);
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+fn pending_native_captures(native: &Path) -> Result<Vec<PathBuf>> {
+    let parent = native
+        .parent()
+        .context("Codex native auth path has no parent")?;
+    let filename = native
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("auth.json");
+    let prefix = format!(".{filename}.omega-capture.");
+    let mut captures: Vec<PathBuf> = Vec::new();
+    for entry in
+        std::fs::read_dir(parent).with_context(|| format!("reading {}", parent.display()))?
+    {
+        let entry = entry.with_context(|| format!("reading an entry in {}", parent.display()))?;
+        if entry.file_name().to_string_lossy().starts_with(&prefix) {
+            captures.push(entry.path());
+        }
+    }
+    Ok(captures)
+}
+
+/// Restore `native` without ever rename-overwriting a concurrent Codex write.
+/// Regular files are atomically moved to recognizable sibling captures. If a
+/// writer recreates `native` before symlink creation, EEXIST makes us capture
+/// that file too. Stale captures are deliberately discoverable by the next
+/// reconciliation if this process crashes before adoption/quarantine.
+fn capture_native_and_restore_link(native: &Path, canonical: &Path) -> Result<Vec<PathBuf>> {
+    let parent = native
+        .parent()
+        .context("Codex native auth path has no parent")?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        let mut captures: Vec<PathBuf> = Vec::new();
+        let canonical = absolute_path(canonical);
+        for _ in 0..32 {
+            if path_links_to(native, &canonical) {
+                sync_parent(parent);
+                return Ok(captures);
+            }
+            match std::fs::symlink_metadata(native) {
+                Ok(metadata) => {
+                    if metadata.file_type().is_file() {
+                        chmod_600(native)
+                            .with_context(|| format!("chmod 600 {}", native.display()))?;
+                    }
+                    let capture = unique_sibling(native, "omega-capture");
+                    match std::fs::rename(native, &capture) {
+                        Ok(()) => {
+                            sync_parent(parent);
+                            captures.push(capture);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!("capturing native Codex credential {}", native.display())
+                            })
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    match std::os::unix::fs::symlink(&canonical, native) {
+                        Ok(()) => {
+                            sync_parent(parent);
+                            return Ok(captures);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                        Err(error) => {
+                            return Err(error).with_context(|| {
+                                format!(
+                                    "creating symlink {} -> {}",
+                                    native.display(),
+                                    canonical.display()
+                                )
+                            })
+                        }
+                    }
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("inspecting {}", native.display()))
+                }
+            }
+        }
+        anyhow::bail!("Codex kept recreating auth.json while Omega restored its symlink")
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = canonical;
+        anyhow::bail!(
+            "Codex credential reconciliation is unsupported on this platform: \
+             refusing to replace the native credential without symlink support"
+        )
+    }
+}
+
+fn sync_parent(parent: &Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = parent;
+}
+
 /// Map a provider id to the legacy path its CLI expects.
 /// Returns None for providers without a fixed legacy location (api-key only).
 pub fn legacy_path_for(provider: &str) -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
     match provider {
-        "claude" => Some(home.join(".claude").join(".credentials.json")),
-        "codex" => Some(home.join(".codex").join("auth.json")),
-        "gemini" => Some(home.join(".config").join("gemini").join("oauth_creds.json")),
+        "codex" => Some(codex_home_dir().join("auth.json")),
+        "claude" => Some(dirs::home_dir()?.join(".claude").join(".credentials.json")),
+        "gemini" => Some(
+            dirs::home_dir()?
+                .join(".config")
+                .join("gemini")
+                .join("oauth_creds.json"),
+        ),
         // api-key providers store config in providers.toml; no legacy path.
         _ => None,
     }
@@ -342,6 +1140,7 @@ fn sanitize(name: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::ffi::OsString;
     use std::sync::{Mutex, MutexGuard};
 
     // fresh_store mutates the process-global HOME, and cargo runs tests in
@@ -349,15 +1148,53 @@ mod tests {
     // legacy symlink can land in the wrong tmp dir. Serialize HOME-touching tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    struct LockedEnvironment {
+        _guard: MutexGuard<'static, ()>,
+        previous: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl LockedEnvironment {
+        fn set(values: Vec<(&'static str, Option<OsString>)>) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let previous = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            Self {
+                _guard: guard,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for LockedEnvironment {
+        fn drop(&mut self) {
+            for (key, value) in self.previous.iter().rev() {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
     #[test]
     fn omega_dir_override_relocates_credentials() {
         // $OMEGA_DIR must relocate the WHOLE secret tree, not just config.toml.
         // credentials now share config::omega_dir() (was: a hardcoded ~/.omega),
         // so setting the override lands the credential store under it.
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var("OMEGA_DIR").ok();
-        std::env::set_var("OMEGA_DIR", tmp.path());
+        let codex_home = tmp.path().join("codex-home");
+        let _env = LockedEnvironment::set(vec![
+            ("OMEGA_DIR", Some(tmp.path().as_os_str().to_owned())),
+            ("CODEX_HOME", Some(codex_home.as_os_str().to_owned())),
+        ]);
         let store = CredentialStore::new().unwrap();
         assert!(
             store.base_dir().starts_with(tmp.path()),
@@ -365,10 +1202,6 @@ mod tests {
             store.base_dir(),
             tmp.path()
         );
-        match prev {
-            Some(v) => std::env::set_var("OMEGA_DIR", v),
-            None => std::env::remove_var("OMEGA_DIR"),
-        }
     }
 
     #[cfg(unix)]
@@ -392,12 +1225,67 @@ mod tests {
         assert_eq!(smode & 0o077, 0, "switched creds must be 0600, got {:o}", smode & 0o777);
     }
 
-    fn fresh_store(tmp: &Path) -> (CredentialStore, MutexGuard<'static, ()>) {
-        let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        std::env::set_var("HOME", tmp);
-        // Force re-eval of omega_dir
-        std::fs::create_dir_all(tmp.join(".omega").join("credentials").join("accounts")).unwrap();
-        (CredentialStore::new().unwrap(), guard)
+    fn fresh_store(tmp: &Path) -> (CredentialStore, LockedEnvironment) {
+        let omega = tmp.join(".omega");
+        let codex_home = tmp.join(".codex");
+        let env = LockedEnvironment::set(vec![
+            ("HOME", Some(tmp.as_os_str().to_owned())),
+            ("OMEGA_DIR", Some(omega.as_os_str().to_owned())),
+            ("CODEX_HOME", Some(codex_home.as_os_str().to_owned())),
+        ]);
+        let native = legacy_path_for("codex").unwrap();
+        assert!(
+            native.starts_with(&codex_home),
+            "native Codex credential path {:?} must stay inside isolated CODEX_HOME {:?}",
+            native,
+            codex_home
+        );
+        (CredentialStore::new().unwrap(), env)
+    }
+
+    fn codex_store(tmp: &Path) -> (CredentialStore, PathBuf) {
+        let codex_home = tmp.join("native-codex");
+        let omega = tmp.join("omega");
+        let store = CredentialStore::from_roots(&omega, &codex_home).unwrap();
+        (store, codex_home)
+    }
+
+    fn codex_credential(last_refresh: &str, marker: &str) -> Value {
+        json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": format!("id-{marker}"),
+                "access_token": format!("access-{marker}"),
+                "refresh_token": format!("refresh-{marker}")
+            },
+            "last_refresh": last_refresh
+        })
+    }
+
+    fn write_codex(path: &Path, last_refresh: &str, marker: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            serde_json::to_vec(&codex_credential(last_refresh, marker)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_codex_api_key(path: &Path, marker: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(
+            path,
+            serde_json::to_vec(&json!({
+                "auth_mode": "apikey",
+                "OPENAI_API_KEY": format!("test-{marker}")
+            }))
+            .unwrap(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -436,6 +1324,22 @@ mod tests {
         let legacy = tmp.path().join(".claude").join(".credentials.json");
         let meta = std::fs::symlink_metadata(&legacy).unwrap();
         assert!(meta.file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_legacy_symlink_codex_uses_canonical_reconciler() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _env) = fresh_store(tmp.path());
+        write_codex(
+            &store.active_path("codex"),
+            "2026-07-21T00:00:00Z",
+            "canonical",
+        );
+        store.ensure_legacy_symlink("codex").unwrap();
+        let topology = store.codex_topology();
+        assert!(topology.native_links_to_canonical);
+        assert_eq!(topology.canonical_validity, CodexCredentialValidity::Valid);
     }
 
     #[test]
@@ -506,6 +1410,308 @@ mod tests {
         let canonical_content = std::fs::read_to_string(store.active_path("claude")).unwrap();
         assert!(canonical_content.contains("GOOD"), "canonical must keep good creds, got: {canonical_content}");
         assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+    }
+
+    #[test]
+    fn codex_home_override_controls_native_auth_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let expected = tmp.path().join("alternate-codex");
+        let _env =
+            LockedEnvironment::set(vec![("CODEX_HOME", Some(expected.as_os_str().to_owned()))]);
+
+        assert_eq!(codex_home_dir(), expected);
+        assert_eq!(legacy_path_for("codex"), Some(expected.join("auth.json")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_adopts_newer_native_and_quarantines_old_canonical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        write_codex(&canonical, "2026-07-20T10:00:00Z", "canonical-old");
+        write_codex(&native, "2026-07-21T10:00:00Z", "native-new");
+
+        let before = store.codex_topology();
+        assert!(before.split);
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::AdoptedNative);
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-21T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert_eq!(
+            inspect_codex_credential(&report.quarantined[0]).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-20T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert!(report.topology.native_links_to_canonical);
+        assert!(!report.topology.split);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_never_lets_newer_mtime_override_newer_last_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        write_codex(&canonical, "2026-07-22T10:00:00Z", "canonical-new");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_codex(&native, "2026-07-21T10:00:00Z", "native-old");
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::RepairedNativeLink);
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-22T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(
+            inspect_codex_credential(&report.quarantined[0]).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-21T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_uses_mtime_when_only_one_copy_has_last_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        write_codex(&canonical, "2026-07-22T10:00:00Z", "canonical-old");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_codex_api_key(&native, "native-new");
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::AdoptedNative);
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            None,
+            "the newer API-key credential should win by mtime"
+        );
+        assert_eq!(report.quarantined.len(), 1);
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_recovers_a_crash_left_native_capture() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        let pending = codex_home.join(".auth.json.omega-capture.crash-test");
+        write_codex(&canonical, "2026-07-20T10:00:00Z", "canonical-old");
+        write_codex(&pending, "2026-07-23T10:00:00Z", "captured-new");
+        std::os::unix::fs::symlink(&canonical, &native).unwrap();
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::AdoptedNative);
+        assert!(!pending.exists());
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-23T10:00:00Z")
+                .ok()
+                .map(|value| value.with_timezone(&Utc))
+        );
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_preserves_corrupt_native_without_clobbering_canonical() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        write_codex(&canonical, "2026-07-22T10:00:00Z", "canonical-valid");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(&native, b"{truncated").unwrap();
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::RepairedNativeLink);
+        assert_eq!(
+            inspect_codex_credential(&canonical).validity,
+            CodexCredentialValidity::Valid
+        );
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(
+            inspect_codex_credential(&report.quarantined[0]).validity,
+            CodexCredentialValidity::Invalid
+        );
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_restores_single_topology_when_no_copy_is_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let native = codex_home.join("auth.json");
+        std::fs::create_dir_all(&codex_home).unwrap();
+        std::fs::write(&native, b"{incomplete").unwrap();
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::NoValidCredential);
+        assert_eq!(report.quarantined.len(), 1);
+        assert!(report.topology.native_is_symlink);
+        assert!(report.topology.native_links_to_canonical);
+        assert!(!report.topology.split);
+        assert_eq!(
+            report.topology.canonical_validity,
+            CodexCredentialValidity::Missing
+        );
+        assert_eq!(
+            inspect_codex_credential(&report.quarantined[0]).validity,
+            CodexCredentialValidity::Invalid
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_quarantines_an_invalid_extra_candidate_without_a_winner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _codex_home) = codex_store(tmp.path());
+        let candidate = tmp.path().join("flow").join("backup.json");
+        std::fs::create_dir_all(candidate.parent().unwrap()).unwrap();
+        let invalid = b"{truncated-flow-backup";
+        std::fs::write(store.active_path("codex"), invalid).unwrap();
+        std::fs::write(&candidate, invalid).unwrap();
+
+        let report = store.reconcile_codex_candidate(&candidate).unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::NoValidCredential);
+        assert_eq!(report.quarantined.len(), 1);
+        assert_eq!(std::fs::read(&report.quarantined[0]).unwrap(), invalid);
+        assert_eq!(
+            inspect_codex_credential(&report.quarantined[0]).validity,
+            CodexCredentialValidity::Invalid
+        );
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconcile_updates_resolved_target_without_breaking_symlink_chain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let shared = tmp.path().join("shared").join("codex-auth.json");
+        let native = codex_home.join("auth.json");
+        write_codex(&shared, "2026-07-20T10:00:00Z", "shared-old");
+        std::os::unix::fs::symlink(&shared, &canonical).unwrap();
+        write_codex(&native, "2026-07-21T10:00:00Z", "native-new");
+
+        let report = store.reconcile_codex().unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::AdoptedNative);
+        assert_eq!(std::fs::read_link(&canonical).unwrap(), shared);
+        assert_eq!(
+            inspect_codex_credential(&shared).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-21T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert!(report.topology.native_links_to_canonical);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_candidate_restore_is_monotonic_and_quarantines_every_distinct_loser() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, codex_home) = codex_store(tmp.path());
+        let canonical = store.active_path("codex");
+        let native = codex_home.join("auth.json");
+        let backup = tmp.path().join("flow").join("backup.json");
+        write_codex(&canonical, "2026-07-21T10:00:00Z", "canonical-middle");
+        write_codex(&native, "2026-07-22T10:00:00Z", "native-newest");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_codex(&backup, "2026-07-20T10:00:00Z", "backup-oldest");
+
+        let report = store.reconcile_codex_candidate(&backup).unwrap();
+
+        assert_eq!(report.action, CodexReconcileAction::AdoptedNative);
+        assert_eq!(report.quarantined.len(), 2);
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-22T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        let quarantine_dir = store.base_dir().join("quarantine").join("codex");
+        let dir_mode = std::fs::metadata(&quarantine_dir)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o077, 0);
+        for path in &report.quarantined {
+            let mode = std::fs::metadata(path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+
+        write_codex(&backup, "2026-07-23T10:00:00Z", "backup-newest");
+        let promoted = store.reconcile_codex_candidate(&backup).unwrap();
+        assert_eq!(promoted.action, CodexReconcileAction::AdoptedCandidate);
+        assert_eq!(
+            inspect_codex_credential(&canonical).last_refresh,
+            DateTime::parse_from_rfc3339("2026-07-23T10:00:00Z")
+                .ok()
+                .map(|v| v.with_timezone(&Utc))
+        );
+        assert!(promoted.topology.native_links_to_canonical);
+    }
+
+    #[test]
+    fn codex_fresh_relative_uses_semantic_time_and_requires_distinct_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let baseline = tmp.path().join("baseline.json");
+        let candidate = tmp.path().join("candidate.json");
+        write_codex(&baseline, "2026-07-22T10:00:00Z", "baseline");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_codex(&candidate, "2026-07-21T10:00:00Z", "older-candidate");
+        assert!(!codex_credential_fresh_relative(&candidate, &baseline));
+
+        write_codex(&candidate, "2026-07-23T10:00:00Z", "newer-candidate");
+        assert!(codex_credential_fresh_relative(&candidate, &baseline));
+
+        write_codex(&candidate, "2026-07-22T10:00:00Z", "same-time-candidate");
+        assert!(
+            !codex_credential_fresh_relative(&candidate, &baseline),
+            "equal last_refresh is not proof that a device flow produced a fresh credential"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        write_codex_api_key(&candidate, "newer-api-key");
+        assert!(
+            codex_credential_fresh_relative(&candidate, &baseline),
+            "a one-sided last_refresh comparison should use a newer mtime"
+        );
+
+        std::fs::copy(&baseline, &candidate).unwrap();
+        assert!(!codex_credential_fresh_relative(&candidate, &baseline));
+
+        std::fs::write(&candidate, b"not-json").unwrap();
+        assert!(!codex_credential_fresh_relative(&candidate, &baseline));
     }
 
     #[test]

@@ -25,7 +25,7 @@ DATE="$(date +%Y-%m-%d)"; RUN="$STATE/runs/$DATE"
 LOG="$OMEGA_DIR/logs/ecosystem-watch.log"
 ALERT="$(command -v omega-alert-send.sh || echo "$HOME/Station/SideBusiness/OmegaOS/scripts/omega-alert-send.sh")"
 ANALYZE_MODEL="${EW_ANALYZE_MODEL:-claude-sonnet-5}"
-GATE_MODEL="${EW_GATE_MODEL:-claude-opus-4-8}"
+GATE_MODEL="${EW_GATE_MODEL:-claude-opus-5}"
 mkdir -p "$RUN/raw" "$ART" "$(dirname "$LOG")" "$STATE"; touch "$SEEN"
 
 log(){ printf '%s | %s\n' "$(date -Is)" "$*" | tee -a "$LOG" >&2; }

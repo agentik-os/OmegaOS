@@ -12,7 +12,7 @@ SESS="Nova"
 DIR="${NOVA_HOME:-$HOME/Station/LifeStyle}"
 LOG="$OMEGA/logs/nova-godmode.log"
 LOCK="/tmp/nova-godmode.lock"
-MODEL="${NOVA_GODMODE_MODEL:-claude-opus-4-8}"
+MODEL="${NOVA_GODMODE_MODEL:-claude-opus-5}"
 
 # Un seul resurrect à la fois (le boot de claude prend ~10s ; le cron refire à la minute).
 exec 9>"$LOCK"

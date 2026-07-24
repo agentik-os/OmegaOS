@@ -154,6 +154,116 @@ if ls scripts/hooks/*.sh >/dev/null 2>&1 && grep -q "scripts/hooks" install.sh; 
 if [ -f agents/identity/SOUL.template.md ] && grep -q "SOUL.template" install.sh; then ok "SOUL identity template shipped + installed"; else bad "SOUL template not shipped/wired"; fi
 if grep -q "usage --check" install.sh; then ok "native billing cron (omega usage --check) scheduled"; else bad "native billing cron missing from install.sh"; fi
 
+# Phase 1 /duo assets: prove the source bridge is executable and the installer
+# copies both shipped assets, restores executable mode, and exposes the bridge
+# on PATH. These are separate assertions so a partial install cannot look green.
+if [ -x tools/duo/bin/omega-duo ] && [ -f skills/duo/SKILL.md ] \
+  && grep -qF 'if [[ -x "$DUO_SRC/bin/omega-duo" && -f "$DUO_SKILL_SRC/SKILL.md" ]]' install.sh \
+  && grep -qF 'cp -f "$DUO_SRC/bin/omega-duo" "$DUO_SKILL_DST/bin/omega-duo"' install.sh \
+  && grep -qF 'cp -f "$DUO_SKILL_SRC/SKILL.md" "$DUO_SKILL_DST/SKILL.md"' install.sh; then
+  ok "/duo bridge + skill sources shipped and copied"
+else
+  bad "/duo bridge/skill source or installer copy wiring missing"
+fi
+if grep -qF 'chmod +x "$DUO_SKILL_DST/bin/omega-duo"' install.sh \
+  && grep -qF 'ln -sf "$DUO_SKILL_DST/bin/omega-duo" "$HOME/.local/bin/omega-duo"' install.sh; then
+  ok "omega-duo installed executable and linked onto PATH"
+else
+  bad "omega-duo executable/PATH wiring missing from install.sh"
+fi
+
+# Codex credential topology is resolved by omega-core, where JSON validity and
+# last_refresh can be compared atomically. The installer must honor a nonempty
+# CODEX_HOME, must not make the old fixed .pre-omega duplicate choice, and must
+# provision the owner-only quarantine before invoking the Rust reconciler.
+if grep -qF 'if [[ -n "${CODEX_HOME:-}" ]]' install.sh \
+  && grep -qF 'CODEX_NATIVE_DIR="$CODEX_HOME"' install.sh \
+  && grep -qF 'CODEX_NATIVE_AUTH="$CODEX_NATIVE_DIR/auth.json"' install.sh; then
+  ok "installer honors nonempty CODEX_HOME for native Codex auth"
+else
+  bad "installer does not honor nonempty CODEX_HOME"
+fi
+if ! grep -qE 'migrate_creds[[:space:]]+"codex"' install.sh \
+  && grep -qF 'OMEGA_DIR="$OMEGA_DIR" CODEX_HOME="$CODEX_NATIVE_DIR"' install.sh \
+  && grep -qF '"$INSTALL_DIR/omega" codex-reconcile --json' install.sh \
+  && grep -qF '#[command(name = "codex-reconcile")]' crates/omega-cli/src/main.rs \
+  && grep -qF 'pub fn reconcile_codex(&self)' crates/omega-core/src/credentials.rs \
+  && grep -qF 'codex_login::reconcile_on_startup' crates/omega-cli/src/main.rs; then
+  ok "Codex split reconciliation uses the authoritative omega-core command"
+else
+  bad "unsafe shell-owned Codex credential reconciliation remains"
+fi
+if grep -qF '#[command(name = "codex-login-abort")]' crates/omega-cli/src/main.rs \
+  && grep -qF 'pub fn abort(pid: u32)' crates/omega-core/src/codex_login.rs \
+  && grep -qF 'abort_requires_owned_pid_and_settles_after_exit_sentinel' crates/omega-core/src/codex_login.rs; then
+  ok "Codex login abort is PID-bound, sentinel-settled, and runtime-tested"
+else
+  bad "safe Codex login abort path is incomplete"
+fi
+if grep -qF 'acct:codexabort:' telegram-bot/omega-tg-bot.ts \
+  && grep -qF 'codex-login-abort' telegram-bot/omega-tg-bot.ts; then
+  ok "Telegram Codex Cancel uses the explicit abort callback"
+else
+  bad "Telegram Codex Cancel does not use the explicit abort callback"
+fi
+if grep -qF 'mkdir -p "$OMEGA_DIR/credentials/accounts" "$OMEGA_DIR/credentials/quarantine"' install.sh \
+  && grep -qF 'chmod 700 "$OMEGA_DIR/credentials"' install.sh \
+  && grep -qF '    "$OMEGA_DIR/credentials/accounts" \' install.sh \
+  && grep -qF '    "$OMEGA_DIR/credentials/quarantine"' install.sh; then
+  ok "credential store + quarantine provisioned owner-only"
+else
+  bad "owner-only credential quarantine provisioning missing"
+fi
+if grep -qF 'install_bun_required' install.sh \
+  && grep -qF 'OmegaOS will not install an unusable /duo bridge' install.sh \
+  && grep -qF 'Bun disappeared before /duo installation' install.sh; then
+  ok "Bun is a required, fail-closed runtime for /duo"
+else
+  bad "fresh installs can still ship /duo without its Bun runtime"
+fi
+if grep -qF 'pub async fn probe_codex_auth()' crates/omega-core/src/doctor.rs \
+  && grep -qF 'doctor_checks(&config, deep)' crates/omega-cli/src/main.rs; then
+  ok "live Codex auth probing is gated behind explicit doctor --deep"
+else
+  bad "live Codex auth probe is not explicitly gated"
+fi
+
+# The bridge's deterministic fake-agent suite is the real runtime gate. Verify
+# both its exit status and the named invariants; a shortened suite is not green.
+if command -v bun >/dev/null 2>&1; then
+  DUO_SELFTEST_OUTPUT="$(tools/duo/bin/omega-duo --self-test 2>&1)"
+  DUO_SELFTEST_RC=$?
+  DUO_INVARIANTS_OK=1
+  while IFS= read -r invariant; do
+    [ -z "$invariant" ] && continue
+    if ! grep -qF "ok   $invariant" <<<"$DUO_SELFTEST_OUTPUT"; then
+      bad "omega-duo self-test omitted invariant: $invariant"
+      DUO_INVARIANTS_OK=0
+    fi
+  done <<'DUO_INVARIANTS'
+attempt zero uses native read-only argv
+transient provider failure never enters guarded degraded mode
+injected watcher failure is the real fail-closed result
+Git metadata mutation outside HEAD and index is detected
+native read-only mode ignores unrelated ignored-artifact churn
+blocked Claude plan read uses disclosed guarded degradation
+native read-only guard supports detached HEAD
+exit-zero preflight auth diagnostic is normalized to failed JSON and process status
+prefixed task echoes cannot trigger auth, quota fallback, or exhaustion
+Claude sandbox availability and no-permission prose cannot authorize degradation
+transport failure classes independently veto sandbox degradation
+exact local Bubblewrap bootstrap denial authorizes guarded degradation
+generic repository-read prose cannot authorize degradation
+DUO_INVARIANTS
+  if [[ "$DUO_SELFTEST_RC" -eq 0 && "$DUO_INVARIANTS_OK" -eq 1 ]]; then
+    ok "omega-duo source self-test passed with every required invariant"
+  else
+    bad "omega-duo source self-test failed or incomplete"
+  fi
+else
+  bad "Bun absent: omega-duo runtime gate cannot execute"
+fi
+
 # 10. Orchestration engine (Gate+Driver+Guardian) + planner skill shipped.
 if [ -f crates/omega-core/src/executor.rs ] && [ -f crates/omega-core/src/guardian.rs ]; then ok "orchestration engine (executor + guardian) in source"; else bad "engine source (executor/guardian) missing"; fi
 if grep -qE "PlanRun|PlanStatus|plan-run|plan_run" crates/omega-cli/src/main.rs; then ok "omega plan-run/plan-status CLI present"; else bad "engine CLI commands missing from main.rs"; fi

@@ -55,7 +55,7 @@ EG_MOCK=1 bash scripts/engage-run.sh       # fixtures, never posts (smoke test)
 ```
 
 Env: `EG_REPLIES_CAP` (6), `EG_LIKES_CAP` (15), `EG_DAYS` (2), `EG_ANALYZE_MODEL`
-(claude-sonnet-5), `EG_GATE_MODEL` (claude-opus-4-8), `EG_TOPICS_FILE`.
+(claude-sonnet-5), `EG_GATE_MODEL` (claude-opus-5), `EG_TOPICS_FILE`.
 
 ## Arm / disarm
 

@@ -212,10 +212,9 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 4b. Codex: installed AND logged in. The check above only covers the
-    // DEFAULT agent (claude), so a broken Codex — the `o` launcher — stayed
-    // invisible until a pane came up dead. Auth lives in ~/.codex/auth.json:
-    // `auth_mode` is "chatgpt" for a subscription login, or an OPENAI_API_KEY.
+    // 4b. Codex topology. A real native file beside a canonical credential is
+    // an explicit split, not a healthy login. This is a cheap local check; it
+    // never sends a provider request.
     {
         let codex = crate::agents::Agent::Codex;
         if !codex.is_available() {
@@ -225,24 +224,87 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                 .unwrap_or_default();
             checks.push(Check::warn("codex", format!("codex not on PATH{}", hint)));
         } else {
-            let auth = crate::credentials::legacy_path_for("codex")
-                .and_then(|p| std::fs::read_to_string(&p).ok())
-                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok());
-            match auth {
-                Some(a)
-                    if a.get("auth_mode").and_then(|v| v.as_str()) == Some("chatgpt")
-                        || a.get("tokens").is_some() =>
+            match crate::credentials::CredentialStore::new()
+                .map(|store| store.codex_topology())
+            {
+                Ok(topology)
+                    if topology.canonical_validity
+                        != crate::credentials::CodexCredentialValidity::Valid
+                        && topology.native_validity
+                            != crate::credentials::CodexCredentialValidity::Valid =>
                 {
-                    checks.push(Check::ok("codex", "codex available, ChatGPT login"))
+                    checks.push(Check::warn(
+                        "codex",
+                        "not logged in; run: omega codex-login",
+                    ))
                 }
-                Some(a) if a.get("OPENAI_API_KEY").and_then(|v| v.as_str()).is_some() => {
-                    checks.push(Check::ok("codex", "codex available, API key"))
-                }
-                _ => checks.push(Check::warn(
+                Ok(topology) if topology.split => checks.push(Check::warn(
                     "codex",
-                    "codex installed but not logged in — run: codex login",
+                    format!(
+                        "native/canonical credential split (native: {}, canonical: {}); no copy was discarded",
+                        topology.native_path.display(),
+                        topology.canonical_path.display()
+                    ),
+                )),
+                Ok(topology)
+                    if topology.native_links_to_canonical
+                        && topology.canonical_validity
+                            == crate::credentials::CodexCredentialValidity::Valid =>
+                {
+                    checks.push(Check::ok(
+                        "codex",
+                        format!(
+                            "canonical credential topology via {}",
+                            topology.native_path.display()
+                        ),
+                    ))
+                }
+                Ok(topology) => checks.push(Check::warn(
+                    "codex",
+                    format!(
+                        "credential topology incomplete (native exists: {}, canonical exists: {}, native linked: {})",
+                        topology.native_exists,
+                        topology.canonical_exists,
+                        topology.native_links_to_canonical
+                    ),
+                )),
+                Err(error) => checks.push(Check::warn(
+                    "codex",
+                    format!("credential topology unavailable: {error}"),
                 )),
             }
+        }
+    }
+
+    // 4c. Recorded device-flow state and stale backups. Read-only: doctor
+    // never settles a flow and never signals any Codex or rmux process.
+    {
+        let diagnostic = crate::codex_login::diagnostics();
+        if diagnostic.active_flow {
+            let detail = match diagnostic.active_pid {
+                Some(pid) if pid != 0 => format!(
+                    "recorded pid {pid} is {}; settle with `omega codex-login-status --pid {pid}`",
+                    diagnostic.active_process
+                ),
+                _ => format!(
+                    "{}; run `omega codex-login-status` to reconcile it",
+                    diagnostic.active_process
+                ),
+            };
+            checks.push(Check::warn("codex login flow", detail));
+        } else if diagnostic.stale_backups > 0 {
+            checks.push(Check::warn(
+                "codex login flow",
+                format!(
+                    "{} stale owner-only backup(s) require review; no process was signalled",
+                    diagnostic.stale_backups
+                ),
+            ));
+        } else {
+            checks.push(Check::ok(
+                "codex login flow",
+                "no active flow or stale backup",
+            ));
         }
     }
 
@@ -505,6 +567,40 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     }
 
     checks
+}
+
+/// Explicit deep Codex authentication check. This performs one live provider
+/// request and must never be called by ordinary doctor or the self-heal cron.
+pub async fn probe_codex_auth() -> Check {
+    if !crate::agents::Agent::Codex.is_available() {
+        return Check::warn("codex real auth", "probe skipped: codex is not on PATH");
+    }
+    if crate::codex_login::diagnostics().active_flow {
+        return Check::warn(
+            "codex real auth",
+            "probe skipped while a device-login flow is recorded",
+        );
+    }
+    let probe = tokio::task::spawn_blocking(crate::codex_login::probe_auth)
+        .await
+        .unwrap_or(crate::codex_login::AuthProbe::Unknown {
+            reason: "auth probe task failed".to_string(),
+        });
+    match probe {
+        crate::codex_login::AuthProbe::Usable => {
+            Check::ok("codex real auth", "explicit AUTH_OK probe succeeded")
+        }
+        crate::codex_login::AuthProbe::Unauthenticated => Check::warn(
+            "codex real auth",
+            "credential was rejected (401); run: omega codex-login",
+        ),
+        crate::codex_login::AuthProbe::QuotaLimited => {
+            Check::warn("codex real auth", "provider quota is unavailable")
+        }
+        crate::codex_login::AuthProbe::Unknown { reason } => {
+            Check::warn("codex real auth", reason)
+        }
+    }
 }
 
 /// Minimal `export KEY="value"` / `export KEY=value` parse → (KEY, value).

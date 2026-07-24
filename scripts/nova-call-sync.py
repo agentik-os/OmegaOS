@@ -147,7 +147,7 @@ def main() -> None:
         t0 = time.time()
         try:
             out = subprocess.run(
-                [CLAUDE, "-p", prompt, "--model", "claude-opus-4-8",
+                [CLAUDE, "-p", prompt, "--model", "claude-opus-5",
                  "--add-dir", "/",  # the companion is the operator's god-mode assistant
                  "--dangerously-skip-permissions", "--max-turns", "60"],  # a 2h call needs room
                 cwd=LIFE, capture_output=True, text=True, timeout=1500,
