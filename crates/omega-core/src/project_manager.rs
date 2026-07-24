@@ -19,13 +19,62 @@ pub struct ManagedProject {
     /// it 🔕 but keeps it listed). Default ON preserves existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<bool>,
+    /// Thematic category used to group the Projects tab (Framework / Lifestyle /
+    /// Nova / Partners / SideBusiness / …). `None` = infer from the path under
+    /// `~/Station`. See `display_category`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
+
+/// Canonical display order of the Projects-tab thematic sections. Categories not
+/// listed here sort after these (alphabetically), and `"Other"` sorts last.
+pub const PROJECT_CATEGORY_ORDER: &[&str] =
+    &["Framework", "Lifestyle", "Nova", "Partners", "SideBusiness"];
 
 impl ManagedProject {
     /// Whether this project participates in Telegram (topic sync + Atlas display).
     /// Enabled unless the toggle was explicitly set to `false`.
     pub fn telegram_enabled(&self) -> bool {
         self.telegram != Some(false)
+    }
+
+    /// Thematic category for the Projects-tab grouping. Uses the explicit
+    /// `category` field when set (non-empty), else infers it from the project
+    /// path's parent under `~/Station` (Frameworks / LifeStyle / Nova / Partners
+    /// / SideBusiness), falling back to `"Other"`.
+    pub fn display_category(&self) -> String {
+        if let Some(c) = self.category.as_deref() {
+            let c = c.trim();
+            if !c.is_empty() {
+                return c.to_string();
+            }
+        }
+        let p = self.path.to_string_lossy();
+        for (needle, label) in [
+            ("/Station/Frameworks/", "Framework"),
+            ("/Station/Partners/", "Partners"),
+            ("/Station/Nova/", "Nova"),
+            ("/Station/LifeStyle/", "Lifestyle"),
+            ("/Station/SideBusiness/", "SideBusiness"),
+        ] {
+            if p.contains(needle) {
+                return label.to_string();
+            }
+        }
+        "Other".to_string()
+    }
+
+    /// Sort rank for `display_category` — canonical categories first (in
+    /// `PROJECT_CATEGORY_ORDER`), then unknown categories alphabetically, then
+    /// `"Other"` last. Returned as a tuple so callers can `sort_by_key`.
+    pub fn category_rank(cat: &str) -> (u8, usize, String) {
+        if cat == "Other" {
+            return (2, 0, String::new());
+        }
+        match PROJECT_CATEGORY_ORDER.iter().position(|c| *c == cat) {
+            Some(i) => (0, i, String::new()),
+            None => (1, 0, cat.to_string()),
+        }
     }
 }
 
@@ -226,6 +275,7 @@ pub fn create_project(name: &str, location: &Path, icon: Option<&str>) -> Result
         git_email: None,
         created_at: date,
         telegram: None,
+        category: None,
     };
 
     // Persist to the registry so /projects sees it.
@@ -254,6 +304,7 @@ pub fn add_existing_project(path: &Path) -> Result<ManagedProject> {
         git_email: None,
         created_at: chrono::Utc::now().to_rfc3339(),
         telegram: None,
+        category: None,
     };
 
     // Persist to the registry so /projects sees it next time.
@@ -298,6 +349,7 @@ pub fn scan_directory(root: &Path) -> Vec<ManagedProject> {
                 git_email: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
                 telegram: None,
+                category: None,
             });
         }
     }

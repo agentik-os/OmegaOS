@@ -2414,6 +2414,10 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     items.push(ListItem::new(Line::from("")));
 
     // ── Group 2: Projects ────────────────────────────────────────────────────
+    // Grouped under thematic sub-headers (Framework / Lifestyle / Nova /
+    // Partners / SideBusiness / …). Selection is by registry index, so the
+    // registry is kept sorted in this same category order (see projects.json /
+    // ManagedProject::category_rank) and arrow-nav flows top-to-bottom.
     items.push(group_header("Projects"));
     if app.project_registry.projects.is_empty() {
         let current = app.projects_group == 1;
@@ -2426,19 +2430,40 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
             current && list_focused,
         ));
     } else {
-        for (i, project) in app.project_registry.projects.iter().enumerate() {
-            let current = app.projects_group == 1 && i == app.projects_selected;
-            if current {
-                flat_selected = items.len();
+        use omega_core::project_manager::ManagedProject;
+        // Distinct categories present, in canonical order.
+        let mut cats: Vec<String> = Vec::new();
+        for p in &app.project_registry.projects {
+            let c = p.display_category();
+            if !cats.contains(&c) {
+                cats.push(c);
             }
-            let icon = project.icon.as_deref().unwrap_or("▣");
-            // 🔕 marks a project whose Telegram toggle is OFF.
-            let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
-            items.push(section_row(
-                format!("{} {}{}", icon, project.name, tg_mark),
-                current,
-                current && list_focused,
-            ));
+        }
+        cats.sort_by_key(|c| ManagedProject::category_rank(c));
+
+        for cat in &cats {
+            // Sub-header (dim, indented one level under the "Projects" header).
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("    ── {} ──", cat),
+                Style::default().fg(th::dim()).add_modifier(Modifier::BOLD),
+            ))));
+            for (i, project) in app.project_registry.projects.iter().enumerate() {
+                if &project.display_category() != cat {
+                    continue;
+                }
+                let current = app.projects_group == 1 && i == app.projects_selected;
+                if current {
+                    flat_selected = items.len();
+                }
+                let icon = project.icon.as_deref().unwrap_or("▣");
+                // 🔕 marks a project whose Telegram toggle is OFF.
+                let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
+                items.push(section_row(
+                    format!("{} {}{}", icon, project.name, tg_mark),
+                    current,
+                    current && list_focused,
+                ));
+            }
         }
     }
 
