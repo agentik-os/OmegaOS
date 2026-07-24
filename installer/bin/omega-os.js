@@ -437,11 +437,37 @@ async function finishTelegram(enabled) {
 
 // --- success / failure summaries (normal screen) -------------------------
 
+// Post-install health gate. "install.sh exited 0" only means the SCRIPT ran; it
+// does not mean the doctrine got exported, the hooks got registered or the
+// binary works. `omega doctor` answers that, and it is the difference between
+// discovering a broken install now and discovering it three missions later.
+// Advisory by design: a warning here never fails the install, it just refuses
+// to let the operator walk away believing everything is green when it is not.
+function runHealthCheck(dir) {
+  const bin = path.join(process.env.HOME || '~', '.local/bin/omega');
+  const exe = fs.existsSync(bin) ? bin : 'omega';
+  const r = spawnSync(exe, ['doctor'], { encoding: 'utf8', timeout: 120000 });
+  if (r.error || typeof r.stdout !== 'string') {
+    process.stdout.write('  ' + yel('! could not run `omega doctor`') + gray(' — run it yourself after reloading your shell') + '\n\n');
+    return;
+  }
+  const lines = r.stdout.split('\n');
+  const bad = lines.filter((l) => /\[[!x]\]/.test(l));
+  const ok = lines.filter((l) => /\[\+\]/.test(l)).length;
+  if (!bad.length) {
+    process.stdout.write('  ' + grn('✓ health check: ' + ok + ' checks passed') + '\n\n');
+    return;
+  }
+  process.stdout.write('  ' + yel('! health check: ' + ok + ' passed, ' + bad.length + ' need attention') + '\n');
+  for (const l of bad.slice(0, 8)) process.stdout.write('  ' + gray('│ ') + l.trim() + '\n');
+  process.stdout.write('  ' + gray('Re-run `omega doctor` after `exec $SHELL -l`; most warnings are credentials you have not set up yet.') + '\n\n');
+}
+
 function printSuccess(dir) {
   process.stdout.write('\n  ' + grn('✓ OmegaOS installed') + '  →  ' + bold(dir) + '\n\n');
+  runHealthCheck(dir);
   process.stdout.write('  Next:\n');
   process.stdout.write('    ' + cyan('exec $SHELL -l') + gray('   # reload your shell so `omega` is on PATH (bash & zsh)') + '\n');
-  process.stdout.write('    ' + cyan('omega doctor') + gray('     # verify the install is healthy') + '\n');
   process.stdout.write('    ' + cyan('omega') + gray('            # launch the TUI') + '\n\n');
   process.stdout.write('  ' + gray('First run: open the TUI Account panel to log into Claude, then set up') + '\n');
   process.stdout.write('  ' + gray('Telegram / providers — Enter on any panel opens a guided wizard.') + '\n\n');

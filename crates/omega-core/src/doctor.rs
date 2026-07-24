@@ -93,26 +93,57 @@ fn check_hooks(config: &OmegaConfig) -> Check {
         .parent()
         .map(|p| p.join("hooks"))
         .unwrap_or_else(|| std::path::PathBuf::from("/nonexistent"));
-    let scripts_present = hooks_dir.join("track-tool-use.sh").exists()
-        && hooks_dir.join("stop-verify-hook.sh").exists();
+    // The anti-abandon set is load-bearing doctrine, not decoration: without
+    // these an agent can stop mid-mission and nothing notices. Check each by
+    // name and say which one is missing — "hooks missing" sent the operator
+    // hunting, and the old check only knew two of them.
+    const REQUIRED: &[(&str, &str)] = &[
+        ("stop-verify-hook.sh", "stop-verify"),
+        ("omega-session-contract.sh", "omega-session-contract"),
+        ("omega-prompt-scan.sh", "omega-prompt-scan"),
+        ("omega-plan-mirror.sh", "omega-plan-mirror"),
+        ("omega_plan_state.py", ""), // shared parser, not registered anywhere
+        ("track-tool-use.sh", "track-tool-use"),
+    ];
 
-    let registered = dirs::home_dir()
+    let settings = dirs::home_dir()
         .map(|h| h.join(".claude/settings.json"))
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .map(|s| s.contains("track-tool-use") && s.contains("stop-verify"))
-        .unwrap_or(false);
+        .unwrap_or_default();
 
-    match (scripts_present, registered) {
-        (true, true) => Check::ok("hooks", "track + verify present, registered in settings.json"),
-        (true, false) => Check::warn(
-            "hooks",
-            "scripts present but not registered in settings.json (re-run install.sh; needs jq)",
-        ),
-        (false, _) => Check::warn(
-            "hooks",
-            format!("hook scripts missing from {}", hooks_dir.display()),
-        ),
+    let mut missing_files = Vec::new();
+    let mut unregistered = Vec::new();
+    for (file, marker) in REQUIRED {
+        if !hooks_dir.join(file).exists() {
+            missing_files.push(*file);
+        } else if !marker.is_empty() && !settings.contains(marker) {
+            unregistered.push(*file);
+        }
     }
+
+    if !missing_files.is_empty() {
+        return Check::warn(
+            "hooks",
+            format!(
+                "missing from {}: {} (re-run install.sh)",
+                hooks_dir.display(),
+                missing_files.join(", ")
+            ),
+        );
+    }
+    if !unregistered.is_empty() {
+        return Check::warn(
+            "hooks",
+            format!(
+                "present but NOT registered in settings.json: {} (re-run install.sh; needs jq)",
+                unregistered.join(", ")
+            ),
+        );
+    }
+    Check::ok(
+        "hooks",
+        format!("{} hooks present + registered (finish-guard armed)", REQUIRED.len()),
+    )
 }
 
 /// Run every health check. Each is independent and never panics.
@@ -141,18 +172,29 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         )),
     }
 
-    // 3. Doctrine integrity (6 Laws + 36 operational rules — R-SECRETS-VAULT
-    // added 2026-07-03; bump EXPECTED_OPS whenever rules.rs ships a new rule).
-    const EXPECTED_LAWS: usize = 6;
-    const EXPECTED_OPS: usize = 36;
+    // 3. Doctrine integrity — a FLOOR, not an exact count.
+    //
+    // This used to hardcode "6 Laws + 36 Rules" and its own comment said to bump
+    // the constant on every new rule. Nobody ever does, so the check spent most
+    // of its life warning about a healthy system (it fired the day L6 + R-PLAN
+    // shipped), and a doctor that always warns is a doctor the operator learns
+    // to skim. Exact drift is already caught precisely by check 3b, which
+    // compares the on-disk rule files against the compiled registry. What is
+    // worth checking HERE is only that the registry is not gutted — a stripped
+    // or half-linked binary.
+    const MIN_LAWS: usize = 6;
+    const MIN_OPS: usize = 30;
     let laws = crate::rules::laws().len();
     let ops = crate::rules::operational_rules().len();
-    if laws == EXPECTED_LAWS && ops == EXPECTED_OPS {
+    if laws >= MIN_LAWS && ops >= MIN_OPS {
         checks.push(Check::ok("doctrine", format!("{} Laws + {} Rules", laws, ops)));
     } else {
         checks.push(Check::warn(
             "doctrine",
-            format!("{} Laws + {} Rules (expected {} + {})", laws, ops, EXPECTED_LAWS, EXPECTED_OPS),
+            format!(
+                "{} Laws + {} Rules — below the sane floor ({} + {}); registry looks truncated",
+                laws, ops, MIN_LAWS, MIN_OPS
+            ),
         ));
     }
 
