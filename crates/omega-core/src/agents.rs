@@ -478,9 +478,27 @@ impl Agent {
                 // become black-on-black. Omega owns the surrounding TUI palette,
                 // while Codex remains fully usable in monochrome; this removes
                 // the opaque band at the source and keeps the session portable.
+                // (3) --dangerously-bypass-hook-trust — same unattended-pane
+                //     problem, third prompt. Codex gates any new or changed
+                //     entry in hooks.json behind "N hooks are new or changed",
+                //     and a dispatched oracle or worker has nobody to accept it,
+                //     so it hangs forever (observed 2026-07-24: every dispatch
+                //     broke the day the OmegaOS hooks were registered). The
+                //     per-hook trusted_hash is not reproducible across machines
+                //     or Codex versions, so install.sh cannot pre-seed it.
+                //
+                //     The residual risk is a repo-local .codex/hooks.json in the
+                //     project being worked on. That risk is real but strictly
+                //     smaller than what this same command line already grants
+                //     one flag earlier: the session runs with approvals AND the
+                //     sandbox fully bypassed, i.e. an unrestricted shell. A hook
+                //     cannot do more than that shell already can. Scoped to
+                //     omega-spawned sessions only — the operator's own
+                //     interactive `codex` keeps the trust prompt.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
                 let args = format!(
-                    "{}{}NO_COLOR=1 codex --dangerously-bypass-approvals-and-sandbox --no-alt-screen",
+                    "{}{}NO_COLOR=1 codex --dangerously-bypass-approvals-and-sandbox \
+                     --dangerously-bypass-hook-trust --no-alt-screen",
                     env_prefix, trust_prefix,
                 );
                 match initial_prompt {

@@ -71,8 +71,40 @@ for sf in "$STATE"/oracle-*.state.json; do
     [ "$idle" -lt "$STALE_MIN" ] && continue          # still active
 
     project="$(printf '%s' "$key" | sed -E 's/-[0-9]+$//')"
+
+    # Mission progress, if the session mirrored its tracked plan out
+    # (omega-plan-mirror.sh, PostToolUse on the plan tools). Turns "stalled"
+    # into "stalled at 3 of 7, and here is what it still owes" — the difference
+    # between an alert you can act on and one you can only acknowledge.
+    plan_line="$(python3 - "$STATE" "$project" <<'PY' 2>/dev/null || true
+import glob, json, os, sys
+state, project = sys.argv[1], sys.argv[2].lower()
+best = None
+for p in glob.glob(os.path.join(state, "plan-*.json")):
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if str(d.get("project", "")).lower() != project:
+        continue
+    if best is None or d.get("updated_at", 0) > best.get("updated_at", 0):
+        best = d
+if not best or not best.get("total"):
+    raise SystemExit(0)
+line = "Plan : <b>%d/%d</b> tâches faites." % (best.get("done", 0), best["total"])
+items = best.get("open_items") or []
+if items:
+    line += " Reste : " + " · ".join(str(i)[:60] for i in items[:3])
+    if len(items) > 3:
+        line += " (+%d)" % (len(items) - 3)
+print(line)
+PY
+)"
     msg="‖ <b>${project}</b> · oracle bloqué ?
-Pas d'activité depuis <b>${idle} min</b> (oracle-${key}).
+Pas d'activité depuis <b>${idle} min</b> (oracle-${key})."
+    [ -n "$plan_line" ] && msg="$msg
+${plan_line}"
+    msg="$msg
 Inspecte : <code>omega capture oracle-${key}</code> · ferme : <code>omega kill oracle-${key}</code>"
     # Operational alert → the dedicated Alerts topic via the canonical sender
     # (auto-recreates the topic if deleted, DM fallback). NEVER the Atlas topic.

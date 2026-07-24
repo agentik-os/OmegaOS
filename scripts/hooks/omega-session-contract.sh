@@ -16,6 +16,16 @@ set -uo pipefail
 
 [[ "${OMEGA_SESSION_CONTRACT:-on}" == "off" ]] && exit 0
 
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# On a `compact` or `resume` start the transcript already holds a plan, and the
+# compaction is exactly the moment its open tasks get forgotten — the session
+# comes back with a summary of what it did and no record of what it still owes.
+# Re-inject the still-open tasks so step 5 of the contract (resume from the
+# plan) has something to resume FROM.
+IN=""
+[ ! -t 0 ] && IN=$(cat 2>/dev/null)
+
 CONTRACT=$(cat <<'EOF'
 # OmegaOS — THE FINISH CONTRACT (L6 · R-PLAN · R-ORCH)
 
@@ -37,11 +47,40 @@ EOF
 )
 
 if command -v python3 >/dev/null 2>&1; then
-    OMEGA_CONTRACT="$CONTRACT" python3 -c '
-import json, os
+    OMEGA_CONTRACT="$CONTRACT" \
+    OMEGA_HOOK_INPUT="$IN" \
+    OMEGA_HOOKS_DIR="$HOOKS_DIR" \
+    python3 -c '
+import json, os, sys
+
+sys.path.insert(0, os.environ.get("OMEGA_HOOKS_DIR", ""))
+context = os.environ.get("OMEGA_CONTRACT", "")
+
+# Resume block — best effort, never fatal. A missing module, an unreadable
+# transcript or a fresh session all fall through to the plain contract.
+try:
+    import omega_plan_state as P
+
+    payload = json.loads(os.environ.get("OMEGA_HOOK_INPUT") or "{}")
+    state = P.analyze(payload.get("transcript_path") or "")
+    if state and state["open_items"]:
+        items = state["open_items"]
+        shown = "\n".join("  - " + str(s)[:110] for s in items[:12])
+        more = "" if len(items) <= 12 else "\n  … and %d more" % (len(items) - 12)
+        context += (
+            "\n\n## RESUMING — this session already has an unfinished plan\n\n"
+            "%d of %d task(s) are still open:\n%s%s\n\n"
+            "This is a continuation, not a fresh start. Do NOT re-plan from scratch, do NOT "
+            "re-ask the operator what to do, do NOT summarize what came before. Take the "
+            "first open task, set it in_progress, finish it, verify it, mark it completed, "
+            "then the next. The plan is the mission state (R-PLAN)."
+        ) % (len(items), state["total_tasks"], shown, more)
+except Exception:
+    pass
+
 print(json.dumps({"hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": os.environ.get("OMEGA_CONTRACT", ""),
+    "additionalContext": context,
 }}))'
 else
     # No interpreter: plain stdout still reaches the session on both harnesses.

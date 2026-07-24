@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
-# stop-verify-hook.sh — THE FINISH GUARD (Stop hook, Claude Code + Codex).
+# stop-verify-hook.sh — THE FINISH GUARD (Stop hook).
 #
 # Enforces L6 (finish the mission, never stop mid-workflow), R-PLAN (a tracked
-# plan or it gets dropped) and L1/L4 (verify against runtime before "done").
+# plan or it gets dropped) and L1/L4 (run something before calling it done).
 #
-# WHY THIS IS A REWRITE: the previous version only `echo`ed a reminder and exited
-# 0. A Stop hook that exits 0 is INVISIBLE to the model — its stdout goes to the
-# transcript, never into the conversation. That reminder had therefore never once
-# reached an agent. Only exit code 2 (stderr → model, stop refused) actually
-# changes behaviour, which is what this version does. Filename kept so every
-# already-installed ~/.claude/settings.json inherits the fix with no migration.
+# WHY IT BLOCKS INSTEAD OF REMINDING: the original version only `echo`ed a
+# reminder and exited 0. A Stop hook that exits 0 is INVISIBLE to the model — its
+# stdout goes to the transcript, never into the conversation — so that reminder
+# had never once reached an agent. Only exit code 2 (stderr → model, stop
+# refused) changes behaviour. Filename kept so every already-installed
+# ~/.claude/settings.json inherits the fix with no migration.
+#
+# Transcript parsing lives in omega_plan_state.py, shared with the SessionStart
+# contract hook so the two never drift apart.
 #
 # CONTRACT
 #   stdin  : {"session_id":…, "transcript_path":…, "stop_hook_active":bool}
@@ -24,6 +27,7 @@ set -uo pipefail
 
 MAX_BLOCKS="${OMEGA_FINISH_GUARD_MAX_BLOCKS:-3}"
 STATE_DIR="${OMEGA_DIR:-$HOME/.omega}/state/finish-guard"
+HOOKS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Escape hatch: a session that legitimately must end early (operator asked for a
 # partial answer, a cron probe) exports OMEGA_FINISH_GUARD=off.
@@ -39,6 +43,12 @@ command -v python3 >/dev/null 2>&1 || exit 0   # fail-open, no interpreter
 read -r -d '' OMEGA_GUARD_SRC <<'PY'
 import json, os, re, sys, hashlib
 
+sys.path.insert(0, os.environ.get("OMEGA_HOOKS_DIR", ""))
+try:
+    import omega_plan_state as P
+except Exception:
+    sys.exit(0)                      # shared module missing → fail open
+
 raw = os.environ.get("OMEGA_HOOK_INPUT", "")
 try:
     payload = json.loads(raw) if raw.strip() else {}
@@ -53,174 +63,22 @@ if payload.get("stop_hook_active"):
     sys.exit(0)
 
 tp = payload.get("transcript_path") or ""
-if not tp or not os.path.isfile(tp):
+st = P.analyze(tp)
+if st is None:
     sys.exit(0)                      # nothing observable → allow
 
-created, status_of, todos = [], {}, None
-edited = False
-verified = False
-mutations = 0      # Write/Edit/NotebookEdit/apply_patch calls
-tool_calls = 0     # every tool call, plan tools excluded
-plan_ever = False  # did this session EVER open a tracked plan?
+open_items = st["open_items"]
 
-# Verification evidence, matched ONLY against what actually ran: the command of
-# a shell tool call, or the OUTPUT a tool returned. Never against prose.
-#
-# The bare words "verify"/"verified" are deliberately NOT in here. They used to
-# be, and it silently disabled this whole check: the SessionStart contract this
-# repo injects says "VERIFY against runtime", that text is stored in the
-# transcript as a hook attachment, and the old whole-line scan matched it at
-# line 10 of EVERY session — so `verified` was true before the session had done
-# anything. An agent's own claim that it verified something is worth nothing
-# here (L1); only a command and its output count.
-VERIFY_RE = re.compile(
-    r"build (?:passed|succeeded)|0 errors?\b|tests? passed|test result: ok|"
-    r"cargo (?:build|test|check|clippy)|npm (?:run build|test)|pnpm (?:build|test)|"
-    r"bun (?:run build|test)|yarn (?:build|test)|pytest|go (?:build|test)|"
-    r"HTTP/[\d.]+ 200|\b200 OK\b|passed;\s*0 failed",
-    re.I,
-)
-
-SHELL_TOOLS = ("Bash", "shell", "exec_command", "run_terminal_cmd", "local_shell")
-
-
-def evidence(rec):
-    """(ran_a_command, text) — what counts as runtime evidence in one record.
-
-    Shell COMMANDS (something was actually executed) and tool RESULTS (what came
-    back). Hook attachments, injected context and assistant prose are excluded on
-    purpose: an agent asserting that it verified something is not evidence (L1).
-
-    The bar is deliberately "did you run ANYTHING after your last edit", not "did
-    you run a build". Demanding `cargo build` after a markdown edit is a false
-    positive, and a guard that cries wolf gets ignored.
-    """
-    if not isinstance(rec, dict):
-        return False, ""
-    if rec.get("type") == "attachment" or "attachment" in rec:
-        return False, ""
-    ran = False
-    out = []
-
-    def visit(obj):
-        nonlocal ran
-        if isinstance(obj, dict):
-            t = obj.get("type")
-            if t == "tool_use" and (obj.get("name") or "") in SHELL_TOOLS:
-                ran = True
-                inp = obj.get("input")
-                if isinstance(inp, dict):
-                    out.append(str(inp.get("command") or ""))
-            elif t == "tool_result":
-                out.append(json.dumps(obj.get("content") or ""))
-            else:
-                for v in obj.values():
-                    visit(v)
-        elif isinstance(obj, list):
-            for v in obj:
-                visit(v)
-
-    visit(rec)
-    return ran, "\n".join(out)
-
-def walk(obj):
-    """Yield every tool_use block in a transcript record."""
-    if isinstance(obj, dict):
-        if obj.get("type") == "tool_use":
-            yield obj
-        for v in obj.values():
-            yield from walk(v)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from walk(v)
-
-try:
-    with open(tp, "r", errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except Exception:
-                continue
-            # A sub-agent's own plan is ITS business, not this session's.
-            if isinstance(rec, dict) and rec.get("isSidechain"):
-                continue
-            for tu in walk(rec):
-                name = tu.get("name") or ""
-                inp = tu.get("input") or {}
-                if not isinstance(inp, dict):
-                    inp = {}
-                if name == "TaskCreate":
-                    created.append(inp.get("subject") or "(untitled task)")
-                    plan_ever = True
-                elif name == "TaskUpdate":
-                    tid = str(inp.get("taskId") or "")
-                    st = inp.get("status")
-                    if tid and st:
-                        status_of[tid] = st
-                    plan_ever = True
-                elif name == "TodoWrite":
-                    t = inp.get("todos")
-                    if isinstance(t, list):
-                        todos = t
-                    plan_ever = True
-                elif name == "update_plan":       # Codex
-                    t = inp.get("plan") or inp.get("steps")
-                    if isinstance(t, list):
-                        todos = t
-                    plan_ever = True
-                else:
-                    tool_calls += 1
-                    if name in ("Write", "Edit", "NotebookEdit", "apply_patch"):
-                        edited = True
-                        mutations += 1
-                        # Evidence is only evidence for the code that existed
-                        # when it was gathered. A new edit invalidates it.
-                        verified = False
-            if not verified:
-                ran, text = evidence(rec)
-                if ran or VERIFY_RE.search(text):
-                    verified = True
-except Exception:
-    sys.exit(0)
-
-open_items = []
-
-# ── 1. The tracked plan still has open work ──────────────────────────────────
-if todos is not None:
-    for t in todos:
-        if not isinstance(t, dict):
-            continue
-        st = (t.get("status") or "").lower()
-        if st not in ("completed", "done", "deleted", "cancelled"):
-            open_items.append(t.get("content") or t.get("step") or t.get("subject") or "(task)")
-elif created:
-    # Task ids are handed out sequentially as "1", "2", … in creation order.
-    for i, subject in enumerate(created, start=1):
-        st = (status_of.get(str(i)) or "pending").lower()
-        if st not in ("completed", "deleted"):
-            open_items.append(subject)
-
-# ── 2. Real work, but no tracked plan was ever opened ────────────────────────
-#
-# This is the hole the first two checks cannot see: a session that never calls
-# a plan tool has no open tasks to inspect, so a multi-part mission can lose its
-# tail tasks silently. Thresholds are deliberately conservative — a chat turn or
-# a one-file lookup does 0-2 tool calls and must never be blocked. A false
-# positive costs one round-trip in which the agent enumerates what it did, which
-# is the exact step (L6.1) that was being skipped.
-def _int_env(key, default):
-    try:
-        return int(os.environ.get(key) or default)
-    except ValueError:
-        return default
-
-MIN_MUTATIONS = _int_env("OMEGA_FINISH_GUARD_MIN_MUTATIONS", 3)
-MIN_TOOL_CALLS = _int_env("OMEGA_FINISH_GUARD_MIN_TOOLS", 15)
-planless_work = (not plan_ever) and (
-    mutations >= MIN_MUTATIONS or tool_calls >= MIN_TOOL_CALLS
+# Real work, but no tracked plan was ever opened. This is the hole the other two
+# checks cannot see: a session that never calls a plan tool has no open tasks to
+# inspect, so a multi-part mission can lose its tail tasks silently. Thresholds
+# are deliberately conservative — a chat turn or a one-file lookup does 0-2 tool
+# calls and must never be blocked. A false positive costs one round-trip in which
+# the agent enumerates what it did, which is the exact step (L6.1) being skipped.
+MIN_MUTATIONS = P.int_env("OMEGA_FINISH_GUARD_MIN_MUTATIONS", 3)
+MIN_TOOL_CALLS = P.int_env("OMEGA_FINISH_GUARD_MIN_TOOLS", 15)
+planless_work = (not st["plan_ever"]) and (
+    st["mutations"] >= MIN_MUTATIONS or st["tool_calls"] >= MIN_TOOL_CALLS
 )
 
 reason = None
@@ -249,9 +107,9 @@ else:
             "thing it asked for (in the operator's own order, one per ask), mark the ones "
             "you genuinely finished AND verified as completed, then execute every task that "
             "is left. If it turns out everything really is done, the plan costs you one "
-            "message and proves it." % (tool_calls, mutations)
+            "message and proves it." % (st["tool_calls"], st["mutations"])
         )
-    if edited and not verified:
+    if st["edited"] and not st["verified"]:
         faults.append(
             "· NOTHING WAS RUN AFTER THE LAST EDIT (L1/L4). Files were changed and then not "
             "a single command was executed against them.\n"
@@ -281,11 +139,7 @@ try:
 except Exception:
     n = 0
 
-try:
-    max_blocks = int(os.environ.get("OMEGA_MAX_BLOCKS") or "3")
-except ValueError:
-    max_blocks = 3
-
+max_blocks = P.int_env("OMEGA_MAX_BLOCKS", 3)
 if n >= max_blocks:
     sys.exit(0)      # ceiling reached: stop nagging, hand control back (R-LOOP)
 
@@ -306,6 +160,7 @@ sys.exit(2)
 PY
 
 OMEGA_HOOK_INPUT="$IN" \
+OMEGA_HOOKS_DIR="$HOOKS_DIR" \
 OMEGA_STATE_DIR="$STATE_DIR" \
 OMEGA_MAX_BLOCKS="$MAX_BLOCKS" \
     python3 -c "$OMEGA_GUARD_SRC"
