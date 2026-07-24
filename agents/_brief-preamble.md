@@ -10,7 +10,7 @@ largest behavior improvements. Treat it as part of the contract.
 ## Core safety laws — reinforced
 
 _These three are the most safety-critical Laws, elaborated here with Opus-4.8
-System Card hardening. The **complete, authoritative** set is **L0–L5** in the
+System Card hardening. The **complete, authoritative** set is **L0–L6** in the
 "⚖️ THE LAWS" block injected right after this preamble — it overrides everything._
 
 1. **Code lies. Comments lie. Worker narration lies.** Only runtime

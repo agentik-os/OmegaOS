@@ -171,6 +171,11 @@ impl Default for OmegaConfig {
             // the agent picker) and remains the safe fallback when an agent name is
             // misconfigured or Codex is absent — see the parse-fallbacks below.
             agent_command: "codex".to_string(),
+            // "opus" is an ALIAS, resolved at dispatch time by
+            // dispatch::resolve_model_flag to "claude-opus-5[1m]" — Claude
+            // Opus 5 with the 1M context window. Operator directive
+            // 2026-07-24: that is the default brain for every session that
+            // does not deliberately pin another tier (R-MODEL).
             default_model: "opus".to_string(),
             aisb_agent: default_aisb_agent(),
             auto_spawn_master: default_auto_master(),

@@ -221,7 +221,9 @@ impl ProvidersConfig {
             "codex" => "gpt-5.5-codex",
             "gemini" => "gemini-3.1-pro",
             "glm" => "glm-5.1",
-            "openrouter" | "pi" | "hermes" => "anthropic/claude-sonnet-4.6",
+            // Operator directive 2026-07-24: Claude Opus 5 is THE default brain
+            // everywhere a tier has not been deliberately pinned (R-MODEL).
+            "openrouter" | "pi" | "hermes" => "anthropic/claude-opus-5",
             _ => "",
         }
     }
@@ -229,7 +231,17 @@ impl ProvidersConfig {
     /// Available models for a provider (used to list options in /model UI).
     pub fn models_for(provider: &str) -> Vec<&'static str> {
         match provider {
-            "claude" => vec!["opus", "sonnet", "haiku", "fable"],
+            // "opus" is first = the default, and resolves to claude-opus-5[1m]
+            // at dispatch time (dispatch::resolve_model_flag). The explicit
+            // ids sit beside the aliases so a session can be pinned exactly.
+            "claude" => vec![
+                "opus",
+                "claude-opus-5",
+                "sonnet",
+                "claude-sonnet-5",
+                "haiku",
+                "fable",
+            ],
             // June 2026: gpt-5.5-codex = Codex default; gpt-5.2-codex stays the
             // API-key-only fallback (5.5 needs ChatGPT sign-in).
             "codex" => vec!["gpt-5.5-codex", "gpt-5.5", "gpt-5.2-codex"],
@@ -240,6 +252,8 @@ impl ProvidersConfig {
             // same curated OpenRouter model IDs — this gives them an arrow-key
             // picker (no typing) instead of the free-text fallback.
             "pi" | "hermes" | "openrouter" => vec![
+                "anthropic/claude-opus-5",
+                "anthropic/claude-sonnet-5",
                 "anthropic/claude-sonnet-4.6",
                 "anthropic/claude-opus-4.8",
                 "openai/gpt-5.5",

@@ -205,6 +205,20 @@ bootstrap_os_packages() {
 }
 bootstrap_os_packages
 
+# Bubblewrap is an optional Codex sandbox dependency on Linux. Report it, but
+# do not make installation fatal and never infer that the native Codex sandbox
+# is broken merely because this helper is absent.
+report_bwrap_dependency() {
+    if [[ "$OS" != "Linux" ]]; then
+        info "bwrap sandbox helper not applicable on $OS"
+    elif command -v bwrap >/dev/null 2>&1; then
+        ok "bwrap sandbox helper available"
+    else
+        info "bwrap missing (optional): /duo attempt zero still uses Codex --sandbox read-only; guarded degraded mode requires a failed repository read probe"
+    fi
+}
+report_bwrap_dependency
+
 # The C toolchain + pkg-config are ONLY needed to compile rmux/omega from source
 # (the prebuilt fast path skips this entirely). Installed lazily, just-in-time,
 # from the source-build branches of Phase 3/4 — so a prebuilt install never pays
@@ -312,24 +326,29 @@ ensure_utf8_locale() {
 }
 ensure_utf8_locale
 
-# Bun runtime: the SST companion layer (Phase 6.9) installs global skills via the
-# `skills` CLI (bunx/npx) — planning-with-files, design packs, claude-mem,
-# superpowers. On a BARE VPS without bun/node those are skipped, so SST never
-# lands. Bootstrap bun (single static binary, fast) so SST works on any fresh
-# machine. Best-effort: never aborts the install if it fails.
-install_bun_optional() {
-    { command -v bun >/dev/null 2>&1 || command -v bunx >/dev/null 2>&1 \
-        || command -v npx >/dev/null 2>&1; } && { ok "JS runtime present (bun/npx — SST companion can install)"; return 0; }
-    info "Installing bun (for the SST companion skills layer)…"
+# Bun is a required OmegaOS runtime: the deterministic /duo bridge and the
+# Telegram services execute Bun scripts directly. `npx` alone is not parity.
+# A fresh install must either provide an executable bridge or stop truthfully.
+install_bun_required() {
+    if command -v bun >/dev/null 2>&1; then
+        ok "Bun runtime present: $(bun --version 2>/dev/null || echo executable)"
+        return 0
+    fi
+
+    info "Installing Bun (required by /duo and Telegram services)…"
     curl -fsSL https://bun.sh/install | bash >/dev/null 2>&1 || true
-    # bun installs to ~/.bun/bin — make it visible to this run + future shells.
+    # Bun installs to ~/.bun/bin. Make it visible to this run and future steps.
     [[ -d "$HOME/.bun/bin" ]] && export PATH="$HOME/.bun/bin:$PATH"
-    command -v bun >/dev/null 2>&1 \
-        && ok "bun installed (SST companion skills will install)" \
-        || info "bun not installed (optional) — SST companion skills will be skipped; install bun/node later to enable them"
-    return 0
+    if ! command -v bun >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+        npm install -g bun >/dev/null 2>&1 || true
+    fi
+    if ! command -v bun >/dev/null 2>&1; then
+        err "Bun installation failed. OmegaOS will not install an unusable /duo bridge."
+        return 1
+    fi
+    ok "Bun installed: $(bun --version 2>/dev/null || echo executable)"
 }
-install_bun_optional
+install_bun_required
 
 # Rust is needed ONLY to compile from source (the prebuilt fast path skips it).
 # `ensure_build_toolchain` installs rustup lazily in the Phase 3/4 source-build
@@ -876,7 +895,12 @@ step "Phase 5: Configuring OmegaOS"
 # tools/ = third-party tools/binaries an agent installs, prompts/ = runtime
 # prompt scratch, lib/ + bin/ = audit runtime. No dual ~/.aisb home.
 mkdir -p "$OMEGA_DIR"/{state,logs,locks,repos,tools,prompts,lib,bin}
-mkdir -p "$OMEGA_DIR/credentials/accounts"
+mkdir -p "$OMEGA_DIR/credentials/accounts" "$OMEGA_DIR/credentials/quarantine"
+# Credentials and every retained losing copy are secrets. Keep the full tree
+# owner-only before any migration or Rust reconciliation writes into it.
+chmod 700 "$OMEGA_DIR/credentials" \
+    "$OMEGA_DIR/credentials/accounts" \
+    "$OMEGA_DIR/credentials/quarantine"
 
 # ─── Provisioning credential store (for /omega-new-project) ─────────────────
 # ~/.omega/provisioning/ holds the tokens that auto-create + wire external
@@ -894,10 +918,11 @@ if [[ -f "$OMEGA_SRC/config/clerk-pool.sample" && ! -f "$OMEGA_DIR/provisioning/
 fi
 
 # ─── Phase 5a: Credential Migration ─────────────────────────────────────────
-# Move existing per-provider credentials into ~/.omega/credentials/<provider>.json
-# and replace the legacy path with a symlink. Idempotent: if the legacy path is
-# already a symlink, do nothing. If the canonical file already exists, the
-# legacy file is backed up with .pre-omega suffix.
+# Move existing Claude/Gemini credentials into the canonical store and replace
+# their legacy paths with symlinks. Codex is deliberately excluded: choosing
+# between native and canonical Codex files requires validating last_refresh and
+# preserving the losing valid copy in the owner-only quarantine. That decision
+# belongs to omega-core, not this shell installer.
 
 migrate_creds() {
     local provider="$1"
@@ -935,14 +960,41 @@ migrate_creds() {
 }
 
 migrate_creds "claude" "$HOME/.claude/.credentials.json"
-migrate_creds "codex"  "$HOME/.codex/auth.json"
 migrate_creds "gemini" "$HOME/.gemini/oauth_creds.json"
+
+# Codex may relocate its complete native home with CODEX_HOME. Preserve any
+# native/canonical split exactly as found; the installed Omega binary performs
+# the atomic, freshness-aware reconciliation below.
+CODEX_NATIVE_DIR="$HOME/.codex"
+if [[ -n "${CODEX_HOME:-}" ]]; then
+    CODEX_NATIVE_DIR="$CODEX_HOME"
+fi
+CODEX_NATIVE_AUTH="$CODEX_NATIVE_DIR/auth.json"
+mkdir -p "$CODEX_NATIVE_DIR"
+if [[ -e "$CODEX_NATIVE_AUTH" || -L "$CODEX_NATIVE_AUTH" || \
+      -e "$OMEGA_DIR/credentials/codex.json" || -L "$OMEGA_DIR/credentials/codex.json" ]]; then
+    info "codex creds: preserved for omega-core reconciliation ($CODEX_NATIVE_AUTH)"
+fi
 
 if [[ ! -f "$OMEGA_DIR/config.toml" ]]; then
     cp config/default.toml "$OMEGA_DIR/config.toml"
     ok "Config created: $OMEGA_DIR/config.toml"
 else
     ok "Config already exists: $OMEGA_DIR/config.toml"
+fi
+
+# Run the dedicated flow-aware reconciler through the newly installed binary.
+# Its JSON and exit status are authoritative. An active device login is
+# reported and preserved; an actual reconciliation failure stays visible.
+if [[ -x "$INSTALL_DIR/omega" ]]; then
+    CODEX_RECONCILE_OUTPUT=""
+    if CODEX_RECONCILE_OUTPUT=$(OMEGA_DIR="$OMEGA_DIR" CODEX_HOME="$CODEX_NATIVE_DIR" \
+        "$INSTALL_DIR/omega" codex-reconcile --json 2>&1); then
+        ok "Codex credential reconciliation: $CODEX_RECONCILE_OUTPUT"
+    else
+        err "Codex credential reconciliation failed: $CODEX_RECONCILE_OUTPUT"
+        exit 1
+    fi
 fi
 
 # ─── Default agent → Codex/Sol (operator directive: codex everywhere) ────────
@@ -1362,31 +1414,34 @@ else
     info "Claude Changelog Adopt skill not found — skipping"
 fi
 
-# Install the /duo binome (Claude stratège ⇄ Codex/Sol coder, auto-fallback on
-# Codex quota). Two pieces: the deterministic bridge `omega-duo` (Bun) symlinked
-# onto the PATH, and the /duo skill copied → ~/.omega/skills/duo. The bridge's
-# self-test proves quota-detection + fallback with NO real API call; run it if
-# bun is present. Registers /duo + /omg-duo stubs. Idempotent + non-fatal.
+# Install the /duo binome (Claude strategist ⇄ Codex/Sol coder). Claude fallback
+# is quota-only: a Codex 401 is an authentication failure and stops the run.
+# Read-only capability, degraded sandbox use, and worktree mutation detection
+# are reported truthfully. Two pieces ship: the deterministic `omega-duo`
+# bridge (Bun) on PATH and the /duo skill under ~/.omega/skills/duo. Its
+# deterministic self-test uses fake agents only. Registers /duo + /omg-duo
+# stubs. Idempotent and required.
 DUO_SRC="$OMEGA_SRC/tools/duo"
 DUO_SKILL_SRC="$OMEGA_SRC/skills/duo"
 DUO_SKILL_DST="$OMEGA_DIR/skills/duo"
-if [[ -d "$DUO_SRC" ]]; then
+if [[ -x "$DUO_SRC/bin/omega-duo" && -f "$DUO_SKILL_SRC/SKILL.md" ]]; then
     # Bridge → ~/.omega/skills/duo/bin + symlink into ~/.local/bin.
     mkdir -p "$DUO_SKILL_DST/bin"
     cp -f "$DUO_SRC/bin/omega-duo" "$DUO_SKILL_DST/bin/omega-duo"
     chmod +x "$DUO_SKILL_DST/bin/omega-duo"
-    [[ -f "$DUO_SKILL_SRC/SKILL.md" ]] && cp -f "$DUO_SKILL_SRC/SKILL.md" "$DUO_SKILL_DST/SKILL.md"
+    cp -f "$DUO_SKILL_SRC/SKILL.md" "$DUO_SKILL_DST/SKILL.md"
     mkdir -p "$HOME/.local/bin"
     ln -sf "$DUO_SKILL_DST/bin/omega-duo" "$HOME/.local/bin/omega-duo"
-    # Prove the fallback logic actually works (no API call). Non-fatal.
-    if command -v bun >/dev/null 2>&1; then
-        if "$DUO_SKILL_DST/bin/omega-duo" --self-test >/dev/null 2>&1; then
-            ok "omega-duo bridge self-test passed (quota-detect + fallback verified)"
-        else
-            info "omega-duo bridge self-test FAILED — inspect ~/.omega/skills/duo/bin/omega-duo"
-        fi
+    # Prove the installed bridge itself works. Fake agents only, no API call.
+    if ! command -v bun >/dev/null 2>&1; then
+        err "Bun disappeared before /duo installation; refusing an unusable bridge"
+        exit 1
+    fi
+    if "$DUO_SKILL_DST/bin/omega-duo" --self-test >/dev/null 2>&1; then
+        ok "omega-duo bridge self-test passed (stdin, auth, sandbox, mutation, quota)"
     else
-        info "bun not found — omega-duo installed but self-test skipped"
+        err "omega-duo bridge self-test failed — inspect $DUO_SKILL_DST/bin/omega-duo"
+        exit 1
     fi
     # /duo + /omg-duo slash stubs.
     DUO_CMD_DST="$HOME/.claude/commands"; mkdir -p "$DUO_CMD_DST"
@@ -1394,18 +1449,20 @@ if [[ -d "$DUO_SRC" ]]; then
         cat > "$DUO_CMD_DST/$cmd.md" <<EOF
 # /$cmd
 
-Binome Claude (stratège) ⇄ Codex/Sol (coder), avec bascule auto sur Claude si le
-quota Codex est épuisé. Read and follow:
+Claude strategist and Codex/Sol coder. Claude fallback is quota-only. A Codex
+authentication failure stops the run, and degraded sandbox capability is
+reported explicitly. Read and follow:
 
 \`$DUO_SKILL_DST/SKILL.md\`
 
-Bridge: \`omega-duo run --task <file.md> --cwd <projet> --mode <plan|code|review>\`
+Bridge: \`omega-duo run --task <file.md> --cwd <project> --mode <plan|code|review>\`
 Status: \`omega-duo status\` · Re-enable Codex: \`omega-duo reset\`
 EOF
     done
     ok "/duo binome installed → $DUO_SKILL_DST/ (bridge omega-duo, /duo + /omg-duo)"
 else
-    info "/duo binome not found — skipping"
+    err "/duo bridge or skill source missing; refusing a partial OmegaOS install"
+    exit 1
 fi
 
 # Install the design skills (generative UI/UX, aesthetics, image-to-code).
@@ -1795,9 +1852,9 @@ Convene the multi-model LLM Council. Read and follow the complete protocol in:
 \`$LLMC_DST/SKILL.md\`
 
 Run the council with the **Workflow tool** exactly as the skill prescribes: four Claude
-models (Opus 4.8, Sonnet 4.6, Haiku 4.5, Fable 5) answer the SAME question independently
+models (Opus 5, Sonnet 4.6, Haiku 4.5, Fable 5) answer the SAME question independently
 and in parallel, then peer-review each other ANONYMOUSLY (Response A/B/C, identities hidden),
-and an Opus 4.8 president synthesizes the final verdict WITH the dissent. The members are
+and an Opus 5 president synthesizes the final verdict WITH the dissent. The members are
 in-process Workflow \`agent(prompt, { model })\` sub-agents on the existing Claude Code
 session — **no API keys, no external providers, no extra cost**. Use the embedded,
 copy-pasteable Workflow JS in the SKILL.md as the implementation.
@@ -2302,7 +2359,19 @@ fi
 
 step "Phase 6.5: Self-containment"
 
-# (a) Agent-tracking + verify hooks → ~/.omega/hooks, registered in settings.json.
+# (a) Agent hooks → ~/.omega/hooks, registered for BOTH Claude Code and Codex.
+#
+#     Four hooks, and the two anti-abandon ones are why this block matters:
+#       · omega-session-contract.sh (SessionStart) — injects THE FINISH CONTRACT
+#         (L6 · R-PLAN · R-ORCH) at position zero of every new session.
+#       · stop-verify-hook.sh (Stop) — the FINISH GUARD: refuses to let a session
+#         end while its own tracked plan still has open tasks, or while edited
+#         code has never been run. Bounded to 3 blocks per session (R-LOOP).
+#       · track-tool-use.sh (PostToolUse) / omega-audit-guard.sh (PreToolUse).
+#
+#     Codex exposes the same hook events (SessionStart / Stop / PreToolUse /
+#     PostToolUse) through ~/.codex/hooks.json, so both agents get the same
+#     discipline from one set of scripts.
 HOOKS_DST="$OMEGA_DIR/hooks"
 mkdir -p "$HOOKS_DST"
 if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
@@ -2312,12 +2381,29 @@ if [[ -d "$OMEGA_SRC/scripts/hooks" ]]; then
     [[ -f "$CLAUDE_SETTINGS" ]] || echo '{}' > "$CLAUDE_SETTINGS"
     if command -v jq >/dev/null 2>&1; then
         TMP="$(mktemp)"
-        jq --arg track "$HOOKS_DST/track-tool-use.sh" --arg verify "$HOOKS_DST/stop-verify-hook.sh" --arg guard "$HOOKS_DST/omega-audit-guard.sh" '
+        jq --arg track "$HOOKS_DST/track-tool-use.sh" \
+           --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+           --arg guard "$HOOKS_DST/omega-audit-guard.sh" \
+           --arg contract "$HOOKS_DST/omega-session-contract.sh" '
           .hooks = (.hooks // {})
           | .hooks.PostToolUse = ((.hooks.PostToolUse // []) | map(select(((.hooks[0].command // "") | test("track-tool-use")) | not)) + [{"matcher":"*","hooks":[{"type":"command","command":$track}]}])
           | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
           | .hooks.PreToolUse = ((.hooks.PreToolUse // []) | map(select(((.hooks[0].command // "") | test("omega-audit-guard")) | not)) + [{"matcher":"Bash","hooks":[{"type":"command","command":$guard}]}])
-        ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null && mv "$TMP" "$CLAUDE_SETTINGS" && ok "Hooks installed + registered (PreToolUse guard + PostToolUse track + Stop verify)" || { rm -f "$TMP"; info "Hook merge skipped (jq error) — hooks copied to $HOOKS_DST"; }
+          | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(((.hooks[0].command // "") | test("omega-session-contract")) | not)) + [{"matcher":"startup|clear|compact","hooks":[{"type":"command","command":$contract}]}])
+        ' "$CLAUDE_SETTINGS" > "$TMP" 2>/dev/null && mv "$TMP" "$CLAUDE_SETTINGS" && ok "Claude hooks registered (SessionStart contract + Stop finish-guard + PreToolUse guard + PostToolUse track)" || { rm -f "$TMP"; info "Hook merge skipped (jq error) — hooks copied to $HOOKS_DST"; }
+
+        # Same two anti-abandon hooks for Codex. Merged additively so an
+        # existing hooks.json (graphify, project hooks) survives untouched.
+        CODEX_HOOKS="$HOME/.codex/hooks.json"
+        mkdir -p "$HOME/.codex"
+        [[ -f "$CODEX_HOOKS" ]] || echo '{}' > "$CODEX_HOOKS"
+        TMP="$(mktemp)"
+        jq --arg verify "$HOOKS_DST/stop-verify-hook.sh" \
+           --arg contract "$HOOKS_DST/omega-session-contract.sh" '
+          .hooks = (.hooks // {})
+          | .hooks.Stop = ((.hooks.Stop // []) | map(select(((.hooks[0].command // "") | test("stop-verify")) | not)) + [{"hooks":[{"type":"command","command":$verify}]}])
+          | .hooks.SessionStart = ((.hooks.SessionStart // []) | map(select(((.hooks[0].command // "") | test("omega-session-contract")) | not)) + [{"hooks":[{"type":"command","command":$contract}]}])
+        ' "$CODEX_HOOKS" > "$TMP" 2>/dev/null && mv "$TMP" "$CODEX_HOOKS" && ok "Codex hooks registered (SessionStart contract + Stop finish-guard)" || { rm -f "$TMP"; info "Codex hook merge skipped (jq error)"; }
     else
         info "jq not found — hooks copied to $HOOKS_DST; install jq to auto-register them in settings.json"
     fi

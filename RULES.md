@@ -27,7 +27,7 @@
 - **Release profile** : `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, panic `unwind` conservé (une task qui panique ne doit pas tuer l'orchestrateur).
 
 ## Intouchable (source de vérité)
-- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (6 Lois L0–L5 + 26 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
+- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (7 Lois L0–L6 + 28 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
 - `OMEGA.md` = instructions universelles chargées par TOUS les agents LLM. **Ne pas éditer ici sans intention.**
 - `~/.omega/` = état runtime + credentials + rules éditables. **Hors repo, jamais commité** (gitignored).
 
@@ -40,7 +40,7 @@
 - **Pas de `--force`, pas de `--no-verify`.** Vérification par runtime live avant merge.
 
 ## Pointeurs (à lire, ne pas recopier ici)
-- `OMEGA.md` — instructions universelles agents (les 6 Lois L0–L5, orchestration, behavior, tools).
+- `OMEGA.md` — instructions universelles agents (les 7 Lois L0–L6, orchestration, behavior, tools).
 - `~/.omega/rules/` — règles opérationnelles éditables, IDs nommés (R-ORCH orchestration workflow-first, R-RUBRIC rubrique avant exécution, R-VERIFY vérification adversariale 2-de-3, R-CITE citation obligatoire, R-BUDGET budget mission, R-PROD prod-verify, R-SCOPE un writer par fichier…).
 - `README.md` (+ `.fr/.ru/.zh`) — présentation produit, doctrine, « How a mission runs ».
 - `GUIDE.md` — le manuel opérateur complet (vocabulaire, cockpits, skills, vérification).

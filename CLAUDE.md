@@ -54,11 +54,12 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 ## Laws vs Rules
 
-- **Laws (L0–L5)** — inviolable, universal, top-priority. They bind every agent always and
+- **Laws (L0–L6)** — inviolable, universal, top-priority. They bind every agent always and
   override every rule and task. Few, stable, never scoped-out. Rendered first everywhere
   (TUI Info tab, `omega rules list`, every prompt block) and visually distinct.
-  The six: L0 ship-the-truth (install-parity), L1 runtime-is-truth, L2 researcher-not-sycophant,
-  L3 decide-and-proceed, L4 done-means-100%, L5 quality-over-speed.
+  The seven: L0 ship-the-truth (install-parity), L1 runtime-is-truth, L2 researcher-not-sycophant,
+  L3 decide-and-proceed, L4 done-means-100%, L5 quality-over-speed, L6 finish-the-mission
+  (never stop mid-workflow — enumerate, execute, verify, report; three legal stops only).
 - **Rules (R-*, named)** — operational, categorized (Universal / QualityGate / Orchestration /
   Reporting / Safety), scoped per agent level (Master / Global / Oracle / Worker via the explicit
   `scopes` field). Guidelines that implement the Laws in practice.

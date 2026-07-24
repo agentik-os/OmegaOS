@@ -408,6 +408,10 @@ enum Commands {
         /// expired oauth), then re-run the checks. Used by the self-heal cron.
         #[arg(long)]
         fix: bool,
+        /// Run an explicit live Codex request to verify provider authentication.
+        /// This may consume quota and is never enabled by the self-heal cron.
+        #[arg(long)]
+        deep: bool,
     },
 
     /// Back up the irreproducible OmegaOS state (`~/.omega` + crontab) to a
@@ -554,15 +558,46 @@ enum Commands {
     #[command(name = "codex-login")]
     CodexLogin,
 
-    /// Settle a Codex device-code re-login: report whether it landed, and if it
-    /// did not, restore the pre-flow credentials and kill the waiting process.
+    /// Settle a Codex device-code re-login: require the recorded child to exit
+    /// successfully with a fresh credential, or safely restore canonical
+    /// topology when the recorded flow was abandoned.
     /// Prints `{"ok":bool,"status":...,"restored":bool}`.
     #[command(name = "codex-login-status")]
     CodexLoginStatus {
-        /// PID from `codex-login`, so an abandoned flow is cleaned up.
+        /// PID from `codex-login`, used only to match the recorded flow owner.
         #[arg(long)]
         pid: Option<u32>,
     },
+
+    /// Abort a recorded Codex device flow only when --pid matches its owned
+    /// supervisor identity and exact argv. Telegram Cancel must be repointed
+    /// to this command when the Telegram phase owns that integration file.
+    #[command(name = "codex-login-abort")]
+    CodexLoginAbort {
+        /// PID returned by `codex-login`.
+        #[arg(long)]
+        pid: u32,
+    },
+
+    /// Reconcile Codex native and canonical credentials. Active login flows are
+    /// reported and preserved. Actual reconciliation errors exit non-zero.
+    #[command(name = "codex-reconcile")]
+    CodexReconcile {
+        /// Print one machine-readable JSON result.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn command_owns_codex_reconciliation(command: &Option<Commands>) -> bool {
+    matches!(
+        command,
+        Some(
+            Commands::CodexLoginStatus { .. }
+                | Commands::CodexLoginAbort { .. }
+                | Commands::CodexReconcile { .. },
+        )
+    )
 }
 
 #[tokio::main]
@@ -576,11 +611,12 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
+    let owns_codex_reconciliation = command_owns_codex_reconciliation(&cli.command);
 
-    // SSOT auto-heal: Claude's atomic write on /login replaces the native
-    // ~/.claude/.credentials.json symlink with a real file, diverging from the
-    // canonical ~/.omega/credentials/claude.json. Repair the symlink on every
-    // startup so reads stay funneled through the canonical store. Non-fatal.
+    // SSOT auto-heal: provider CLIs can replace their native credential
+    // symlinks with regular files during login/refresh. Reconcile both
+    // providers on every startup. Codex is flow-aware: while a recorded device
+    // login is active it deliberately leaves the native path alone.
     match omega_core::credentials::CredentialStore::new() {
         Ok(store) => {
             if let Err(e) = store.ensure_legacy_symlink("claude") {
@@ -590,6 +626,22 @@ async fn main() -> Result<()> {
             }
         }
         Err(e) => tracing::warn!(error = %e, "could not open credential store for symlink heal"),
+    }
+    // Explicit settlement/reconcile commands must run exactly once and own
+    // their exit status. Every other command gets non-fatal startup recovery.
+    if !owns_codex_reconciliation {
+        match omega_core::codex_login::reconcile_on_startup() {
+            Ok(omega_core::codex_login::StartupReconcile::Reconciled) => {
+                tracing::debug!("codex credential topology checked/reconciled");
+            }
+            Ok(omega_core::codex_login::StartupReconcile::DeferredActiveFlow) => {
+                tracing::debug!("codex credential reconciliation deferred for active login flow");
+            }
+            Ok(omega_core::codex_login::StartupReconcile::DeferredLocked) => {
+                tracing::debug!("codex credential reconciliation deferred for held flow lock");
+            }
+            Err(e) => tracing::warn!(error = %e, "could not reconcile codex credentials"),
+        }
     }
 
     match cli.command {
@@ -662,11 +714,11 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Doctor { pre_reset, fix }) => {
+        Some(Commands::Doctor { pre_reset, fix, deep }) => {
             if pre_reset {
                 cmd_doctor_pre_reset()
             } else {
-                cmd_doctor(fix).await
+                cmd_doctor(fix, deep).await
             }
         }
         Some(Commands::Backup { out, include_memory }) => cmd_backup(out, include_memory),
@@ -718,6 +770,8 @@ async fn main() -> Result<()> {
         Some(Commands::ClaudeLoginCode { code }) => cmd_claude_login_code(&code).await,
         Some(Commands::CodexLogin) => cmd_codex_login().await,
         Some(Commands::CodexLoginStatus { pid }) => cmd_codex_login_status(pid).await,
+        Some(Commands::CodexLoginAbort { pid }) => cmd_codex_login_abort(pid).await,
+        Some(Commands::CodexReconcile { json }) => cmd_codex_reconcile(json).await,
     }
 }
 
@@ -3951,21 +4005,96 @@ async fn cmd_codex_login() -> Result<()> {
 /// `omega codex-login-status [--pid N]` — settle the device-code flow: report
 /// success, or restore the pre-flow credentials when it was abandoned.
 async fn cmd_codex_login_status(pid: Option<u32>) -> Result<()> {
-    let (st, restored) =
-        tokio::task::spawn_blocking(move || omega_core::codex_login::finish(pid)).await?;
-    let ok = matches!(st, omega_core::codex_login::LoginStatus::LoggedIn { .. });
-    let label = match &st {
-        omega_core::codex_login::LoginStatus::LoggedIn { mode } => format!("logged in using {mode}"),
-        omega_core::codex_login::LoginStatus::NotLoggedIn => "not logged in".to_string(),
-    };
-    println!(
-        "{}",
-        serde_json::json!({ "ok": ok, "status": label, "restored": restored })
-    );
-    if !ok {
+    let result = tokio::task::spawn_blocking(move || omega_core::codex_login::finish(pid)).await?;
+    println!("{}", codex_login_status_json(&result));
+    if !result.flow_succeeded {
         std::process::exit(1);
     }
     Ok(())
+}
+
+async fn cmd_codex_login_abort(pid: u32) -> Result<()> {
+    let result = tokio::task::spawn_blocking(move || omega_core::codex_login::abort(pid)).await?;
+    println!("{}", codex_login_abort_json(&result));
+    if matches!(result.status, omega_core::codex_login::LoginStatus::Unknown { .. }) {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn codex_login_status_label(
+    status: &omega_core::codex_login::LoginStatus,
+) -> String {
+    match status {
+        omega_core::codex_login::LoginStatus::LoggedIn { mode } => {
+            format!("logged in using {mode}")
+        }
+        omega_core::codex_login::LoginStatus::NotLoggedIn => "not logged in".to_string(),
+        omega_core::codex_login::LoginStatus::Unknown { reason } => {
+            format!("unknown: {reason}")
+        }
+    }
+}
+
+fn codex_login_status_json(
+    result: &omega_core::codex_login::FinishResult,
+) -> serde_json::Value {
+    serde_json::json!({
+        "ok": result.flow_succeeded,
+        "status": codex_login_status_label(&result.status),
+        "restored": result.restored
+    })
+}
+
+fn codex_login_abort_json(
+    result: &omega_core::codex_login::AbortResult,
+) -> serde_json::Value {
+    let command_ok = !matches!(
+        &result.status,
+        omega_core::codex_login::LoginStatus::Unknown { .. }
+    );
+    serde_json::json!({
+        "ok": command_ok,
+        "aborted": result.aborted,
+        "status": codex_login_status_label(&result.status),
+        "restored": result.restored
+    })
+}
+
+/// `omega codex-reconcile [--json]` — authoritative credential-topology
+/// reconciliation for installers and operators. Unlike startup auto-heal, an
+/// actual error is returned to the caller as a non-zero exit.
+async fn cmd_codex_reconcile(json: bool) -> Result<()> {
+    let outcome =
+        tokio::task::spawn_blocking(omega_core::codex_login::reconcile_on_startup).await?;
+    match outcome {
+        Ok(status) => {
+            let status = match status {
+                omega_core::codex_login::StartupReconcile::Reconciled => "reconciled",
+                omega_core::codex_login::StartupReconcile::DeferredActiveFlow => {
+                    "deferred_active_flow"
+                }
+                omega_core::codex_login::StartupReconcile::DeferredLocked => "deferred_locked",
+            };
+            if json {
+                println!("{}", serde_json::json!({ "ok": true, "status": status }));
+            } else {
+                println!("Codex credential topology: {status}");
+            }
+            Ok(())
+        }
+        Err(error) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({ "ok": false, "error": error.to_string() })
+                );
+            } else {
+                eprintln!("Codex credential reconciliation failed: {error:#}");
+            }
+            Err(error).context("reconciling Codex credential topology")
+        }
+    }
 }
 
 /// `omega claude-login-code <code>` — finish the OAuth re-login by pasting the
@@ -4891,9 +5020,17 @@ async fn cmd_timeline(oracle: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_doctor(fix: bool) -> Result<()> {
+async fn doctor_checks(config: &OmegaConfig, deep: bool) -> Vec<omega_core::doctor::Check> {
+    let mut checks = omega_core::doctor::run_all(config).await;
+    if deep {
+        checks.push(omega_core::doctor::probe_codex_auth().await);
+    }
+    checks
+}
+
+async fn cmd_doctor(fix: bool, deep: bool) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
-    let mut checks = omega_core::doctor::run_all(&config).await;
+    let mut checks = doctor_checks(&config, deep).await;
     println!("OmegaOS doctor\n");
     for c in &checks {
         println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);
@@ -4909,7 +5046,7 @@ async fn cmd_doctor(fix: bool) -> Result<()> {
             for a in &actions {
                 println!("  [~] {}", a);
             }
-            checks = omega_core::doctor::run_all(&config).await;
+            checks = doctor_checks(&config, deep).await;
             println!("\n── after fix ──");
             for c in &checks {
                 println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);
@@ -6560,10 +6697,18 @@ fn cmd_sync() -> Result<()> {
     let gemini_dir = home.join(".gemini");
     if gemini_dir.exists() {
         let gemini_md = gemini_dir.join("GEMINI.md");
-        let omega_ref = "\n# OmegaOS\n@import ~/.omega/OMEGA.md\n";
+        // Same reasoning as the Codex block below: import the generated
+        // full-doctrine AGENTS.md, not the OMEGA.md summary.
+        let omega_ref = "\n# OmegaOS\n@import ~/.omega/AGENTS.md\n";
         if gemini_md.exists() {
             let content = std::fs::read_to_string(&gemini_md)?;
-            if !content.contains("OmegaOS") {
+            if content.contains("@import ~/.omega/OMEGA.md") {
+                // Upgrade an install that predates the full-doctrine file.
+                let upgraded =
+                    content.replace("@import ~/.omega/OMEGA.md", "@import ~/.omega/AGENTS.md");
+                std::fs::write(&gemini_md, upgraded)?;
+                println!("[+] Gemini: GEMINI.md import upgraded to the full doctrine");
+            } else if !content.contains("OmegaOS") {
                 std::fs::write(&gemini_md, format!("{}{}", content, omega_ref))?;
                 println!("[+] Gemini: appended OmegaOS reference to GEMINI.md");
             }
@@ -6574,13 +6719,47 @@ fn cmd_sync() -> Result<()> {
     }
 
     // ── Codex integration ──
+    //
+    // Codex (and Gemini) load ONE instructions file, with no per-rule injection
+    // mechanism like Claude's ~/.claude/rules/ symlink farm. Pointing that file
+    // at OMEGA.md alone meant an OpenAI session saw the Laws plus a 7-rule
+    // teaser while the Claude session beside it was bound by the full registry.
+    // So generate ~/.omega/AGENTS.md = OMEGA.md + the COMPLETE doctrine, and
+    // point Codex at that instead — same rules, both agents.
+    let agents_full_dst = omega_dir.join("AGENTS.md");
+    {
+        let base = std::fs::read_to_string(&omega_md_dst).unwrap_or_default();
+        let doctrine = omega_core::rules::full_doctrine_markdown();
+        let generated = format!(
+            "{}\n\n---\n\n# THE COMPLETE DOCTRINE (generated by `omega sync` — do not edit)\n\n\
+             Every Law and every Rule below is in force in THIS session. Claude Code receives \
+             the same set one file per rule from `~/.claude/rules/`; this file is how Codex, \
+             Gemini and any other single-instructions-file agent receive it.\n\n{}",
+            base.trim_end(),
+            doctrine
+        );
+        std::fs::write(&agents_full_dst, generated)?;
+        println!(
+            "[+] AGENTS.md (OMEGA.md + full doctrine) → {}",
+            agents_full_dst.display()
+        );
+    }
+
     let codex_dir = home.join(".codex");
     if codex_dir.exists() || std::fs::create_dir_all(&codex_dir).is_ok() {
         let agents_md = codex_dir.join("AGENTS.md");
+        // Repoint an existing OMEGA.md-only link (or a stale copy) at the
+        // full-doctrine file. A hand-written regular file is left alone.
+        let is_omega_link = std::fs::read_link(&agents_md)
+            .map(|t| t != agents_full_dst)
+            .unwrap_or(false);
+        if is_omega_link {
+            let _ = std::fs::remove_file(&agents_md);
+        }
         if !agents_md.exists() {
             #[cfg(unix)]
-            std::os::unix::fs::symlink(&omega_md_dst, &agents_md)?;
-            println!("[+] Codex: AGENTS.md → OMEGA.md");
+            std::os::unix::fs::symlink(&agents_full_dst, &agents_md)?;
+            println!("[+] Codex: AGENTS.md → ~/.omega/AGENTS.md (full doctrine)");
         }
     }
 
@@ -6609,4 +6788,132 @@ async fn cmd_init() -> Result<()> {
     println!("Logs directory: {}", config.logs_dir.display());
     println!("\nOmegaOS initialized. Run 'omega' to launch the session manager.");
     Ok(())
+}
+
+#[cfg(test)]
+mod phase1_tests {
+    use super::*;
+
+    #[test]
+    fn codex_login_status_json_shape_is_stable() {
+        let success = omega_core::codex_login::FinishResult {
+            status: omega_core::codex_login::LoginStatus::LoggedIn {
+                mode: "ChatGPT".to_string(),
+            },
+            restored: false,
+            flow_succeeded: true,
+        };
+        assert_eq!(
+            codex_login_status_json(&success),
+            serde_json::json!({
+                "ok": true,
+                "status": "logged in using ChatGPT",
+                "restored": false
+            })
+        );
+
+        let restored_without_fresh_credential = omega_core::codex_login::FinishResult {
+            status: omega_core::codex_login::LoginStatus::LoggedIn {
+                mode: "API key".to_string(),
+            },
+            restored: true,
+            flow_succeeded: false,
+        };
+        assert_eq!(
+            codex_login_status_json(&restored_without_fresh_credential),
+            serde_json::json!({
+                "ok": false,
+                "status": "logged in using API key",
+                "restored": true
+            })
+        );
+
+        let unknown = omega_core::codex_login::FinishResult {
+            status: omega_core::codex_login::LoginStatus::Unknown {
+                reason: "reason".to_string(),
+            },
+            restored: false,
+            flow_succeeded: false,
+        };
+        assert_eq!(
+            codex_login_status_json(&unknown),
+            serde_json::json!({
+                "ok": false,
+                "status": "unknown: reason",
+                "restored": false
+            })
+        );
+    }
+
+    #[test]
+    fn codex_login_abort_json_reports_command_success_not_login_success() {
+        let aborted = omega_core::codex_login::AbortResult {
+            status: omega_core::codex_login::LoginStatus::LoggedIn {
+                mode: "API key".to_string(),
+            },
+            restored: true,
+            flow_succeeded: false,
+            aborted: true,
+        };
+        assert_eq!(
+            codex_login_abort_json(&aborted),
+            serde_json::json!({
+                "ok": true,
+                "aborted": true,
+                "status": "logged in using API key",
+                "restored": true
+            })
+        );
+
+        let unknown = omega_core::codex_login::AbortResult {
+            status: omega_core::codex_login::LoginStatus::Unknown {
+                reason: "PID identity changed".to_string(),
+            },
+            restored: false,
+            flow_succeeded: false,
+            aborted: false,
+        };
+        assert_eq!(
+            codex_login_abort_json(&unknown),
+            serde_json::json!({
+                "ok": false,
+                "aborted": false,
+                "status": "unknown: PID identity changed",
+                "restored": false
+            })
+        );
+
+        let completed_before_abort = omega_core::codex_login::AbortResult {
+            status: omega_core::codex_login::LoginStatus::LoggedIn {
+                mode: "ChatGPT".to_string(),
+            },
+            restored: false,
+            flow_succeeded: true,
+            aborted: false,
+        };
+        assert_eq!(
+            codex_login_abort_json(&completed_before_abort),
+            serde_json::json!({
+                "ok": true,
+                "aborted": false,
+                "status": "logged in using ChatGPT",
+                "restored": false
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_codex_settlement_commands_own_startup_reconciliation() {
+        assert!(command_owns_codex_reconciliation(&Some(
+            Commands::CodexLoginStatus { pid: None }
+        )));
+        assert!(command_owns_codex_reconciliation(&Some(
+            Commands::CodexReconcile { json: true }
+        )));
+        assert!(!command_owns_codex_reconciliation(&Some(Commands::Doctor {
+            pre_reset: false,
+            fix: false,
+            deep: false,
+        })));
+    }
 }

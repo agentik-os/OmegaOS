@@ -4,7 +4,7 @@
 
 ## Laws & Rules
 
-_The authoritative, always-current Laws (L0–L5) + your Worker-scoped operational rules are
+_The authoritative, always-current Laws (L0–L6) + your Worker-scoped operational rules are
 injected at runtime from the typed registry (`crates/omega-core/src/rules.rs`) — see the
 "⚖️ THE LAWS" block appended below. They are inviolable and override everything in this prompt._
 

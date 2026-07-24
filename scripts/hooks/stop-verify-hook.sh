@@ -1,29 +1,213 @@
 #!/usr/bin/env bash
-# stop-verify-hook.sh — Stop hook: nudge the agent to verify before finishing.
+# stop-verify-hook.sh — THE FINISH GUARD (Stop hook, Claude Code + Codex).
 #
-# Reads the Stop-hook JSON on stdin (Claude Code convention), resolves the
-# transcript FILE, and if the session edited code (Write/Edit) without any
-# verification signal, emits a reminder. Dependency-free (no ~/.aisb).
-# Enforces Law L1 (runtime is truth) + L4 (done means 100%, verified).
+# Enforces L6 (finish the mission, never stop mid-workflow), R-PLAN (a tracked
+# plan or it gets dropped) and L1/L4 (verify against runtime before "done").
+#
+# WHY THIS IS A REWRITE: the previous version only `echo`ed a reminder and exited
+# 0. A Stop hook that exits 0 is INVISIBLE to the model — its stdout goes to the
+# transcript, never into the conversation. That reminder had therefore never once
+# reached an agent. Only exit code 2 (stderr → model, stop refused) actually
+# changes behaviour, which is what this version does. Filename kept so every
+# already-installed ~/.claude/settings.json inherits the fix with no migration.
+#
+# CONTRACT
+#   stdin  : {"session_id":…, "transcript_path":…, "stop_hook_active":bool}
+#   exit 0 : stop allowed (also the fail-open path — a guard must never break a session)
+#   exit 2 : stop REFUSED, stderr is handed to the model as its next instruction
+#
+# LOOP SAFETY (R-LOOP): never blocks when the harness reports stop_hook_active,
+# and never more than MAX_BLOCKS times per session — past the ceiling it stops
+# nagging and hands control back to the operator.
 
-# Only nudge inside a project tree.
-# (~/Station is the live projects root — the original VibeCoding/projects
-# gate matched nothing on this layout, so the hook never fired.)
-case "$PWD" in
-    *"/VibeCoding/"*|*"/projects/"*|*"/Station/"*) ;;
-    *) exit 0 ;;
-esac
+set -uo pipefail
 
-# Stop-hook input is JSON on stdin: { transcript_path, ... }. Resolve the file.
-IN=""; [ ! -t 0 ] && IN=$(cat 2>/dev/null)
-TP=$(echo "$IN" | jq -r '.transcript_path // empty' 2>/dev/null)
-[ -z "$TP" ] && TP="$1"            # fallback: positional arg
-[ -f "$TP" ] || exit 0             # no readable transcript → nothing to check
+MAX_BLOCKS="${OMEGA_FINISH_GUARD_MAX_BLOCKS:-3}"
+STATE_DIR="${OMEGA_DIR:-$HOME/.omega}/state/finish-guard"
 
-# Did the session edit code? (grep the FILE contents, not the path.)
-if grep -qE '"name":"(Write|Edit|NotebookEdit)"' "$TP" 2>/dev/null; then
-    if ! grep -qiE "verified|verify|build.*(pass|ok|0 error)|test.*pass|cargo (build|test)|npm run build" "$TP" 2>/dev/null; then
-        echo "REMINDER (Law L1/L4): verify your changes before saying done — run the build/tests, observe real output. 92% is not done."
-    fi
-fi
+# Escape hatch: a session that legitimately must end early (operator asked for a
+# partial answer, a cron probe) exports OMEGA_FINISH_GUARD=off.
+[[ "${OMEGA_FINISH_GUARD:-on}" == "off" ]] && exit 0
+
+IN=""
+[ ! -t 0 ] && IN=$(cat 2>/dev/null)
+
+command -v python3 >/dev/null 2>&1 || exit 0   # fail-open, no interpreter
+
+# The hook payload travels in an env var, NOT on stdin: the analyzer below is
+# fed to python3 through a heredoc, which already occupies stdin.
+read -r -d '' OMEGA_GUARD_SRC <<'PY'
+import json, os, re, sys, hashlib
+
+raw = os.environ.get("OMEGA_HOOK_INPUT", "")
+try:
+    payload = json.loads(raw) if raw.strip() else {}
+except Exception:
+    payload = {}
+if not isinstance(payload, dict):
+    payload = {}
+
+# The harness sets this while it is already re-running the agent because of a
+# previous block. Blocking again here is how a hook loops forever.
+if payload.get("stop_hook_active"):
+    sys.exit(0)
+
+tp = payload.get("transcript_path") or ""
+if not tp or not os.path.isfile(tp):
+    sys.exit(0)                      # nothing observable → allow
+
+created, status_of, todos = [], {}, None
+edited = False
+verified = False
+
+VERIFY_RE = re.compile(
+    r"verified|\bverify\b|build (?:passed|succeeded)|0 errors?\b|tests? passed|"
+    r"cargo (?:build|test|check)|npm run build|pnpm build|bun run build|pytest|"
+    r"HTTP/[\d.]+ 200|\b200 OK\b",
+    re.I,
+)
+
+def walk(obj):
+    """Yield every tool_use block in a transcript record."""
+    if isinstance(obj, dict):
+        if obj.get("type") == "tool_use":
+            yield obj
+        for v in obj.values():
+            yield from walk(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from walk(v)
+
+try:
+    with open(tp, "r", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            # A sub-agent's own plan is ITS business, not this session's.
+            if isinstance(rec, dict) and rec.get("isSidechain"):
+                continue
+            for tu in walk(rec):
+                name = tu.get("name") or ""
+                inp = tu.get("input") or {}
+                if not isinstance(inp, dict):
+                    inp = {}
+                if name == "TaskCreate":
+                    created.append(inp.get("subject") or "(untitled task)")
+                elif name == "TaskUpdate":
+                    tid = str(inp.get("taskId") or "")
+                    st = inp.get("status")
+                    if tid and st:
+                        status_of[tid] = st
+                elif name == "TodoWrite":
+                    t = inp.get("todos")
+                    if isinstance(t, list):
+                        todos = t
+                elif name == "update_plan":       # Codex
+                    t = inp.get("plan") or inp.get("steps")
+                    if isinstance(t, list):
+                        todos = t
+                elif name in ("Write", "Edit", "NotebookEdit", "apply_patch"):
+                    edited = True
+            if not verified and VERIFY_RE.search(line):
+                # Cheap whole-record scan: build logs, test output and prod
+                # probes land in tool_result text, not in a tool name.
+                verified = True
+except Exception:
+    sys.exit(0)
+
+open_items = []
+
+# ── 1. The tracked plan still has open work ──────────────────────────────────
+if todos is not None:
+    for t in todos:
+        if not isinstance(t, dict):
+            continue
+        st = (t.get("status") or "").lower()
+        if st not in ("completed", "done", "deleted", "cancelled"):
+            open_items.append(t.get("content") or t.get("step") or t.get("subject") or "(task)")
+elif created:
+    # Task ids are handed out sequentially as "1", "2", … in creation order.
+    for i, subject in enumerate(created, start=1):
+        st = (status_of.get(str(i)) or "pending").lower()
+        if st not in ("completed", "deleted"):
+            open_items.append(subject)
+
+reason = None
+if open_items:
+    shown = "\n".join("  - " + str(s)[:110] for s in open_items[:8])
+    more = "" if len(open_items) <= 8 else "\n  … and %d more" % (len(open_items) - 8)
+    reason = (
+        "STOP REFUSED — L6 (finish the mission). %d task(s) in your own tracked plan are "
+        "still open:\n%s%s\n\n"
+        "Do NOT summarize, do NOT ask whether to continue, do NOT re-report what is already "
+        "done. Take the first open task, set it in_progress, finish it, verify it against "
+        "runtime (L1), mark it completed, then move to the next one. If a task is genuinely "
+        "blocked, finish every other unblocked task first (L4), then say plainly what is "
+        "blocked and why. If 3+ open tasks are file-disjoint, fan them out now (R-ORCH) "
+        "instead of grinding through them one at a time."
+    ) % (len(open_items), shown, more)
+elif edited and not verified:
+    reason = (
+        "STOP REFUSED — L1/L4 (runtime is the only truth). This session edited code but no "
+        "verification ran: no build, no test, no runtime output anywhere in the transcript.\n\n"
+        "Run the real check now (cargo build / npm run build / the test suite / an HTTP probe "
+        "of the deployed route), read the actual output, fix what it reports, and only then "
+        "finish. A green diff is not a green build."
+    )
+
+if not reason:
+    sys.exit(0)
+
+# ── Bounded blocking (R-LOOP) ────────────────────────────────────────────────
+state_dir = os.environ.get("OMEGA_STATE_DIR") or "/tmp/omega-finish-guard"
+try:
+    os.makedirs(state_dir, exist_ok=True)
+except Exception:
+    sys.exit(0)
+
+sid = payload.get("session_id") or hashlib.sha1(tp.encode()).hexdigest()[:16]
+sid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(sid))[:64]
+counter = os.path.join(state_dir, sid + ".count")
+
+try:
+    n = int(open(counter).read().strip() or "0")
+except Exception:
+    n = 0
+
+try:
+    max_blocks = int(os.environ.get("OMEGA_MAX_BLOCKS") or "3")
+except ValueError:
+    max_blocks = 3
+
+if n >= max_blocks:
+    sys.exit(0)      # ceiling reached: stop nagging, hand control back (R-LOOP)
+
+try:
+    with open(counter, "w") as fh:
+        fh.write(str(n + 1))
+except Exception:
+    pass
+
+if n + 1 >= max_blocks:
+    reason += (
+        "\n\n(finish-guard: block %d/%d — the last one for this session. If you truly cannot "
+        "finish, say so explicitly and tell the operator what is blocked; do not spin.)"
+    ) % (n + 1, max_blocks)
+
+sys.stderr.write(reason + "\n")
+sys.exit(2)
+PY
+
+OMEGA_HOOK_INPUT="$IN" \
+OMEGA_STATE_DIR="$STATE_DIR" \
+OMEGA_MAX_BLOCKS="$MAX_BLOCKS" \
+    python3 -c "$OMEGA_GUARD_SRC"
+rc=$?
+
+[[ $rc -eq 2 ]] && exit 2
 exit 0
