@@ -374,7 +374,7 @@ impl Orchestrator {
             crate::rules::RuleScope::Worker
         };
         let mut full_prompt = task.prompt.clone();
-        let ctx = crate::rules::agent_context_block(scope);
+        let ctx = crate::rules::agent_context_block_for_mission(scope, &full_prompt);
         if !ctx.is_empty() {
             full_prompt.push_str("\n\n");
             full_prompt.push_str(&ctx);

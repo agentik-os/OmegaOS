@@ -3212,6 +3212,11 @@ enum RulesAction {
         /// Agent scope: master | oracle | worker (default: oracle)
         #[arg(default_value = "oracle")]
         scope: String,
+        /// Preview the block an agent would ACTUALLY receive for this mission:
+        /// Laws and universal rules in full, domain rules indexed unless the
+        /// mission text mentions their topic. Omit to print the full block.
+        #[arg(long)]
+        mission: Option<String>,
     },
 }
 
@@ -4550,7 +4555,10 @@ async fn cmd_spawn_worker(
             "\n\n## GIT SYNC\n{warning}\nReconcile (fetch/pull --ff-only on a clean tree) before touching any file.\n"
         ));
     }
-    let agent_ctx = omega_core::rules::agent_context_block(omega_core::rules::RuleScope::Worker);
+    let agent_ctx = omega_core::rules::agent_context_block_for_mission(
+        omega_core::rules::RuleScope::Worker,
+        &full_prompt,
+    );
     if !agent_ctx.is_empty() {
         full_prompt.push_str("\n\n");
         full_prompt.push_str(&agent_ctx);
@@ -6165,12 +6173,16 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 fn cmd_rules(action: RulesAction) -> Result<()> {
     use omega_core::rules::{self, RuleKind};
     match action {
-        RulesAction::Context { scope } => {
+        RulesAction::Context { scope, mission } => {
             let s = match scope.to_lowercase().as_str() {
                 "master" | "atlas" | "director" => rules::RuleScope::Master,
                 "worker" => rules::RuleScope::Worker,
                 _ => rules::RuleScope::Oracle,
             };
+            if let Some(m) = mission {
+                print!("{}", rules::agent_context_block_for_mission(s, &m));
+                return Ok(());
+            }
             print!("{}", rules::agent_context_block(s));
             return Ok(());
         }

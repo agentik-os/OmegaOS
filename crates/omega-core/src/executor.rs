@@ -370,7 +370,10 @@ impl WorkerRuntime for RmuxRuntime<'_> {
              the whole plan halts on this step until `omega done {session} …` runs. No exceptions.",
             session = session
         ));
-        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Worker);
+        let ctx = crate::rules::agent_context_block_for_mission(
+            crate::rules::RuleScope::Worker,
+            &full_brief,
+        );
         if !ctx.is_empty() {
             full_brief.push_str("\n\n");
             full_brief.push_str(&ctx);

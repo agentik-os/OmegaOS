@@ -401,7 +401,13 @@ impl Dispatcher {
         // its role-scoped Laws + operational rules via this single call.
         // This closes the gap where CLI/RPC-dispatched oracles previously
         // launched without their inviolable Laws.
-        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Oracle);
+        // Narrowed to THIS mission (rules::agent_context_block_for_mission):
+        // universal rules + Laws in full, domain rules indexed unless the
+        // mission mentions their topic. Nothing is hidden, only un-inlined.
+        let ctx = crate::rules::agent_context_block_for_mission(
+            crate::rules::RuleScope::Oracle,
+            &prompt,
+        );
         if !ctx.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&ctx);
@@ -661,7 +667,13 @@ impl Dispatcher {
 
         let mut prompt = build_resume_prompt(&state);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
-        let ctx = crate::rules::agent_context_block(crate::rules::RuleScope::Oracle);
+        // Narrowed to THIS mission (rules::agent_context_block_for_mission):
+        // universal rules + Laws in full, domain rules indexed unless the
+        // mission mentions their topic. Nothing is hidden, only un-inlined.
+        let ctx = crate::rules::agent_context_block_for_mission(
+            crate::rules::RuleScope::Oracle,
+            &prompt,
+        );
         if !ctx.is_empty() {
             prompt.push_str("\n\n");
             prompt.push_str(&ctx);
