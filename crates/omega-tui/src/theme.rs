@@ -595,14 +595,14 @@ impl ThemeId {
             ThemeId::Synthwave => "Mono chrome + neon pink",
             ThemeId::Ocean => "Mono chrome + deep sea blue",
             ThemeId::Crimson => "Mono chrome + alert red",
-            ThemeId::TransparentDark => "No painted bg, white ink: the terminal transparency shows",
-            ThemeId::TransparentLight => "No painted bg, black ink for light terminals",
-            ThemeId::GlassCyan => "No painted bg + cyan accent — bright inks for glassy terminals",
-            ThemeId::GlassGreen => "No painted bg + neon green — bright inks for glassy terminals",
-            ThemeId::GlassAmber => "No painted bg + amber — bright inks for glassy terminals",
-            ThemeId::GlassPurple => "No painted bg + purple — bright inks for glassy terminals",
-            ThemeId::GlassPink => "No painted bg + neon pink — bright inks for glassy terminals",
-            ThemeId::GlassBlue => "No painted bg + azure — bright inks for glassy terminals",
+            ThemeId::TransparentDark => "NEEDS A DARK TERMINAL — white ink, no painted bg",
+            ThemeId::TransparentLight => "NEEDS A LIGHT TERMINAL — black ink, no painted bg",
+            ThemeId::GlassCyan => "NEEDS A DARK TERMINAL — cyan accent, no painted bg",
+            ThemeId::GlassGreen => "NEEDS A DARK TERMINAL — neon green, no painted bg",
+            ThemeId::GlassAmber => "NEEDS A DARK TERMINAL — amber, no painted bg",
+            ThemeId::GlassPurple => "NEEDS A DARK TERMINAL — purple, no painted bg",
+            ThemeId::GlassPink => "NEEDS A DARK TERMINAL — neon pink, no painted bg",
+            ThemeId::GlassBlue => "NEEDS A DARK TERMINAL — azure, no painted bg",
         }
     }
 
@@ -754,6 +754,30 @@ mod tests {
     #[test]
     fn twenty_three_themes() {
         assert_eq!(ThemeId::all().len(), 23);
+    }
+
+    /// A bg-less theme with fixed RGB inks is only readable on the terminal
+    /// background it was DESIGNED for — `contrast_contract` audits it against
+    /// an ASSUMED bg (black or white), which the runtime never verifies. Pick
+    /// the wrong one and the chrome drops to ~1.1:1: invisible. So every such
+    /// theme MUST state the terminal it needs, in the blurb the picker renders
+    /// next to its name. Omega is exempt: named ANSI roles, no fixed ink, it
+    /// genuinely adapts to whatever palette the terminal carries.
+    #[test]
+    fn bg_less_themes_declare_the_terminal_they_need() {
+        for id in ThemeId::all() {
+            if id.palette().bg.is_some() || *id == ThemeId::Omega {
+                continue;
+            }
+            let blurb = id.blurb();
+            assert!(
+                blurb.starts_with("NEEDS A DARK TERMINAL")
+                    || blurb.starts_with("NEEDS A LIGHT TERMINAL"),
+                "{}: paints no background, so its blurb must open with the \
+                 terminal background it requires — got {blurb:?}",
+                id.slug()
+            );
+        }
     }
 
     // ── WCAG 2.x contrast contract ──────────────────────────────────────────
