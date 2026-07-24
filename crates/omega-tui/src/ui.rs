@@ -2414,10 +2414,11 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     items.push(ListItem::new(Line::from("")));
 
     // ── Group 2: Projects ────────────────────────────────────────────────────
-    // Grouped under thematic sub-headers (Framework / Lifestyle / Nova /
-    // Partners / SideBusiness / …). Selection is by registry index, so the
-    // registry is kept sorted in this same category order (see projects.json /
-    // ManagedProject::category_rank) and arrow-nav flows top-to-bottom.
+    // Grouped under thematic sub-headers derived per-machine from each project's
+    // folder under the user's configured projects root (or an explicit category).
+    // Selection is by registry index, so the registry is kept sorted in this same
+    // category order (see ManagedProject::category_rank) and arrow-nav flows
+    // top-to-bottom.
     items.push(group_header("Projects"));
     if app.project_registry.projects.is_empty() {
         let current = app.projects_group == 1;
@@ -2431,10 +2432,11 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
         ));
     } else {
         use omega_core::project_manager::ManagedProject;
-        // Distinct categories present, in canonical order.
+        let root = app.config.projects_dir.as_path();
+        // Distinct categories present, sorted (named alphabetically, Other last).
         let mut cats: Vec<String> = Vec::new();
         for p in &app.project_registry.projects {
-            let c = p.display_category();
+            let c = p.display_category(root);
             if !cats.contains(&c) {
                 cats.push(c);
             }
@@ -2448,7 +2450,7 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
                 Style::default().fg(th::dim()).add_modifier(Modifier::BOLD),
             ))));
             for (i, project) in app.project_registry.projects.iter().enumerate() {
-                if &project.display_category() != cat {
+                if &project.display_category(root) != cat {
                     continue;
                 }
                 let current = app.projects_group == 1 && i == app.projects_selected;

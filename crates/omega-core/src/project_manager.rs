@@ -19,17 +19,12 @@ pub struct ManagedProject {
     /// it 🔕 but keeps it listed). Default ON preserves existing behavior.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telegram: Option<bool>,
-    /// Thematic category used to group the Projects tab (Framework / Lifestyle /
-    /// Nova / Partners / SideBusiness / …). `None` = infer from the path under
-    /// `~/Station`. See `display_category`.
+    /// Thematic category used to group the Projects tab. An explicit value wins;
+    /// when unset it is derived per-machine from the project's own location. See
+    /// `display_category`. Kept out of the serialized form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
 }
-
-/// Canonical display order of the Projects-tab thematic sections. Categories not
-/// listed here sort after these (alphabetically), and `"Other"` sorts last.
-pub const PROJECT_CATEGORY_ORDER: &[&str] =
-    &["Framework", "Lifestyle", "Nova", "Partners", "SideBusiness"];
 
 impl ManagedProject {
     /// Whether this project participates in Telegram (topic sync + Atlas display).
@@ -38,42 +33,45 @@ impl ManagedProject {
         self.telegram != Some(false)
     }
 
-    /// Thematic category for the Projects-tab grouping. Uses the explicit
-    /// `category` field when set (non-empty), else infers it from the project
-    /// path's parent under `~/Station` (Frameworks / LifeStyle / Nova / Partners
-    /// / SideBusiness), falling back to `"Other"`.
-    pub fn display_category(&self) -> String {
+    /// Thematic category for the Projects-tab grouping. An explicit `category`
+    /// (non-empty) wins; otherwise it is derived from the project's own location
+    /// on THIS machine — the first path component under the user's configured
+    /// projects root (`OmegaConfig::projects_dir`). A project that sits directly
+    /// under the root (no category folder) or outside it is `"Other"`.
+    ///
+    /// Machine-agnostic by design: it mirrors whatever top-level folders the user
+    /// organizes their projects into (customers/ side-business/ tools/ …, or any
+    /// custom layout), never a hardcoded taxonomy. Pass the root from
+    /// `OmegaConfig::projects_dir`.
+    pub fn display_category(&self, projects_root: &Path) -> String {
         if let Some(c) = self.category.as_deref() {
             let c = c.trim();
             if !c.is_empty() {
                 return c.to_string();
             }
         }
-        let p = self.path.to_string_lossy();
-        for (needle, label) in [
-            ("/Station/Frameworks/", "Framework"),
-            ("/Station/Partners/", "Partners"),
-            ("/Station/Nova/", "Nova"),
-            ("/Station/LifeStyle/", "Lifestyle"),
-            ("/Station/SideBusiness/", "SideBusiness"),
-        ] {
-            if p.contains(needle) {
-                return label.to_string();
+        // The first folder under the projects root, but only when the project
+        // actually lives INSIDE a category folder (≥2 remaining components:
+        // <category>/<project>[/…]). A bare child of the root has no category.
+        if let Ok(rel) = self.path.strip_prefix(projects_root) {
+            let mut comps = rel.components();
+            if let Some(first) = comps.next() {
+                if comps.next().is_some() {
+                    return first.as_os_str().to_string_lossy().to_string();
+                }
             }
         }
         "Other".to_string()
     }
 
-    /// Sort rank for `display_category` — canonical categories first (in
-    /// `PROJECT_CATEGORY_ORDER`), then unknown categories alphabetically, then
-    /// `"Other"` last. Returned as a tuple so callers can `sort_by_key`.
-    pub fn category_rank(cat: &str) -> (u8, usize, String) {
+    /// Sort key for the Projects-tab category sections: named categories
+    /// alphabetically (case-insensitive), `"Other"` always last. Deliberately
+    /// order-agnostic so it fits any user's folder taxonomy.
+    pub fn category_rank(cat: &str) -> (u8, String) {
         if cat == "Other" {
-            return (2, 0, String::new());
-        }
-        match PROJECT_CATEGORY_ORDER.iter().position(|c| *c == cat) {
-            Some(i) => (0, i, String::new()),
-            None => (1, 0, cat.to_string()),
+            (1, String::new())
+        } else {
+            (0, cat.to_lowercase())
         }
     }
 }
@@ -422,5 +420,59 @@ mod tests {
         assert_eq!(found.len(), 2);
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn proj(path: &str, category: Option<&str>) -> ManagedProject {
+        ManagedProject {
+            name: "x".into(),
+            path: PathBuf::from(path),
+            icon: None,
+            telegram_topic_id: None,
+            oracle_session: None,
+            git_email: None,
+            created_at: "t".into(),
+            telegram: None,
+            category: category.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn category_is_derived_from_the_users_own_layout() {
+        // Machine-agnostic: the category is the first folder under the user's
+        // configured projects root — whatever it is named — NOT a fixed taxonomy.
+        let root = Path::new("/home/alice/dev");
+        assert_eq!(proj("/home/alice/dev/customers/acme", None).display_category(root), "customers");
+        assert_eq!(proj("/home/alice/dev/tools/mylib/crate", None).display_category(root), "tools");
+        // A different user with a different root and different folder names.
+        let root2 = Path::new("/Users/bob/Code");
+        assert_eq!(proj("/Users/bob/Code/Clients/foo", None).display_category(root2), "Clients");
+    }
+
+    #[test]
+    fn category_falls_back_to_other() {
+        let root = Path::new("/home/alice/dev");
+        // Directly under the root (no category folder) → Other.
+        assert_eq!(proj("/home/alice/dev/loose-project", None).display_category(root), "Other");
+        // Outside the root entirely → Other.
+        assert_eq!(proj("/somewhere/else/proj", None).display_category(root), "Other");
+    }
+
+    #[test]
+    fn explicit_category_overrides_derivation() {
+        let root = Path::new("/home/alice/dev");
+        // Even though the path would derive "side-business", the pin wins.
+        assert_eq!(
+            proj("/home/alice/dev/side-business/omega", Some("Framework")).display_category(root),
+            "Framework"
+        );
+        // Blank/whitespace category is ignored → falls back to derivation.
+        assert_eq!(proj("/home/alice/dev/tools/x", Some("  ")).display_category(root), "tools");
+    }
+
+    #[test]
+    fn category_rank_sorts_named_alpha_other_last() {
+        let mut cats = vec!["Partners", "Other", "framework", "Nova"];
+        cats.sort_by_key(|c| ManagedProject::category_rank(c));
+        assert_eq!(cats, vec!["framework", "Nova", "Partners", "Other"]);
     }
 }
