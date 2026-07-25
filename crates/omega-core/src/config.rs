@@ -164,13 +164,13 @@ impl Default for OmegaConfig {
             locks_dir: omega_dir.join("locks"),
             projects_dir: default_projects_dir(),
             projects: Vec::new(),
-            // Operator directive: Codex/Sol is the default coding agent everywhere
-            // (oracles, workers, orchestrate, team, patrol re-spawn, and the plain
-            // Telegram dispatch all resolve THIS field when no --agent is given).
-            // Claude stays available (per-mission `--agent claude`, the /duo binome,
-            // the agent picker) and remains the safe fallback when an agent name is
-            // misconfigured or Codex is absent — see the parse-fallbacks below.
-            agent_command: "codex".to_string(),
+            // Operator directive 2026-07-25 (reverses the 2026-07-23 Codex switch):
+            // Claude is the default coding agent everywhere again — oracles, workers,
+            // orchestrate, team, patrol re-spawn and the plain Telegram dispatch all
+            // resolve THIS field when no --agent is given. Codex stays a first-class
+            // per-mission choice (`--agent codex`, the /duo binome, the agent picker);
+            // it is not removed, it is simply no longer what you get by default.
+            agent_command: "claude".to_string(),
             // "opus" is an ALIAS, resolved at dispatch time by
             // dispatch::resolve_model_flag to "claude-opus-5[1m]" — Claude
             // Opus 5 with the 1M context window. Operator directive
@@ -390,7 +390,7 @@ mod tests {
         // silently discard the whole config on a fresh install.
         let cfg: OmegaConfig = toml::from_str(include_str!("../../../config/default.toml"))
             .expect("config/default.toml must deserialize into OmegaConfig");
-        assert_eq!(cfg.agent_command, "codex");
+        assert_eq!(cfg.agent_command, "claude");
         assert_eq!(cfg.default_model, "opus");
     }
 
@@ -414,7 +414,7 @@ mod tests {
         // instead of nuking the whole file.
         let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
         assert_eq!(cfg.default_model, "sonnet"); // overridden
-        assert_eq!(cfg.agent_command, "codex"); // still the default, not empty
+        assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
     }
 
     #[test]
@@ -442,7 +442,7 @@ mod tests {
     fn absent_config_is_default_not_error() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = OmegaConfig::load_from(&tmp.path().join("nonexistent.toml")).unwrap();
-        assert_eq!(cfg.agent_command, "codex");
+        assert_eq!(cfg.agent_command, "claude");
     }
 
     #[test]

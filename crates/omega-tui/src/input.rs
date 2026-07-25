@@ -813,17 +813,20 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             // dispatch path (no project-picking step, since we already know which one).
             const COUNT: usize = 4;
             const ORACLE: usize = 2;
+            // Index 0 is Claude: it mirrors config.agent_command, the operator-wide
+            // default every dispatch path resolves. A picker whose first row is not
+            // the configured default teaches the wrong muscle memory.
             let open = |sel: usize| -> Action {
                 match sel {
                     0 => Action::OpenProject {
                         name: name.clone(),
                         path: path.clone(),
-                        agent: omega_core::agents::Agent::Codex,
+                        agent: omega_core::agents::Agent::Claude,
                     },
                     1 => Action::OpenProject {
                         name: name.clone(),
                         path: path.clone(),
-                        agent: omega_core::agents::Agent::Claude,
+                        agent: omega_core::agents::Agent::Codex,
                     },
                     _ => Action::None,
                 }
@@ -2529,44 +2532,44 @@ mod tests {
         let mut app = test_app();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-        // Default selection (0) → Codex (the operator-wide default).
+        // Default selection (0) → Claude (mirrors config.agent_command).
         app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
         let action = handle_key(&mut app, enter);
         match action {
             Action::OpenProject { name, path, agent } => {
                 assert_eq!(name, "Verba");
                 assert_eq!(path, "/tmp/verba");
-                assert_eq!(agent, omega_core::agents::Agent::Codex);
-            }
-            _ => panic!("expected OpenProject with Codex"),
-        }
-        assert!(matches!(app.input_mode, InputMode::Normal));
-
-        // Down → Claude.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        match handle_key(&mut app, enter) {
-            Action::OpenProject { agent, .. } => {
                 assert_eq!(agent, omega_core::agents::Agent::Claude);
             }
             _ => panic!("expected OpenProject with Claude"),
         }
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // Down → Codex.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match handle_key(&mut app, enter) {
+            Action::OpenProject { agent, .. } => {
+                assert_eq!(agent, omega_core::agents::Agent::Codex);
+            }
+            _ => panic!("expected OpenProject with Codex"),
+        }
     }
 
-    // '1' → Codex (default), '2' → Claude; Esc and the Cancel row open nothing.
+    // '1' → Claude (default), '2' → Codex; Esc and the Cancel row open nothing.
     #[test]
     fn open_project_picker_shortcuts_and_cancel() {
         let mut app = test_app();
         app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
         match handle_key(&mut app, press('1')) {
             Action::OpenProject { agent, .. } => {
-                assert_eq!(agent, omega_core::agents::Agent::Codex)
+                assert_eq!(agent, omega_core::agents::Agent::Claude)
             }
-            _ => panic!("expected OpenProject with Codex via '1'"),
+            _ => panic!("expected OpenProject with Claude via '1'"),
         }
 
-        // Cancel row (index 2) → no session opened.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 2);
+        // Cancel row (index 3 — Oracle took index 2) → no session opened.
+        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 3);
         let action = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(action, Action::None), "Cancel must not open a session");
 

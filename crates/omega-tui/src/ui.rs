@@ -747,8 +747,8 @@ fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
         _ => return,
     };
     let options = [
-        "1. Codex — OpenAI (Sol) — default",
-        "2. Claude Code — Opus 5",
+        "1. Claude Code — Opus 5 — default",
+        "2. Codex — OpenAI (Sol)",
         "3. Oracle — the project's own orchestrator (asks for a mission)",
         "   Cancel",
     ];
