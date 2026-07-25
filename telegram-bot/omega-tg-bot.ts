@@ -1529,7 +1529,13 @@ async function accountStatus(): Promise<string> {
   const sub = raw.match(/"subscriptionType"\s*:\s*"([^"]+)"/)?.[1] || "?";
   let token = "?";
   try { const c = JSON.parse(await oauth(["check"])); token = c.valid ? `valid (${c.remaining_min} min left)` : "⚠️ EXPIRED — tap “Login”"; } catch {}
-  const usage = await omega(["usage"]);
+  // --check, not the cached snapshot: this card is what the operator opens right
+  // after switching accounts, and the cache is only refreshed by a 10-minute cron.
+  // Reading it stale showed the PREVIOUS account's quota — "I just logged into a
+  // clean account and it still says 98%". One live call on an on-demand button is
+  // the right trade. Falls back to the cache if the OAuth endpoint is unavailable.
+  let usage = await omega(["usage", "--check"]);
+  if (!usage || /unavailable|failed/i.test(usage)) usage = await omega(["usage"]);
   const tokenOk = /valid/i.test(token);
   return card("CLAUDE ACCOUNT (AISB)",
     ` 📧 ${esc(email)}\n 🎫 plan: ${esc(sub)}\n ${tokenOk ? "🟢" : "🔴"} token: ${esc(token)}`,
