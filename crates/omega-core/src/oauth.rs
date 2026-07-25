@@ -423,6 +423,21 @@ pub fn detect_auth_failure(pane_text: &str) -> Option<&'static str> {
     None
 }
 
+/// Does this look like a COMPLETE authorize URL, not a half-painted one?
+///
+/// `redirect_uri` is the deciding parameter: it sits in the tail of the query
+/// string and is what Anthropic's OAuth server rejects the request without
+/// ("Invalid OAuth Request — Missing redirect_uri parameter"). Anything that
+/// stops before it is a screen still being drawn, not a link.
+fn auth_url_is_complete(url: &str) -> bool {
+    match url.split_once("redirect_uri=") {
+        // A bare "redirect_uri=" with nothing after it is the same half-render,
+        // caught one paint later.
+        Some((_, tail)) => !tail.is_empty(),
+        None => false,
+    }
+}
+
 /// Extract the OAuth URL from the captured pane.
 ///
 /// Strategy:
@@ -430,6 +445,13 @@ pub fn detect_auth_failure(pane_text: &str) -> Option<&'static str> {
 ///   2. Continue concatenating subsequent non-empty lines that look like a URL
 ///      continuation (no whitespace, no prompt markers).
 ///   3. Trim trailing punctuation/whitespace.
+///   4. Return "" unless the result is COMPLETE — see `auth_url_is_complete`.
+///
+/// Step 4 is load-bearing for the caller: `start_reauth` polls this every 500ms
+/// and breaks on the first non-empty answer. Claude paints its /login screen
+/// progressively, so returning a truncated URL there would hand the operator a
+/// dead link. Reporting "not found yet" instead makes the poll wait one more
+/// tick for the screen to finish.
 pub fn extract_auth_url(pane_text: &str) -> String {
     let mut parts = Vec::new();
     let mut in_url = false;
@@ -502,6 +524,9 @@ pub fn extract_auth_url(pane_text: &str) -> String {
         } else {
             break;
         }
+    }
+    if !auth_url_is_complete(&out) {
+        return String::new();
     }
     out
 }
@@ -729,7 +754,8 @@ mod tests {
     fn extract_auth_url_finds_url() {
         let pane = "\
             Some pre-text\n\
-            https://claude.com/cai/oauth/authorize?code=true&client_id=abc&state=xyz\n\
+            https://claude.com/cai/oauth/authorize?code=true&client_id=abc\
+&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&state=xyz\n\
             Paste code here:\n\
         ";
         let url = extract_auth_url(pane);
@@ -740,6 +766,48 @@ mod tests {
     #[test]
     fn extract_auth_url_handles_no_url() {
         assert_eq!(extract_auth_url("nothing here"), "");
+    }
+
+    /// The poll loop in `start_reauth` breaks on the FIRST non-empty extraction.
+    /// Claude paints its /login screen progressively, so a 500ms tick can catch
+    /// the pane mid-render and see only the head of the URL. `redirect_uri` sits
+    /// in the TAIL of the query string, so that truncated URL is accepted and the
+    /// operator lands on "Invalid OAuth Request — Missing redirect_uri parameter".
+    /// An incomplete URL must therefore read as NOT FOUND, so the loop keeps
+    /// polling until the screen has finished painting.
+    #[test]
+    fn extract_auth_url_rejects_a_half_painted_url() {
+        let half = "\
+            https://claude.com/cai/oauth/authorize?code=true&client_id=abc\n\
+        ";
+        assert_eq!(
+            extract_auth_url(half),
+            "",
+            "a URL without redirect_uri is half-rendered, not a usable link"
+        );
+
+        let complete = "\
+            https://claude.com/cai/oauth/authorize?code=true&client_id=abc\
+&response_type=code&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&state=xyz\n\
+        ";
+        let url = extract_auth_url(complete);
+        assert!(url.contains("redirect_uri=https%3A"), "got {url:?}");
+        assert!(url.contains("state=xyz"), "got {url:?}");
+    }
+
+    /// A wrapped URL (terminal folded it across physical lines) must be rejoined
+    /// into one link — that is the whole reason the extractor concatenates.
+    #[test]
+    fn extract_auth_url_rejoins_a_wrapped_url() {
+        let pane = "\
+            https://claude.com/cai/oauth/authorize?code=true&client_id=abc&response_type=code\n\
+            &redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback\n\
+            &state=xyz\n\
+            Paste code here:\n\
+        ";
+        let url = extract_auth_url(pane);
+        assert!(url.contains("redirect_uri=https%3A"), "got {url:?}");
+        assert!(url.ends_with("state=xyz"), "got {url:?}");
     }
 
     #[test]

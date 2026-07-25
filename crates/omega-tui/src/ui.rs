@@ -1960,6 +1960,23 @@ fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
     }
 }
 
+/// Split a long unbreakable string into fixed-width chunks.
+///
+/// Used for the OAuth authorize URL: the Monitor detail Paragraph scrolls
+/// instead of wrapping, so anything wider than the panel is clipped and lost.
+/// Chunking on CHARACTERS (not bytes) keeps multi-byte input intact; a URL is
+/// ASCII, but this must never be able to split a char and panic.
+fn fold_for_panel(s: &str, width: usize) -> Vec<String> {
+    if s.is_empty() {
+        return vec![String::new()];
+    }
+    let chars: Vec<char> = s.chars().collect();
+    chars
+        .chunks(width.max(1))
+        .map(|c| c.iter().collect())
+        .collect()
+}
+
 fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
     use crate::app::ReauthStatus;
     use omega_core::monitor;
@@ -2005,10 +2022,18 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!("    {}", url),
-                Style::default().fg(th::info()).add_modifier(Modifier::UNDERLINED),
-            )));
+            // The detail Paragraph deliberately does not wrap (it scrolls), so a
+            // ~400-char authorize URL on ONE Line is clipped at the panel edge —
+            // the operator sees a cut link and cannot select the rest of it. Fold
+            // it ourselves into panel-safe chunks so the WHOLE URL is on screen
+            // and copyable. Telegram's Account card is the one-tap path (it sends
+            // the URL as a native button); this is the terminal fallback.
+            for chunk in fold_for_panel(url, 56) {
+                lines.push(Line::from(Span::styled(
+                    format!("    {}", chunk),
+                    Style::default().fg(th::info()).add_modifier(Modifier::UNDERLINED),
+                )));
+            }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "    2) Press Enter to paste the code you get back.",
@@ -4164,4 +4189,27 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let right = Paragraph::new(Line::from(right_spans))
         .alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, split[1]);
+}
+
+#[cfg(test)]
+mod url_fold_tests {
+    use super::fold_for_panel;
+
+    /// The whole URL must survive folding — that is the entire point: a clipped
+    /// link is what the operator could not copy.
+    #[test]
+    fn fold_preserves_every_character() {
+        let url = "https://claude.com/cai/oauth/authorize?code=true&client_id=abc\
+&redirect_uri=https%3A%2F%2Fconsole.anthropic.com%2Foauth%2Fcode%2Fcallback&state=xyz";
+        let folded = fold_for_panel(url, 56);
+        assert!(folded.len() > 1, "a 150-char URL must fold");
+        assert!(folded.iter().all(|c| c.chars().count() <= 56));
+        assert_eq!(folded.concat(), url, "rejoining the chunks must give the URL back");
+    }
+
+    #[test]
+    fn fold_handles_short_and_empty() {
+        assert_eq!(fold_for_panel("abc", 56), vec!["abc".to_string()]);
+        assert_eq!(fold_for_panel("", 56), vec![String::new()]);
+    }
 }
