@@ -860,7 +860,7 @@ MM_DST="$OMEGA_DIR/marketing-machine"
 if [[ -d "$MM_SRC" ]]; then
     mkdir -p "$MM_DST"
     # Registry + scaffolder + manifest + docs + growth kit.
-    for _mm_f in capabilities.toml scaffold.sh projects.tsv README.md AUDIT.md BACKLOG.md; do
+    for _mm_f in capabilities.toml scaffold.sh projects.tsv README.md AUDIT.md BACKLOG.md NEEDS-OPERATOR.md; do
         [[ -f "$MM_SRC/$_mm_f" ]] && cp -f "$MM_SRC/$_mm_f" "$MM_DST/$_mm_f"
     done
     unset _mm_f

@@ -1,5 +1,10 @@
 # omega-marketing-machine
 
+> **Avant de promettre quoi que ce soit : lis [`NEEDS-OPERATOR.md`](NEEDS-OPERATOR.md).**
+> Des rails externes (Zernio, Higgsfield, Apify) sont bloqués côté facturation et
+> `omega marketing doctor` les affiche verts parce qu'il ne teste que la présence des
+> clés. L'état réel se lit avec `reels doctor` et `higgsfield account status`.
+
 Per-project **marketing machine** scaffolder. Gives every OmegaOS/Partner project an
 **identical `marketing/` folder** (the parent folder of all GTM artifacts), then the
 marketing skills fill it. Closes the loop from strategy → copy → visual identity (DA +

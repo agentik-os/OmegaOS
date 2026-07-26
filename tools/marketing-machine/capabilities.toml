@@ -1606,16 +1606,16 @@ notes = "Today two per-project forks (VD12/VD13). P0-2/P0-4 unification — NOT 
 id = "O8"
 group = "orchestration"
 name = "marketing doctor"
-does = "Check integration keys/tools present + working per dependency"
+does = "Check integration keys/tools are PRESENT (key presence, not rail health)"
 run = "omega marketing doctor"
 kind = "cli"
 inputs = ["~/.omega/secrets/integrations.env"]
 layer = "n/a"
-status = "built"
+status = "partial"
 deps = []
 paid = false
 skill = ""
-notes = "v1 shipped 2026-07-03."
+notes = "v1 shipped 2026-07-03. KNOWN LIMIT, verified 2026-07-26: it checks key PRESENCE, not rail HEALTH, so it printed a green ZERNIO_API_KEY while the Zernio API answered HTTP 402 (account paused) and a green `higgsfield account` on a balance of 0.03 credits. A valid key proves nothing. For live rail status use `reels doctor` (probes each source and reads Apify's effectivePlatformFeatures.ACTORS.disabledReason, which is the only free signal that a valid token still 403s every run) plus `higgsfield account status`. Ask-list: NEEDS-OPERATOR.md (O9)."
 
 # ---------------------------------------------------------------------------
 # IG Reel Loop (G14-G18) — the Instagram half of the research loop, added
@@ -1700,3 +1700,18 @@ deps = ["python3"]
 paid = false
 skill = "reel-script, reel-lint"
 notes = "Vendored from github.com/smaroc/sophiene-claude-skills @aa11daa (reviewed: no network, no credentials, no exec). Brick 2 of the IG reel loop. Local edit: absolute linter path in SKILL.md (upstream ships a relative path that never resolves from a project cwd). Verified live 2026-07-26: linter scored a test script 86/100, exit 0. Shipped by install.sh + vendored under skills/."
+
+[[capability]]
+id = "O9"
+group = "orchestration"
+name = "NEEDS-OPERATOR (standing ask-list)"
+does = "The blocked-rail / operator-ask list that survives between sessions, each line carrying the command that re-verifies it"
+run = "read tools/marketing-machine/NEEDS-OPERATOR.md, then `reels doctor` + `higgsfield account status`"
+kind = "doc"
+inputs = []
+layer = "cross"
+status = "built"
+deps = []
+paid = false
+skill = ""
+notes = "Written 2026-07-26 after four paid rails were found blocked at once (Apify 403 unpaid invoices, ScrapeCreators 402, Zernio 402 paused, Higgsfield 0.03 credits). TRAP it documents: `omega marketing doctor` checks key PRESENCE, not rail HEALTH, so it prints a green ZERNIO_API_KEY while the API answers 402. Same shape on Apify, whose token stays valid while every run 403s. Surfaced from the README header and the footer of `reels doctor` so it is read before a promise, not after."

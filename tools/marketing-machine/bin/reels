@@ -759,6 +759,14 @@ To open the free rail (Instagram Graph, brick 1):
      IG_ACCESS_TOKEN=...
   Then: reels doctor && reels mine`);
   }
+
+  // Last line on purpose. The standing ask-list is what stops a blocked rail from
+  // being rediscovered every session, always mid-run, always after someone
+  // announced it worked.
+  console.log(
+    "\nWhat to ask the operator for, and how to re-verify each item:\n" +
+      "  tools/marketing-machine/NEEDS-OPERATOR.md",
+  );
 }
 
 // ── main ────────────────────────────────────────────────────────────────────
