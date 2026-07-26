@@ -173,12 +173,25 @@ export default {
 };
 TS
 
-cat > convex/items.ts <<'TS'
-import { query, mutation } from "./_generated/server";
-import { v } from "convex/values";
+# The example functions must match the schema that is actually in place. With a
+# blueprint schema, writing a hardcoded `items.ts` produces functions pointing at a
+# table that does not exist — it survives `tsc` (no _generated types yet) and only
+# blows up on the first `npx convex dev`. So: read the real primitive out of the
+# schema and generate against it.
+PRIMITIVE="$(grep -oE '^  [a-zA-Z_][a-zA-Z0-9_]*: defineTable' convex/schema.ts | head -1 | sed 's/^  //; s/: defineTable//')"
+TABLE_BLOCK="$(sed -n "/^  ${PRIMITIVE}: defineTable/,/^  [a-zA-Z_][a-zA-Z0-9_]*: defineTable/p" convex/schema.ts 2>/dev/null)"
+TENANT_FIELD="$(printf '%s' "$TABLE_BLOCK" | grep -oE '(clubId|tenantId|orgId|workspaceId|accountId):' | head -1 | tr -d ':')"
+TENANT_INDEX="$(printf '%s' "$TABLE_BLOCK" | grep -oE "\.index\(\"[^\"]+\", \[\"${TENANT_FIELD:-__none__}\"" | head -1 | grep -oE '"[^"]+"' | head -1 | tr -d '"')"
 
+if [[ -n "$PRIMITIVE" && -n "$TENANT_FIELD" && -n "$TENANT_INDEX" ]]; then
+  cat > "convex/${PRIMITIVE}.ts" <<TS
+import { query } from "./_generated/server";
+
+// Example read against the primitive of this app's schema: \`${PRIMITIVE}\`.
+//
 // Every function derives the tenant from the authenticated identity.
-// Never accept a tenantId from the client — that is a cross-tenant read away.
+// NEVER accept a ${TENANT_FIELD} argument from the client — that is one crafted
+// request away from reading another tenant's data.
 async function requireTenant(ctx: { auth: { getUserIdentity: () => Promise<any> } }) {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Not authenticated");
@@ -188,28 +201,32 @@ async function requireTenant(ctx: { auth: { getUserIdentity: () => Promise<any> 
 export const list = query({
   args: {},
   handler: async (ctx) => {
-    const tenantId = await requireTenant(ctx);
+    const ${TENANT_FIELD} = await requireTenant(ctx);
     return await ctx.db
-      .query("items")
-      .withIndex("by_tenant", (q) => q.eq("tenantId", tenantId))
+      .query("${PRIMITIVE}")
+      .withIndex("${TENANT_INDEX}", (q) => q.eq("${TENANT_FIELD}", ${TENANT_FIELD}))
       .order("desc")
       .take(100);
   },
 });
 
-export const create = mutation({
-  args: { title: v.string() },
-  handler: async (ctx, args) => {
-    const tenantId = await requireTenant(ctx);
-    return await ctx.db.insert("items", {
-      tenantId,
-      title: args.title,
-      createdAt: Date.now(),
-    });
-  },
-});
+// Mutations are deliberately NOT scaffolded here: the required fields of
+// \`${PRIMITIVE}\` come from your schema, and guessing them would generate code that
+// compiles and then fails at runtime. Write them against the real table.
 TS
-c_ok "convex/ auth config + example query/mutation written"
+  c_ok "convex/ auth config + example query on the real primitive: ${PRIMITIVE} (tenant: ${TENANT_FIELD})"
+else
+  cat > convex/README.md <<'MD'
+# Convex functions
+
+No example query was generated: the primitive, its tenant field, or a tenant index
+could not be detected in `schema.ts`.
+
+Write your functions against the real schema, and derive the tenant from the
+authenticated identity — never from a client argument.
+MD
+  c_warn "could not detect primitive/tenant in schema.ts — wrote convex/README.md instead of a wrong example"
+fi
 
 # ── 5. Clerk bridge ─────────────────────────────────────────────────────────────
 mkdir -p src/lib
