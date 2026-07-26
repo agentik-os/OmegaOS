@@ -1673,6 +1673,37 @@ else
     info "Stax skill not found — skipping"
 fi
 
+# Install the Blueprint OS pair — the design→build chain for every new AgentikOS
+# product (R-BLUEPRINT-STACK). /blueprint-os DESIGNS an OS (14 phases, 3 gates,
+# the phase-0 interrogation first); /stack BUILDS the app from that blueprint on
+# the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
+# live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
+# the Stax block just above, so this block deliberately runs after it.
+for BSK in blueprint-os stack; do
+    BSK_SRC="$OMEGA_SRC/skills/$BSK"
+    BSK_DST="$OMEGA_DIR/skills/$BSK"
+    if [[ -d "$BSK_SRC" ]]; then
+        mkdir -p "$BSK_DST"
+        cp -r "$BSK_SRC"/* "$BSK_DST/"
+        find "$BSK_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+        BCMD="$HOME/.claude/commands"; mkdir -p "$BCMD"
+        for cmd in "$BSK" "omg-$BSK"; do
+            cat > "$BCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $BSK skill. Read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        ok "Blueprint skill installed: $BSK → ~/.omega/skills/$BSK/ (/$BSK + /omg-$BSK)"
+    else
+        info "Blueprint skill $BSK not found — skipping"
+    fi
+done
+
 # Install the watch video-analysis skill (/watch + /omg-watch) — vendored from
 # taoufik123-collab/claude-watch @ 7871c7e (MIT). Ships SKILL.md + python
 # scripts + the cookie-harvest helper. External runtime deps (ffmpeg, yt-dlp,
