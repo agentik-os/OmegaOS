@@ -1162,6 +1162,19 @@ if [[ -f "$ALERTSEND_SRC" ]]; then
     ok "Alert sender installed: $OMEGA_DIR/bin/omega-alert-send.sh"
 fi
 
+# The `omega stream` snapshot loop. `omega stream` creates the viewer with
+#   rmux new-session -d -s <viewer> "$OMEGA_DIR/bin/omega-stream.sh <target> <session> <interval> <lines>"
+# so this file IS the viewer session's command: it PULLS a rendered `capture-pane`
+# snapshot from the source box every few seconds (never raw bytes — a TUI replayed
+# out of its screen buffer is garbage) and never exits on error, since exiting would
+# kill the viewer and show the operator nothing at all instead of the failure.
+STREAM_SRC="$OMEGA_SRC/scripts/omega-stream.sh"
+if [[ -f "$STREAM_SRC" ]]; then
+    cp "$STREAM_SRC" "$OMEGA_DIR/bin/omega-stream.sh"
+    chmod +x "$OMEGA_DIR/bin/omega-stream.sh"
+    ok "Session mirror installed: $OMEGA_DIR/bin/omega-stream.sh (omega stream)"
+fi
+
 for hs in omega-atlas-brief omega-clean-projects omega-open omega-agent-bot; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"

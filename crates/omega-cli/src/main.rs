@@ -490,6 +490,42 @@ enum Commands {
         name: String,
     },
 
+    /// Mirror a live rmux session into a local viewer session, here or over ssh
+    ///
+    /// omega stream oracle-Kommu           watch a session on this box
+    /// omega stream matrix:MAC-STREAM      watch a session on the `matrix` ssh host
+    /// omega stream list                   what is watchable, here and on every ssh host
+    ///
+    /// The viewer PULLS: it snapshots the RENDERED screen of the source
+    /// session (rmux capture-pane) every --interval seconds and reprints it.
+    /// It never replays raw bytes, because a full-screen TUI emits cursor
+    /// moves that only mean something against a live screen buffer. The source
+    /// box ships nothing, so a mirror that stops is noticed on the box that
+    /// can do something about it.
+    ///
+    /// Hosts are ALIASES from ~/.ssh/config: ssh resolves HostName, Port,
+    /// User and IdentityFile, so no coordinate is ever hardcoded. The target
+    /// is preflighted (host known, box reachable, session present) before a
+    /// viewer is created, and an existing viewer is reused rather than
+    /// doubled: two pullers on one stream interleave into garbage.
+    ///
+    /// Detach the viewer with Ctrl-b d. It keeps running; re-attach with
+    /// `omega stream` again, or kill it with `omega kill stream-<name>`.
+    #[command(verbatim_doc_comment)]
+    Stream {
+        /// `<session>`, `<host>:<session>`, or the literal `list`
+        target: String,
+        /// Create the viewer but do not attach to it
+        #[arg(short, long)]
+        detach: bool,
+        /// Seconds between screen snapshots
+        #[arg(long, default_value_t = omega_core::stream::DEFAULT_INTERVAL_SECS)]
+        interval: u32,
+        /// Scrollback lines captured per snapshot
+        #[arg(long, default_value_t = omega_core::stream::DEFAULT_LINES)]
+        lines: u32,
+    },
+
     /// Show session log (JSONL history)
     Log {
         /// Session name
@@ -759,6 +795,9 @@ async fn main() -> Result<()> {
         Some(Commands::Status { name }) => cmd_status(&name).await,
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
         Some(Commands::Capture { name }) => cmd_capture(&name).await,
+        Some(Commands::Stream { target, detach, interval, lines }) => {
+            cmd_stream(&target, detach, interval, lines).await
+        }
         Some(Commands::Log { session, count }) => cmd_log(&session, count).await,
         Some(Commands::Rpc) => omega_core::rpc::run_rpc_loop().await,
         Some(Commands::Route { mission }) => cmd_route(&mission),
@@ -5931,6 +5970,237 @@ async fn cmd_capture(name: &str) -> Result<()> {
     let mgr = SessionManager::connect().await?;
     let content = mgr.capture_pane(name).await?;
     print!("{}", content);
+    Ok(())
+}
+
+/// `omega stream <session> | <host>:<session> | list` — mirror a live rmux
+/// session into a local viewer session that PULLS rendered screen snapshots.
+///
+/// Preflight before creation is the whole point: an unknown alias, a box that
+/// does not answer, or a session that is not there each produce a named error
+/// and a non-zero exit, never a viewer session that dies the instant it starts
+/// (see omega_core::stream for the five constraints this obeys).
+async fn cmd_stream(target: &str, detach: bool, interval: u32, lines: u32) -> Result<()> {
+    use omega_core::stream::{self, ProbeOutcome};
+
+    if target.eq_ignore_ascii_case("list") {
+        return cmd_stream_list().await;
+    }
+
+    if interval == 0 {
+        anyhow::bail!("--interval must be at least 1 second (0 would spin the loop at full CPU)");
+    }
+    if lines == 0 {
+        anyhow::bail!("--lines must be at least 1 (0 would capture an empty screen)");
+    }
+
+    let t = stream::parse_target(target);
+
+    // The coordinates land on the viewer's shell command line, so they are
+    // refused rather than quoted when they are not slugs.
+    if !stream::is_safe_coordinate(t.session()) {
+        anyhow::bail!(
+            "unsupported session name {:?} — rmux session names are slugs \
+             ([A-Za-z0-9._-]); nothing else is streamable",
+            t.session()
+        );
+    }
+    if let Some(host) = t.host() {
+        if !stream::is_safe_coordinate(host) {
+            anyhow::bail!(
+                "unsupported ssh host alias {host:?} — use the alias from ~/.ssh/config"
+            );
+        }
+    }
+
+    // PREFLIGHT 1 — an alias ssh actually knows.
+    if let Some(host) = t.host() {
+        let cfg = stream::read_ssh_config();
+        let known = cfg.hosts.iter().any(|h| h == host);
+        // An empty list means we could not enumerate, and an Include means the
+        // list is only a lower bound. Neither is evidence the host is unknown,
+        // so we let ssh be the judge instead of blocking a valid box.
+        if !known && !cfg.hosts.is_empty() && !cfg.has_include {
+            anyhow::bail!(
+                "unknown ssh host alias {host:?}\n  \
+                 ~/.ssh/config defines: {}\n  \
+                 (hosts are ALIASES, never raw coordinates — add one to ~/.ssh/config first)",
+                cfg.hosts.join(", ")
+            );
+        }
+    }
+
+    // PREFLIGHT 2 — the box answers, and the session is really on it.
+    let box_label = t.host().unwrap_or("this box").to_string();
+    let outcome = stream::probe_target(&t).await;
+    let sessions = match &outcome {
+        ProbeOutcome::Sessions(s) => s.clone(),
+        other => anyhow::bail!(
+            "cannot list sessions on {box_label}: {}\n  \
+             (nothing was created — a viewer for an unreachable box would just render errors)",
+            other.describe()
+        ),
+    };
+    if !sessions.iter().any(|s| s == t.session()) {
+        let listing = if sessions.is_empty() {
+            "  (no rmux sessions at all on that box)".to_string()
+        } else {
+            sessions
+                .iter()
+                .map(|s| format!("  - {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        anyhow::bail!(
+            "no session named {:?} on {box_label}. What IS there:\n{listing}",
+            t.session()
+        );
+    }
+
+    // IDEMPOTENT — one viewer per stream, always. Two pullers on one stream
+    // interleave their snapshots into unreadable garbage.
+    let viewer = stream::viewer_name(&t);
+    if stream::session_exists(&viewer).await {
+        println!(
+            "Already streaming {} in session {} — reusing it (a second puller would interleave).",
+            t.label(),
+            viewer
+        );
+    } else {
+        stream::create_viewer(&viewer, &t, interval, lines).await?;
+        println!(
+            "Streaming {} → session {} (rendered snapshot every {}s, {} lines).",
+            t.label(),
+            viewer,
+            interval,
+            lines
+        );
+    }
+
+    stream_attach(&viewer, detach)
+}
+
+/// Attach to the viewer, or print exactly how to reach it when attaching from
+/// here would be wrong.
+///
+/// rmux exports `RMUX` and `RMUX_PANE`, NOT `$TMUX` — testing `$TMUX` reports
+/// "not in a multiplexer" from inside one, and attaching a session to itself
+/// is how you nest a terminal inside a terminal.
+fn stream_attach(viewer: &str, detach: bool) -> Result<()> {
+    use std::io::IsTerminal;
+
+    if detach {
+        println!("  attach when you want it: rmux attach-session -t {viewer}");
+        return Ok(());
+    }
+    if std::env::var_os("RMUX").is_some() {
+        println!("  you are already inside rmux — switch to it: rmux switch-client -t {viewer}");
+        return Ok(());
+    }
+    if !std::io::stdout().is_terminal() {
+        println!("  no TTY here — attach from a terminal: rmux attach-session -t {viewer}");
+        return Ok(());
+    }
+
+    let status = std::process::Command::new(omega_core::stream::rmux_bin())
+        .args(["attach-session", "-t", viewer])
+        .status()
+        .context("spawning rmux attach-session")?;
+    if !status.success() {
+        anyhow::bail!(
+            "could not attach to {viewer} (exit {:?}) — the viewer is running; \
+             attach manually with: rmux attach-session -t {viewer}",
+            status.code()
+        );
+    }
+    Ok(())
+}
+
+/// `omega stream list` — what is watchable, on this box and on every ssh
+/// alias, probed IN PARALLEL under a bounded timeout. A host that is down is
+/// marked and skipped; it never holds the listing hostage.
+async fn cmd_stream_list() -> Result<()> {
+    use omega_core::stream::{self, ProbeOutcome};
+
+    let cfg = stream::read_ssh_config();
+
+    // Spawn every probe first, then collect: the whole listing costs one
+    // timeout, not one per host.
+    let mut probes: Vec<(Option<String>, tokio::task::JoinHandle<ProbeOutcome>)> = Vec::new();
+    probes.push((None, tokio::spawn(async { stream::probe_host(None).await })));
+    for host in &cfg.hosts {
+        let host = host.clone();
+        probes.push((
+            Some(host.clone()),
+            tokio::spawn(async move { stream::probe_host(Some(&host)).await }),
+        ));
+    }
+
+    let mut results: Vec<(Option<String>, ProbeOutcome)> = Vec::new();
+    for (host, handle) in probes {
+        let outcome = handle.await.unwrap_or(ProbeOutcome::SpawnFailed {
+            detail: "probe task panicked".to_string(),
+        });
+        results.push((host, outcome));
+    }
+
+    // Local sessions double as the "already mirrored" index: a viewer is just
+    // a local session named stream-<...>.
+    let local_sessions: Vec<String> = results
+        .first()
+        .and_then(|(_, o)| o.sessions())
+        .map(|s| s.to_vec())
+        .unwrap_or_default();
+
+    for (host, outcome) in &results {
+        let header = match host {
+            None => "local".to_string(),
+            Some(h) => format!("{h} (ssh)"),
+        };
+        println!("─── {} ───", header);
+        match outcome {
+            ProbeOutcome::Sessions(sessions) if sessions.is_empty() => {
+                println!("  (no rmux sessions)");
+            }
+            ProbeOutcome::Sessions(sessions) => {
+                for s in sessions {
+                    let target = match host {
+                        None => omega_core::stream::StreamTarget::Local {
+                            session: s.clone(),
+                        },
+                        Some(h) => omega_core::stream::StreamTarget::Remote {
+                            host: h.clone(),
+                            session: s.clone(),
+                        },
+                    };
+                    let viewer = stream::viewer_name(&target);
+                    let mirrored = local_sessions.iter().any(|l| l == &viewer);
+                    let note = if host.is_none() && s.starts_with("stream-") {
+                        "  (a viewer)"
+                    } else if mirrored {
+                        "  (already streaming here)"
+                    } else {
+                        ""
+                    };
+                    println!("  ● {}{}", s, note);
+                }
+            }
+            other => println!("  ✗ {}", other.describe()),
+        }
+        println!();
+    }
+
+    if cfg.hosts.is_empty() {
+        println!("No ssh host aliases found in ~/.ssh/config — only this box was probed.");
+    } else if cfg.has_include {
+        println!(
+            "note: ~/.ssh/config has an Include, so aliases defined in the included \
+             files are not listed above (streaming them still works)."
+        );
+    }
+    println!("Watch one:");
+    println!("  omega stream <session>          a session on this box");
+    println!("  omega stream <host>:<session>   a session on another box");
     Ok(())
 }
 
