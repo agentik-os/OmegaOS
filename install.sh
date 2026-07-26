@@ -837,6 +837,14 @@ if [[ -f "$OMEGA_SRC/tools/zernflow/install-zernflow.sh" ]]; then
     info "ZernFlow available (opt-in) — bash tools/zernflow/install-zernflow.sh to set it up"
 fi
 
+# Lidless — macOS menu-bar toggle for lid-close sleep, so a dispatched agent
+# keeps running while the operator shuts the laptop and walks away. OPT-IN and
+# never auto-run: it writes a sudoers rule and needs an admin password, and it
+# is macOS-only. Same boundary as ZernFlow above.
+if [[ "$(uname -s)" == "Darwin" && -f "$OMEGA_SRC/tools/lidless/install-lidless.sh" ]]; then
+    info "Lidless available (opt-in) — bash tools/lidless/install-lidless.sh to set it up"
+fi
+
 # ─── Marketing Machine (R-MARKETING) — full setup, ZERO credentials ──────────
 # The machine is three things and ALL of them must survive without a repo
 # checkout: the capabilities registry (the anti-forgetting SSOT that
