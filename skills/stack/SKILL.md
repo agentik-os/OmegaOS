@@ -1,11 +1,11 @@
 ---
 name: stack
 description: >
-  Build the canonical AgentikOS app stack — Next.js + Convex + Clerk + Stripe + Stax —
-  from scratch or from a Blueprint OS blueprint folder. Pulls the live Stax checkout
-  before every scaffold (R-BLUEPRINT-STACK), vendors the panel engine, wires Convex
-  auth to Clerk, and stubs Stripe subscriptions with an explicit list of the IDs the
-  operator must provide. Use when the user says "/stack", "/omg-stack", "new app",
+  Build the canonical AgentikOS app stack — Next.js + Convex + Clerk + Stax, with Stripe
+  as an opt-in flag — from scratch or from a Blueprint OS blueprint folder. Pulls the
+  live Stax checkout before every scaffold (R-BLUEPRINT-STACK), vendors the panel engine,
+  wires Convex auth to Clerk, and (with --stripe only) stubs subscriptions with an
+  explicit list of the IDs the operator must provide. Use when the user says "/stack", "/omg-stack", "new app",
   "scaffold the stack", "build the app", "start a new OS", "nouveau projet Next Convex",
   "monte la stack", "construis l'app", "build from the blueprint", or names any subset of
   Next.js / Convex / Clerk / Stripe / Stax as the thing to set up. This is the BUILD half
@@ -30,10 +30,14 @@ source: OmegaOS — pairs with skills/blueprint-os and skills/stax
 | Front | Next.js (App Router) | The app |
 | Data + realtime | Convex | The single model. Reactive by default |
 | Auth | Clerk | Identity, organizations, roles |
-| Payment | Stripe | Subscription and one-shot |
 | AI | Claude, called from a **Convex action** | Never from the client |
 
 If a design suggests something else, the design changes, not the stack.
+
+**Stripe is opt-in, not part of the default.** Pass `--stripe` when the app actually
+charges someone. Most OS products are built and used long before they are sold, and a
+billing surface nobody calls is dead code that still demands keys, a webhook endpoint,
+and a dashboard setup. Scaffold it when it earns its place.
 
 ## Stax is pulled every single time
 
@@ -50,13 +54,14 @@ the rest of the family, and the drift is invisible until the panel grammar disag
 ## How to run it
 
 ```bash
-bash ~/.omega/skills/stack/scripts/stack-new.sh <app-name> [--blueprint <dir>] [--dir <parent>]
+bash ~/.omega/skills/stack/scripts/stack-new.sh <app-name> [--blueprint <dir>] [--dir <parent>] [--stripe]
 ```
 
 | Flag | Effect |
 |---|---|
 | `--blueprint <dir>` | Read a Blueprint OS folder: phase `09-data/schema.ts` becomes the Convex schema, phase `10-stax/panneaux.md` drives the panel registry |
 | `--dir <parent>` | Where the app is created. Defaults to `~/Station/SideBusiness` |
+| `--stripe` | **Opt-in billing.** Adds the checkout route, the webhook route, `lib/stripe.ts`, the `stripe` dependency, and the Stripe env block |
 | `--no-install` | Scaffold the files, skip `npm install` (offline / inspection) |
 
 The script is **idempotent on a fresh dir and refuses to overwrite an existing app** —
@@ -73,8 +78,9 @@ rerunning it on a live project is a destructive act, so it stops instead (R-DEST
 4. **Convex** — `convex/schema.ts` (from the blueprint if given, else the canonical
    pattern), `convex/auth.config.ts` wired to Clerk, an example query and mutation.
 5. **Clerk** — middleware, provider, and the Convex `ConvexProviderWithClerk` bridge.
-6. **Stripe** — checkout route, webhook route, and `lib/stripe.ts`. The **price IDs are
-   left as named placeholders** because only the operator can create them.
+6. **Stripe — only with `--stripe`** — checkout route, webhook route, and `lib/stripe.ts`.
+   The **price IDs are left as named placeholders** because only the operator can create
+   them. Without the flag, none of this is written and `stripe` is not installed.
 7. **`.env.example`** — every key, with who provides it and where to get it.
 8. **`NEEDS-OPERATOR.md`** — the exact list of what a human must do before the app runs.
 
@@ -84,6 +90,8 @@ claims the app runs before `npm run dev` has actually been executed.
 ---
 
 ## The Stripe IDs — read this before promising anything
+
+*Only relevant when the app was scaffolded with `--stripe`.*
 
 Stripe is the one layer that **cannot** be fully scaffolded. Products and prices live in
 the operator's Stripe account, and their IDs (`price_…`, `prod_…`) do not exist until a

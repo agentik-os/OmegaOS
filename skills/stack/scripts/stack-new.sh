@@ -23,18 +23,19 @@ c_warn(){ printf '\033[33m[stack]\033[0m %s\n' "$*"; }
 c_die(){  printf '\033[31m[stack]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── args ────────────────────────────────────────────────────────────────────────
-APP=""; BLUEPRINT=""; PARENT="$HOME/Station/SideBusiness"; DO_INSTALL=1
+APP=""; BLUEPRINT=""; PARENT="$HOME/Station/SideBusiness"; DO_INSTALL=1; WITH_STRIPE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --blueprint) BLUEPRINT="${2:-}"; shift 2;;
     --dir)       PARENT="${2:-}";    shift 2;;
+    --stripe)    WITH_STRIPE=1;      shift;;
     --no-install) DO_INSTALL=0;      shift;;
     -h|--help)   sed -n '2,12p' "$0"; exit 0;;
     -*)          c_die "unknown flag: $1";;
     *)           [[ -z "$APP" ]] && APP="$1" || c_die "unexpected arg: $1"; shift;;
   esac
 done
-[[ -n "$APP" ]] || c_die "usage: stack-new.sh <app-name> [--blueprint <dir>] [--dir <parent>] [--no-install]"
+[[ -n "$APP" ]] || c_die "usage: stack-new.sh <app-name> [--blueprint <dir>] [--dir <parent>] [--stripe] [--no-install]"
 
 # Slug: lowercase, non-alnum → dash. npm package names refuse anything else.
 SLUG="$(printf '%s' "$APP" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\+/-/g; s/^-//; s/-$//')"
@@ -211,7 +212,7 @@ TS
 c_ok "convex/ auth config + example query/mutation written"
 
 # ── 5. Clerk bridge ─────────────────────────────────────────────────────────────
-mkdir -p src/lib src/app/api/stripe/checkout src/app/api/stripe/webhook
+mkdir -p src/lib
 
 cat > src/middleware.ts <<'TS'
 import { clerkMiddleware } from "@clerk/nextjs/server";
@@ -249,7 +250,12 @@ export function Providers({ children }: { children: ReactNode }) {
 TSX
 c_ok "Clerk middleware + Convex/Clerk provider bridge written"
 
-# ── 6. Stripe (IDs deliberately left as placeholders) ───────────────────────────
+# ── 6. Stripe — OPT-IN ONLY (--stripe) ──────────────────────────────────────────
+# Billing is not part of the default stack: most OS products are built and used long
+# before they are sold, and an unused Stripe surface is dead code that still needs keys.
+# Pass --stripe when the app actually charges someone.
+if [[ "$WITH_STRIPE" -eq 1 ]]; then
+mkdir -p src/app/api/stripe/checkout src/app/api/stripe/webhook
 cat > src/lib/stripe.ts <<'TS'
 import Stripe from "stripe";
 
@@ -329,6 +335,9 @@ export async function POST(req: Request) {
 }
 TS
 c_ok "Stripe checkout + webhook routes written (price IDs = placeholders)"
+else
+  c_info "Stripe skipped (opt-in — pass --stripe when the app actually charges)"
+fi
 
 # ── 7. env + operator checklist ─────────────────────────────────────────────────
 cat > .env.example <<'ENV'
@@ -344,7 +353,14 @@ CLERK_SECRET_KEY=
 # This is that template's Issuer URL (your Frontend API URL).
 CLERK_JWT_ISSUER_DOMAIN=
 
-# ── Stripe ─────────────────────────────────────────────────────────────────────
+# ── App ────────────────────────────────────────────────────────────────────────
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+ENV
+
+if [[ "$WITH_STRIPE" -eq 1 ]]; then
+cat >> .env.example <<'ENV'
+
+# ── Stripe (this app was scaffolded with --stripe) ─────────────────────────────
 # Stripe dashboard → Developers → API keys.
 STRIPE_SECRET_KEY=
 # Stripe dashboard → Developers → Webhooks → your endpoint → signing secret.
@@ -352,10 +368,8 @@ STRIPE_WEBHOOK_SECRET=
 # Product price IDs — OPERATOR MUST CREATE THESE. Never invent a price_… value.
 STRIPE_PRICE_MONTHLY=
 STRIPE_PRICE_YEARLY=
-
-# ── App ────────────────────────────────────────────────────────────────────────
-NEXT_PUBLIC_APP_URL=http://localhost:3000
 ENV
+fi
 
 cat > NEEDS-OPERATOR.md <<MD
 # What a human must do before this app runs
@@ -387,36 +401,19 @@ npx convex env set CLERK_JWT_ISSUER_DOMAIN <your-clerk-frontend-api-url>
    everyone misses; without it Convex rejects every authenticated call)
 4. Copy that template's Issuer URL into \`CLERK_JWT_ISSUER_DOMAIN\`
 
-## 3. Stripe — the IDs
-
-The scaffold cannot create these. Products and prices live in your Stripe account
-and their IDs do not exist until you make them.
-
-1. Stripe dashboard → Products → create the product
-2. Add a **monthly** price and a **yearly** price
-3. Copy each \`price_…\` into \`STRIPE_PRICE_MONTHLY\` / \`STRIPE_PRICE_YEARLY\`
-4. Developers → API keys → \`STRIPE_SECRET_KEY\`
-5. Developers → Webhooks → add endpoint \`<your-domain>/api/stripe/webhook\`,
-   subscribe to \`checkout.session.completed\`, \`customer.subscription.updated\`,
-   \`customer.subscription.deleted\`, then copy the signing secret into
-   \`STRIPE_WEBHOOK_SECRET\`
-
-Until these are set, \`/api/stripe/checkout\` returns **501** on purpose rather than
-failing on a fake ID.
-
-## 4. Secrets location
+## 3. Secrets location
 
 Real values go in \`.env.local\` (gitignored) and are mirrored to
 \`~/.omega/secrets/${SLUG}.env\`. They never enter the repo.
 
-## 5. First run
+## 4. First run
 
 \`\`\`bash
 npm run dev        # Next.js
 npx convex dev     # Convex, in a second terminal
 \`\`\`
 
-## 6. Expected typecheck errors before step 1
+## 5. Expected typecheck errors before step 1
 
 Until \`npx convex dev\` has run once, \`convex/_generated/\` does not exist, so
 \`tsc --noEmit\` reports:
@@ -429,17 +426,41 @@ convex/items.ts: Parameter 'ctx' implicitly has an 'any' type
 This is normal, not a broken scaffold. Convex generates that folder from your schema on
 its first run, and the errors disappear. Anything *else* in the typecheck output is real.
 MD
+
+if [[ "$WITH_STRIPE" -eq 1 ]]; then
+cat >> NEEDS-OPERATOR.md <<'MD'
+
+## 6. Stripe — the IDs (scaffolded with `--stripe`)
+
+The scaffold cannot create these. Products and prices live in your Stripe account
+and their IDs do not exist until you make them.
+
+1. Stripe dashboard → Products → create the product
+2. Add a **monthly** price and a **yearly** price
+3. Copy each `price_…` into `STRIPE_PRICE_MONTHLY` / `STRIPE_PRICE_YEARLY`
+4. Developers → API keys → `STRIPE_SECRET_KEY`
+5. Developers → Webhooks → add endpoint `<your-domain>/api/stripe/webhook`,
+   subscribe to `checkout.session.completed`, `customer.subscription.updated`,
+   `customer.subscription.deleted`, then copy the signing secret into
+   `STRIPE_WEBHOOK_SECRET`
+
+Until these are set, `/api/stripe/checkout` returns **501** on purpose rather than
+failing on a fake ID.
+MD
+fi
 c_ok ".env.example + NEEDS-OPERATOR.md written"
 
 # ── 8. deps ─────────────────────────────────────────────────────────────────────
 grep -q '^\.env\.local$\|^\.env\*' .gitignore 2>/dev/null || printf '\n.env.local\n.env*.local\n' >> .gitignore
 
+DEPS=(convex @clerk/nextjs)
+[[ "$WITH_STRIPE" -eq 1 ]] && DEPS+=(stripe)
 if [[ "$DO_INSTALL" -eq 1 ]]; then
-  c_info "installing convex, clerk, stripe (this takes a minute)"
-  npm install convex @clerk/nextjs stripe 2>&1 | tail -3 || c_warn "npm install reported warnings"
+  c_info "installing ${DEPS[*]} (this takes a minute)"
+  npm install "${DEPS[@]}" 2>&1 | tail -3 || c_warn "npm install reported warnings"
   c_ok "dependencies installed"
 else
-  c_warn "--no-install: run  npm install convex @clerk/nextjs stripe  yourself"
+  c_warn "--no-install: run  npm install ${DEPS[*]}  yourself"
 fi
 
 # ── 9. blueprint carry-over ─────────────────────────────────────────────────────
@@ -458,4 +479,8 @@ git init -q 2>/dev/null || true
 printf '\n'
 c_ok "app scaffolded: $TARGET"
 c_info "Stax commit: $STAX_COMMIT"
-c_warn "READ NEEDS-OPERATOR.md — Convex, Clerk and the Stripe price IDs need a human."
+if [[ "$WITH_STRIPE" -eq 1 ]]; then
+  c_warn "READ NEEDS-OPERATOR.md — Convex, Clerk and the Stripe price IDs need a human."
+else
+  c_warn "READ NEEDS-OPERATOR.md — Convex and Clerk need a human. (Stripe: rerun with --stripe when the app charges.)"
+fi
