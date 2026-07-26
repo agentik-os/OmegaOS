@@ -37,6 +37,18 @@ scaffold() {
 #   >= 30x  a format to reskin THIS WEEK (the window is ~2 weeks)
 EOF
 
+  # --- the reels engine's IG accounts feed (G14) — seed only, never clobbered ---
+  w "$M/00-context/swipe/accounts.txt" <<EOF
+# Instagram accounts for the reels engine (tools/marketing-machine/growth/IG-REEL-LOOP.md).
+# One @handle per line, all in ONE niche. Business/Creator accounts only: the free
+# Graph rail reads public business accounts and cannot see personal ones.
+# Then:  bin/reels scan --accounts marketing/00-context/swipe/accounts.txt
+#        bin/reels score --min 10 && bin/reels hooks --top 30
+#
+# Same math as the outlier engine: lift = metric / that account's median.
+# Your own side of the loop:  bin/reels mine && bin/reels ledger
+EOF
+
   w "$M/README.md" <<EOF
 # Marketing Machine — $NAME
 

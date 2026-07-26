@@ -41,7 +41,28 @@ bin/outlier score                                         # what to copy, and ho
 ```
 
 Method, prompts, format library and the publish-and-learn loop: **`growth/OUTLIER-ENGINE.md`**.
-Scope: YouTube Shorts only. TikTok/Instagram need a paid source and are not wired yet.
+Scope: YouTube Shorts only. For Instagram, use `bin/reels` below.
+
+## The Instagram reel loop (`bin/reels`)
+
+The same research idea on Instagram, plus the half `outlier` cannot do: measuring your
+**own** account and feeding the result back into what you write next.
+
+```bash
+bin/reels doctor                                    # which rails are live today
+bin/reels scan  --accounts marketing/00-context/swipe/accounts.txt
+bin/reels score --min 10                            # lift = metric / that account's median
+bin/reels hooks --top 30                            # hook library + niche pattern leaderboard
+bin/reels mine                                      # your reels + insights (Graph API, free)
+bin/reels ledger                                    # your lift per pattern vs the niche's
+```
+
+Hooks are classified in the **same P1-P11 taxonomy** that `/reel-script` writes in and
+`/reel-lint` grades against, so a measured pattern is directly actionable. `reels doctor`
+diffs the two tables and shouts on drift. Three pluggable sources (Graph API free,
+Apify and ScrapeCreators paid); doctor reports each one live and never fakes a green.
+
+Full method, the 4 bricks and the current blockers: **`growth/IG-REEL-LOOP.md`**.
 
 ## Scaffold
 

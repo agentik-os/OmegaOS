@@ -1562,6 +1562,39 @@ EOF
     fi
 done
 
+# Install the reel skills (vendored, MIT-spirit public release from
+# github.com/smaroc/sophiene-claude-skills @aa11daa): /reel-script writes a
+# short-form face-cam script calibrated on measured viral patterns, /reel-lint
+# scores it /100 BEFORE you film. They are brick 2 ("les mains") of the
+# marketing machine's IG reel loop — see tools/marketing-machine/growth/
+# IG-REEL-LOOP.md. Zero network, zero credentials, pure-python linter.
+# Local edit vs upstream: the SKILL.md linter invocation is an ABSOLUTE path
+# (upstream ships a relative `scripts/…` that never resolves from a project cwd).
+for RSK in reel-script reel-lint; do
+    RSK_SRC="$OMEGA_SRC/skills/$RSK"
+    RSK_DST="$OMEGA_DIR/skills/$RSK"
+    if [[ -d "$RSK_SRC" ]]; then
+        mkdir -p "$RSK_DST"
+        cp -r "$RSK_SRC"/* "$RSK_DST/"
+        find "$RSK_DST" -name "*.py" -exec chmod +x {} + 2>/dev/null || true
+        RCMD="$HOME/.claude/commands"; mkdir -p "$RCMD"
+        for cmd in "$RSK" "omg-$RSK"; do
+            cat > "$RCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $RSK skill. Read and follow the complete instructions in:
+
+\`$RSK_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        ok "Reel skill installed: $RSK → ~/.omega/skills/$RSK/ (/$RSK + /omg-$RSK)"
+    else
+        info "Reel skill $RSK not found — skipping"
+    fi
+done
+
 # Install the thinking-mode micro-skills (Master-level, like /popper): /10x
 # ambition reframe, /pitch 30-second pitch, /ghost persona simulator. Mirrors
 # the maintenance loop: copy -> ~/.omega/skills/<name>/ + /<name> and

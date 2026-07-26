@@ -1396,16 +1396,16 @@ notes = "Pairs with /watch to reverse-engineer what the algorithm rewards now."
 id = "G7"
 group = "growth"
 name = "comment-to-DM funnel"
-does = "Keyword -> auto-DM lead-magnet funnel (INFO/SETUP/LINK); manufactures comments AND sends at once"
-run = "(spec — ManyChat/Replient-class automation; marketing-analysis-multiplatform.md IG-4)"
-kind = "doc"
-inputs = ["02-copy/social-content.md"]
+does = "Comment -> auto-DM lead-magnet funnel; every commenter gets the promised resource and becomes a follower"
+run = "bash tools/zernflow/install-zernflow.sh, then build the flow in the ZernFlow app"
+kind = "engine"
+inputs = ["02-copy/social-content.md", "~/.omega/secrets/zernflow.env"]
 layer = "04-publishing"
-status = "missing"
-deps = []
+status = "partial"
+deps = ["zernflow", "zernio account"]
 paid = true
 skill = ""
-notes = "The single biggest funnel unlock of 2026 — no runner yet."
+notes = "R-ZERNFLOW: the rail is ZernFlow (self-hosted open-source ManyChat alternative, vendored at tools/zernflow, dedicated Supabase mbsncijxqvawawpgjbkp), NEVER a hand-rolled DM bot. Credential present in ~/.omega/secrets/zernflow.env; the app itself is an opt-in install + deploy, so this is not live yet. Brick 4 of the IG reel loop (growth/IG-REEL-LOOP.md). The script CTA must stay keyword-free: /reel-lint scores an imposed keyword down because it depresses comment rate."
 
 [[capability]]
 id = "G8"
@@ -1616,3 +1616,87 @@ deps = []
 paid = false
 skill = ""
 notes = "v1 shipped 2026-07-03."
+
+# ---------------------------------------------------------------------------
+# IG Reel Loop (G14-G18) — the Instagram half of the research loop, added
+# 2026-07-26. G11 (outlier) answers "what shape wins on YouTube Shorts"; this
+# group answers the same on Instagram AND closes the loop back onto your own
+# account. The binding idea is the SHARED P1-P11 hook taxonomy: the eyes score
+# hooks in the exact vocabulary /reel-script writes in and /reel-lint grades.
+# Method: growth/IG-REEL-LOOP.md.
+# ---------------------------------------------------------------------------
+
+[[capability]]
+id = "G14"
+group = "growth"
+name = "reels-engine (IG research)"
+does = "Scan IG accounts of a niche -> outlier score (metric / account median) -> ranked reels worth reskinning"
+run = "tools/marketing-machine/bin/reels {doctor|scan|score|report}"
+kind = "cli"
+inputs = ["00-context/swipe/accounts.txt"]
+layer = "00-context"
+status = "partial"
+deps = ["bun", "IG_ACCESS_TOKEN | APIFY_TOKEN | SCRAPECREATORS_API_KEY"]
+paid = false
+skill = ""
+notes = "Three pluggable sources, preference order graph > apify > scrapecreators. `reels doctor` reports each rail live and never fakes one. Verified 2026-07-26: scoring/ranking/report logic runs green on fixtures; NO source live that day (no IG token yet; Apify HTTP 403 too-many-outstanding-invoices; ScrapeCreators HTTP 402 out of credits). The free Graph rail is the cheapest way back to a live scan. business_discovery gives competitors' like/comment counts but NOT play counts, so competitor scoring falls back to the engagement metric (surfaced in the output)."
+
+[[capability]]
+id = "G15"
+group = "growth"
+name = "IG own-account insights"
+does = "Your reels + real insights (views, reach, saved, shares, avg watch time) via the Instagram Graph API"
+run = "tools/marketing-machine/bin/reels mine [--limit N]"
+kind = "cli"
+inputs = ["~/.omega/secrets/instagram.env"]
+layer = "00-context"
+status = "partial"
+deps = ["bun", "IG_USER_ID", "IG_ACCESS_TOKEN"]
+paid = false
+skill = ""
+notes = "R-CLI: plain REST against graph.facebook.com, NO MCP server. Free and official. The only rail that gives RETENTION, which is the metric distribution actually keys on. Coded and gated: no IG Business token exists in ~/.omega/secrets yet, so this is not runtime-verified end to end. `reels doctor` prints the exact token procedure (Business account linked to a Page, instagram_basic + instagram_manage_insights, long-lived token)."
+
+[[capability]]
+id = "G16"
+group = "growth"
+name = "hook library (P1-P11)"
+does = "Outlier hooks classified into the 11 measured hook patterns + the niche pattern leaderboard by average lift"
+run = "tools/marketing-machine/bin/reels hooks [--top N]"
+kind = "cli"
+inputs = ["00-context/swipe/reels.json"]
+layer = "00-context"
+status = "built"
+deps = ["bun"]
+paid = false
+skill = "reel-lint"
+notes = "The taxonomy is MIRRORED from reel-lint's lint_script.py (single source of truth) and `reels doctor` diffs the two, so drift is loud instead of silent. Classification is re-derived from the caption at read time, so editing PATTERNS re-scores every feed already on disk. Verified live 2026-07-26 on fixtures: leaderboard + library written, 11 patterns in sync."
+
+[[capability]]
+id = "G17"
+group = "growth"
+name = "pattern ledger (the measurement loop)"
+does = "Your measured lift per hook pattern vs the niche's, with a verdict per pattern (double down / execution problem / stop)"
+run = "tools/marketing-machine/bin/reels ledger"
+kind = "cli"
+inputs = ["00-context/swipe/mine.json", "00-context/swipe/hooks.json"]
+layer = "00-context"
+status = "built"
+deps = ["bun"]
+paid = false
+skill = ""
+notes = "Closes BACKLOG P2-4 (pattern-ledger metrics loop). The two-column comparison is the point: a pattern that wins in the niche but not for you is an EXECUTION problem, not a format problem, which stops the classic mistake of dropping a working format after two bad takes. Verified live 2026-07-26 on fixtures."
+
+[[capability]]
+id = "G18"
+group = "growth"
+name = "reel script + pre-shoot lint"
+does = "Writes a face-cam reel script on a measured hook pattern, then scores it /100 BEFORE filming (ship only at green >= 85)"
+run = "/reel-script un reel sur <sujet>  then  /reel-lint le-script.md"
+kind = "skill"
+inputs = ["00-context/swipe/hooks.json"]
+layer = "02-copy"
+status = "built"
+deps = ["python3"]
+paid = false
+skill = "reel-script, reel-lint"
+notes = "Vendored from github.com/smaroc/sophiene-claude-skills @aa11daa (reviewed: no network, no credentials, no exec). Brick 2 of the IG reel loop. Local edit: absolute linter path in SKILL.md (upstream ships a relative path that never resolves from a project cwd). Verified live 2026-07-26: linter scored a test script 86/100, exit 0. Shipped by install.sh + vendored under skills/."

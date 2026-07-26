@@ -35,6 +35,8 @@ engine exists — otherwise it would be a command with no engine behind it.
 - P2-1 — portable voice/audio helper (ElevenLabs TTS + music ducking) as a lib.
 - P2-2 — HeyGen avatar runner (capabilities.toml `U2` = missing).
 - P2-3 — decide the legacy outreach engine (`~/Station/Marketing/engine/`).
-- P2-4 — `pattern-ledger.md` metrics loop.
+- ~~P2-4 — `pattern-ledger.md` metrics loop.~~ **DONE 2026-07-26** — `bin/reels ledger`
+  (capabilities.toml `G17`) joins your measured reels against the niche leaderboard and
+  emits a verdict per hook pattern. Method: `growth/IG-REEL-LOOP.md`.
 - P3-1 — Reddit-native module in social-content.
 - G7 — comment-to-DM funnel runner (capabilities.toml `G7` = missing).
