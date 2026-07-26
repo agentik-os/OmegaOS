@@ -394,8 +394,7 @@ fn last_error_line(stderr: &str) -> String {
     stderr
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .next_back()
+        .rfind(|l| !l.is_empty())
         .unwrap_or("(no error output)")
         .to_string()
 }
