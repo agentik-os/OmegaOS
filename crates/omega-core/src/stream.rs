@@ -54,7 +54,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
-use crate::session::sanitize_session_name;
+use crate::session::{sanitize_session_name, MAX_SESSION_NAME_LEN};
 
 /// Default seconds between screen snapshots.
 pub const DEFAULT_INTERVAL_SECS: u32 = 3;
@@ -229,24 +229,282 @@ pub fn is_safe_coordinate(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// The viewer session name for a target.
-///
-/// `local` gives `stream-<session>`; a remote gives `stream-<host>-<session>`.
+/// Prefix every viewer name carries, and the marker `omega stream list` reads.
+const VIEWER_PREFIX: &str = "stream-";
+
+/// Length of the disambiguating fingerprint. Base-36 over 6 characters is ~2.2
+/// billion values, against a population of at most a few dozen live viewers.
+const FINGERPRINT_LEN: usize = 6;
+
+/// The name a target gets when nothing is ambiguous: exactly the documented
+/// `stream-<session>` / `stream-<host>-<session>` contract.
 ///
 /// Both `:` and `.` are neutralized BEFORE sanitizing, because rmux does not
 /// reject them, it silently REWRITES them to `_` (verified: a session created
 /// as `a.b` comes back as `a_b`). A name we compute but rmux does not key on
 /// would break `has-session` idempotency and attach, so the name must already
 /// be one rmux keeps verbatim.
-pub fn viewer_name(target: &StreamTarget) -> String {
+fn plain_viewer_name(target: &StreamTarget) -> String {
     let raw = match target {
-        StreamTarget::Local { session } => format!("stream-{session}"),
-        StreamTarget::Remote { host, session } => format!("stream-{host}-{session}"),
+        StreamTarget::Local { session } => format!("{VIEWER_PREFIX}{session}"),
+        StreamTarget::Remote { host, session } => format!("{VIEWER_PREFIX}{host}-{session}"),
     };
     // Space, not '-': sanitize collapses any run of disallowed characters into
     // a single '-', so this avoids "a--b" on an already-hyphenated coordinate.
     let neutral = raw.replace([':', '.'], " ");
     sanitize_session_name(&neutral)
+}
+
+/// Is the plain name a FAITHFUL encoding of this coordinate — one that no other
+/// coordinate could have produced?
+///
+/// The viewer name is the identity of the mirror, so it has to be reversible.
+/// Two mechanisms used to destroy that, and both are decidable from the target
+/// alone:
+///
+/// * FOLDING. `sanitize_session_name` collapses anything outside the slug
+///   alphabet to `-`, so `box.local` and `box-local` land on one name.
+/// * TRUNCATION at [`MAX_SESSION_NAME_LEN`]. Reproduced live: two 43-character
+///   sessions differing only in the last character produced ONE viewer, and the
+///   operator was told they were watching B while looking at A.
+///
+/// Plus one that is decidable for the remote form: a host containing `-` makes
+/// the host/session boundary unreadable (`stream-a-b-c` is `a` + `b-c` and
+/// `a-b` + `c` at once).
+///
+/// Comparing against the un-sanitized composition catches folding and
+/// truncation in one test: if sanitizing changed anything at all, the plain
+/// name is not a faithful encoding and the fingerprint takes over.
+fn encodes_faithfully(target: &StreamTarget, plain: &str) -> bool {
+    let verbatim = match target {
+        StreamTarget::Local { session } => format!("{VIEWER_PREFIX}{session}"),
+        StreamTarget::Remote { host, session } => {
+            // A dashed host cannot be told from a dashed session afterwards.
+            if host.contains('-') {
+                return false;
+            }
+            format!("{VIEWER_PREFIX}{host}-{session}")
+        }
+    };
+    plain == verbatim
+}
+
+/// A short, stable, machine-independent fingerprint of a coordinate.
+///
+/// FNV-1a rather than [`std::collections::hash_map::DefaultHasher`] on purpose:
+/// the std hasher's output is explicitly not guaranteed stable across Rust
+/// releases, and a viewer name that changes under the operator when they
+/// upgrade the toolchain is a name that finds nothing.
+fn fingerprint(label: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in label.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    const ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+    let mut out = [b'0'; FINGERPRINT_LEN];
+    for slot in out.iter_mut().rev() {
+        *slot = ALPHABET[(hash % 36) as usize];
+        hash /= 36;
+    }
+    String::from_utf8(out.to_vec()).expect("the alphabet is ascii")
+}
+
+/// The unambiguous fallback name: the plain name, cut to make room, plus a
+/// fingerprint of [`StreamTarget::label`].
+///
+/// `label()` is the coordinate exactly as the operator wrote it, and it is
+/// injective over valid targets (a session name may not contain `:`, so
+/// `host:session` can never be a local session name). Two different sources
+/// therefore never share a fingerprinted name.
+pub fn fingerprinted_viewer_name(target: &StreamTarget) -> String {
+    let plain = plain_viewer_name(target);
+    let head_budget = MAX_SESSION_NAME_LEN - FINGERPRINT_LEN - 1;
+    // `plain` is ASCII by construction (sanitize guarantees it), so a byte cut
+    // is a character cut.
+    let head = plain
+        .get(..head_budget)
+        .unwrap_or(&plain)
+        .trim_end_matches(['-', '.']);
+    format!("{head}-{}", fingerprint(&target.label()))
+}
+
+/// The viewer session name for a target.
+///
+/// `local` gives `stream-<session>`, a remote gives `stream-<host>-<session>`,
+/// and anything the plain form cannot encode faithfully (see
+/// [`encodes_faithfully`]) gets `<cut>-<fingerprint>` instead. The documented
+/// forms are unchanged for every coordinate that is already a clean, in-budget
+/// slug, which is the overwhelming majority and every live viewer on this box.
+///
+/// ONE structural overlap survives this function, deliberately: a local session
+/// literally named `<alias>-<session>` composes to the same plain name as the
+/// remote coordinate `<alias>:<session>`. Removing it by name alone would mean
+/// fingerprinting one WHOLE family (every local, or every remote), renaming
+/// viewers that are correct today and contradicting the `stream-<host>-<session>`
+/// contract in R-STREAM. It is closed one layer up instead, by
+/// [`choose_viewer`], which reads what a live viewer is ACTUALLY streaming and
+/// moves to the fingerprinted name on a mismatch — so the two sources still get
+/// two viewers, and neither is ever shown under the other's label.
+pub fn viewer_name(target: &StreamTarget) -> String {
+    let plain = plain_viewer_name(target);
+    if encodes_faithfully(target, &plain) {
+        plain
+    } else {
+        fingerprinted_viewer_name(target)
+    }
+}
+
+/// What a live session standing on a candidate viewer name turns out to be.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerSlot {
+    /// No session under that name.
+    Free,
+    /// A viewer, and this is the coordinate it is really pulling — read from
+    /// the command rmux started it with, never inferred from its name.
+    Mirroring(StreamTarget),
+    /// A session exists under that name and it is not a viewer we can read
+    /// (an operator's own session, or a viewer started by an older build).
+    Taken,
+}
+
+impl ViewerSlot {
+    /// Is this slot already the mirror we were about to create?
+    pub fn mirrors(&self, target: &StreamTarget) -> bool {
+        matches!(self, ViewerSlot::Mirroring(t) if t == target)
+    }
+
+    /// What it mirrors, when it mirrors anything.
+    pub fn target(&self) -> Option<&StreamTarget> {
+        match self {
+            ViewerSlot::Mirroring(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// Which viewer session `omega stream <target>` should end up attached to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ViewerChoice {
+    /// A viewer for exactly this target is already running.
+    Reuse(String),
+    /// Nothing is streaming this target yet; create it under this name.
+    Create(String),
+    /// Both candidate names are held by something else. Refuse rather than
+    /// attach the operator to a mirror of a different session.
+    Conflict {
+        name: String,
+        held_by: Option<StreamTarget>,
+    },
+}
+
+impl ViewerChoice {
+    /// The viewer session name this choice lands on, if any.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            ViewerChoice::Reuse(n) | ViewerChoice::Create(n) => Some(n),
+            ViewerChoice::Conflict { .. } => None,
+        }
+    }
+}
+
+/// Decide between reusing, creating, and refusing, given what each candidate
+/// name currently holds. Pure, so the whole decision table is unit-testable
+/// without an rmux server.
+///
+/// `preferred` is the state of [`viewer_name`]; `fallback` is the state of
+/// [`fingerprinted_viewer_name`] and is only consulted when the preferred name
+/// is held by something that is not this target.
+pub fn choose_viewer(
+    target: &StreamTarget,
+    preferred: &ViewerSlot,
+    fallback: &ViewerSlot,
+) -> ViewerChoice {
+    let name = viewer_name(target);
+    match preferred {
+        ViewerSlot::Free => return ViewerChoice::Create(name),
+        slot if slot.mirrors(target) => return ViewerChoice::Reuse(name),
+        _ => {}
+    }
+
+    // The preferred name is taken by a DIFFERENT stream. This is the live
+    // failure F-002 reproduced: the old code printed "Already streaming <B>"
+    // and attached the operator to A. Move to a name only this coordinate can
+    // produce.
+    let alt = fingerprinted_viewer_name(target);
+    if alt == name {
+        // Already the fingerprinted form, so there is no further escape: only a
+        // fingerprint collision or a foreign session squatting that exact name
+        // gets here. Say so instead of pretending.
+        return ViewerChoice::Conflict {
+            name,
+            held_by: preferred.target().cloned(),
+        };
+    }
+    match fallback {
+        ViewerSlot::Free => ViewerChoice::Create(alt),
+        slot if slot.mirrors(target) => ViewerChoice::Reuse(alt),
+        other => ViewerChoice::Conflict {
+            name: alt,
+            held_by: other.target().cloned(),
+        },
+    }
+}
+
+/// Recover the coordinate a viewer is streaming from the command it was started
+/// with (`<script> <target> <session> <interval> <lines>` — the seam contract).
+///
+/// Returns `None` for anything that is not that command, which is the safe
+/// direction: an unreadable session is treated as occupied, never as a mirror
+/// of what its name suggests.
+pub fn parse_viewer_command(cmd: &str) -> Option<StreamTarget> {
+    let mut tokens = cmd.split_whitespace();
+    let script = tokens.next()?;
+    if !script.ends_with("omega-stream.sh") {
+        return None;
+    }
+    let host_arg = tokens.next()?;
+    let session = tokens.next()?;
+    if !is_safe_coordinate(session) {
+        return None;
+    }
+    if host_arg == "local" {
+        Some(StreamTarget::Local {
+            session: session.to_string(),
+        })
+    } else if is_safe_coordinate(host_arg) {
+        Some(StreamTarget::Remote {
+            host: host_arg.to_string(),
+            session: session.to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+/// Parse `rmux list-panes -a -F '#S|#{pane_start_command}'` into the live
+/// viewers and what each one is really streaming.
+///
+/// This is the honest "already mirrored" index. Matching on the NAME instead
+/// (what `omega stream list` did) marks two colliding sources as mirrored while
+/// only one viewer exists.
+pub fn parse_viewer_index(listing: &str) -> Vec<(String, StreamTarget)> {
+    let mut out = Vec::new();
+    for line in listing.lines() {
+        let Some((name, cmd)) = line.split_once('|') else {
+            continue;
+        };
+        let name = name.trim();
+        if !name.starts_with(VIEWER_PREFIX) {
+            continue;
+        }
+        if let Some(target) = parse_viewer_command(cmd.trim()) {
+            if !out.iter().any(|(n, _): &(String, StreamTarget)| n == name) {
+                out.push((name.to_string(), target));
+            }
+        }
+    }
+    out
 }
 
 /// Absolute rmux binary (lesson 4: rmux is NOT on the non-interactive PATH).
@@ -467,6 +725,75 @@ pub async fn session_exists(name: &str) -> bool {
     }
 }
 
+/// The command rmux started a session with, or `None` when there is no such
+/// session (or rmux cannot tell us).
+///
+/// `list-panes -F '#{pane_start_command}'` is the only thing that knows what a
+/// viewer is REALLY pulling. Verified live:
+/// `stream-zzv-src -> /home/vibe/.omega/bin/omega-stream.sh local zzv-src 2 60`.
+async fn session_start_command(name: &str) -> Option<String> {
+    let mut cmd = tokio::process::Command::new(rmux_bin());
+    cmd.args(["list-panes", "-t", name, "-F", "#{pane_start_command}"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let out = match tokio::time::timeout(PROBE_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => out,
+        _ => return None,
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(str::to_string)
+}
+
+/// What is standing on this viewer name right now.
+pub async fn viewer_slot(name: &str) -> ViewerSlot {
+    if !session_exists(name).await {
+        return ViewerSlot::Free;
+    }
+    match session_start_command(name).await.as_deref() {
+        Some(cmd) => match parse_viewer_command(cmd) {
+            Some(target) => ViewerSlot::Mirroring(target),
+            None => ViewerSlot::Taken,
+        },
+        None => ViewerSlot::Taken,
+    }
+}
+
+/// Pick the viewer session for a target, VERIFYING that anything we reuse is
+/// really streaming it.
+///
+/// The fallback name is probed only when the preferred one is held by something
+/// else, so the common path still costs a single `has-session`.
+pub async fn resolve_viewer(target: &StreamTarget) -> ViewerChoice {
+    let preferred = viewer_slot(&viewer_name(target)).await;
+    let fallback = if matches!(preferred, ViewerSlot::Free) || preferred.mirrors(target) {
+        // Unused by choose_viewer on these two branches; never probed.
+        ViewerSlot::Free
+    } else {
+        viewer_slot(&fingerprinted_viewer_name(target)).await
+    };
+    choose_viewer(target, &preferred, &fallback)
+}
+
+/// Every live viewer on this box and the coordinate it is really streaming.
+///
+/// One rmux call for the whole index. An empty result means "nothing readable",
+/// never "nothing mirrored", so callers must not treat it as proof.
+pub async fn live_viewer_index() -> Vec<(String, StreamTarget)> {
+    let mut cmd = tokio::process::Command::new(rmux_bin());
+    cmd.args(["list-panes", "-a", "-F", "#S|#{pane_start_command}"])
+        .stdin(std::process::Stdio::null())
+        .kill_on_drop(true);
+    match tokio::time::timeout(PROBE_TIMEOUT, cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => {
+            parse_viewer_index(&String::from_utf8_lossy(&out.stdout))
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Create the detached viewer session that runs the pull loop.
 ///
 /// Verifies afterwards that a session under exactly this name exists: rmux
@@ -675,11 +1002,16 @@ Host matrix
         // rmux does not refuse '.' or ':', it silently rewrites them to '_'
         // (verified live). A name rmux would rewrite is a name we could not
         // then find with has-session, so it must not survive this function.
+        // The dotted host is ALSO a folding collision (`matrix.tail.ts.net` and
+        // `matrix-tail-ts-net` fold together), so it earns a fingerprint.
         let name = viewer_name(&StreamTarget::Remote {
             host: "matrix.tail.ts.net".to_string(),
             session: "MAC-STREAM".to_string(),
         });
-        assert_eq!(name, "stream-matrix-tail-ts-net-MAC-STREAM");
+        assert!(
+            name.starts_with("stream-matrix-tail-ts-net-MAC-STREAM-"),
+            "the readable form is kept, plus what makes it unambiguous: {name}"
+        );
         for n in [
             viewer_name(&parse_target("matrix:MAC-STREAM")),
             viewer_name(&StreamTarget::Local {
@@ -703,8 +1035,387 @@ Host matrix
             host: "box-1".to_string(),
             session: "a.b".to_string(),
         });
-        assert_eq!(n, "stream-box-1-a-b");
-        assert!(!n.contains("--"));
+        assert!(n.starts_with("stream-box-1-a-b-"), "readable stem kept: {n}");
+        assert!(!n.contains("--"), "sanitize must not leave a doubled separator: {n}");
+    }
+
+    // ── F-002 · the viewer name is the identity of the mirror ────────────────
+    //
+    // Every test below is a defect that was reproduced end to end: the operator
+    // asked for B, was told they got B, and was shown A.
+
+    /// The live reproduction, verbatim: two real sessions, 43 characters each,
+    /// differing only in the last character. `stream-` + 43 overflows the
+    /// 48-character cap, so the old code truncated both onto ONE name.
+    #[test]
+    fn viewer_name_survives_truncation_at_the_cap() {
+        let a = parse_target("audit-stream-collision-probe-session-name-A");
+        let b = parse_target("audit-stream-collision-probe-session-name-B");
+        let (na, nb) = (viewer_name(&a), viewer_name(&b));
+
+        assert_ne!(
+            na, nb,
+            "two different sources must never share one viewer name"
+        );
+        for n in [&na, &nb] {
+            assert!(
+                n.len() <= MAX_SESSION_NAME_LEN,
+                "a name over the cap is a name rmux will truncate again: {n} ({})",
+                n.len()
+            );
+            assert!(n.starts_with("stream-"), "viewer names stay recognizable: {n}");
+        }
+        // The old behaviour, pinned so a regression is unmistakable.
+        assert_ne!(
+            na, "stream-audit-stream-collision-probe-session-name",
+            "this is the truncated name both sources used to collapse onto"
+        );
+    }
+
+    /// Folding collision: everything outside the slug alphabet becomes '-', so
+    /// `box.local` and `box-local` used to compose the same name.
+    #[test]
+    fn viewer_name_survives_character_folding() {
+        let pairs = [
+            (
+                StreamTarget::Local {
+                    session: "box.local".to_string(),
+                },
+                StreamTarget::Local {
+                    session: "box-local".to_string(),
+                },
+            ),
+            (
+                StreamTarget::Remote {
+                    host: "matrix.tail.ts.net".to_string(),
+                    session: "MAC-STREAM".to_string(),
+                },
+                StreamTarget::Remote {
+                    host: "matrix-tail-ts-net".to_string(),
+                    session: "MAC-STREAM".to_string(),
+                },
+            ),
+        ];
+        for (a, b) in pairs {
+            assert_ne!(
+                viewer_name(&a),
+                viewer_name(&b),
+                "{} and {} fold onto one name",
+                a.label(),
+                b.label()
+            );
+        }
+    }
+
+    /// A dashed HOST makes the boundary unreadable: `stream-a-b-c` is both
+    /// `a` + `b-c` and `a-b` + `c`.
+    #[test]
+    fn viewer_name_survives_an_ambiguous_host_boundary() {
+        let split_left = StreamTarget::Remote {
+            host: "a-b".to_string(),
+            session: "c".to_string(),
+        };
+        let split_right = StreamTarget::Remote {
+            host: "a".to_string(),
+            session: "b-c".to_string(),
+        };
+        assert_ne!(viewer_name(&split_left), viewer_name(&split_right));
+    }
+
+    /// The documented contract is NOT paid for by the fix: every coordinate
+    /// that is already a clean, in-budget slug keeps the exact name it has
+    /// today, including every viewer live on this box when the fix shipped.
+    #[test]
+    fn viewer_name_keeps_the_documented_form_for_clean_coordinates() {
+        for (target, expected) in [
+            ("oracle-OmegaOS", "stream-oracle-OmegaOS"),
+            ("matrix:MAC-STREAM", "stream-matrix-MAC-STREAM"),
+            ("matrix:MBC-STREAM", "stream-matrix-MBC-STREAM"),
+            (
+                "moonbasecapital:MoonBaseCapital-claude",
+                "stream-moonbasecapital-MoonBaseCapital-claude",
+            ),
+            ("zzv-src", "stream-zzv-src"),
+        ] {
+            assert_eq!(
+                viewer_name(&parse_target(target)),
+                expected,
+                "a clean coordinate must not be renamed by the collision fix"
+            );
+        }
+    }
+
+    /// The fingerprint is part of a session NAME: if it moves, every viewer it
+    /// named becomes unfindable. Pinned so a hash change cannot be silent.
+    #[test]
+    fn the_fingerprint_is_stable_and_slug_safe() {
+        let name = viewer_name(&parse_target(
+            "audit-stream-collision-probe-session-name-A",
+        ));
+        assert_eq!(name, "stream-audit-stream-collision-probe-sessi-w2d5nm");
+        assert_eq!(fingerprint("matrix:MAC-STREAM"), "brtzw8");
+        assert_eq!(fingerprint(""), "j4ux45");
+        for label in ["a", "matrix:MAC-STREAM", "oracle-OmegaOS", "Camélia build"] {
+            let fp = fingerprint(label);
+            assert_eq!(fp.len(), FINGERPRINT_LEN);
+            assert!(
+                fp.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+                "a fingerprint reaches rmux inside a session name: {fp}"
+            );
+        }
+    }
+
+    /// Sweep: nothing in a deliberately nasty population may share a name.
+    #[test]
+    fn viewer_names_are_injective_over_a_hostile_population() {
+        let targets = [
+            parse_target("a"),
+            parse_target("a-b"),
+            parse_target("a.b"),
+            parse_target("a_b"),
+            parse_target("host:a"),
+            parse_target("host:a-b"),
+            parse_target("host-x:a"),
+            parse_target("host:a.b"),
+            parse_target(&"x".repeat(60)),
+            parse_target(&format!("{}A", "x".repeat(59))),
+            parse_target(&format!("{}B", "x".repeat(59))),
+            parse_target("audit-stream-collision-probe-session-name-A"),
+            parse_target("audit-stream-collision-probe-session-name-B"),
+            parse_target("Camélia build"),
+            parse_target("Camelia-build"),
+        ];
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for t in &targets {
+            let name = viewer_name(t);
+            assert!(
+                name.len() <= MAX_SESSION_NAME_LEN,
+                "{name} is longer than rmux will keep"
+            );
+            if let Some((other, _)) = seen.iter().find(|(_, n)| n == &name) {
+                panic!("{} and {} collide on {name}", other, t.label());
+            }
+            seen.push((t.label(), name));
+        }
+    }
+
+    /// The one overlap a name-only scheme cannot remove (a local session
+    /// literally named `<alias>-<session>`), pinned as a KNOWN property so it
+    /// can never be mistaken for an accident — and proven closed one layer up
+    /// by `choose_viewer` in the test that follows.
+    #[test]
+    fn the_local_versus_remote_overlap_is_known_and_resolved_above() {
+        let local = parse_target("matrix-MAC-STREAM");
+        let remote = parse_target("matrix:MAC-STREAM");
+        assert_eq!(
+            viewer_name(&local),
+            viewer_name(&remote),
+            "if this ever differs, the comment on viewer_name is out of date"
+        );
+
+        // A viewer for the LOCAL session is already up under that shared name.
+        let taken = ViewerSlot::Mirroring(local.clone());
+        let choice = choose_viewer(&remote, &taken, &ViewerSlot::Free);
+        let name = choice.name().expect("the remote still gets a viewer");
+        assert_ne!(
+            name,
+            viewer_name(&local),
+            "the remote must NOT be handed the local session's mirror"
+        );
+        assert_eq!(choice, ViewerChoice::Create(name.to_string()));
+    }
+
+    // ── F-002 · "reusing it" is a claim about the SOURCE, not the name ───────
+
+    #[test]
+    fn choose_viewer_reuses_only_a_viewer_of_the_same_source() {
+        let t = parse_target("matrix:MAC-STREAM");
+        assert_eq!(
+            choose_viewer(&t, &ViewerSlot::Mirroring(t.clone()), &ViewerSlot::Free),
+            ViewerChoice::Reuse("stream-matrix-MAC-STREAM".to_string()),
+            "the same source under the same name is the whole point of idempotency"
+        );
+        assert_eq!(
+            choose_viewer(&t, &ViewerSlot::Free, &ViewerSlot::Free),
+            ViewerChoice::Create("stream-matrix-MAC-STREAM".to_string())
+        );
+    }
+
+    #[test]
+    fn choose_viewer_never_reuses_a_viewer_of_a_different_source() {
+        // The shape of the live repro, in the one form that still reaches a
+        // shared name after the naming fix: something else is already standing
+        // on the name this coordinate composes to — here the local session that
+        // looks exactly like the remote coordinate. It could equally be a viewer
+        // left behind by a pre-fix build under a truncated name.
+        let wanted = parse_target("matrix:MAC-STREAM");
+        let showing = parse_target("matrix-MAC-STREAM");
+        assert_eq!(viewer_name(&wanted), viewer_name(&showing), "premise");
+
+        let choice = choose_viewer(
+            &wanted,
+            &ViewerSlot::Mirroring(showing.clone()),
+            &ViewerSlot::Free,
+        );
+        match &choice {
+            ViewerChoice::Create(name) => {
+                assert_ne!(
+                    name,
+                    &viewer_name(&showing),
+                    "that name is rendering the OTHER source"
+                );
+                assert_eq!(name, &fingerprinted_viewer_name(&wanted));
+            }
+            other => panic!("the remote must get its own viewer, not {other:?}"),
+        }
+        assert!(
+            !matches!(choice, ViewerChoice::Reuse(_)),
+            "'reusing it' over another session's mirror is the F-002 defect"
+        );
+    }
+
+    /// When the name a target composes to is ALREADY its fingerprinted form,
+    /// there is no second name to fall back to. Refusing is the only honest
+    /// answer left: attaching would show the operator someone else's session.
+    #[test]
+    fn choose_viewer_has_no_second_escape_from_a_fingerprinted_name() {
+        let t = parse_target("audit-stream-collision-probe-session-name-B");
+        assert_eq!(
+            viewer_name(&t),
+            fingerprinted_viewer_name(&t),
+            "premise: an over-long coordinate is fingerprinted from the start"
+        );
+        let squatter = parse_target("something-else");
+        assert_eq!(
+            choose_viewer(&t, &ViewerSlot::Mirroring(squatter.clone()), &ViewerSlot::Free),
+            ViewerChoice::Conflict {
+                name: viewer_name(&t),
+                held_by: Some(squatter),
+            }
+        );
+    }
+
+    #[test]
+    fn choose_viewer_treats_an_unreadable_session_as_occupied() {
+        let t = parse_target("oracle-OmegaOS");
+        // A session under that name whose command we cannot parse could be
+        // anything, including the operator's own work. Never adopt it.
+        let choice = choose_viewer(&t, &ViewerSlot::Taken, &ViewerSlot::Free);
+        assert_eq!(
+            choice,
+            ViewerChoice::Create(fingerprinted_viewer_name(&t)),
+            "an unreadable holder is stepped around, never reused"
+        );
+    }
+
+    #[test]
+    fn choose_viewer_refuses_rather_than_stealing_when_both_names_are_held() {
+        let t = parse_target("oracle-OmegaOS");
+        let other = parse_target("something-else");
+        let choice = choose_viewer(
+            &t,
+            &ViewerSlot::Mirroring(other.clone()),
+            &ViewerSlot::Mirroring(other.clone()),
+        );
+        assert_eq!(
+            choice,
+            ViewerChoice::Conflict {
+                name: fingerprinted_viewer_name(&t),
+                held_by: Some(other),
+            },
+            "with no free name left, refusing beats attaching to the wrong mirror"
+        );
+        assert!(choice.name().is_none(), "a conflict names no viewer to attach");
+    }
+
+    #[test]
+    fn choose_viewer_reuses_the_fingerprinted_viewer_when_that_is_the_one_running() {
+        // Second `omega stream matrix:MAC-STREAM` after the first one had to
+        // step aside: it must land back on ITS viewer, not create a third.
+        let t = parse_target("matrix:MAC-STREAM");
+        let other = parse_target("matrix-MAC-STREAM");
+        let choice = choose_viewer(
+            &t,
+            &ViewerSlot::Mirroring(other),
+            &ViewerSlot::Mirroring(t.clone()),
+        );
+        assert_eq!(
+            choice,
+            ViewerChoice::Reuse(fingerprinted_viewer_name(&t)),
+            "idempotency must survive the fallback, or every run adds a puller"
+        );
+    }
+
+    // ── F-002 · reading what a viewer is really pulling ──────────────────────
+
+    #[test]
+    fn a_viewer_command_round_trips_back_to_its_target() {
+        for label in ["oracle-OmegaOS", "matrix:MAC-STREAM"] {
+            let t = parse_target(label);
+            let cmd = viewer_command(&t, 3, 120);
+            assert_eq!(
+                parse_viewer_command(&cmd),
+                Some(t),
+                "the seam contract is <script> <target> <session> <interval> <lines>: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_viewer_command_refuses_anything_that_is_not_the_loop() {
+        for cmd in [
+            "",
+            "bash -c 'claude --dangerously-skip-permissions'",
+            "/home/vibe/.omega/bin/omega-stream.sh",
+            "/home/vibe/.omega/bin/omega-stream.sh local",
+            "/home/vibe/.omega/bin/other-script.sh local a 3 120",
+            "/home/vibe/.omega/bin/omega-stream.sh local a;id 3 120",
+        ] {
+            assert_eq!(
+                parse_viewer_command(cmd),
+                None,
+                "an unparseable session must be treated as occupied, not adopted: {cmd:?}"
+            );
+        }
+    }
+
+    /// Fixture captured from the live rmux server
+    /// (`rmux list-panes -a -F '#S|#{pane_start_command}'`), including the
+    /// percent-encoded shape rmux uses for a command with shell metacharacters.
+    const VIEWER_INDEX_FIXTURE: &str = concat!(
+        "oracle-OmegaOS|bash -c %27claude --dangerously-skip-permissions%27\n",
+        "stream-matrix-MAC-STREAM|/home/vibe/.omega/bin/omega-stream.sh matrix MAC-STREAM 3 120\n",
+        "stream-zzv-src|/home/vibe/.omega/bin/omega-stream.sh local zzv-src 2 60\n",
+        "stream-broken|bash\n",
+        "\n",
+        "not-a-viewer|/home/vibe/.omega/bin/omega-stream.sh local hidden 3 120\n",
+    );
+
+    #[test]
+    fn the_mirror_index_reports_what_each_viewer_actually_pulls() {
+        let index = parse_viewer_index(VIEWER_INDEX_FIXTURE);
+        assert_eq!(
+            index,
+            vec![
+                (
+                    "stream-matrix-MAC-STREAM".to_string(),
+                    parse_target("matrix:MAC-STREAM")
+                ),
+                ("stream-zzv-src".to_string(), parse_target("zzv-src")),
+            ],
+            "only readable stream-* viewers count, and each maps to its REAL source"
+        );
+
+        // The point of the index: a source is "already mirrored" only when a
+        // viewer is really pulling it, whatever that viewer happens to be named.
+        let local_lookalike = parse_target("matrix-MAC-STREAM");
+        assert!(
+            !index.iter().any(|(_, t)| t == &local_lookalike),
+            "the colliding LOCAL session must not be reported as mirrored: only the remote is"
+        );
+        assert!(index
+            .iter()
+            .any(|(_, t)| t == &parse_target("matrix:MAC-STREAM")));
     }
 
     #[test]

@@ -6059,23 +6059,44 @@ async fn cmd_stream(target: &str, detach: bool, interval: u32, lines: u32) -> Re
 
     // IDEMPOTENT — one viewer per stream, always. Two pullers on one stream
     // interleave their snapshots into unreadable garbage.
-    let viewer = stream::viewer_name(&t);
-    if stream::session_exists(&viewer).await {
-        println!(
-            "Already streaming {} in session {} — reusing it (a second puller would interleave).",
-            t.label(),
-            viewer
-        );
-    } else {
-        stream::create_viewer(&viewer, &t, interval, lines).await?;
-        println!(
-            "Streaming {} → session {} (rendered snapshot every {}s, {} lines).",
-            t.label(),
-            viewer,
-            interval,
-            lines
-        );
-    }
+    //
+    // "Already streaming" is a claim about the SOURCE, so it is only ever made
+    // after reading what the live viewer is actually pulling (resolve_viewer
+    // parses its start command). Matching on the name alone is what once told
+    // the operator they were watching B while the viewer rendered A.
+    let viewer = match stream::resolve_viewer(&t).await {
+        stream::ViewerChoice::Reuse(name) => {
+            println!(
+                "Already streaming {} in session {} — reusing it (a second puller would interleave).",
+                t.label(),
+                name
+            );
+            name
+        }
+        stream::ViewerChoice::Create(name) => {
+            stream::create_viewer(&name, &t, interval, lines).await?;
+            println!(
+                "Streaming {} → session {} (rendered snapshot every {}s, {} lines).",
+                t.label(),
+                name,
+                interval,
+                lines
+            );
+            name
+        }
+        stream::ViewerChoice::Conflict { name, held_by } => {
+            let holds = match held_by {
+                Some(other) => format!("it is streaming {} instead", other.label()),
+                None => "it is not a viewer we can read".to_string(),
+            };
+            anyhow::bail!(
+                "the viewer name {name} is already taken and {holds}\n  \
+                 (nothing was created — attaching you to another session's mirror is \
+                 exactly the failure this check exists to prevent)\n  \
+                 free it with: omega kill {name}"
+            );
+        }
+    };
 
     stream_attach(&viewer, detach)
 }
@@ -6144,13 +6165,10 @@ async fn cmd_stream_list() -> Result<()> {
         results.push((host, outcome));
     }
 
-    // Local sessions double as the "already mirrored" index: a viewer is just
-    // a local session named stream-<...>.
-    let local_sessions: Vec<String> = results
-        .first()
-        .and_then(|(_, o)| o.sessions())
-        .map(|s| s.to_vec())
-        .unwrap_or_default();
+    // The "already mirrored" index, read from what each live viewer is really
+    // pulling rather than from its name. Name matching marked BOTH sources of a
+    // colliding pair as mirrored while only one viewer existed.
+    let mirrors = stream::live_viewer_index().await;
 
     for (host, outcome) in &results {
         let header = match host {
@@ -6173,8 +6191,7 @@ async fn cmd_stream_list() -> Result<()> {
                             session: s.clone(),
                         },
                     };
-                    let viewer = stream::viewer_name(&target);
-                    let mirrored = local_sessions.iter().any(|l| l == &viewer);
+                    let mirrored = mirrors.iter().any(|(_, t)| t == &target);
                     let note = if host.is_none() && s.starts_with("stream-") {
                         "  (a viewer)"
                     } else if mirrored {

@@ -28,6 +28,14 @@
 #     $HOME/.local/bin/rmux. In the remote command that path MUST be written \$HOME
 #     so it expands on the REMOTE box — a locally-expanded $HOME once pointed a Linux
 #     box at /Users/hacker/... , silently.
+#  5. EVERY CAPTURE CARRIES A WALL CLOCK. ssh's ConnectTimeout bounds the HANDSHAKE
+#     only. A source that connects and then stops answering (hung rmux server, half
+#     open TCP, a wedged box) parks the loop inside the command substitution forever:
+#     no new frame, no new banner, and the staleness machinery below never runs
+#     because it only runs after capture RETURNS. Measured: 12s of a wedged source
+#     produced 0 bytes and 0 frames, leaving a [live] banner over a frozen frame —
+#     verbatim the failure invariant 2 exists to prevent. So the capture is bounded,
+#     and a bound that fires is a RENDERED state (SOURCE NOT ANSWERING), never fatal.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # Deliberately NO `set -e` / `set -u` / `pipefail`: invariant 3. A stray non-zero
@@ -97,6 +105,78 @@ trap 'rm -f "$ERRFILE"' EXIT
 LAST_FRAME=""       # last frame we successfully captured
 LAST_OK=0           # epoch seconds of that capture; 0 == never connected
 
+# ── the wall clock (invariant 5) ──────────────────────────────────────────────
+# One capture may take at most this long. Generous on purpose: a healthy capture
+# over ssh costs well under a second, so anything past a whole interval plus ten
+# seconds is a source that is not answering, not a slow one.
+CAPTURE_BUDGET=$(( INTERVAL + 10 ))
+
+# `timeout` is GNU coreutils. It does NOT exist on a stock macOS — where, if it
+# exists at all, it is `gtimeout` from brew coreutils — and OmegaOS installs on
+# macOS (this script already avoids `mapfile` for the same reason). So: resolve it
+# ONCE here, and when neither spelling is present fall back to a watchdog built
+# out of nothing but bash. Detecting it per-iteration would pay a PATH lookup
+# every tick for an answer that cannot change.
+TIMEOUT_CMD=()
+if command -v timeout >/dev/null 2>&1; then
+    TIMEOUT_CMD=(timeout -k 5 "$CAPTURE_BUDGET")
+elif command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT_CMD=(gtimeout -k 5 "$CAPTURE_BUDGET")
+fi
+
+# Exit codes that mean "the wall clock fired, the source never answered":
+#   124  GNU timeout, budget elapsed        (137 if the child ignored the TERM)
+#   143  the bash fallback below (128 + SIGTERM)
+timed_out() {
+    case "$1" in 124|137|143) return 0;; *) return 1;; esac
+}
+
+# Run "$@" under the budget, whichever mechanism we have.
+#
+# The fallback exists so a Mac without coreutils gets the SAME honesty as this
+# box, instead of silently keeping the frozen-mirror bug. Three details make it
+# work inside `$(capture)`, each one measured rather than assumed:
+#   * `set -m` puts the capture in its OWN process group, and the watchdog
+#     signals that group (`kill -- -PID`), which is exactly what GNU timeout
+#     does. Signalling only the direct child is not enough: a grandchild still
+#     holds the command substitution's stdout pipe open, so `$(capture)` keeps
+#     blocking and the mirror stays frozen even though the wall clock fired.
+#     Measured: TERM to the pid alone left the loop stuck past 30s; TERM to the
+#     group returned in 3s. Job control is switched straight back off, and the
+#     shell prints no job notices in either state.
+#   * the watchdog subshell redirects its own stdout, or IT would hold that same
+#     pipe open and every capture would cost the full budget.
+#   * whatever the child printed BEFORE it wedged still reaches us, so a partial
+#     frame is never mistaken for a clean one — the non-zero status is what the
+#     loop reads, never the output.
+run_bounded() {
+    if [ ${#TIMEOUT_CMD[@]} -gt 0 ]; then
+        "${TIMEOUT_CMD[@]}" "$@"
+        return $?
+    fi
+    set -m
+    "$@" &
+    local pid=$!
+    set +m
+    (
+        sleep "$CAPTURE_BUDGET"
+        kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+    ) >/dev/null 2>&1 &
+    local watchdog=$!
+    wait "$pid"
+    local rc=$?
+    kill -TERM "$watchdog" >/dev/null 2>&1
+    wait "$watchdog" >/dev/null 2>&1
+    return $rc
+}
+
+# Which mechanism is holding the clock, said out loud in the banner when it is
+# the fallback: the operator should never have to guess whether a mirror on this
+# box is bounded. Empty wherever a timeout binary exists (every Linux box, and
+# any Mac with coreutils), so the common banner stays clean.
+CLOCK_NOTE=""
+[ ${#TIMEOUT_CMD[@]} -eq 0 ] && CLOCK_NOTE=" · bash watchdog"
+
 # ── geometry ──────────────────────────────────────────────────────────────────
 # Re-read every iteration: the viewer resizes the moment the operator attaches.
 term_rows() {
@@ -128,13 +208,22 @@ fit() {
 
 # ── the capture ───────────────────────────────────────────────────────────────
 # stdout -> the frame, stderr -> $ERRFILE (never mixed into the frame), rc -> state.
+# Always under the wall clock (invariant 5): a capture that cannot finish must
+# come back as a STATE, not as a loop that stopped iterating.
 capture() {
     if [ "$TARGET" = "local" ]; then
-        "$RMUX_LOCAL" capture-pane -p -t "$SESSION" -S -"$SCROLLBACK" 2>"$ERRFILE"
+        run_bounded "$RMUX_LOCAL" capture-pane -p -t "$SESSION" -S -"$SCROLLBACK" 2>"$ERRFILE"
     else
         # \$HOME is written so it expands on the REMOTE box (invariant 4).
         # -n : stdin from /dev/null, so ssh never swallows the viewer's keystrokes.
-        ssh -n -o ConnectTimeout=10 -o BatchMode=yes "$TARGET" \
+        # ServerAlive* : ssh's own liveness probe on an ESTABLISHED connection —
+        #   5s apart, gone after 2 unanswered — so a half-open TCP is usually ssh's
+        #   own error (with a real message) before our wall clock has to guess.
+        run_bounded ssh -n \
+            -o ConnectTimeout=10 \
+            -o ServerAliveInterval=5 \
+            -o ServerAliveCountMax=2 \
+            -o BatchMode=yes "$TARGET" \
             "$RMUX_REMOTE capture-pane -p -t '$SESSION' -S -$SCROLLBACK" 2>"$ERRFILE"
     fi
 }
@@ -183,13 +272,21 @@ while true; do
         # one. Liveness is "the last capture succeeded", never "the content moved".
         LAST_FRAME="$OUT"
         LAST_OK="$NOW"
-        render "[live]  omega stream · $LABEL · $(date +%H:%M:%S) · every ${INTERVAL}s" "" "$OUT"
+        render "[live]  omega stream · $LABEL · $(date +%H:%M:%S) · every ${INTERVAL}s${CLOCK_NOTE}" "" "$OUT"
     else
-        # Two causes. ssh's own 255 means we never reached the box; anything else
-        # non-zero means the command ran and rmux could not find the session.
-        if [ "$TARGET" != "local" ] && [ "$RC" -eq 255 ]; then
+        # Three causes, and the third is why the wall clock exists. Our own budget
+        # firing means the box took the connection and then said nothing — which is
+        # NOT "unreachable" (we reached it) and NOT "not found" (nobody answered
+        # either way), so it gets its own name instead of being filed under a
+        # diagnosis we did not earn.
+        if timed_out "$RC"; then
+            STATE="SOURCE NOT ANSWERING"
+            [ -z "$ERR" ] && ERR="no answer within ${CAPTURE_BUDGET}s (capture killed)"
+        elif [ "$TARGET" != "local" ] && [ "$RC" -eq 255 ]; then
+            # ssh's own 255 means we never reached the box.
             STATE="HOST UNREACHABLE"
         else
+            # Any other non-zero: the command RAN and rmux could not find the session.
             STATE="SESSION NOT FOUND"
         fi
 
