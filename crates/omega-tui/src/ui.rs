@@ -2485,7 +2485,11 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
                 if current {
                     flat_selected = items.len();
                 }
-                let icon = project.icon.as_deref().unwrap_or("▣");
+                let icon = // Fall back to an EMOJI, never a geometric glyph: a project registered
+// without an icon otherwise renders a whole cell narrower than its
+// neighbours, so the column reads as half-finished. 📦 keeps the list
+// uniform until the project is given one that says what it actually is.
+project.icon.as_deref().unwrap_or("📦");
                 // 🔕 marks a project whose Telegram toggle is OFF.
                 let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
                 items.push(section_row(
@@ -2525,7 +2529,11 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         ];
     };
 
-    let icon = project.icon.as_deref().unwrap_or("▣");
+    let icon = // Fall back to an EMOJI, never a geometric glyph: a project registered
+// without an icon otherwise renders a whole cell narrower than its
+// neighbours, so the column reads as half-finished. 📦 keeps the list
+// uniform until the project is given one that says what it actually is.
+project.icon.as_deref().unwrap_or("📦");
     let mut lines = vec![
         Line::from(""),
         Line::from(vec![
