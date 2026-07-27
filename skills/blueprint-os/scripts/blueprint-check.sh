@@ -16,11 +16,12 @@
 set -uo pipefail
 
 BP="${1:-}"; shift || true
-QUIET=0; GATES_ONLY=0
+QUIET=0; GATES_ONLY=0; WITH_CONVEX=0
 for a in "$@"; do
   case "$a" in
     --quiet) QUIET=1;;
     --gates-only) GATES_ONLY=1;;
+    --convex) WITH_CONVEX=1;;
   esac
 done
 
@@ -172,6 +173,24 @@ else
     c_ok "aucun index posé sur un champ tableau"
   fi
 
+  # La validation par CONVEX lui-même. Les types génériques du package contraignent
+  # réellement les index aux champs du document, ce qu'aucun grep ne sait faire.
+  # Automatique si le bac à sable est déjà monté (coût nul), sinon opt-in --convex
+  # pour ne jamais déclencher un npm install par surprise.
+  CVX="$(dirname "${BASH_SOURCE[0]}")/convex-validate.sh"
+  SANDBOX_READY=0
+  [[ -d "${OMEGA_DIR:-$HOME/.omega}/cache/convex-validate/node_modules/convex" ]] && SANDBOX_READY=1
+  if [[ -x "$CVX" ]] && { [[ $SANDBOX_READY -eq 1 ]] || [[ $WITH_CONVEX -eq 1 ]]; }; then
+    if CVX_OUT="$(bash "$CVX" "$SCHEMA" --quiet 2>&1)"; then
+      c_ok "schéma validé par les types Convex (index et validators réels)"
+    else
+      c_no "schéma REFUSÉ par Convex:"
+      printf '%s\n' "$CVX_OUT" | sed 's/^/     /'
+    fi
+  else
+    c_warn "validation Convex non lancée — relancer avec --convex (monte un bac à sable npm la première fois)"
+  fi
+
   # Chaque table devrait apparaître dans un flux (phase 04)
   FLUX="$BP/04-flux"
   if [[ -d "$FLUX" ]]; then
@@ -223,6 +242,61 @@ if [[ -n "$PARF" ]]; then
   else
     c_ok "$NV verdicts tranchés dans la matrice"
   fi
+
+  # La couverture par FAMILLE, pas seulement le total. Un blueprint peut trancher
+  # 60 capacités et n'avoir jamais ouvert la famille "confiance et conformité" :
+  # le total serait bon et le produit invendable en Europe.
+  declare -A FAM=(
+    [A]="socle|authentification|recherche|email|onboarding|mobile"
+    [B]="monétisation|monetisation|abonnement|stripe|paiement|facturation|TVA"
+    [C]="contenu|formation|cours|bibliothèque|bibliotheque|quiz"
+    [D]="événement|evenement|calendrier|RSVP|rappel|fuseau"
+    [E]="communication|message|annonce|digest|traduction"
+    [F]="IA de production|rédaction|redaction|grammaticale|sémantique|semantique"
+    [G]="administration|analytics|export|audit|API|webhook|domaine|import"
+    [H]="confiance|conformité|conformite|RGPD|DPA|chiffrement|sauvegarde|indexation|rétention|retention"
+  )
+  MISS=""
+  for f in A B C D E F G H; do
+    grep -qiE "${FAM[$f]}" "$PARF" || MISS="$MISS $f"
+  done
+  if [[ -n "$MISS" ]]; then
+    c_no "familles de parité JAMAIS ouvertes:$MISS — une famille entière non tranchée est une dette qu'on découvre à la livraison"
+  else
+    c_ok "les 8 familles de parité (A à H) sont toutes représentées"
+  fi
+fi
+
+# ── 5bis. La recherche marché est réelle, et fraîche ────────────────────────────
+head_ "5bis. La recherche marché"
+MKT="$BP/01-market"
+if [[ -d "$MKT" ]]; then
+  NURL="$(grep -rhoE 'https?://[^ )"]+' "$MKT" 2>/dev/null | sort -u | wc -l)"
+  if [[ "$NURL" -eq 0 ]]; then
+    c_no "aucune source citée en phase 1 — une recherche sans URL est un marché inventé"
+  elif [[ "$NURL" -lt 3 ]]; then
+    c_warn "seulement $NURL source(s) distincte(s) — le skill demande 3 à 6 acteurs, prix réels compris"
+  else
+    c_ok "$NURL sources distinctes citées"
+  fi
+
+  # Un blueprint vieillit par ses PRIX. Une date de consultation qui dérive rend le
+  # positionnement faux sans que rien ne le signale.
+  DATES="$(grep -rhoE '20[0-9]{2}-[01][0-9]-[0-3][0-9]' "$MKT" 2>/dev/null | sort -u | tail -1)"
+  if [[ -z "$DATES" ]]; then
+    c_warn "aucune date de consultation en phase 1 — impossible de savoir si les prix sont encore vrais"
+  else
+    NOW="$(date +%s)"
+    THEN="$(date -d "$DATES" +%s 2>/dev/null || echo "$NOW")"
+    AGE=$(( (NOW - THEN) / 86400 ))
+    if [[ "$AGE" -gt 180 ]]; then
+      c_no "sources datées du $DATES, soit $AGE jours — les prix concurrents ont bougé, refaire la phase 1"
+    elif [[ "$AGE" -gt 90 ]]; then
+      c_warn "sources datées du $DATES, soit $AGE jours — à revérifier avant toute décision de prix"
+    else
+      c_ok "sources fraîches ($DATES, $AGE jours)"
+    fi
+  fi
 fi
 
 # ── 6. Les livrables de la phase 14 ─────────────────────────────────────────────
@@ -245,6 +319,25 @@ fi
 
 [[ "$QOPEN" -eq 3 ]] && c_ok "exactement 3 questions ouvertes" \
   || c_no "$QOPEN question(s) ouverte(s) — le skill en demande exactement 3"
+
+# La dérive entre le blueprint et l'app construite. Sans ce contrôle, on modifie la
+# phase 09 après un build et plus rien ne signale que l'app tourne sur l'ancien schéma.
+BUILT="$(python3 -c "
+import json
+b=json.load(open('$JSON')).get('build',{})
+print(str(b.get('construit',False)).lower(), b.get('schema_sha') or '-', b.get('chemin_app') or '-')" 2>/dev/null)"
+read -r BOK BSHA BPATH <<<"$BUILT"
+if [[ "$BOK" == "true" ]]; then
+  if [[ -f "$SCHEMA" && "$BSHA" != "-" ]]; then
+    NOWSHA="$(sha256sum "$SCHEMA" | cut -c1-12)"
+    if [[ "$NOWSHA" == "$BSHA" ]]; then
+      c_ok "l'app construite est à jour avec la phase 09"
+    else
+      c_warn "le schéma a CHANGÉ depuis le build ($BSHA → $NOWSHA) — l'app tourne sur l'ancien: $BPATH"
+    fi
+  fi
+  [[ -d "$BPATH" ]] && c_ok "app présente: $BPATH" || c_warn "app déclarée construite mais introuvable: $BPATH"
+fi
 
 # ── 7. R-NODASH ─────────────────────────────────────────────────────────────────
 head_ "7. Kill pass (R-NODASH)"

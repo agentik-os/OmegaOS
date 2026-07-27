@@ -507,6 +507,26 @@ if [[ -n "$BLUEPRINT" ]]; then
   [[ -f "$BLUEPRINT/10-stax/panneaux.md" ]] && cp "$BLUEPRINT/10-stax/panneaux.md" docs/blueprint/ 2>/dev/null
   [[ -f "$BLUEPRINT/06-features/features.md" ]] && cp "$BLUEPRINT/06-features/features.md" docs/blueprint/ 2>/dev/null
   c_ok "blueprint carried into docs/blueprint/ (panels + features drive the build)"
+
+  # Write the build back into the blueprint. Without this the blueprint never knows
+  # it was built, so nothing can later detect that the two have drifted apart.
+  if [[ -f "$BLUEPRINT/blueprint.json" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 - "$BLUEPRINT/blueprint.json" "$TARGET" "$STAX_COMMIT" "$(date -Is)" <<'PY' && \
+      c_ok "build recorded back into blueprint.json (path, stax commit, timestamp)"
+import json,sys,hashlib,os
+p,target,commit,ts = sys.argv[1:5]
+d = json.load(open(p))
+# Fingerprint the schema that was actually shipped: if the blueprint's phase 09
+# changes later, the app is provably out of date and a rebuild is owed.
+sha = None
+sp = os.path.join(os.path.dirname(p), "09-data", "schema.ts")
+if os.path.exists(sp):
+    sha = hashlib.sha256(open(sp,"rb").read()).hexdigest()[:12]
+d["build"] = {"construit": True, "chemin_app": target, "stax_commit": commit,
+              "construit_le": ts, "schema_sha": sha}
+json.dump(d, open(p,"w"), indent=2, ensure_ascii=False)
+PY
+  fi
 fi
 
 git init -q 2>/dev/null || true
