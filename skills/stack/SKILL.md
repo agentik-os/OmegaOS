@@ -114,10 +114,18 @@ When `--blueprint` points at a Blueprint OS folder, the chain is:
 | `06-features/features.md` | The `NEEDS-BUILD.md` checklist, layer by layer |
 | `08-ia/system-prompts.md` | `convex/ai/` action stubs, one per agent |
 
-**Gate:** if the blueprint's `blueprint.json` shows an unfranchised gate, say so and ask
-before scaffolding. Building an app from a blueprint that failed the parity gate produces
-a demo, and the missing socle is discovered at delivery — which is exactly the failure
-mode phase 5 exists to prevent.
+**Gate, enforced mechanically.** `stack-new.sh` runs `blueprint-check.sh --gates-only`
+before it scaffolds anything, and **refuses** on an unfranchised gate. Building from a
+blueprint that failed the parity gate produces a demo whose missing socle is discovered
+at delivery, which is exactly the failure mode phase 5 exists to prevent.
+
+`--force-gates` overrides it. Use it knowing what it costs, and it says so out loud.
+
+Run the full check yourself when you want more than the gates:
+
+```bash
+bash ~/.omega/skills/blueprint-os/scripts/blueprint-check.sh <blueprint-dir>
+```
 
 ---
 

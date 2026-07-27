@@ -23,12 +23,13 @@ c_warn(){ printf '\033[33m[stack]\033[0m %s\n' "$*"; }
 c_die(){  printf '\033[31m[stack]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ── args ────────────────────────────────────────────────────────────────────────
-APP=""; BLUEPRINT=""; PARENT="$HOME/Station/SideBusiness"; DO_INSTALL=1; WITH_STRIPE=0
+APP=""; BLUEPRINT=""; PARENT="$HOME/Station/SideBusiness"; DO_INSTALL=1; WITH_STRIPE=0; FORCE_GATES=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --blueprint) BLUEPRINT="${2:-}"; shift 2;;
     --dir)       PARENT="${2:-}";    shift 2;;
     --stripe)    WITH_STRIPE=1;      shift;;
+    --force-gates) FORCE_GATES=1;    shift;;
     --no-install) DO_INSTALL=0;      shift;;
     -h|--help)   sed -n '2,12p' "$0"; exit 0;;
     -*)          c_die "unknown flag: $1";;
@@ -57,6 +58,23 @@ fi
 if [[ -n "$BLUEPRINT" ]]; then
   [[ -d "$BLUEPRINT" ]] || c_die "blueprint folder not found: $BLUEPRINT"
   c_info "blueprint: $BLUEPRINT"
+  # Les gates avant tout scaffold. Construire une app sur un blueprint qui a rate son
+  # gate parite produit une demo dont le socle manquant est decouvert a la livraison,
+  # ce qui est exactement le mode d'echec que la phase 5 existe pour empecher.
+  BP_CHECK="$OMEGA_DIR/skills/blueprint-os/scripts/blueprint-check.sh"
+  if [[ -x "$BP_CHECK" ]]; then
+    if bash "$BP_CHECK" "$BLUEPRINT" --gates-only --quiet >/dev/null 2>&1; then
+      c_ok "les 3 gates du blueprint sont franchis"
+    elif [[ "$FORCE_GATES" -eq 1 ]]; then
+      c_warn "gates NON franchis, mais --force-gates est passe. Le socle manquant se decouvrira a la livraison."
+    else
+      c_warn "un ou plusieurs GATES ne sont pas franchis sur ce blueprint:"
+      bash "$BP_CHECK" "$BLUEPRINT" --gates-only 2>&1 | sed 's/^/    /'
+      c_die "refus de scaffolder. Corriger le blueprint, ou relancer en connaissance de cause avec --force-gates."
+    fi
+  else
+    c_warn "blueprint-check absent — les gates ne sont PAS verifies"
+  fi
 fi
 
 command -v node >/dev/null 2>&1 || c_die "node is required"

@@ -191,6 +191,26 @@ Séquence v0 → v5 · **une seule métrique étoile** · les risques avec leur 
 1. **`<nom>-blueprint.md`** — 18 sections
 2. **`<nom>-blueprint.html`** — l'artefact navigable
 
+**Puis lancer le contrôle mécanique. Ce n'est pas optionnel non plus :**
+
+```bash
+bash scripts/blueprint-check.sh <dossier-du-blueprint>
+```
+
+Il vérifie ce que la prose ne peut pas garantir : les 3 gates, chaque phase remplie,
+la primitive en première table, `entries` et `syntheses` présentes, le champ tenant
+partout, **aucun index posé sur un champ tableau**, la couverture de parité, les
+18 sections, l'artefact self-contained, exactement 3 questions ouvertes, et le kill
+pass R-NODASH.
+
+Un échec doit être corrigé avant de construire. `/stack` refuse de scaffolder un
+blueprint dont les gates ne passent pas.
+
+> Il existe parce que ces invariants vivaient uniquement en prose : au premier vrai
+> run, un index sur un champ tableau, deux tables obligatoires absentes et trois
+> tables sans flux ont été trouvés à la lecture, pas par un contrôle. Le jugement de
+> celui qui déroule le skill n'est pas un filet.
+
 **Le graphe de nœuds doit couvrir les deux couches.** Les nœuds de parité existent, même marqués « différé v4 ». Un artefact qui ne montre que le différenciant ment sur l'ampleur du travail.
 
 Terminer par **exactement trois questions ouvertes.**
