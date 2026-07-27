@@ -215,12 +215,67 @@ Il vérifie ce que la prose ne peut pas garantir :
 un index sur un champ inexistant et un validator inventé. Il monte un bac à sable npm
 la première fois, puis le réutilise et se lance tout seul.
 
-**Les deux autres outils :**
+**Les autres outils :**
 
 ```bash
 bash scripts/convex-validate.sh <schema.ts>          # la validation Convex, seule
 bash scripts/blueprint-diff.sh --all <blueprints/>   # ce que le portefeuille partage
 ```
+
+---
+
+## Phase 15 — Du blueprint au plan exécutable
+
+*Un blueprint en markdown demande à l'agent de tout relire, de choisir un ordre à
+chaque tour, et de se déclarer fini sur une impression. Ces trois gestes sont ceux
+qu'il rate. La phase 15 les supprime.*
+
+```bash
+python3 scripts/stax_derive.py <blueprint> --write   # le layout, DÉDUIT du schéma
+python3 scripts/plan_build.py  <blueprint> --write   # le plan d'exécution
+python3 scripts/runner.py      <blueprint> status    # où on en est
+python3 scripts/runner.py      <blueprint> next      # la prochaine étape, en entier
+python3 scripts/runner.py      <blueprint> done <id> # ferme APRÈS vérification
+```
+
+### Le renversement Stax
+
+**La grammaire de panneaux n'est pas une phase où l'on dessine des écrans : c'est une
+conséquence du modèle de données.** Une table donne un panneau. Un `v.id("x")` donne
+une action open-right vers le panneau de x. Un union de literals donne les statuts,
+donc les couleurs du board. Dessiner ces écrans à la main revient à re-décider ce que
+le schéma a déjà décidé, et les deux divergent au premier changement.
+
+`stax_derive.py` produit `10-stax/panels.json` (la carte machine), `panels.md`,
+`panels.mmd` et l'ERD `09-data/schema.mmd`. Il **propose** les espaces de premier
+niveau et marque ses hypothèses ; le concepteur tranche.
+
+### Les quatre blocs, et pourquoi le troisième décide de tout
+
+Chaque étape du plan porte les quatre blocs de la doctrine Stax :
+
+| Bloc | Ce qu'il porte |
+|---|---|
+| 1. Objectif | Ce que l'étape doit permettre |
+| 2. Contraintes | Stack, invariants, dépendances |
+| **3. Définition du fini** | **Une commande qui s'exécute**, pas une opinion |
+| 4. Ne pas toucher | Le hors-périmètre, celui que tout le monde oublie |
+
+Le bloc 3 décide de la **voie d'exécution** : vérifiable par une machine, l'étape part
+en lot autonome ; sinon un agent à la fois, avec un humain devant.
+
+Une étape dont les quatre blocs ne sont pas remplis est **rouge**, et le rouge est
+bloquant. C'est ce qui empêche de lancer un agent sur du flou et de récupérer
+900 lignes inutilisables. Le bloc 4 est celui qui évite les diffs de 900 lignes.
+
+### Comment l'agent s'en sert
+
+`runner.py next` donne **une** étape prête, avec ses quatre blocs. L'agent la fait.
+`runner.py done <id>` **exécute** la définition du fini et **refuse de fermer** si elle
+est rouge. `--force` passe outre, en le disant.
+
+L'état vit dans `plan/state.json`, séparé de `plan.json` qui est régénérable :
+recompiler le plan n'efface jamais ce qui a été fait.
 
 `blueprint-diff` devient utile à partir de deux blueprints : il montre les tables et
 les capacités de socle construites deux fois, celles qui méritent une brique commune
