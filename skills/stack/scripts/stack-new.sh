@@ -176,6 +176,37 @@ TS
   c_ok "convex/schema.ts written (canonical pattern — rename the primitive)"
 fi
 
+# Convex gets its OWN tsconfig and the root one excludes it. Without this split
+# `next build` typechecks convex/ and dies on ./_generated/server, which does not
+# exist before the first `npx convex dev`. Building the interface has no reason to
+# wait on a Convex account. Convex typechecks that folder itself on every push.
+cat > convex/tsconfig.json <<'JSON'
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "skipLibCheck": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ESNext",
+    "lib": ["ES2021", "dom", "dom.iterable"],
+    "forceConsistentCasingInFileNames": true,
+    "module": "ESNext",
+    "isolatedModules": true,
+    "noEmit": true
+  },
+  "include": ["./**/*"],
+  "exclude": ["./_generated"]
+}
+JSON
+node -e '
+const fs=require("fs"),p="tsconfig.json";
+const t=JSON.parse(fs.readFileSync(p,"utf8"));
+t.exclude=[...new Set([...(t.exclude||["node_modules"]),"convex"])];
+fs.writeFileSync(p,JSON.stringify(t,null,2)+"\n");
+' 2>/dev/null || c_warn "tsconfig.json non modifié — exclure convex/ à la main"
+
 cat > convex/auth.config.ts <<'TS'
 // Clerk is the identity provider; Convex validates its JWT.
 // CLERK_JWT_ISSUER_DOMAIN is your Clerk Frontend API URL, e.g.
@@ -232,7 +263,7 @@ export const list = query({
 // \`${PRIMITIVE}\` come from your schema, and guessing them would generate code that
 // compiles and then fails at runtime. Write them against the real table.
 TS
-  c_ok "convex/ auth config + example query on the real primitive: ${PRIMITIVE} (tenant: ${TENANT_FIELD})"
+    c_ok "convex/ auth config + example query on the real primitive: ${PRIMITIVE} (tenant: ${TENANT_FIELD})"
 else
   cat > convex/README.md <<'MD'
 # Convex functions
@@ -251,8 +282,15 @@ mkdir -p src/lib
 
 cat > src/middleware.ts <<'TS'
 import { clerkMiddleware } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
 
-export default clerkMiddleware();
+// Clerk is only mounted when its key exists. Without this guard a freshly
+// scaffolded app answers 500 on every route before a Clerk account is even
+// created, and nothing of the interface can be seen. A first run that fails is
+// what makes people abandon a tool halfway through setting it up.
+const hasClerk = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+
+export default hasClerk ? clerkMiddleware() : () => NextResponse.next();
 
 export const config = {
   matcher: [
