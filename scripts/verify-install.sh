@@ -172,6 +172,28 @@ else
   bad "omega-duo executable/PATH wiring missing from install.sh"
 fi
 
+# `omega monitor <target>` assets. Three SEPARATE assertions, because a monitor
+# that installs its watcher but not its audit runner, or its scripts but not its
+# skill, is a half feature that would still look green under one combined check.
+# The watcher is useless without the report directory, so that is asserted too:
+# the first audit run must never race on a missing path.
+if [ -f scripts/omega-monitor.sh ] && [ -f scripts/omega-monitor-audit.sh ] \
+  && grep -qF 'for MON in omega-monitor omega-monitor-audit; do' install.sh; then
+  ok "monitor watcher + audit runner shipped and copied by install.sh"
+else
+  bad "monitor watcher/audit runner source or installer copy wiring missing"
+fi
+if grep -qF 'mkdir -p "$OMEGA_DIR/state/monitor"' install.sh; then
+  ok "monitor audit report directory created by install.sh"
+else
+  bad "monitor audit report directory (state/monitor) missing from install.sh"
+fi
+if [ -f skills/monitor/SKILL.md ] && grep -qF 'for NSK in monitor; do' install.sh; then
+  ok "/monitor skill shipped + wired (/monitor + /omg-monitor)"
+else
+  bad "/monitor skill not shipped/wired in install.sh"
+fi
+
 # Codex credential topology is resolved by omega-core, where JSON validity and
 # last_refresh can be compared atomically. The installer must honor a nonempty
 # CODEX_HOME, must not make the old fixed .pre-omega duplicate choice, and must

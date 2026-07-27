@@ -1175,6 +1175,26 @@ if [[ -f "$STREAM_SRC" ]]; then
     ok "Session mirror installed: $OMEGA_DIR/bin/omega-stream.sh (omega stream)"
 fi
 
+# The `omega monitor <target>` watcher loop, and the deep-audit team it schedules.
+# Same viewer-session shape as omega-stream.sh above, and the same never-exit rule,
+# but where a stream is for a HUMAN to read, a monitor CLASSIFIES and ACTS: it sorts
+# the session into QUESTION / STALLED / BLOCKED / WORKING and answers each
+# differently (a question needs judgement so it goes to a human, a stall is
+# mechanical so it gets a nudge, a block must never be nudged because that is
+# manufactured thrash, and working means stay silent). The audit script is invoked
+# on a slower cadence and fans out one read-only agent per dimension. See R-MONITOR.
+for MON in omega-monitor omega-monitor-audit; do
+    MON_SRC="$OMEGA_SRC/scripts/$MON.sh"
+    if [[ -f "$MON_SRC" ]]; then
+        cp "$MON_SRC" "$OMEGA_DIR/bin/$MON.sh"
+        chmod +x "$OMEGA_DIR/bin/$MON.sh"
+    fi
+done
+# The audit team writes its timestamped reports here; create it now so the first
+# run never races on a missing directory.
+mkdir -p "$OMEGA_DIR/state/monitor"
+[[ -f "$OMEGA_DIR/bin/omega-monitor.sh" ]] && ok "Session monitor installed: $OMEGA_DIR/bin/omega-monitor.sh (omega monitor <session>)"
+
 for hs in omega-atlas-brief omega-clean-projects omega-open omega-agent-bot; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"
@@ -1613,6 +1633,36 @@ EOF
         ok "Reel skill installed: $RSK → ~/.omega/skills/$RSK/ (/$RSK + /omg-$RSK)"
     else
         info "Reel skill $RSK not found — skipping"
+    fi
+done
+
+# Install the /monitor skill — point a monitor at a running rmux session and read
+# what comes back. It is the agent-facing half of `omega monitor <target>`: the
+# binary runs the two layers (the cheap watcher that classifies into four states,
+# and the deep audit team), the skill teaches an agent WHICH state means what and
+# why a BLOCKED session must never be nudged. Same copy -> ~/.omega/skills/<name>/
+# + /<name> and /omg-<name> stub shape as the loops around it. See R-MONITOR.
+for NSK in monitor; do
+    NSK_SRC="$OMEGA_SRC/skills/$NSK"
+    NSK_DST="$OMEGA_DIR/skills/$NSK"
+    if [[ -d "$NSK_SRC" ]]; then
+        mkdir -p "$NSK_DST"
+        cp -r "$NSK_SRC"/* "$NSK_DST/"
+        NCMD="$HOME/.claude/commands"; mkdir -p "$NCMD"
+        for cmd in "$NSK" "omg-$NSK"; do
+            cat > "$NCMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the $NSK skill. Read and follow the complete instructions in:
+
+\`$NSK_DST/SKILL.md\`
+
+Use every reference, template, and script it provides.
+EOF
+        done
+        ok "Monitor skill installed: $NSK → ~/.omega/skills/$NSK/ (/$NSK + /omg-$NSK)"
+    else
+        info "Monitor skill $NSK not found — skipping"
     fi
 done
 

@@ -56,6 +56,7 @@ pub mod scope;
 pub mod service;
 pub mod session;
 pub mod session_log;
+pub mod session_monitor;
 pub mod stream;
 pub mod tuilog;
 pub mod ship;

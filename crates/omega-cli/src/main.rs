@@ -156,8 +156,73 @@ enum Commands {
         action: ConfigAction,
     },
 
-    /// Show billing / accounts / bot status (one-shot, also visible in TUI Monitor tab)
-    Monitor,
+    /// Show billing / accounts / bot status, or WATCH a live rmux session
+    ///
+    /// omega monitor                     billing, accounts and bot status (unchanged)
+    /// omega monitor oracle-Kommu        watch a session on this box
+    /// omega monitor matrix:MAC-STREAM   watch a session on the `matrix` ssh host
+    /// omega monitor list                what is watchable, and what is already watched
+    /// omega monitor classify < pane     classify ONE captured pane and print the state
+    ///
+    /// With no target this is the one-shot billing view it has always been,
+    /// also visible in the TUI Monitor tab. With a target it runs the SESSION
+    /// monitor, which is a different feature that happens to share the word.
+    ///
+    /// A cheap watcher polls the pane and sorts what it sees into FOUR states,
+    /// because a stop has more than one shape and each shape needs a different
+    /// answer. QUESTION needs judgement, so it goes to a human and is never
+    /// auto-answered. STALLED is mechanical, so it gets a mechanical nudge.
+    /// BLOCKED is never nudged: a nudge with nothing runnable is manufactured
+    /// thrash, not persistence. WORKING says nothing, which is the correct
+    /// output most of the time.
+    ///
+    /// --work-probe is what splits STALLED from BLOCKED: a shell command that
+    /// prints how much work is LEFT, counting work in ANY form (a step
+    /// awaiting a sign-off is work, and counting only runnable steps once
+    /// reported BLOCKED on a build that was merely waiting for a signature).
+    /// Anything unreadable counts as work, so a broken probe never stalls a
+    /// build silently.
+    ///
+    /// --progress-probe bounds the ABSENCE of progress rather than the work:
+    /// it prints a monotonic integer, and every advance resets the nudge
+    /// budget. A flat cap stops a healthy long run for no reason.
+    ///
+    /// Hosts are ALIASES from ~/.ssh/config, and the target is preflighted
+    /// before anything is created. Detach with Ctrl-b d; it keeps running.
+    /// Kill it with `omega kill monitor-<name>`.
+    #[command(verbatim_doc_comment)]
+    Monitor {
+        /// Omitted shows billing/accounts. Otherwise `<session>`, `<host>:<session>`, `list`, or `classify`
+        target: Option<String>,
+        /// Create the monitor but do not attach to it
+        #[arg(short, long)]
+        detach: bool,
+        /// Seconds between watcher polls
+        #[arg(long, default_value_t = omega_core::session_monitor::DEFAULT_INTERVAL_SECS)]
+        interval: u32,
+        /// Scrollback lines captured per poll
+        #[arg(long, default_value_t = omega_core::session_monitor::DEFAULT_LINES)]
+        lines: u32,
+        /// Shell command printing how much work is LEFT (splits STALLED from BLOCKED)
+        #[arg(long)]
+        work_probe: Option<String>,
+        /// `classify` only: the work count ALREADY measured by the caller.
+        ///
+        /// The watcher loop runs the work probe once per poll for its own
+        /// logic and then asks for a classification, so re-running the probe
+        /// in here would run it TWICE per poll. That is not merely wasteful:
+        /// a probe is usually an ssh round trip, and the two runs can disagree
+        /// across the gap, which would classify against a count the caller
+        /// never saw. Takes precedence over --work-probe when both are given.
+        #[arg(long)]
+        work: Option<i64>,
+        /// Shell command printing a monotonic progress metric (an advance resets the nudge budget)
+        #[arg(long)]
+        progress_probe: Option<String>,
+        /// Watcher polls between two runs of the deep audit team
+        #[arg(long, default_value_t = omega_core::session_monitor::DEFAULT_AUDIT_EVERY)]
+        audit_every: u32,
+    },
 
     /// Manage the Omega Telegram bot bridge (setup/run/enable/disable)
     Telegram {
@@ -698,7 +763,35 @@ async fn main() -> Result<()> {
         Some(Commands::Install { agent, dry_run }) => cmd_install(&agent, dry_run),
         Some(Commands::Master) => cmd_master().await,
         Some(Commands::Config { action }) => cmd_config(action),
-        Some(Commands::Monitor) => cmd_monitor(),
+        // Two features, one command word. A bare `omega monitor` is the
+        // billing view it has always been; a target routes to the session
+        // monitor. Splitting on the target rather than renaming keeps every
+        // script and TUI binding that calls the shipped command working.
+        Some(Commands::Monitor {
+            target,
+            detach,
+            interval,
+            lines,
+            work_probe,
+            work,
+            progress_probe,
+            audit_every,
+        }) => match target {
+            None => cmd_monitor(),
+            Some(t) => {
+                cmd_session_monitor(
+                    &t,
+                    detach,
+                    interval,
+                    lines,
+                    work_probe.as_deref(),
+                    work,
+                    progress_probe.as_deref(),
+                    audit_every,
+                )
+                .await
+            }
+        },
         Some(Commands::Telegram { action }) => cmd_telegram(action).await,
         Some(Commands::Pdf { template, data, demo, theme, out, send, caption }) => {
             cmd_pdf(&template, data.as_deref(), demo, &theme, &out, send, caption.as_deref()).await
@@ -6218,6 +6311,271 @@ async fn cmd_stream_list() -> Result<()> {
     println!("Watch one:");
     println!("  omega stream <session>          a session on this box");
     println!("  omega stream <host>:<session>   a session on another box");
+    Ok(())
+}
+
+/// `omega monitor <session> | <host>:<session> | list | classify`: the SESSION
+/// monitor (see omega_core::session_monitor; the bare `omega monitor` is the
+/// unrelated billing view and never reaches here).
+///
+/// Preflight before creation, exactly as `omega stream` does and for the same
+/// reason: an unknown alias, a box that does not answer, or a session that is
+/// not there each produce a named error and a non-zero exit, never a monitor
+/// session that dies the instant it starts.
+#[allow(clippy::too_many_arguments)]
+async fn cmd_session_monitor(
+    target: &str,
+    detach: bool,
+    interval: u32,
+    lines: u32,
+    work_probe: Option<&str>,
+    work: Option<i64>,
+    progress_probe: Option<&str>,
+    audit_every: u32,
+) -> Result<()> {
+    use omega_core::session_monitor as monitor;
+    use omega_core::stream::{self, ProbeOutcome};
+
+    if target.eq_ignore_ascii_case("list") {
+        return cmd_monitor_list().await;
+    }
+    if target.eq_ignore_ascii_case("classify") {
+        return cmd_monitor_classify(work_probe, work).await;
+    }
+
+    if interval == 0 {
+        anyhow::bail!("--interval must be at least 1 second (0 would spin the loop at full CPU)");
+    }
+    if lines == 0 {
+        anyhow::bail!("--lines must be at least 1 (0 would capture an empty screen)");
+    }
+
+    let t = stream::parse_target(target);
+
+    // The coordinates land on a shell command line, so they are refused rather
+    // than quoted when they are not slugs.
+    if !stream::is_safe_coordinate(t.session()) {
+        anyhow::bail!(
+            "unsupported session name {:?}: rmux session names are slugs \
+             ([A-Za-z0-9._-]), and nothing else is monitorable",
+            t.session()
+        );
+    }
+    if let Some(host) = t.host() {
+        if !stream::is_safe_coordinate(host) {
+            anyhow::bail!("unsupported ssh host alias {host:?}, use the alias from ~/.ssh/config");
+        }
+    }
+
+    // PREFLIGHT 1. An alias ssh actually knows. An empty list means we could
+    // not enumerate and an Include means the list is a lower bound; neither is
+    // evidence the host is unknown, so ssh gets to be the judge.
+    if let Some(host) = t.host() {
+        let cfg = stream::read_ssh_config();
+        let known = cfg.hosts.iter().any(|h| h == host);
+        if !known && !cfg.hosts.is_empty() && !cfg.has_include {
+            anyhow::bail!(
+                "unknown ssh host alias {host:?}\n  \
+                 ~/.ssh/config defines: {}\n  \
+                 (hosts are ALIASES, never raw coordinates: add one to ~/.ssh/config first)",
+                cfg.hosts.join(", ")
+            );
+        }
+    }
+
+    // PREFLIGHT 2. The box answers, and the session is really on it.
+    let box_label = t.host().unwrap_or("this box").to_string();
+    let outcome = stream::probe_target(&t).await;
+    let sessions = match &outcome {
+        ProbeOutcome::Sessions(s) => s.clone(),
+        other => anyhow::bail!(
+            "cannot list sessions on {box_label}: {}\n  \
+             (nothing was created, and a monitor of an unreachable box would just render errors)",
+            other.describe()
+        ),
+    };
+    if !sessions.iter().any(|s| s == t.session()) {
+        let listing = if sessions.is_empty() {
+            "  (no rmux sessions at all on that box)".to_string()
+        } else {
+            sessions
+                .iter()
+                .map(|s| format!("  - {s}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        anyhow::bail!(
+            "no session named {:?} on {box_label}. What IS there:\n{listing}",
+            t.session()
+        );
+    }
+
+    // IDEMPOTENT. One monitor per target: two watchers on one session would
+    // both nudge it, which turns one mechanical answer into a race.
+    let viewer = monitor::monitor_viewer_name(&t);
+    if stream::session_exists(&viewer).await {
+        println!(
+            "Already monitoring {} in session {}, reusing it (a second watcher would double every nudge).",
+            t.label(),
+            viewer
+        );
+    } else {
+        monitor::create_monitor(
+            &viewer,
+            &t,
+            interval,
+            lines,
+            work_probe.unwrap_or(""),
+            progress_probe.unwrap_or(""),
+            audit_every,
+        )
+        .await?;
+        println!(
+            "Monitoring {} → session {} (poll every {}s over {} lines, deep audit every {} polls).",
+            t.label(),
+            viewer,
+            interval,
+            lines,
+            audit_every
+        );
+        if work_probe.is_none() {
+            println!(
+                "  note: no --work-probe, so a stop cannot be told from a block. Every stop \
+                 will read as STALLED and be nudged, which is the safe direction (never stall \
+                 silently) but not the informed one."
+            );
+        }
+        if progress_probe.is_none() {
+            println!(
+                "  note: no --progress-probe, so the nudge budget has nothing to reset it and \
+                 behaves as a flat cap."
+            );
+        }
+    }
+
+    stream_attach(&viewer, detach)
+}
+
+/// `omega monitor list`: what is watchable, on this box and on every ssh
+/// alias, probed IN PARALLEL under a bounded timeout, plus which of them a
+/// monitor is already watching. A host that is down is marked and skipped, so
+/// it never holds the listing hostage.
+async fn cmd_monitor_list() -> Result<()> {
+    use omega_core::session_monitor as monitor;
+    use omega_core::stream::{self, ProbeOutcome};
+
+    let cfg = stream::read_ssh_config();
+
+    // Spawn every probe first, then collect: the whole listing costs one
+    // timeout, not one per host.
+    let mut probes: Vec<(Option<String>, tokio::task::JoinHandle<ProbeOutcome>)> = Vec::new();
+    probes.push((None, tokio::spawn(async { stream::probe_host(None).await })));
+    for host in &cfg.hosts {
+        let host = host.clone();
+        probes.push((
+            Some(host.clone()),
+            tokio::spawn(async move { stream::probe_host(Some(&host)).await }),
+        ));
+    }
+
+    let mut results: Vec<(Option<String>, ProbeOutcome)> = Vec::new();
+    for (host, handle) in probes {
+        let outcome = handle.await.unwrap_or(ProbeOutcome::SpawnFailed {
+            detail: "probe task panicked".to_string(),
+        });
+        results.push((host, outcome));
+    }
+
+    // What each live monitor is REALLY watching, read from the command it was
+    // started with rather than from its name. Matching on the name marks a
+    // colliding pair as watched while only one watcher exists.
+    let watched = monitor::live_monitor_index().await;
+
+    for (host, outcome) in &results {
+        let header = match host {
+            None => "local".to_string(),
+            Some(h) => format!("{h} (ssh)"),
+        };
+        println!("─── {} ───", header);
+        match outcome {
+            ProbeOutcome::Sessions(sessions) if sessions.is_empty() => {
+                println!("  (no rmux sessions)");
+            }
+            ProbeOutcome::Sessions(sessions) => {
+                for s in sessions {
+                    let target = match host {
+                        None => omega_core::stream::StreamTarget::Local { session: s.clone() },
+                        Some(h) => omega_core::stream::StreamTarget::Remote {
+                            host: h.clone(),
+                            session: s.clone(),
+                        },
+                    };
+                    let note = if host.is_none() && s.starts_with(monitor::MONITOR_PREFIX) {
+                        "  (a monitor)"
+                    } else if host.is_none() && s.starts_with("stream-") {
+                        "  (a stream viewer)"
+                    } else if watched.iter().any(|(_, t)| t == &target) {
+                        "  (already monitored here)"
+                    } else {
+                        ""
+                    };
+                    println!("  ● {}{}", s, note);
+                }
+            }
+            other => println!("  ✗ {}", other.describe()),
+        }
+        println!();
+    }
+
+    if cfg.hosts.is_empty() {
+        println!("No ssh host aliases found in ~/.ssh/config, so only this box was probed.");
+    } else if cfg.has_include {
+        println!(
+            "note: ~/.ssh/config has an Include, so aliases defined in the included \
+             files are not listed above (monitoring them still works)."
+        );
+    }
+    println!("Watch one:");
+    println!("  omega monitor <session>          a session on this box");
+    println!("  omega monitor <host>:<session>   a session on another box");
+    Ok(())
+}
+
+/// `omega monitor classify`: the JUDGEMENT seam.
+///
+/// The shell loop captures the pane, pipes it here on stdin, and reads back one
+/// word. Every rule that decides what a pane MEANS lives in Rust, where it is
+/// unit-tested against real captures; the loop only polls, sleeps and sends.
+/// The reference watcher put all of this in bash greps that could never be
+/// tested, and that is the one thing this design deliberately improves on.
+async fn cmd_monitor_classify(work_probe: Option<&str>, work: Option<i64>) -> Result<()> {
+    use omega_core::session_monitor as monitor;
+    use std::io::Read;
+
+    let mut pane = String::new();
+    std::io::stdin()
+        .read_to_string(&mut pane)
+        .context("reading the captured pane from stdin")?;
+
+    // An already-measured count wins over a probe command. The watcher loop
+    // measures work once per poll for its own decisions and passes the number
+    // here, so re-running the probe would both cost a second ssh round trip
+    // and risk classifying against a count the caller never saw.
+    //
+    // No probe, a failed probe and a hung probe all land on Unknown, and
+    // Unknown is read as work. Never stall a build on a probe bug.
+    let work = match work {
+        Some(n) => monitor::WorkSignal::from_count(n),
+        None => match work_probe {
+            Some(cmd) => match monitor::run_probe(cmd, monitor::PROBE_TIMEOUT).await {
+                Some(out) => monitor::WorkSignal::from_probe_output(&out),
+                None => monitor::WorkSignal::Unknown,
+            },
+            None => monitor::WorkSignal::Unknown,
+        },
+    };
+
+    println!("{}", monitor::classify(&pane, work).as_str());
     Ok(())
 }
 
