@@ -1574,6 +1574,45 @@ else
     info "Design-intelligence pack not found — skipping"
 fi
 
+# Install the Power-Ups ROUTER — one skill that searches a large corpus of
+# purchased third-party business/marketing skills at ~/.omega/powerups/.
+#
+# The corpus itself is PAID third-party content and is deliberately NOT in this
+# public repo (see ~/.omega/powerups/PROVENANCE.md on a machine that has it).
+# Only the router ships here: it holds no vendor content, just routing rules.
+# It is installed ONLY when the corpus is actually present, so a fresh clone on
+# a machine without the purchase never advertises 907 skills that do not exist.
+PU_SRC="$OMEGA_SRC/skills/powerups"
+PU_CORPUS="$OMEGA_DIR/powerups"
+if [[ -d "$PU_SRC" && -f "$PU_CORPUS/MANIFEST.json" ]]; then
+    mkdir -p "$OMEGA_DIR/skills/powerups"
+    cp "$PU_SRC/SKILL.md" "$OMEGA_DIR/skills/powerups/SKILL.md"
+    ln -sfn "$OMEGA_DIR/skills/powerups" "$HOME/.claude/skills/powerups" 2>/dev/null || true
+    # search tool on PATH
+    if [[ -x "$PU_CORPUS/bin/powerup-find" ]]; then
+        mkdir -p "$HOME/.local/bin"
+        ln -sf "$PU_CORPUS/bin/powerup-find" "$HOME/.local/bin/powerup-find"
+    fi
+    PU_CMD="$HOME/.claude/commands"; mkdir -p "$PU_CMD"
+    for cmd in powerups omg-powerups; do
+        cat > "$PU_CMD/$cmd.md" <<'PUEOF'
+# /powerups
+
+Route into the Power-Ups corpus (purchased business/marketing Claude skills and
+companion assets). Read and follow the complete instructions in:
+
+`~/.omega/skills/powerups/SKILL.md`
+
+Search with `powerup-find <query>` first, then read the matching SKILL.md and
+follow it literally, honouring its phase gates.
+PUEOF
+    done
+    PU_N="$(/usr/bin/python3 -c "import json;print(json.load(open('$PU_CORPUS/MANIFEST.json'))['counts']['skills_total'])" 2>/dev/null || echo '?')"
+    ok "Power-Ups router installed ($PU_N skills reachable via powerup-find + /powerups)"
+elif [[ -d "$PU_SRC" ]]; then
+    info "Power-Ups corpus not present at $PU_CORPUS — router skipped (paid content, not in this repo)"
+fi
+
 # Install the maintenance skills (cleanup, project-tidy) — VPS/disk cleanup +
 # project tidying (docs/ + agentic/ convention, doc↔app coherence). Portable
 # scripts (no machine-specific paths). Mirrors the design loop: copy →
