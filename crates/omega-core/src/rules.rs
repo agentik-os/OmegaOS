@@ -4,7 +4,7 @@
 //! first everywhere, and outrank every rule and task. **Rules**
 //! (`RuleKind::Rule`) are operational guidelines that implement the Laws —
 //! categorized and scoped per agent level via the explicit `scopes` field.
-//! The Info tab, `omega rules list`, and every agent prompt
+//! The System tab, `omega rules list`, and every agent prompt
 //! (`agent_context_block`) render from this single source of truth.
 
 use serde::{Deserialize, Serialize};

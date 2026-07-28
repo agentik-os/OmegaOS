@@ -18,6 +18,7 @@ pub mod clock;
 pub mod config;
 pub mod credentials;
 pub mod dispatch;
+pub mod docs;
 pub mod doctor;
 pub mod done;
 pub mod executor;

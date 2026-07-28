@@ -24,6 +24,12 @@ pub enum Tab {
     Sessions,
     Menu,
     Projects,
+    /// The doctrine surface: Laws, Rules, the AISB agents, the architecture,
+    /// the installed skills and the whole manual. It used to be its own tab
+    /// named "Info", was renamed to "Agentic", and then lost its identity when
+    /// Agentic was repurposed into Projects — its sections survived as a
+    /// 5-row group buried above the project list. This tab gives it back.
+    System,
     Settings,
     Marketing,
     Help,
@@ -34,11 +40,12 @@ impl Tab {
     /// labels, the highlighted index and Left/Right cycling all derive from
     /// this array, so a reorder is a single edit here. (They used to be three
     /// hand-kept lists, which is how the bar and the enum drifted apart.)
-    pub const ORDER: [Tab; 6] = [
+    pub const ORDER: [Tab; 7] = [
         Tab::Sessions,
         Tab::Projects,
         Tab::Marketing,
         Tab::Menu,
+        Tab::System,
         Tab::Help,
         Tab::Settings,
     ];
@@ -49,6 +56,7 @@ impl Tab {
             Tab::Projects => "Projects",
             Tab::Marketing => "Marketing",
             Tab::Menu => "Menu",
+            Tab::System => "System",
             Tab::Help => "Help",
             Tab::Settings => "Settings",
         }
@@ -80,37 +88,65 @@ pub enum ReauthStatus {
     Error(String),
 }
 
+/// The sections of the System tab, top to bottom. Order is the reading order
+/// of the system itself: what it is → what binds it → who runs it → what it
+/// can do → the manual.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InfoSection {
-    Atlas,
+    Overview,
+    Laws,
+    Rules,
     AisbAgents,
+    Atlas,
     Oracle,
     Workers,
-    Rules,
+    Skills,
+    Docs,
 }
 
 impl InfoSection {
     pub fn all() -> &'static [InfoSection] {
         &[
-            InfoSection::Atlas,
+            InfoSection::Overview,
+            InfoSection::Laws,
+            InfoSection::Rules,
             InfoSection::AisbAgents,
+            InfoSection::Atlas,
             InfoSection::Oracle,
             InfoSection::Workers,
-            InfoSection::Rules,
+            InfoSection::Skills,
+            InfoSection::Docs,
         ]
     }
+
+    /// Sections whose right panel carries its own ↑/↓ cursor over a list,
+    /// rather than scrolling free-form text.
+    pub fn has_sub_cursor(&self) -> bool {
+        matches!(self, InfoSection::AisbAgents | InfoSection::Docs)
+    }
+
     pub fn label(&self) -> String {
         match self {
-            InfoSection::Atlas => "Atlas — the Director brain".to_string(),
-            // Count derived from the roster, not hardcoded: the literal "(13)"
-            // silently went stale when Council joined the Matrix agents.
+            InfoSection::Overview => "Overview — what OmegaOS is".to_string(),
+            // Counts derived from the registries, never hardcoded: the literal
+            // "(13)" silently went stale when Council joined the Matrix agents.
+            InfoSection::Laws => format!("Laws ({}) — inviolable", omega_core::rules::laws().len()),
+            InfoSection::Rules => format!(
+                "Rules ({}) — operational doctrine",
+                omega_core::rules::all_rules()
+                    .iter()
+                    .filter(|r| r.kind == omega_core::rules::RuleKind::Rule)
+                    .count()
+            ),
             InfoSection::AisbAgents => format!(
-                "AISB Agents ({})",
+                "AI Agents ({})",
                 omega_core::aisb_agents::AisbAgent::all().len()
             ),
+            InfoSection::Atlas => "Atlas — the Director brain".to_string(),
             InfoSection::Oracle => "Oracle — routing & coordination".to_string(),
             InfoSection::Workers => "Workers — dispatch & lifecycle".to_string(),
-            InfoSection::Rules => "Rules — system invariants".to_string(),
+            InfoSection::Skills => "Skills — the installed arsenal".to_string(),
+            InfoSection::Docs => "Documentation — the manual".to_string(),
         }
     }
 }
@@ -1100,14 +1136,25 @@ pub struct App {
     /// New-project wizard: chosen credential group for a client project (set in
     /// the cred-group step, read by the CreateProject handler). None = default.
     pub new_project_cred_group: Option<String>,
+    /// Cursor in the System tab's left section list (`InfoSection::all()`).
     pub info_section_selected: usize,
-    /// Which group of the Projects tab the cursor is on: 0 = System info
-    /// sections (`InfoSection`/`info_section_selected`), 1 = Projects
-    /// (`project_registry`/`projects_selected`). One continuous left list,
-    /// separated by a blank gap + `─── Projects ───` header.
-    pub projects_group: u8,
-    /// When the AISB Agents sub-section is active, which agent is highlighted.
+    /// When the AI Agents sub-section is active, which agent is highlighted.
     pub info_agent_selected: usize,
+    /// When the Documentation sub-section is active, which document is open.
+    pub info_doc_selected: usize,
+    /// The installed manual, discovered once at startup (a filesystem walk has
+    /// no business running inside the 5s refresh tick or the render loop).
+    pub docs: Vec<omega_core::docs::DocEntry>,
+    /// Body of the document under `info_doc_selected`, loaded lazily and cached
+    /// by relative path so arrowing through the list re-reads nothing.
+    pub doc_body: Option<(String, String)>,
+    /// The installed skills, discovered once at startup alongside `docs`.
+    pub skills: Vec<omega_core::skill_registry::Skill>,
+    /// Set when a sub-cursor moves, so the renderer scrolls the detail panel to
+    /// keep that row visible — for ONE frame. Any explicit scroll clears it.
+    /// Without the flag the renderer re-snapped every frame, which pinned the
+    /// panel to the document list and made the document BODY unreachable.
+    pub detail_follow_cursor: bool,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub input_mode: InputMode,
@@ -1297,8 +1344,16 @@ impl App {
             session_filter: None,
             new_project_cred_group: None,
             info_section_selected: 0,
-            projects_group: 0,
             info_agent_selected: 0,
+            info_doc_selected: 0,
+            // One walk at startup, never in the refresh tick: the manual and
+            // the skill arsenal only change on install/update.
+            docs: omega_core::docs::discover(),
+            doc_body: None,
+            skills: omega_core::skill_registry::SkillRegistry::discover_default()
+                .map(|r| r.list().into_iter().cloned().collect())
+                .unwrap_or_default(),
+            detail_follow_cursor: false,
             should_quit: false,
             status_message: None,
             input_mode: InputMode::Normal,
@@ -1723,9 +1778,11 @@ impl App {
             .detail_scroll
             .saturating_add(lines)
             .min(self.detail_max_scroll);
+        self.detail_follow_cursor = false;
     }
     pub fn scroll_detail_up(&mut self, lines: u16) {
         self.detail_scroll = self.detail_scroll.saturating_sub(lines);
+        self.detail_follow_cursor = false;
     }
 
     /// Cancel an in-flight mouse selection. Called when the view shifts under
@@ -2448,7 +2505,7 @@ impl App {
     pub fn select_info_next(&mut self) {
         let count = InfoSection::all().len();
         self.info_section_selected = (self.info_section_selected + 1) % count;
-        self.info_agent_selected = 0;
+        self.on_info_nav_change();
     }
 
     pub fn select_info_prev(&mut self) {
@@ -2458,73 +2515,94 @@ impl App {
         } else {
             self.info_section_selected - 1
         };
+        self.on_info_nav_change();
+    }
+
+    /// Every System-tab section change resets the sub-cursors and the scroll —
+    /// landing halfway down the previous section's text reads as a broken panel.
+    fn on_info_nav_change(&mut self) {
         self.info_agent_selected = 0;
+        self.detail_scroll = 0;
     }
 
     pub fn selected_info_section(&self) -> InfoSection {
         InfoSection::all()[self.info_section_selected.min(InfoSection::all().len() - 1)]
     }
 
-    /// True when the Projects-tab cursor sits on a Projects-group row.
-    pub fn on_projects_group(&self) -> bool {
-        self.projects_group == 1
-    }
-
-    /// Number of navigable rows in the Projects group (≥1 so the empty
+    /// Number of navigable rows in the Projects list (≥1 so the empty
     /// "(no projects)" placeholder row stays selectable).
     fn projects_len(&self) -> usize {
         self.project_registry.projects.len().max(1)
     }
 
-    /// Advance the unified Projects-tab cursor: walks the info sections, then the
-    /// project list, then wraps back to the first info section.
+    /// Advance the Projects-tab cursor. Since the System sections moved to
+    /// their own tab, this list is projects and nothing else — it wraps.
     pub fn projects_tab_next(&mut self) {
-        let ilen = InfoSection::all().len();
         let plen = self.projects_len();
-        if self.projects_group == 0 {
-            if self.info_section_selected + 1 < ilen {
-                self.info_section_selected += 1;
-            } else {
-                self.projects_group = 1;
-                self.projects_selected = 0;
-            }
-        } else if self.projects_selected + 1 < plen {
-            self.projects_selected += 1;
-        } else {
-            self.projects_group = 0;
-            self.info_section_selected = 0;
-        }
+        self.projects_selected = (self.projects_selected + 1) % plen;
         self.on_projects_nav_change();
     }
 
     pub fn projects_tab_prev(&mut self) {
-        let ilen = InfoSection::all().len();
         let plen = self.projects_len();
-        if self.projects_group == 0 {
-            if self.info_section_selected > 0 {
-                self.info_section_selected -= 1;
-            } else {
-                self.projects_group = 1;
-                self.projects_selected = plen.saturating_sub(1);
-            }
-        } else if self.projects_selected > 0 {
-            self.projects_selected -= 1;
+        self.projects_selected = if self.projects_selected == 0 {
+            plen - 1
         } else {
-            self.projects_group = 0;
-            self.info_section_selected = ilen.saturating_sub(1);
-        }
+            self.projects_selected - 1
+        };
         self.on_projects_nav_change();
     }
 
     fn on_projects_nav_change(&mut self) {
-        self.info_agent_selected = 0;
         self.detail_scroll = 0;
         self.project_delete_pending = None;
+    }
+
+    /// Documents in the manual, ≥1 so the "(no docs installed)" placeholder
+    /// row stays selectable.
+    fn docs_len(&self) -> usize {
+        self.docs.len().max(1)
+    }
+
+    pub fn select_info_doc_next(&mut self) {
+        let len = self.docs_len();
+        self.info_doc_selected = (self.info_doc_selected + 1) % len;
+        self.detail_follow_cursor = true;
+    }
+
+    pub fn select_info_doc_prev(&mut self) {
+        let len = self.docs_len();
+        self.info_doc_selected = if self.info_doc_selected == 0 {
+            len - 1
+        } else {
+            self.info_doc_selected - 1
+        };
+        self.detail_follow_cursor = true;
+    }
+
+    /// The document under the cursor, if any is installed.
+    pub fn selected_doc(&self) -> Option<&omega_core::docs::DocEntry> {
+        self.docs.get(self.info_doc_selected.min(self.docs.len().saturating_sub(1)))
+    }
+
+    /// Body of the selected document, read from disk on first request and
+    /// cached by relative path. Returns None when no docs are installed.
+    pub fn selected_doc_body(&mut self) -> Option<&str> {
+        let (rel, path) = {
+            let doc = self.selected_doc()?;
+            (doc.rel_path.clone(), doc.path.clone())
+        };
+        let stale = !matches!(&self.doc_body, Some((cached, _)) if *cached == rel);
+        if stale {
+            self.doc_body = Some((rel, omega_core::docs::read_body(&path)));
+        }
+        self.doc_body.as_ref().map(|(_, body)| body.as_str())
     }
 
     pub fn select_info_agent_next(&mut self) {
         let count = omega_core::aisb_agents::AisbAgent::all().len();
         self.info_agent_selected = (self.info_agent_selected + 1) % count;
+        self.detail_follow_cursor = true;
     }
     pub fn select_info_agent_prev(&mut self) {
         let count = omega_core::aisb_agents::AisbAgent::all().len();
@@ -2533,6 +2611,7 @@ impl App {
         } else {
             self.info_agent_selected - 1
         };
+        self.detail_follow_cursor = true;
     }
 
     pub fn select_next(&mut self) {

@@ -2,7 +2,7 @@
 //!
 //! Each agent has a name, model class, role, tool set, and a compiled-in
 //! system prompt. This is the single source of truth — the Master AISB
-//! references this when deciding who to delegate to, and the Info tab
+//! references this when deciding who to delegate to, and the System tab
 //! displays the same data so users can read the definitions.
 
 use serde::{Deserialize, Serialize};

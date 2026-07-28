@@ -65,7 +65,7 @@ Compare before/after:
 - AISB Master still auto-restarts on crash
 - PDF generator still works from any directory
 - omega rules list/export/sync still function
-- All 6 Laws + the named Rules still render in Info tab (`omega rules list` is the count of record)
+- All Laws + the named Rules still render in the System tab (`omega rules list` is the count of record)
 
 ## Execution
 

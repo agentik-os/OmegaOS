@@ -472,7 +472,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.tab {
         Tab::Sessions => draw_sessions(frame, app, chunks[1]),
         Tab::Menu => draw_menu(frame, app, chunks[1]),
-        Tab::Projects => draw_info(frame, app, chunks[1]),
+        Tab::Projects => draw_projects(frame, app, chunks[1]),
+        Tab::System => draw_system(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Marketing => draw_marketing(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
@@ -2413,10 +2414,26 @@ fn short_num(n: u64) -> String {
     }
 }
 
-/// Build the unified Projects-tab left list: a top-padding blank, the System
-/// info group, a blank gap, then the Projects group. Returns (items,
-/// flat_selected) — the rendered row index of the cursor for `ListState`
-/// scroll tracking.
+/// Build the System tab's left section list.
+fn build_system_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
+    let list_focused = !app.detail_focused;
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut flat_selected = 0usize;
+
+    items.push(ListItem::new(Line::from("")));
+    items.push(group_header("OmegaOS"));
+    for (i, sec) in InfoSection::all().iter().enumerate() {
+        let current = i == app.info_section_selected;
+        if current {
+            flat_selected = items.len();
+        }
+        items.push(section_row(sec.label(), current, current && list_focused));
+    }
+    (items, flat_selected)
+}
+
+/// Build the Projects-tab left list. Returns (items, flat_selected) — the
+/// rendered row index of the cursor for `ListState` scroll tracking.
 fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     let list_focused = !app.detail_focused;
     let mut items: Vec<ListItem> = Vec::new();
@@ -2425,23 +2442,6 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // Top padding.
     items.push(ListItem::new(Line::from("")));
 
-    // ── Group 1: System info sections ────────────────────────────────────────
-    // Named "System" (not "Projects") so it never collides with the tab name:
-    // the tab is Projects, and these rows are the Atlas/Oracle/Workers/Rules
-    // status readouts, not projects.
-    items.push(group_header("System"));
-    for (i, sec) in InfoSection::all().iter().enumerate() {
-        let current = app.projects_group == 0 && i == app.info_section_selected;
-        if current {
-            flat_selected = items.len();
-        }
-        items.push(section_row(sec.label().to_string(), current, current && list_focused));
-    }
-
-    // Gap between groups.
-    items.push(ListItem::new(Line::from("")));
-
-    // ── Group 2: Projects ────────────────────────────────────────────────────
     // Grouped under thematic sub-headers derived per-machine from each project's
     // folder under the user's configured projects root (or an explicit category).
     // Selection is by registry index, so the registry is kept sorted in this same
@@ -2449,7 +2449,7 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // top-to-bottom.
     items.push(group_header("Projects"));
     if app.project_registry.projects.is_empty() {
-        let current = app.projects_group == 1;
+        let current = true;
         if current {
             flat_selected = items.len();
         }
@@ -2481,7 +2481,7 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
                 if &project.display_category(root) != cat {
                     continue;
                 }
-                let current = app.projects_group == 1 && i == app.projects_selected;
+                let current = i == app.projects_selected;
                 if current {
                     flat_selected = items.len();
                 }
@@ -3094,31 +3094,94 @@ fn mask_key(key: &str) -> String {
     }
 }
 
-fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
-    // Detail + label depend on the group: the System info group renders the
-    // info sections, the Projects group renders the selected project's detail.
-    let on_projects = app.on_projects_group();
-    let (lines, scroll_target) = if on_projects {
-        (render_project_detail(app), 0usize)
-    } else {
-        match app.selected_info_section() {
-            InfoSection::Atlas => (render_info_atlas(), 0),
-            InfoSection::AisbAgents => render_info_aisb_agents(app),
-            InfoSection::Oracle => (render_info_oracle(), 0),
-            InfoSection::Workers => (render_info_workers(), 0),
-            InfoSection::Rules => (render_info_rules(), 0),
-        }
-    };
-    let section_label: String = if on_projects {
-        app.selected_project()
-            .map(|p| p.name.clone())
-            .unwrap_or_else(|| "Projects".to_string())
-    } else {
-        app.selected_info_section().label().to_string()
-    };
+/// Projects tab — the project list and the selected project's detail.
+fn draw_projects(frame: &mut Frame, app: &mut App, area: Rect) {
+    let lines = render_project_detail(app);
+    let label = app
+        .selected_project()
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "Projects".to_string());
+    let (items, rendered_selected) = build_projects_list(app);
+    draw_two_column(
+        frame,
+        app,
+        area,
+        TwoColumn {
+            items,
+            rendered_selected,
+            lines,
+            scroll_target: 0,
+            section_label: label,
+            list_focused_title: " ▶ FOCUSED Projects — ↑/↓ select, Tab → focus detail ",
+            list_title: " Projects — Tab to focus list ",
+        },
+    );
+}
 
-    // Auto-scroll to keep selected item visible (agents list, etc.)
-    if app.detail_focused && scroll_target > 0 {
+/// System tab — the doctrine surface: what OmegaOS is, the Laws and Rules that
+/// bind every agent, the AI agent roster, the orchestration layers, the
+/// installed skills, and the whole manual.
+fn draw_system(frame: &mut Frame, app: &mut App, area: Rect) {
+    let (lines, scroll_target) = match app.selected_info_section() {
+        InfoSection::Overview => (render_info_overview(app), 0),
+        InfoSection::Laws => (render_info_laws(), 0),
+        InfoSection::Rules => (render_info_rules(), 0),
+        InfoSection::AisbAgents => render_info_aisb_agents(app),
+        InfoSection::Atlas => (render_info_atlas(), 0),
+        InfoSection::Oracle => (render_info_oracle(), 0),
+        InfoSection::Workers => (render_info_workers(), 0),
+        InfoSection::Skills => (render_info_skills(app), 0),
+        InfoSection::Docs => render_info_docs(app),
+    };
+    let label = app.selected_info_section().label();
+    let (items, rendered_selected) = build_system_list(app);
+    draw_two_column(
+        frame,
+        app,
+        area,
+        TwoColumn {
+            items,
+            rendered_selected,
+            lines,
+            scroll_target,
+            section_label: label,
+            list_focused_title: " ▶ FOCUSED System — ↑/↓ select, Tab → focus detail ",
+            list_title: " System — Tab to focus list ",
+        },
+    );
+}
+
+/// Everything the shared 25/75 list+detail shell needs to render one frame.
+struct TwoColumn<'a> {
+    items: Vec<ListItem<'a>>,
+    /// Rendered row index of the left cursor, for `ListState` scroll tracking.
+    rendered_selected: usize,
+    lines: Vec<Line<'a>>,
+    /// Line the right panel must keep visible (a sub-list cursor); 0 = none.
+    scroll_target: usize,
+    section_label: String,
+    list_focused_title: &'a str,
+    list_title: &'a str,
+}
+
+/// The 25/75 list+detail shell shared by the Projects and System tabs, with
+/// the fullscreen mode, the scroll-bound contract and the focus borders.
+fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn) {
+    let TwoColumn {
+        items,
+        rendered_selected,
+        lines,
+        scroll_target,
+        section_label,
+        list_focused_title,
+        list_title,
+    } = col;
+
+    // Auto-scroll to keep the just-moved sub-cursor visible (agent list,
+    // document list) — once, on the frame after the move. Re-snapping every
+    // frame pinned the panel to the list and made a document's BODY, which
+    // renders below it, impossible to scroll into.
+    if app.detail_focused && app.detail_follow_cursor && scroll_target > 0 {
         let panel_h = area.height.saturating_sub(2);
         let target = scroll_target as u16;
         if target < app.detail_scroll {
@@ -3126,6 +3189,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
         } else if target >= app.detail_scroll + panel_h {
             app.detail_scroll = target.saturating_sub(panel_h.saturating_sub(2));
         }
+        app.detail_follow_cursor = false;
     }
 
     // Publish + pin the scroll bound (same contract as draw_settings): End
@@ -3158,14 +3222,7 @@ fn draw_info(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { th::accent() } else { th::dim() };
     let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
 
-    // ── Left: grouped list (System info group + Projects group) ──────────────
-    let (items, rendered_selected) = build_projects_list(app);
-
-    let list_title = if list_focused {
-        " ▶ FOCUSED Projects — ↑/↓ select, Tab → focus detail "
-    } else {
-        " Projects — Tab to focus list "
-    };
+    let list_title = if list_focused { list_focused_title } else { list_title };
     let list = List::new(items)
         .block(
             Block::default()
@@ -3597,56 +3654,74 @@ fn render_info_workers() -> Vec<Line<'static>> {
     ]
 }
 
+/// The Laws — their own section, because they outrank every rule and reading
+/// them should not mean scrolling past forty rules first.
+fn render_info_laws() -> Vec<Line<'static>> {
+    use omega_core::rules::laws;
+    let law_list = laws();
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  THE LAWS — inviolable, bind every agent, override every rule and every task.",
+            Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(
+                "  {} laws · injected into every dispatched agent · `omega rules list`",
+                law_list.len()
+            ),
+            Style::default().fg(th::dim()),
+        )),
+        Line::from(""),
+    ];
+
+    for r in &law_list {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  {:14}", r.id),
+                Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                r.title.to_string(),
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(Span::styled(
+            format!("    {}", r.description),
+            Style::default().fg(th::text()),
+        )));
+        let applies = if r.applies_to.is_empty() {
+            "all agents".to_string()
+        } else {
+            r.applies_to.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+        };
+        lines.push(Line::from(Span::styled(
+            format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
+            Style::default().fg(th::dim()),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("    Why: {}", r.reason),
+            Style::default().fg(th::dim()),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
 fn render_info_rules() -> Vec<Line<'static>> {
-    use omega_core::rules::{all_rules, laws, RuleCategory, RuleKind};
+    use omega_core::rules::{all_rules, RuleCategory, RuleKind};
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
             "  System invariants — every rule has a reason, a date, and who it binds.",
             Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
         )),
+        Line::from(Span::styled(
+            "  Rules implement the Laws in practice. See the Laws section for what outranks them.",
+            Style::default().fg(th::dim()),
+        )),
         Line::from(""),
     ];
-
-    // ── LAWS — inviolable, render first, visually distinct ──
-    let law_list = laws();
-    if !law_list.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  THE LAWS — inviolable, bind every agent, override every rule",
-            Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(""));
-        for r in &law_list {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("  {:14}", r.id),
-                    Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    r.title.to_string(),
-                    Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            lines.push(Line::from(Span::styled(
-                format!("    {}", r.description),
-                Style::default().fg(th::text()),
-            )));
-            let applies = if r.applies_to.is_empty() {
-                "all agents".to_string()
-            } else {
-                r.applies_to.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
-            };
-            lines.push(Line::from(Span::styled(
-                format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
-                Style::default().fg(th::dim()),
-            )));
-            lines.push(Line::from(Span::styled(
-                format!("    Why: {}", r.reason),
-                Style::default().fg(th::dim()),
-            )));
-            lines.push(Line::from(""));
-        }
-    }
 
     let categories = [
         RuleCategory::Universal,
@@ -3701,6 +3776,295 @@ fn render_info_rules() -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+/// Overview — the one screen that answers "what am I running?": the four
+/// orchestration levels, every registry's live count, and where things live.
+fn render_info_overview(app: &App) -> Vec<Line<'static>> {
+    use omega_core::rules::{all_rules, laws, RuleKind};
+
+    let head = Style::default().fg(th::accent()).add_modifier(Modifier::BOLD);
+    let sub = Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(th::dim());
+
+    let rule_count = all_rules().iter().filter(|r| r.kind == RuleKind::Rule).count();
+    let agent_count = omega_core::aisb_agents::AisbAgent::all().len();
+    let omega_dir = omega_core::config::omega_dir();
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  Ω  OmegaOS v{}", env!("CARGO_PKG_VERSION")),
+            head,
+        )),
+        Line::from(Span::styled(
+            "  An agentic terminal operating system — a multi-agent development platform",
+            Style::default().fg(th::text()),
+        )),
+        Line::from(Span::styled(
+            "  running on rmux, driven by Laws and Rules that bind every agent it dispatches.",
+            Style::default().fg(th::text()),
+        )),
+        Line::from(""),
+        Line::from(Span::styled("  ── The four levels ──", sub)),
+        Line::from(""),
+    ];
+
+    for (level, title, detail) in [
+        ("Level 1", "Human interface", "Telegram · CLI · this TUI — you state intent"),
+        ("Level 2", "Atlas / AISB", "the Director brain classifies and dispatches"),
+        ("Level 3", "Oracle", "one per project, strategic — decomposes and delegates"),
+        ("Level 4", "Workers", "ephemeral, parallel, file-scoped — execute, verify, report"),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:9}", level), Style::default().fg(th::special())),
+            Span::styled(
+                format!("{:18}", title),
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(detail.to_string(), dim),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  ── What is loaded right now ──", sub)));
+    lines.push(Line::from(""));
+
+    // Counts come from the live registries — a hardcoded number here is a
+    // number that goes stale the next time a law or a skill is added.
+    for (label, value, hint) in [
+        ("Laws", laws().len().to_string(), "inviolable, injected into every agent"),
+        ("Rules", rule_count.to_string(), "operational, scoped per agent level"),
+        ("AI agents", agent_count.to_string(), "the AISB Matrix roster"),
+        ("Skills", app.skills.len().to_string(), "installed under ~/.omega/skills"),
+        ("Documents", app.docs.len().to_string(), "the manual, under ~/.omega/docs"),
+        (
+            "Projects",
+            app.project_registry.projects.len().to_string(),
+            "registered in the Projects tab",
+        ),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:12}", label), Style::default().fg(th::accent2())),
+            Span::styled(
+                format!("{:>5}  ", value),
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(hint.to_string(), dim),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  ── Where it lives ──", sub)));
+    lines.push(Line::from(""));
+    for (label, path) in [
+        ("State + secrets", omega_dir.to_string_lossy().to_string()),
+        ("Skills", omega_dir.join("skills").to_string_lossy().to_string()),
+        ("Manual", omega_core::docs::docs_dir().to_string_lossy().to_string()),
+        ("Projects root", app.config.projects_dir.to_string_lossy().to_string()),
+    ] {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:16}", label), Style::default().fg(th::accent2())),
+            Span::styled(path, dim),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ↑/↓ pick a section on the left · Tab focuses this panel · [ and ] jump sections",
+        dim,
+    )));
+    lines.push(Line::from(Span::styled(
+        "  Same doctrine on the CLI: `omega rules list` · `omega guide` · `omega doctor`",
+        dim,
+    )));
+    lines
+}
+
+/// Skills — the installed arsenal, grouped by category, straight from
+/// ~/.omega/skills. Empty is a real state worth explaining, not a blank panel.
+fn render_info_skills(app: &App) -> Vec<Line<'static>> {
+    use omega_core::skill_registry::SkillCategory;
+
+    let dim = Style::default().fg(th::dim());
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!(
+                "  {} skills installed — invoked by name from any agent session.",
+                app.skills.len()
+            ),
+            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("  {}", omega_core::config::omega_dir().join("skills").display()),
+            dim,
+        )),
+        Line::from(""),
+    ];
+
+    if app.skills.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No skills found. Run `omega update` (or ./install.sh) to install the arsenal.",
+            Style::default().fg(th::accent2()),
+        )));
+        return lines;
+    }
+
+    let categories = [
+        SkillCategory::Audit,
+        SkillCategory::Build,
+        SkillCategory::Design,
+        SkillCategory::Orchestration,
+        SkillCategory::Marketing,
+        SkillCategory::Utility,
+        SkillCategory::Custom,
+    ];
+    for cat in categories {
+        let mut in_cat: Vec<_> = app.skills.iter().filter(|s| s.category == cat).collect();
+        if in_cat.is_empty() {
+            continue;
+        }
+        in_cat.sort_by(|a, b| a.name.cmp(&b.name));
+        lines.push(Line::from(Span::styled(
+            format!("  ── {} ({}) ──", cat.label(), in_cat.len()),
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )));
+        for skill in in_cat {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  /{:28}", skill.name),
+                    Style::default().fg(th::accent()),
+                ),
+                Span::styled(truncate_chars(&skill.description, 90), Style::default().fg(th::text())),
+            ]));
+        }
+        lines.push(Line::from(""));
+    }
+    lines
+}
+
+/// Documentation — the installed manual. The left half of the panel is a
+/// document list with its own ↑/↓ cursor, the rest is the selected document.
+fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
+    let dim = Style::default().fg(th::dim());
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("  {} documents — ↑/↓ to pick one, it opens below.", app.docs.len()),
+            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!("  {}", omega_core::docs::docs_dir().display()),
+            dim,
+        )),
+        Line::from(""),
+    ];
+
+    if app.docs.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  No documentation installed yet.",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "  Run `omega update` — the installer mirrors the OmegaOS manual into",
+            Style::default().fg(th::text()),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!("  {} so it reads offline, with no checkout.", omega_core::docs::docs_dir().display()),
+            Style::default().fg(th::text()),
+        )));
+        return (lines, 0);
+    }
+
+    let selected = app.info_doc_selected.min(app.docs.len() - 1);
+    let mut selected_line = 4usize;
+    let mut current_group = String::new();
+    for (i, doc) in app.docs.iter().enumerate() {
+        if doc.group != current_group {
+            current_group = doc.group.clone();
+            lines.push(Line::from(Span::styled(
+                format!("  ── {} ──", current_group),
+                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            )));
+        }
+        let is_selected = i == selected;
+        if is_selected {
+            selected_line = lines.len();
+        }
+        let title_style = if is_selected {
+            Style::default()
+                .fg(th::sel_fg())
+                .bg(th::accent2())
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(th::text())
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if is_selected { "▶ " } else { "  " }, Style::default().fg(th::accent())),
+            Span::styled(format!("{:34}", truncate_chars(&doc.title, 34)), title_style),
+            Span::styled(format!(" {:>5}  ", human_size(doc.bytes)), dim),
+            Span::styled(truncate_chars(&doc.summary, 70), dim),
+        ]));
+    }
+
+    let (title, rel_path) = {
+        let doc = &app.docs[selected];
+        (doc.title.clone(), doc.rel_path.clone())
+    };
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("  ═══ {} ═══", title),
+        Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(format!("  {}", rel_path), dim)));
+    lines.push(Line::from(""));
+
+    // The body is plain text, deliberately: a terminal-width markdown renderer
+    // is a different feature. Headings are the one thing worth colouring —
+    // without them a 900-line spec is an undifferentiated wall.
+    let body = app.selected_doc_body().unwrap_or("").to_string();
+    for raw in body.lines() {
+        let line = raw.trim_end();
+        if line.starts_with("#### ") || line.starts_with("### ") {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(th::accent2()),
+            )));
+        } else if line.starts_with("## ") || line.starts_with("# ") {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            )));
+        } else {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", line),
+                Style::default().fg(th::text()),
+            )));
+        }
+    }
+    (lines, selected_line)
+}
+
+/// Char-safe truncation — byte slicing panics on the emoji and accented text
+/// that project names, skill descriptions and doc summaries are full of.
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 {
+        format!("{:.1}M", bytes as f64 / 1_048_576.0)
+    } else if bytes >= 1024 {
+        format!("{}K", bytes / 1024)
+    } else {
+        format!("{}B", bytes)
+    }
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -3807,7 +4171,7 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("x", "Clear selected text field (press twice)"),
         Line::from(""),
 
-        section("Projects → Projects group"),
+        section("Projects"),
         key("↑ / ↓", "Browse projects"),
         key("Enter", "Focus detail; Enter again → open in terminal"),
         key("d", "Dispatch oracle to selected project"),
@@ -3818,9 +4182,13 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("D", "Quick delete local (press twice)"),
         Line::from(""),
 
-        section("Projects → System group"),
-        key("↑ / ↓", "Navigate sub-sections (or AISB agents in detail)"),
-        key("[  /  ]", "Previous / next sub-section"),
+        section("System — the doctrine, the agents, the manual"),
+        key("↑ / ↓", "Pick a section (Overview · Laws · Rules · Agents · Skills · Docs)"),
+        key("Tab", "Focus the right panel to read it"),
+        key("↑ / ↓ (focused)", "Scroll — or move the agent / document cursor"),
+        key("[  /  ]", "Previous / next section while the detail is focused"),
+        key("PgUp/PgDn Home/End", "Page and jump through long documents"),
+        key("Tab-Tab", "Fullscreen the panel (a whole doc, full width)"),
         Line::from(""),
 
         section("Chat (Sessions, when chat-focused)"),

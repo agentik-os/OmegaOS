@@ -2209,11 +2209,21 @@ fi
 
 # Install reference docs (architecture, integration plans, install guide).
 # Ship the whole docs/ tree to ~/.omega/docs/ so users can `omega docs`
-# (and so Claude sessions launched in $HOME can read them).
+# (and so Claude sessions launched in $HOME can read them). This is also the
+# manual the TUI's System tab reads: a user who installed via npx has no
+# checkout, so the docs on disk are the only copy they have.
 if [[ -d "$OMEGA_SRC/docs" ]]; then
     mkdir -p "$OMEGA_DIR/docs"
     cp -r "$OMEGA_SRC/docs/"* "$OMEGA_DIR/docs/" 2>/dev/null || true
-    ok "Reference docs installed → $OMEGA_DIR/docs/ ($(ls "$OMEGA_DIR/docs/"*.md 2>/dev/null | wc -l) markdown files)"
+    # The root canon (README, CLAUDE, RULES, GUIDE, …) goes under docs/canon/ —
+    # its own sub-dir so README.md never collides with docs/README.md, and so
+    # the System tab can group it ahead of the guides.
+    mkdir -p "$OMEGA_DIR/docs/canon"
+    for canon in README.md CLAUDE.md RULES.md GUIDE.md OMEGA.md AGENTS.md \
+                 CHANGELOG.md CONTRIBUTING.md SECURITY.md CODE_OF_CONDUCT.md; do
+        [[ -f "$OMEGA_SRC/$canon" ]] && cp -f "$OMEGA_SRC/$canon" "$OMEGA_DIR/docs/canon/$canon"
+    done
+    ok "Manual installed → $OMEGA_DIR/docs/ ($(find "$OMEGA_DIR/docs" -name '*.md' 2>/dev/null | wc -l) documents · TUI: System tab → Documentation)"
 fi
 
 # Ship OmegaOS-specific Claude Code slash commands (.claude/commands/omega-*.md)

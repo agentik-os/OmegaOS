@@ -56,7 +56,7 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 
 - **Laws (L0–L6)** — inviolable, universal, top-priority. They bind every agent always and
   override every rule and task. Few, stable, never scoped-out. Rendered first everywhere
-  (TUI Info tab, `omega rules list`, every prompt block) and visually distinct.
+  (TUI System tab, `omega rules list`, every prompt block) and visually distinct.
   The seven: L0 ship-the-truth (install-parity), L1 runtime-is-truth, L2 researcher-not-sycophant,
   L3 decide-and-proceed, L4 done-means-100%, L5 quality-over-speed, L6 finish-the-mission
   (never stop mid-workflow — enumerate, execute, verify, report; three legal stops only).

@@ -395,6 +395,16 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 }
             }
         }
+        Tab::System => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.select_info_next(); } else { app.select_info_prev(); }
+                }
+            }
+        }
         Tab::Help => {
             if down { app.scroll_detail_down(lines); }
             else { app.scroll_detail_up(lines); }
@@ -1189,7 +1199,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "In session — Tab: back to list · Ctrl+X: close session · Tab-Tab: hide/show menu".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Projects) {
+            } else if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on the Settings group, snap cursor to the
@@ -1222,7 +1232,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Scroll: depends on the active tab + focus. PageUp/PageDown super-
         // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(app.preview_inner_height.max(10));
@@ -1230,7 +1240,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(app.preview_inner_height.max(10));
@@ -1238,19 +1248,22 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
                 app.detail_scroll = 0;
+                // Explicit scroll wins over the sub-cursor snap-back.
+                app.detail_follow_cursor = false;
             } else {
                 app.scroll_preview_home();
             }
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects) {
+            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
                 // Jump to the renderer-published bound, not a huge sentinel:
                 // u16::MAX/2 scrolled the Paragraph ~32k lines past its
                 // content — an empty panel only Home could recover.
                 app.detail_scroll = app.detail_max_scroll;
+                app.detail_follow_cursor = false;
             } else {
                 app.scroll_preview_end();
             }
@@ -1295,16 +1308,18 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
                 return Action::None;
             }
-            // Projects tab + detail focused: Projects group → scroll the project
-            // detail; info group → navigate AISB agents (on that section) or scroll.
-            if app.tab == Tab::Projects && app.detail_focused {
-                if app.on_projects_group() {
-                    app.scroll_detail_down(1);
-                } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
-                    app.select_info_agent_next();
-                } else {
-                    app.scroll_detail_down(1);
+            // System tab + detail focused: sections with their own list (AI
+            // Agents, Documentation) move that cursor; the rest scroll the text.
+            if app.tab == Tab::System && app.detail_focused {
+                match app.selected_info_section() {
+                    crate::app::InfoSection::AisbAgents => app.select_info_agent_next(),
+                    crate::app::InfoSection::Docs => app.select_info_doc_next(),
+                    _ => app.scroll_detail_down(1),
                 }
+                return Action::None;
+            }
+            if app.tab == Tab::Projects && app.detail_focused {
+                app.scroll_detail_down(1);
                 return Action::None;
             }
             match app.tab {
@@ -1313,6 +1328,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Settings => app.settings_tab_next(),
                 Tab::Projects => app.projects_tab_next(),
                 Tab::Marketing => app.marketing_tab_next(),
+                Tab::System => app.select_info_next(),
                 Tab::Help => app.scroll_detail_down(1),
             }
             Action::None
@@ -1336,14 +1352,16 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
                 return Action::None;
             }
-            if app.tab == Tab::Projects && app.detail_focused {
-                if app.on_projects_group() {
-                    app.scroll_detail_up(1);
-                } else if matches!(app.selected_info_section(), crate::app::InfoSection::AisbAgents) {
-                    app.select_info_agent_prev();
-                } else {
-                    app.scroll_detail_up(1);
+            if app.tab == Tab::System && app.detail_focused {
+                match app.selected_info_section() {
+                    crate::app::InfoSection::AisbAgents => app.select_info_agent_prev(),
+                    crate::app::InfoSection::Docs => app.select_info_doc_prev(),
+                    _ => app.scroll_detail_up(1),
                 }
+                return Action::None;
+            }
+            if app.tab == Tab::Projects && app.detail_focused {
+                app.scroll_detail_up(1);
                 return Action::None;
             }
             match app.tab {
@@ -1352,19 +1370,19 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Settings => app.settings_tab_prev(),
                 Tab::Projects => app.projects_tab_prev(),
                 Tab::Marketing => app.marketing_tab_prev(),
+                Tab::System => app.select_info_prev(),
                 Tab::Help => app.scroll_detail_up(1),
             }
             Action::None
         }
 
-        // Left/Right inside Info navigates between sub-sections (independent of agent sub-cursor)
-        // We use a separate explicit handler via PgUp/PgDn — but since arrow keys are taken
-        // for tabs, users can use Home/End or [/] to jump between sub-sections:
-        KeyCode::Char('[') if app.tab == Tab::Projects && !app.on_projects_group() => {
+        // [ and ] jump between System sections while the detail panel holds the
+        // ↑/↓ keys (agent list, document list) — the arrows are taken by tabs.
+        KeyCode::Char('[') if app.tab == Tab::System => {
             app.select_info_prev();
             Action::None
         }
-        KeyCode::Char(']') if app.tab == Tab::Projects && !app.on_projects_group() => {
+        KeyCode::Char(']') if app.tab == Tab::System => {
             app.select_info_next();
             Action::None
         }
@@ -1535,8 +1553,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 }
             }
             Tab::Projects => {
-                if app.on_projects_group() {
-                    // ── Projects group ──
+                {
                     if app.project_registry.projects.is_empty() {
                         // Empty registry: Enter opens the same add-project modal
                         // as 'n' — the literal "Enter adds a project" affordance.
@@ -1571,18 +1588,20 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                             }
                         }
                     }
-                } else {
-                    // ── System info group: Enter focuses the detail panel so
-                    // users can browse Oracle/Workers/Rules content. ──
-                    if !app.detail_focused {
-                        app.detail_focused = true;
-                        app.detail_scroll = 0;
-                        app.status_message = Some(
-                            "Focus: detail (↑/↓ scroll or navigate agents, Tab → list, Tab-Tab → fullscreen)".to_string(),
-                        );
-                    }
-                    Action::None
                 }
+            }
+            Tab::System => {
+                // Enter focuses the detail panel so the Laws, the agents, the
+                // skills and the manual can be read and scrolled.
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: detail (↑/↓ scroll or navigate, [/] section, Tab → list, Tab-Tab → fullscreen)"
+                            .to_string(),
+                    );
+                }
+                Action::None
             }
             Tab::Marketing => {
                 // Enter opens a marketing-scoped Claude session for the selected
@@ -1644,7 +1663,7 @@ code produit.",
         // Projects tab: 'n' opens a guided "register existing folder" modal
         // (the in-TUI replacement for the `omega project add` CLI hint). For a
         // green-field scaffold the Menu tab's New-project wizard still applies.
-        KeyCode::Char('n') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('n') if app.tab == Tab::Projects => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::AddProjectPath;
             app.status_message =
@@ -1689,7 +1708,7 @@ code produit.",
         }
         // Projects tab: 'x' opens the DELETE menu — the same three escalating
         // tiers as the Telegram bot (visible options, no hidden hotkey-guessing).
-        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Projects => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     app.input_mode = InputMode::ProjectDelete(name, 0);
@@ -1701,7 +1720,7 @@ code produit.",
                 }
             }
         }
-        KeyCode::Char('T') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('T') if app.tab == Tab::Projects => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => Action::ToggleProjectTelegram { name },
                 None => {
@@ -1713,7 +1732,7 @@ code produit.",
         // Projects tab: 'D' = Delete forever (two-press confirm) — removes the
         // project from OmegaOS AND deletes its local folder. Distinct from 'x'
         // (registry-only removal). First press arms it; second 'D' fires.
-        KeyCode::Char('D') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('D') if app.tab == Tab::Projects => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     if app.project_delete_pending.as_deref() == Some(name.as_str()) {
@@ -1754,7 +1773,7 @@ code produit.",
         }
         // Projects tab: 'p' runs the planner for the selected project
         // (the global 'p' = new Pi session applies on every other tab).
-        KeyCode::Char('p') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('p') if app.tab == Tab::Projects => {
             match app.selected_project() {
                 Some(p) => Action::RunPlannerForProject {
                     name: p.name.clone(),
@@ -1795,7 +1814,7 @@ code produit.",
 
         // Projects tab: 'd' pre-fills the dispatch with the selected project,
         // skipping the project-name step → straight to mission entry.
-        KeyCode::Char('d') if app.tab == Tab::Projects && app.on_projects_group() => {
+        KeyCode::Char('d') if app.tab == Tab::Projects => {
             match app.selected_project().map(|p| p.name.clone()) {
                 Some(name) => {
                     app.input_buffer = String::new();
@@ -2496,15 +2515,15 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
-    // The tab bar reads Sessions · Projects · Marketing · Menu · Help · Settings,
-    // and Right/Left walk it in that visual order. Locked down because the order
-    // used to live in three hand-kept lists that drifted apart.
+    // The tab bar reads Sessions · Projects · Marketing · Menu · System · Help ·
+    // Settings, and Right/Left walk it in that visual order. Locked down because
+    // the order used to live in three hand-kept lists that drifted apart.
     #[test]
     fn tab_order_matches_the_bar_and_cycles_both_ways() {
         let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
         assert_eq!(
             titles,
-            vec!["Sessions", "Projects", "Marketing", "Menu", "Help", "Settings"]
+            vec!["Sessions", "Projects", "Marketing", "Menu", "System", "Help", "Settings"]
         );
         for (i, t) in Tab::ORDER.iter().enumerate() {
             assert_eq!(t.index(), i, "{} must sit at bar position {}", t.title(), i);
@@ -2522,6 +2541,95 @@ mod tests {
             app.prev_tab();
             assert_eq!(app.tab, *expected, "prev_tab landed on the wrong tab");
         }
+    }
+
+    // The doctrine surface must stay REACHABLE as its own tab. It was lost once
+    // already: Info → renamed Agentic → Agentic repurposed into Projects, and
+    // its sections survived only as a buried group above the project list. This
+    // test fails the moment System stops being a top-level tab.
+    #[test]
+    fn system_tab_is_a_real_tab_carrying_the_doctrine() {
+        assert!(
+            Tab::ORDER.contains(&Tab::System),
+            "System must sit in the tab bar, not inside another tab"
+        );
+
+        use crate::app::InfoSection;
+        let sections = InfoSection::all();
+        // The five things the operator asked to be able to read.
+        for required in [
+            InfoSection::Laws,
+            InfoSection::Rules,
+            InfoSection::AisbAgents,
+            InfoSection::Skills,
+            InfoSection::Docs,
+        ] {
+            assert!(sections.contains(&required), "{:?} must be readable", required);
+        }
+    }
+
+    // ↑/↓ walk the sections while the list has focus, and wrap both ways.
+    #[test]
+    fn system_sections_navigate_and_wrap() {
+        use crate::app::InfoSection;
+        let mut app = test_app();
+        app.tab = Tab::System;
+        app.detail_focused = false;
+        let last = InfoSection::all().len() - 1;
+
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+
+        handle_key(&mut app, down);
+        assert_eq!(app.info_section_selected, 1);
+        handle_key(&mut app, up);
+        assert_eq!(app.info_section_selected, 0);
+        // Up from the first section wraps to the last.
+        handle_key(&mut app, up);
+        assert_eq!(app.info_section_selected, last);
+        handle_key(&mut app, down);
+        assert_eq!(app.info_section_selected, 0, "down from the last wraps home");
+    }
+
+    // With the detail focused, ↑/↓ belong to the section's own list (agents,
+    // documents) — [ and ] are what change section, since the arrows are taken.
+    #[test]
+    fn focused_detail_moves_the_sub_cursor_and_brackets_change_section() {
+        use crate::app::InfoSection;
+        let mut app = test_app();
+        app.tab = Tab::System;
+        app.info_section_selected = InfoSection::all()
+            .iter()
+            .position(|s| *s == InfoSection::AisbAgents)
+            .expect("AI Agents section");
+        app.detail_focused = true;
+
+        let before = app.info_section_selected;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.info_agent_selected, 1, "↑/↓ drive the agent list");
+        assert_eq!(app.info_section_selected, before, "and never the section list");
+
+        handle_key(&mut app, press(']'));
+        assert_eq!(app.info_section_selected, before + 1, "] moves to the next section");
+        handle_key(&mut app, press('['));
+        assert_eq!(app.info_section_selected, before, "[ moves back");
+        assert_eq!(app.info_agent_selected, 0, "a section change resets the sub-cursor");
+    }
+
+    // The Projects tab is projects and nothing else now — its cursor must walk
+    // the project rows directly, never stall on a phantom leading group that no
+    // longer renders. Registry is set explicitly: the machine's real one would
+    // make this pass or fail depending on how many projects are registered.
+    #[test]
+    fn projects_cursor_walks_projects_only() {
+        let mut app = test_app();
+        app.tab = Tab::Projects;
+        app.detail_focused = false;
+        app.project_registry.projects.clear();
+
+        // Empty registry: one placeholder row, the cursor has nowhere to go.
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.projects_selected, 0);
     }
 
     // Opening a project spawns a NEW session with the PICKED agent — it must
