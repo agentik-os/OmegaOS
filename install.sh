@@ -2658,6 +2658,18 @@ else
     info "Third-party skill collections skipped (OMEGA_SKIP_THIRD_PARTY=1 or script missing)"
 fi
 
+# ─── Phase 6.915: Skill Atlas — discover every skill + how to run it ──────────
+# The omega-skills CLI + a searchable HTML catalog of every installed skill and
+# its command (R-SKILL-ATLAS). Universal. Also, auth-gated, pulls the operator's
+# PRIVATE purchased Power-Up library — a public/unauth install skips that and the
+# paid IP is never shipped in this public repo. Opt-out: OMEGA_SKIP_ATLAS=1.
+step "Phase 6.915: Skill Atlas (omega-skills discovery)"
+if [[ "${OMEGA_SKIP_ATLAS:-0}" != "1" && -f "$OMEGA_SRC/scripts/install-skill-atlas.sh" ]]; then
+    bash "$OMEGA_SRC/scripts/install-skill-atlas.sh" || info "skill atlas step had warnings (non-fatal)"
+else
+    info "Skill Atlas skipped (OMEGA_SKIP_ATLAS=1 or script missing)"
+fi
+
 # ─── Phase 6.92: Nova — personal-assistant layer (opt-in) ────────────────────
 # Nova is the operator's PERSONAL companion: the fallback persona
 # (agents/companion.md — shipped with the other agent prompts above), proactive
