@@ -120,7 +120,7 @@ function ColumnHost({ renderers }: { renderers: Renderers }) {
   const context = ws.path.map((id) => ws.state.panelsById[id]);
   const refs = ws.state.referenceRailOrder.map((id) => ws.state.panelsById[id]);
   return (
-    <div className="stax-stage">
+    <div className="stax-stage stax-rail">
       {context.map((p) => <Panel key={p.instanceId} panel={p} renderers={renderers} />)}
       {refs.map((p) => <Panel key={p.instanceId} panel={p} renderers={renderers} isReference />)}
     </div>
@@ -132,7 +132,7 @@ function PushHost({ renderers }: { renderers: Renderers }) {
   const leafId = ws.state.contextLeafId;
   if (!ws.state.rootInstanceId || !leafId) return <Empty />;
   return (
-    <div className="stax-stage stax-push">
+    <div className="stax-stage stax-rail stax-push">
       <Panel panel={ws.state.panelsById[leafId]} renderers={renderers} />
     </div>
   );
