@@ -24,6 +24,70 @@ license: MIT (Agentik OS)
 > current by the daily `OMEGA-CRON-STAX-SYNC-v1` cron). **Always read the live source
 > under `~/.omega/repos/stax` — it is the source of truth, this skill is the pilot.**
 
+
+## L'OUTILLAGE — lance-le, ne juge jamais à l'œil
+
+Stax livre un CLI complet, `stax-migrate`, et **il faut le lancer**. Une session
+entière a été perdue à corriger le design au jugement alors que deux commandes
+donnaient la réponse en trente secondes.
+
+```bash
+STAX=~/.omega/repos/stax/frameword/packages/stax-migrate/index.mjs
+```
+
+### Les deux gates — à lancer AVANT de dire que c'est bon
+
+```bash
+# LE gate de design : pilote l'app qui tourne et asserte les lois
+# (marges intérieures, rythme, pied 44px, champs tokenisés, luminance en sombre)
+PLAYWRIGHT_BROWSERS_PATH=$HOME/.cache/ms-playwright \
+  node $STAX verify --url http://localhost:3000 --themes light,dark
+
+# L'audit complet : cette app obéit-elle à ses propres lois, sur toutes ses
+# surfaces, dans les deux thèmes
+node $STAX audit stax --url http://localhost:3000
+```
+
+`verify` sort en 1 sur la moindre violation. Il exige `playwright` **dans le
+projet** (`npm i -D playwright`) et le navigateur correspondant.
+
+### Les deux commandes qui évitent de dessiner à la main
+
+```bash
+node $STAX shapes    # LE ROUTEUR DE FORMES : la mise en page vient de ce que
+                     # la donnée EST, jamais de l'habitude
+node $STAX patterns  # les écrans que le framework PROUVE déjà, avec leur
+                     # grammaire Stax et un panneau de référence live à copier
+```
+
+**`shapes` est le plus sous-estimé.** Il répond à « quelle forme pour cette
+donnée » avant qu'on ouvre un éditeur :
+
+| La donnée est | La forme | Le piège |
+|---|---|---|
+| Des lignes que l'utilisateur ÉDITE | `grid` (datatable) | N'y aller qu'en dernier : si la question est « que s'est-il passé », c'est un stream |
+| Des événements dans le temps | `stream` | Pas un grid : on lit de haut en bas, on ne trie pas par colonne |
+| Des entités comparées par MAGNITUDE | `ladder` | Ne pas ajouter de camembert : la barre EST la comparaison |
+
+**`patterns` couvre les écrans de console déjà résolus** : clés d'API avec
+révélation unique, équipe et sièges avec invitations, projets, facturation en
+hub (sous-pages en DRILLS, jamais en onglets), usage avec segments au pied. Les
+recopier plutôt que les réinventer.
+
+### Le reste
+
+```bash
+node $STAX upgrade [dir]        # projet DÉJÀ Stax : les mises à jour layout+design
+                                # appliquées et en attente
+node $STAX data scan [dir]      # extraction backend programmatique (Convex, Supabase,
+                                # Prisma, REST, tRPC) avec les sites d'appel, file:line
+node $STAX data check [dir]     # le gate mécanique : chaque ligne non interne est liée
+```
+
+> **La règle qui découle de tout ça :** un panneau n'est pas « bon » parce qu'il
+> ressemble à la référence. Il est bon quand `verify` passe dans les deux thèmes.
+> Le gate voit ce que l'œil ne voit pas, et il ne se fatigue pas.
+
 ## What Stax is (the one mechanic)
 
 The entire interface is a **horizontal rail of in-page panels**. Click anything with

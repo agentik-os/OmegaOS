@@ -47,6 +47,35 @@ if [[ -f "$SKILL_DIR/assets/stax-ui.css" ]]; then cp -f "$SKILL_DIR/assets/stax-
 [[ ! -f "$DST/tokens.css" && -f "$SKILL_DIR/assets/tokens.css" ]] && cp -f "$SKILL_DIR/assets/tokens.css" "$DST/tokens.css"
 c_ok "engine + design system vendored: panels-core.ts, panels-react.tsx, tokens.css, stax-ui.css"
 
+# Le gate de design, ecrit DANS le projet. Une app Stax n'est pas "bonne" parce
+# qu'elle ressemble a la reference : elle l'est quand `stax verify` passe dans les
+# deux themes. Sans ce script sous les yeux, personne ne pense a le lancer, et on
+# corrige au jugement pendant des heures ce qu'une commande tranche en trente
+# secondes.
+mkdir -p "$TARGET/scripts"
+cat > "$TARGET/scripts/stax-gate.sh" <<'GATE'
+#!/usr/bin/env bash
+# Le gate de design Stax. A lancer AVANT de dire que l'interface est bonne.
+#
+#   ./scripts/stax-gate.sh [url]
+#
+# Il pilote l'app qui tourne et asserte les lois du design system : marges
+# interieures, rythme vertical, pied a 44px, champs tokenises, luminance du
+# canvas en sombre. Il sort en 1 a la moindre violation.
+set -uo pipefail
+URL="${1:-http://localhost:3000}"
+STAX="${STAX_MIGRATE:-$HOME/.omega/repos/stax/frameword/packages/stax-migrate/index.mjs}"
+
+[[ -f "$STAX" ]] || { echo "stax-migrate introuvable: $STAX" >&2; exit 2; }
+[[ -d node_modules/playwright ]] || { echo "playwright manquant: npm i -D playwright" >&2; exit 2; }
+curl -sf -o /dev/null "$URL" || { echo "rien ne repond sur $URL — lancer l'app d'abord" >&2; exit 2; }
+
+export PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
+node "$STAX" verify --url "$URL" --themes light,dark
+GATE
+chmod +x "$TARGET/scripts/stax-gate.sh"
+c_ok "gate de design ecrit: scripts/stax-gate.sh (le lancer avant de juger a l'oeil)"
+
 # 2) Generic shell (only if absent).
 write_if_absent(){ # $1 path ; stdin = content
   if [[ -e "$1" ]]; then c_warn "kept existing $(basename "$1")"; cat >/dev/null; else cat > "$1"; c_ok "wrote $(basename "$1")"; fi
