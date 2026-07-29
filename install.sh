@@ -482,12 +482,18 @@ maybe_install_prebuilt
 
 step "Phase 3: Building rmux"
 
-RMUX_BUILD_DIR="/tmp/omega-rmux-build"
+# Per-user build dir: a shared /tmp/omega-rmux-build owned by another user on a
+# multi-user box makes `rm -rf` fail with Permission denied (sticky /tmp), which
+# aborted the whole install. The $(id -u) suffix isolates each user; if a stale
+# dir still cannot be removed (e.g. leftover root-owned files), fall back to a
+# fresh mktemp dir so the clone never fails.
+RMUX_BUILD_DIR="/tmp/omega-rmux-build-$(id -u)"
 if [[ -f "$INSTALL_DIR/rmux" ]]; then
     ok "rmux already installed at $INSTALL_DIR/rmux"
 else
     if [[ -d "$RMUX_BUILD_DIR" ]]; then
-        rm -rf "$RMUX_BUILD_DIR"
+        rm -rf "$RMUX_BUILD_DIR" 2>/dev/null \
+            || RMUX_BUILD_DIR="$(mktemp -d /tmp/omega-rmux-build-XXXXXX)"
     fi
     ensure_build_toolchain
     info "Cloning rmux..."
@@ -779,9 +785,11 @@ EOF
 step "Phase 4: Building OmegaOS"
 
 if [[ -z "$OMEGA_SRC" ]]; then
-    OMEGA_SRC="/tmp/omega-build"
+    # Per-user build dir (same multi-user /tmp collision fix as rmux above).
+    OMEGA_SRC="/tmp/omega-build-$(id -u)"
     if [[ -d "$OMEGA_SRC" ]]; then
-        rm -rf "$OMEGA_SRC"
+        rm -rf "$OMEGA_SRC" 2>/dev/null \
+            || OMEGA_SRC="$(mktemp -d /tmp/omega-build-XXXXXX)"
     fi
     info "Cloning OmegaOS..."
     git clone --depth 1 "$REPO_URL" "$OMEGA_SRC"
@@ -893,7 +901,7 @@ if [[ -d "$MM_SRC" ]]; then
         # installed copy when the source is the throwaway curl|bash clone in
         # /tmp — those symlinks used to dangle the moment /tmp was cleared.
         _mm_link_src="$MM_SRC/bin"
-        [[ "$OMEGA_SRC" == /tmp/omega-build ]] && _mm_link_src="$MM_DST/bin"
+        [[ "$OMEGA_SRC" == /tmp/omega-build* ]] && _mm_link_src="$MM_DST/bin"
         for _mm_bin in "$MM_SRC/bin"/*; do
             [[ -f "$_mm_bin" ]] || continue
             chmod +x "$_mm_bin"
