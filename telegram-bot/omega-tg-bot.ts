@@ -490,10 +490,16 @@ async function refreshCommands() {
     projCmds.push({ command: c, description: `Mission → ${p.name} oracle` });
   }
   const cmds = [...base, ...projCmds].slice(0, 100); // Telegram caps at 100 commands
-  await tg("setMyCommands", { commands: cmds });
-  await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
+  // tg() RESOLVES with {ok:false} on an API error instead of throwing, so a
+  // caller that only catches rejections would report a menu it never published.
+  const a = await tg("setMyCommands", { commands: cmds });
+  const b = await tg("setMyCommands", { commands: cmds, scope: { type: "all_private_chats" } });
+  published = !!(a?.ok && b?.ok);
   return projCmds.length;
 }
+/// Whether the last refreshCommands() actually reached Telegram. Read by the
+/// startup wait loop so it never claims a menu is live when it is not.
+let published = false;
 // Upsert a project in the shared registry (matched by path or name). Optionally bind its Telegram topic.
 function recordProject(name: string, dir: string, _category?: string, topicId?: number | null) {
   const reg = loadRegistry();
@@ -3456,7 +3462,34 @@ async function main() {
   if (process.env.OMEGA_AGENT_BOT) return agentBotMain(process.env.OMEGA_AGENT_BOT);
   // Wait for a token so the systemd service can be enabled at install time and
   // auto-connect whenever the operator sets the token (no manual restart).
-  while (!loadConfig()) { console.log(`omega-tg-bot: waiting for a bot token in ${TG_TOML} …`); await Bun.sleep(5000); }
+  // Wait for a SERVEABLE config. Two different things can be missing, and
+  // saying "waiting for a bot token" when the token is already there sent the
+  // operator looking in the wrong place.
+  //
+  // The command menu is published as soon as a VALID TOKEN exists, before the
+  // allow-list is set. Publishing a menu is not serving anyone: it exposes no
+  // data and grants no access — every command still goes through `allowed()`.
+  // Without this the bot was unusable on a fresh install: the token was set,
+  // the allow-list was not yet, so loadConfig() returned false, the loop span
+  // forever and Telegram showed NO COMMANDS AT ALL — so there was nothing to
+  // tap to finish the setup. Chicken-and-egg, and the egg was the menu.
+  let menuPublished = false;
+  while (!loadConfig()) {
+    if (/^\d+:/.test(TOKEN)) {
+      if (!menuPublished) {
+        API = `https://api.telegram.org/bot${TOKEN}`;
+        await refreshCommands().catch(() => {});
+        menuPublished = published;
+        console.log(menuPublished
+          ? `omega-tg-bot: command menu published — the commands are visible in Telegram now`
+          : `omega-tg-bot: could not publish the command menu (is the bot token valid?) — will retry`);
+      }
+      console.log(`omega-tg-bot: token OK, waiting for allow_user_ids in ${TG_TOML} (add allow_user_ids=[<your_user_id>]) …`);
+    } else {
+      console.log(`omega-tg-bot: waiting for a bot token in ${TG_TOML} …`);
+    }
+    await Bun.sleep(5000);
+  }
   console.log(`omega-tg-bot: token loaded, botId=${BOT_ID}`);
   // Restore any login/new-project flow that was awaiting a typed reply when the
   // service last stopped — so a restart mid-login doesn't lose the pasted code.
