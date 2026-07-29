@@ -37,7 +37,10 @@ mkdir -p "$OMEGA_DIR/bin" "$OMEGA_DIR/artifacts" "$INSTALL_DIR"
 if [[ -f "$OMEGA_SRC/scripts/omega-skills" && -f "$OMEGA_SRC/scripts/omega-skills-atlas.py" ]]; then
     cp -f "$OMEGA_SRC/scripts/omega-skills"          "$OMEGA_DIR/bin/omega-skills"
     cp -f "$OMEGA_SRC/scripts/omega-skills-atlas.py" "$OMEGA_DIR/bin/omega-skills-atlas.py"
-    chmod +x "$OMEGA_DIR/bin/omega-skills" "$OMEGA_DIR/bin/omega-skills-atlas.py"
+    [[ -f "$OMEGA_SRC/scripts/omega-skills-rag.py" ]] && \
+        cp -f "$OMEGA_SRC/scripts/omega-skills-rag.py" "$OMEGA_DIR/bin/omega-skills-rag.py"
+    chmod +x "$OMEGA_DIR/bin/omega-skills" "$OMEGA_DIR/bin/omega-skills-atlas.py" \
+             "$OMEGA_DIR/bin/omega-skills-rag.py" 2>/dev/null || true
     ln -sf "$OMEGA_DIR/bin/omega-skills" "$INSTALL_DIR/omega-skills" 2>/dev/null || true
     ok "Skill Atlas CLI installed (omega-skills)"
 else
@@ -87,4 +90,11 @@ if [[ -f "$OMEGA_DIR/bin/omega-skills-atlas.py" ]]; then
     python3 "$OMEGA_DIR/bin/omega-skills-atlas.py" >/dev/null 2>&1 \
         && ok "Skill Atlas built ($OMEGA_DIR/artifacts/omega-skill-atlas.html)" \
         || warn "Skill Atlas build had warnings (re-run: omega-skills)"
+fi
+
+# ── 4) build the semantic RAG index (embeddings if OPENAI_API_KEY, else BM25) ─
+if [[ -f "$OMEGA_DIR/bin/omega-skills-rag.py" ]]; then
+    python3 "$OMEGA_DIR/bin/omega-skills-rag.py" build >/dev/null 2>&1 \
+        && ok "Skill RAG index built (omega-skills --rag \"<need>\")" \
+        || warn "Skill RAG build had warnings (re-run: omega-skills-rag.py build)"
 fi

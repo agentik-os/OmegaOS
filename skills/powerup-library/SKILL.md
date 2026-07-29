@@ -44,11 +44,14 @@ design pack, and the marketing suite win when they apply — check those first.)
 1. **Derive 1-3 search terms** from the request (e.g. "cold email sequence" -> `cold email`;
    "sell my prints on Etsy" -> `etsy`; "launch my course" -> `course launch`).
 
-2. **Search the library** (this is the source of truth, never guess a skill name):
+2. **Search by MEANING first** (semantic RAG over the whole corpus, native + library):
    ```bash
-   omega-skills --powerups "<term>"
+   omega-skills --rag "<the user's need in plain words>"
    ```
-   It prints matching skill names + one-line descriptions. Pick the best 1-2.
+   This is the source of truth, never guess a skill name. It ranks the best matches
+   (embeddings when available, BM25 otherwise) and mixes native + library skills.
+   Use `omega-skills --powerups "<term>"` for a pure keyword search of the library only.
+   Pick the best 1-2 matches.
 
 3. **Open the matched skill** and read its full protocol:
    ```bash

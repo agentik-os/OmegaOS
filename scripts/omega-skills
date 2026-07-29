@@ -6,6 +6,7 @@
 #   omega-skills <term>         search native skills (name/desc/command)
 #   omega-skills --powerups <t> search the Power-Up library (907 paid skills)
 #   omega-skills --all <term>   search both
+#   omega-skills --rag "<need>" SEMANTIC retrieval by meaning (native + library)
 #   omega-skills --html         print the served catalog URL
 # ═══════════════════════════════════════════════════════════════════════════
 set -uo pipefail
@@ -20,6 +21,14 @@ fi
 [ -f "$ATLAS" ] || { echo "atlas not found and could not be built: $ATLAS" >&2; exit 1; }
 
 if [ "${1:-}" = "--html" ]; then echo "$URL"; exit 0; fi
+
+# Semantic RAG: retrieve by MEANING across the whole corpus (native + library).
+if [ "${1:-}" = "--rag" ]; then
+    shift
+    RAG="$OMEGA_DIR/bin/omega-skills-rag.py"
+    [ -f "$RAG" ] || { echo "rag backend not found: $RAG" >&2; exit 1; }
+    exec python3 "$RAG" query "$@"
+fi
 
 SCOPE="native"; TERM=""
 case "${1:-}" in
