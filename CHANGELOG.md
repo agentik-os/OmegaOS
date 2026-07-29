@@ -20,6 +20,27 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
   wrong — Fable 5 is ~2×; the classifier-decline behavior was confirmed).
 
 ### Added
+- **Daily update check + automatic apply.** Every install now schedules
+  `omega update --auto` at 03:30 (`OMEGA-CRON-AUTO-UPDATE-v1`): it checks for a
+  new commit and installs it, so a box stays current without anyone logging in.
+  The apply is deliberately timid and every refusal is logged with its reason —
+  it never touches a checkout with local changes or unpushed commits, defers a
+  night when an agent is mid-turn rather than rebuilding under a running mission,
+  stops after `FAILURE_CAP` (3) failed installs of the same commit and escalates
+  instead of thrashing (R-LOOP), and holds a single-flight lock (stale after 6h)
+  so two runs can never write the binary at once. Telegram alerts on applied /
+  available / needs-you; silence means nothing to do. Auto-installing renews the
+  repo's trust nightly, so the switch is one command:
+  `omega config set auto_update apply|check|off` (default `apply`). The decision
+  layer is pure and unit-tested (`omega_core::auto_update::decide`).
+- **System tab — the doctrine, the agents and the manual, in the TUI.** The menu
+  that showed the Laws, the Rules and the AISB roster had lost its own tab (Info
+  → renamed Agentic → Agentic repurposed into Projects), surviving only as a
+  buried group above the project list. It is a top-level tab again, and now also
+  carries an Overview (the four levels, live registry counts, install paths), the
+  installed Skills, and the whole Documentation tree — readable offline from
+  `~/.omega/docs`, which the installer mirrors along with the root canon
+  (README, CLAUDE, RULES, GUIDE, …) under `docs/canon/`.
 - **Native `/loop` doctrine (R-LOOP extended).** After the Claude Code `/loop`
   launch, every loop-driving OmegaOS agent now knows the two native loop layers
   compose: the OmegaOS *mission* loop and the *native `/loop`* (fixed-interval

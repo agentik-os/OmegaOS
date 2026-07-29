@@ -276,6 +276,12 @@ enum Commands {
         /// Report what an update WOULD do, then exit. Changes nothing.
         #[arg(long)]
         check: bool,
+        /// Unattended daily mode (what the cron runs). Checks, then installs
+        /// what is available — but never over local changes, never while an
+        /// agent is mid-turn, and never a 4th time on a commit that keeps
+        /// failing. Honors the `auto_update` config (apply | check | off).
+        #[arg(long)]
+        auto: bool,
         /// The OmegaOS checkout to update. Defaults to $OMEGA_SRC, the current
         /// directory, then the usual install locations.
         #[arg(long)]
@@ -799,7 +805,13 @@ async fn main() -> Result<()> {
         Some(Commands::Rules { action }) => cmd_rules(action),
         Some(Commands::Audit { action }) => cmd_audit(action),
         Some(Commands::Sync) => cmd_sync(),
-        Some(Commands::Update { check, dir }) => cmd_update(check, dir.as_deref()),
+        Some(Commands::Update { check, auto, dir }) => {
+            if auto {
+                cmd_update_auto(dir.as_deref()).await
+            } else {
+                cmd_update(check, dir.as_deref())
+            }
+        }
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -3644,10 +3656,35 @@ fn cmd_config(action: ConfigAction) -> Result<()> {
             println!("{}", toml);
         }
         ConfigAction::Get { key } => {
+            // `auto_update` lives in config.toml (OmegaConfig), not in the
+            // providers table every other key here belongs to. Intercepted so
+            // the one command users are told about actually works.
+            if key == "auto_update" {
+                let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+                println!("{}", cfg.auto_update.as_str());
+                return Ok(());
+            }
             let value = get_config_value(&cfg, &key)?;
             println!("{}", value);
         }
         ConfigAction::Set { key, value } => {
+            if key == "auto_update" {
+                use omega_core::config::{AutoUpdatePolicy, OmegaConfig};
+                let policy = AutoUpdatePolicy::parse(&value);
+                OmegaConfig::set_auto_update(policy)?;
+                println!("[+] Set auto_update = {}", policy.as_str());
+                println!(
+                    "{}",
+                    match policy {
+                        AutoUpdatePolicy::Apply =>
+                            "The daily 03:30 check will install updates automatically.",
+                        AutoUpdatePolicy::Check =>
+                            "The daily 03:30 check will alert you, and install nothing.",
+                        AutoUpdatePolicy::Off => "The daily check will do nothing.",
+                    }
+                );
+                return Ok(());
+            }
             set_config_value(&mut cfg, &key, &value)?;
             cfg.save()?;
             println!("[+] Set {} = {}", key, value);
@@ -7158,6 +7195,256 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
 
     println!("\n✓ OmegaOS updated. Restart a running TUI (Menu → R) to pick up the new binary.");
     Ok(())
+}
+
+/// The daily cron path: check, then install what is available — unattended.
+///
+/// Everything here is written for a run nobody is watching. It is quiet when
+/// there is nothing to do (the normal day), it refuses rather than risks, and
+/// every refusal is logged with its reason and — when the operator has to act —
+/// pushed through the alert funnel. The decision itself lives in
+/// `omega_core::auto_update::decide`, which is pure and unit-tested; this
+/// function only gathers the facts and carries out the verdict.
+async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
+    use omega_core::auto_update::{decide, AutoUpdateState, CheckoutState, Decision, SkipReason};
+
+    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let state_dir = config.state_dir.clone();
+    let stamp = chrono::Utc::now();
+
+    // A line per run, timestamped, in the cron's own log.
+    let say = |msg: &str| println!("[{}] auto-update: {}", stamp.to_rfc3339(), msg);
+
+    if config.auto_update == omega_core::config::AutoUpdatePolicy::Off {
+        say(&Decision::Disabled.describe());
+        return Ok(());
+    }
+
+    // Single-flight. A rebuild can outlast a day if the machine is slow or the
+    // network stalls; two installs writing the same binary is how you get a
+    // half-written omega. A lock older than 6h is stale (killed cron) and is
+    // taken over, so a crash can never wedge updates forever.
+    let lock_path = config.locks_dir.join("auto-update.lock");
+    std::fs::create_dir_all(&config.locks_dir).ok();
+    if let Ok(meta) = std::fs::metadata(&lock_path) {
+        let age = meta
+            .modified()
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .unwrap_or_default();
+        if age < std::time::Duration::from_secs(6 * 3600) {
+            say("another update is already running — skipping this run");
+            return Ok(());
+        }
+        say("clearing a stale update lock (older than 6h)");
+        std::fs::remove_file(&lock_path).ok();
+    }
+    std::fs::write(&lock_path, std::process::id().to_string()).ok();
+    // Released on every exit path below via this guard.
+    struct LockGuard(std::path::PathBuf);
+    impl Drop for LockGuard {
+        fn drop(&mut self) {
+            std::fs::remove_file(&self.0).ok();
+        }
+    }
+    let _lock = LockGuard(lock_path);
+
+    let src = match dir {
+        Some(d) => std::path::PathBuf::from(d),
+        None => match resolve_omega_src() {
+            Some(p) => p,
+            None => {
+                // Nothing to update from. Not an error worth alerting daily —
+                // an npx install with no checkout is a legitimate setup.
+                say("no OmegaOS checkout found — nothing to update (install with: npx omega-os)");
+                return Ok(());
+            }
+        },
+    };
+    if !src.join(".git").exists() {
+        say(&format!("{} has no .git — cannot update in place", src.display()));
+        return Ok(());
+    }
+
+    let git = |args: &[&str]| -> String {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(&src)
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+
+    let branch = {
+        let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+        if b.is_empty() || b == "HEAD" { "main".to_string() } else { b }
+    };
+
+    let fetch = std::process::Command::new("git")
+        .args(["fetch", "origin", &branch])
+        .current_dir(&src)
+        .output()?;
+    if !fetch.status.success() {
+        // A flaky network is the single most likely daily failure. It is not
+        // worth waking anyone: tomorrow's run retries by itself.
+        say(&format!(
+            "fetch failed (network/credentials) — retrying tomorrow: {}",
+            String::from_utf8_lossy(&fetch.stderr).trim()
+        ));
+        return Ok(());
+    }
+
+    let checkout = CheckoutState {
+        behind: git(&["rev-list", "--count", &format!("HEAD..origin/{}", branch)])
+            .parse()
+            .unwrap_or(0),
+        ahead: git(&["rev-list", "--count", &format!("origin/{}..HEAD", branch)])
+            .parse()
+            .unwrap_or(0),
+        dirty: !git(&["status", "--porcelain"]).is_empty(),
+        target: git(&["rev-parse", "--short", &format!("origin/{}", branch)]),
+    };
+
+    let mut history = AutoUpdateState::load(&state_dir);
+    history.last_check = Some(stamp);
+
+    // Only ask whether an agent is busy when an update is actually pending —
+    // capturing panes on every session costs real time, daily, for nothing.
+    let working = if checkout.behind > 0 {
+        busy_agent_session().await
+    } else {
+        None
+    };
+
+    let decision = decide(config.auto_update, &checkout, &history, working.as_deref());
+    let summary = decision.describe();
+    say(&summary);
+
+    match decision {
+        Decision::Disabled | Decision::UpToDate => {
+            history.last_outcome = Some(summary);
+            history.save(&state_dir).ok();
+            Ok(())
+        }
+        Decision::NotifyOnly { behind, target } => {
+            history.last_outcome = Some(summary);
+            history.save(&state_dir).ok();
+            alert(&format!(
+                "⬆️ <b>OmegaOS update available</b>\n{} commit(s) behind (<code>{}</code>).\nInstall it with <code>omega update</code>.\n<i>auto_update = check</i>",
+                behind, target
+            ));
+            Ok(())
+        }
+        Decision::Skip { reason } => {
+            history.last_outcome = Some(reason.describe());
+            history.save(&state_dir).ok();
+            if reason.needs_human() {
+                let extra = match &reason {
+                    SkipReason::RepeatedFailure { .. } => {
+                        "\nSee <code>~/.omega/logs/omega-auto-update.log</code>."
+                    }
+                    _ => "",
+                };
+                alert(&format!(
+                    "⚠️ <b>OmegaOS auto-update skipped</b>\n{}{}",
+                    reason.describe(),
+                    extra
+                ));
+            }
+            Ok(())
+        }
+        Decision::Apply { behind, target } => {
+            let from = git(&["rev-parse", "--short", "HEAD"]);
+            let ff = std::process::Command::new("git")
+                .args(["merge", "--ff-only", &format!("origin/{}", branch)])
+                .current_dir(&src)
+                .output()?;
+            if !ff.status.success() {
+                history.record_failure(&target);
+                history.last_outcome = Some("fast-forward failed".to_string());
+                history.save(&state_dir).ok();
+                say(&format!(
+                    "fast-forward failed: {}",
+                    String::from_utf8_lossy(&ff.stderr).trim()
+                ));
+                return Ok(());
+            }
+
+            say("running install.sh (rebuilds the binary from source)…");
+            let status = std::process::Command::new("bash")
+                .arg(src.join("install.sh"))
+                .current_dir(&src)
+                .env("OMEGA_FROM_SOURCE", "1")
+                .status()?;
+
+            if !status.success() {
+                history.record_failure(&target);
+                let failures = history.failures_for(&target);
+                history.last_outcome = Some(format!("install.sh failed ({}x)", failures));
+                history.save(&state_dir).ok();
+                say(&format!(
+                    "install.sh FAILED on {} (attempt {} of {}) — previous install untouched",
+                    target,
+                    failures,
+                    omega_core::auto_update::FAILURE_CAP
+                ));
+                // Only shout once the cap is reached; a single transient build
+                // failure retries itself tomorrow without waking anyone.
+                if failures >= omega_core::auto_update::FAILURE_CAP {
+                    alert(&format!(
+                        "🛑 <b>OmegaOS auto-update is stuck</b>\ncommit <code>{}</code> failed to install {} times — not retrying.\nRun <code>omega update</code> by hand to see why.",
+                        target, failures
+                    ));
+                }
+                return Ok(());
+            }
+
+            history.record_success(&target, stamp);
+            history.last_outcome = Some(format!("updated {} → {}", from, target));
+            history.save(&state_dir).ok();
+            say(&format!("updated {} → {} ({} commits)", from, target, behind));
+            alert(&format!(
+                "✅ <b>OmegaOS updated</b>\n<code>{}</code> → <code>{}</code> ({} commit(s)).\nRestart a running TUI (Menu → R) to pick up the new binary.",
+                from, target, behind
+            ));
+            Ok(())
+        }
+    }
+}
+
+/// Name of an agent session that is mid-turn right now, if any.
+///
+/// Only Oracle/Worker sessions count: a Home shell sitting at a prompt is not
+/// work, and deferring the update because someone left a shell open would mean
+/// never updating. Any failure to look is treated as "not busy" — a broken
+/// probe must not silently stop every update.
+async fn busy_agent_session() -> Option<String> {
+    use omega_core::session::{SessionManager, SessionRole};
+
+    let mgr = SessionManager::connect_cached().await.ok()?;
+    let sessions = mgr.list_sessions().await.ok()?;
+    for session in sessions {
+        if !matches!(session.role, SessionRole::Oracle | SessionRole::Worker) {
+            continue;
+        }
+        if let Ok(pane) = mgr.capture_pane(&session.name).await {
+            if omega_core::session_monitor::working_indicator_visible(&pane) {
+                return Some(session.name);
+            }
+        }
+    }
+    None
+}
+
+/// Send an operational alert through the canonical funnel (the Telegram
+/// "Alerts" topic). Best-effort by design: the update itself already happened,
+/// and a machine with no Telegram configured must not see a failure here.
+fn alert(html: &str) {
+    let script = omega_core::config::omega_dir().join("bin/omega-alert-send.sh");
+    if !script.is_file() {
+        return;
+    }
+    let _ = std::process::Command::new("bash").arg(script).arg(html).status();
 }
 
 fn resolve_omega_src() -> Option<std::path::PathBuf> {

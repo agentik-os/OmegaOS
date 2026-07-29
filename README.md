@@ -45,6 +45,16 @@ If you have local changes or unpushed commits in the checkout, the update
 **stops and tells you** rather than touching your work — commit, stash or push,
 then re-run it.
 
+It also keeps itself current: every install checks daily at 03:30 and installs
+what it finds, skipping any night where your checkout has local work, an agent
+is mid-turn, or the same commit has already failed three times. Auto-installing
+means trusting the repo nightly, so the switch is one command:
+
+```
+omega config set auto_update check   # alert me instead of installing
+omega config set auto_update off     # do nothing at all
+```
+
 ## First 5 minutes
 
 The stack installs itself; only the personal pieces are left. **`omega guide`

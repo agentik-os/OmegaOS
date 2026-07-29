@@ -2354,6 +2354,15 @@ LIVENESS_CRON="*/2 * * * * $OMEGA_DIR/bin/omega-atlas-liveness.sh >> $OMEGA_DIR/
 # for the dispatched oracle to Read; they are transient — purge anything older
 # than 7 days, daily. Strictly scoped to that one directory (cannot touch projects).
 TGMEDIA_CRON="30 4 * * * find $OMEGA_DIR/state/tg-media -type f -mtime +7 -delete 2>/dev/null   # OMEGA-CRON-TGMEDIA-PURGE-v1"
+# Daily update check + automatic apply. 03:30 is deliberately the quietest slot:
+# before every morning cron, and the hour least likely to land on live agent
+# work (which defers it anyway). OMEGA_SRC is baked in because cron runs with
+# cwd=$HOME, so the checkout could not otherwise be found unless the user
+# happened to clone into one of the default locations.
+# Guards live in `omega update --auto`: never over local changes, never while
+# an agent is mid-turn, never a 4th time on a commit that keeps failing.
+# Opt out any time:  omega config set auto_update off   (or check)
+AUTOUPDATE_CRON="30 3 * * * OMEGA_SRC=$OMEGA_SRC $INSTALL_DIR/omega update --auto >> $OMEGA_DIR/logs/omega-auto-update.log 2>&1   # OMEGA-CRON-AUTO-UPDATE-v1"
 if command -v crontab >/dev/null 2>&1; then
     if crontab -l 2>/dev/null | grep -qF "# OMEGA-CRON-PATROL-v1"; then
         ok "Self-improvement patrol already scheduled"
@@ -2408,6 +2417,15 @@ if command -v crontab >/dev/null 2>&1; then
     else
         ( crontab -l 2>/dev/null; echo "$TGMEDIA_CRON" ) | crontab -
         ok "Telegram media purge scheduled (daily 04:30 → state/tg-media files >7 days)"
+    fi
+    # Re-registered (not skipped) when present: the line carries OMEGA_SRC, and a
+    # user who moves their checkout would otherwise keep a cron pointing nowhere.
+    if [[ -n "${OMEGA_SRC:-}" && -d "$OMEGA_SRC/.git" ]]; then
+        ( crontab -l 2>/dev/null | grep -v 'OMEGA-CRON-AUTO-UPDATE-v1'; echo "$AUTOUPDATE_CRON" ) | crontab - 2>/dev/null \
+            && ok "Daily update check + auto-apply scheduled (03:30 → omega update --auto; disable: omega config set auto_update off)" \
+            || warn "Could not schedule the daily update check"
+    else
+        info "Daily auto-update not scheduled (no git checkout to update from — reinstall with: npx omega-os)"
     fi
 else
     info "crontab not available — run 'omega patrol' + 'omega usage --check' manually or via your scheduler"

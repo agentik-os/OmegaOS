@@ -395,6 +395,39 @@ never stash, reset or discard your work. (`npx omega-os` also updates an
 existing clone, but it dies on a dirty checkout with a raw git error and can
 clone a second copy if run from a different directory — prefer `omega update`.)
 
+### Staying current on its own
+
+Every install schedules a **daily check at 03:30** that installs what it finds:
+
+```bash
+omega config set auto_update apply   # check daily and install  (the default)
+omega config set auto_update check   # check daily, alert me, install nothing
+omega config set auto_update off     # do nothing
+omega config get auto_update         # what is it set to right now?
+```
+
+Be clear about what `apply` means: whoever controls the OmegaOS repo controls
+this machine's OmegaOS, renewed every night rather than once at install time.
+That is the same trust you extended to the installer — if you would rather
+approve each change yourself, `check` gives you the alert without the install.
+
+The nightly run is deliberately timid, and each refusal is logged with its
+reason in `~/.omega/logs/omega-auto-update.log`:
+
+- **nothing to pull** — it exits in under a second (the normal night)
+- **local changes or unpushed commits** — never touched, the update is skipped
+- **an agent is mid-turn** — deferred to the next night rather than rebuilding
+  the binary under a running mission
+- **the same commit failed 3 times** — it stops retrying and alerts you instead
+  of thrashing nightly on a broken build
+- **an update already running** — one at a time, always (a lock older than 6h
+  is treated as a crashed run and cleared)
+
+You get a Telegram alert when an update is installed, when one is available
+under `check`, and when something needs you. Silence means it had nothing to do.
+
+`omega update --auto` runs that exact path by hand if you want to watch it.
+
 **What is local secret state** — recreated per machine, never in any repo:
 `~/.omega/credentials/` (OAuth tokens, API keys), `telegram.toml`,
 `deposit.toml`, `agent-bots.json` (per-project bot tokens),

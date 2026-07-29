@@ -498,6 +498,10 @@ if [ -f docs/GETTING-STARTED.md ] && grep -q "GETTING-STARTED.md" install.sh; th
 if [ -f GUIDE.md ] && grep -q 'OMEGA_SRC/GUIDE.md' install.sh; then ok "GUIDE.md operator manual shipped + installed to ~/.omega"; else bad "GUIDE.md not shipped/wired in install.sh"; fi
 if grep -q "Commands::Guide" crates/omega-cli/src/main.rs && grep -q "GETTING-STARTED.md" crates/omega-cli/src/main.rs; then ok "omega guide command wired (embedded fallback)"; else bad "omega guide command missing from CLI"; fi
 if grep -q "agent-bot resurrect" telegram-bot/omega-tg-bot.ts; then ok "agent-bot units resurrected at bot startup (reinstall-safe)"; else bad "agent-bot resurrection loop missing from bot startup"; fi
+# Daily update check + auto-apply: the cron, the CLI path it calls, and the
+# opt-out must ship together — a cron pointing at a missing flag updates nobody.
+if grep -q "OMEGA-CRON-AUTO-UPDATE-v1" install.sh && grep -q "cmd_update_auto" crates/omega-cli/src/main.rs; then ok "daily update check + auto-apply scheduled by install.sh"; else bad "daily auto-update cron/CLI path not wired"; fi
+if grep -q "auto_update" crates/omega-core/src/config.rs && grep -q "auto_update" crates/omega-cli/src/main.rs; then ok "auto-update opt-out wired (omega config set auto_update off|check|apply)"; else bad "auto_update config switch missing"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then

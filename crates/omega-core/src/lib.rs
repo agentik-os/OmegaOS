@@ -10,6 +10,7 @@ pub mod git_status;
 pub mod git_sync;
 pub mod aisb_agents;
 pub mod audit;
+pub mod auto_update;
 pub mod backup;
 pub mod bootstrap;
 pub mod budget;

@@ -48,7 +48,51 @@ pub struct OmegaConfig {
     /// `None`/empty → fall back to `$TZ`, then the system local zone.
     #[serde(default)]
     pub timezone: Option<String>,
+    /// What the daily update cron is allowed to do (`omega update --auto`).
+    /// Default `Apply` — the check runs every day and the update is installed.
+    #[serde(default)]
+    pub auto_update: AutoUpdatePolicy,
     pub telegram: Option<TelegramConfig>,
+}
+
+/// How far the daily update cron may go on its own.
+///
+/// This is the ONE switch between "OmegaOS keeps itself current" and "OmegaOS
+/// tells me and I decide". It exists because auto-applying code pulled from a
+/// remote is a real trust decision, not a preference: `Apply` means whoever
+/// controls the repo controls this machine's OmegaOS — the same trust the
+/// installer already required, now renewed daily instead of once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoUpdatePolicy {
+    /// Check daily and install what is available. The default.
+    #[default]
+    Apply,
+    /// Check daily, alert when an update exists, install nothing.
+    Check,
+    /// Do nothing at all — the cron exits immediately.
+    Off,
+}
+
+impl AutoUpdatePolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Apply => "apply",
+            Self::Check => "check",
+            Self::Off => "off",
+        }
+    }
+
+    /// Parse a user-typed value (config file, `omega config set`). Unknown text
+    /// is NOT silently treated as `off` — a typo must not quietly stop updates,
+    /// so it falls back to the default.
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "check" | "notify" | "check-only" => Self::Check,
+            "off" | "false" | "no" | "disabled" | "never" => Self::Off,
+            _ => Self::Apply,
+        }
+    }
 }
 
 fn default_aisb_agent() -> String {
@@ -184,6 +228,7 @@ impl Default for OmegaConfig {
             theme: default_theme(),
             theme_background: default_theme_background(),
             timezone: None,
+            auto_update: AutoUpdatePolicy::default(),
             telegram: None,
         }
     }
@@ -247,6 +292,55 @@ impl OmegaConfig {
 
     pub fn config_path() -> PathBuf {
         omega_dir().join("config.toml")
+    }
+
+    /// Persist the auto-update policy into config.toml.
+    ///
+    /// Rewrites ONLY that one key and leaves every other byte — including the
+    /// user's comments and formatting — untouched. Serializing the whole struct
+    /// back would be shorter and would silently strip a hand-written config
+    /// down to whatever the struct happens to model.
+    ///
+    /// The key must be written ABOVE the first `[table]` header, or TOML parses
+    /// it as a member of that table instead of a top-level key.
+    pub fn set_auto_update(policy: AutoUpdatePolicy) -> Result<()> {
+        let path = Self::config_path();
+        Self::set_auto_update_at(&path, policy)
+    }
+
+    fn set_auto_update_at(path: &Path, policy: AutoUpdatePolicy) -> Result<()> {
+        let line = format!("auto_update = \"{}\"", policy.as_str());
+        let existing = std::fs::read_to_string(path).unwrap_or_default();
+
+        let mut out: Vec<String> = Vec::new();
+        let mut written = false;
+        for raw in existing.lines() {
+            let trimmed = raw.trim_start();
+            if trimmed.starts_with("auto_update") && trimmed.contains('=') && !written {
+                out.push(line.clone());
+                written = true;
+                continue;
+            }
+            // First table header: the last point where a top-level key is still
+            // top-level. Insert here if we have not written the key yet.
+            if !written && trimmed.starts_with('[') {
+                out.push(line.clone());
+                out.push(String::new());
+                written = true;
+            }
+            out.push(raw.to_string());
+        }
+        if !written {
+            out.push(line);
+        }
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut body = out.join("\n");
+        body.push('\n');
+        std::fs::write(path, body)?;
+        Ok(())
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
@@ -329,6 +423,62 @@ impl OmegaConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_update_defaults_to_apply_so_installs_stay_current() {
+        assert_eq!(OmegaConfig::default().auto_update, AutoUpdatePolicy::Apply);
+        // And an empty config.toml must not silently turn updates off.
+        let parsed: OmegaConfig = toml::from_str("").unwrap();
+        assert_eq!(parsed.auto_update, AutoUpdatePolicy::Apply);
+    }
+
+    #[test]
+    fn auto_update_round_trips_through_config_toml() {
+        for policy in [
+            AutoUpdatePolicy::Off,
+            AutoUpdatePolicy::Check,
+            AutoUpdatePolicy::Apply,
+        ] {
+            let toml_str = format!("auto_update = \"{}\"", policy.as_str());
+            let parsed: OmegaConfig = toml::from_str(&toml_str).unwrap();
+            assert_eq!(parsed.auto_update, policy);
+        }
+    }
+
+    #[test]
+    fn setting_the_policy_preserves_the_rest_of_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# my notes\nagent_command = \"claude\"\n\n[telegram]\nbot_token = \"t\"\nchat_id = 42\n",
+        )
+        .unwrap();
+
+        OmegaConfig::set_auto_update_at(&path, AutoUpdatePolicy::Off).unwrap();
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert!(back.contains("# my notes"), "comments survive");
+        assert!(back.contains("chat_id = 42"), "telegram survives");
+        assert!(back.contains("auto_update = \"off\""));
+
+        // And it must still parse, with the key top-level rather than swallowed
+        // into [telegram].
+        let cfg: OmegaConfig = toml::from_str(&back).unwrap();
+        assert_eq!(cfg.auto_update, AutoUpdatePolicy::Off);
+        assert!(cfg.telegram.is_some());
+    }
+
+    #[test]
+    fn setting_the_policy_twice_replaces_rather_than_appends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        OmegaConfig::set_auto_update_at(&path, AutoUpdatePolicy::Off).unwrap();
+        OmegaConfig::set_auto_update_at(&path, AutoUpdatePolicy::Check).unwrap();
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(back.matches("auto_update").count(), 1, "one key, not two");
+        let cfg: OmegaConfig = toml::from_str(&back).unwrap();
+        assert_eq!(cfg.auto_update, AutoUpdatePolicy::Check);
+    }
 
     #[test]
     fn resolve_category_path_is_under_projects_dir_no_vibecoding() {
