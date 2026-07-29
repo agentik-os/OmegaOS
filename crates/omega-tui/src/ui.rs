@@ -352,7 +352,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -1039,7 +1039,43 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Narrower than this and a 25/75 split leaves the left list ~15 columns —
+/// too narrow for any real label. Below it the 2-column tabs show one column
+/// at a time, switched with Tab.
+const TWO_COLUMN_MIN_WIDTH: u16 = 90;
+
+/// Width the full tab bar needs: every label, ` │ ` between each, plus the
+/// block's two border columns and its one-column padding on each side.
+fn tab_bar_width() -> usize {
+    let labels: usize = Tab::ORDER.iter().map(|t| t.title().chars().count()).sum();
+    let separators = Tab::ORDER.len().saturating_sub(1) * 3;
+    labels + separators + 4
+}
+
 fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
+    // On a narrow terminal — a phone in portrait is ~60 columns — the full bar
+    // does not fit, and ratatui clips it mid-word: at 70 columns the last tab
+    // read "Settin", at 60 it vanished entirely, so Settings did not appear to
+    // exist. Collapse to the active tab plus its position instead: it always
+    // fits, it never lies about how many tabs there are, and ←/→ still walk them.
+    if (area.width as usize) < tab_bar_width() {
+        let label = format!(
+            " ‹ {} ›  {}/{} ",
+            app.tab.title(),
+            app.tab.index() + 1,
+            Tab::ORDER.len()
+        );
+        let compact = Paragraph::new(Line::from(Span::styled(
+            label,
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )))
+        .block(Block::default().borders(Borders::ALL).title(" OmegaOS "));
+        frame.render_widget(compact, area);
+        return;
+    }
+
     // Both derive from Tab::ORDER — reorder the tab bar there, not here.
     let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
     let selected = app.tab.index();
@@ -1848,13 +1884,43 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
         } else {
             Style::default()
         };
+        // Agent launchers carry their install state. Pressing one of these
+        // when the CLI is missing already refuses with an install hint — but
+        // only AFTER the press. Showing it on the row means you can see which
+        // tools are actually usable before trying them.
+        let (state_glyph, state_style) = match action.agent() {
+            Some(agent) if !matches!(agent, omega_core::agents::Agent::Shell) => {
+                if crate::app::agent_available_cached(agent) {
+                    ("● ", Style::default().fg(th::success()))
+                } else {
+                    ("○ ", Style::default().fg(th::dim()))
+                }
+            }
+            _ => ("", Style::default()),
+        };
+
         items.push(ListItem::new(Line::from(vec![
             Span::styled(prefix, Style::default().fg(th::accent())),
+            Span::styled(state_glyph, state_style),
             Span::styled(
                 format!("[{}] ", action.shortcut()),
                 Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
             ),
             Span::styled(action.label(), label_style),
+            // Say it in words too: a glyph alone is not a state anyone can read
+            // on a first visit (and colour alone fails on mono themes).
+            Span::styled(
+                match action.agent() {
+                    Some(agent)
+                        if !matches!(agent, omega_core::agents::Agent::Shell)
+                            && !crate::app::agent_available_cached(agent) =>
+                    {
+                        "   not installed".to_string()
+                    }
+                    _ => String::new(),
+                },
+                Style::default().fg(th::dim()),
+            ),
         ])));
     }
 
@@ -3197,16 +3263,29 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
         app.detail_follow_cursor = false;
     }
 
+    // The panel wraps (below), so the scroll bound must count the rows actually
+    // painted, not the logical lines. Counting logical lines let End stop short
+    // of the end of a wrapped document — the tail was unreachable.
+    let detail_width = if app.detail_fullscreen || area.width < TWO_COLUMN_MIN_WIDTH {
+        area.width.saturating_sub(2)
+    } else {
+        // Mirrors the 25/75 split below.
+        (area.width as u32 * 75 / 100) as u16
+    }
+    .saturating_sub(2)
+    .max(1);
+    let painted_rows = wrapped_row_count(&lines, detail_width);
+
     // Publish + pin the scroll bound (same contract as draw_settings): End
     // and wheel-overscroll stop at the content edge, never a blank panel.
-    app.detail_max_scroll =
-        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_max_scroll = painted_rows.saturating_sub(area.height.saturating_sub(2));
     app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
 
     // Fullscreen detail
     if app.detail_fullscreen {
         let title = format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", section_label);
         let paragraph = Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
             .scroll((app.detail_scroll, 0))
             .block(
                 Block::default()
@@ -3215,6 +3294,37 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
                     .border_style(Style::default().fg(th::accent2())),
             );
         frame.render_widget(paragraph, area);
+        return;
+    }
+
+    // Below this, 25% of the width is ~15 columns: every section label was
+    // clipped mid-word ("Documentati", "AI Agents (") and the detail was just
+    // as cramped. Narrow terminals — a phone in portrait is ~60 columns — get
+    // ONE column: whichever half has focus, at full width. Tab already toggles
+    // that focus, so it becomes the way to move between them, no new key.
+    if area.width < TWO_COLUMN_MIN_WIDTH {
+        let list_focused = !app.detail_focused;
+        if list_focused {
+            let list = List::new(items).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} — Tab → read ", section_label))
+                    .border_style(Style::default().fg(th::accent())),
+            );
+            let mut state = ListState::default().with_selected(Some(rendered_selected));
+            frame.render_stateful_widget(list, area, &mut state);
+        } else {
+            let paragraph = Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .scroll((app.detail_scroll, 0))
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!(" {} — Tab → list ", section_label))
+                        .border_style(Style::default().fg(th::accent2())),
+                );
+            frame.render_widget(paragraph, area);
+        }
         return;
     }
 
@@ -3250,6 +3360,9 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
     };
 
     let paragraph = Paragraph::new(lines)
+        // Wrapped, not clipped: a doc line, a rule's reason or a long path used
+        // to lose its tail at the panel edge with no way to see it.
+        .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0))
         .block(
             Block::default()
@@ -3258,6 +3371,26 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
                 .border_style(Style::default().fg(detail_border)),
         );
     frame.render_widget(paragraph, split[1]);
+}
+
+/// Rows a set of lines actually occupies once wrapped to `width` — the count
+/// the scroll bound has to use, since a wrapped panel paints more rows than it
+/// has logical lines.
+fn wrapped_row_count(lines: &[Line<'_>], width: u16) -> u16 {
+    let w = width.max(1) as usize;
+    let mut rows: usize = 0;
+    for line in lines {
+        let len: usize = line
+            .spans
+            .iter()
+            .map(|s| s.content.chars().count())
+            .sum();
+        rows += len.div_ceil(w).max(1);
+        if rows > u16::MAX as usize {
+            return u16::MAX;
+        }
+    }
+    rows as u16
 }
 
 /// Marketing tab — 25/75 split: left = selectable list of marketing-enabled
@@ -4764,5 +4897,103 @@ mod system_overview_tests {
         let out = text(&render_info_overview(&app));
         assert!(out.contains("deadbee"));
         assert!(!out.contains("STOPPED"), "one failure is not a stop");
+    }
+}
+
+#[cfg(test)]
+mod menu_state_tests {
+    use crate::app::{agent_available_cached, MenuAction};
+    use omega_core::agents::Agent;
+
+    /// Every agent launcher in the Menu is a tool you might go and test, so
+    /// each one has to say whether it is actually installed BEFORE you press
+    /// it — the launch guard only refuses after the press.
+    #[test]
+    fn every_agent_launcher_resolves_an_install_state() {
+        let launchers: Vec<Agent> = MenuAction::all()
+            .iter()
+            .filter_map(|a| a.agent())
+            .filter(|a| !matches!(a, Agent::Shell))
+            .collect();
+        assert!(
+            launchers.len() >= 5,
+            "the Menu should carry the agent launchers, found {}",
+            launchers.len()
+        );
+        // The lookup must answer for each, and must not panic or hang.
+        for agent in launchers {
+            let _: bool = agent_available_cached(agent);
+        }
+    }
+
+    /// Non-agent rows (Refresh, Kill, Quit…) must NOT grow a state dot — a
+    /// state glyph on "Quit" would be meaningless.
+    #[test]
+    fn only_agent_rows_carry_a_state() {
+        assert!(MenuAction::Quit.agent().is_none());
+        assert!(MenuAction::KillAll.agent().is_none());
+        assert!(MenuAction::NewClaude.agent().is_some());
+    }
+}
+
+#[cfg(test)]
+mod responsive_tests {
+    use super::*;
+
+    /// A phone in portrait is ~60 columns. The full tab bar needs far more, and
+    /// ratatui clips it mid-word rather than adapting — at 70 columns the last
+    /// tab read "Settin", at 60 it was gone entirely, so Settings did not appear
+    /// to exist at all. The compact bar exists for exactly that range.
+    #[test]
+    fn the_tab_bar_knows_when_it_does_not_fit() {
+        let needed = tab_bar_width();
+        assert!(needed > 60, "the full bar cannot fit a phone; it must collapse");
+        // And the threshold must be honest about the real labels, not a guess.
+        let longest_possible: usize = Tab::ORDER
+            .iter()
+            .map(|t| t.title().chars().count())
+            .sum::<usize>();
+        assert!(needed > longest_possible, "separators and borders count too");
+    }
+
+    /// The scroll bound is computed from painted rows. Counting logical lines
+    /// instead left the tail of a wrapped document unreachable by End.
+    #[test]
+    fn wrapped_rows_are_counted_not_logical_lines() {
+        let lines = vec![
+            Line::from("short"),
+            // 30 chars at width 10 = 3 rows.
+            Line::from("x".repeat(30)),
+        ];
+        assert_eq!(wrapped_row_count(&lines, 10), 4);
+        // Wide enough for everything = one row each.
+        assert_eq!(wrapped_row_count(&lines, 200), 2);
+    }
+
+    /// An empty line still occupies a row — otherwise every blank spacer would
+    /// silently shorten the scroll bound.
+    #[test]
+    fn an_empty_line_still_takes_a_row() {
+        assert_eq!(wrapped_row_count(&[Line::from("")], 40), 1);
+        assert_eq!(wrapped_row_count(&[], 40), 0);
+    }
+
+    /// Width 0 must not divide by zero — terminals do report degenerate sizes
+    /// mid-resize.
+    #[test]
+    fn a_zero_width_panel_does_not_panic() {
+        assert_eq!(wrapped_row_count(&[Line::from("abc")], 0), 3);
+    }
+
+    /// A multi-span line is measured across ALL its spans — the System tab
+    /// builds nearly every line from several styled spans.
+    #[test]
+    fn multi_span_lines_measure_their_whole_width() {
+        let line = Line::from(vec![
+            Span::raw("12345"),
+            Span::raw("67890"),
+            Span::raw("abcde"),
+        ]);
+        assert_eq!(wrapped_row_count(std::slice::from_ref(&line), 5), 3);
     }
 }

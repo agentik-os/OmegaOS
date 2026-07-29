@@ -579,7 +579,7 @@ fn model_field(provider: &str, config_key: &str, current: &str) -> SettingsField
 /// calls per second at 15-60 FPS. A 2s memo keeps the [+]/[x] install badges
 /// honest within one housekeeping tick of an install/uninstall finishing,
 /// with zero per-frame filesystem work.
-fn agent_available_cached(agent: omega_core::agents::Agent) -> bool {
+pub(crate) fn agent_available_cached(agent: omega_core::agents::Agent) -> bool {
     use std::cell::RefCell;
     use std::collections::HashMap;
     use std::time::{Duration, Instant};
