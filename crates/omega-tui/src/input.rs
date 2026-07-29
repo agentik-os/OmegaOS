@@ -1196,7 +1196,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.handle_tab_in_sessions();
                 app.status_message = Some(match app.session_focus {
                     SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
-                    SessionFocus::Chat => "In session — Tab: back to list · Ctrl+X: close session · Tab-Tab: hide/show menu".to_string(),
+                    SessionFocus::Chat => "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Ctrl+X: close".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
             } else if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
@@ -2157,14 +2157,21 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         app.handle_tab_in_sessions();
         app.status_message = Some(match app.session_focus {
             SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
-            SessionFocus::Chat => "In session — Tab: back to list · Tab-Tab: hide/show menu".to_string(),
+            SessionFocus::Chat => "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Tab-Tab: menu".to_string(),
             SessionFocus::ChatFullscreen => "Session FULLSCREEN — Tab-Tab: show menu".to_string(),
         });
         return Action::None;
     }
 
-    // Alt+arrows = TUI scroll preview
-    if key.modifiers.contains(KeyModifiers::ALT) {
+    // Alt+arrows and Shift+arrows = TUI scroll preview.
+    //
+    // Shift is here for PHONES. Reading agent output from Termius, the plain
+    // arrows are forwarded to the agent (correct — Claude needs them), so the
+    // preview stays glued to the tail and the text keeps sliding away under the
+    // reader. Alt+arrow already froze it, but Alt is not on a phone's key row
+    // while Shift always is. PageUp/PageDown work too; this is the gesture that
+    // survives a soft keyboard.
+    if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) {
         match key.code {
             KeyCode::Up => { app.scroll_preview_up(3); return Action::None; }
             KeyCode::Down => { app.scroll_preview_down(3); return Action::None; }
@@ -2540,6 +2547,45 @@ mod tests {
         for expected in Tab::ORDER.iter().rev() {
             app.prev_tab();
             assert_eq!(app.tab, *expected, "prev_tab landed on the wrong tab");
+        }
+    }
+
+    // Reading agent output from a phone: the plain arrows belong to the agent,
+    // so without a modifier-free-ish alternative the preview stays glued to the
+    // tail and the text slides away under the reader. Alt+arrow already worked;
+    // Shift+arrow is the one a soft keyboard actually has. Both must scroll,
+    // and scrolling up must PAUSE the tail-follow.
+    #[test]
+    fn shift_and_alt_arrows_pause_the_tail_so_it_can_be_read() {
+        for modifier in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            let mut app = test_app();
+            // Chat focus needs a session to chat with — with an empty list the
+            // handler drops back to list mode and never reaches the scroll keys.
+            app.sessions.push(SessionEntry {
+                session: OmegaSession::classify("test-worker"),
+                progress: None,
+                is_current: false,
+                is_protected: false,
+                tree_prefix: String::new(),
+            });
+            app.selected = 0;
+            app.session_focus = crate::app::SessionFocus::Chat;
+            app.preview_follow_tail = true;
+            app.preview_scroll = 0;
+
+            handle_key(&mut app, KeyEvent::new(KeyCode::Up, modifier));
+            assert!(
+                !app.preview_follow_tail,
+                "{:?}+Up must stop the view chasing the tail",
+                modifier
+            );
+            assert!(app.preview_scroll > 0, "{:?}+Up must move into history", modifier);
+
+            // And back down to the tail re-glues to live.
+            app.preview_max_scroll = 100;
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, modifier));
+            handle_key(&mut app, KeyEvent::new(KeyCode::Down, modifier));
+            assert!(app.preview_scroll < 6, "{:?}+Down must walk back toward live", modifier);
         }
     }
 

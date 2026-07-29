@@ -1155,6 +1155,10 @@ pub struct App {
     /// Without the flag the renderer re-snapped every frame, which pinned the
     /// panel to the document list and made the document BODY unreachable.
     pub detail_follow_cursor: bool,
+    /// What the daily update cron last did. Re-read on the refresh tick (it is
+    /// one small file) so the System tab shows the real state of the machine,
+    /// not a snapshot from whenever the TUI happened to start.
+    pub auto_update_state: omega_core::auto_update::AutoUpdateState,
     pub should_quit: bool,
     pub status_message: Option<String>,
     pub input_mode: InputMode,
@@ -1354,6 +1358,7 @@ impl App {
                 .map(|r| r.list().into_iter().cloned().collect())
                 .unwrap_or_default(),
             detail_follow_cursor: false,
+            auto_update_state: omega_core::auto_update::AutoUpdateState::load(&config.state_dir),
             should_quit: false,
             status_message: None,
             input_mode: InputMode::Normal,
@@ -2243,6 +2248,11 @@ impl App {
             self.session_badges
                 .insert(b.session, omega_core::done::DoneStatus::Blocked);
         }
+
+        // One small JSON, beside the progress files already read here — so the
+        // System tab reports what the cron actually did last night, live.
+        self.auto_update_state =
+            omega_core::auto_update::AutoUpdateState::load(&self.config.state_dir);
 
         let all_progress = ProgressInfo::read_all(&self.config.state_dir);
 

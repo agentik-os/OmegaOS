@@ -1608,7 +1608,12 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         }
     }
 
-    let scroll_indicator = if max_scroll > 0 {
+    // Reading state, spelled out. A reader on a phone could not tell whether
+    // the text was still going to slide away under them; PAUSED says the view
+    // is theirs and names the key that gives it back to the tail.
+    let scroll_indicator = if !app.preview_follow_tail {
+        format!(" ⏸ PAUSED [{}/{}] End→live ", scroll, max_scroll)
+    } else if max_scroll > 0 {
         format!(" [{}/{}] ", scroll, max_scroll)
     } else {
         String::new()
@@ -3869,6 +3874,94 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
         ]));
     }
 
+    // ── Staying current ───────────────────────────────────────────────────
+    // What the nightly update cron is allowed to do and what it last did. This
+    // is the only place in the UI that answers "is this box keeping itself up
+    // to date?", so it names the policy, the schedule and the last outcome.
+    use omega_core::config::AutoUpdatePolicy;
+    let st = &app.auto_update_state;
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("  ── Staying current ──", sub)));
+    lines.push(Line::from(""));
+
+    let (policy_text, policy_color) = match app.config.auto_update {
+        AutoUpdatePolicy::Apply => ("apply — checks daily at 03:30 and installs", th::success()),
+        AutoUpdatePolicy::Check => ("check — checks daily at 03:30, alerts only", th::accent2()),
+        AutoUpdatePolicy::Off => ("off — no automatic check", th::dim()),
+    };
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:16}", "Auto-update"), Style::default().fg(th::accent2())),
+        Span::styled(
+            policy_text.to_string(),
+            Style::default().fg(policy_color).add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let ago = |t: chrono::DateTime<chrono::Utc>| -> String {
+        let mins = (chrono::Utc::now() - t).num_minutes().max(0);
+        if mins < 60 {
+            format!("{}m ago", mins)
+        } else if mins < 60 * 48 {
+            format!("{}h ago", mins / 60)
+        } else {
+            format!("{}d ago", mins / (60 * 24))
+        }
+    };
+
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:16}", "Last check"), Style::default().fg(th::accent2())),
+        Span::styled(
+            match st.last_check {
+                Some(t) => ago(t),
+                // Never having run is a real state: the cron may not be
+                // installed on this box at all.
+                None => "never — run `omega update --auto` to check now".to_string(),
+            },
+            dim,
+        ),
+    ]));
+
+    lines.push(Line::from(vec![
+        Span::styled(format!("  {:16}", "Last installed"), Style::default().fg(th::accent2())),
+        Span::styled(
+            match (&st.last_applied_commit, st.last_applied) {
+                (Some(c), Some(t)) => format!("{}  ({})", c, ago(t)),
+                _ => "nothing yet — this install is what you started with".to_string(),
+            },
+            dim,
+        ),
+    ]));
+
+    if let Some(outcome) = &st.last_outcome {
+        lines.push(Line::from(vec![
+            Span::styled(format!("  {:16}", "Last outcome"), Style::default().fg(th::accent2())),
+            Span::styled(truncate_chars(outcome, 92), dim),
+        ]));
+    }
+
+    // A stuck update is the one state worth shouting about: it means this box
+    // has silently stopped receiving fixes.
+    if st.consecutive_failures > 0 {
+        let stuck = st.consecutive_failures >= omega_core::auto_update::FAILURE_CAP;
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  {:16}{} failed install(s) of {}{}",
+                "",
+                st.consecutive_failures,
+                st.failing_commit.as_deref().unwrap_or("?"),
+                if stuck { " — STOPPED, needs you: run `omega update`" } else { "" }
+            ),
+            Style::default()
+                .fg(if stuck { th::error() } else { th::accent2() })
+                .add_modifier(Modifier::BOLD),
+        )));
+    }
+
+    lines.push(Line::from(Span::styled(
+        "                  Change it: omega config set auto_update apply | check | off",
+        dim,
+    )));
+
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "  ↑/↓ pick a section on the left · Tab focuses this panel · [ and ] jump sections",
@@ -4587,5 +4680,89 @@ mod url_fold_tests {
     fn fold_handles_short_and_empty() {
         assert_eq!(fold_for_panel("abc", 56), vec!["abc".to_string()]);
         assert_eq!(fold_for_panel("", 56), vec![String::new()]);
+    }
+}
+
+#[cfg(test)]
+mod system_overview_tests {
+    use super::*;
+    use crate::app::App;
+    use omega_core::config::{AutoUpdatePolicy, OmegaConfig};
+
+    /// Flatten rendered lines to plain text so assertions read like the screen.
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The Overview must answer "is this box keeping itself up to date?".
+    /// Building the auto-updater without surfacing it here is exactly the gap
+    /// this test exists to catch.
+    #[test]
+    fn overview_reports_the_auto_update_policy_and_last_run() {
+        let mut app = App::new(OmegaConfig::default());
+        app.config.auto_update = AutoUpdatePolicy::Apply;
+        app.auto_update_state = omega_core::auto_update::AutoUpdateState::default();
+
+        let out = text(&render_info_overview(&app));
+        assert!(out.contains("Auto-update"), "the policy must be named");
+        assert!(out.contains("03:30"), "the schedule must be visible");
+        assert!(out.contains("Last check"));
+        assert!(out.contains("omega config set auto_update"), "the opt-out must be discoverable");
+        // Never-run is a real state, not a blank.
+        assert!(out.contains("never"), "a box that never checked must say so");
+    }
+
+    #[test]
+    fn overview_shows_each_policy_distinctly() {
+        let mut app = App::new(OmegaConfig::default());
+        for (policy, expected) in [
+            (AutoUpdatePolicy::Apply, "installs"),
+            (AutoUpdatePolicy::Check, "alerts only"),
+            (AutoUpdatePolicy::Off, "no automatic check"),
+        ] {
+            app.config.auto_update = policy;
+            let out = text(&render_info_overview(&app));
+            assert!(
+                out.contains(expected),
+                "policy {:?} must render {:?}",
+                policy,
+                expected
+            );
+        }
+    }
+
+    /// A stuck auto-update means the box has silently stopped getting fixes —
+    /// it has to be loud, and it has to say what to do.
+    #[test]
+    fn a_stuck_auto_update_is_shouted_not_whispered() {
+        let mut app = App::new(OmegaConfig::default());
+        app.config.auto_update = AutoUpdatePolicy::Apply;
+        for _ in 0..omega_core::auto_update::FAILURE_CAP {
+            app.auto_update_state.record_failure("deadbee");
+        }
+        let out = text(&render_info_overview(&app));
+        assert!(out.contains("deadbee"), "name the commit that is failing");
+        assert!(out.contains("STOPPED"), "say that it gave up");
+        assert!(out.contains("omega update"), "say how to unstick it");
+    }
+
+    /// One failure is worth reporting but is NOT the stuck state — tomorrow's
+    /// run retries by itself.
+    #[test]
+    fn a_single_failure_is_reported_without_crying_wolf() {
+        let mut app = App::new(OmegaConfig::default());
+        app.auto_update_state.record_failure("deadbee");
+        let out = text(&render_info_overview(&app));
+        assert!(out.contains("deadbee"));
+        assert!(!out.contains("STOPPED"), "one failure is not a stop");
     }
 }
