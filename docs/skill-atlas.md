@@ -12,6 +12,7 @@ skills exist or how to invoke them.
   - `omega-skills <term>` — search native skills (name / description / command)
   - `omega-skills --powerups <term>` — search the private Power-Up library
   - `omega-skills --all <term>` — search both
+  - `omega-skills --rag "<need>"` — SEMANTIC retrieval by meaning (native + library), embeddings or BM25
   - `omega-skills --html` — print the served catalog URL
 - **Catalog** — a searchable HTML atlas at `~/.omega/artifacts/omega-skill-atlas.html`,
   served tailnet-only per R-ARTIFACT. Two tabs: OmegaOS native (each skill with
