@@ -837,6 +837,20 @@ if [[ -f "$OMEGA_SRC/tools/zernflow/install-zernflow.sh" ]]; then
     info "ZernFlow available (opt-in) — bash tools/zernflow/install-zernflow.sh to set it up"
 fi
 
+# Agent Reach — internet reach for every agent (X, Reddit, YouTube transcripts,
+# Bilibili, RSS, GitHub, clean web reader, AI search). MIT, pinned to a reviewed
+# commit. Unlike zernflow/higgsfield this one RUNS here: it is a modest pip
+# install into its own venv, needs no paid account, and every install should
+# have it. Re-runs on `omega update` (which re-runs this installer), so the
+# pinned source and the venv stay current.
+# The browser-cookie extra is deliberately NOT installed — see the security
+# boundary at the top of tools/agent-reach/install-agent-reach.sh.
+if [[ -f "$OMEGA_SRC/tools/agent-reach/install-agent-reach.sh" ]]; then
+    # Never fatal: a network hiccup here must not abort the OmegaOS install.
+    bash "$OMEGA_SRC/tools/agent-reach/install-agent-reach.sh" \
+        || info "Agent Reach setup had warnings (non-fatal)"
+fi
+
 # Lidless — macOS menu-bar toggle for lid-close sleep, so a dispatched agent
 # keeps running while the operator shuts the laptop and walks away. OPT-IN and
 # never auto-run: it writes a sudoers rule and needs an admin password, and it

@@ -509,6 +509,12 @@ if grep -q "mission_patterns::orchestration_block" crates/omega-core/src/oracle_
 # The registry must never be writable from a poisoned load — this is the guard
 # that stopped the suite erasing a user's project list.
 if grep -q "poisoned" crates/omega-core/src/project_manager.rs; then ok "project registry protected against overwrite-after-failed-load"; else bad "projects.json data-loss guard missing"; fi
+# Agent Reach: installer shipped AND actually invoked by install.sh (a shipped
+# script nobody calls is the install-parity failure this gate exists to catch).
+if [[ -f tools/agent-reach/install-agent-reach.sh ]] && grep -q "install-agent-reach.sh" install.sh; then ok "Agent Reach shipped + installed by install.sh (internet reach for every agent)"; else bad "Agent Reach not shipped/wired in install.sh"; fi
+# The pin must be a real commit, not a branch — an unpinned external repo is an
+# unreviewed one on every future install.
+if grep -qE '^PIN="[0-9a-f]{40}"' tools/agent-reach/install-agent-reach.sh; then ok "Agent Reach pinned to a reviewed commit"; else bad "Agent Reach pin missing or not a full sha"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
