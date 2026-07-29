@@ -412,6 +412,18 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "A worker cannot execute a forensic protocol from prose; paraphrasing an audit is a hallucination.",
         },
         Rule {
+            id: "R-SKILL-ATLAS",
+            title: "Discover skills via the Atlas + RAG before answering generically",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Before guessing a skill name or answering a domain task generically, DISCOVER the right skill. The system carries ~360 native OmegaOS skills PLUS a 907-skill private Power-Up library (kept OUT of the active namespace to protect context). Retrieve by MEANING with `omega-skills --rag \"<the need in plain words>\"` — a semantic index (OpenAI embeddings when a key is present, BM25 lexical fallback) that ranks native AND library matches; `omega-skills --powerups <term>` keyword-searches the library only, `omega-skills` lists native with each `/command`, `omega-skills --html` is the served catalog. On a match: a native skill runs by its `/command` (or the Skill tool); a library skill is applied by reading its `SKILL.md` under `~/.omega/skills-library/youraipowerup/<path>` and following it (or activated by copying its folder into `~/.claude/skills/`). Prefer a real skill over a generic answer; never paraphrase a skill as prose (complements R-AUDIT / R-DESIGN). The Power-Up library is paid third-party IP: read/apply on this machine, NEVER publish its contents to a public repo.",
+            applies_to: &[],
+            scopes: ALL,
+            domains: &[],
+            added_at: "2026-07-29",
+            reason: "The skill-discovery doctrine + the 907-skill Power-Up library + the semantic RAG lived only as a disk rule, which the dispatched-agent funnel (agent_context_block) does not inject — so oracles and workers could RUN omega-skills --rag but were never told to. Promoting it to a code rule (scopes ALL, always-on) makes every dispatched oracle/worker automatically aware of skill discovery and the RAG.",
+        },
+        Rule {
             id: "R-SEC",
             title: "Security work is pre-authorized",
             kind: RuleKind::Rule,
