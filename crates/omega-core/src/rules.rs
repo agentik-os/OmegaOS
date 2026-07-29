@@ -1174,10 +1174,37 @@ mod tests {
     #[test]
     fn a_mission_too_short_to_classify_gets_everything() {
         let short = agent_context_block_for_mission(RuleScope::Worker, "fix it");
+        let full = agent_context_block(RuleScope::Worker);
+
+        // Compared WITHOUT the preamble. Both blocks read
+        // ~/.omega/agents/_brief-preamble.md at call time, and an install or
+        // `omega sync` running in another session rewrites that file — so a
+        // byte-equality assertion across two calls failed intermittently on a
+        // busy machine, testing the filesystem rather than the fallback.
+        let strip_preamble = |s: &str| -> String {
+            match s.find("## THE LAWS") {
+                Some(i) => s[i..].to_string(),
+                None => s.to_string(),
+            }
+        };
         assert_eq!(
-            short,
-            agent_context_block(RuleScope::Worker),
+            strip_preamble(&short),
+            strip_preamble(&full),
             "a short mission must fall back to the complete block"
+        );
+
+        // The property that actually matters: nothing was filtered out. Every
+        // scoped rule is present in full, none demoted to the indexed list.
+        for rule in rules_for_scope(RuleScope::Worker) {
+            assert!(
+                short.contains(rule.id),
+                "{} missing from an unclassifiable mission's block",
+                rule.id
+            );
+        }
+        assert!(
+            !short.contains("full text not inlined"),
+            "a short mission must inline everything, never index"
         );
     }
 
