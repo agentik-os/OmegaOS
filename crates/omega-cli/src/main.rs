@@ -2271,11 +2271,17 @@ async fn run_tui_loop(
                 }
                 Action::OpenProject { name, path, agent } => {
                     let mgr = SessionManager::connect().await?;
-                    // Opening a project ALWAYS spawns a NEW blank session with
-                    // the picked agent. It deliberately does NOT re-attach to
-                    // the project's live oracle: re-entering an existing
-                    // session is the Sessions tab's job, and silently
-                    // attaching made "open" look like it did nothing.
+                    // Opening a project ALWAYS spawns a NEW session with the
+                    // picked agent. It deliberately does NOT re-attach to the
+                    // project's live oracle: re-entering an existing session is
+                    // the Sessions tab's job, and silently attaching made "open"
+                    // look like it did nothing.
+                    //
+                    // A Claude open comes up as a CLEAN ORACLE: it is seeded with
+                    // the per-project oracle system prompt (identity + doctrine +
+                    // protocol via OraclePromptGenerator) instead of a blank
+                    // shell, so the operator lands in a project manager ready to
+                    // decompose and dispatch, not an empty prompt.
                     let safe = name
                         .chars()
                         .filter(|c| c.is_alphanumeric() || *c == '-')
@@ -2295,15 +2301,37 @@ async fn run_tui_loop(
                         session = format!("{}-{}", base, n);
                         n += 1;
                     }
+                    // Seed a clean oracle identity for Claude opens; other agents
+                    // keep their own default (blank) entry.
+                    let oracle_prompt = if matches!(agent, omega_core::agents::Agent::Claude) {
+                        Some(omega_core::oracle_lifecycle::OraclePromptGenerator::generate(
+                            &name,
+                            std::path::Path::new(&path),
+                            &session,
+                            "Interactive oracle session for this project. Await the operator's \
+                             instructions, then analyze, decompose, dispatch workers, verify, and \
+                             report. Do NOT edit project code directly (delegate to workers).",
+                            false,
+                            false,
+                        ))
+                    } else {
+                        None
+                    };
                     match mgr
-                        .create_session_with_agent(&session, Some(&path), agent, None)
+                        .create_session_with_agent(&session, Some(&path), agent, oracle_prompt.as_deref())
                         .await
                     {
                         Ok(_) => {
+                            let kind = if matches!(agent, omega_core::agents::Agent::Claude) {
+                                "oracle"
+                            } else {
+                                "session"
+                            };
                             app.status_message = Some(format!(
-                                "▶ {} — new {} session ({})",
+                                "▶ {} — new {} {} ({})",
                                 name,
                                 agent.name(),
+                                kind,
                                 session
                             ));
                             auto_focus_chat(app, &session).await;
