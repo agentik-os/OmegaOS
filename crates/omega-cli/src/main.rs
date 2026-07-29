@@ -4753,6 +4753,16 @@ async fn cmd_spawn_worker(
             "\n\n## GIT SYNC\n{warning}\nReconcile (fetch/pull --ff-only on a clean tree) before touching any file.\n"
         ));
     }
+    // The shape of the work, matched from the brief. A worker inside a
+    // self-correcting loop, an audit dimension or a long-horizon slice needs to
+    // know which it is — the stop condition is different in each, and a worker
+    // that does not know when to stop either quits early or never quits.
+    let shape = omega_core::mission_patterns::orchestration_block(&full_prompt);
+    if !shape.is_empty() {
+        full_prompt.push_str("\n\n");
+        full_prompt.push_str(&shape);
+    }
+
     let agent_ctx = omega_core::rules::agent_context_block_for_mission(
         omega_core::rules::RuleScope::Worker,
         &full_prompt,

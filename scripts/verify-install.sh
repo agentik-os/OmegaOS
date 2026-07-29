@@ -502,6 +502,13 @@ if grep -q "agent-bot resurrect" telegram-bot/omega-tg-bot.ts; then ok "agent-bo
 # opt-out must ship together — a cron pointing at a missing flag updates nobody.
 if grep -q "OMEGA-CRON-AUTO-UPDATE-v1" install.sh && grep -q "cmd_update_auto" crates/omega-cli/src/main.rs; then ok "daily update check + auto-apply scheduled by install.sh"; else bad "daily auto-update cron/CLI path not wired"; fi
 if grep -q "auto_update" crates/omega-core/src/config.rs && grep -q "auto_update" crates/omega-cli/src/main.rs; then ok "auto-update opt-out wired (omega config set auto_update off|check|apply)"; else bad "auto_update config switch missing"; fi
+# Mission patterns: the shape block must reach BOTH the oracle prompt and the
+# worker brief. Wired in one place only, an oracle would dispatch workers that
+# do not know when to stop.
+if grep -q "mission_patterns::orchestration_block" crates/omega-core/src/oracle_lifecycle.rs && grep -q "mission_patterns::orchestration_block" crates/omega-cli/src/main.rs; then ok "mission-pattern orchestration injected into oracle prompts + worker briefs"; else bad "mission patterns not wired into oracle/worker prompts"; fi
+# The registry must never be writable from a poisoned load — this is the guard
+# that stopped the suite erasing a user's project list.
+if grep -q "poisoned" crates/omega-core/src/project_manager.rs; then ok "project registry protected against overwrite-after-failed-load"; else bad "projects.json data-loss guard missing"; fi
 
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then

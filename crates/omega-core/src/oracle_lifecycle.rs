@@ -544,6 +544,15 @@ impl OraclePromptGenerator {
         // Layer 3 — the mission body comes first so it's unmissable.
         prompt.push_str(&format!("## Mission\n{}\n\n---\n\n", mission));
 
+        // Layer 3b — HOW to run this particular mission. Sits right under the
+        // mission and above the standing identity, because the shape of the
+        // work is mission-specific while the identity is not. Without it, an
+        // oracle given "audit this" and one given "build this" received the
+        // same generic advice and both defaulted to doing the work themselves
+        // instead of spawning and supervising workers.
+        prompt.push_str(&crate::mission_patterns::orchestration_block(mission));
+        prompt.push_str("\n---\n\n");
+
         // Layer 2 — the shared v2 identity/protocol template.
         match Self::load_template(project, working_dir, oracle_name) {
             Some(tpl) => prompt.push_str(&tpl),
@@ -1503,5 +1512,44 @@ mod tests {
         assert!(OraclePromptGenerator::is_god_mode("Run in god mode"));
         assert!(OraclePromptGenerator::is_god_mode("/godmode fix everything"));
         assert!(!OraclePromptGenerator::is_god_mode("Fix the login flow"));
+    }
+
+    // The operator's stated objective: oracles must LAUNCH worker sessions they
+    // supervise, not do the work themselves. That only happens if the generated
+    // prompt actually says so, per mission. This test fails the moment the
+    // orchestration block stops reaching a real oracle prompt.
+    #[test]
+    fn the_generated_oracle_prompt_carries_the_mission_shape() {
+        let prompt = OraclePromptGenerator::generate(
+            "camelia",
+            std::path::Path::new("/tmp/camelia"),
+            "oracle-camelia-1",
+            "audite le code et corrige ce que tu trouves en parallele",
+            false,
+            false,
+        );
+        assert!(prompt.contains("How to run THIS mission"), "shape block missing");
+        assert!(prompt.contains("P-AUDIT"), "an audit mission must match the audit shape");
+        assert!(prompt.contains("P-PARALLEL"), "\"en parallele\" must match the parallel shape");
+        assert!(prompt.contains("spawn-worker"), "it must tell the oracle to dispatch");
+        assert!(prompt.contains("Done when"), "it must carry a stop condition");
+        // And the mission itself still leads.
+        assert!(prompt.starts_with("## Mission"));
+    }
+
+    /// A mission that matches nothing still gets the orchestration floor —
+    /// never a prompt with no shape at all.
+    #[test]
+    fn an_unclassifiable_mission_still_gets_a_shape() {
+        let prompt = OraclePromptGenerator::generate(
+            "p",
+            std::path::Path::new("/tmp/p"),
+            "oracle-p-1",
+            "do the thing",
+            false,
+            false,
+        );
+        assert!(prompt.contains("How to run THIS mission"));
+        assert!(prompt.contains("spawn-worker"));
     }
 }

@@ -37,6 +37,7 @@ pub mod marketing;
 pub mod mcp_servers;
 pub mod metrics;
 pub mod mission;
+pub mod mission_patterns;
 pub mod monitor;
 pub mod naming;
 pub mod oauth;
