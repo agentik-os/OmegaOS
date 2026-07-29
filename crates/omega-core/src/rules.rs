@@ -424,6 +424,18 @@ pub fn all_rules() -> Vec<Rule> {
             reason: "The skill-discovery doctrine + the 907-skill Power-Up library + the semantic RAG lived only as a disk rule, which the dispatched-agent funnel (agent_context_block) does not inject — so oracles and workers could RUN omega-skills --rag but were never told to. Promoting it to a code rule (scopes ALL, always-on) makes every dispatched oracle/worker automatically aware of skill discovery and the RAG.",
         },
         Rule {
+            id: "R-PRODUCT",
+            title: "Work product through the Product Development System — never idea->build",
+            kind: RuleKind::Rule,
+            category: RuleCategory::Orchestration,
+            description: "Whenever a mission touches a product decision — a feature, a roadmap, a priority call, an idea, an opportunity, or a process/workflow — run it through the OmegaOS Product Development System, never straight from 'we have an idea' to 'let's build it'. The chain is: Business Outcome -> Opportunity -> Idea (brainstorm) -> Feature (Discovery -> Prioritization -> Specification) -> Workflow -> Build -> Measure -> Improve. If asked to just build X, first place X on the chain and backfill the missing upstream objects (which outcome, which opportunity, what evidence, what acceptance criteria, what success metric) before any code. Seven sub-systems, each with an exact object model, fields, statuses and relations — Vision Board, Brainstorming, Opportunity Board, Feature System, Feature Discovery, Prioritization (RICE/ICE/weighted), Workflow Builder. INVOKE the `product-development-system` skill for the full spec (do not paraphrase the object model from memory); persist objects as markdown under the project's `agentic/product/` tree (vision/ ideas/ opportunities/ features/ workflows/), each with a `status` that never runs ahead of the evidence (L1/R-VERIFY). Gates are hard: a feature reaches 'Planned' only with a priority score + acceptance criteria + a success metric; 'Released' only when verified against runtime (R-PROD). Acceptance criteria become the workers' Done Criteria (R-RUBRIC) at dispatch (R-ORCH).",
+            applies_to: &[],
+            scopes: ALL,
+            domains: &[],
+            added_at: "2026-07-29",
+            reason: "Operator directive (2026-07-29): from now on all feature/product work in OmegaOS follows a precise 7-system method (Vision Board, Brainstorming, Opportunity Board, Feature System, Discovery, Prioritization, Workflow Builder), and oracle sessions and workers must carry that knowledge and functional understanding. A code rule (scopes ALL, always-on) injects the method + the pointer to the product-development-system skill into every dispatched agent, so no oracle/worker jumps idea->build or ships a feature without discovery, a score, and acceptance criteria.",
+        },
+        Rule {
             id: "R-SEC",
             title: "Security work is pre-authorized",
             kind: RuleKind::Rule,
