@@ -72,6 +72,16 @@ if [[ "${OMEGA_SKIP_SKILL_LIBRARY:-0}" != "1" ]]; then
     fi
 fi
 
+# ── 2b) install the ONE always-on router skill (only when the library exists) ─
+# powerup-library is a single active-namespace skill (one description, negligible
+# context) so Claude auto-matches a relevant prompt and routes into the 907-skill
+# library. Installed only if the library is present, so it never dangles.
+if [[ -d "$LIB_ROOT/youraipowerup" && -f "$OMEGA_SRC/skills/powerup-library/SKILL.md" ]]; then
+    mkdir -p "$HOME/.claude/skills/powerup-library"
+    cp -f "$OMEGA_SRC/skills/powerup-library/SKILL.md" "$HOME/.claude/skills/powerup-library/SKILL.md"
+    ok "Power-Up router skill installed (auto-discovered by Claude)"
+fi
+
 # ── 2) build the atlas from whatever is installed ────────────────────────────
 if [[ -f "$OMEGA_DIR/bin/omega-skills-atlas.py" ]]; then
     python3 "$OMEGA_DIR/bin/omega-skills-atlas.py" >/dev/null 2>&1 \
