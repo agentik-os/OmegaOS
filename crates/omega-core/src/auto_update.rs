@@ -39,6 +39,11 @@ pub struct CheckoutState {
     pub dirty: bool,
     /// Short sha of the remote tip — the update target. Empty when unknown.
     pub target: String,
+    /// Short sha of the local HEAD. Needed because a fast-forward moves HEAD
+    /// BEFORE install.sh runs: if the install then fails, the checkout is
+    /// current while the installed binary is not, and `behind` alone would
+    /// report the machine as up to date forever.
+    pub head: String,
 }
 
 /// What the cron decided to do, and why. Every variant carries the sentence
@@ -102,9 +107,19 @@ impl Decision {
         match self {
             Self::Disabled => "auto-update is off (config: auto_update)".to_string(),
             Self::UpToDate => "already up to date".to_string(),
+            // behind == 0 here means the source was already fast-forwarded and
+            // only the install failed, so this is a retry, not a new update.
+            Self::Apply { behind, target } if *behind == 0 => format!(
+                "source is at {} but its install did not finish — installing it again",
+                target
+            ),
             Self::Apply { behind, target } => {
                 format!("{} commit(s) behind — installing {}", behind, target)
             }
+            Self::NotifyOnly { behind, target } if *behind == 0 => format!(
+                "source is at {} but its install did not finish — check-only policy, not installing",
+                target
+            ),
             Self::NotifyOnly { behind, target } => format!(
                 "{} commit(s) behind ({}) — check-only policy, not installing",
                 behind, target
@@ -201,7 +216,19 @@ pub fn decide(
     // Nothing to pull is checked BEFORE the refusals: a dirty checkout that is
     // already current is not a problem worth alerting anyone about, and that is
     // the normal state of a developer's own machine.
-    if state.behind == 0 {
+    //
+    // "Nothing to pull" is NOT the same as "nothing to install". The
+    // fast-forward moves HEAD before install.sh runs, so an install that fails
+    // afterwards leaves the checkout current and the BINARY stale. Reading
+    // `behind` alone reported that machine as up to date every night after,
+    // and the install was never retried — the failure cap never even engaged
+    // because this branch returned first. An install is still owed whenever the
+    // commit we last failed on is the one checked out.
+    let install_owed = !state.head.is_empty()
+        && history.failing_commit.as_deref() == Some(state.head.as_str())
+        && history.consecutive_failures > 0;
+
+    if state.behind == 0 && !install_owed {
         return Decision::UpToDate;
     }
 
@@ -255,6 +282,20 @@ mod tests {
             ahead: 0,
             dirty: false,
             target: "abc1234".to_string(),
+            // Behind means HEAD is NOT the target yet.
+            head: "0000000".to_string(),
+        }
+    }
+
+    /// The state a machine is in after a fast-forward whose install then
+    /// failed: the checkout is current, the installed binary is not.
+    fn ff_done_install_failed() -> CheckoutState {
+        CheckoutState {
+            behind: 0,
+            ahead: 0,
+            dirty: false,
+            target: "abc1234".to_string(),
+            head: "abc1234".to_string(),
         }
     }
 
@@ -324,6 +365,73 @@ mod tests {
             decide(AutoUpdatePolicy::Apply, &ahead, &AutoUpdateState::default(), None),
             Decision::Skip { reason: SkipReason::LocalCommits { ahead: 4 } }
         ));
+    }
+
+    // Found by /codeaudit, proven at runtime: the fast-forward moves HEAD
+    // BEFORE install.sh runs. When the install then failed, `behind` was 0 on
+    // every later run, this returned UpToDate, and the install was NEVER
+    // retried — the machine sat on new source with a stale binary while the
+    // updater reported "already up to date". The failure cap never engaged
+    // because the Apply branch was unreachable.
+    #[test]
+    fn an_install_that_failed_after_the_fast_forward_is_retried() {
+        let mut history = AutoUpdateState::default();
+        history.record_failure("abc1234");
+
+        match decide(
+            AutoUpdatePolicy::Apply,
+            &ff_done_install_failed(),
+            &history,
+            None,
+        ) {
+            Decision::Apply { behind, target } => {
+                assert_eq!(behind, 0, "nothing to pull — only the install is owed");
+                assert_eq!(target, "abc1234");
+            }
+            other => panic!("a failed install must be retried, got {:?}", other),
+        }
+    }
+
+    /// …but the retry is still bounded. An install that keeps failing on the
+    /// checked-out commit must stop at the cap, not rebuild every night forever.
+    #[test]
+    fn the_owed_install_still_stops_at_the_cap() {
+        let mut history = AutoUpdateState::default();
+        for _ in 0..FAILURE_CAP {
+            history.record_failure("abc1234");
+        }
+        match decide(
+            AutoUpdatePolicy::Apply,
+            &ff_done_install_failed(),
+            &history,
+            None,
+        ) {
+            Decision::Skip { reason } => assert!(reason.needs_human()),
+            other => panic!("expected the cap to hold, got {:?}", other),
+        }
+    }
+
+    /// A machine that is genuinely current — nothing pulled, nothing failed —
+    /// must still take the cheap path. The retry must not fire on every box.
+    #[test]
+    fn a_clean_current_machine_still_does_nothing() {
+        let state = ff_done_install_failed(); // same shape, but no failure history
+        assert_eq!(
+            decide(AutoUpdatePolicy::Apply, &state, &AutoUpdateState::default(), None),
+            Decision::UpToDate
+        );
+    }
+
+    /// And a failure recorded against a DIFFERENT commit than the one checked
+    /// out must not trigger a pointless reinstall.
+    #[test]
+    fn a_failure_on_another_commit_does_not_force_a_reinstall() {
+        let mut history = AutoUpdateState::default();
+        history.record_failure("0ldc0de");
+        assert_eq!(
+            decide(AutoUpdatePolicy::Apply, &ff_done_install_failed(), &history, None),
+            Decision::UpToDate
+        );
     }
 
     #[test]

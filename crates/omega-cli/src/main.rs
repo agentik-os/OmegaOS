@@ -7254,9 +7254,22 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
     // taken over, so a crash can never wedge updates forever.
     let lock_path = config.locks_dir.join("auto-update.lock");
     std::fs::create_dir_all(&config.locks_dir).ok();
-    if let Ok(meta) = std::fs::metadata(&lock_path) {
-        let age = meta
-            .modified()
+    // Claim it with create_new, which is atomic: checking then writing left a
+    // window where two runs starting together both saw no lock and both
+    // proceeded to rebuild the same binary.
+    let claim = |path: &std::path::Path| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        write!(f, "{}", std::process::id())
+    };
+    if claim(&lock_path).is_err() {
+        // Someone holds it. Only a lock old enough to be a crashed run is
+        // taken over — otherwise a slow-but-live rebuild would be trampled.
+        let age = std::fs::metadata(&lock_path)
+            .and_then(|m| m.modified())
             .ok()
             .and_then(|m| m.elapsed().ok())
             .unwrap_or_default();
@@ -7266,8 +7279,11 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
         }
         say("clearing a stale update lock (older than 6h)");
         std::fs::remove_file(&lock_path).ok();
+        if claim(&lock_path).is_err() {
+            say("could not claim the update lock — skipping this run");
+            return Ok(());
+        }
     }
-    std::fs::write(&lock_path, std::process::id().to_string()).ok();
     // Released on every exit path below via this guard.
     struct LockGuard(std::path::PathBuf);
     impl Drop for LockGuard {
@@ -7331,6 +7347,7 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
             .unwrap_or(0),
         dirty: !git(&["status", "--porcelain"]).is_empty(),
         target: git(&["rev-parse", "--short", &format!("origin/{}", branch)]),
+        head: git(&["rev-parse", "--short", "HEAD"]),
     };
 
     let mut history = AutoUpdateState::load(&state_dir);
