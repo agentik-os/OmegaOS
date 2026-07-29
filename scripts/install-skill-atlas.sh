@@ -75,6 +75,23 @@ if [[ "${OMEGA_SKIP_SKILL_LIBRARY:-0}" != "1" ]]; then
     fi
 fi
 
+# ── 2a) install OmegaOS-native discovery/method skills into the active namespace
+# These are OmegaOS's own skills (no third-party IP) that must always be active so
+# oracles/workers and the RAG see them. Copy → ~/.omega/skills, symlink → ~/.claude.
+for native_skill in product-development-system; do
+    src="$OMEGA_SRC/skills/$native_skill"
+    if [[ -d "$src" ]]; then
+        mkdir -p "$OMEGA_DIR/skills/$native_skill"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a "$src/" "$OMEGA_DIR/skills/$native_skill/" 2>/dev/null || true
+        else
+            cp -r "$src/." "$OMEGA_DIR/skills/$native_skill/" 2>/dev/null || true
+        fi
+        ln -sfn "$OMEGA_DIR/skills/$native_skill" "$HOME/.claude/skills/$native_skill" 2>/dev/null || true
+        ok "Native skill active: $native_skill"
+    fi
+done
+
 # ── 2b) install the ONE always-on router skill (only when the library exists) ─
 # powerup-library is a single active-namespace skill (one description, negligible
 # context) so Claude auto-matches a relevant prompt and routes into the 907-skill
