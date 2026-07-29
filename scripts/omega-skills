@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# omega-skills — list & search every skill in the system and how to run it.
+# Reads ~/.omega/skills-atlas.json (rebuild: python3 <atlas-generator>).
+#   omega-skills                list all native OmegaOS skills + commands
+#   omega-skills <term>         search native skills (name/desc/command)
+#   omega-skills --powerups <t> search the Power-Up library (907 paid skills)
+#   omega-skills --all <term>   search both
+#   omega-skills --html         print the served catalog URL
+# ═══════════════════════════════════════════════════════════════════════════
+set -uo pipefail
+OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
+ATLAS="$OMEGA_DIR/skills-atlas.json"
+URL="https://station.tail64d114.ts.net:8443/omega-skill-atlas.html"
+# Lazy-build: on a fresh install the atlas may not exist yet. Generate it once
+# from the installed skills so `omega-skills` works with zero install.sh surgery.
+if [ ! -f "$ATLAS" ] && [ -f "$OMEGA_DIR/bin/omega-skills-atlas.py" ]; then
+    python3 "$OMEGA_DIR/bin/omega-skills-atlas.py" >/dev/null 2>&1 || true
+fi
+[ -f "$ATLAS" ] || { echo "atlas not found and could not be built: $ATLAS" >&2; exit 1; }
+
+if [ "${1:-}" = "--html" ]; then echo "$URL"; exit 0; fi
+
+SCOPE="native"; TERM=""
+case "${1:-}" in
+  --powerups) SCOPE="powerups"; TERM="${2:-}";;
+  --all)      SCOPE="all";      TERM="${2:-}";;
+  "")         SCOPE="native";   TERM="";;
+  *)          SCOPE="native";   TERM="$1";;
+esac
+
+python3 - "$ATLAS" "$SCOPE" "$TERM" <<'PY'
+import json,sys,re
+atlas,scope,term=json.load(open(sys.argv[1])),sys.argv[2],sys.argv[3].lower()
+rows=[]
+if scope in ("native","all"):
+    for r in atlas["native"]:
+        rows.append((r["name"]," ".join(r["commands"]),r.get("description","") or "","omegaos"))
+if scope in ("powerups","all"):
+    for r in atlas["powerups"]:
+        rows.append((r["name"],"","(library) "+r.get("description","") ,r["source"]))
+def hit(row): return not term or term in row[0].lower() or term in row[2].lower() or term in row[1].lower()
+rows=[r for r in rows if hit(r)]
+rows.sort(key=lambda r:(r[3]!="omegaos",r[0].lower()))
+w=max((len(r[0]) for r in rows),default=10)
+cw=max((len(r[1]) for r in rows),default=8)
+for name,cmd,desc,src in rows:
+    d=re.sub(r"\s+"," ",desc).strip()
+    print(f"\033[1m{name.ljust(w)}\033[0m  \033[36m{cmd.ljust(cw)}\033[0m  {d[:96]}")
+print(f"\n{len(rows)} skill(s) · scope={scope}"+(f" · term='{term}'" if term else ""))
+print("Full catalog: https://station.tail64d114.ts.net:8443/omega-skill-atlas.html")
+PY
