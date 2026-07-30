@@ -277,7 +277,7 @@ const PROMPT_MARKERS: &[char] = &['❯', '>'];
 /// composer is drawn. A modal (a question, a permission prompt) renders at the
 /// very bottom of the screen by definition, so a generous bound costs nothing
 /// and keeps a marker-shaped line deep in the scrollback from firing.
-const LIVE_TAIL_LINES: usize = 12;
+pub const LIVE_TAIL_LINES: usize = 12;
 
 /// Lines above the composer's opening rule that still count as live chrome.
 /// The activity line renders directly above the input box, so a small window
@@ -442,6 +442,159 @@ fn is_activity_line(line: &str) -> bool {
         .next()
         .is_some_and(|c| ACTIVITY_GLYPHS.contains(&c))
         && t.contains(WORKING_MARKER_TOKENS)
+}
+
+// ── Is a composer safe to PASTE INTO? ───────────────────────────────────────
+//
+// [`find_input_box`] answers "where does the composer box start", which is the
+// right question when CUTTING it out of a transcript and the wrong one when
+// deciding whether a block of text may be TYPED there. This section answers the
+// second question, and it is written as a WHITELIST: the pane must positively
+// exhibit the agent's own live chrome, rather than merely fail to exhibit one
+// known modal.
+//
+// Every rejection below was reproduced in runtime by a forensic audit of the
+// followup delivery path:
+//   * a LIVE bash shell. Oracles run as `bash -c '<agent> …; exec bash'`
+//     (agents.rs:452), so when the agent dies the session STAYS UP with its
+//     last frame — composer included — and a shell prompt under it. Every line
+//     of a mission pasted there executes as a command.
+//   * a modal whose hint hard-wraps onto two lines (a narrow pane in a split
+//     layout), or a numbered permission dialog that draws no hint at all. Enter
+//     picks the highlighted option.
+//   * a composer holding the operator's own unsubmitted draft: a paste
+//     CONCATENATES onto it and submits the lot as one turn.
+
+/// Markers only the agent's own status bar draws, on the line(s) directly under
+/// the composer. This is the POSITIVE evidence that the box on screen belongs
+/// to a live agent TUI rather than to a shell, a pager, or a modal.
+pub const COMPOSER_STATUS_MARKERS: &[&str] = &[
+    "⏵⏵",
+    "bypass permissions",
+    "shift+tab to cycle",
+    "accept edits on",
+    "plan mode on",
+    "for shortcuts",
+    WORKING_MARKER_INTERRUPT,
+];
+
+/// How far under the prompt marker the status bar may sit. A real capture puts
+/// it two lines down (the composer's closing rule, then the bar).
+const COMPOSER_STATUS_LOOKAHEAD: usize = 4;
+
+/// Index of the composer's PROMPT MARKER line, bounded to the live tail.
+///
+/// Same structural pair as [`find_input_box`] (a rule with a marker directly
+/// under it) with one added constraint: the pair must be inside the live tail,
+/// exactly as [`question_ui_visible`] bounds its hint. The composer is by
+/// construction the LAST thing drawn, so a pair sitting `LIVE_TAIL_LINES` or
+/// more above the final line of content is scrollback, not a place to type.
+pub fn find_live_composer_marker(pane: &str) -> Option<usize> {
+    let lines: Vec<&str> = pane.lines().collect();
+    let last_content = lines.iter().rposition(|l| !l.trim().is_empty())?;
+    for i in (1..lines.len()).rev() {
+        if is_prompt_marker_line(lines[i]) && is_horizontal_rule(lines[i - 1]) {
+            // Bottom-most pair first: if this one is already scrollback, every
+            // pair above it is further away still.
+            if last_content.saturating_sub(i) >= LIVE_TAIL_LINES {
+                return None;
+            }
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Is the composer EMPTY — the marker and nothing else?
+///
+/// A followup pastes WITHOUT clearing, because clearing would destroy text the
+/// operator typed and has not sent. So a draft is not a target: the caller
+/// falls back to spawning. Two live sessions on the audited machine were
+/// holding a draft at that moment, and one of them read `❯ ferme la session
+/// OmegaOS` — the followup would have submitted "close the session" plus the
+/// mission as a single turn.
+pub fn composer_is_empty(marker_line: &str) -> bool {
+    let trimmed = marker_line.trim();
+    let mut chars = trimmed.chars();
+    match chars.next() {
+        // `trim` covers the NO-BREAK SPACE the real capture puts after `❯`.
+        Some(c) if PROMPT_MARKERS.contains(&c) => chars.as_str().trim().is_empty(),
+        _ => false,
+    }
+}
+
+/// Is a selection list on screen — `❯ 1. Option A`?
+///
+/// The blacklist half of the modal test, and the one that survives a hint the
+/// pane hard-wrapped. A permission dialog draws this shape with a footer that
+/// is not the question hint at all, so [`question_ui_visible`] misses it while
+/// Enter would still pick the highlighted option.
+fn is_numbered_option_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !PROMPT_MARKERS.contains(&first) {
+        return false;
+    }
+    let rest = chars.as_str().trim_start();
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    digits > 0 && rest[digits..].starts_with('.')
+}
+
+/// Does a shell prompt appear on this line?
+///
+/// Deliberately generous. This predicate guards a paste that would otherwise
+/// EXECUTE, so a false rejection costs a spawned oracle while a false
+/// acceptance runs a mission body as shell commands, `$()` and redirections
+/// live.
+fn is_shell_prompt_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if matches!(trimmed.chars().last(), Some('$') | Some('#') | Some('%')) {
+        return true;
+    }
+    // `vibe@station:~/Station/SideBusiness/OmegaOS$ some command`
+    trimmed.contains('@') && (trimmed.contains(":~") || trimmed.contains(":/"))
+}
+
+/// May a mission body be pasted into this pane?
+///
+/// The whole predicate, as five independent reasons to say no. The caller adds
+/// [`question_ui_visible`] on top; each check is kept separate so a regression
+/// names itself in the failing test.
+pub fn composer_ready_for_paste(pane: &str) -> bool {
+    let lines: Vec<&str> = pane.lines().collect();
+    let Some(marker) = find_live_composer_marker(pane) else {
+        return false;
+    };
+    if !composer_is_empty(lines[marker]) {
+        return false;
+    }
+    // POSITIVE evidence of a live agent, within the composer's own chrome.
+    let status_end = (marker + 1 + COMPOSER_STATUS_LOOKAHEAD).min(lines.len());
+    let has_status_bar = lines[(marker + 1).min(lines.len())..status_end]
+        .iter()
+        .any(|l| COMPOSER_STATUS_MARKERS.iter().any(|m| l.contains(m)));
+    if !has_status_bar {
+        return false;
+    }
+    // A selection list anywhere in the live tail: Enter would answer it.
+    if tail_lines(pane, LIVE_TAIL_LINES)
+        .into_iter()
+        .any(is_numbered_option_line)
+    {
+        return false;
+    }
+    // NOTHING typeable below the composer. A shell prompt there means the frame
+    // above it is a corpse the agent left on screen when it exited; a second
+    // prompt marker means the pair we matched was not the bottom-most one.
+    !lines[(marker + 1).min(lines.len())..]
+        .iter()
+        .any(|l| is_shell_prompt_line(l) || is_prompt_marker_line(l))
 }
 
 // ── Failure signals ─────────────────────────────────────────────────────────

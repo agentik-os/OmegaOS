@@ -197,23 +197,34 @@ where
 
 /// Is this pane safe to type a followup into?
 ///
-/// THE FAILURE THIS PREVENTS IS NOT HYPOTHETICAL. A followup routed to an
-/// oracle that is still BOOTING would meet a bare shell, and `send_text` ends
-/// with an Enter: the mission text would execute as a bash command line. So the
-/// evidence required is the agent's own composer — a horizontal rule with a
-/// prompt marker directly under it, which a shell prompt never draws (a `❯`
-/// starship prompt has no rule above it).
+/// THE FAILURE THIS PREVENTS IS NOT HYPOTHETICAL, AND THE FIRST VERSION OF THIS
+/// PREDICATE DID NOT PREVENT IT. It asked only for a rule-then-marker pair
+/// ANYWHERE in the pane plus the absence of one known question modal, and a
+/// forensic audit reproduced three panes that pass that test and must not:
 ///
-/// A visible QUESTION modal is also refused. It draws the same rule + marker
-/// shape as the composer, but typing there drives a selection list, and
-/// answering a question the operator was meant to answer is the worst thing
-/// this path could do (R-MONITOR). Not-ready simply falls back to a spawn.
+///  1. A LIVE BASH SHELL. Every oracle runs as `bash -c '<agent> …; exec bash'`
+///     (agents.rs:452), so an agent that dies — crash, `--max-turns`, budget,
+///     auth, a reused session id — leaves the session UP, its last frame on
+///     screen with the composer in it, and a shell prompt underneath. The
+///     mission body would have executed there as command lines.
+///  2. A MODAL THE BLACKLIST DOES NOT KNOW: the same question modal with its
+///     hint hard-wrapped onto two lines (a narrow pane in a split layout), or a
+///     numbered permission dialog, which draws no hint at all. The Enter that
+///     submits a paste picks the highlighted option instead.
+///  3. A COMPOSER HOLDING THE OPERATOR'S DRAFT. The paste does not clear (it
+///     must not — that is the operator's text), so it CONCATENATES and submits
+///     both as one turn.
 ///
-/// Both primitives are reused from `session_monitor` rather than re-derived —
-/// they carry seven real false-positive scars and re-deriving them would repay
-/// all of them.
+/// So the evidence required is now POSITIVE and specific: a live-tail composer,
+/// EMPTY, with the agent's own status bar under it, no selection list on
+/// screen, and nothing typeable below it. Not-ready falls back to a spawn,
+/// which is the whole reason a strict predicate is cheap here.
+///
+/// The shapes stay in `session_monitor` rather than being re-derived — that
+/// module carries seven real false-positive scars — and only the POLICY (which
+/// shapes are refused, and that a refusal means spawn) lives here.
 pub fn pane_ready_for_followup(pane: &str) -> bool {
-    crate::session_monitor::find_input_box(pane).is_some()
+    crate::session_monitor::composer_ready_for_paste(pane)
         && !crate::session_monitor::question_ui_visible(pane)
 }
 
@@ -1461,16 +1472,187 @@ mod followup_routing_tests {
     }
 
     // ── Pane readiness ──────────────────────────────────────────────────────
+    //
+    // The positive cases are REAL rmux captures, not hand-typed strings: the
+    // hand-typed ones are what let the three false positives below ship, since
+    // an author who writes both the pane and the predicate writes them to
+    // agree. `tests/fixtures/` already held eight captures.
 
-    /// A booting oracle shows its SHELL. Typing a mission there executes it as a
-    /// bash command line, so this must read as not-ready.
+    /// Two real composers, captured from live agent sessions.
+    const REAL_COMPOSER_STOPPED: &str =
+        include_str!("../tests/fixtures/GOLDEN-stalled-real.txt");
+    const REAL_COMPOSER_WORKING: &str =
+        include_str!("../tests/fixtures/MoonBaseCapital-claude.txt");
+    /// A real capture whose transcript ECHOES the question hint while the
+    /// composer is drawn under it — the pane that must stay a valid target.
+    const REAL_SELF_ECHO: &str =
+        include_str!("../tests/fixtures/GOLDEN-self-echo-false-question.txt");
+    /// Real question modals, including the three adversarial variants.
+    const REAL_QUESTION: &str = include_str!("../tests/fixtures/GOLDEN-question-real.txt");
+    const REAL_QUESTION_OPTION_UNDER_RULE: &str =
+        include_str!("../tests/fixtures/adv-question-option-under-rule.txt");
+    const REAL_QUESTION_RULE_ARROW: &str =
+        include_str!("../tests/fixtures/adv-question-with-rule-arrow.txt");
+    const REAL_QUESTION_RULE_BLOCKQUOTE: &str =
+        include_str!("../tests/fixtures/adv-question-with-rule-blockquote.txt");
+    const REAL_QUESTION_STALE_INTERRUPT: &str =
+        include_str!("../tests/fixtures/adv-question-stale-interrupt.txt");
+
+    /// The nominal path, on real captures: an empty composer with the agent's
+    /// status bar under it is the ONE thing this feature waits for.
     #[test]
-    fn shell_pane_is_not_ready_for_a_followup() {
-        let pane = "vibe@station:~/Station/SideBusiness/OmegaOS$ \n";
+    fn real_agent_composers_are_ready() {
+        for (name, pane) in [
+            ("GOLDEN-stalled-real", REAL_COMPOSER_STOPPED),
+            ("MoonBaseCapital-claude", REAL_COMPOSER_WORKING),
+            ("GOLDEN-self-echo-false-question", REAL_SELF_ECHO),
+        ] {
+            assert!(
+                pane_ready_for_followup(pane),
+                "{name}: a real, empty agent composer must be a valid followup target"
+            );
+        }
+    }
+
+    /// Every real question capture, including the three adversarial variants
+    /// that put the option list directly under a rule.
+    #[test]
+    fn real_question_modals_are_never_ready() {
+        for (name, pane) in [
+            ("GOLDEN-question-real", REAL_QUESTION),
+            ("adv-question-option-under-rule", REAL_QUESTION_OPTION_UNDER_RULE),
+            ("adv-question-with-rule-arrow", REAL_QUESTION_RULE_ARROW),
+            ("adv-question-with-rule-blockquote", REAL_QUESTION_RULE_BLOCKQUOTE),
+            ("adv-question-stale-interrupt", REAL_QUESTION_STALE_INTERRUPT),
+        ] {
+            assert!(
+                !pane_ready_for_followup(pane),
+                "{name}: a followup must never auto-answer a pending question"
+            );
+        }
+    }
+
+    /// FALSE POSITIVE 1, REPRODUCED IN RUNTIME (audit P3). Every oracle runs as
+    /// `bash -c '<agent> …; exec bash'` (agents.rs:452), so a dead agent leaves
+    /// the session ALIVE showing its last frame — composer and status bar
+    /// included — with a shell prompt under it. The registry still calls it
+    /// live, its state still says `analyze`, and it has no done signal: it is a
+    /// perfect followup target by every OTHER condition.
+    ///
+    /// This capture is the one the audit replayed through the real function and
+    /// got `ready=true` from. Each mission line would have run as a command,
+    /// `$()` and redirections live, in the project directory.
+    ///
+    /// NOTE the shape: this is NOT the one-line pane the previous version of
+    /// this test used. That pane had a single line, so `find_input_box`'s
+    /// `for i in (1..lines.len()).rev()` never iterated and the test passed
+    /// before reaching any composer logic at all.
+    #[test]
+    fn a_live_shell_under_a_dead_agents_last_frame_is_not_ready() {
+        let pane = "● Analysis complete.\n\
+                    \n\
+                    ────────────────────────────────────────────────\n\
+                    ❯ \n\
+                    ────────────────────────────────────────────────\n\
+                      ⏵⏵ bypass permissions on (shift+tab to cycle)\n\
+                    vibe@Agentik-os:~/Station/SideBusiness/OmegaOS$ \n";
         assert!(
             !pane_ready_for_followup(pane),
-            "a bare shell must never be typed into"
+            "a live shell under a dead agent's frame must never be typed into"
         );
+    }
+
+    /// Same cause, no dead agent needed: any command that printed a rule
+    /// followed by a `>`-quoted line leaves the shell wearing the composer's
+    /// shape.
+    #[test]
+    fn a_shell_after_a_rule_and_a_quoted_line_is_not_ready() {
+        let pane = "$ omega report --tail\n\
+                    ────────────────────────────────────────\n\
+                    > the reviewer said the gate is green\n\
+                    vibe@station:~$ \n";
+        assert!(!pane_ready_for_followup(pane));
+    }
+
+    /// FALSE POSITIVE 2a, REPRODUCED (audit P2). A pane created at 200x50 is
+    /// resized to whatever client attaches, and OmegaOS spawns teams into split
+    /// panes: in a narrow one the modal's footer HARD-WRAPS, both hint markers
+    /// stop sharing a line, and the only anti-modal guard falls silent. The
+    /// selection list is still there and Enter still picks the highlighted
+    /// option.
+    #[test]
+    fn a_hard_wrapped_question_hint_is_still_not_ready() {
+        let pane = "Which approach do you want?\n\
+                    ────────────────────────────────\n\
+                    ❯ 1. Option A\n\
+                      2. Option B\n\
+                    Enter to select · ↑/↓\n\
+                    to navigate · Esc to cancel\n";
+        assert!(
+            !pane_ready_for_followup(pane),
+            "a wrapped hint must not turn a live modal into a paste target"
+        );
+    }
+
+    /// FALSE POSITIVE 2b, REPRODUCED (audit P2). A tool-permission dialog draws
+    /// the rule + numbered selection shape with a footer that is not the
+    /// question hint at all, so the blacklist never sees it.
+    #[test]
+    fn a_numbered_permission_dialog_is_not_ready() {
+        let pane = "Bash command\n\
+                    rm -rf ./build\n\
+                    ────────────────────────────────\n\
+                    ❯ 1. Yes\n\
+                      2. Yes, and don't ask again\n\
+                      3. No, tell Claude what to do differently\n";
+        assert!(
+            !pane_ready_for_followup(pane),
+            "Enter on a permission dialog approves it — never a followup target"
+        );
+    }
+
+    /// FALSE POSITIVE 3, OBSERVED ON LIVE SESSIONS (audit P5). Two sessions on
+    /// the audited machine were holding an unsubmitted draft; one read `❯ ferme
+    /// la session OmegaOS`. The paste does not clear the composer (it must not,
+    /// the text is the operator's), so it concatenates and submits both as one
+    /// turn — the mission would have opened with "close the session".
+    #[test]
+    fn a_composer_holding_an_operator_draft_is_not_ready() {
+        let pane = "● Ready.\n\
+                    ────────────────────────────────────────────────\n\
+                    ❯ ferme la session OmegaOS\n\
+                    ────────────────────────────────────────────────\n\
+                      ⏵⏵ bypass permissions on (shift+tab to cycle)\n";
+        assert!(
+            !pane_ready_for_followup(pane),
+            "never append a mission to the operator's unsent draft"
+        );
+    }
+
+    /// The composer must show the agent's OWN chrome. A rule-plus-marker pair
+    /// with nothing under it proves nothing about what is reading the keyboard.
+    #[test]
+    fn a_composer_without_a_status_bar_is_not_ready() {
+        let pane = "some output\n\
+                    ────────────────────────────────\n\
+                    ❯ \n";
+        assert!(!pane_ready_for_followup(pane));
+    }
+
+    /// A composer scrolled far above the live tail is scrollback, not a place
+    /// to type — the bound `question_ui_visible` already applies to its hint.
+    #[test]
+    fn a_composer_left_far_up_the_scrollback_is_not_ready() {
+        let mut pane = String::from(
+            "────────────────────────────────\n\
+             ❯ \n\
+             ────────────────────────────────\n\
+               ⏵⏵ bypass permissions on\n",
+        );
+        for i in 0..(crate::session_monitor::LIVE_TAIL_LINES + 2) {
+            pane.push_str(&format!("output line {i}\n"));
+        }
+        assert!(!pane_ready_for_followup(&pane));
     }
 
     /// A starship-style prompt starts with the same glyph as the agent composer
@@ -1481,7 +1663,8 @@ mod followup_routing_tests {
         assert!(!pane_ready_for_followup(pane));
     }
 
-    /// The agent composer: a horizontal rule with the prompt marker under it.
+    /// The agent composer: a horizontal rule, an EMPTY prompt marker under it,
+    /// and the agent's status bar under that.
     #[test]
     fn agent_composer_is_ready() {
         let pane = "I finished the analysis.\n\
@@ -1509,10 +1692,30 @@ mod followup_routing_tests {
         );
     }
 
-    /// An empty capture (pane not drawn yet) is not ready.
+    /// A pane that has not finished drawing is not ready.
+    ///
+    /// The previous version of this test passed `""`, whose `.lines()` yields
+    /// ZERO elements: no loop ran, no predicate was reached, and no regression
+    /// could ever have failed it. The real shapes of "not drawn yet" are a
+    /// half-painted boot frame and a session whose screen is still blank, so
+    /// those are what is asserted.
     #[test]
-    fn empty_pane_is_not_ready() {
-        assert!(!pane_ready_for_followup(""));
+    fn a_pane_that_is_not_drawn_yet_is_not_ready() {
+        for (name, pane) in [
+            ("empty capture", ""),
+            ("blank screen", "\n\n   \n\n"),
+            ("rule drawn, composer not yet", "● Booting\n────────────────────────────────\n"),
+            (
+                "composer drawn, status bar not yet",
+                "● Booting\n────────────────────────────────\n❯ \n",
+            ),
+            ("agent starting up in its shell", "vibe@station:~/OmegaOS$ claude --model opus\n"),
+        ] {
+            assert!(
+                !pane_ready_for_followup(pane),
+                "{name}: an undrawn pane must never be typed into"
+            );
+        }
     }
 
     // ── Output contract ─────────────────────────────────────────────────────
