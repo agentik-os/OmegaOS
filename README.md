@@ -252,6 +252,7 @@ I'd rather you know these going in.
 
 **[GUIDE.md](GUIDE.md)** is the operator manual: the vocabulary (mission, oracle, worker, goal, plan, Atlas), the three cockpits, your first missions, the skill catalog, and how work gets verified. Then go deeper:
 
+- [docs/FEATURES.md](docs/FEATURES.md) — **the complete feature catalog** (every subsystem + how to reach it).
 - [docs/README.md](docs/README.md) — the documentation index.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — the full-system reference.
 - [docs/MAP.md](docs/MAP.md) — where everything lives on disk.

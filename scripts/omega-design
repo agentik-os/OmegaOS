@@ -61,5 +61,29 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
   templates) _list /api/design-templates ;;
   plugins)   _list /api/plugins ;;
   api)  shift; p="${1:-/api/health}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
-  *) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -20 ;;
+  projects) # list OmegaOS projects you can open as a working directory
+    ROOT="${OMEGA_PROJECTS_ROOT:-$HOME/Station}"
+    echo "Projects under $ROOT (use the full path as the working directory in Open Design):"
+    find "$ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed "s#/.git##" | sort | sed 's/^/  /' | head -60 ;;
+  open|info) # the operator-facing quick card
+    st=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/health" 2>/dev/null)
+    cat <<TXT
+┌─ Open Design ─ the self-hosted design engine ────────────────
+  View it:   $URL      $([ "$st" = 200 ] && echo "(live)" || echo "(NOT running — omega-design up && omega-design serve)")
+  Agents:    $(omega-design agents 2>/dev/null | sed 's/detected local CLIs: //')
+
+  How to use it:
+   1. Open the link above (needs Tailscale on your device if it's the tailnet URL).
+   2. New Project → pick a Design System (150+: apple, airbnb, agentic…) or write your own DESIGN.md.
+   3. Local CLI → Rescan → pick claude or codex (your subscription).
+   4. To REDESIGN an existing project: Select working directory →
+      a path under $HOME/Station (see: omega-design projects).
+   5. Generate prototypes / dashboards / decks / images / video; it renders in the browser.
+
+  Marketing: build the visual system + viewable creatives here, publish via Zernio.
+  CLI: omega-design status | url | agents | projects | systems | up | serve
+└──────────────────────────────────────────────────────────────
+TXT
+    ;;
+  *) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -22 ;;
 esac
