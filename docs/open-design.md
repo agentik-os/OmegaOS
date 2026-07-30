@@ -46,10 +46,22 @@ subscription. `omega-design agents` confirms it.
 
 ## Redesign an existing project (refonte)
 
-The OmegaOS projects root (`~/Station`) is mounted into the container at the **same path**. In Open
-Design, **Select working directory** → a project path from `omega-design projects`
-(e.g. `/home/vibe/Station/Partners/rm/rm-site`). The agent reads and writes the real project files,
-and git is wired (`~/.omega/secrets/agentik-os.git-credentials`) so it can push.
+The served web UI cannot browse **server** folders (a browser folder-picker only sees the operator's
+own device, not the daemon's filesystem), so you register a project from the CLI instead:
+
+```
+omega-design projects            # list your OmegaOS project paths (~/Station)
+omega-design import <name|path>  # register it into Open Design -> it appears in the UI project list
+```
+
+Then open the link, pick the project, and claude/codex (your subscription) read/write the real
+project files at `~/Station/...` (mounted read-write). Git is wired
+(`~/.omega/secrets/agentik-os.git-credentials`) so it can push.
+
+**There is no "connect GitHub" step** — Open Design has no clone-from-GitHub feature (the `github`
+you see in the UI is a *design system* named github). Your projects are already local git repos;
+the mount + git creds are what let a refonte push.
+
 
 ## Marketing machine
 

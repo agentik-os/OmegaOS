@@ -61,6 +61,16 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
   templates) _list /api/design-templates ;;
   plugins)   _list /api/plugins ;;
   api)  shift; p="${1:-/api/health}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
+  import) # register an OmegaOS project into Open Design so it shows in the UI
+    shift; arg="${1:-}"
+    [ -n "$arg" ] || { echo "usage: omega-design import <project-name-or-path>"; exit 2; }
+    if [ -d "$arg" ]; then p="$(cd "$arg" && pwd)"; else
+      p="$(find "${OMEGA_PROJECTS_ROOT:-$HOME/Station}" -maxdepth 3 -type d -name "$arg" 2>/dev/null | head -1)"
+    fi
+    [ -n "$p" ] && [ -d "$p" ] || { echo "not found: $arg (try: omega-design projects)"; exit 1; }
+    r=$(curl -s -X POST "${BASE}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" 2>/dev/null)
+    echo "$r" | python3 -c "import json,sys;d=json.load(sys.stdin);pr=d.get('project',{});print('  imported:',pr.get('name'),'->',pr.get('metadata',{}).get('baseDir'));print('  open','''"$URL"''','and it is in your project list')" 2>/dev/null || echo "  import response: $r"
+    ;;
   projects) # list OmegaOS projects you can open as a working directory
     ROOT="${OMEGA_PROJECTS_ROOT:-$HOME/Station}"
     echo "Projects under $ROOT (use the full path as the working directory in Open Design):"
@@ -76,8 +86,10 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
    1. Open the link above (needs Tailscale on your device if it's the tailnet URL).
    2. New Project → pick a Design System (150+: apple, airbnb, agentic…) or write your own DESIGN.md.
    3. Local CLI → Rescan → pick claude or codex (your subscription).
-   4. To REDESIGN an existing project: Select working directory →
-      a path under $HOME/Station (see: omega-design projects).
+   4. To REDESIGN a project (the web folder-picker can't reach server folders):
+        omega-design projects        # list your OmegaOS project paths
+        omega-design import <name>   # register it -> it appears in the UI project list
+      (No "connect GitHub": your projects are already local git repos, mounted; push works.)
    5. Generate prototypes / dashboards / decks / images / video; it renders in the browser.
 
   Marketing: build the visual system + viewable creatives here, publish via Zernio.
