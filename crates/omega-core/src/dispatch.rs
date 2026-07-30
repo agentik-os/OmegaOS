@@ -117,29 +117,43 @@ impl DispatchDelivery {
     }
 }
 
-/// The env var that switches followup routing on.
+/// The env var that switches followup routing OFF.
 pub const FOLLOWUP_ROUTING_ENV: &str = "OMEGA_FOLLOWUP_ROUTING";
 
 /// Is followup routing switched on for this process?
 ///
-/// SHIPPED OPT-IN, DELIBERATELY. The routing DECISION ([`route_dispatch`]) is
-/// sound, but the DELIVERY half was audited and found to accept panes that are
-/// not the agent's composer — including a live bash shell left behind by
-/// `bash -c '<agent> …; exec bash'` after the agent dies, where every line of
-/// the mission would execute as a command. Until the probe is proven against
-/// those shapes, the whole branch stays behind an explicit flag: with the
-/// variable absent, `omega dispatch` behaves exactly as it did before the
-/// followup merge and always spawns.
+/// ON BY DEFAULT, with `OMEGA_FOLLOWUP_ROUTING=0` as the kill switch.
+///
+/// It shipped the other way round first, and deliberately: the routing
+/// DECISION ([`route_dispatch`]) was sound, but the DELIVERY half accepted
+/// three classes of pane that are not the agent's composer — a live bash shell
+/// left behind by `bash -c '<agent> …; exec bash'` after the agent dies, a
+/// modal whose hint wrapped or which carried no hint at all, and a composer
+/// holding the operator's unsent draft — each reproduced in runtime. The
+/// default flips now that the probe demands positive evidence instead
+/// (`session_monitor::composer_ready_for_paste`), that every delivery failure
+/// falls back to a spawn rather than to a success report, and that the
+/// rejection of all three shapes is executed by tests over real rmux captures.
+///
+/// The kill switch stays because the residual risk is not zero: two concurrent
+/// dispatches on one project still race (the exclusive lock is taken inside
+/// `reserve_oracle`, below this branch), and the Telegram bridge's own handling
+/// of a followup is a separate change.
 pub fn followup_routing_enabled() -> bool {
     followup_routing_enabled_from(std::env::var(FOLLOWUP_ROUTING_ENV).ok().as_deref())
 }
 
 /// The pure half of [`followup_routing_enabled`], so the parsing is testable
 /// without mutating the process environment from a parallel test thread.
+///
+/// UNSET IS ON, and only an explicit off-value is off. Anything unrecognized
+/// reads as ON rather than silently disabling the feature over a typo — the
+/// failure mode of a wrong value here is a spawned sibling oracle, which is
+/// visible, not a lost mission.
 fn followup_routing_enabled_from(raw: Option<&str>) -> bool {
-    matches!(
+    !matches!(
         raw.map(str::trim),
-        Some("1") | Some("true") | Some("yes") | Some("on")
+        Some("0") | Some("false") | Some("no") | Some("off")
     )
 }
 
@@ -815,8 +829,8 @@ impl Dispatcher {
         // followup path is a straight-line probe → deliver → return, and it
         // touches none of them.
         //
-        // OPT-IN: with OMEGA_FOLLOWUP_ROUTING unset the followup branch is
-        // skipped exactly like `--new` does, which is the pre-merge behavior.
+        // KILL SWITCH: `OMEGA_FOLLOWUP_ROUTING=0` skips the followup branch
+        // exactly like `--new` does, which is the pre-merge behavior.
         let followup_allowed = followup_routing_enabled();
         let route = route_now(&state_dir, project, &live, force_new || !followup_allowed);
 
@@ -1675,23 +1689,25 @@ mod followup_routing_tests {
         assert_eq!(route, DispatchRoute::Spawn { preferred: None });
     }
 
-    /// THE SHIPPED DEFAULT. Followup routing is opt-in: an absent (or empty, or
-    /// `0`) `OMEGA_FOLLOWUP_ROUTING` leaves the dispatcher on its pre-merge
-    /// behavior — every mission spawns — because the delivery probe is not yet
-    /// proven against a live shell.
+    /// THE SHIPPED DEFAULT, and the kill switch that turns it off.
+    ///
+    /// Followup routing is ON unless `OMEGA_FOLLOWUP_ROUTING` says otherwise.
+    /// An unrecognized value reads as ON: a typo must not silently disable the
+    /// feature, and the cost of the wrong answer in that direction is a visible
+    /// sibling oracle rather than a mission delivered somewhere unproven.
     #[test]
-    fn followup_routing_is_off_unless_explicitly_enabled() {
-        assert!(!followup_routing_enabled_from(None), "absent means OFF");
-        for off in ["", " ", "0", "false", "no", "off", "maybe"] {
+    fn followup_routing_is_on_unless_explicitly_disabled() {
+        assert!(followup_routing_enabled_from(None), "absent means ON");
+        for off in ["0", "false", "no", "off", " 0 "] {
             assert!(
                 !followup_routing_enabled_from(Some(off)),
-                "{off:?} must not enable followup routing"
+                "{off:?} must disable followup routing"
             );
         }
-        for on in ["1", "true", "yes", "on", " 1 "] {
+        for on in ["", " ", "1", "true", "yes", "on", "maybe"] {
             assert!(
                 followup_routing_enabled_from(Some(on)),
-                "{on:?} must enable followup routing"
+                "{on:?} must leave followup routing enabled"
             );
         }
     }
