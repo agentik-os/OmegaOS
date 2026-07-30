@@ -1977,29 +1977,45 @@ async fn run_tui_loop(
                     }
                 }
                 Action::DispatchOracle(project, mission) => {
-                    let cfg = OmegaConfig::load().unwrap_or_default();
-                    let mgr = SessionManager::connect().await?;
-                    let dispatcher = omega_core::dispatch::Dispatcher::new(mgr, cfg.clone());
-                    match dispatcher.dispatch_oracle(&project, &mission).await {
-                        Ok(oracle_name) => {
-                            let sessions_dir = cfg.state_dir.join("sessions");
-                            if let Ok(mut log) = omega_core::session_log::SessionLog::create(
-                                &sessions_dir,
-                                &oracle_name,
-                                ".",
-                            ) {
-                                let _ = log.append_message(
-                                    "system",
-                                    &format!("Mission dispatched: {}", mission),
-                                );
+                    // DETACHED, like the two reauth actions above and for the
+                    // same reason. A dispatch used to be prompt, so handling it
+                    // inline was free; a followup dispatch now waits for the
+                    // target's composer (up to 8s) and then confirms the paste
+                    // was accepted (up to 3s more), and every one of those
+                    // seconds froze the whole event loop — no redraw, no
+                    // keystrokes, no preview. The result lands in async_status,
+                    // which the top of the loop drains into the status bar, and
+                    // the session list is refreshed by the periodic tick.
+                    app.status_message =
+                        Some(format!("◆ Dispatching to {} — briefing the oracle…", project));
+                    let sink = async_status.clone();
+                    tokio::spawn(async move {
+                        let cfg = OmegaConfig::load().unwrap_or_default();
+                        let msg = match SessionManager::connect().await {
+                            Ok(mgr) => {
+                                let dispatcher =
+                                    omega_core::dispatch::Dispatcher::new(mgr, cfg.clone());
+                                match dispatcher
+                                    .dispatch_oracle_with_agent(&project, &mission, None, false)
+                                    .await
+                                {
+                                    Ok(outcome) => {
+                                        write_dispatch_session_log(&cfg, &outcome, &mission);
+                                        format!(
+                                            "◆ Dispatched: {} ({})",
+                                            outcome.oracle_name,
+                                            outcome.delivery.tag()
+                                        )
+                                    }
+                                    Err(e) => format!("Dispatch failed: {}", e),
+                                }
                             }
-                            app.status_message = Some(format!("◆ Dispatched: {}", oracle_name));
-                            let _ = app.refresh().await;
+                            Err(e) => format!("Dispatch failed: {}", e),
+                        };
+                        if let Ok(mut g) = sink.lock() {
+                            *g = Some(msg);
                         }
-                        Err(e) => {
-                            app.status_message = Some(format!("Dispatch failed: {}", e));
-                        }
-                    }
+                    });
                 }
                 Action::Refresh => {
                     // Ack AFTER the refresh completes (pre-series ordering).
@@ -4835,6 +4851,39 @@ impl Beat {
     }
 }
 
+/// Open the session journal for a dispatch — for a SPAWN only.
+///
+/// A FOLLOWUP GETS NO JOURNAL, and that is the fix. `SessionLog::create` names
+/// its file `<session>-<first 8 hex of the ms timestamp>.jsonl`, an ~65s
+/// bucket, so a followup landing on a live oracle either appended a SECOND
+/// session header (with its message ids restarting at 1) into the journal of
+/// the mission still running, or opened a near-empty second file that
+/// `find_latest` — which sorts by mtime — then served as the whole answer to
+/// `omega log <oracle>`. Either way the operator asking "what is this oracle
+/// doing" stopped seeing the mission it is actually doing. The incident that
+/// motivated the followup feature had its two dispatches 24 SECONDS apart:
+/// same bucket, first shape.
+///
+/// The followup is not lost from the record: `deliver_followup` appends a
+/// `MissionLog` event to the live oracle's own timeline (`omega timeline`),
+/// which is the log that belongs to a running mission.
+fn write_dispatch_session_log(
+    config: &OmegaConfig,
+    outcome: &omega_core::dispatch::DispatchOutcome,
+    mission: &str,
+) {
+    use omega_core::dispatch::DispatchDelivery;
+    if matches!(outcome.delivery, DispatchDelivery::Followup) {
+        return;
+    }
+    let sessions_dir = config.state_dir.join("sessions");
+    if let Ok(mut log) =
+        omega_core::session_log::SessionLog::create(&sessions_dir, &outcome.oracle_name, ".")
+    {
+        let _ = log.append_message("system", &format!("Mission dispatched: {}", mission));
+    }
+}
+
 async fn cmd_dispatch(
     project: &str,
     mission: &str,
@@ -4854,16 +4903,14 @@ async fn cmd_dispatch(
         .await;
     beat.stop().await;
     let outcome = dispatched?;
-    let oracle_name = outcome.oracle_name.clone();
 
-    // Create session log
-    let sessions_dir = config.state_dir.join("sessions");
-    let mut log = omega_core::session_log::SessionLog::create(&sessions_dir, &oracle_name, ".")?;
-    log.append_message("system", &format!("Mission dispatched: {}", mission))?;
+    // Session log — for a spawn only; see write_dispatch_session_log.
+    write_dispatch_session_log(&config, &outcome, mission);
 
     // report_lines() owns the output contract: line 0 is always the canonical
-    // "Oracle dispatched: <name>" the Telegram bridge parses, and a followup
-    // adds its note on a separate line. See DispatchOutcome::report_lines.
+    // "Oracle dispatched: <name>" the Telegram bridge parses, a followup adds
+    // its note on a separate line, and the last line is the machine-readable
+    // DISPATCH_DELIVERY=<tag>. See DispatchOutcome::report_lines.
     for line in outcome.report_lines() {
         println!("{}", line);
     }
