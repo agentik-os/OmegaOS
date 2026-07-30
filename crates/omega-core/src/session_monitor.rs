@@ -482,6 +482,68 @@ pub const COMPOSER_STATUS_MARKERS: &[&str] = &[
 /// it two lines down (the composer's closing rule, then the bar).
 const COMPOSER_STATUS_LOOKAHEAD: usize = 4;
 
+/// Glyphs that OPEN a row of the agent's own footer block — the task panel it
+/// draws under the status bar when `ctrl+t to hide tasks` is on.
+const COMPOSER_FOOTER_GLYPHS: &[char] = &['◯', '◻', '◼', '○', '●', '✔', '✓'];
+
+/// Does this line belong to the agent's own footer — the block it draws BELOW
+/// the composer's closing rule?
+///
+/// THE PREDICATE THIS REPLACES TRIED TO RECOGNISE A SHELL, AND A RE-AUDIT
+/// PROVED IT CANNOT. An oracle runs as `bash -c '<agent> …; exec bash'`
+/// (agents.rs:452), so a dead agent leaves its last frame on screen with a live
+/// shell prompt under it — and that prompt is drawn from the USER'S `~/.bashrc`,
+/// not from anything OmegaOS controls. Six realistic `PS1` forms were replayed
+/// into six real rmux sessions and FOUR were accepted (`\u@\h \w ❯`, `\w >`,
+/// `➜  omegaos git:(main)`, a bare `omegaos`); the mission body then executed
+/// line by line as commands, `$()` live.
+///
+/// So the proof is inverted. Nothing is asked of the foreign line any more:
+/// what follows the composer must POSITIVELY be the agent's own footer, which
+/// is a blank line, the status bar itself, a token-count row, or a task-panel
+/// row. Every one of the six prompts fails that, and so does a seventh nobody
+/// has thought of yet.
+///
+/// The cost of being wrong runs one way only: an unrecognised footer row costs
+/// a spawned oracle (the caller falls back), while an unrecognised shell prompt
+/// runs a mission as shell commands. A new footer row in a future agent release
+/// therefore switches the feature off rather than pointing it at a shell.
+fn is_composer_footer_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if COMPOSER_STATUS_MARKERS.iter().any(|m| trimmed.contains(m)) {
+        return true;
+    }
+    if is_token_count_row(trimmed) {
+        return true;
+    }
+    trimmed
+        .chars()
+        .next()
+        .is_some_and(|c| COMPOSER_FOOTER_GLYPHS.contains(&c))
+}
+
+/// The right-aligned rows the agent puts under its status bar: `400384 tokens`
+/// and `new task? /clear to save 250k tokens`.
+///
+/// Matched by SHAPE, not by the bare word: a count then the word, so a shell
+/// whose working directory merely ends in `tokens` is not read as chrome.
+fn is_token_count_row(trimmed: &str) -> bool {
+    let Some(head) = trimmed.strip_suffix(WORKING_MARKER_TOKENS) else {
+        return false;
+    };
+    let Some(count) = head.split_whitespace().next_back() else {
+        return false;
+    };
+    head.ends_with(char::is_whitespace)
+        && count.starts_with(|c: char| c.is_ascii_digit())
+        && count
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == 'k' || c == 'K' || c == 'M')
+}
+
 /// Index of the composer's PROMPT MARKER line, bounded to the live tail.
 ///
 /// Same structural pair as [`find_input_box`] (a rule with a marker directly
@@ -505,7 +567,23 @@ pub fn find_live_composer_marker(pane: &str) -> Option<usize> {
     None
 }
 
-/// Is the composer EMPTY — the marker and nothing else?
+/// Index of the composer box's CLOSING rule, scanning DOWN from the marker.
+///
+/// The composer is a BOX between two rules, not a line: the marker opens it and
+/// the text wraps onto the lines under the marker. Everything that reads the
+/// composer therefore needs both edges, and a box whose closing rule is not on
+/// screen is a box this module cannot bound — the caller treats that as "not
+/// empty", which costs a spawned oracle and never a paste into the unknown.
+fn composer_closing_rule(lines: &[&str], marker: usize) -> Option<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .skip(marker + 1)
+        .find(|(_, l)| is_horizontal_rule(l))
+        .map(|(i, _)| i)
+}
+
+/// Is the composer EMPTY — the whole BOX, marker line to closing rule?
 ///
 /// A followup pastes WITHOUT clearing, because clearing would destroy text the
 /// operator typed and has not sent. So a draft is not a target: the caller
@@ -513,14 +591,35 @@ pub fn find_live_composer_marker(pane: &str) -> Option<usize> {
 /// holding a draft at that moment, and one of them read `❯ ferme la session
 /// OmegaOS` — the followup would have submitted "close the session" plus the
 /// mission as a single turn.
-pub fn composer_is_empty(marker_line: &str) -> bool {
+///
+/// TESTING THE MARKER LINE ALONE WAS NOT ENOUGH, and a re-audit reproduced it
+/// on a live session: any draft whose FIRST line is blank — a paste that opens
+/// with a newline, a `\`+Enter, an Option+Enter typed first — leaves the marker
+/// bare and the text intact one line BELOW it. The probe read that pane as an
+/// empty composer, and the paste came back as the single turn
+/// `fais aussi le refactor avant de fermerMISSION SUIVI: audite le module
+/// dispatch`. So the whole box is judged: one non-blank line anywhere between
+/// the marker and the closing rule means a draft is being held.
+pub fn composer_is_empty(pane: &str, marker: usize) -> bool {
+    let lines: Vec<&str> = pane.lines().collect();
+    let Some(marker_line) = lines.get(marker) else {
+        return false;
+    };
     let trimmed = marker_line.trim();
     let mut chars = trimmed.chars();
     match chars.next() {
         // `trim` covers the NO-BREAK SPACE the real capture puts after `❯`.
-        Some(c) if PROMPT_MARKERS.contains(&c) => chars.as_str().trim().is_empty(),
-        _ => false,
+        Some(c) if PROMPT_MARKERS.contains(&c) => {
+            if !chars.as_str().trim().is_empty() {
+                return false;
+            }
+        }
+        _ => return false,
     }
+    let Some(close) = composer_closing_rule(&lines, marker) else {
+        return false;
+    };
+    lines[marker + 1..close].iter().all(|l| l.trim().is_empty())
 }
 
 /// Is a selection list on screen — `❯ 1. Option A`?
@@ -563,7 +662,7 @@ fn is_shell_prompt_line(line: &str) -> bool {
 
 /// May a mission body be pasted into this pane?
 ///
-/// The whole predicate, as five independent reasons to say no. The caller adds
+/// The whole predicate, as six independent reasons to say no. The caller adds
 /// [`question_ui_visible`] on top; each check is kept separate so a regression
 /// names itself in the failing test.
 pub fn composer_ready_for_paste(pane: &str) -> bool {
@@ -571,9 +670,14 @@ pub fn composer_ready_for_paste(pane: &str) -> bool {
     let Some(marker) = find_live_composer_marker(pane) else {
         return false;
     };
-    if !composer_is_empty(lines[marker]) {
+    // The whole BOX, not the marker line: a draft whose first line is blank
+    // hides under a bare marker.
+    if !composer_is_empty(pane, marker) {
         return false;
     }
+    let Some(close) = composer_closing_rule(&lines, marker) else {
+        return false;
+    };
     // POSITIVE evidence of a live agent, within the composer's own chrome.
     let status_end = (marker + 1 + COMPOSER_STATUS_LOOKAHEAD).min(lines.len());
     let has_status_bar = lines[(marker + 1).min(lines.len())..status_end]
@@ -592,9 +696,20 @@ pub fn composer_ready_for_paste(pane: &str) -> bool {
     // NOTHING typeable below the composer. A shell prompt there means the frame
     // above it is a corpse the agent left on screen when it exited; a second
     // prompt marker means the pair we matched was not the bottom-most one.
-    !lines[(marker + 1).min(lines.len())..]
+    // Kept as the blacklist half, under the whitelist that now decides: it
+    // names the two shapes that were actually reproduced in runtime.
+    if lines[(marker + 1).min(lines.len())..]
         .iter()
         .any(|l| is_shell_prompt_line(l) || is_prompt_marker_line(l))
+    {
+        return false;
+    }
+    // ONLY the agent's own footer below the box. This is the check that closes
+    // the dead-agent shell for every `PS1`, including the four realistic ones
+    // the blacklist above accepted. See [`is_composer_footer_line`].
+    lines[(close + 1).min(lines.len())..]
+        .iter()
+        .all(|l| is_composer_footer_line(l))
 }
 
 // ── Failure signals ─────────────────────────────────────────────────────────
@@ -1689,6 +1804,210 @@ mod tests {
         assert!(last.contains(WORKING_MARKER_INTERRUPT), "fixture premise");
         assert!(!strip_input_box(PANE_WORKING).contains(WORKING_MARKER_INTERRUPT));
         assert!(working_indicator_visible(PANE_WORKING));
+    }
+
+    // ── May a mission body be pasted here? ──────────────────────────────────
+    //
+    // Every capture below is `rmux capture-pane -p` output from a REAL session.
+    // The eight shell panes are the oracle shape `bash -c '<agent …>; exec
+    // bash'` (agents.rs:452) replayed eight times with a different `PS1`, each
+    // one a live rmux session at 80x24 whose frame is this crate's own
+    // `GOLDEN-stalled-real.txt`. Four of them were ACCEPTED as followup targets
+    // before this predicate was inverted, and a re-audit pasted a mission into
+    // one and watched the body run as shell commands.
+
+    const PANE_DRAFT_BLANK_FIRST_LINE: &str =
+        include_str!("../tests/fixtures/GOLDEN-draft-blank-first-line.txt");
+    const PANE_OPTIONS_ABOVE_COMPOSER: &str =
+        include_str!("../tests/fixtures/adv-option-list-above-composer.txt");
+    /// The same dead-agent shell with a command already half-typed at its
+    /// prompt, which moves the sigil off the end of the line.
+    const PANE_SHELL_DISTRO_TYPED: &str =
+        include_str!("../tests/fixtures/adv-shell-ps1-distro-typed.txt");
+
+    /// name -> the real capture of a dead agent with that `PS1` under its frame.
+    const DEAD_AGENT_SHELLS: &[(&str, &str)] = &[
+        ("distro   \\u@\\h:\\w\\$", include_str!("../tests/fixtures/adv-shell-ps1-distro.txt")),
+        ("starship ❯", include_str!("../tests/fixtures/adv-shell-ps1-starship.txt")),
+        (
+            "inline   \\u@\\h \\w ❯",
+            include_str!("../tests/fixtures/adv-shell-ps1-inlinearrow.txt"),
+        ),
+        (
+            "ohmybash ➜  omegaos git:(main)",
+            include_str!("../tests/fixtures/adv-shell-ps1-ohmybash.txt"),
+        ),
+        ("angle    \\w >", include_str!("../tests/fixtures/adv-shell-ps1-angle.txt")),
+        ("plain    omegaos", include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt")),
+        ("sigil    \\W \\$", include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt")),
+        ("root     omegaos #", include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt")),
+        (
+            "typed    \\u@\\h:\\w\\$ + a command",
+            include_str!("../tests/fixtures/adv-shell-ps1-distro-typed.txt"),
+        ),
+    ];
+
+    /// R1, REPRODUCED ON A LIVE SESSION. The operator's draft opens with a blank
+    /// line, so the marker is bare and the text sits one line UNDER it. Reading
+    /// the marker alone called that composer empty, and the paste came back as
+    /// one turn: `fais aussi le refactor avant de fermerMISSION SUIVI: …`.
+    ///
+    /// This test fails the moment emptiness is judged on a line again.
+    #[test]
+    fn a_draft_under_a_bare_marker_is_not_an_empty_composer() {
+        let marker = find_live_composer_marker(PANE_DRAFT_BLANK_FIRST_LINE)
+            .expect("fixture premise: the capture draws a live composer");
+        let marker_line = PANE_DRAFT_BLANK_FIRST_LINE.lines().nth(marker).unwrap();
+        assert!(
+            marker_line.trim().chars().count() <= 1,
+            "fixture premise: the marker line itself is bare — that is the trap"
+        );
+        assert!(
+            PANE_DRAFT_BLANK_FIRST_LINE.contains("fais aussi le refactor avant de fermer"),
+            "fixture premise: the draft is one line below the marker"
+        );
+        assert!(
+            !composer_is_empty(PANE_DRAFT_BLANK_FIRST_LINE, marker),
+            "a draft below the marker is still a draft: the box is what is empty or not"
+        );
+        assert!(!composer_ready_for_paste(PANE_DRAFT_BLANK_FIRST_LINE));
+    }
+
+    /// R2, REPRODUCED IN RUNTIME ON SIX REAL SESSIONS. The shell that takes over
+    /// when an agent dies reads the USER'S `~/.bashrc`, so its prompt is not a
+    /// constant of this project. Four of these eight were accepted while the
+    /// predicate tried to recognise a shell.
+    ///
+    /// Nothing here asks what the foreign line IS. Under the composer's closing
+    /// rule only the agent's own footer may appear, so every prompt fails, and
+    /// so does the ninth `PS1` nobody has captured yet.
+    #[test]
+    fn no_ps1_turns_a_dead_agent_shell_into_a_paste_target() {
+        for (ps1, pane) in DEAD_AGENT_SHELLS {
+            assert!(
+                find_live_composer_marker(pane).is_some(),
+                "fixture premise ({ps1}): the dead agent's frame still draws its composer"
+            );
+            let marker = find_live_composer_marker(pane).unwrap();
+            assert!(
+                composer_is_empty(pane, marker),
+                "fixture premise ({ps1}): the frozen composer IS empty — the box is not what saves us here"
+            );
+            assert!(
+                !composer_ready_for_paste(pane),
+                "PS1 {ps1}: a live shell under a dead agent's frame accepted a mission body"
+            );
+        }
+    }
+
+    /// The other half of the same rule: the agent's real footer must survive it.
+    /// `GOLDEN-self-echo-false-question.txt` draws a task-panel row under its
+    /// status bar and two live oracles drew a token-count row, so a rule that
+    /// demanded blank lines under the bar would refuse the nominal path it
+    /// exists to protect.
+    #[test]
+    fn the_agents_own_footer_rows_are_not_foreign_lines() {
+        assert!(
+            composer_ready_for_paste(PANE_SELF_ECHO),
+            "the real capture with a task row under its status bar must stay a target"
+        );
+        assert!(composer_ready_for_paste(PANE_STOPPED));
+        assert!(composer_ready_for_paste(PANE_WORKING));
+        // Real footer rows, from live oracle captures.
+        for row in [
+            "                                                        400384 tokens",
+            "                        new task? /clear to save 250k tokens",
+            "  ◯ build-omega-monitor  Build /monitor",
+            "",
+        ] {
+            assert!(is_composer_footer_line(row), "real footer row read as foreign: {row:?}");
+        }
+        // A count is what makes the token row chrome, not the bare word: a shell
+        // sitting in a directory called `tokens` is not the agent's footer.
+        for foreign in ["/home/vibe/tokens", "vibe@host ~/src/tokens $", "omegaos"] {
+            assert!(
+                !is_composer_footer_line(foreign),
+                "a foreign line was read as the agent's own footer: {foreign:?}"
+            );
+        }
+    }
+
+    /// The selection-list guard, EXECUTED. A permission dialog draws
+    /// `❯ 1. Yes` with a footer that is not the question hint, so the question
+    /// test never sees it while Enter would still pick the highlighted option.
+    ///
+    /// This pane is the real stopped capture with the real Write-permission
+    /// dialog's own option block above its composer. Every other reason to
+    /// refuse is switched off on purpose — the composer below is genuinely
+    /// empty and its footer is genuinely the agent's — so the numbered-option
+    /// guard is the only thing standing between this pane and a paste, and
+    /// deleting that guard turns this test red.
+    #[test]
+    fn a_selection_list_above_a_live_composer_is_never_a_paste_target() {
+        let marker = find_live_composer_marker(PANE_OPTIONS_ABOVE_COMPOSER)
+            .expect("fixture premise: the pane draws a live composer");
+        assert!(
+            composer_is_empty(PANE_OPTIONS_ABOVE_COMPOSER, marker),
+            "fixture premise: the composer is empty, so emptiness cannot be what refuses this"
+        );
+        assert!(
+            PANE_OPTIONS_ABOVE_COMPOSER
+                .lines()
+                .any(|l| l.trim() == "❯ 1. Yes"),
+            "fixture premise: a real dialog's selected option is on screen"
+        );
+        assert!(
+            !question_ui_visible(PANE_OPTIONS_ABOVE_COMPOSER),
+            "fixture premise: this dialog draws no question hint — that is why it is dangerous"
+        );
+        assert!(
+            !composer_ready_for_paste(PANE_OPTIONS_ABOVE_COMPOSER),
+            "Enter on a selection list picks the highlighted option"
+        );
+    }
+
+    /// The shell-prompt blacklist, EXECUTED on its own terms. It rides UNDER the
+    /// footer whitelist as defence in depth, so a pane test cannot reach it: the
+    /// contract is pinned directly instead.
+    ///
+    /// The two sigil prompts below come from real captures (`\W \$` and a root
+    /// `#`) and are caught by NOTHING but the trailing-sigil arm — no `@`, no
+    /// `:~`, no `:/` — so dropping that arm turns this test red.
+    #[test]
+    fn a_trailing_shell_sigil_is_a_shell_prompt() {
+        for (name, pane) in DEAD_AGENT_SHELLS
+            .iter()
+            .filter(|(n, _)| n.starts_with("sigil") || n.starts_with("root"))
+        {
+            let last = pane.lines().rev().find(|l| !l.trim().is_empty()).unwrap();
+            assert!(
+                !last.contains('@') && !last.contains(":~") && !last.contains(":/"),
+                "fixture premise ({name}): only the sigil arm can catch {last:?}"
+            );
+            assert!(
+                is_shell_prompt_line(last),
+                "a real shell prompt went unrecognised: {last:?}"
+            );
+        }
+        // The other arm, and the shape that needs it: a prompt with a command
+        // already half-typed at it puts the sigil in the MIDDLE of the line.
+        // Real capture, distro `PS1` with `omega status …` typed and not sent.
+        let typed = PANE_SHELL_DISTRO_TYPED
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap();
+        assert!(
+            !matches!(typed.trim().chars().last(), Some('$') | Some('#') | Some('%')),
+            "fixture premise: the sigil is no longer last, so only the user@host arm can catch it"
+        );
+        assert!(
+            is_shell_prompt_line(typed),
+            "a prompt with a half-typed command went unrecognised: {typed:?}"
+        );
+        // And it stays a predicate about prompts, not about prose.
+        assert!(!is_shell_prompt_line("● Ready."));
+        assert!(!is_shell_prompt_line("  ⏵⏵ bypass permissions on (shift+tab to cycle)"));
     }
 
     // ── The work probe ───────────────────────────────────────────────────────

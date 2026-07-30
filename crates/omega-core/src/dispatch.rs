@@ -312,10 +312,10 @@ pub fn pane_ready_for_followup(pane: &str) -> bool {
 /// the screen) is NOT text held: there is nothing left holding our paste.
 fn composer_holds_text(pane: &str) -> bool {
     match crate::session_monitor::find_live_composer_marker(pane) {
-        Some(marker) => pane
-            .lines()
-            .nth(marker)
-            .is_some_and(|line| !crate::session_monitor::composer_is_empty(line)),
+        // The whole box, not the marker line: our own paste lands wrapped onto
+        // the lines UNDER the marker, so reading the marker alone reported an
+        // empty composer while the mission body sat in it unsent.
+        Some(marker) => !crate::session_monitor::composer_is_empty(pane, marker),
         None => false,
     }
 }
@@ -1722,6 +1722,22 @@ mod followup_routing_tests {
         include_str!("../tests/fixtures/adv-question-with-rule-blockquote.txt");
     const REAL_QUESTION_STALE_INTERRUPT: &str =
         include_str!("../tests/fixtures/adv-question-stale-interrupt.txt");
+    /// The two classes a re-audit reproduced in runtime: eight real dead-agent
+    /// shells (one per `PS1`), a real composer holding a draft whose first line
+    /// is blank, and a real dialog's option block above a real live composer.
+    const REAL_SHELL_DISTRO: &str = include_str!("../tests/fixtures/adv-shell-ps1-distro.txt");
+    const REAL_SHELL_STARSHIP: &str = include_str!("../tests/fixtures/adv-shell-ps1-starship.txt");
+    const REAL_SHELL_INLINEARROW: &str =
+        include_str!("../tests/fixtures/adv-shell-ps1-inlinearrow.txt");
+    const REAL_SHELL_OHMYBASH: &str = include_str!("../tests/fixtures/adv-shell-ps1-ohmybash.txt");
+    const REAL_SHELL_ANGLE: &str = include_str!("../tests/fixtures/adv-shell-ps1-angle.txt");
+    const REAL_SHELL_PLAINNAME: &str = include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt");
+    const REAL_SHELL_BARESIGIL: &str = include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt");
+    const REAL_SHELL_ROOTSIGIL: &str = include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt");
+    const REAL_DRAFT_BLANK_FIRST_LINE: &str =
+        include_str!("../tests/fixtures/GOLDEN-draft-blank-first-line.txt");
+    const REAL_OPTIONS_ABOVE_COMPOSER: &str =
+        include_str!("../tests/fixtures/adv-option-list-above-composer.txt");
 
     /// The nominal path, on real captures: an empty composer with the agent's
     /// status bar under it is the ONE thing this feature waits for.
@@ -1736,6 +1752,94 @@ mod followup_routing_tests {
                 pane_ready_for_followup(pane),
                 "{name}: a real, empty agent composer must be a valid followup target"
             );
+        }
+    }
+
+    /// THE TWO FALSE POSITIVES A RE-AUDIT REPRODUCED IN RUNTIME, on real
+    /// captures rather than on panes this file typed for itself.
+    ///
+    /// The eight shells are the oracle shape `bash -c '<agent …>; exec bash'`
+    /// replayed with eight different `PS1`; four of them were accepted here,
+    /// and pasting into one ran the mission body as shell commands with `$()`
+    /// live. The draft is a live Claude Code composer holding an operator's
+    /// unsent line that begins with a blank line, which read as EMPTY and would
+    /// have submitted `…avant de fermerMISSION SUIVI: …` as a single turn.
+    #[test]
+    fn the_reproduced_false_positives_are_never_followup_targets() {
+        for (name, pane) in [
+            ("PS1 \\u@\\h:\\w\\$", REAL_SHELL_DISTRO),
+            ("PS1 ❯", REAL_SHELL_STARSHIP),
+            ("PS1 \\u@\\h \\w ❯", REAL_SHELL_INLINEARROW),
+            ("PS1 ➜  omegaos git:(main)", REAL_SHELL_OHMYBASH),
+            ("PS1 \\w >", REAL_SHELL_ANGLE),
+            ("PS1 omegaos", REAL_SHELL_PLAINNAME),
+            ("PS1 \\W \\$", REAL_SHELL_BARESIGIL),
+            ("PS1 omegaos #", REAL_SHELL_ROOTSIGIL),
+            ("draft under a bare marker", REAL_DRAFT_BLANK_FIRST_LINE),
+            ("selection list above the composer", REAL_OPTIONS_ABOVE_COMPOSER),
+        ] {
+            assert!(
+                !pane_ready_for_followup(pane),
+                "{name}: reproduced in runtime as a false positive — never a followup target"
+            );
+        }
+    }
+
+    /// The same box rule on the confirmation side. Our own paste wraps onto the
+    /// lines UNDER the marker, so a marker-only reading reported an empty
+    /// composer while the whole mission body sat in it unsent — and the caller
+    /// would have reported a delivery it never made.
+    #[test]
+    fn a_draft_below_the_marker_is_text_the_composer_still_holds() {
+        assert!(
+            REAL_DRAFT_BLANK_FIRST_LINE.contains("fais aussi le refactor avant de fermer"),
+            "fixture premise: the text sits below a bare marker"
+        );
+        assert!(
+            composer_holds_text(REAL_DRAFT_BLANK_FIRST_LINE),
+            "text under the marker is text the composer is still holding"
+        );
+    }
+
+    /// HONESTY NOTE, and it is the reason this test exists at all.
+    ///
+    /// `pane_ready_for_followup` refuses on two lenses, and since the composer
+    /// predicate started demanding that only the agent's own footer follow the
+    /// box, the second lens can no longer decide anything: a question hint is
+    /// either inside the box (so the box is not empty), or under it (so it is
+    /// not the agent's footer), or above the composer (in which case
+    /// `question_ui_visible` is false by its own position rule). Deleting the
+    /// `!question_ui_visible` conjunct therefore turns NO test red, and no pane
+    /// — real or invented — can make it turn one red, because the class it
+    /// discriminates is empty.
+    ///
+    /// So the conjunct is documented for what it is: defence in depth behind a
+    /// stronger guard, kept because auto-answering a question is the worst
+    /// thing this feature could do and because it costs one line. What IS
+    /// pinned here is the domination itself. The day a capture makes both
+    /// lenses disagree, this test fails and the conjunct is load-bearing again.
+    #[test]
+    fn the_question_lens_is_dominated_by_the_composer_lens_on_every_capture() {
+        for (name, pane) in [
+            ("GOLDEN-stalled-real", REAL_COMPOSER_STOPPED),
+            ("MoonBaseCapital-claude", REAL_COMPOSER_WORKING),
+            ("GOLDEN-self-echo-false-question", REAL_SELF_ECHO),
+            ("GOLDEN-question-real", REAL_QUESTION),
+            ("adv-question-option-under-rule", REAL_QUESTION_OPTION_UNDER_RULE),
+            ("adv-question-with-rule-arrow", REAL_QUESTION_RULE_ARROW),
+            ("adv-question-with-rule-blockquote", REAL_QUESTION_RULE_BLOCKQUOTE),
+            ("adv-question-stale-interrupt", REAL_QUESTION_STALE_INTERRUPT),
+            ("adv-option-list-above-composer", REAL_OPTIONS_ABOVE_COMPOSER),
+            ("GOLDEN-draft-blank-first-line", REAL_DRAFT_BLANK_FIRST_LINE),
+        ] {
+            if crate::session_monitor::question_ui_visible(pane) {
+                assert!(
+                    !crate::session_monitor::composer_ready_for_paste(pane),
+                    "{name}: the question lens has become load-bearing again — the conjunct \
+                     in pane_ready_for_followup is no longer defence in depth, and it now \
+                     needs a test of its own"
+                );
+            }
         }
     }
 
@@ -1889,12 +1993,20 @@ mod followup_routing_tests {
     }
 
     /// The agent composer: a horizontal rule, an EMPTY prompt marker under it,
-    /// and the agent's status bar under that.
+    /// the rule that CLOSES the box, and the agent's status bar under that.
+    ///
+    /// The closing rule is not decoration. The composer is a box, the operator's
+    /// text wraps onto the lines under the marker, and emptiness is judged on
+    /// the whole box — so a pane that opens a box and never closes it is not a
+    /// composer this module can bound. Every one of the 8 committed captures and
+    /// the 13 live panes replayed by the re-audit draws both rules; this pane
+    /// omitted the second one and was an abbreviation, never a real shape.
     #[test]
     fn agent_composer_is_ready() {
         let pane = "I finished the analysis.\n\
                     ────────────────────────────────\n\
                     ❯ \n\
+                    ────────────────────────────────\n\
                       ? for shortcuts";
         assert!(
             pane_ready_for_followup(pane),
