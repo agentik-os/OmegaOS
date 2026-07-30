@@ -85,8 +85,11 @@ services:
     image: od-omega:latest
     read_only: false
     user: "$UID_GID"
+    network_mode: host
     environment:
       HOME: /home/node
+      OD_BIND_HOST: 127.0.0.1
+      OD_PORT: "$PORT"
     volumes:
       - $DATA:/app/.od
       - $AH/.claude:/home/node/.claude
@@ -118,7 +121,32 @@ fi
 i=0; until curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health" || [ $i -ge 30 ]; do sleep 2; i=$((i+1)); done
 if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
     ok "Open Design healthy → view: $VIEW"
-    info "Select working directory: point it at a project under $PROJECTS_ROOT to redesign it"
+
+    # 7a) MCP — design research + project creation from a Claude/Codex chat. The
+    # daemon's MCP server runs inside the container; agents reach it via
+    # `docker exec`. Claude gets a user-scoped server; Codex needs its own
+    # config.toml (it does not read Claude's). Opt out: OMEGA_SKIP_OD_MCP=1.
+    if [[ "${OMEGA_SKIP_OD_MCP:-0}" != "1" ]]; then
+        MCP_ARGS=(docker exec -i open-design node /app/apps/daemon/dist/cli.js mcp --daemon-url "http://127.0.0.1:${PORT}")
+        if command -v claude >/dev/null 2>&1; then
+            claude mcp remove open-design --scope user 2>/dev/null || true
+            claude mcp add --scope user open-design -- "${MCP_ARGS[@]}" >/dev/null 2>&1 && ok "Claude MCP wired (open-design)"
+        fi
+        CXCFG="$HOME/.codex/config.toml"
+        if [[ -f "$CXCFG" ]] && ! grep -q "\[mcp_servers.open-design\]" "$CXCFG"; then
+            printf '\n[mcp_servers.open-design]\ncommand = "docker"\nargs = ["exec", "-i", "open-design", "node", "/app/apps/daemon/dist/cli.js", "mcp", "--daemon-url", "http://127.0.0.1:%s"]\n' "$PORT" >> "$CXCFG"
+            ok "Codex MCP wired (~/.codex/config.toml)"
+        fi
+    fi
+
+    # 7b) populate the UI with every OmegaOS project (the web folder-picker can't
+    # reach server paths, so we register them server-side).
+    N=0
+    while IFS= read -r p; do [[ -n "$p" ]] || continue
+        curl -s -X POST "http://127.0.0.1:${PORT}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" >/dev/null 2>&1 && N=$((N+1))
+    done < <(find "$PROJECTS_ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed 's#/.git##' | sort -u)
+    ok "Imported $N OmegaOS projects into Open Design"
+    info "Refonte: open $VIEW → pick a project. Composio/connector keys: omega-design composio <KEY> (server-side; the tailnet UI is loopback-only by design)."
 else
     warn "Open Design did not report healthy yet (check: docker logs open-design)"
 fi

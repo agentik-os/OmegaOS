@@ -47,6 +47,13 @@ If it is not running: `omega-design up && omega-design serve`. The view URL is
 - **Daemon API**: everything is `/api/*` on the daemon (`omega-design api /api/health`). The web UI
   and the CLI both call the same endpoints — the HTTP layer is the source of truth.
 
+## Drive it from a chat (MCP)
+
+The Open Design MCP is wired into Claude and Codex (`docker exec` into the daemon). Tools:
+`list_projects`, `create_project`, `list_skills` (design research), `start_run` (commission a
+design), `get_run`. The full capability list (162 skills by mode + 151 design systems) is in
+`references/od-catalog.md`. Use these to research a design and generate a project straight from chat.
+
 ## How an OmegaOS session drives it
 
 1. **Confirm it's live**: `omega-design status` (start with `omega-design up && omega-design serve`).

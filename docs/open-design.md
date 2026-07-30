@@ -63,6 +63,31 @@ you see in the UI is a *design system* named github). Your projects are already 
 the mount + git creds are what let a refonte push.
 
 
+## Design from a chat (MCP)
+
+The daemon's MCP server is wired into **Claude and Codex** (Claude: user-scoped; Codex:
+`~/.codex/config.toml` — it does not read Claude's config). Reached via `docker exec` into the
+container. So from any OmegaOS chat you can: `list_projects`, `create_project`, `list_skills`
+(design research over 162 skills / 151 design systems — see
+[references/od-catalog.md](../skills/open-design/references/od-catalog.md)), and `start_run` to
+commission a design, then `get_run`. Re-run the installer or `omega-design` to re-wire; opt out with
+`OMEGA_SKIP_OD_MCP=1`.
+
+## Connectors & keys (Composio, BYOK) — loopback-only
+
+Open Design gates sensitive settings (Composio API key, connector/provider keys) to **loopback
+only** — a deliberate security boundary: only the local machine may change them, never a remote
+tailnet client. So the **tailnet UI cannot save a key** (it returns 403 by design). Set them
+**server-side** instead:
+
+```
+omega-design composio <COMPOSIO_API_KEY>   # clears with: omega-design composio -
+```
+
+(OmegaOS runs the daemon with host networking so its own loopback works behind Docker — without it,
+even a localhost request was seen as non-loopback through the bridge NAT and every management write
+failed.)
+
 ## Marketing machine
 
 Build the visual system and viewable creatives (landing pages, decks, ad mocks) here; the operator

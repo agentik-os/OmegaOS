@@ -61,6 +61,20 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
   templates) _list /api/design-templates ;;
   plugins)   _list /api/plugins ;;
   api)  shift; p="${1:-/api/health}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
+  import-all) # register EVERY OmegaOS git project so they populate the UI
+    ROOT="${OMEGA_PROJECTS_ROOT:-$HOME/Station}"; n=0
+    while IFS= read -r p; do [ -n "$p" ] || continue
+      curl -s -X POST "${BASE}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" >/dev/null 2>&1 && n=$((n+1))
+    done < <(find "$ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed "s#/.git##" | sort -u)
+    echo "  imported $n projects -> refresh $URL"
+    ;;
+  composio) # set the Composio API key SERVER-SIDE (the tailnet UI can't: loopback-only)
+    shift; k="${1:-}"
+    [ -n "$k" ] || { echo "usage: omega-design composio <COMPOSIO_API_KEY>  (clears with: omega-design composio -)"; exit 2; }
+    [ "$k" = "-" ] && k=""
+    curl -s -X PUT "${BASE}/api/connectors/composio/config" -H "Content-Type: application/json" -d "{\"apiKey\":\"$k\"}" \
+      -w "\n  composio -> HTTP %{http_code}\n" | tail -2
+    ;;
   import) # register an OmegaOS project into Open Design so it shows in the UI
     shift; arg="${1:-}"
     [ -n "$arg" ] || { echo "usage: omega-design import <project-name-or-path>"; exit 2; }
