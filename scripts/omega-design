@@ -70,12 +70,18 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
   templates) _list /api/design-templates ;;
   plugins)   _list /api/plugins ;;
   api)  shift; p="${1:-/api/health}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
-  import-all) # register EVERY OmegaOS git project so they populate the UI
+  import-all) # register EVERY OmegaOS git project (idempotent: skips existing)
     ROOT="${OMEGA_PROJECTS_ROOT:-$HOME/Station}"; n=0
+    EXISTING="$(curl -s "${BASE}/api/projects" 2>/dev/null | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); it=d.get('projects',d) if isinstance(d,dict) else d
+    print('\n'.join((p.get('metadata') or {}).get('baseDir','') for p in it))
+except Exception: pass" 2>/dev/null)"
     while IFS= read -r p; do [ -n "$p" ] || continue
+      printf '%s\n' "$EXISTING" | grep -qxF "$p" && continue
       curl -s -X POST "${BASE}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" >/dev/null 2>&1 && n=$((n+1))
     done < <(find "$ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed "s#/.git##" | sort -u)
-    echo "  imported $n projects -> refresh $URL"
+    echo "  imported $n new project(s) (existing skipped) -> refresh $URL"
     ;;
   composio) # set the Composio API key SERVER-SIDE (the tailnet UI can't: loopback-only)
     shift; k="${1:-}"
@@ -91,6 +97,9 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
       p="$(find "${OMEGA_PROJECTS_ROOT:-$HOME/Station}" -maxdepth 3 -type d -name "$arg" 2>/dev/null | head -1)"
     fi
     [ -n "$p" ] && [ -d "$p" ] || { echo "not found: $arg (try: omega-design projects)"; exit 1; }
+    # idempotent: if already imported, don't create a duplicate
+    if curl -s "${BASE}/api/projects" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);it=d.get('projects',d) if isinstance(d,dict) else d;sys.exit(0 if any((x.get('metadata') or {}).get('baseDir')=='$p' for x in it) else 1)" 2>/dev/null; then
+      echo "  already imported: $p"; exit 0; fi
     r=$(curl -s -X POST "${BASE}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" 2>/dev/null)
     echo "$r" | python3 -c "import json,sys;d=json.load(sys.stdin);pr=d.get('project',{});print('  imported:',pr.get('name'),'->',pr.get('metadata',{}).get('baseDir'));print('  open','''"$URL"''','and it is in your project list')" 2>/dev/null || echo "  import response: $r"
     ;;

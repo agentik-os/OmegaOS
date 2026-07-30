@@ -140,12 +140,19 @@ if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
     fi
 
     # 7b) populate the UI with every OmegaOS project (the web folder-picker can't
-    # reach server paths, so we register them server-side).
+    # reach server paths, so we register them server-side). IDEMPOTENT: skip a
+    # baseDir already imported, so re-running on every update never duplicates.
+    EXISTING="$(curl -s "http://127.0.0.1:${PORT}/api/projects" 2>/dev/null | python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin); it=d.get('projects',d) if isinstance(d,dict) else d
+    print('\n'.join((p.get('metadata') or {}).get('baseDir','') for p in it))
+except Exception: pass" 2>/dev/null)"
     N=0
     while IFS= read -r p; do [[ -n "$p" ]] || continue
+        printf '%s\n' "$EXISTING" | grep -qxF "$p" && continue
         curl -s -X POST "http://127.0.0.1:${PORT}/api/import/folder" -H "Content-Type: application/json" -d "{\"baseDir\":\"$p\"}" >/dev/null 2>&1 && N=$((N+1))
     done < <(find "$PROJECTS_ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed 's#/.git##' | sort -u)
-    ok "Imported $N OmegaOS projects into Open Design"
+    ok "Imported $N new OmegaOS project(s) into Open Design (existing skipped)"
     info "Refonte: open $VIEW → pick a project. Composio/connector keys: omega-design composio <KEY> (server-side; the tailnet UI is loopback-only by design)."
 else
     warn "Open Design did not report healthy yet (check: docker logs open-design)"
