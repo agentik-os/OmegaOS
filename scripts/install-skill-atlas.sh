@@ -42,6 +42,13 @@ if [[ -f "$OMEGA_SRC/scripts/omega-skills" && -f "$OMEGA_SRC/scripts/omega-skill
     chmod +x "$OMEGA_DIR/bin/omega-skills" "$OMEGA_DIR/bin/omega-skills-atlas.py" \
              "$OMEGA_DIR/bin/omega-skills-rag.py" 2>/dev/null || true
     ln -sf "$OMEGA_DIR/bin/omega-skills" "$INSTALL_DIR/omega-skills" 2>/dev/null || true
+    # Open Design driver CLI (the daemon itself is an opt-in install:
+    # tools/open-design/install-open-design.sh — heavy Docker dep, not auto-run).
+    if [[ -f "$OMEGA_SRC/scripts/omega-design" ]]; then
+        cp -f "$OMEGA_SRC/scripts/omega-design" "$OMEGA_DIR/bin/omega-design"
+        chmod +x "$OMEGA_DIR/bin/omega-design"
+        ln -sf "$OMEGA_DIR/bin/omega-design" "$INSTALL_DIR/omega-design" 2>/dev/null || true
+    fi
     ok "Skill Atlas CLI installed (omega-skills)"
 else
     warn "omega-skills sources not found in $OMEGA_SRC/scripts — atlas CLI not installed"
@@ -78,7 +85,7 @@ fi
 # ── 2a) install OmegaOS-native discovery/method skills into the active namespace
 # These are OmegaOS's own skills (no third-party IP) that must always be active so
 # oracles/workers and the RAG see them. Copy → ~/.omega/skills, symlink → ~/.claude.
-for native_skill in product-development-system; do
+for native_skill in product-development-system open-design; do
     src="$OMEGA_SRC/skills/$native_skill"
     if [[ -d "$src" ]]; then
         mkdir -p "$OMEGA_DIR/skills/$native_skill"
