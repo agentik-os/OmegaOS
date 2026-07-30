@@ -18,9 +18,22 @@ OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 REPO="$OMEGA_DIR/repos/open-design"
 DEPLOY="$REPO/deploy"
 PORT="${OPEN_DESIGN_PORT:-7456}"
+# Always include the OmegaOS override (CLI-baked image + agent-auth mount) when
+# present, so up/restart never revert to the vanilla image that detects no CLI.
+DC=(docker compose -f "$DEPLOY/docker-compose.yml")
+[ -f "$DEPLOY/docker-compose.omega.yml" ] && DC+=(-f "$DEPLOY/docker-compose.omega.yml")
 BASE="http://127.0.0.1:${PORT}"
-TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo station.tail64d114.ts.net)"
-URL="https://${TS_HOST}:${PORT}"
+# View URL, resolved by what actually exists:
+#   Tailscale up AND serving this port -> the tailnet HTTPS URL (remote-viewable)
+#   otherwise (no Tailscale / local machine)   -> plain localhost
+TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+if [ -n "$TS_HOST" ] && tailscale serve status 2>/dev/null | grep -q ":${PORT}"; then
+    URL="https://${TS_HOST}:${PORT}"        # served over the tailnet
+elif [ -n "$TS_HOST" ]; then
+    URL="https://${TS_HOST}:${PORT}"        # tailnet up; `omega-design serve` will expose it
+else
+    URL="http://localhost:${PORT}"          # no Tailscale -> local machine only
+fi
 
 _list() { curl -s "${BASE}$1" 2>/dev/null | python3 -c "import json,sys
 d=json.load(sys.stdin)
@@ -35,10 +48,14 @@ case "${1:-status}" in
     tailscale serve status 2>/dev/null | grep -q ":${PORT}" && echo "  served:    $URL (tailnet-only)" || echo "  served:    NOT (run: omega-design serve)"
     curl -sf -o /dev/null -w "  health:    HTTP %{http_code}\n" "${BASE}/api/health" 2>/dev/null || echo "  health:    unreachable"
     ;;
-  up)      ( cd "$DEPLOY" && docker compose up -d ) ;;
-  down)    ( cd "$DEPLOY" && docker compose down ) ;;
-  restart) ( cd "$DEPLOY" && docker compose restart ) ;;
+  up)      ( cd "$DEPLOY" && "${DC[@]}" up -d ) ;;
+  down)    ( cd "$DEPLOY" && "${DC[@]}" down ) ;;
+  restart) ( cd "$DEPLOY" && "${DC[@]}" up -d ) ;;
   serve)   tailscale serve --bg --https=${PORT} "${BASE}" && echo "served at $URL" ;;
+  agents)  curl -s "${BASE}/api/agents" 2>/dev/null | python3 -c "import json,sys
+d=json.load(sys.stdin); items=d if isinstance(d,list) else (d.get('agents') or d.get('items') or [])
+det=[a for a in items if isinstance(a,dict) and (a.get('detected') or a.get('available'))]
+print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in det) or 'NONE (run the installer to bake claude/codex into the image)')" 2>/dev/null ;;
   systems)   _list /api/design-systems ;;
   skills)    _list /api/skills ;;
   templates) _list /api/design-templates ;;

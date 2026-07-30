@@ -30,12 +30,14 @@ ok "Open Design source at $DST ($(cd "$DST" && git rev-parse --short HEAD 2>/dev
 
 # 2) .env with a generated token (mirrored to secrets, never the repo)
 DEPLOY="$DST/deploy"
-TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo localhost)"
+TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+# Tailscale present -> tailnet HTTPS origin; otherwise local machine over http.
+if [[ -n "$TS_HOST" ]]; then VIEW="https://$TS_HOST:$PORT"; else VIEW="http://localhost:$PORT"; fi
 if [[ ! -f "$DEPLOY/.env" ]]; then
     cp "$DEPLOY/.env.example" "$DEPLOY/.env"
     TOKEN="$(openssl rand -hex 32)"
     sed -i "s|^OD_API_TOKEN=.*|OD_API_TOKEN=$TOKEN|" "$DEPLOY/.env"
-    sed -i "s|^OPEN_DESIGN_ALLOWED_ORIGINS=.*|OPEN_DESIGN_ALLOWED_ORIGINS=https://$TS_HOST:$PORT|" "$DEPLOY/.env"
+    sed -i "s|^OPEN_DESIGN_ALLOWED_ORIGINS=.*|OPEN_DESIGN_ALLOWED_ORIGINS=$VIEW|" "$DEPLOY/.env"
     grep -q '^OPEN_DESIGN_DISABLE_API_AUTH=' "$DEPLOY/.env" \
         && sed -i "s|^OPEN_DESIGN_DISABLE_API_AUTH=.*|OPEN_DESIGN_DISABLE_API_AUTH=1|" "$DEPLOY/.env" \
         || echo "OPEN_DESIGN_DISABLE_API_AUTH=1" >> "$DEPLOY/.env"
@@ -43,12 +45,46 @@ if [[ ! -f "$DEPLOY/.env" ]]; then
     ok "deploy/.env written (token mirrored to secrets)"
 fi
 
-# 3) pull + up
-( cd "$DEPLOY" && docker compose pull 2>&1 | tail -1 && docker compose up -d 2>&1 | tail -1 ) || { warn "docker compose up failed"; exit 0; }
+# 2b) LOCAL CLI mode: bake the operator's coding-agent CLIs into the image + mount
+# their auth, so Open Design detects claude/codex (subscription) instead of failing
+# with "vela binary not found". Opt out with OMEGA_SKIP_OD_LOCALCLI=1 (uses BYOK/UI).
+COMPOSE=(docker compose -f "$DEPLOY/docker-compose.yml")
+if [[ "${OMEGA_SKIP_OD_LOCALCLI:-0}" != "1" ]] && command -v claude >/dev/null 2>&1; then
+    cat > "$DEPLOY/Dockerfile.omega-agents" <<'DOCKER'
+FROM ghcr.io/nexu-io/od:latest
+USER root
+RUN npm i -g @anthropic-ai/claude-code @openai/codex 2>/dev/null || npm i -g @anthropic-ai/claude-code
+USER 1001
+DOCKER
+    ( cd "$DEPLOY" && docker build -f Dockerfile.omega-agents -t od-omega:latest .. 2>&1 | tail -1 )
+    # resolved agent-auth home (real creds, no host symlink, not polluting ~/.claude)
+    AH="$OMEGA_DIR/open-design-agent-home"; mkdir -p "$AH/.claude" "$AH/.codex"
+    RC="$(readlink -f "$HOME/.claude/.credentials.json" 2>/dev/null)"; [[ -f "$RC" ]] && cp "$RC" "$AH/.claude/.credentials.json"
+    [[ -f "$HOME/.codex/auth.json" ]] && cp "$HOME/.codex/auth.json" "$AH/.codex/auth.json"
+    [[ -f "$HOME/.codex/config.toml" ]] && cp "$HOME/.codex/config.toml" "$AH/.codex/config.toml"
+    sudo chown -R 1001:1001 "$AH" 2>/dev/null || chown -R 1001:1001 "$AH" 2>/dev/null || true
+    cat > "$DEPLOY/docker-compose.omega.yml" <<YML
+services:
+  open-design:
+    image: od-omega:latest
+    read_only: false
+    environment:
+      HOME: /home/open-design
+    volumes:
+      - open_design_data:/app/.od
+      - $AH/.claude:/home/open-design/.claude
+      - $AH/.codex:/home/open-design/.codex
+YML
+    COMPOSE+=(-f "$DEPLOY/docker-compose.omega.yml")
+    ok "Local CLI mode: claude/codex baked into od-omega image + auth mounted"
+fi
+
+# 3) pull + up (with the override when local-CLI mode is on)
+( cd "$DEPLOY" && docker compose pull 2>&1 | tail -1 && "${COMPOSE[@]}" up -d 2>&1 | tail -1 ) || { warn "docker compose up failed"; exit 0; }
 
 # 4) tailscale serve (tailnet-only)
 if [[ "${OMEGA_SKIP_TS_SERVE:-0}" != "1" ]] && command -v tailscale >/dev/null 2>&1; then
-    tailscale serve --bg --https=${PORT} "http://127.0.0.1:${PORT}" 2>/dev/null && ok "served tailnet-only at https://$TS_HOST:$PORT"
+    tailscale serve --bg --https=${PORT} "http://127.0.0.1:${PORT}" 2>/dev/null && ok "served tailnet-only at https://${TS_HOST:-localhost}:$PORT"
 fi
 
 # 5) install the CLI + skill live
@@ -61,7 +97,7 @@ fi
 # 6) verify
 i=0; until curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health" || [ $i -ge 30 ]; do sleep 2; i=$((i+1)); done
 if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
-    ok "Open Design healthy → view: https://$TS_HOST:$PORT"
+    ok "Open Design healthy → view: $VIEW"
 else
     warn "Open Design did not report healthy yet (check: docker logs open-design)"
 fi

@@ -471,13 +471,16 @@ impl Agent {
                 // --dangerously-skip-permissions: an omega pane is unattended, so a
                 // per-command approval prompt is a hang, not a safety net.
                 //
-                // NO_COLOR is intentional here. Codex's interactive composer
-                // paints a full-width RGB(30,30,30) surface even when the outer
-                // terminal is light (Termius, basic ANSI terminals, etc.). Its
-                // default foreground then inherits the outer palette and can
-                // become black-on-black. Omega owns the surrounding TUI palette,
-                // while Codex remains fully usable in monochrome; this removes
-                // the opaque band at the source and keeps the session portable.
+                // COLORFGBG='15;0' (light-on-dark) instead of NO_COLOR. Codex's
+                // composer paints a full-width RGB(30,30,30) band; NO_COLOR used
+                // to strip it, but that also killed ALL syntax color and left
+                // typed input barely visible — the operator wants color back.
+                // COLORFGBG tells Codex the terminal is dark, so it renders a
+                // light foreground ON its dark band (readable + colored) instead
+                // of inheriting the outer palette and going black-on-black. The
+                // dark band only mismatches a LIGHT outer terminal now; on the
+                // dark rmux/omega TUI it blends in. Quoted so the ';' is one env
+                // value, not a shell separator.
                 // (3) --dangerously-bypass-hook-trust — same unattended-pane
                 //     problem, third prompt. Codex gates any new or changed
                 //     entry in hooks.json behind "N hooks are new or changed",
@@ -497,7 +500,7 @@ impl Agent {
                 //     interactive `codex` keeps the trust prompt.
                 let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
                 let args = format!(
-                    "{}{}NO_COLOR=1 codex --dangerously-bypass-approvals-and-sandbox \
+                    "{}{}COLORFGBG='15;0' codex --dangerously-bypass-approvals-and-sandbox \
                      --dangerously-bypass-hook-trust --no-alt-screen",
                     env_prefix, trust_prefix,
                 );
@@ -714,11 +717,17 @@ mod tests {
     }
 
     #[test]
-    fn codex_launch_disables_unsafe_full_width_color_surface() {
+    fn codex_launch_keeps_color_but_stays_terminal_safe() {
         let cmd = Agent::Codex.launch_command(None);
+        // Color is preserved (no NO_COLOR); a dark-terminal hint keeps Codex's
+        // band readable (light-on-dark) instead of black-on-black; inline render.
         assert!(
-            cmd.contains("NO_COLOR=1 codex") && cmd.contains("--no-alt-screen"),
-            "Codex launch must be terminal-safe: {cmd}"
+            !cmd.contains("NO_COLOR")
+                && cmd.contains("COLORFGBG=")
+                && cmd.contains("15;0")
+                && cmd.contains("codex --dangerously-bypass-approvals-and-sandbox")
+                && cmd.contains("--no-alt-screen"),
+            "Codex launch must keep color and stay terminal-safe: {cmd}"
         );
     }
 }
