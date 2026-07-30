@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# omega-design — drive Open Design (nexu-io/open-design) from OmegaOS.
+# A local, self-hosted design engine: agents generate prototypes, dashboards,
+# decks, images and video from a brand contract (DESIGN.md), viewable in the
+# browser over Tailscale. The daemon owns /api/*; this wraps the common ops.
+#
+#   omega-design status              container + tailscale-serve + URL
+#   omega-design url                 print the tailnet view URL
+#   omega-design up | down | restart lifecycle (docker compose)
+#   omega-design systems             list the built-in design systems
+#   omega-design skills              list the functional skills
+#   omega-design templates           list the render templates (decks/prototypes/…)
+#   omega-design api <path> [curl…]  raw call, e.g.  omega-design api /api/health
+# ═══════════════════════════════════════════════════════════════════════════
+set -uo pipefail
+OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
+REPO="$OMEGA_DIR/repos/open-design"
+DEPLOY="$REPO/deploy"
+PORT="${OPEN_DESIGN_PORT:-7456}"
+BASE="http://127.0.0.1:${PORT}"
+TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || echo station.tail64d114.ts.net)"
+URL="https://${TS_HOST}:${PORT}"
+
+_list() { curl -s "${BASE}$1" 2>/dev/null | python3 -c "import json,sys
+d=json.load(sys.stdin)
+items=d if isinstance(d,list) else (d.get('items') or d.get('designSystems') or d.get('templates') or d.get('skills') or [])
+for x in items: print(' -', x.get('name') or x.get('id') or x if isinstance(x,dict) else x)" 2>/dev/null || echo "  (endpoint returned no list)"; }
+
+case "${1:-status}" in
+  url) echo "$URL" ;;
+  status)
+    echo "Open Design"
+    docker ps --filter name=open-design --format '  container: {{.Status}}  {{.Ports}}' 2>/dev/null || echo "  container: (docker unavailable)"
+    tailscale serve status 2>/dev/null | grep -q ":${PORT}" && echo "  served:    $URL (tailnet-only)" || echo "  served:    NOT (run: omega-design serve)"
+    curl -sf -o /dev/null -w "  health:    HTTP %{http_code}\n" "${BASE}/api/health" 2>/dev/null || echo "  health:    unreachable"
+    ;;
+  up)      ( cd "$DEPLOY" && docker compose up -d ) ;;
+  down)    ( cd "$DEPLOY" && docker compose down ) ;;
+  restart) ( cd "$DEPLOY" && docker compose restart ) ;;
+  serve)   tailscale serve --bg --https=${PORT} "${BASE}" && echo "served at $URL" ;;
+  systems)   _list /api/design-systems ;;
+  skills)    _list /api/skills ;;
+  templates) _list /api/design-templates ;;
+  plugins)   _list /api/plugins ;;
+  api)  shift; p="${1:-/api/health}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
+  *) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -20 ;;
+esac
