@@ -1268,15 +1268,93 @@ function extractAgentPick(text: string): { text: string; agent?: AgentPick } {
   return { text: text.slice(0, m.index).trim() || text, agent };
 }
 
+// ── Force a NEW oracle from the phone ("new: …") ──────────────────────────────
+// `omega dispatch` no longer always spawns: a mission for a project whose oracle
+// is STILL WORKING is delivered into that live session (a followup). Good default,
+// but it left the operator with no way to start a genuinely independent second
+// mission from the one interface he actually uses — `--new` was wired in the CLI
+// and reachable from no real interface.
+//
+// The trigger is a LEADING marker, the cheapest thing to type on a phone and the
+// only shape that cannot be confused with prose: `new:` / `nouveau:` / `nouvelle:`
+// (the colon is REQUIRED, so a mission that merely opens with "new feature …"
+// still routes normally), or a bare `/new ` head for the paths where a slash is
+// not a command. Stripped before dispatch, so the oracle never reads the marker
+// as part of its mission.
+const FORCE_NEW_RE = /^\s*(?:\/new\b|(?:nouveau|nouvelle|new)\s*:)\s*/i;
+function extractForceNew(text: string): { text: string; forceNew: boolean } {
+  const m = text.match(FORCE_NEW_RE);
+  if (!m) return { text, forceNew: false };
+  const rest = text.slice(m[0].length).trim();
+  if (!rest) return { text, forceNew: false }; // the marker alone is not a mission
+  return { text: rest, forceNew: true };
+}
+// How `omega dispatch` delivered the mission. The CLI prints exactly ONE such
+// line. ABSENT = an older binary that only ever spawns → fall back to "spawned",
+// i.e. the historical behaviour, so the bridge keeps working against an omega
+// that has not been rebuilt yet. Any unknown future value is treated as a spawn
+// too: only an explicit `followup` changes what the bridge does.
+const DELIVERY_RE = /^[ \t]*DISPATCH_DELIVERY=([A-Za-z_]+)[ \t]*\r?$/m;
+const dispatchDelivery = (out: string) => (out.match(DELIVERY_RE)?.[1] || "spawned").toLowerCase();
+// Run `omega dispatch`, forcing a new oracle when asked. An omega OLDER than the
+// followup routing has no `--new` flag at all and clap REJECTS the whole command
+// ("error: unexpected argument '--new' found" — verified against the installed
+// binary), which would turn a legitimate mission into a FAILED card. Such a
+// binary always spawns anyway, so dropping the flag and retrying yields exactly
+// what `--new` asked for. Backward compatibility, same reason as DELIVERY_RE.
+const NEW_FLAG_REJECTED_RE = /error:.*(?:unexpected argument|unknown flag|found argument).*--new/i;
+async function omegaDispatch(args: string[], forceNew: boolean): Promise<string> {
+  if (!forceNew) return omega(["dispatch", ...args]);
+  const out = await omega(["dispatch", "--new", ...args]);
+  if (!NEW_FLAG_REJECTED_RE.test(out)) return out;
+  console.warn("omega dispatch: this omega has no --new flag (pre-followup binary) — retrying without it (it always spawns a new oracle anyway)");
+  return omega(["dispatch", ...args]);
+}
+
 async function dispatchToOracle(project: string, mission: string, chat: number, thread: number | undefined, extra = "", agent?: AgentPick): Promise<string> {
-  const out = await omega(["dispatch", project, `${extra}${mission}`, ...(agent ? ["--agent", agent] : [])]);
+  const forced = extractForceNew(mission);
+  const out = await omegaDispatch([project, `${extra}${forced.text}`, ...(agent ? ["--agent", agent] : [])], forced.forceNew);
   const m = out.match(/Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)/) || out.match(/oracle=(oracle-[A-Za-z0-9._-]+)/);
   if (!m) return card(`DISPATCH ${project.toUpperCase()} — FAILED`, ` ❌ <pre>${esc(out).slice(0, 600)}</pre>`);
   const oracle = m[1];
-  const sent = await send(chat, progressCard(project, oracle, mission, null), undefined, thread);
+  // FOLLOWUP: the text was typed INTO an oracle that is already running its own
+  // mission. There is no new session, no new plan and no second report coming —
+  // so the two things the spawn path does are both destructive here:
+  //   · rewriting <oracle>.progress.json with done:0/total:0/tasks:[] wipes the
+  //     projection of the mission currently in flight (the operator's map);
+  //   · a second watching[] entry for one oracle leaves a card frozen forever,
+  //     since pollReports resolves exactly ONE entry per done.json.
+  // Same de-dup key as rehydrateWatching() (prefix-insensitive, R-CITE: :1237).
+  if (dispatchDelivery(out) === "followup") {
+    if (!watching.some(w => normOracle(w.oracle) === normOracle(oracle))) {
+      // Not tracked in THIS process (bot restarted, or another chat launched it).
+      // Adopt the live card if the progress file already carries one; only create
+      // a card when there is genuinely nothing to preserve.
+      let p: any = null;
+      try { p = JSON.parse(readFileSync(progressPath(oracle), "utf8")); } catch {}
+      if (p?.msgId && p.bot === BOT_ID) {
+        watching.push({ chat: p.chat ?? chat, thread: p.thread ?? thread, mission: p.mission || forced.text, ts: 0, oracle, project: p.project || project, msgId: p.msgId });
+      } else {
+        const sent = await send(chat, progressCard(project, oracle, p?.mission || forced.text, p), undefined, thread);
+        const msgId = sent?.result?.message_id as number | undefined;
+        watching.push({ chat, thread, mission: p?.mission || forced.text, ts: Date.now(), oracle, project, msgId });
+        // MERGE, never reset: whatever plan the live oracle already published stays.
+        try { writeFileSync(progressPath(oracle), JSON.stringify({ ...(p || {}), chat, thread: thread ?? null, msgId: msgId ?? null, bot: BOT_ID, project, oracle, mission: p?.mission || forced.text, done: p?.done ?? 0, total: p?.total ?? 0, tasks: p?.tasks ?? [] })); } catch {}
+      }
+    }
+    // Say it plainly: on the operator's main surface a followup was until now
+    // indistinguishable from a fresh oracle. And name the escape hatch.
+    return card(`${project.toUpperCase()} · SUIVI`,
+      ` ↩ Ton message a rejoint la <b>mission en cours</b> de <code>${esc(oracle)}</code>.\n` +
+      ` Aucun nouvel oracle : la carte de progression déjà postée reste la bonne.\n\n` +
+      ` Mission <b>séparée</b> ? Commence par <code>new:</code> →\n <code>new: ${esc(forced.text.slice(0, 60))}</code>`);
+  }
+  // spawned · spawned_pane_not_ready (a followup was attempted, the pane was not
+  // typeable, so a real new oracle was spawned) · unknown/absent → a NEW session.
+  const sent = await send(chat, progressCard(project, oracle, forced.text, null), undefined, thread);
   const msgId = sent?.result?.message_id as number | undefined;
-  watching.push({ chat, thread, mission, ts: Date.now(), oracle, project, msgId });
-  try { writeFileSync(progressPath(oracle), JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, bot: BOT_ID, project, oracle, mission, done: 0, total: 0, tasks: [] })); } catch {}
+  watching.push({ chat, thread, mission: forced.text, ts: Date.now(), oracle, project, msgId });
+  try { writeFileSync(progressPath(oracle), JSON.stringify({ chat, thread: thread ?? null, msgId: msgId ?? null, bot: BOT_ID, project, oracle, mission: forced.text, done: 0, total: 0, tasks: [] })); } catch {}
   return ""; // card already sent
 }
 
@@ -2146,7 +2224,7 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
     case "zernio": return await zernioHome();
     case "marketing": return await marketingHome();
     case "skills": return { text: pre("Skills", Bun.spawnSync(["ls", "-1", `${OMEGA_DIR}/skills`]).stdout.toString().trim() || "(none)"), markup: kb([[back()]]) };
-    case "dispatch": return { text: card("DISPATCH", " Send: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>\n Launches a dedicated oracle on the VPS."), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
+    case "dispatch": return { text: card("DISPATCH", " Send: <code>/dispatch &lt;project&gt; &lt;mission&gt;</code>\n Launches a dedicated oracle on the VPS.\n\n Si l'oracle du projet travaille déjà, la mission le <b>rejoint</b> (suivi).\n Pour forcer un <b>nouvel</b> oracle, commence la mission par <code>new:</code> →\n <code>/dispatch demo new: refais le landing</code>"), markup: kb([[{ text: "📁 Projects", callback_data: "nav:projects" }], [back()]]) };
     case "setupgroup": return { text: card("GROUP HUB", " Run <code>/setupgroup</code> <b>in a supergroup</b> where this bot is <b>admin</b> (Topics enabled). It registers the group as the project hub, then <code>/sync</code> maps each project to a topic."), markup: kb([[back()]]) };
     case "sync": { const g = loadGroups(); return { text: card("SYNC", g.hub ? " Hub registered. Run <code>/sync</code> in it to map projects → topics." : " No hub yet — run <code>/setupgroup</code> in your supergroup first."), markup: kb([[back()]]) }; }
     case "killall": return { text: card("KILL ALL SESSIONS?", " 🛑 Kills every session.\n <i>Keeps the infra (Home/System, bridge, master).</i>"), markup: kb([[{ text: "✅ Yes", callback_data: "do:killall" }], [{ text: "✖ Cancel", callback_data: "nav:menu" }]]) };
@@ -2381,7 +2459,7 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
     const ag: AgentPick = action === "oraclex" ? "codex" : "claude";
     setPending(from, "oracle-prompt", ag === "codex" ? `${arg}|codex` : arg);
     const label = ag === "codex" ? "Codex (gpt-5.6-sol)" : "Claude (Opus 5)";
-    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b> · <i>${label}</i>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
+    return edit(chat, msgId, `<b>🔮 Oracle — ${esc(arg)}</b> · <i>${label}</i>\nSend your <b>prompt / mission</b>. I hand it to the dedicated oracle of <b>${esc(arg)}</b> (full reprompting: project knowledge + the whole OmegaOS doctrine — orchestration, dynamic workflows, workers, goals, audits) — scoped to this project.\n\n<i>Si son oracle travaille déjà, ton message rejoint sa mission. Pour une mission séparée, commence par</i> <code>new:</code>`, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }]]));
   }
   // Reply to a finished report: the next message continues this project's oracle, with
   // the conversation history (incl. the report just sent) as context.
@@ -3669,7 +3747,9 @@ async function main() {
               await send(chatId, `<b>${st === "on" ? "🔔" : "🔕"} ${esc(target)} — Telegram ${st.toUpperCase()}.</b>${note}`, undefined, thread);
             }
           }
-          else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; await send(chatId, pre(`dispatch → ${p}`, await omega(["dispatch", p, m.join(" ")])), undefined, thread); }
+          // /dispatch <project> <mission> — raw CLI passthrough. `new:` in front of
+          // the mission forces a NEW oracle here too (same marker as everywhere else).
+          else if (cmd === "dispatch" && a.length >= 2) { const [p, ...m] = a; const fn = extractForceNew(m.join(" ")); await send(chatId, pre(`dispatch → ${p}`, await omegaDispatch([p, fn.text], fn.forceNew)), undefined, thread); }
           // /council <question> — MENU advertises it, so it MUST act here: KNOWN
           // short-circuits the brain fallback, and view() would silently render the
           // generic menu. Route it to the Atlas brain with an explicit convene order.
@@ -3691,7 +3771,7 @@ async function main() {
             // knowledge + OmegaOS doctrine); we prepend the conversation context.
             const proj = projectForCommand(cmd)!;
             const mission = file ? withFileNote(a.join(" ").trim(), file) : a.join(" ").trim();
-            if (!mission) { setPending(from, "oracle-prompt", proj); await send(chatId, card(`ORACLE — ${proj.toUpperCase()}`, ` 🔮 Send your <b>mission</b> for <b>${esc(proj)}</b> — I hand it to its oracle with the full Atlas reprompting (project + doctrine).`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }]]), thread); }
+            if (!mission) { setPending(from, "oracle-prompt", proj); await send(chatId, card(`ORACLE — ${proj.toUpperCase()}`, ` 🔮 Send your <b>mission</b> for <b>${esc(proj)}</b> — I hand it to its oracle with the full Atlas reprompting (project + doctrine).\n\n Si son oracle travaille déjà, ton message <b>rejoint</b> sa mission. Pour en lancer une <b>séparée</b>, commence par <code>new:</code>`), kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }]]), thread); }
             else { react(chatId, msg.message_id, "🚀"); const ctx = histContext(chatId, thread); histAppend(chatId, thread, "operator", text, proj); const r = await dispatchToOracle(proj, mission, chatId, thread, ctx); if (r) await send(chatId, r, undefined, thread); }
           }
           else {
