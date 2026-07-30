@@ -90,6 +90,32 @@ impl DispatchOutcome {
     }
 }
 
+/// The env var that switches followup routing on.
+pub const FOLLOWUP_ROUTING_ENV: &str = "OMEGA_FOLLOWUP_ROUTING";
+
+/// Is followup routing switched on for this process?
+///
+/// SHIPPED OPT-IN, DELIBERATELY. The routing DECISION ([`route_dispatch`]) is
+/// sound, but the DELIVERY half was audited and found to accept panes that are
+/// not the agent's composer — including a live bash shell left behind by
+/// `bash -c '<agent> …; exec bash'` after the agent dies, where every line of
+/// the mission would execute as a command. Until the probe is proven against
+/// those shapes, the whole branch stays behind an explicit flag: with the
+/// variable absent, `omega dispatch` behaves exactly as it did before the
+/// followup merge and always spawns.
+pub fn followup_routing_enabled() -> bool {
+    followup_routing_enabled_from(std::env::var(FOLLOWUP_ROUTING_ENV).ok().as_deref())
+}
+
+/// The pure half of [`followup_routing_enabled`], so the parsing is testable
+/// without mutating the process environment from a parallel test thread.
+fn followup_routing_enabled_from(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(str::trim),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
 /// Decide where a mission for `project` goes: into a live oracle as a followup,
 /// or into a spawn.
 ///
@@ -556,6 +582,10 @@ impl Dispatcher {
         // thrash counters, possibly a destroyed undelivered report). So the
         // followup path is a straight-line probe → deliver → return, and it
         // touches none of them.
+        //
+        // OPT-IN: with OMEGA_FOLLOWUP_ROUTING unset the followup branch is
+        // skipped exactly like `--new` does, which is the pre-merge behavior.
+        let followup_allowed = followup_routing_enabled();
         let route = route_dispatch(
             &OracleRegistry::load(&state_dir).oracles,
             project,
@@ -572,7 +602,7 @@ impl Dispatcher {
                     .flatten()
                     .is_some()
             },
-            force_new,
+            force_new || !followup_allowed,
         );
 
         let mut pane_not_ready = false;
@@ -1407,6 +1437,27 @@ mod followup_routing_tests {
             false,
         );
         assert_eq!(route, DispatchRoute::Spawn { preferred: None });
+    }
+
+    /// THE SHIPPED DEFAULT. Followup routing is opt-in: an absent (or empty, or
+    /// `0`) `OMEGA_FOLLOWUP_ROUTING` leaves the dispatcher on its pre-merge
+    /// behavior — every mission spawns — because the delivery probe is not yet
+    /// proven against a live shell.
+    #[test]
+    fn followup_routing_is_off_unless_explicitly_enabled() {
+        assert!(!followup_routing_enabled_from(None), "absent means OFF");
+        for off in ["", " ", "0", "false", "no", "off", "maybe"] {
+            assert!(
+                !followup_routing_enabled_from(Some(off)),
+                "{off:?} must not enable followup routing"
+            );
+        }
+        for on in ["1", "true", "yes", "on", " 1 "] {
+            assert!(
+                followup_routing_enabled_from(Some(on)),
+                "{on:?} must enable followup routing"
+            );
+        }
     }
 
     // ── Pane readiness ──────────────────────────────────────────────────────
