@@ -27,12 +27,20 @@ BASE="http://127.0.0.1:${PORT}"
 #   Tailscale up AND serving this port -> the tailnet HTTPS URL (remote-viewable)
 #   otherwise (no Tailscale / local machine)   -> plain localhost
 TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+SSH_HINT=""
 if [ -n "$TS_HOST" ] && tailscale serve status 2>/dev/null | grep -q ":${PORT}"; then
     URL="https://${TS_HOST}:${PORT}"        # served over the tailnet
 elif [ -n "$TS_HOST" ]; then
     URL="https://${TS_HOST}:${PORT}"        # tailnet up; `omega-design serve` will expose it
 else
-    URL="http://localhost:${PORT}"          # no Tailscale -> local machine only
+    # No Tailscale: the daemon is bound to loopback. Reach it with an SSH tunnel
+    # using the key you already SSH in with, then open it locally.
+    URL="http://localhost:${PORT}"
+    SSH_USER="${OMEGA_SSH_USER:-${USER:-$(id -un 2>/dev/null || echo user)}}"
+    SSH_HOST="${OMEGA_SSH_HOST:-$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $3}')}"
+    SSH_PORT="${OMEGA_SSH_PORT:-$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $4}')}"
+    [ -n "$SSH_HOST" ] || SSH_HOST="<server>"
+    SSH_HINT="ssh -N -L ${PORT}:127.0.0.1:${PORT}${SSH_PORT:+ -p $SSH_PORT} ${SSH_USER}@${SSH_HOST}   # then open http://localhost:${PORT}"
 fi
 
 _list() { curl -s "${BASE}$1" 2>/dev/null | python3 -c "import json,sys
@@ -42,6 +50,7 @@ for x in items: print(' -', x.get('name') or x.get('id') or x if isinstance(x,di
 
 case "${1:-status}" in
   url) echo "$URL" ;;
+  ssh) [ -n "$SSH_HINT" ] && echo "$SSH_HINT" || echo "Tailscale is up — just open: $URL" ;;
   status)
     echo "Open Design"
     docker ps --filter name=open-design --format '  container: {{.Status}}  {{.Ports}}' 2>/dev/null || echo "  container: (docker unavailable)"
@@ -94,6 +103,7 @@ print('detected local CLIs:', ', '.join(a.get('id') or a.get('name') for a in de
     cat <<TXT
 ┌─ Open Design ─ the self-hosted design engine ────────────────
   View it:   $URL      $([ "$st" = 200 ] && echo "(live)" || echo "(NOT running — omega-design up && omega-design serve)")
+$([ -n "$SSH_HINT" ] && printf '  No Tailscale? SSH tunnel (uses your key):\n     %s\n' "$SSH_HINT")
   Agents:    $(omega-design agents 2>/dev/null | sed 's/detected local CLIs: //')
 
   How to use it:

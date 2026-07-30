@@ -2720,6 +2720,18 @@ else
     info "Skill Atlas skipped (OMEGA_SKIP_ATLAS=1 or script missing)"
 fi
 
+# ─── Phase 6.916: Open Design — REFRESH ONLY IF ALREADY INSTALLED ─────────────
+# The daemon is a heavy opt-in (Docker); a FRESH install never sets it up here
+# (run tools/open-design/install-open-design.sh once to opt in). But when it is
+# already installed, every `omega update` re-runs the (idempotent) installer so
+# the deployment tracks main: latest override (host-net, auth/git/projects
+# mounts), re-wired MCP for claude/codex, projects re-imported, tailnet re-served.
+# Opt out: OMEGA_SKIP_OD_REFRESH=1.
+if [[ "${OMEGA_SKIP_OD_REFRESH:-0}" != "1" && -d "$OMEGA_DIR/repos/open-design/.git" && -f "$OMEGA_SRC/tools/open-design/install-open-design.sh" ]]; then
+    step "Phase 6.916: Open Design refresh (already installed)"
+    bash "$OMEGA_SRC/tools/open-design/install-open-design.sh" || info "open-design refresh had warnings (non-fatal)"
+fi
+
 # ─── Phase 6.92: Nova — personal-assistant layer (opt-in) ────────────────────
 # Nova is the operator's PERSONAL companion: the fallback persona
 # (agents/companion.md — shipped with the other agent prompts above), proactive
