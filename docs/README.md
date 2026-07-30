@@ -2,6 +2,13 @@
 
 Start with the repo-root [GUIDE.md](../GUIDE.md) (the operator manual) and [README.md](../README.md).
 
+## ⭐ Start here — the feature map
+
+- [FEATURES.md](FEATURES.md) — **the complete feature catalog**: every subsystem (oracles/workers,
+  Telegram, rules & laws, skills + atlas + RAG + power-ups, design + Open Design, product system,
+  marketing, audits, council, self-improvement) with the exact command/trigger and where it lives.
+  The "nothing hidden" map.
+
 ## Current reference
 
 - [GETTING-STARTED.md](GETTING-STARTED.md) — post-install setup (login, Telegram, keys, projects, doctor); printed by `omega guide`.
@@ -12,6 +19,10 @@ Start with the repo-root [GUIDE.md](../GUIDE.md) (the operator manual) and [READ
 - [THEMES.md](THEMES.md) — the TUI palette gallery and contrast contract.
 - [RESET-RECOVERY.md](RESET-RECOVERY.md) — backing up and rebuilding a box (`omega backup` / restore).
 - [VERIFICATION-GATE.md](VERIFICATION-GATE.md) — the build-verification gate checklist.
+- [skill-atlas.md](skill-atlas.md) — the skill discovery system: `omega-skills`, the semantic RAG, the served catalog.
+- [third-party-skills.md](third-party-skills.md) — the pinned MIT skill collections wired at install.
+- [open-design.md](open-design.md) — the self-hosted design engine (`omega-design`): local-CLI on your subscription, redesign a project, tailnet view.
+- [marketing-machine-ssot.md](marketing-machine-ssot.md) — the marketing suite + publishing funnel.
 
 ## Historical / planning (kept for context, not maintained)
 
