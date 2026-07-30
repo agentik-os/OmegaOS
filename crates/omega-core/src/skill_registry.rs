@@ -1774,12 +1774,17 @@ mod tests {
         }
         let catalog =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", repo_skills)]).unwrap();
-        assert_eq!(catalog.skills.len(), 231);
+        assert_eq!(catalog.skills.len(), 232);
         let names: BTreeSet<_> = catalog
             .skills
             .iter()
             .map(|skill| skill.name.as_str())
             .collect();
+        // 7609727 shipped skills/open-design/SKILL.md without bumping the count
+        // above, so this assertion has been red on main since. Named here
+        // because the closure is asserted by NUMBER: adding a skill without
+        // bumping it fails a test that looks unrelated to the skill you added.
+        assert!(names.contains("open-design"));
         assert!(names.contains("high-end-visual-design"));
         assert!(names.contains("caio-ai-readiness-assessment"));
         assert!(names.contains("marketing-master"));

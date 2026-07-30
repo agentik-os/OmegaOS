@@ -1,6 +1,8 @@
 use crate::config::OmegaConfig;
 use crate::done::DoneSignal;
-use crate::oracle_lifecycle::{OraclePromptGenerator, OracleRegistry, OracleState};
+use crate::oracle_lifecycle::{
+    OraclePromptGenerator, OracleRegistry, OracleRegistryEntry, OracleRegistryStatus, OracleState,
+};
 use crate::routing;
 use crate::session::SessionManager;
 use anyhow::{bail, Result};
@@ -10,6 +12,184 @@ use std::time::Duration;
 /// N20: Claude's `/goal` rejects conditions longer than ~4000 chars; an
 /// over-long goal silently aborts the whole dispatch. We cap at 4000.
 const MAX_GOAL_LEN: usize = 4000;
+
+/// How many times to look for a typeable composer before giving up on a
+/// followup. A freshly-spawned oracle needs a few seconds to attach its agent
+/// TUI to the pane, and the incident this exists for saw two dispatches land
+/// 24 SECONDS apart — well inside that window.
+const FOLLOWUP_PANE_ATTEMPTS: usize = 5;
+
+/// Wait between composer probes. `ATTEMPTS * INTERVAL` is the whole bound:
+/// past it we spawn instead of typing into an unknown pane.
+const FOLLOWUP_PANE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Where a dispatch should be delivered. Computed by [`route_dispatch`] as a
+/// PURE function of the registry, the live rmux session list, and each oracle's
+/// closeable state — which is the only reason the decision is unit-testable
+/// with zero rmux and zero daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DispatchRoute {
+    /// Spawn a session. `preferred` is the pre-existing idle-reuse candidate
+    /// (an idle + live + closeable oracle whose NAME is recycled); `None` means
+    /// the registry allocates the next name.
+    Spawn { preferred: Option<String> },
+    /// Deliver into the live oracle named here — its mission is still running,
+    /// so its conversation already carries the context the operator is adding
+    /// to. No new session, no new mission, no new state.
+    Followup { oracle: String },
+}
+
+/// How a dispatch was actually delivered. Carried back to the CLI so the
+/// operator (and the Telegram bridge) can see whether a sibling oracle was
+/// created or a live one was reused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchDelivery {
+    /// A session was spawned (possibly under a recycled idle name).
+    Spawned,
+    /// The mission text was typed into an already-live oracle.
+    Followup,
+    /// A followup was the right call, but the target pane never presented a
+    /// typeable composer inside the bound, so a new oracle was spawned rather
+    /// than risk the text landing in a shell.
+    SpawnedPaneNotReady,
+}
+
+/// The result of a dispatch: which oracle owns the mission, and how the text
+/// got there.
+#[derive(Debug, Clone)]
+pub struct DispatchOutcome {
+    pub oracle_name: String,
+    pub delivery: DispatchDelivery,
+}
+
+impl DispatchOutcome {
+    /// The operator-facing report lines.
+    ///
+    /// LINE 0 IS A CONTRACT, NOT A COSMETIC CHOICE. The Telegram bridge shells
+    /// out to `omega dispatch` and recovers the oracle name by matching
+    /// `/Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)/` against stdout
+    /// (telegram-bot/omega-tg-bot.ts:1273). A followup that announced itself
+    /// with a different label would parse as a FAILED dispatch and the bridge
+    /// would lose the thread — no progress card, no report. So every path
+    /// prints the canonical line, and the followup says so on an ADDITIONAL
+    /// line that the regex simply does not care about.
+    pub fn report_lines(&self) -> Vec<String> {
+        let mut lines = vec![format!("◆ Oracle dispatched: {}", self.oracle_name)];
+        match self.delivery {
+            DispatchDelivery::Spawned => {}
+            DispatchDelivery::Followup => lines.push(
+                "  (suivi: route dans l oracle vivant, aucun nouvel oracle cree)".to_string(),
+            ),
+            DispatchDelivery::SpawnedPaneNotReady => lines.push(
+                "  (suivi impossible: le pane de l oracle vivant n etait pas pret, \
+                 nouvel oracle spawne)"
+                    .to_string(),
+            ),
+        }
+        lines
+    }
+}
+
+/// Decide where a mission for `project` goes: into a live oracle as a followup,
+/// or into a spawn.
+///
+/// THE STATUS FIELD LIES, IN BOTH DIRECTIONS, and this function is written
+/// around that. Observed in runtime during the incident that motivated it:
+/// `oracle-dentistrygpt` sat at `active` with its mission already finished,
+/// while `oracle-dentistrygpt-2` sat at `idle` while actively working. So
+/// liveness is NEVER read off `status` — it is the intersection of the registry
+/// and the LIVE rmux session list, qualified by the oracle's own closeable
+/// state.
+///
+/// `closeable(name)` returns `Some(true)` when that oracle's `OracleState` says
+/// its mission is over, `Some(false)` when it is still owed work, and `None`
+/// when no state could be read. `None` is deliberately NOT a followup target:
+/// every dispatched oracle writes a state file, so an unreadable one means we
+/// cannot prove there is a live mission to add to, and the safe answer is the
+/// pre-existing behavior (spawn).
+///
+/// NOTE on `is_closeable()`: the real incident states all carried
+/// `phase: analyze` + `closeable_since: null`, so the predicate is false for
+/// nearly every live oracle. That is FINE here and is the point: both a busy
+/// oracle and a live not-yet-closed one are good followup targets, because in
+/// both cases the conversation is alive and holds the context.
+///
+/// `has_done_signal(name)` is the THIRD condition and it is a hard veto. An
+/// oracle with an `oracle-<key>.done.json` on disk is queued for reaping:
+/// patrol kills the session AND its workers `ORACLE_CLOSE_GRACE_SECS` = 120s
+/// after any closeable signal (patrol.rs:29, patrol.rs:1174-1236), so a followup
+/// dropped there dies with the session. Clearing the signal to keep the session
+/// alive was considered and REJECTED: the signal is keyed by NAME with no
+/// mission id, so clearing it can destroy a report that was never delivered to
+/// the operator. A finished oracle is simply not a followup target — we spawn.
+pub fn route_dispatch<F, G>(
+    entries: &[OracleRegistryEntry],
+    project: &str,
+    live_sessions: &[String],
+    closeable: F,
+    has_done_signal: G,
+    force_new: bool,
+) -> DispatchRoute
+where
+    F: Fn(&str) -> Option<bool>,
+    G: Fn(&str) -> bool,
+{
+    // `--new` is the operator's explicit escape hatch: it skips ONLY the
+    // followup branch. The idle-name recycling below is untouched, because
+    // recycling a finished oracle's name still produces a brand-new mission.
+    if !force_new {
+        let mut candidates: Vec<&OracleRegistryEntry> = entries
+            .iter()
+            .filter(|e| e.project == project)
+            .filter(|e| live_sessions.iter().any(|s| s == &e.session_name))
+            .filter(|e| closeable(&e.oracle_name) == Some(false))
+            .filter(|e| !has_done_signal(&e.oracle_name))
+            .collect();
+        // Freshest wins. With several live oracles on one project (the incident
+        // had four), the most recently spawned is the one whose conversation the
+        // operator is following up on.
+        candidates.sort_by_key(|e| e.spawned_at);
+        if let Some(target) = candidates.last() {
+            return DispatchRoute::Followup {
+                oracle: target.oracle_name.clone(),
+            };
+        }
+    }
+
+    // ── Pre-existing idle-reuse, semantics preserved verbatim ──────────────
+    // First Idle entry for the project, kept only if it is really alive in rmux
+    // AND has reached a genuine closeable done-state (N10). An Idle oracle that
+    // still owes Verify/Report work is not reusable.
+    let preferred = entries
+        .iter()
+        .find(|e| e.project == project && e.status == OracleRegistryStatus::Idle)
+        .map(|e| e.oracle_name.clone())
+        .filter(|name| live_sessions.iter().any(|s| s == name))
+        .filter(|name| closeable(name) == Some(true));
+    DispatchRoute::Spawn { preferred }
+}
+
+/// Is this pane safe to type a followup into?
+///
+/// THE FAILURE THIS PREVENTS IS NOT HYPOTHETICAL. A followup routed to an
+/// oracle that is still BOOTING would meet a bare shell, and `send_text` ends
+/// with an Enter: the mission text would execute as a bash command line. So the
+/// evidence required is the agent's own composer — a horizontal rule with a
+/// prompt marker directly under it, which a shell prompt never draws (a `❯`
+/// starship prompt has no rule above it).
+///
+/// A visible QUESTION modal is also refused. It draws the same rule + marker
+/// shape as the composer, but typing there drives a selection list, and
+/// answering a question the operator was meant to answer is the worst thing
+/// this path could do (R-MONITOR). Not-ready simply falls back to a spawn.
+///
+/// Both primitives are reused from `session_monitor` rather than re-derived —
+/// they carry seven real false-positive scars and re-deriving them would repay
+/// all of them.
+pub fn pane_ready_for_followup(pane: &str) -> bool {
+    crate::session_monitor::find_input_box(pane).is_some()
+        && !crate::session_monitor::question_ui_visible(pane)
+}
 
 /// Map a config `default_model` alias to the explicit model name Claude's CLI
 /// pins with `--model`. The default alias "opus" resolves to the 1M-context
@@ -232,7 +412,83 @@ impl Dispatcher {
 
     /// Dispatch using the configured default agent (`config.agent_command`).
     pub async fn dispatch_oracle(&self, project: &str, mission: &str) -> Result<String> {
-        self.dispatch_oracle_with_agent(project, mission, None).await
+        self.dispatch_oracle_with_agent(project, mission, None, false)
+            .await
+            .map(|outcome| outcome.oracle_name)
+    }
+
+    /// Probe the pane until it presents a typeable composer, bounded by
+    /// `FOLLOWUP_PANE_ATTEMPTS * FOLLOWUP_PANE_INTERVAL`. Returns whether it is
+    /// safe to type. A capture error is treated as not-ready: we never type into
+    /// a pane we could not read.
+    async fn wait_for_typeable_pane(&self, session: &str) -> bool {
+        for attempt in 1..=FOLLOWUP_PANE_ATTEMPTS {
+            match self.session_mgr.capture_pane(session).await {
+                Ok(pane) if pane_ready_for_followup(&pane) => return true,
+                Ok(_) => tracing::debug!(
+                    session = %session, attempt,
+                    "followup target pane has no typeable composer yet"
+                ),
+                Err(e) => tracing::debug!(
+                    session = %session, attempt, error = %e,
+                    "failed to capture followup target pane"
+                ),
+            }
+            if attempt < FOLLOWUP_PANE_ATTEMPTS {
+                tokio::time::sleep(FOLLOWUP_PANE_INTERVAL).await;
+            }
+        }
+        false
+    }
+
+    /// Deliver `mission` into an ALREADY-LIVE oracle instead of spawning a
+    /// sibling. Returns `Ok(false)` when the pane never became typeable, which
+    /// tells the caller to fall through to the normal spawn path.
+    ///
+    /// Deliberately does NOT create a `Mission` in the ledger, does NOT write an
+    /// `OracleState`, does NOT clear the done signal, and does NOT touch the
+    /// `MissionLog` / gate counters: one oracle is one mission is one state.json,
+    /// and a followup is an addition to the mission already running there, not a
+    /// second mission wearing the same name. Every one of those mutations lives
+    /// on the spawn path AFTER this returns, and each would corrupt the running
+    /// mission — `OracleState::new()` would wipe the live worker roster,
+    /// `MissionLog::clear` would erase the R-LOOP timeline and reset the
+    /// bounded-retry counters, and clearing the name-keyed done signal could
+    /// destroy an undelivered report.
+    async fn deliver_followup(&self, oracle: &str, project: &str, mission: &str) -> Result<bool> {
+        if !self.wait_for_typeable_pane(oracle).await {
+            tracing::warn!(
+                oracle = %oracle, project = %project,
+                attempts = FOLLOWUP_PANE_ATTEMPTS,
+                "followup target never showed a typeable composer — spawning instead of typing \
+                 into an unknown pane"
+            );
+            return Ok(false);
+        }
+
+        // BRACKETED PASTE, not a line-wise send. A mission body is multi-line
+        // (it carries "## Attached files" and paths); `send_text` submits at the
+        // first newline and would fracture one mission into a dozen half-turns.
+        // `send_paste_then_submit` wraps the block in \e[200~ ... \e[201~ so the
+        // TUI buffers it as ONE paste, then sends Enter as a separate key.
+        self.session_mgr
+            .send_paste_then_submit(oracle, mission)
+            .await?;
+
+        crate::loop_guard::MissionLog::event(
+            &self.config.state_dir,
+            oracle,
+            "followup",
+            &format!(
+                "followup delivered into the live mission: {}",
+                mission.chars().take(140).collect::<String>()
+            ),
+        );
+        tracing::info!(
+            oracle = %oracle, project = %project,
+            "Followup routed into a live oracle — no sibling spawned"
+        );
+        Ok(true)
     }
 
     /// Dispatch, optionally overriding the agent for THIS mission only.
@@ -246,7 +502,8 @@ impl Dispatcher {
         project: &str,
         mission: &str,
         agent_override: Option<&str>,
-    ) -> Result<String> {
+        force_new: bool,
+    ) -> Result<DispatchOutcome> {
         // An oracle is scoped to a DECLARED project. A project not present in the
         // config may still be auto-discovered under the user's projects root —
         // `omega projects` lists those — so fall back to that same discovery walk
@@ -287,21 +544,55 @@ impl Dispatcher {
         // registration under an exclusive lock: two concurrent dispatches can no
         // longer both compute the same next name and clobber each other's save.
         let live_names = self.session_mgr.list_sessions().await.unwrap_or_default();
-        let preferred: Option<String> = OracleRegistry::load(&self.config.state_dir)
-            .find_available(project)
-            .map(|idle| idle.oracle_name.clone())
-            .filter(|name| live_names.iter().any(|s| &s.name == name))
-            // N10: a registry-Idle oracle is only safe to REUSE once it has
-            // reached a real closeable done-state (is_closeable/has_done_signal
-            // on OracleState — strictly stronger than all_workers_terminal()).
-            // An Idle oracle still owing Verify/Report work must NOT be reused.
-            .filter(|name| {
-                OracleState::read(&self.config.state_dir, name)
+        let live: Vec<String> = live_names.iter().map(|s| s.name.clone()).collect();
+        let state_dir = self.config.state_dir.clone();
+
+        // ── FOLLOWUP ROUTING — decided and RETURNED before any mutation ──────
+        // Everything below this block mutates the mission of whatever name it
+        // resolves: the stale-signal clear, MissionLog::clear +
+        // clear_gate_attempt, the ledger Mission, and OracleState::new(). Run any
+        // of them against a LIVE oracle and you corrupt the mission it is
+        // currently running (wiped worker roster, erased R-LOOP timeline, reset
+        // thrash counters, possibly a destroyed undelivered report). So the
+        // followup path is a straight-line probe → deliver → return, and it
+        // touches none of them.
+        let route = route_dispatch(
+            &OracleRegistry::load(&state_dir).oracles,
+            project,
+            &live,
+            |name| {
+                OracleState::read(&state_dir, name)
                     .ok()
                     .flatten()
                     .map(|st| st.is_closeable())
-                    .unwrap_or(false)
-            });
+            },
+            |name| {
+                crate::done::OracleDoneSignal::read(&state_dir, name)
+                    .ok()
+                    .flatten()
+                    .is_some()
+            },
+            force_new,
+        );
+
+        let mut pane_not_ready = false;
+        let preferred: Option<String> = match route {
+            DispatchRoute::Followup { oracle } => {
+                if self.deliver_followup(&oracle, project, mission).await? {
+                    return Ok(DispatchOutcome {
+                        oracle_name: oracle,
+                        delivery: DispatchDelivery::Followup,
+                    });
+                }
+                // Pane never became typeable. Fall through to a normal spawn —
+                // a followup that lands in a shell (or is lost) is worse than
+                // the sibling oracle we are trying to avoid.
+                pane_not_ready = true;
+                None
+            }
+            DispatchRoute::Spawn { preferred } => preferred,
+        };
+
         let oracle_name =
             OracleRegistry::reserve_oracle(&self.config.state_dir, project, preferred.as_deref())?;
 
@@ -668,7 +959,14 @@ impl Dispatcher {
                 }
             }
         }
-        Ok(oracle_name)
+        Ok(DispatchOutcome {
+            oracle_name,
+            delivery: if pane_not_ready {
+                DispatchDelivery::SpawnedPaneNotReady
+            } else {
+                DispatchDelivery::Spawned
+            },
+        })
     }
 
     /// Re-spawn a crashed oracle from its persisted OracleState — survives a
@@ -907,6 +1205,328 @@ fn build_resume_prompt(state: &OracleState) -> String {
          continue to completion, then write your own .done.json.\n",
     );
     p
+}
+
+#[cfg(test)]
+mod followup_routing_tests {
+    use super::*;
+    use crate::oracle_lifecycle::{OracleRegistryEntry, OracleRegistryStatus};
+    use chrono::{Duration as ChronoDuration, Utc};
+
+    fn entry(name: &str, project: &str, status: OracleRegistryStatus, age_secs: i64) -> OracleRegistryEntry {
+        OracleRegistryEntry {
+            oracle_name: name.to_string(),
+            project: project.to_string(),
+            session_name: name.to_string(),
+            status,
+            spawned_at: Utc::now() - ChronoDuration::seconds(age_secs),
+            files_owned: Vec::new(),
+        }
+    }
+
+    /// No done signal anywhere.
+    fn no_signal(_: &str) -> bool {
+        false
+    }
+
+    /// THE CORE FIX. An oracle that is alive in rmux with a mission still
+    /// running receives the followup, and NO new name is allocated.
+    ///
+    /// The status field is deliberately `Idle` here: during the real incident
+    /// the actively-working `oracle-dentistrygpt-2` was registered `idle`, so a
+    /// routing decision that trusted `status` would have spawned a sibling. This
+    /// test fails if anyone reintroduces that dependency.
+    #[test]
+    fn live_working_oracle_receives_the_followup() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Idle,
+            30,
+        )];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-dentistrygpt".to_string()],
+            |_| Some(false), // mission still running
+            no_signal,
+            false,
+        );
+        assert_eq!(
+            route,
+            DispatchRoute::Followup {
+                oracle: "oracle-dentistrygpt".to_string()
+            },
+            "a live oracle with an unfinished mission must absorb the followup, not get a sibling"
+        );
+    }
+
+    /// `--new` is the escape hatch: the same live working oracle is bypassed.
+    #[test]
+    fn force_new_respawns_even_while_an_oracle_works() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Active,
+            30,
+        )];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-dentistrygpt".to_string()],
+            |_| Some(false),
+            no_signal,
+            true, // --new
+        );
+        assert_eq!(
+            route,
+            DispatchRoute::Spawn { preferred: None },
+            "--new must spawn a fresh oracle even when one is working"
+        );
+    }
+
+    /// FM3: a done signal on disk means patrol reaps the session within
+    /// ORACLE_CLOSE_GRACE_SECS (120s, patrol.rs:29). A followup delivered there
+    /// dies with the session, so a signalled oracle is never a target.
+    #[test]
+    fn oracle_with_a_done_signal_is_not_a_followup_target() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Active,
+            30,
+        )];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-dentistrygpt".to_string()],
+            |_| Some(false),
+            |_| true, // done signal present
+            false,
+        );
+        assert!(
+            matches!(route, DispatchRoute::Spawn { .. }),
+            "an oracle queued for reaping must not receive a followup"
+        );
+    }
+
+    /// A registry entry is not proof of life: with no live rmux session the old
+    /// behavior (spawn) is preserved.
+    #[test]
+    fn dead_oracle_still_spawns() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Active,
+            30,
+        )];
+        let route = route_dispatch(&entries, "dentistrygpt", &[], |_| Some(false), no_signal, false);
+        assert_eq!(route, DispatchRoute::Spawn { preferred: None });
+    }
+
+    /// The pre-existing idle-reuse path is untouched: an Idle + live + closeable
+    /// oracle still has its NAME recycled.
+    #[test]
+    fn idle_closeable_oracle_name_is_still_recycled() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Idle,
+            30,
+        )];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-dentistrygpt".to_string()],
+            |_| Some(true), // mission finished
+            no_signal,
+            false,
+        );
+        assert_eq!(
+            route,
+            DispatchRoute::Spawn {
+                preferred: Some("oracle-dentistrygpt".to_string())
+            },
+            "idle-name recycling must survive this change"
+        );
+    }
+
+    /// An unreadable state proves nothing, so it is not a followup target.
+    #[test]
+    fn unreadable_state_falls_back_to_spawn() {
+        let entries = vec![entry(
+            "oracle-dentistrygpt",
+            "dentistrygpt",
+            OracleRegistryStatus::Active,
+            30,
+        )];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-dentistrygpt".to_string()],
+            |_| None,
+            no_signal,
+            false,
+        );
+        assert_eq!(route, DispatchRoute::Spawn { preferred: None });
+    }
+
+    /// With several live oracles on one project (the incident had four), the
+    /// freshest conversation wins.
+    #[test]
+    fn freshest_live_oracle_wins() {
+        let entries = vec![
+            entry("oracle-dentistrygpt", "dentistrygpt", OracleRegistryStatus::Active, 600),
+            entry("oracle-dentistrygpt-4", "dentistrygpt", OracleRegistryStatus::Active, 10),
+            entry("oracle-dentistrygpt-2", "dentistrygpt", OracleRegistryStatus::Active, 300),
+        ];
+        let live = vec![
+            "oracle-dentistrygpt".to_string(),
+            "oracle-dentistrygpt-2".to_string(),
+            "oracle-dentistrygpt-4".to_string(),
+        ];
+        let route = route_dispatch(&entries, "dentistrygpt", &live, |_| Some(false), no_signal, false);
+        assert_eq!(
+            route,
+            DispatchRoute::Followup {
+                oracle: "oracle-dentistrygpt-4".to_string()
+            }
+        );
+    }
+
+    /// Another project's live oracle must never capture this project's mission.
+    #[test]
+    fn other_projects_oracle_is_never_a_target() {
+        let entries = vec![entry("oracle-Verba", "Verba", OracleRegistryStatus::Active, 30)];
+        let route = route_dispatch(
+            &entries,
+            "dentistrygpt",
+            &["oracle-Verba".to_string()],
+            |_| Some(false),
+            no_signal,
+            false,
+        );
+        assert_eq!(route, DispatchRoute::Spawn { preferred: None });
+    }
+
+    // ── Pane readiness ──────────────────────────────────────────────────────
+
+    /// A booting oracle shows its SHELL. Typing a mission there executes it as a
+    /// bash command line, so this must read as not-ready.
+    #[test]
+    fn shell_pane_is_not_ready_for_a_followup() {
+        let pane = "vibe@station:~/Station/SideBusiness/OmegaOS$ \n";
+        assert!(
+            !pane_ready_for_followup(pane),
+            "a bare shell must never be typed into"
+        );
+    }
+
+    /// A starship-style prompt starts with the same glyph as the agent composer
+    /// but draws no rule above it.
+    #[test]
+    fn bare_prompt_glyph_without_a_rule_is_not_ready() {
+        let pane = "some output\n❯ ";
+        assert!(!pane_ready_for_followup(pane));
+    }
+
+    /// The agent composer: a horizontal rule with the prompt marker under it.
+    #[test]
+    fn agent_composer_is_ready() {
+        let pane = "I finished the analysis.\n\
+                    ────────────────────────────────\n\
+                    ❯ \n\
+                      ? for shortcuts";
+        assert!(
+            pane_ready_for_followup(pane),
+            "the agent's composer is exactly what we wait for"
+        );
+    }
+
+    /// A pending question draws the same rule+marker shape as a composer, but
+    /// typing there ANSWERS it. Refuse, and let the caller spawn instead.
+    #[test]
+    fn visible_question_modal_is_not_ready() {
+        let pane = "Which approach do you want?\n\
+                    ────────────────────────────────\n\
+                    ❯ 1. Option A\n\
+                      2. Option B\n\
+                    Enter to select · ↑/↓ to navigate · Esc to cancel";
+        assert!(
+            !pane_ready_for_followup(pane),
+            "a followup must never auto-answer a pending question"
+        );
+    }
+
+    /// An empty capture (pane not drawn yet) is not ready.
+    #[test]
+    fn empty_pane_is_not_ready() {
+        assert!(!pane_ready_for_followup(""));
+    }
+
+    // ── Output contract ─────────────────────────────────────────────────────
+
+    /// The Telegram bridge's ACTUAL regex, copied from
+    /// telegram-bot/omega-tg-bot.ts:1273.
+    const BRIDGE_RE: &str = r"Oracle dispatched:?\s*(oracle-[A-Za-z0-9._-]+)";
+
+    /// REGRESSION GUARD. The bridge recovers the oracle name by matching the
+    /// line above against `omega dispatch` stdout; a miss is reported to the
+    /// operator as a FAILED dispatch and the progress thread is lost. So the
+    /// followup case must keep matching, and must yield the SAME name.
+    #[test]
+    fn followup_output_still_matches_the_telegram_bridge_regex() {
+        let re = regex::Regex::new(BRIDGE_RE).unwrap();
+        for delivery in [
+            DispatchDelivery::Spawned,
+            DispatchDelivery::Followup,
+            DispatchDelivery::SpawnedPaneNotReady,
+        ] {
+            let outcome = DispatchOutcome {
+                oracle_name: "oracle-dentistrygpt-2".to_string(),
+                delivery,
+            };
+            let stdout = outcome.report_lines().join("\n");
+            let captured = re
+                .captures(&stdout)
+                .unwrap_or_else(|| panic!("bridge regex failed to match for {:?}:\n{}", delivery, stdout));
+            assert_eq!(
+                captured.get(1).unwrap().as_str(),
+                "oracle-dentistrygpt-2",
+                "the bridge must recover the right oracle name for {:?}",
+                delivery
+            );
+        }
+    }
+
+    /// The followup and fallback cases must be VISIBLY different from a plain
+    /// spawn, on their own extra line.
+    #[test]
+    fn followup_and_fallback_announce_themselves_on_an_extra_line() {
+        let spawned = DispatchOutcome {
+            oracle_name: "oracle-X".into(),
+            delivery: DispatchDelivery::Spawned,
+        };
+        assert_eq!(spawned.report_lines().len(), 1);
+
+        let followup = DispatchOutcome {
+            oracle_name: "oracle-X".into(),
+            delivery: DispatchDelivery::Followup,
+        };
+        let lines = followup.report_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].contains("Oracle dispatched: oracle-X"));
+        assert!(lines[1].contains("suivi"));
+        assert!(lines[1].contains("aucun nouvel oracle"));
+
+        let fallback = DispatchOutcome {
+            oracle_name: "oracle-X".into(),
+            delivery: DispatchDelivery::SpawnedPaneNotReady,
+        };
+        let lines = fallback.report_lines();
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("pas pret"));
+    }
 }
 
 #[cfg(test)]

@@ -33,3 +33,6 @@ thiserror.workspace = true
 [dev-dependencies]
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt"] }
+# Test-only: the dispatch output contract is asserted against the REAL regex the
+# Telegram bridge uses (telegram-bot/omega-tg-bot.ts:1273), not a lookalike.
+regex = "1"
