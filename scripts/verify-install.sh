@@ -396,7 +396,7 @@ else
   bad "pdfgen engine or discoverable skill contract missing"
 fi
 if grep -q "OMEGA_TELEGRAM_CHAT_ID is required" tools/pdfgen/bin/pdfgen.ts \
-  && ! grep -qE 'execFileSync\\(telegramSh, \\[\"file\", \"[0-9-]+\"' tools/pdfgen/bin/pdfgen.ts; then
+  && ! grep -qF 'execFileSync(telegramSh, ["file", "' tools/pdfgen/bin/pdfgen.ts; then
   ok "raw pdfgen Telegram delivery requires an explicit allow-listed destination"
 else
   bad "raw pdfgen Telegram delivery contains an implicit or hardcoded destination"
