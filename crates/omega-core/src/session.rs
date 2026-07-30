@@ -579,20 +579,81 @@ impl SessionManager {
     ///
     /// Use this whenever the prompt may contain `\n` AND you want a
     /// single coherent user turn (e.g., reply-context + new message).
+    ///
+    /// SAME PROTECTION AS [`Self::send_paste_raw`], and for the same reason.
+    /// This used to be the bare, unretried variant while its twin thirty lines
+    /// below chunked the body and replayed the whole block atomically on a
+    /// stale pane. Its one caller is the oracle followup, whose body carries
+    /// "## Attached files" and runs to several KB — the exact payload the
+    /// chunking exists for — and a failure landing BETWEEN `\e[200~` and
+    /// `\e[201~` leaves a live oracle's composer stuck in paste mode, eating
+    /// the operator's next keystrokes.
+    ///
+    /// The Enter is deliberately NOT inside the retried block: replaying a
+    /// submit could duplicate a turn, whereas replaying the paste alone can
+    /// only ever re-fill a composer that never received it.
     pub async fn send_paste_then_submit(
         &self,
         session_name: &str,
         text: &str,
     ) -> Result<()> {
+        self.send_paste_block(session_name, text).await?;
         let pane = self.pane_for(session_name).await?;
-        // Bracketed paste opener
-        pane.send_text("\u{1b}[200~").await?;
-        pane.send_text(text).await?;
-        // Closer
-        pane.send_text("\u{1b}[201~").await?;
-        // Submit
-        pane.send_key("Enter").await?;
-        Ok(())
+        match pane.send_key("Enter").await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                pane.send_key("Enter").await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// One bracketed-paste block (markers + chunked body) sent as a single
+    /// unit, replayed in full if the pane went stale mid-flight — never a
+    /// half-sent block. Shared by the submit and no-submit variants.
+    async fn send_paste_block(&self, session_name: &str, text: &str) -> Result<()> {
+        async fn paste_block(
+            pane: &Pane,
+            text: &str,
+        ) -> std::result::Result<(), rmux_sdk::RmuxError> {
+            pane.send_text("\u{1b}[200~").await?;
+            // Chunk the body so a very large paste isn't sent as one oversized
+            // PTY write. Markers are sent once; only the body is split, so the
+            // block stays atomic from the target app's perspective.
+            const CHUNK: usize = 4096;
+            if text.len() <= CHUNK {
+                pane.send_text(text).await?;
+            } else {
+                let mut start = 0;
+                let bytes = text.as_bytes();
+                while start < bytes.len() {
+                    // Advance to a char boundary at/under the chunk limit.
+                    let mut end = (start + CHUNK).min(bytes.len());
+                    while end < bytes.len() && !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    pane.send_text(&text[start..end]).await?;
+                    start = end;
+                }
+            }
+            pane.send_text("\u{1b}[201~").await?;
+            Ok(())
+        }
+
+        let pane = self.pane_for(session_name).await?;
+        match paste_block(&pane, text).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_pane_stale(&e) => {
+                self.invalidate_pane(session_name).await;
+                let pane = self.pane_for(session_name).await?;
+                paste_block(&pane, text).await?;
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// HOT PATH (~12 FPS during chat focus): the right-panel preview tick
@@ -725,42 +786,7 @@ impl SessionManager {
         // Whole bracketed-paste block (markers + chunked body) as one unit, so
         // the stale-pane retry replays the ENTIRE paste atomically — never a
         // half-sent block. Mirrors the single-retry strategy of send_text_raw.
-        async fn paste_block(pane: &Pane, text: &str) -> std::result::Result<(), rmux_sdk::RmuxError> {
-            pane.send_text("\u{1b}[200~").await?;
-            // Chunk the body so a very large paste isn't sent as one oversized
-            // PTY write. Markers are sent once; only the body is split, so the
-            // block stays atomic from the target app's perspective.
-            const CHUNK: usize = 4096;
-            if text.len() <= CHUNK {
-                pane.send_text(text).await?;
-            } else {
-                let mut start = 0;
-                let bytes = text.as_bytes();
-                while start < bytes.len() {
-                    // Advance to a char boundary at/under the chunk limit.
-                    let mut end = (start + CHUNK).min(bytes.len());
-                    while end < bytes.len() && !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    pane.send_text(&text[start..end]).await?;
-                    start = end;
-                }
-            }
-            pane.send_text("\u{1b}[201~").await?;
-            Ok(())
-        }
-
-        let pane = self.pane_for(session_name).await?;
-        match paste_block(&pane, text).await {
-            Ok(()) => Ok(()),
-            Err(e) if is_pane_stale(&e) => {
-                self.invalidate_pane(session_name).await;
-                let pane = self.pane_for(session_name).await?;
-                paste_block(&pane, text).await?;
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        }
+        self.send_paste_block(session_name, text).await
     }
 
     pub async fn wait_for_text(

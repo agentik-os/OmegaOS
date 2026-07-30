@@ -23,6 +23,13 @@ const FOLLOWUP_PANE_ATTEMPTS: usize = 5;
 /// past it we spawn instead of typing into an unknown pane.
 const FOLLOWUP_PANE_INTERVAL: Duration = Duration::from_secs(2);
 
+/// How many times to look for evidence that the paste was ACCEPTED before
+/// refusing to report a success.
+const FOLLOWUP_CONFIRM_ATTEMPTS: usize = 3;
+
+/// Wait between acceptance probes.
+const FOLLOWUP_CONFIRM_INTERVAL: Duration = Duration::from_secs(1);
+
 /// Where a dispatch should be delivered. Computed by [`route_dispatch`] as a
 /// PURE function of the registry, the live rmux session list, and each oracle's
 /// closeable state — which is the only reason the decision is unit-testable
@@ -86,7 +93,27 @@ impl DispatchOutcome {
                     .to_string(),
             ),
         }
+        lines.push(format!("DISPATCH_DELIVERY={}", self.delivery.tag()));
         lines
+    }
+}
+
+impl DispatchDelivery {
+    /// THE MACHINE-READABLE HALF OF THE OUTPUT CONTRACT, and the reason the
+    /// French line above is not it: a consumer parsing prose breaks on the day
+    /// somebody rewords it. Exactly one line of the form
+    /// `DISPATCH_DELIVERY=<tag>` is printed on every SUCCESS path, and these
+    /// three tags are the whole vocabulary.
+    ///
+    /// Line 0 stays the canonical `Oracle dispatched: <name>` — the Telegram
+    /// bridge's regex owns that line and must keep matching it (see
+    /// [`DispatchOutcome::report_lines`]).
+    pub fn tag(&self) -> &'static str {
+        match self {
+            DispatchDelivery::Spawned => "spawned",
+            DispatchDelivery::Followup => "followup",
+            DispatchDelivery::SpawnedPaneNotReady => "spawned_pane_not_ready",
+        }
     }
 }
 
@@ -195,6 +222,49 @@ where
     DispatchRoute::Spawn { preferred }
 }
 
+/// THE PRODUCTION `closeable` ADAPTER: does this oracle's own state say its
+/// mission is over? `None` when no state could be read, which
+/// [`route_dispatch`] treats as "prove nothing, spawn".
+///
+/// A free function, not a closure at the call site, because the audit's F12 is
+/// exactly that the adapters were never executed by a test: every routing test
+/// injected a hand-written constant, so inverting this predicate left all of
+/// them green while re-delivering the incident.
+pub fn oracle_is_closeable(state_dir: &Path, name: &str) -> Option<bool> {
+    OracleState::read(state_dir, name)
+        .ok()
+        .flatten()
+        .map(|st| st.is_closeable())
+}
+
+/// THE PRODUCTION `has_done_signal` ADAPTER: is this oracle queued for reaping?
+pub fn oracle_has_done_signal(state_dir: &Path, name: &str) -> bool {
+    crate::done::OracleDoneSignal::read(state_dir, name)
+        .ok()
+        .flatten()
+        .is_some()
+}
+
+/// THE ONE WIRING of [`route_dispatch`] to the disk. Every caller — the
+/// dispatch itself, the re-check immediately before the keystroke, and the
+/// fallback that needs the idle-recycling candidate — goes through here, so
+/// there is a single reading of the registry and of both adapters.
+pub fn route_now(
+    state_dir: &Path,
+    project: &str,
+    live_sessions: &[String],
+    force_new: bool,
+) -> DispatchRoute {
+    route_dispatch(
+        &OracleRegistry::load(state_dir).oracles,
+        project,
+        live_sessions,
+        |name| oracle_is_closeable(state_dir, name),
+        |name| oracle_has_done_signal(state_dir, name),
+        force_new,
+    )
+}
+
 /// Is this pane safe to type a followup into?
 ///
 /// THE FAILURE THIS PREVENTS IS NOT HYPOTHETICAL, AND THE FIRST VERSION OF THIS
@@ -226,6 +296,21 @@ where
 pub fn pane_ready_for_followup(pane: &str) -> bool {
     crate::session_monitor::composer_ready_for_paste(pane)
         && !crate::session_monitor::question_ui_visible(pane)
+}
+
+/// Is there unsubmitted text sitting in the composer right now?
+///
+/// After a paste this is what tells "buffered but never submitted" apart from
+/// "taken as a turn". No composer at all (the agent is redrawing, or took over
+/// the screen) is NOT text held: there is nothing left holding our paste.
+fn composer_holds_text(pane: &str) -> bool {
+    match crate::session_monitor::find_live_composer_marker(pane) {
+        Some(marker) => pane
+            .lines()
+            .nth(marker)
+            .is_some_and(|line| !crate::session_monitor::composer_is_empty(line)),
+        None => false,
+    }
 }
 
 /// Map a config `default_model` alias to the explicit model name Claude's CLI
@@ -478,20 +563,97 @@ impl Dispatcher {
         false
     }
 
+    /// Is `oracle` STILL the followup target, read fresh off the disk and off
+    /// the live session list?
+    ///
+    /// The probe above can sleep for eight seconds, and the fast path that ends
+    /// an oracle is not patrol's 120s reap but the inline auto-close of
+    /// `omega done`, which runs in seconds. So every condition the route was
+    /// built on is re-read here, immediately before the keystroke, through the
+    /// SAME production wiring that built it.
+    async fn still_the_followup_target(&self, oracle: &str, project: &str) -> bool {
+        let live: Vec<String> = self
+            .session_mgr
+            .list_sessions()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.name.clone())
+            .collect();
+        matches!(
+            route_now(&self.config.state_dir, project, &live, false),
+            DispatchRoute::Followup { oracle: ref target } if target == oracle
+        )
+    }
+
+    /// Was the paste ACCEPTED by the agent?
+    ///
+    /// A send that returns `Ok` proves the bytes reached the PTY and nothing
+    /// more. The failure this exists for: the session dies in the seconds after
+    /// a successful send, the mission goes down with it, and the operator reads
+    /// `◆ Oracle dispatched:` — a success report for a mission that no longer
+    /// exists anywhere.
+    ///
+    /// WHAT THIS PROVES, EXACTLY, and no more: the session still answers a
+    /// capture, its pane MOVED, and the composer no longer holds the text.
+    /// A capture that fails is the dead-session case and reads as NOT accepted.
+    /// The pane still holding the paste means it was buffered but never
+    /// submitted, so we keep looking until the bound. It does not prove the
+    /// agent understood the mission — nothing observable from outside could.
+    async fn confirm_followup_accepted(&self, oracle: &str, before: &str) -> bool {
+        for attempt in 1..=FOLLOWUP_CONFIRM_ATTEMPTS {
+            tokio::time::sleep(FOLLOWUP_CONFIRM_INTERVAL).await;
+            let pane = match self.session_mgr.capture_pane(oracle).await {
+                Ok(pane) => pane,
+                Err(e) => {
+                    tracing::warn!(
+                        oracle = %oracle, attempt, error = %e,
+                        "followup target stopped answering after the send — the mission went \
+                         down with the session, refusing to report a success"
+                    );
+                    return false;
+                }
+            };
+            if pane == before {
+                continue; // nothing moved yet
+            }
+            if composer_holds_text(&pane) {
+                continue; // buffered, not submitted
+            }
+            return true;
+        }
+        tracing::warn!(
+            oracle = %oracle, attempts = FOLLOWUP_CONFIRM_ATTEMPTS,
+            "followup paste was never confirmed as accepted — refusing to report a success"
+        );
+        false
+    }
+
     /// Deliver `mission` into an ALREADY-LIVE oracle instead of spawning a
-    /// sibling. Returns `Ok(false)` when the pane never became typeable, which
-    /// tells the caller to fall through to the normal spawn path.
+    /// sibling. Returns `Ok(false)` for EVERY way this can fail to deliver —
+    /// pane never typeable, target no longer valid, send error, acceptance
+    /// never confirmed — which tells the caller to fall through to the normal
+    /// spawn path. That is deliberate: this function has no failure mode that
+    /// is better served by killing the whole dispatch than by spawning, and a
+    /// `?` here used to do exactly that, leaving the operator's mission
+    /// undelivered anywhere while the neighbouring not-ready case fell back
+    /// cleanly.
     ///
     /// Deliberately does NOT create a `Mission` in the ledger, does NOT write an
-    /// `OracleState`, does NOT clear the done signal, and does NOT touch the
-    /// `MissionLog` / gate counters: one oracle is one mission is one state.json,
-    /// and a followup is an addition to the mission already running there, not a
-    /// second mission wearing the same name. Every one of those mutations lives
-    /// on the spawn path AFTER this returns, and each would corrupt the running
-    /// mission — `OracleState::new()` would wipe the live worker roster,
-    /// `MissionLog::clear` would erase the R-LOOP timeline and reset the
-    /// bounded-retry counters, and clearing the name-keyed done signal could
-    /// destroy an undelivered report.
+    /// `OracleState`, does NOT clear the done signal, and does NOT clear the
+    /// `MissionLog` or the gate counters: one oracle is one mission is one
+    /// state.json, and a followup is an addition to the mission already running
+    /// there, not a second mission wearing the same name. Every one of those
+    /// mutations lives on the spawn path AFTER this returns, and each would
+    /// corrupt the running mission — `OracleState::new()` would wipe the live
+    /// worker roster, `MissionLog::clear` would erase the R-LOOP timeline and
+    /// reset the bounded-retry counters, and clearing the name-keyed done signal
+    /// could destroy an undelivered report.
+    ///
+    /// It DOES append one `MissionLog::event` to the live oracle's timeline
+    /// once the followup is confirmed — an append, by design, so `omega
+    /// timeline` shows the operator that the running mission grew (loop_guard.rs
+    /// :226-245: pure append, no rotation, no thrash or gate counter touched).
     async fn deliver_followup(&self, oracle: &str, project: &str, mission: &str) -> Result<bool> {
         if !self.wait_for_typeable_pane(oracle).await {
             tracing::warn!(
@@ -503,14 +665,66 @@ impl Dispatcher {
             return Ok(false);
         }
 
+        // The probe may have slept for eight seconds. Re-read the route, then
+        // take one last look at the pane: both conditions must hold at the
+        // moment of the keystroke, not at the moment of the decision.
+        if !self.still_the_followup_target(oracle, project).await {
+            tracing::warn!(
+                oracle = %oracle, project = %project,
+                "followup target stopped qualifying while we waited for its composer \
+                 (closed, signalled, or gone) — spawning instead"
+            );
+            return Ok(false);
+        }
+        let before = match self.session_mgr.capture_pane(oracle).await {
+            Ok(pane) if pane_ready_for_followup(&pane) => pane,
+            Ok(_) => {
+                tracing::warn!(
+                    oracle = %oracle,
+                    "followup target's composer stopped being typeable at the last look — \
+                     spawning instead"
+                );
+                return Ok(false);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    oracle = %oracle, error = %e,
+                    "could not re-read the followup target's pane before typing — spawning instead"
+                );
+                return Ok(false);
+            }
+        };
+
         // BRACKETED PASTE, not a line-wise send. A mission body is multi-line
         // (it carries "## Attached files" and paths); `send_text` submits at the
         // first newline and would fracture one mission into a dozen half-turns.
         // `send_paste_then_submit` wraps the block in \e[200~ ... \e[201~ so the
-        // TUI buffers it as ONE paste, then sends Enter as a separate key.
-        self.session_mgr
+        // TUI buffers it as ONE paste, then sends Enter as a separate key. It
+        // chunks the body and replays the whole block on a stale pane, so a
+        // failure can never leave a live composer stuck between the paste
+        // markers eating the operator's keystrokes.
+        if let Err(e) = self
+            .session_mgr
             .send_paste_then_submit(oracle, mission)
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                oracle = %oracle, project = %project, error = %e,
+                "failed to type the followup into the live oracle — spawning instead of failing \
+                 the dispatch"
+            );
+            return Ok(false);
+        }
+
+        // NO CONFIRMATION, NO SUCCESS. An unconfirmed followup falls back to a
+        // spawn and is reported as such: the operator gets an oracle that
+        // certainly holds the mission, instead of a success line for a mission
+        // that may have died with its session. The residual cost of the
+        // fallback is a mission that landed twice, which is visible and
+        // recoverable; the cost of the alternative is silence.
+        if !self.confirm_followup_accepted(oracle, &before).await {
+            return Ok(false);
+        }
 
         crate::loop_guard::MissionLog::event(
             &self.config.state_dir,
@@ -597,24 +811,7 @@ impl Dispatcher {
         // OPT-IN: with OMEGA_FOLLOWUP_ROUTING unset the followup branch is
         // skipped exactly like `--new` does, which is the pre-merge behavior.
         let followup_allowed = followup_routing_enabled();
-        let route = route_dispatch(
-            &OracleRegistry::load(&state_dir).oracles,
-            project,
-            &live,
-            |name| {
-                OracleState::read(&state_dir, name)
-                    .ok()
-                    .flatten()
-                    .map(|st| st.is_closeable())
-            },
-            |name| {
-                crate::done::OracleDoneSignal::read(&state_dir, name)
-                    .ok()
-                    .flatten()
-                    .is_some()
-            },
-            force_new || !followup_allowed,
-        );
+        let route = route_now(&state_dir, project, &live, force_new || !followup_allowed);
 
         let mut pane_not_ready = false;
         let preferred: Option<String> = match route {
@@ -625,11 +822,32 @@ impl Dispatcher {
                         delivery: DispatchDelivery::Followup,
                     });
                 }
-                // Pane never became typeable. Fall through to a normal spawn —
-                // a followup that lands in a shell (or is lost) is worse than
-                // the sibling oracle we are trying to avoid.
+                // The followup could not be delivered (pane never typeable,
+                // target stopped qualifying, send failed, or acceptance was
+                // never confirmed). Fall through to a normal spawn — a followup
+                // that lands in a shell, or is lost, is worse than the sibling
+                // oracle we are trying to avoid.
                 pane_not_ready = true;
-                None
+                // …but do NOT throw away the idle-recycling candidate on the
+                // way out. Asking the SAME router with `force_new` skips only
+                // the followup branch and returns the `preferred` name the
+                // pre-existing idle-reuse rules would have picked, which is
+                // what the commit message claimed was left unchanged and what
+                // hardcoding `None` here quietly broke. The session list is
+                // re-read because the probe may have slept for eight seconds.
+                let live_now: Vec<String> = self
+                    .session_mgr
+                    .list_sessions()
+                    .await
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect();
+                match route_now(&state_dir, project, &live_now, true) {
+                    DispatchRoute::Spawn { preferred } => preferred,
+                    // Unreachable: `force_new` skips the followup branch.
+                    DispatchRoute::Followup { .. } => None,
+                }
             }
             DispatchRoute::Spawn { preferred } => preferred,
         };
@@ -1761,14 +1979,16 @@ mod followup_routing_tests {
             oracle_name: "oracle-X".into(),
             delivery: DispatchDelivery::Spawned,
         };
-        assert_eq!(spawned.report_lines().len(), 1);
+        let lines = spawned.report_lines();
+        assert_eq!(lines.len(), 2, "canonical line + the machine line");
+        assert!(lines[0].contains("Oracle dispatched: oracle-X"));
 
         let followup = DispatchOutcome {
             oracle_name: "oracle-X".into(),
             delivery: DispatchDelivery::Followup,
         };
         let lines = followup.report_lines();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert!(lines[0].contains("Oracle dispatched: oracle-X"));
         assert!(lines[1].contains("suivi"));
         assert!(lines[1].contains("aucun nouvel oracle"));
@@ -1778,8 +1998,119 @@ mod followup_routing_tests {
             delivery: DispatchDelivery::SpawnedPaneNotReady,
         };
         let lines = fallback.report_lines();
-        assert_eq!(lines.len(), 2);
+        assert_eq!(lines.len(), 3);
         assert!(lines[1].contains("pas pret"));
+    }
+
+    /// THE MACHINE CONTRACT, consumed by a parallel change in the Telegram
+    /// bridge. Exactly one line, exactly this spelling, on EVERY success path —
+    /// a consumer that has to parse the French prose line breaks the day
+    /// somebody rewords it.
+    #[test]
+    fn every_success_path_prints_exactly_one_dispatch_delivery_line() {
+        for (delivery, tag) in [
+            (DispatchDelivery::Spawned, "spawned"),
+            (DispatchDelivery::Followup, "followup"),
+            (
+                DispatchDelivery::SpawnedPaneNotReady,
+                "spawned_pane_not_ready",
+            ),
+        ] {
+            let outcome = DispatchOutcome {
+                oracle_name: "oracle-dentistrygpt-2".into(),
+                delivery,
+            };
+            let lines = outcome.report_lines();
+            let machine: Vec<&String> = lines
+                .iter()
+                .filter(|l| l.starts_with("DISPATCH_DELIVERY="))
+                .collect();
+            assert_eq!(
+                machine.len(),
+                1,
+                "exactly one machine line for {delivery:?}, got {lines:?}"
+            );
+            assert_eq!(machine[0], &format!("DISPATCH_DELIVERY={tag}"));
+            // Line 0 stays the bridge's canonical line, ahead of it.
+            assert!(lines[0].starts_with("◆ Oracle dispatched: "));
+        }
+    }
+
+    // ── The production adapters ─────────────────────────────────────────────
+
+    /// F12. Every routing test above injects a hand-written constant closure,
+    /// so NONE of them executes the adapters that read the real files —
+    /// inverting `oracle_is_closeable` to `!st.is_closeable()` left the whole
+    /// suite green while re-delivering the incident the feature exists to fix.
+    ///
+    /// This test drives `route_now` — the single production wiring — against a
+    /// real state directory on disk, so the `OracleState` read, the
+    /// `is_closeable()` predicate, the registry load, and the done-signal read
+    /// are all executed for real.
+    #[test]
+    fn the_production_adapters_decide_the_route_on_real_state_files() {
+        use crate::oracle_lifecycle::OraclePhase;
+
+        let tmp = std::env::temp_dir().join(format!(
+            "omega-dispatch-adapters-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        // A live oracle, mid-mission: the real state file, the real registry.
+        let mut registry = OracleRegistry::load(&tmp);
+        registry.oracles.push(entry(
+            "oracle-adapters",
+            "adapters",
+            OracleRegistryStatus::Idle,
+            30,
+        ));
+        registry.save(&tmp).unwrap();
+        let mission = crate::mission::Mission::new("adapters", "do the thing", tmp.clone());
+        let mut state = OracleState::new("oracle-adapters", &mission);
+        state.phase = OraclePhase::Analyze;
+        state.write(&tmp).unwrap();
+
+        let live = vec!["oracle-adapters".to_string()];
+        assert_eq!(
+            oracle_is_closeable(&tmp, "oracle-adapters"),
+            Some(false),
+            "a mission in Analyze is not closeable — this is the value the route depends on"
+        );
+        assert_eq!(
+            route_now(&tmp, "adapters", &live, false),
+            DispatchRoute::Followup {
+                oracle: "oracle-adapters".to_string()
+            },
+            "the REAL adapters must route a live mid-mission oracle to a followup"
+        );
+
+        // The same oracle once it has signalled done: patrol will reap it, so
+        // the done-signal adapter must veto the followup.
+        crate::done::OracleDoneSignal::new(
+            "oracle-adapters",
+            "adapters",
+            crate::done::DoneStatus::DoneClean,
+            "do the thing",
+        )
+        .write(&tmp)
+        .unwrap();
+        assert!(
+            oracle_has_done_signal(&tmp, "oracle-adapters"),
+            "the signal we just wrote must be readable by the production adapter"
+        );
+        assert!(
+            matches!(
+                route_now(&tmp, "adapters", &live, false),
+                DispatchRoute::Spawn { .. }
+            ),
+            "an oracle queued for reaping must not receive a followup"
+        );
+
+        // An unreadable state proves nothing: spawn.
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
 
