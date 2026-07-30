@@ -19,6 +19,29 @@ omega-design agents      # which local CLIs Open Design detected
 **View link:** Tailscale up → `https://<tailnet-host>:7456`; no Tailscale → `http://localhost:7456`.
 (This box: `https://station.tail64d114.ts.net:7456` — needs Tailscale on your device.)
 
+## Updates & existing installs
+
+A **fresh** OmegaOS install does NOT set up the daemon (heavy Docker dep — opt in once with the
+installer below). But **once it is installed**, every `omega update` re-runs the idempotent
+installer (install.sh Phase 6.916) so the deployment tracks `main`: latest override (host-net,
+auth/git/projects mounts), MCP re-wired for claude/codex, projects re-imported, tailnet re-served.
+Opt out with `OMEGA_SKIP_OD_REFRESH=1`. So on an existing install: `omega update` and it self-heals;
+on a new one: run the installer once, then updates keep it current.
+
+## Getting the link (Tailscale, or SSH when there is none)
+
+```
+omega-design url     # the view URL
+omega-design open    # a card: URL + how-to + agents
+omega-design ssh     # the SSH tunnel command when there is no Tailscale
+```
+
+- **Tailscale present** → `https://<tailnet-host>:7456` (open it directly; needs Tailscale on your device).
+- **No Tailscale** → the daemon is loopback-only, so tunnel in with the SSH key you already use:
+  `ssh -N -L 7456:127.0.0.1:7456 [-p <port>] <user>@<host>` then open `http://localhost:7456`.
+  `omega-design ssh` prints the exact command (auto-filled from `$SSH_CONNECTION`; override with
+  `OMEGA_SSH_HOST` / `OMEGA_SSH_PORT` / `OMEGA_SSH_USER`).
+
 ## Install (opt-in — heavy Docker dependency, not auto-run by install.sh)
 
 ```
