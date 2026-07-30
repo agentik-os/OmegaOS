@@ -1943,6 +1943,37 @@ mod followup_routing_tests {
         }
     }
 
+    /// The signal `confirm_followup_accepted` reads after the send: does the
+    /// composer still hold the paste? "Buffered but never submitted" and "taken
+    /// as a turn" are the two outcomes that look alike from outside, and only
+    /// the second one may be reported as a delivered followup.
+    #[test]
+    fn a_composer_still_holding_the_paste_is_not_an_accepted_followup() {
+        let submitted = "● Working on it.\n\
+                         ────────────────────────────────\n\
+                         ❯ \n\
+                         ────────────────────────────────\n\
+                           ⏵⏵ bypass permissions on · esc to interrupt\n";
+        assert!(
+            !composer_holds_text(submitted),
+            "an empty composer means the turn was taken"
+        );
+
+        let buffered = "● Working on it.\n\
+                        ────────────────────────────────\n\
+                        ❯ MISSION\\nAudit the followup path\n\
+                        ────────────────────────────────\n\
+                          ⏵⏵ bypass permissions on\n";
+        assert!(
+            composer_holds_text(buffered),
+            "text still sitting in the composer was never submitted"
+        );
+
+        // No composer at all (the agent redrew, or took the screen): nothing is
+        // holding the paste.
+        assert!(!composer_holds_text("● Working on it.\n"));
+    }
+
     // ── Output contract ─────────────────────────────────────────────────────
 
     /// The Telegram bridge's ACTUAL regex, copied from
