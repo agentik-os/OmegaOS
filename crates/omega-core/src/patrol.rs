@@ -64,6 +64,50 @@ impl Patrol {
         }
     }
 
+    fn transition_v3_worker_attempt(
+        &self,
+        oracle: &OracleState,
+        worker: &crate::oracle_lifecycle::WorkerEntry,
+        next: crate::mission::TaskAttemptState,
+        event_key: &str,
+    ) -> Result<bool> {
+        let (Some(attempt_id), Some(plan_revision)) =
+            (worker.attempt_id.as_deref(), worker.plan_revision)
+        else {
+            return Ok(false);
+        };
+        let ledger_path = self.config.state_dir.join("mission-engine-v3.sqlite3");
+        if !ledger_path.exists() || oracle.mission_id.as_str().is_empty() {
+            return Ok(false);
+        }
+        let ledger = crate::mission_ledger::MissionLedger::open(ledger_path)?;
+        let projection = ledger
+            .mission(&oracle.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 mission projection is missing"))?;
+        let attempt = ledger
+            .task_attempt(attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 task attempt projection is missing"))?;
+        if attempt.state == next {
+            return Ok(true);
+        }
+        let mut event = crate::mission_ledger::AppendEvent::new(
+            oracle.mission_id.clone(),
+            projection.version,
+            format!("patrol:{attempt_id}:{event_key}"),
+            "omega-patrol",
+            format!("task_attempt_{}", format!("{next:?}").to_lowercase()),
+        );
+        event.task_attempt = Some(crate::mission_ledger::TaskAttemptMutation {
+            task_id: worker.task_id.clone(),
+            attempt_id: attempt_id.to_string(),
+            plan_revision,
+            expected_version: attempt.version,
+            next_state: next,
+        });
+        ledger.append(event)?;
+        Ok(true)
+    }
+
     pub async fn run_once(&mut self) -> Result<PatrolReport> {
         // Heartbeat — proves the patrol actually fired. Lets the user (and
         // `omega doctor`) verify the self-improvement loop is alive rather
@@ -136,7 +180,7 @@ impl Patrol {
                 // Give the respawned shell a beat before typing into it.
                 tokio::time::sleep(Duration::from_millis(500)).await;
                 let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-                    .unwrap_or(crate::agents::Agent::Claude);
+                    .unwrap_or(crate::agents::Agent::Codex);
                 let launch = agent.launch_command_with(
                     None,
                     crate::agents::LaunchOptions {
@@ -202,10 +246,9 @@ impl Patrol {
                     // ── Opus 4.8 ground-truth gate ──
                     // A worker's `done_clean` narration is inadmissible as
                     // proof. Verify every artifact it cited against the real
-                    // repo. We CONTEST (downgrade to failed) only on a
-                    // CONCRETE fabrication — a cited SHA/branch/file that does
-                    // not exist. Absence of artifacts is a soft warning, never
-                    // a block (avoids false-positiving honest non-code work).
+                    // repo. A concrete fabrication is a failure. Weak or
+                    // absent proof remains a candidate (`Pending`) and keeps
+                    // its scope: a worker never accepts its own work.
                     let repo_root = crate::session::OmegaSession::classify(&session.name)
                         .project
                         .as_deref()
@@ -213,10 +256,55 @@ impl Patrol {
                         .map(std::path::PathBuf::from);
                     let mut effective_status = done.status;
                     let mut contest_reason: Option<String> = None;
-                    if done.status == DoneStatus::DoneClean {
-                        let verdict = crate::done::verify_done_against_repo(
+                    let v3_worker = oracle_states.iter().find_map(|state| {
+                        state
+                            .workers
+                            .iter()
+                            .find(|worker| worker.session_name == session.name)
+                            .map(|worker| (state, worker))
+                    });
+                    let mut ledger_ready = true;
+                    if let Some((oracle, worker)) = v3_worker {
+                        if let Err(error) = self.transition_v3_worker_attempt(
+                            oracle,
+                            worker,
+                            crate::mission::TaskAttemptState::Verifying,
+                            &format!("{}:verifying", done.finished_at.timestamp_micros()),
+                        ) {
+                            ledger_ready = false;
+                            effective_status = DoneStatus::Pending;
+                            report.actions_taken.push(format!(
+                                "{}: authoritative verification transition failed; scope held ({error})",
+                                session.name
+                            ));
+                        }
+                    }
+                    if done.status == DoneStatus::DoneClean && ledger_ready {
+                        let verifier_checks = oracle_states
+                            .iter()
+                            .find_map(|state| {
+                                state
+                                    .workers
+                                    .iter()
+                                    .find(|worker| worker.session_name == session.name)
+                                    .map(|worker| (state.mission_id.clone(), worker.task_id.clone()))
+                            })
+                            .and_then(|(mission_id, task_id)| {
+                                let path =
+                                    self.config.state_dir.join("mission-engine-v3.sqlite3");
+                                let ledger =
+                                    crate::mission_ledger::MissionLedger::open(path).ok()?;
+                                let plan = ledger.active_plan(&mission_id).ok().flatten()?;
+                                plan.tasks
+                                    .into_iter()
+                                    .find(|task| task.task_id.as_str() == task_id)
+                                    .map(|task| task.verifier_checks)
+                            })
+                            .unwrap_or_default();
+                        let verdict = crate::done::verify_done_against_contract(
                             &done,
                             repo_root.as_deref(),
+                            &verifier_checks,
                         );
                         let fabrication = verdict.checks.iter().any(|c| !c.passed);
                         if fabrication {
@@ -229,13 +317,43 @@ impl Patrol {
                             contest_reason = Some(reasons.join("; "));
                             effective_status = DoneStatus::Failed;
                         } else if !verdict.passes {
-                            // Weak proof (no artifacts / single-source) — accept
-                            // but log it so the trend is visible.
+                            effective_status = DoneStatus::Pending;
                             report.actions_taken.push(format!(
-                                "{}: done_clean accepted with weak proof ({})",
+                                "{}: candidate completion retained as pending; proof is insufficient ({})",
                                 session.name,
                                 verdict.failures.join("; ")
                             ));
+                        }
+                    }
+
+                    if ledger_ready {
+                        if let Some((oracle, worker)) = v3_worker {
+                            let target = match effective_status {
+                                DoneStatus::DoneClean => {
+                                    crate::mission::TaskAttemptState::Accepted
+                                }
+                                DoneStatus::Pending => {
+                                    crate::mission::TaskAttemptState::CorrectionRequired
+                                }
+                                DoneStatus::Failed => crate::mission::TaskAttemptState::Failed,
+                                DoneStatus::Blocked => crate::mission::TaskAttemptState::Blocked,
+                            };
+                            if let Err(error) = self.transition_v3_worker_attempt(
+                                oracle,
+                                worker,
+                                target,
+                                &format!(
+                                    "{}:{}",
+                                    done.finished_at.timestamp_micros(),
+                                    format!("{target:?}").to_lowercase()
+                                ),
+                            ) {
+                                effective_status = DoneStatus::Pending;
+                                report.actions_taken.push(format!(
+                                    "{}: authoritative verdict transition failed; scope held ({error})",
+                                    session.name
+                                ));
+                            }
                         }
                     }
 

@@ -1,15 +1,21 @@
 //! Rules registry — typed catalogue of OmegaOS Laws + operational Rules.
 //!
-//! Two tiers: **Laws** (`RuleKind::Law`) are inviolable, universal, render
-//! first everywhere, and outrank every rule and task. **Rules**
-//! (`RuleKind::Rule`) are operational guidelines that implement the Laws —
-//! categorized and scoped per agent level via the explicit `scopes` field.
-//! The System tab, `omega rules list`, and every agent prompt
-//! (`agent_context_block`) render from this single source of truth.
+//! The registry retains the complete doctrine for export, while dispatched
+//! prompts receive a compact, provider-neutral law kernel plus typed,
+//! role/mission-scoped operational rules. Host system/developer instructions
+//! and the user's granted scope always remain above OmegaOS project policy.
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 use crate::aisb_agents::AisbAgent;
+
+/// Maximum OmegaOS-owned context emitted by the rule compiler.
+///
+/// This is a byte budget because every provider accepts UTF-8 input and the
+/// compiler must be able to enforce it without depending on a provider
+/// tokenizer. Provider adapters may impose an additional, stricter token cap.
+pub const RULE_CONTEXT_BUDGET_BYTES: usize = 24 * 1024;
 
 /// LAW vs RULE tier. Laws are inviolable, universal, render first
 /// everywhere, and outrank every rule or task. Rules are operational
@@ -50,6 +56,83 @@ pub enum RuleScope {
     Worker,
 }
 
+/// How a rule is actually enforced. Prompt-only policy is deliberately
+/// distinguishable from a runtime or human gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnforcementMode {
+    Prompt,
+    Hook,
+    Runtime,
+    HumanApproval,
+    Hybrid,
+}
+
+/// Consequence of violating a rule, not a routing confidence score.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleRisk {
+    Baseline,
+    Elevated,
+    High,
+    Critical,
+}
+
+/// Provider mechanics are selected explicitly and never leak into the
+/// provider-neutral kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFamily {
+    Neutral,
+    Claude,
+    Codex,
+    Gemini,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "provider")]
+pub enum ProviderApplicability {
+    Any,
+    Only(ProviderFamily),
+}
+
+impl ProviderApplicability {
+    pub fn includes(self, provider: ProviderFamily) -> bool {
+        matches!(self, Self::Any) || matches!(self, Self::Only(p) if p == provider)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunbookRef {
+    RuleFile,
+    AuditRouter,
+    SkillAtlas,
+    Stream,
+    Monitor,
+    Pdf,
+    ApprovalGate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleLifecycle {
+    Active,
+    Deprecated,
+}
+
+/// Strongly typed compilation metadata. It is derived from the canonical
+/// registry so existing rule initializers and export APIs remain compatible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuleCompileMetadata {
+    pub enforcement: EnforcementMode,
+    pub risk: RuleRisk,
+    pub provider: ProviderApplicability,
+    pub runbook: RunbookRef,
+    pub lifecycle: RuleLifecycle,
+}
+
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub id: &'static str,
@@ -71,6 +154,44 @@ pub struct Rule {
     pub added_at: &'static str,
     pub reason: &'static str,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledRuleContext {
+    pub markdown: String,
+    pub bytes: usize,
+    /// Stable FNV-1a digest of the exact compiled bytes. This is intended for
+    /// reproducibility and drift detection, not for cryptographic signing.
+    pub digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleCompileError {
+    BudgetExceeded {
+        scope: RuleScope,
+        provider: ProviderFamily,
+        bytes: usize,
+        budget: usize,
+    },
+}
+
+impl fmt::Display for RuleCompileError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BudgetExceeded {
+                scope,
+                provider,
+                bytes,
+                budget,
+            } => write!(
+                f,
+                "OmegaOS rule context exceeds budget: scope={scope:?} provider={provider:?} \
+                 bytes={bytes} budget={budget}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RuleCompileError {}
 
 // Scope shorthands for the table below.
 const ALL: &[RuleScope] = &[RuleScope::Master, RuleScope::Oracle, RuleScope::Worker];
@@ -148,22 +269,22 @@ pub fn all_rules() -> Vec<Rule> {
         },
         Rule {
             id: "L5",
-            title: "Quality over speed",
+            title: "Quality floor over arbitrary speed",
             kind: RuleKind::Law,
             category: RuleCategory::Universal,
-            description: "Tokens are unlimited; time is never a constraint; quality is the only one. Never produce a streamlined / lightweight / quick / custom / simplified variant of a real skill, audit, or protocol to save time — run the real thing. A 403 / 401 / blocked surface is an ABORT, never a PASS.",
+            description: "Meet the verified quality floor within the mission's explicit time, token, cost, and risk budget. Never silently lower that floor or replace a real skill, audit, or protocol with an unverified imitation merely to finish sooner; instead narrow scope transparently, fan out safely, or escalate before the budget is exhausted. A 403 / 401 / blocked surface is an ABORT, never a PASS.",
             applies_to: &[],
             scopes: &[],
             domains: &[],
             added_at: "2026-05-29",
-            reason: "Agents shortcut real audits to 'save time' and read auth failures as passes. Both are silent quality failures.",
+            reason: "Agents shortcut real audits to 'save time' and read auth failures as passes. The original wording also claimed time and tokens were unlimited, contradicting R-BUDGET and preventing bounded, observable execution. Quality remains a hard floor; resources are explicit constraints.",
         },
         Rule {
             id: "L6",
             title: "Finish the mission — never stop mid-workflow",
             kind: RuleKind::Law,
             category: RuleCategory::QualityGate,
-            description: "A turn ends when the MISSION ends, not when the first deliverable looks presentable. THE FINISH CONTRACT, in order: (1) ENUMERATE — restate every distinct task the prompt contains (a prompt routinely carries 3-6; the later ones are the ones that get dropped) and, past 2 steps, write them into the harness plan tool (L6 is the WHY, R-PLAN is the HOW); (2) EXECUTE to the last item, never stopping to narrate the remaining ones; (3) VERIFY each against runtime (L1) before it is marked done; (4) REPORT what shipped and what did not. THREE LEGAL STOPS, and only these: every task completed AND verified; a genuine hard blocker recorded IN THE PLAN with every other file-disjoint task already finished (L4); or a question so blocking that proceeding under any assumption would be unsafe or would waste the whole mission (dispatched sessions do not have this one — L3 overrides: decide and proceed). Everything else is an ILLEGAL STOP: 'do you want me to continue?', 'next steps would be…', 'I can also…', a phase-1-of-4 handoff, a plan presented instead of executed, or a summary of remaining work written where the work itself belongs. Mid-workflow abandonment is the specific failure this Law names: a fan-out launched and never synthesized, a build started and never checked, a plan written and never executed, 5 of 6 tasks done and the 6th silently dropped. Running out of turn is NOT a legal stop — continue in the next turn from the first unfinished plan item without waiting to be re-prompted, and never re-ask a question the operator already answered. Volume is never a reason to stop: tokens are unlimited (L5), so a big mission is fanned out (R-ORCH), never truncated. The finish-guard Stop hook enforces this at runtime — a blocked stop is an instruction to KEEP WORKING, never a prompt to argue with the hook or to re-report the same summary.",
+            description: "A turn ends when the MISSION ends, not when the first deliverable looks presentable. THE FINISH CONTRACT, in order: (1) ENUMERATE — restate every distinct task the prompt contains (a prompt routinely carries 3-6; the later ones are the ones that get dropped) and, past 2 steps, write them into the harness plan tool (L6 is the WHY, R-PLAN is the HOW); (2) EXECUTE to the last item, never stopping to narrate the remaining ones; (3) VERIFY each against runtime (L1) before it is marked done; (4) REPORT what shipped and what did not. THREE LEGAL STOPS, and only these: every task completed AND verified; a genuine hard blocker recorded IN THE PLAN with every other file-disjoint task already finished (L4); or a question so blocking that proceeding under any assumption would be unsafe or would waste the whole mission (dispatched sessions do not have this one — L3 overrides: decide and proceed). Everything else is an ILLEGAL STOP: 'do you want me to continue?', 'next steps would be…', 'I can also…', a phase-1-of-4 handoff, a plan presented instead of executed, or a summary of remaining work written where the work itself belongs. Mid-workflow abandonment is the specific failure this Law names: a fan-out launched and never synthesized, a build started and never checked, a plan written and never executed, 5 of 6 tasks done and the 6th silently dropped. Running out of turn is NOT a legal stop — continue in the next turn from the first unfinished plan item without waiting to be re-prompted, and never re-ask a question the operator already answered. Volume is handled by decomposition, safe fan-out, and explicit budget escalation (L5, R-ORCH, R-BUDGET), never by silent truncation. The finish-guard Stop hook enforces this at runtime — a blocked stop is an instruction to KEEP WORKING, never a prompt to argue with the hook or to re-report the same summary.",
             applies_to: &[],
             scopes: &[],
             domains: &[],
@@ -389,15 +510,15 @@ pub fn all_rules() -> Vec<Rule> {
         },
         Rule {
             id: "R-TEST",
-            title: "Production-only testing",
+            title: "Layered testing with production verification",
             kind: RuleKind::Rule,
             category: RuleCategory::QualityGate,
-            description: "Never start a local dev server (`next dev` / `bun dev` / `npm run dev`) to test — use the deployed / prod URL. Browser testing goes through the Playwright CLI via Bash, never MCP browser tools. The only exception is brand-new code not yet deployed.",
+            description: "Test at the lowest safe layer that can falsify the claim: unit and integration tests first, then an isolated preview or disposable local runtime when it adds evidence, and finally the deployed production golden path when deployed behavior changed (R-PROD). Do not start an unbounded local dev server when a build, test command, or existing deployment answers the question. Browser testing uses the Playwright CLI, never MCP browser tools. Never use production as the first test surface for destructive, stateful, or security-sensitive changes.",
             applies_to: &[],
             scopes: EXEC,
             domains: &[],
             added_at: "2026-05-29",
-            reason: "Dev servers waste GBs of RAM and the prod surface is already deployed; the browser MCP servers were removed.",
+            reason: "The original production-only rule reduced local resource waste but made production the first line of defense, conflicting with safe staged verification. The replacement preserves resource discipline while requiring layered evidence and a real production check for deployed work.",
         },
         Rule {
             id: "R-AUDIT",
@@ -739,17 +860,26 @@ pub fn all_rules() -> Vec<Rule> {
 }
 
 pub fn rules_by_category(cat: RuleCategory) -> Vec<Rule> {
-    all_rules().into_iter().filter(|r| r.category == cat).collect()
+    all_rules()
+        .into_iter()
+        .filter(|r| r.category == cat)
+        .collect()
 }
 
 /// All Laws (the inviolable tier). Order preserved from `all_rules()`.
 pub fn laws() -> Vec<Rule> {
-    all_rules().into_iter().filter(|r| r.kind == RuleKind::Law).collect()
+    all_rules()
+        .into_iter()
+        .filter(|r| r.kind == RuleKind::Law)
+        .collect()
 }
 
 /// All operational rules (everything that is NOT a Law).
 pub fn operational_rules() -> Vec<Rule> {
-    all_rules().into_iter().filter(|r| r.kind == RuleKind::Rule).collect()
+    all_rules()
+        .into_iter()
+        .filter(|r| r.kind == RuleKind::Rule)
+        .collect()
 }
 
 impl Rule {
@@ -765,6 +895,56 @@ impl Rule {
         }
         self.scopes.to_vec()
     }
+
+    /// Typed policy used by the context compiler. The verbose `description`
+    /// remains the exportable doctrine; this metadata controls when and how the
+    /// compact rule is delivered.
+    pub fn compile_metadata(&self) -> RuleCompileMetadata {
+        let provider = match self.id {
+            // These rules are entirely Claude-native. R-LOOP's retry ceiling
+            // and R-COUNCIL's approval trigger are provider-neutral policy even
+            // though their verbose runbooks mention Claude mechanisms.
+            "R-GOAL" | "R-MODEL" => ProviderApplicability::Only(ProviderFamily::Claude),
+            _ => ProviderApplicability::Any,
+        };
+
+        let enforcement = match self.id {
+            "R-PLAN" => EnforcementMode::Hook,
+            "R-SCOPE" | "R-BUDGET" | "R-PROD" | "R-TGSEC" => EnforcementMode::Runtime,
+            "R-DESTRUCT" | "R-COUNCIL" => EnforcementMode::HumanApproval,
+            "R-SYNC" | "R-VERIFY" | "R-TEST" | "R-ENV" | "R-PROJ" => EnforcementMode::Hybrid,
+            _ => EnforcementMode::Prompt,
+        };
+
+        let risk = if self.kind == RuleKind::Law {
+            RuleRisk::Critical
+        } else {
+            match self.category {
+                RuleCategory::Safety => RuleRisk::Critical,
+                RuleCategory::QualityGate => RuleRisk::High,
+                RuleCategory::Orchestration => RuleRisk::Elevated,
+                RuleCategory::Universal | RuleCategory::Reporting => RuleRisk::Baseline,
+            }
+        };
+
+        let runbook = match self.id {
+            "R-AUDIT" => RunbookRef::AuditRouter,
+            "R-SKILL-ATLAS" => RunbookRef::SkillAtlas,
+            "R-STREAM" => RunbookRef::Stream,
+            "R-MONITOR" => RunbookRef::Monitor,
+            "R-PDF" => RunbookRef::Pdf,
+            "R-DESTRUCT" => RunbookRef::ApprovalGate,
+            _ => RunbookRef::RuleFile,
+        };
+
+        RuleCompileMetadata {
+            enforcement,
+            risk,
+            provider,
+            runbook,
+            lifecycle: RuleLifecycle::Active,
+        }
+    }
 }
 
 /// All rules that should be injected into a given agent level's prompt.
@@ -777,53 +957,224 @@ pub fn rules_for_scope(scope: RuleScope) -> Vec<Rule> {
         .collect()
 }
 
-/// Read the hardened brief preamble (`~/.omega/agents/_brief-preamble.md`,
-/// falling back to the repo copy at `agents/_brief-preamble.md`). This
-/// is the single highest-leverage safety surface per the Opus 4.8 card
-/// — it gets prepended to every Oracle and Worker brief. Empty string
-/// if neither file exists (degrades gracefully).
+/// Read the provider-neutral brief preamble from the configured OmegaOS
+/// directory, falling back to the repo copy at `agents/_brief-preamble.md`.
+/// It gets prepended to every Oracle and Worker brief. Empty string if neither
+/// file exists (degrades gracefully).
 pub fn brief_preamble() -> String {
-    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let installed = home.join(".omega/agents/_brief-preamble.md");
-    let repo = std::path::PathBuf::from("agents/_brief-preamble.md");
-    std::fs::read_to_string(&installed)
-        .or_else(|_| std::fs::read_to_string(&repo))
-        .unwrap_or_default()
+    static PREAMBLE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PREAMBLE
+        .get_or_init(|| {
+            let installed = crate::config::omega_dir().join("agents/_brief-preamble.md");
+            let repo = std::path::PathBuf::from("agents/_brief-preamble.md");
+            std::fs::read_to_string(&installed)
+                .or_else(|_| std::fs::read_to_string(&repo))
+                .unwrap_or_default()
+        })
+        .clone()
 }
 
-/// Render the scoped rules as a compact markdown block for prompt
-/// injection. Laws are rendered FIRST (universal, inviolable) and
-/// visually distinct from the operational rules that follow.
-pub fn rules_prompt_block(scope: RuleScope) -> String {
-    let level = match scope {
+fn scope_label(scope: RuleScope) -> &'static str {
+    match scope {
         RuleScope::Master => "AISB Master",
         RuleScope::Oracle => "Oracle",
         RuleScope::Worker => "Worker",
-    };
+    }
+}
 
+/// Concise, provider-neutral constitutional kernel. The complete historical
+/// doctrine remains available through [`full_doctrine_markdown`].
+fn compact_law_text(id: &str) -> &'static str {
+    match id {
+        "L0" => "Complete only work that is reproducible in the required target and backed by fresh evidence.",
+        "L1" => "Runtime evidence outranks code, comments, plans, and agent narration.",
+        "L2" => "Challenge false premises, state uncertainty, and actively try to falsify conclusions.",
+        "L3" => "A dispatched agent acts autonomously within granted scope; unsafe ambiguity becomes a typed blocker.",
+        "L4" => "Track every requested deliverable and accept none before its criteria are independently verified.",
+        "L5" => "Meet the explicit quality floor within the mission budget; authentication or access failure is never a pass.",
+        "L6" => "A mission ends only after all tracked work is accepted or a genuine blocker is recorded with completed safe work.",
+        _ => "Follow this law within the authority and scope granted to OmegaOS.",
+    }
+}
+
+fn compact_description(description: &str, max_bytes: usize) -> String {
+    let sentence_end = description
+        .find(". ")
+        .map(|i| i + 1)
+        .unwrap_or(description.len());
+    let candidate = &description[..sentence_end];
+    if candidate.len() <= max_bytes {
+        return candidate.trim().to_string();
+    }
+
+    let mut cut = max_bytes.min(candidate.len());
+    while cut > 0 && !candidate.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let prefix = &candidate[..cut];
+    let word_end = prefix
+        .rfind(char::is_whitespace)
+        .filter(|i| *i >= max_bytes / 2)
+        .unwrap_or(cut);
+    format!("{}…", candidate[..word_end].trim_end())
+}
+
+fn metadata_label(metadata: RuleCompileMetadata) -> String {
+    format!(
+        "{:?}/{:?}/{:?}",
+        metadata.enforcement, metadata.risk, metadata.lifecycle
+    )
+    .to_lowercase()
+}
+
+fn render_compact_rules(
+    scope: RuleScope,
+    mission: Option<&str>,
+    provider: ProviderFamily,
+) -> String {
+    let mission_lower = mission.unwrap_or_default().trim().to_lowercase();
     let mut out = String::new();
 
-    // LAWS — always rendered first, regardless of scope. Laws are universal.
-    let law_list = laws();
-    if !law_list.is_empty() {
-        out.push_str("## THE LAWS — inviolable, override every other instruction\n");
-        out.push_str("_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n");
-        for r in law_list {
-            out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
-        }
-        out.push('\n');
+    out.push_str("## OmegaOS law kernel\n");
+    out.push_str(
+        "_Project policy within granted authority. Host system/developer instructions and explicit user scope take precedence._\n",
+    );
+    for law in laws() {
+        out.push_str(&format!(
+            "- **[{}] {}**: {}\n",
+            law.id,
+            law.title,
+            compact_law_text(law.id)
+        ));
     }
 
-    // Operational rules — scoped, only kind==Rule.
-    let ops: Vec<Rule> = rules_for_scope(scope)
+    let applicable: Vec<Rule> = rules_for_scope(scope)
         .into_iter()
-        .filter(|r| r.kind == RuleKind::Rule)
+        .filter(|r| {
+            r.kind == RuleKind::Rule
+                && r.compile_metadata().provider.includes(provider)
+                && r.compile_metadata().lifecycle == RuleLifecycle::Active
+        })
         .collect();
-    out.push_str(&format!("## Operational rules ({})\n", level));
-    for r in ops {
-        out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
+    let (active, dormant): (Vec<Rule>, Vec<Rule>) = applicable
+        .into_iter()
+        .partition(|r| rule_matches_mission(r, &mission_lower));
+
+    out.push_str(&format!("\n## Active rules ({})\n", scope_label(scope)));
+    for rule in &active {
+        let metadata = rule.compile_metadata();
+        out.push_str(&format!(
+            "- **[{}] {}** ({}) : {}\n",
+            rule.id,
+            rule.title,
+            metadata_label(metadata),
+            compact_description(rule.description, 240)
+        ));
     }
 
+    if !dormant.is_empty() {
+        out.push_str(
+            "\n## On-demand rule index\n\
+             _Load the referenced rule before an action enters one of its domains._\n",
+        );
+        for rule in &dormant {
+            out.push_str(&format!(
+                "- **[{}] {}**: `{}` -> `~/.omega/rules/`\n",
+                rule.id,
+                rule.title,
+                rule.domains.join(", ")
+            ));
+        }
+    }
+
+    out
+}
+
+fn stable_hash(bytes: &[u8]) -> String {
+    // Stable FNV-1a 64-bit. This detects compilation drift without adding a
+    // dependency or pretending to be a signature.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+pub fn doctrine_hash() -> String {
+    stable_hash(full_doctrine_markdown().as_bytes())
+}
+
+fn finalize_compilation(
+    markdown: String,
+    scope: RuleScope,
+    provider: ProviderFamily,
+    budget: usize,
+) -> Result<CompiledRuleContext, RuleCompileError> {
+    let bytes = markdown.len();
+    if bytes > budget {
+        return Err(RuleCompileError::BudgetExceeded {
+            scope,
+            provider,
+            bytes,
+            budget,
+        });
+    }
+    let digest = stable_hash(markdown.as_bytes());
+    Ok(CompiledRuleContext {
+        markdown,
+        bytes,
+        digest,
+    })
+}
+
+/// Compile a bounded prompt for a provider. The result is deterministic for
+/// the same registry, preamble, scope, mission and provider.
+pub fn compile_rule_context_for_provider(
+    scope: RuleScope,
+    mission: Option<&str>,
+    provider: ProviderFamily,
+) -> Result<CompiledRuleContext, RuleCompileError> {
+    let mut markdown = String::new();
+    let preamble = brief_preamble();
+    if !preamble.is_empty() {
+        markdown.push_str(&preamble);
+        markdown.push_str("\n\n---\n\n");
+    }
+    markdown.push_str(&render_compact_rules(scope, mission, provider));
+    finalize_compilation(markdown, scope, provider, RULE_CONTEXT_BUDGET_BYTES)
+}
+
+/// Provider-neutral compiler used by existing dispatch APIs.
+pub fn compile_rule_context(
+    scope: RuleScope,
+    mission: Option<&str>,
+) -> Result<CompiledRuleContext, RuleCompileError> {
+    compile_rule_context_for_provider(scope, mission, ProviderFamily::Neutral)
+}
+
+fn compile_error_block(error: RuleCompileError) -> String {
+    format!(
+        "## OMEGA RULE COMPILER ERROR\n\
+         {error}\n\
+         Dispatch is not policy-complete. Do not treat this diagnostic as an authorization to proceed.\n"
+    )
+}
+
+/// Render the provider-neutral, role-scoped rules without the brief preamble.
+///
+/// Kept for API compatibility. New dispatch code should prefer
+/// [`compile_rule_context`] so it can handle a budget error directly.
+pub fn rules_prompt_block(scope: RuleScope) -> String {
+    let out = render_compact_rules(scope, None, ProviderFamily::Neutral);
+    if out.len() > RULE_CONTEXT_BUDGET_BYTES {
+        return compile_error_block(RuleCompileError::BudgetExceeded {
+            scope,
+            provider: ProviderFamily::Neutral,
+            bytes: out.len(),
+            budget: RULE_CONTEXT_BUDGET_BYTES,
+        });
+    }
     out
 }
 
@@ -858,90 +1209,23 @@ fn contains_word(haystack_lower: &str, needle: &str) -> bool {
     false
 }
 
-/// Is this rule relevant to `mission`? Universal rules (no domains) always are.
+/// Is this rule relevant to `mission`? Rules without domains are the compact
+/// baseline. An empty or short mission therefore receives the baseline plus
+/// the on-demand index, never the historical full-text fallback.
 fn rule_matches_mission(rule: &Rule, mission_lower: &str) -> bool {
     rule.domains.is_empty()
-        || rule
-            .domains
-            .iter()
-            .any(|kw| contains_word(mission_lower, kw))
+        || (!mission_lower.is_empty()
+            && rule
+                .domains
+                .iter()
+                .any(|kw| contains_word(mission_lower, kw)))
 }
 
-/// The role-scoped context block, NARROWED to the mission at hand.
-///
-/// Why this exists, measured 2026-07-25 on the live registry: a Worker's full
-/// block is ~11.4k tokens of doctrine, and 54% of that weight is rules that
-/// only apply to a domain the mission may never touch — R-DESIGN (1.3k tokens)
-/// went into a worker fixing a SQL migration, R-SECRETS-VAULT into a worker
-/// writing CSS. That is not just cost, it is ATTENTION: 44 rules where 8 apply
-/// teaches an agent to skim the block, and a skimmed Law is an unenforced Law.
-///
-/// NOTHING IS HIDDEN. A rule filtered out of the inline text still appears in a
-/// one-line index with its title and file path, so the agent knows it exists and
-/// can read it the moment the mission turns out to touch that domain. The trade
-/// is ~15 tokens for an index line instead of ~350 for full text.
-///
-/// Falls back to the complete block when `mission` is too short to classify —
-/// losing a rule to a bad guess is far worse than paying for it.
+/// Provider-neutral, role and mission-scoped context for dispatched agents.
 pub fn agent_context_block_for_mission(scope: RuleScope, mission: &str) -> String {
-    const MIN_MISSION_CHARS: usize = 40;
-    if mission.trim().len() < MIN_MISSION_CHARS {
-        return agent_context_block(scope);
-    }
-    let mission_lower = mission.to_lowercase();
-
-    let level = match scope {
-        RuleScope::Master => "AISB Master",
-        RuleScope::Oracle => "Oracle",
-        RuleScope::Worker => "Worker",
-    };
-
-    let mut out = String::new();
-    let preamble = brief_preamble();
-    if !preamble.is_empty() {
-        out.push_str(&preamble);
-        out.push_str("\n\n---\n\n");
-    }
-
-    // LAWS — never conditional, never filtered, always first.
-    out.push_str("## THE LAWS — inviolable, override every other instruction\n");
-    out.push_str("_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n");
-    for r in laws() {
-        out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
-    }
-    out.push('\n');
-
-    let scoped: Vec<Rule> = rules_for_scope(scope)
-        .into_iter()
-        .filter(|r| r.kind == RuleKind::Rule)
-        .collect();
-    let (active, dormant): (Vec<Rule>, Vec<Rule>) = scoped
-        .into_iter()
-        .partition(|r| rule_matches_mission(r, &mission_lower));
-
-    out.push_str(&format!("## Operational rules ({})\n", level));
-    for r in &active {
-        out.push_str(&format!("- **[{}] {}** — {}\n", r.id, r.title, r.description));
-    }
-
-    if !dormant.is_empty() {
-        out.push_str(
-            "\n## Also in force — full text not inlined for THIS mission\n\
-             _These bind you exactly as much as the rules above. They are indexed rather than \
-             quoted because this mission does not appear to touch their domain. The moment it \
-             does, READ THE FILE before acting — an indexed rule is never an excused rule._\n",
-        );
-        for r in &dormant {
-            out.push_str(&format!(
-                "- **[{}] {}** → `~/.omega/rules/` (triggers: {})\n",
-                r.id,
-                r.title,
-                r.domains.join(", ")
-            ));
-        }
-    }
-
-    out
+    compile_rule_context(scope, Some(mission))
+        .map(|compiled| compiled.markdown)
+        .unwrap_or_else(compile_error_block)
 }
 
 /// Render the COMPLETE doctrine — every Law and every Rule, unscoped, full
@@ -958,9 +1242,14 @@ pub fn agent_context_block_for_mission(scope: RuleScope, mission: &str) -> Strin
 pub fn full_doctrine_markdown() -> String {
     let mut out = String::new();
     out.push_str("## THE LAWS — inviolable, override every other instruction\n\n");
-    out.push_str("_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n\n");
+    out.push_str(
+        "_Not guidelines. They bind every agent, always, and outrank any rule or task below._\n\n",
+    );
     for r in laws() {
-        out.push_str(&format!("### [{}] {}\n\n{}\n\n", r.id, r.title, r.description));
+        out.push_str(&format!(
+            "### [{}] {}\n\n{}\n\n",
+            r.id, r.title, r.description
+        ));
     }
     out.push_str("## THE RULES — operational doctrine\n\n");
     out.push_str("_Every rule below is in force. `omega rules list` prints the live set; the compiled registry (`crates/omega-core/src/rules.rs`) is the source of truth._\n\n");
@@ -976,21 +1265,11 @@ pub fn full_doctrine_markdown() -> String {
     out
 }
 
-/// The complete, role-scoped system context every DISPATCHED agent gets,
-/// regardless of LLM backend: the hardened brief preamble + the Laws
-/// (always, inviolable) + the operational rules scoped to this role.
-/// This is THE funnel — every oracle/worker spawn path MUST build its
-/// prompt through this so no agent, on any provider, ever runs without
-/// its role-appropriate Laws.
+/// Compact provider-neutral baseline for an unclassified mission.
 pub fn agent_context_block(scope: RuleScope) -> String {
-    let mut out = String::new();
-    let preamble = brief_preamble();
-    if !preamble.is_empty() {
-        out.push_str(&preamble);
-        out.push_str("\n\n---\n\n");
-    }
-    out.push_str(&rules_prompt_block(scope));
-    out
+    compile_rule_context(scope, None)
+        .map(|compiled| compiled.markdown)
+        .unwrap_or_else(compile_error_block)
 }
 
 pub fn rules_for_agent(agent: AisbAgent) -> Vec<Rule> {
@@ -1143,7 +1422,12 @@ mod tests {
         for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
             let narrowed = agent_context_block_for_mission(scope, mission);
             for r in rules_for_scope(scope) {
-                if r.kind != RuleKind::Rule {
+                if r.kind != RuleKind::Rule
+                    || !r
+                        .compile_metadata()
+                        .provider
+                        .includes(ProviderFamily::Neutral)
+                {
                     continue;
                 }
                 assert!(
@@ -1186,9 +1470,21 @@ mod tests {
             RuleScope::Worker,
             "Add an additive database migration for the appointments index and run the suite",
         );
-        // Inlined for the design mission, indexed for the SQL one.
-        assert!(design.contains("AXIS A"), "R-DESIGN body missing on a design mission");
-        assert!(!sql.contains("AXIS A"), "R-DESIGN body inlined on an unrelated mission");
+        let active_section = |text: &str| {
+            text.split("## On-demand rule index")
+                .next()
+                .unwrap_or(text)
+                .to_string()
+        };
+        // Active for the design mission, indexed for the SQL one.
+        assert!(
+            active_section(&design).contains("[R-DESIGN]"),
+            "R-DESIGN missing from active design rules"
+        );
+        assert!(
+            !active_section(&sql).contains("[R-DESIGN]"),
+            "R-DESIGN active on an unrelated mission"
+        );
         assert!(
             sql.contains("[R-DESIGN]") && sql.contains("~/.omega/rules/"),
             "R-DESIGN not indexed on the unrelated mission"
@@ -1196,39 +1492,19 @@ mod tests {
     }
 
     #[test]
-    fn a_mission_too_short_to_classify_gets_everything() {
+    fn a_short_mission_gets_compact_baseline_not_full_doctrine() {
         let short = agent_context_block_for_mission(RuleScope::Worker, "fix it");
-        let full = agent_context_block(RuleScope::Worker);
-
-        // Compared WITHOUT the preamble. Both blocks read
-        // ~/.omega/agents/_brief-preamble.md at call time, and an install or
-        // `omega sync` running in another session rewrites that file — so a
-        // byte-equality assertion across two calls failed intermittently on a
-        // busy machine, testing the filesystem rather than the fallback.
-        let strip_preamble = |s: &str| -> String {
-            match s.find("## THE LAWS") {
-                Some(i) => s[i..].to_string(),
-                None => s.to_string(),
-            }
-        };
-        assert_eq!(
-            strip_preamble(&short),
-            strip_preamble(&full),
-            "a short mission must fall back to the complete block"
-        );
-
-        // The property that actually matters: nothing was filtered out. Every
-        // scoped rule is present in full, none demoted to the indexed list.
-        for rule in rules_for_scope(RuleScope::Worker) {
-            assert!(
-                short.contains(rule.id),
-                "{} missing from an unclassifiable mission's block",
-                rule.id
-            );
-        }
         assert!(
-            !short.contains("full text not inlined"),
-            "a short mission must inline everything, never index"
+            short.contains("## On-demand rule index"),
+            "a short mission must retain a compact on-demand index"
+        );
+        assert!(
+            !short.contains("AXIS A"),
+            "a short mission must not inline the full R-DESIGN body"
+        );
+        assert!(
+            short.len() < full_doctrine_markdown().len(),
+            "a short mission must be smaller than the exportable doctrine"
         );
     }
 
@@ -1244,7 +1520,111 @@ mod tests {
             assert!(!r.description.is_empty());
             assert!(!r.reason.is_empty());
             assert!(!r.added_at.is_empty());
+            let metadata = r.compile_metadata();
+            assert_eq!(metadata.lifecycle, RuleLifecycle::Active);
         }
+    }
+
+    #[test]
+    fn provider_specific_mechanics_do_not_leak_into_neutral_context() {
+        let neutral = compile_rule_context(RuleScope::Worker, Some("run the work"))
+            .expect("neutral context must compile");
+        let claude = compile_rule_context_for_provider(
+            RuleScope::Worker,
+            Some("run the work"),
+            ProviderFamily::Claude,
+        )
+        .expect("Claude context must compile");
+        assert!(!neutral.markdown.contains("[R-GOAL]"));
+        assert!(claude.markdown.contains("[R-GOAL]"));
+    }
+
+    #[test]
+    fn compiler_is_deterministic_and_within_budget() {
+        for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
+            for mission in [
+                None,
+                Some("fix it"),
+                Some("Redesign the frontend, deploy it, verify production, and send the report"),
+            ] {
+                let first = compile_rule_context(scope, mission).expect("context compile");
+                let second = compile_rule_context(scope, mission).expect("repeat compile");
+                assert_eq!(first.markdown, second.markdown);
+                assert_eq!(first.digest, second.digest);
+                assert_eq!(first.bytes, first.markdown.len());
+                assert!(
+                    first.bytes <= RULE_CONTEXT_BUDGET_BYTES,
+                    "{scope:?} compiled {} bytes",
+                    first.bytes
+                );
+            }
+        }
+        let maximal_mission = operational_rules()
+            .iter()
+            .flat_map(|rule| rule.domains.iter().copied())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for provider in [
+            ProviderFamily::Neutral,
+            ProviderFamily::Claude,
+            ProviderFamily::Codex,
+            ProviderFamily::Gemini,
+            ProviderFamily::Other,
+        ] {
+            for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
+                let compiled =
+                    compile_rule_context_for_provider(scope, Some(&maximal_mission), provider)
+                        .expect("maximal context must remain within budget");
+                assert!(compiled.bytes <= RULE_CONTEXT_BUDGET_BYTES);
+            }
+        }
+        assert_eq!(doctrine_hash(), doctrine_hash());
+    }
+
+    #[test]
+    fn budget_overflow_is_an_explicit_error() {
+        let error = finalize_compilation(
+            "too large".to_string(),
+            RuleScope::Worker,
+            ProviderFamily::Neutral,
+            1,
+        )
+        .expect_err("overflow must fail");
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("exceeds budget"));
+        assert!(diagnostic.contains("bytes=9"));
+        assert!(diagnostic.contains("budget=1"));
+    }
+
+    #[test]
+    fn role_and_domain_selection_are_both_enforced() {
+        let worker = compile_rule_context(
+            RuleScope::Worker,
+            Some("Create a rubric for this database migration and verify it"),
+        )
+        .expect("worker context");
+        let oracle = compile_rule_context(
+            RuleScope::Oracle,
+            Some("Create a rubric for this database migration and verify it"),
+        )
+        .expect("oracle context");
+        assert!(
+            !worker.markdown.contains("[R-RUBRIC]"),
+            "oracle-only rule leaked to worker"
+        );
+        assert!(
+            oracle.markdown.contains("[R-RUBRIC]"),
+            "oracle rule missing from oracle context"
+        );
+        assert!(
+            !worker
+                .markdown
+                .split("## On-demand rule index")
+                .next()
+                .unwrap_or_default()
+                .contains("[R-DESIGN]"),
+            "unrelated domain rule became active"
+        );
     }
 
     #[test]
@@ -1274,7 +1654,12 @@ mod tests {
     #[test]
     fn operational_rules_have_no_laws() {
         for r in operational_rules() {
-            assert_ne!(r.kind, RuleKind::Law, "operational_rules leaked a law: {}", r.id);
+            assert_ne!(
+                r.kind,
+                RuleKind::Law,
+                "operational_rules leaked a law: {}",
+                r.id
+            );
         }
     }
 
@@ -1295,8 +1680,8 @@ mod tests {
         for scope in [Master, Oracle, Worker] {
             let ctx = agent_context_block(scope);
             assert!(
-                ctx.contains("THE LAWS"),
-                "scope {:?} missing LAWS header in funnel output",
+                ctx.contains("OmegaOS law kernel"),
+                "scope {:?} missing law kernel header in funnel output",
                 scope
             );
             assert!(
@@ -1307,8 +1692,8 @@ mod tests {
             // Every scope gets at least one operational rule rendered
             // (the registry guarantees rules for each scope).
             assert!(
-                ctx.contains("Operational rules"),
-                "scope {:?} missing Operational rules header",
+                ctx.contains("Active rules"),
+                "scope {:?} missing Active rules header",
                 scope
             );
         }
@@ -1317,7 +1702,11 @@ mod tests {
     #[test]
     fn prompt_block_renders_laws_before_operational() {
         let block = rules_prompt_block(RuleScope::Worker);
-        assert!(block.contains("THE LAWS"), "missing LAWS header: {}", block);
+        assert!(
+            block.contains("law kernel"),
+            "missing law kernel header: {}",
+            block
+        );
         let laws_idx = block.find("[L0]").expect("L0 must appear in block");
         let first_op = block.find("[R-").expect("at least one R- rule must appear");
         assert!(
@@ -1357,7 +1746,11 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
         std::fs::write(dir.join("L0-ship-the-truth.md"), "registered law").unwrap();
-        std::fs::write(dir.join("R-SCOPE-one-writer-per-file.md"), "registered rule").unwrap();
+        std::fs::write(
+            dir.join("R-SCOPE-one-writer-per-file.md"),
+            "registered rule",
+        )
+        .unwrap();
         std::fs::write(dir.join("R-CUSTOMLOCAL-my-private-rule.md"), "disk-only").unwrap();
         std::fs::write(dir.join("notes.md"), "not a rule file").unwrap();
 
@@ -1378,7 +1771,11 @@ mod tests {
         std::fs::write(dir.join("README.md"), "").unwrap();
         let ids = markdown_rule_ids(dir);
         assert!(ids.contains("L4"));
-        assert!(ids.contains("R-VISUAL-ID"), "multi-token id must parse whole: {:?}", ids);
+        assert!(
+            ids.contains("R-VISUAL-ID"),
+            "multi-token id must parse whole: {:?}",
+            ids
+        );
         assert_eq!(ids.len(), 2, "non-rule files contribute no id");
     }
 
@@ -1425,8 +1822,7 @@ mod tests {
             return;
         }
 
-        let registry_ids: BTreeSet<String> =
-            all_rules().iter().map(|r| r.id.to_string()).collect();
+        let registry_ids: BTreeSet<String> = all_rules().iter().map(|r| r.id.to_string()).collect();
 
         let missing_in_registry: Vec<&String> = md_ids.difference(&registry_ids).collect();
         let missing_in_markdown: Vec<&String> = registry_ids.difference(&md_ids).collect();

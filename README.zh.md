@@ -10,15 +10,15 @@
 
 OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上，得到的是 `omega` 命令、一个用来盯着会话并随手 kill 掉它们的 TUI，以及一层把活儿派给 agent 的编排逻辑。还附带一个 Telegram 桥接，方便你用手机来驱动它。
 
-默认的 agent 运行时是 Claude Code。并行跑 agent 的工具多得是，这里不一样的地方在于：每个 agent，无论它在树里钻得多深，都带着同一套不容商量的规则——以纯文本形式注入进它的 prompt。这就是 doctrine（教义），也是你该从这里入手的原因。
+默认的 agent 运行时是 OpenAI Codex。Claude Code、Gemini、Pi、Hermes 和 GLM 仍可显式选择。每个 agent 都会收到由同一 doctrine 编译出的紧凑、类型化、按角色裁剪的上下文。
 
 当前版本见 [CHANGELOG.md](CHANGELOG.md)（在已安装的机器上运行 `omega -V`）。我每天都在用它，请预期会有些粗糙的地方。
 
 ## doctrine
 
-有一个类型化的注册表，包含 6 条 Law 和一组具名的操作 Rule（写作本文时为 26 条——`omega rules list` 会打印当前的集合）。它住在 Rust 里，位于 `crates/omega-core/src/rules.rs`，所以它是一件编译产物，而不是某个没人想起来更新的 YAML 文件。
+有一个类型化的注册表，包含 7 条 Law 和 47 条具名的操作 Rule。`omega rules list` 会打印当前集合。
 
-**Law 不可违背。**它们约束每一个 agent，并且凌驾于每一条 rule、每一个 task 之上。一共六条：
+**Law 不可违背。**它们约束每一个 agent，并且凌驾于每一条 rule、每一个 task 之上。一共七条：
 
 - **L0 — Ship the truth（交付真相）。**一处改动，只有在一次干净的重新构建能复现它、并且它已被 push 之后，才算完成。差一点的都只是草稿。
 - **L1 — Runtime is the only truth（运行时是唯一的真相）。**代码和注释陈述的是意图，只有真正跑起来才会显出现实。两者不一致时，运行时说了算。
@@ -26,14 +26,15 @@ OmegaOS 不是一个供你 import 的库。你把它装在一台 Linux 机器上
 - **L3 — Decide and proceed（决断并推进）。**被派发出去的 agent 是自主的。它绝不停下来问"我该继续吗？"它自己决断、自己执行、事后再汇报。
 - **L4 — Done means 100%, verified（完成意味着 100%，且经过验证）。**92% 不叫完成。把任务逐条列出来，逐条做完，逐条对着运行时验证。
 - **L5 — Quality over speed（质量高于速度）。**真协议不存在精简版、轻量版或快速版。403 或 401 是中止，不是通过。
+- **L6 - Finish the mission（完成整项任务）。**列出、执行、验证并报告每一个请求的交付物。计划或部分阶段不是合法的停止点。
 
 **Rule 是操作层面的。**它们是具名的（R-SCOPE、R-VERIFY、R-CITE……），归入 Universal、QualityGate、Orchestration、Reporting、Safety 几类。每条 Rule 都按它所约束的角色来划定范围：Master、Oracle、Worker。一个 worker 不会被它根本无从下手的编排规则压上身，一个 oracle 也不会背上 worker 那套文件加锁的纪律。同一个注册表，切出不同的片。
 
 ### 漏斗
 
-机制就在这里。一个函数，`rules::agent_context_block(scope)`，构建出按角色切片的 Law 与 Rule，并在每个 agent 被派发的那一刻，把它注入进该 agent 的系统 prompt。
+机制由 `rules::compile_rule_context_for_provider` 实现：组合紧凑的 Law 核心、角色契约、任务相关 Rule 和 provider 机制。超过 24 KB 的 OmegaOS 上下文会被拒绝，而不是静默截断。
 
-一个钻到树里三层深的 worker，带着的六条 Law 和顶端的 Master 一模一样。谁也没法悄悄生一个把 L5 偷偷丢掉、好跑得更快的子节点——因为子节点的 prompt 是由同一个函数、从同一个注册表里组装出来的。
+一个钻到树里三层深的 worker，带着的七条 Law 和顶端的 Master 一模一样。谁也没法悄悄生一个把 L5 偷偷丢掉、好跑得更快的子节点——因为子节点的 prompt 是由同一个函数、从同一个注册表里组装出来的。
 
 正因为 doctrine 只是文本，所以无论后端是 Claude、GPT、Gemini，还是你以后加进来的别的东西，它的运作方式都一样。
 
@@ -107,14 +108,14 @@ OmegaOS doctor
   [+] binary           omega 0.1.5
   [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 26 Rules
-  [+] agent CLI        claude available
+  [+] doctrine         7 Laws + 47 Rules
+  [+] agent CLI        codex available
   [+] state dir        /home/vibe/.omega/state
   [+] telegram service omega-tg-bot active
   [+] hooks            track + verify present, registered in settings.json
   [+] secrets dir      /home/vibe/.omega present
   [+] memory           249088MB available
-  [+] claude oauth     Claude OAuth valid
+  [+] codex auth       Codex login valid
   [+] telegram poller  1 poller
 ```
 
@@ -153,7 +154,7 @@ omega pdf           生成一份 PDF 报告
 
 - **Linux 优先。**在一台无头 VPS 上开发。没有 Windows。macOS 未经测试，但大体上应该能用，毕竟它就是 Rust 加 rmux。
 - TUI 假定终端支持 256 色。在 16 色终端上它会很丑。
-- 默认的 agent 运行时是 Claude Code，所以你需要 `claude` CLI 和一个 Anthropic 账号。其他 agent（pi、codex、gemini、glm）经由 `omega install` 安装也能跑，但它们被磨炼得少些。
+- 默认的 agent 运行时是 OpenAI Codex，因此 `codex` CLI 必须已登录。Claude Code、Gemini、Pi、Hermes 和 GLM 仍是显式可选项。
 - **单机。**rmux 守护进程是本地的。没有跨主机的编排。
 - 这是 0.1.x。我每天都用，但你会撞上一些我还没撞过的粗糙地方。
 

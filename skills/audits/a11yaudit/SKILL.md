@@ -146,6 +146,7 @@ audits/.a11yaudit/
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
+  --hinge="$HINGE_POINT" \
   --ticket="$TICKET_ID"
 ```
 

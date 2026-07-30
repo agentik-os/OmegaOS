@@ -195,6 +195,7 @@ Format: `{"total": 31, "done": 9, "failed": 1, "skipped": 2, "remaining": 19, "c
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
+  --hinge="$HINGE_POINT" \
   --ticket="$TICKET_ID"
 ```
 

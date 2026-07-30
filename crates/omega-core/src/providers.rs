@@ -6,6 +6,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -164,6 +165,8 @@ impl ProvidersConfig {
             "gemini" => &self.gemini.api_key,
             "glm" => &self.glm.api_key,
             "openrouter" => &self.openrouter.api_key,
+            "pi" => &self.pi.api_key,
+            "hermes" => &self.hermes.api_key,
             _ => "",
         }
     }
@@ -206,11 +209,20 @@ impl ProvidersConfig {
 
     /// All known providers in canonical order. Static slice — safe to expose.
     pub fn all_providers() -> Vec<&'static str> {
-        vec!["claude", "codex", "gemini", "glm", "openrouter"]
+        vec![
+            "claude",
+            "codex",
+            "gemini",
+            "glm",
+            "openrouter",
+            "pi",
+            "hermes",
+            "shell",
+        ]
     }
 
     pub fn default_provider() -> &'static str {
-        "claude"
+        "codex"
     }
 
     /// Default model id for a provider (used when /model <provider> has no
@@ -224,6 +236,7 @@ impl ProvidersConfig {
             // Operator directive 2026-07-24: Claude Opus 5 is THE default brain
             // everywhere a tier has not been deliberately pinned (R-MODEL).
             "openrouter" | "pi" | "hermes" => "anthropic/claude-opus-5",
+            "shell" => "",
             _ => "",
         }
     }
@@ -246,7 +259,12 @@ impl ProvidersConfig {
             // API-key-only fallback (5.5 needs ChatGPT sign-in).
             "codex" => vec!["gpt-5.5-codex", "gpt-5.5", "gpt-5.2-codex"],
             // 3.1+ line uses bare ids (no -preview); 2.5-pro kept as fallback.
-            "gemini" => vec!["gemini-3.1-pro", "gemini-3.1-flash", "gemini-3.5-flash", "gemini-2.5-pro"],
+            "gemini" => vec![
+                "gemini-3.1-pro",
+                "gemini-3.1-flash",
+                "gemini-3.5-flash",
+                "gemini-2.5-pro",
+            ],
             "glm" => vec!["glm-5.1", "glm-5", "glm-4.6"],
             // Pi and Hermes both route through OpenRouter, so they share the
             // same curated OpenRouter model IDs — this gives them an arrow-key
@@ -261,6 +279,7 @@ impl ProvidersConfig {
                 "z-ai/glm-5.1",
                 "deepseek/deepseek-chat",
             ],
+            "shell" => vec![],
             _ => vec![],
         }
     }
@@ -269,7 +288,8 @@ impl ProvidersConfig {
     pub fn auth_type(provider: &str) -> &'static str {
         match provider {
             "claude" | "gemini" => "oauth",
-            "codex" | "glm" | "openrouter" => "api_key",
+            "codex" | "glm" | "openrouter" | "pi" | "hermes" => "api_key",
+            "shell" => "local",
             _ => "unknown",
         }
     }
@@ -283,6 +303,175 @@ impl ProvidersConfig {
     pub fn is_known(provider: &str) -> bool {
         Self::all_providers().iter().any(|p| *p == provider)
     }
+
+    /// Static execution capabilities used by the router before a session is
+    /// spawned. This describes the OmegaOS adapter, not a marketing claim made
+    /// by a model vendor.
+    pub fn capabilities_for(provider: &str) -> Option<BTreeSet<ProviderCapability>> {
+        let capabilities = match provider {
+            "claude" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+                ProviderCapability::Delegation,
+                ProviderCapability::Vision,
+                ProviderCapability::LongContext,
+            ][..],
+            "codex" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+                ProviderCapability::Delegation,
+                ProviderCapability::Vision,
+            ][..],
+            "gemini" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+                ProviderCapability::Vision,
+                ProviderCapability::LongContext,
+            ][..],
+            "glm" | "openrouter" | "pi" | "hermes" => &[
+                ProviderCapability::Reasoning,
+                ProviderCapability::CodeEditing,
+                ProviderCapability::ToolCalling,
+            ][..],
+            "shell" => &[
+                ProviderCapability::LocalExecution,
+                ProviderCapability::DeterministicCommands,
+            ][..],
+            _ => return None,
+        };
+        Some(capabilities.iter().copied().collect())
+    }
+
+    /// Negotiate required and optional capabilities before spawn.
+    ///
+    /// A named provider is never silently replaced: a mismatch is returned to
+    /// the caller. Without a preference, candidates missing any required
+    /// capability are excluded and optional capability coverage is used only
+    /// as a deterministic tie-breaker.
+    pub fn negotiate_provider(
+        preferred: Option<&str>,
+        required: &[ProviderCapability],
+        optional: &[ProviderCapability],
+    ) -> std::result::Result<ProviderSelection, ProviderNegotiationError> {
+        if let Some(provider) = preferred {
+            let capabilities = Self::capabilities_for(provider)
+                .ok_or_else(|| ProviderNegotiationError::UnknownProvider(provider.to_string()))?;
+            let missing_required = missing_capabilities(required, &capabilities);
+            if !missing_required.is_empty() {
+                return Err(ProviderNegotiationError::RequiredCapabilitiesMissing {
+                    provider: provider.to_string(),
+                    missing: missing_required,
+                });
+            }
+            return Ok(ProviderSelection::new(
+                provider,
+                capabilities,
+                optional,
+                false,
+            ));
+        }
+
+        let mut candidates: Vec<ProviderSelection> = Self::all_providers()
+            .into_iter()
+            .filter_map(|provider| {
+                let capabilities = Self::capabilities_for(provider)?;
+                missing_capabilities(required, &capabilities)
+                    .is_empty()
+                    .then(|| ProviderSelection::new(provider, capabilities, optional, true))
+            })
+            .collect();
+        candidates.sort_by(|left, right| {
+            right
+                .optional_capabilities_satisfied
+                .len()
+                .cmp(&left.optional_capabilities_satisfied.len())
+                .then_with(|| provider_rank(&left.provider).cmp(&provider_rank(&right.provider)))
+        });
+        candidates
+            .into_iter()
+            .next()
+            .ok_or_else(|| ProviderNegotiationError::NoProviderSatisfies {
+                required: required.to_vec(),
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCapability {
+    Reasoning,
+    CodeEditing,
+    ToolCalling,
+    Delegation,
+    Vision,
+    LongContext,
+    LocalExecution,
+    DeterministicCommands,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderSelection {
+    pub provider: String,
+    pub capabilities: BTreeSet<ProviderCapability>,
+    pub optional_capabilities_satisfied: Vec<ProviderCapability>,
+    /// True when OmegaOS selected a provider from capabilities rather than
+    /// honoring an explicit caller preference.
+    pub automatically_selected: bool,
+}
+
+impl ProviderSelection {
+    fn new(
+        provider: &str,
+        capabilities: BTreeSet<ProviderCapability>,
+        optional: &[ProviderCapability],
+        automatically_selected: bool,
+    ) -> Self {
+        let optional_capabilities_satisfied = optional
+            .iter()
+            .copied()
+            .filter(|capability| capabilities.contains(capability))
+            .collect();
+        Self {
+            provider: provider.to_string(),
+            capabilities,
+            optional_capabilities_satisfied,
+            automatically_selected,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ProviderNegotiationError {
+    #[error("unknown provider: {0}")]
+    UnknownProvider(String),
+    #[error("provider {provider} is missing required capabilities: {missing:?}")]
+    RequiredCapabilitiesMissing {
+        provider: String,
+        missing: Vec<ProviderCapability>,
+    },
+    #[error("no provider satisfies required capabilities: {required:?}")]
+    NoProviderSatisfies { required: Vec<ProviderCapability> },
+}
+
+fn missing_capabilities(
+    required: &[ProviderCapability],
+    available: &BTreeSet<ProviderCapability>,
+) -> Vec<ProviderCapability> {
+    required
+        .iter()
+        .copied()
+        .filter(|capability| !available.contains(capability))
+        .collect()
+}
+
+fn provider_rank(provider: &str) -> usize {
+    ProvidersConfig::all_providers()
+        .iter()
+        .position(|candidate| *candidate == provider)
+        .unwrap_or(usize::MAX)
 }
 
 /// Track the per-Telegram-chat active model selection.
@@ -353,5 +542,78 @@ impl ActiveModel {
         };
         new.save()?;
         Ok(new)
+    }
+}
+
+#[cfg(test)]
+mod provider_capability_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_covers_every_agent_adapter() {
+        for provider in [
+            "claude",
+            "codex",
+            "gemini",
+            "glm",
+            "openrouter",
+            "pi",
+            "hermes",
+            "shell",
+        ] {
+            assert!(ProvidersConfig::is_known(provider), "{provider}");
+            assert!(
+                ProvidersConfig::capabilities_for(provider).is_some(),
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn required_capability_mismatch_fails_before_spawn() {
+        let result = ProvidersConfig::negotiate_provider(
+            Some("shell"),
+            &[ProviderCapability::CodeEditing],
+            &[],
+        );
+        assert!(matches!(
+            result,
+            Err(ProviderNegotiationError::RequiredCapabilitiesMissing {
+                provider,
+                missing,
+            }) if provider == "shell" && missing == vec![ProviderCapability::CodeEditing]
+        ));
+    }
+
+    #[test]
+    fn optional_capabilities_rank_without_becoming_requirements() {
+        let selection = ProvidersConfig::negotiate_provider(
+            None,
+            &[ProviderCapability::Reasoning],
+            &[
+                ProviderCapability::Delegation,
+                ProviderCapability::LongContext,
+            ],
+        )
+        .unwrap();
+        assert_eq!(selection.provider, "claude");
+        assert_eq!(selection.optional_capabilities_satisfied.len(), 2);
+        assert!(selection.automatically_selected);
+    }
+
+    #[test]
+    fn impossible_required_set_returns_no_provider() {
+        let result = ProvidersConfig::negotiate_provider(
+            None,
+            &[
+                ProviderCapability::CodeEditing,
+                ProviderCapability::DeterministicCommands,
+            ],
+            &[],
+        );
+        assert!(matches!(
+            result,
+            Err(ProviderNegotiationError::NoProviderSatisfies { .. })
+        ));
     }
 }

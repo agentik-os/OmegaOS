@@ -64,7 +64,7 @@ bot for remote control.
 ├── rules/                         the typed doctrine (.md, editable — `omega rules list` prints the current set)
 │   ├── L0-ship-the-truth...md
 │   ├── L1-runtime-is-the-only-truth.md
-│   └── ... (6 Laws + the named R-* rules)
+│   └── ... (7 Laws + 47 named R-* rules)
 │
 ├── agents/                        Agent system prompts
 │   ├── aisb-master.md             Master AISB brain
@@ -161,7 +161,7 @@ to be a copy/symlink of the saved profile.
 
 ```
 /model                       Show current + list available
-/model claude                Switch to Claude (default model)
+/model codex                 Switch to Codex (OmegaOS default)
 /model claude opus           Switch to Claude with opus
 /model codex gpt-5           Switch to Codex with gpt-5
 /model openrouter            Switch to OpenRouter (default model)
@@ -371,7 +371,7 @@ omega new <name>         Create session
 omega kill <name>        Kill session
 omega dispatch <P> <M>   Send mission to oracle
 omega orchestrate <P> <M>  Full pipeline (classify → plan → dispatch → gate)
-omega rules list         Show the 6 Laws + the named operational Rules
+omega rules list         Show the 7 Laws + 47 named operational Rules
 omega rules export       Write to ~/.omega/rules/
 omega sync               Symlink to all LLMs
 omega accounts list      List provider accounts
@@ -394,6 +394,6 @@ To verify the architecture is correctly set up:
 ls ~/.omega/                              # Should show: credentials/ rules/ agents/ skills/ ...
 ls ~/.omega/credentials/                  # Should show: claude.json codex.json ...
 ls -la ~/.claude/.credentials.json        # Should be a symlink to ~/.omega/credentials/claude.json
-omega rules list                          # Should show the 6 Laws + the named Rules (26 as of 0.1.5)
+omega rules list                          # Should show the 7 Laws + 47 named Rules
 cargo build --release                     # Should be 0 errors
 ```

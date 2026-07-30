@@ -12,10 +12,11 @@ Usage:
   omega-skills-rag.py query "<text>"   # top-K skills for a natural-language need
   omega-skills-rag.py query "<text>" --k 8 --json
 """
-import os, sys, json, re, math, urllib.request, hashlib
+import os, sys, json, re, math, urllib.request, hashlib, subprocess
 
 OMEGA = os.environ.get("OMEGA_DIR") or os.path.join(os.path.expanduser("~"), ".omega")
 ATLAS = os.path.join(OMEGA, "skills-atlas.json")
+CATALOG = os.environ.get("OMEGA_SKILL_CATALOG") or os.path.join(OMEGA, "skill-catalog-v1.json")
 RAGDIR = os.path.join(OMEGA, "skills-rag")
 VEC = os.path.join(RAGDIR, "vectors.npy")
 META = os.path.join(RAGDIR, "meta.json")
@@ -33,8 +34,42 @@ def _key():
                 return m.group(1).strip().strip('"\'')
     return None
 
-def _corpus():
-    a = json.load(open(ATLAS))
+def _canonical_hash():
+    if not os.path.isfile(CATALOG):
+        return None
+    try:
+        catalog = json.load(open(CATALOG, encoding="utf-8"))
+        if catalog.get("schema_version") != 1:
+            return None
+        digest = catalog.get("content_digest")
+        return digest if isinstance(digest, str) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+def _ensure_atlas_current():
+    """Rebuild Atlas before RAG if its canonical catalog projection drifted."""
+    expected = _canonical_hash()
+    atlas = None
+    if os.path.isfile(ATLAS):
+        try:
+            atlas = json.load(open(ATLAS, encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            atlas = None
+    stale = atlas is None or (expected is not None and atlas.get("catalog_hash") != expected)
+    if stale:
+        generator = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "omega-skills-atlas.py")
+        if not os.path.isfile(generator):
+            raise RuntimeError(
+                f"skill Atlas is stale and generator is unavailable: {generator}")
+        subprocess.run([sys.executable, generator], check=True)
+        atlas = json.load(open(ATLAS, encoding="utf-8"))
+        if expected is not None and atlas.get("catalog_hash") != expected:
+            raise RuntimeError("Atlas rebuild did not consume the current canonical catalog")
+    return atlas
+
+def _corpus(atlas=None):
+    a = atlas or _ensure_atlas_current()
     rows = []
     for r in a.get("native", []):
         rows.append({"name": r["name"], "text": f'{r["name"]}. {r.get("description","")}',
@@ -45,6 +80,11 @@ def _corpus():
                      "commands": [], "source": r.get("source", "powerup"),
                      "group": r.get("group", ""), "path": r.get("path", "")})
     return rows
+
+def _rows_hash(rows):
+    payload = json.dumps(rows, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":")).encode()
+    return hashlib.sha256(payload).hexdigest()
 
 def _embed(texts, key):
     """Batch-embed via OpenAI REST (stdlib only)."""
@@ -63,10 +103,13 @@ def _embed(texts, key):
 
 def build():
     os.makedirs(RAGDIR, exist_ok=True)
-    rows = _corpus()
+    atlas = _ensure_atlas_current()
+    rows = _corpus(atlas)
     key = _key()
     meta = {"model": None, "backend": "bm25", "rows": rows,
-            "corpus_hash": hashlib.md5("".join(r["text"] for r in rows).encode()).hexdigest()}
+            "catalog_hash": atlas.get("catalog_hash"),
+            "atlas_hash": atlas.get("atlas_hash"),
+            "corpus_hash": _rows_hash(rows)}
     if key:
         try:
             import numpy as np
@@ -81,7 +124,11 @@ def build():
             print(f"[rag] embedding build failed ({e}); using BM25 fallback", file=sys.stderr)
     else:
         print(f"[rag] no OPENAI_API_KEY; built BM25 lexical index ({len(rows)} skills)")
-    json.dump(meta, open(META, "w"))
+    temp = META + ".tmp"
+    with open(temp, "w", encoding="utf-8") as handle:
+        json.dump(meta, handle, ensure_ascii=False, sort_keys=True)
+        handle.write("\n")
+    os.replace(temp, META)
     return meta
 
 def _tok(s): return re.findall(r"[a-z0-9]+", s.lower())
@@ -108,9 +155,23 @@ def _bm25(query, rows, k):
     return [(rows[i], sc) for sc, i in scores[:k] if sc > 0]
 
 def query(text, k=6, as_json=False):
-    if not os.path.isfile(META):
-        build()
-    meta = json.load(open(META))
+    atlas = _ensure_atlas_current()
+    meta = None
+    if os.path.isfile(META):
+        try:
+            candidate = json.load(open(META, encoding="utf-8"))
+            current_rows = _corpus(atlas)
+            if (
+                candidate.get("catalog_hash") == atlas.get("catalog_hash")
+                and candidate.get("atlas_hash") == atlas.get("atlas_hash")
+                and candidate.get("corpus_hash") == _rows_hash(current_rows)
+            ):
+                meta = candidate
+        except (OSError, ValueError, TypeError):
+            meta = None
+    if meta is None:
+        print("[rag] index drift detected; rebuilding", file=sys.stderr)
+        meta = build()
     rows = meta["rows"]
     results = []
     if meta.get("backend") == "embeddings" and os.path.isfile(VEC):

@@ -1,4 +1,8 @@
 use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, MonitorSection, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
+use crate::preview::{
+    provider as preview_provider, reflow_cursor as reflowed_cursor,
+    reflow_lines as reflow_preview_lines,
+};
 use omega_core::done::DoneStatus;
 use omega_core::session::{PreviewColor, PreviewSpan, SessionRole};
 
@@ -215,6 +219,33 @@ fn preview_span_style(sp: &PreviewSpan) -> Style {
     style
 }
 
+/// Add semantic emphasis without throwing away the nested terminal's ANSI
+/// foreground/background/modifiers. The previous row classifiers rebuilt
+/// styles from `Style::default()`, so a highlighted task or prompt could lose
+/// its provider-owned colors and, for composer rows, its contrast background.
+fn emphasized_preview_row(
+    row: &[PreviewSpan],
+    fallback_fg: Option<Color>,
+    modifier: Option<Modifier>,
+) -> Line<'static> {
+    Line::from(
+        row.iter()
+            .map(|span| {
+                let mut style = preview_span_style(span);
+                if span.fg.is_none() {
+                    if let Some(color) = fallback_fg {
+                        style = style.fg(color);
+                    }
+                }
+                if let Some(modifier) = modifier {
+                    style = style.add_modifier(modifier);
+                }
+                Span::styled(span.text.clone(), style)
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 #[cfg(test)]
 mod preview_style_tests {
     use super::*;
@@ -307,6 +338,27 @@ mod preview_style_tests {
 
         assert_eq!(style.fg, None);
         assert_eq!(style.bg, None);
+    }
+
+    #[test]
+    fn semantic_emphasis_preserves_provider_ansi_and_background() {
+        let row = vec![PreviewSpan {
+            text: "› typed input".to_string(),
+            fg: Some(PreviewColor::Rgb(195, 147, 255)),
+            bg: Some(PreviewColor::Rgb(30, 30, 30)),
+            bold: false,
+            dim: false,
+            italic: true,
+            underline: true,
+        }];
+
+        let line = emphasized_preview_row(&row, Some(Color::Green), Some(Modifier::BOLD));
+        let style = line.spans[0].style;
+        assert_eq!(style.fg, Some(Color::Rgb(195, 147, 255)));
+        assert_eq!(style.bg, Some(Color::Rgb(30, 30, 30)));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        assert!(style.add_modifier.contains(Modifier::ITALIC));
+        assert!(style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }
 
@@ -748,8 +800,8 @@ fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
         _ => return,
     };
     let options = [
-        "1. Claude Code — Opus 5 — default",
-        "2. Codex — OpenAI (Sol)",
+        "1. Codex — OpenAI (Sol) — default",
+        "2. Claude Code — explicit alternative",
         "3. Oracle — the project's own orchestrator (asks for a mission)",
         "   Cancel",
     ];
@@ -1297,19 +1349,42 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Render the right column of the Sessions tab (preview + optional chat input).
 /// Used both in split layout and chat-fullscreen mode.
-fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focused: bool) {
+pub(crate) fn draw_sessions_right(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    chat_focused: bool,
+) {
     let fullscreen = app.session_focus == SessionFocus::ChatFullscreen;
 
-    let preview_title = match app.selected_session() {
-        Some(e) => {
+    let selected_name = app
+        .selected_session()
+        .map(|entry| entry.session.name.clone());
+    let selected_provider = app
+        .selected_session()
+        .and_then(|entry| entry.session.provider.clone());
+    let selected_model = selected_name
+        .as_ref()
+        .and_then(|name| app.session_meta.get(name))
+        .map(|(model, _)| model.as_str());
+    let provider = preview_provider(
+        selected_provider.as_deref(),
+        selected_name.as_deref().unwrap_or_default(),
+        selected_model,
+        &app.preview_content,
+    );
+    let preview_title = match selected_name.as_deref() {
+        Some(name) => {
             let suffix = if fullscreen { "  [FULLSCREEN — Tab-Tab to exit]" } else { "" };
-            format!(" {}{} ", e.session.name, suffix)
+            format!(" {} · {}{} ", provider.label(), name, suffix)
         }
         None => " Preview ".to_string(),
     };
 
     let preview_border_style = if chat_focused {
-        Style::default().fg(th::accent2())
+        Style::default()
+            .fg(provider.accent())
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(th::dim())
     };
@@ -1320,18 +1395,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
     app.preview_inner_width = area.width.saturating_sub(2);
     app.preview_inner_height = area.height.saturating_sub(2);
 
-    // Saturate instead of `as`-truncating: a deep history capture can exceed
-    // 65 535 lines, and modulo-wrapped math made the scroll bound garbage.
-    let total_lines = app.preview_content.lines().count().min(u16::MAX as usize) as u16;
     let viewport_height = area.height.saturating_sub(2);
-    let max_scroll = total_lines.saturating_sub(viewport_height);
-    // Publish the real clamp bound so the scroll setters (which don't know the
-    // panel geometry) can stop at the top of history.
-    app.preview_max_scroll = max_scroll;
-    // `preview_scroll` is measured from the TAIL; the Paragraph wants a
-    // from-top offset. Clamp the from-tail value, then convert.
-    let from_tail = app.preview_scroll.min(max_scroll);
-    let scroll = max_scroll.saturating_sub(from_tail);
 
     let mut preview_lines: Vec<Line> = if app.preview_content.is_empty() {
         vec![Line::from(Span::styled(
@@ -1473,115 +1537,23 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
                     // line that happens to contain "tokens" isn't mis-typed
                     // as activity. Activity is checked LAST as a fallback.
                     if is_todo_done {
-                        // Green bold across the row. Named color so the terminal
-                        // theme renders it readable on light AND dark backgrounds.
-                        let green = th::success();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(green).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::success()), Some(Modifier::BOLD))
                     } else if is_todo_failed {
-                        // Red bold — same family as activity but distinct
-                        // by anchor (line-start glyph).
-                        let red = th::error();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(red).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::error()), Some(Modifier::BOLD))
                     } else if is_todo_progress {
-                        // Magenta bold — actively-running todo stands out
-                        // from the pending grey and the done green.
-                        let magenta = th::special();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(magenta).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::special()), Some(Modifier::BOLD))
                     } else if is_todo_pending {
-                        // Yellow, NOT bold — pending todos read as backlog. Named
-                        // color: the bright Rgb yellow was near-invisible on a
-                        // light background; the theme's yellow stays readable.
-                        let yellow = th::accent2();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| Span::styled(sp.text.clone(), Style::default().fg(yellow)))
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::accent2()), None)
                     } else if is_task_dispatch {
-                        // Cyan bold — a worker is being spawned, you want to see
-                        // it. No forced bg (it became a dark bar on light themes).
-                        let cyan = th::accent();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(cyan).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::accent()), Some(Modifier::BOLD))
                     } else if is_activity {
-                        // Bold red across the row.
-                        let red = th::error();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(red).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::error()), Some(Modifier::BOLD))
                     } else if is_user_input {
-                        // Bold, preserving Claude's own ANSI fg. NO forced bg:
-                        // a hardcoded dark tint renders as an ugly black bar on
-                        // light terminal themes (Termius light schemes). BOLD +
-                        // the preserved fg distinguish the prompt on any theme.
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                let mut style = Style::default().add_modifier(Modifier::BOLD);
-                                if let Some(c) = sp.fg {
-                                    style = style.fg(preview_to_color(c));
-                                }
-                                Span::styled(sp.text.clone(), style)
-                            })
-                            .collect();
-                        Line::from(spans)
+                        // The provider accent is a fallback only. Captured ANSI,
+                        // including a Codex/Gemini composer background, wins.
+                        emphasized_preview_row(row, Some(provider.accent()), Some(Modifier::BOLD))
                     } else if is_agent_reply {
-                        // AISB-master mirror: agent reply line. Soft green fg to
-                        // distinguish from user lines. No forced bg (dark bar on
-                        // light themes).
-                        let green = th::success();
-                        let spans: Vec<Span> = row
-                            .iter()
-                            .map(|sp| {
-                                Span::styled(
-                                    sp.text.clone(),
-                                    Style::default().fg(green).add_modifier(Modifier::BOLD),
-                                )
-                            })
-                            .collect();
-                        Line::from(spans)
+                        emphasized_preview_row(row, Some(th::success()), Some(Modifier::BOLD))
                     } else {
                         let spans: Vec<Span> = row
                             .iter()
@@ -1598,6 +1570,62 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
             .map(|l| Line::from(l.to_string()))
             .collect()
     };
+
+    // Determine the source cursor before reflow. The snapshot coordinate is a
+    // display column, not a byte/char index. The fallback uses ratatui's
+    // Unicode-aware line width for static/plain captures.
+    let source_cursor = app
+        .preview_cursor
+        .map(|(row, col, _)| (row, col))
+        .or_else(|| {
+            preview_lines
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, line)| {
+                    line.spans
+                        .iter()
+                        .any(|span| !span.content.trim().is_empty())
+                })
+                .map(|(row, line)| {
+                    (
+                        row.min(u16::MAX as usize) as u16,
+                        line.width().min(u16::MAX as usize) as u16,
+                    )
+                })
+        });
+
+    // Core intentionally drops trailing blank snapshot rows. Restore only the
+    // rows needed to carry the real cursor, then hard-wrap every source row to
+    // the current preview width. This covers the resize/SIGWINCH transition
+    // without waiting for the provider TUI to redraw itself.
+    if let Some((source_row, _)) = source_cursor {
+        while preview_lines.len() <= usize::from(source_row) {
+            preview_lines.push(Line::from(""));
+        }
+    }
+    let reflowed = reflow_preview_lines(&preview_lines, app.preview_inner_width);
+    let mapped_cursor = source_cursor.map(|(row, col)| {
+        reflowed_cursor(
+            &preview_lines,
+            &reflowed.source_row_starts,
+            row,
+            col,
+            app.preview_inner_width,
+        )
+    });
+    preview_lines = reflowed.lines;
+
+    // Count painted rows after Unicode-safe reflow. A stale 132-column rmux
+    // frame shown inside an 80-column panel may occupy more rows than its
+    // logical capture; counting source lines made the live composer disappear.
+    let total_lines = preview_lines.len().min(u16::MAX as usize) as u16;
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+    app.preview_max_scroll = max_scroll;
+    // `preview_scroll` is measured from the tail; Paragraph wants a from-top
+    // offset. Clamp the from-tail value, then convert.
+    let from_tail = app.preview_scroll.min(max_scroll);
+    let scroll = max_scroll.saturating_sub(from_tail);
 
     // Bottom-anchor the live terminal mirror. A real terminal keeps the
     // prompt pinned to the bottom while history scrolls up off the top. When
@@ -1695,20 +1723,7 @@ fn draw_sessions_right(frame: &mut Frame, app: &mut App, area: Rect, chat_focuse
         // That's exactly where the agent's input caret is. Fall back to the
         // last-non-empty-line heuristic only if the snapshot didn't carry a
         // cursor (e.g. history-browsing mode).
-        let (cur_row, cur_col) = match app.preview_cursor {
-            Some((row, col, _visible)) => (row, col),
-            None => {
-                let all_lines: Vec<&str> = app.preview_content.lines().collect();
-                let (idx, line) = all_lines
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find(|(_, l)| !l.trim().is_empty())
-                    .map(|(i, l)| (i as u16, *l))
-                    .unwrap_or((0, ""));
-                (idx, line.chars().count() as u16)
-            }
-        };
+        let (cur_row, cur_col) = mapped_cursor.unwrap_or((0, 0));
 
         // Map the snapshot row to a viewport row using the same from-top
         // `scroll` offset the Paragraph uses, plus the bottom-anchor padding

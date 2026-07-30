@@ -20,8 +20,11 @@ pdfgen --template=audit --demo --out=/tmp/audit.pdf
 # Render from a JSON data file
 pdfgen --template=whitepaper --data=./whitepaper.json --out=./out.pdf
 
-# Send the result via Telegram
-pdfgen --template=marketing --data=./mkt.json --send-dm
+# Send the result via Telegram through the allow-listed OmegaOS configuration
+omega pdf --template=marketing --data=./mkt.json --send
+
+# Raw pdfgen requires an explicit allow-listed destination
+OMEGA_TELEGRAM_CHAT_ID=<chat-id> pdfgen --template=marketing --data=./mkt.json --send-dm
 pdfgen --template=audit --data=./audit.json --send-topic=32 --send-group=-1003587170167
 ```
 

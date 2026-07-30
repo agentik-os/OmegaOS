@@ -9,7 +9,7 @@
 # back to Claude by uncommenting the line below. Either way you can still choose
 # per mission: `omega dispatch <proj> "…" --agent claude`, the /duo binome, the
 # TUI agent picker, or a trailing "… avec claude" in a Telegram message.
-# agent_command = "claude"
+# agent_command = "codex"
 # default_model = "opus"   # (Claude-only: the model tier when the agent is Claude)
 
 # Root that holds your project category folders (customers/ side-business/
@@ -17,7 +17,7 @@
 # projects_dir = "/home/you/projects"
 
 # Persistent AISB master + automatic session naming.
-# aisb_agent = "claude"
+# aisb_agent = "codex"
 # auto_spawn_master = false   # retired aisb-master rmux viewer (brain = Atlas Telegram bot)
 # auto_naming = true
 

@@ -14,28 +14,82 @@ import json
 import os
 import re
 
-# Evidence that something actually RAN. Deliberately excludes the bare words
-# "verify"/"verified": the SessionStart contract contains "VERIFY against
-# runtime", that text is stored in the transcript as a hook attachment, and a
-# whole-line scan for it silently disabled the check for every session. An
-# agent's claim that it verified something is not evidence (L1).
-VERIFY_RE = re.compile(
-    r"build (?:passed|succeeded)|0 errors?\b|tests? passed|test result: ok|"
-    r"cargo (?:build|test|check|clippy)|npm (?:run build|test)|pnpm (?:build|test)|"
-    r"bun (?:run build|test)|yarn (?:build|test)|pytest|go (?:build|test)|"
-    r"HTTP/[\d.]+ 200|\b200 OK\b|passed;\s*0 failed",
+# A verification is a pair: an admissible verification command followed by its
+# successful tool result. Merely opening a shell, or writing "tests passed" in
+# assistant prose, is never evidence.
+VERIFY_COMMAND_RE = re.compile(
+    r"(?:^|[\s;&|])(?:"
+    r"cargo\s+(?:build|test|check|clippy|fmt\s+--check)\b|"
+    r"(?:npm|pnpm|bun|yarn)\s+(?:run\s+)?(?:build|test|check|lint|typecheck)\b|"
+    r"(?:python(?:3)?\s+-m\s+)?(?:pytest|unittest)\b|"
+    r"go\s+(?:build|test|vet)\b|"
+    r"(?:make|just)\s+(?:test|check|verify|build)\b|"
+    r"(?:bash\s+)?(?:\./)?[\w./-]*verify[\w.-]*\.sh\b|"
+    r"curl\s+[^\n]*(?:--fail|-f)\b"
+    r")",
     re.I,
 )
 
-SHELL_TOOLS = ("Bash", "shell", "exec_command", "run_terminal_cmd", "local_shell")
+VERIFY_SUCCESS_RE = re.compile(
+    r"Process exited with code 0|Command exited with code 0|"
+    r"\bexit(?:ed)?(?: with)?(?: code)?[=: ]+0\b|"
+    r"\"exit_code\"\s*:\s*0\b|test result:\s*ok|"
+    r"\b\d+\s+passed\b|\bOK\b|Finished\s+\S+\s+profile|"
+    r"HTTP/[\d.]+\s+2\d\d|\b2\d\d OK\b|passed;\s*0 failed",
+    re.I,
+)
+
+VERIFY_FAILURE_RE = re.compile(
+    r"Process exited with code [1-9]\d*|Command exited with code [1-9]\d*|"
+    r"\bexit(?:ed)?(?: with)?(?: code)?[=: ]+[1-9]\d*\b|"
+    r'"exit_code"\s*:\s*[1-9]\d*\b|test result:\s*failed|'
+    r"\b[1-9]\d*\s+failed\b|"
+    r"Traceback \(most recent call last\)",
+    re.I,
+)
+
+SHELL_TOOLS = (
+    "Bash",
+    "shell",
+    "exec",
+    "exec_command",
+    "run_terminal_cmd",
+    "local_shell",
+)
 MUTATION_TOOLS = ("Write", "Edit", "NotebookEdit", "apply_patch")
 DONE_STATES = ("completed", "done", "deleted", "cancelled")
+CUSTOM_CMD_RE = re.compile(r'\bcmd\s*:\s*("(?:\\.|[^"\\])*")', re.S)
+
+
+def _decode_tool_input(obj):
+    raw = obj.get("input")
+    if raw is None:
+        raw = obj.get("arguments")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            if obj.get("name") == "exec":
+                match = CUSTOM_CMD_RE.search(raw)
+                if match:
+                    try:
+                        return {"cmd": json.loads(match.group(1))}
+                    except Exception:
+                        pass
+            return {}
+    return raw if isinstance(raw, dict) else {}
 
 
 def _walk_tool_uses(obj):
     if isinstance(obj, dict):
-        if obj.get("type") == "tool_use":
-            yield obj
+        if obj.get("type") in ("tool_use", "function_call", "custom_tool_call") and obj.get(
+            "name"
+        ):
+            yield {
+                "name": obj.get("name"),
+                "input": _decode_tool_input(obj),
+                "call_id": obj.get("id") or obj.get("call_id"),
+            }
         for v in obj.values():
             yield from _walk_tool_uses(v)
     elif isinstance(obj, list):
@@ -43,39 +97,43 @@ def _walk_tool_uses(obj):
             yield from _walk_tool_uses(v)
 
 
-def _evidence(rec):
-    """(ran_a_command, text) — the parts of a record that count as runtime proof.
+def _walk_tool_results(obj):
+    if isinstance(obj, dict):
+        result_type = obj.get("type")
+        if result_type in (
+            "tool_result",
+            "function_call_output",
+            "custom_tool_call_output",
+        ):
+            yield {
+                "call_id": obj.get("tool_use_id") or obj.get("call_id"),
+                "content": obj.get("content")
+                if result_type == "tool_result"
+                else obj.get("output"),
+                "is_error": bool(obj.get("is_error")),
+            }
+        for value in obj.values():
+            yield from _walk_tool_results(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _walk_tool_results(value)
 
-    Shell COMMANDS and tool RESULTS only. Hook attachments, injected context and
-    assistant prose are excluded on purpose.
-    """
-    if not isinstance(rec, dict):
-        return False, ""
-    if rec.get("type") == "attachment" or "attachment" in rec:
-        return False, ""
-    ran = False
-    out = []
 
-    def visit(obj):
-        nonlocal ran
-        if isinstance(obj, dict):
-            t = obj.get("type")
-            if t == "tool_use" and (obj.get("name") or "") in SHELL_TOOLS:
-                ran = True
-                inp = obj.get("input")
-                if isinstance(inp, dict):
-                    out.append(str(inp.get("command") or ""))
-            elif t == "tool_result":
-                out.append(json.dumps(obj.get("content") or ""))
-            else:
-                for v in obj.values():
-                    visit(v)
-        elif isinstance(obj, list):
-            for v in obj:
-                visit(v)
+def _command_from_input(inp):
+    return str(inp.get("command") or inp.get("cmd") or "")
 
-    visit(rec)
-    return ran, "\n".join(out)
+
+def _is_verification_command(command):
+    return bool(command and VERIFY_COMMAND_RE.search(command))
+
+
+def _result_succeeded(result):
+    if result.get("is_error"):
+        return False
+    text = json.dumps(result.get("content") or "", ensure_ascii=False)
+    if VERIFY_FAILURE_RE.search(text):
+        return False
+    return bool(VERIFY_SUCCESS_RE.search(text))
 
 
 def analyze(transcript_path):
@@ -93,6 +151,7 @@ def analyze(transcript_path):
     created, status_of, todos = [], {}, None
     edited = verified = plan_ever = False
     mutations = tool_calls = 0
+    pending_verifications = {}
 
     try:
         with open(transcript_path, "r", errors="replace") as fh:
@@ -139,10 +198,20 @@ def analyze(transcript_path):
                             # Evidence is only evidence for the code that existed
                             # when it was gathered. A new edit invalidates it.
                             verified = False
-                if not verified:
-                    ran, text = _evidence(rec)
-                    if ran or VERIFY_RE.search(text):
-                        verified = True
+                            pending_verifications.clear()
+                        elif name in SHELL_TOOLS:
+                            command = _command_from_input(inp)
+                            if _is_verification_command(command):
+                                call_id = tu.get("call_id")
+                                if call_id:
+                                    pending_verifications[str(call_id)] = command
+                for result in _walk_tool_results(rec):
+                    call_id = result.get("call_id")
+                    if call_id is None:
+                        continue
+                    command = pending_verifications.pop(str(call_id), None)
+                    if command is not None:
+                        verified = _result_succeeded(result)
     except Exception:
         return None
 

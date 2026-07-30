@@ -132,6 +132,8 @@ mod tests {
             session_name: "Acme-worker-auth".into(),
             task_id: "t1".into(),
             task_name: "auth".into(),
+            attempt_id: None,
+            plan_revision: None,
             files_owned: vec![],
             dispatched_at: t0 + chrono::Duration::seconds(10),
             status: WorkerEntryStatus::DoneClean,

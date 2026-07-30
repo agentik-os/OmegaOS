@@ -12,11 +12,43 @@
 set -uo pipefail
 OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
 ATLAS="$OMEGA_DIR/skills-atlas.json"
+CATALOG="${OMEGA_SKILL_CATALOG:-$OMEGA_DIR/skill-catalog-v1.json}"
+ATLAS_GENERATOR="$OMEGA_DIR/bin/omega-skills-atlas.py"
 URL="https://station.tail64d114.ts.net:8443/omega-skill-atlas.html"
-# Lazy-build: on a fresh install the atlas may not exist yet. Generate it once
-# from the installed skills so `omega-skills` works with zero install.sh surgery.
-if [ ! -f "$ATLAS" ] && [ -f "$OMEGA_DIR/bin/omega-skills-atlas.py" ]; then
-    python3 "$OMEGA_DIR/bin/omega-skills-atlas.py" >/dev/null 2>&1 || true
+
+# Rebuild when the canonical compiler digest changes. During staged migration,
+# legacy installs without SkillCatalogV1 use the newest SKILL.md mtime as their
+# drift signal. A failed rebuild is surfaced rather than serving a stale Atlas.
+if python3 - "$ATLAS" "$CATALOG" "$OMEGA_DIR/skills" <<'PY'
+import json, os, sys
+atlas_path, catalog_path, skills_root = sys.argv[1:]
+if not os.path.isfile(atlas_path):
+    raise SystemExit(0)
+try:
+    atlas = json.load(open(atlas_path, encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if os.path.isfile(catalog_path):
+    try:
+        catalog = json.load(open(catalog_path, encoding="utf-8"))
+    except Exception:
+        raise SystemExit(0)
+    raise SystemExit(0 if atlas.get("catalog_hash") != catalog.get("content_digest") else 1)
+atlas_mtime = os.path.getmtime(atlas_path)
+excluded = {".git", ".venv", "build", "dist", "node_modules", "target", "vendor"}
+for current, dirs, files in os.walk(skills_root, topdown=True, followlinks=False):
+    dirs[:] = [d for d in dirs if d not in excluded and
+               not os.path.islink(os.path.join(current, d))]
+    if "SKILL.md" in files and os.path.getmtime(os.path.join(current, "SKILL.md")) > atlas_mtime:
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+then
+    [ -f "$ATLAS_GENERATOR" ] || {
+        echo "skill Atlas is stale and generator is unavailable: $ATLAS_GENERATOR" >&2
+        exit 1
+    }
+    python3 "$ATLAS_GENERATOR" >/dev/null
 fi
 [ -f "$ATLAS" ] || { echo "atlas not found and could not be built: $ATLAS" >&2; exit 1; }
 

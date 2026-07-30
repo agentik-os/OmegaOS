@@ -221,24 +221,39 @@ mod tests {
 
         let out = std::fs::read_to_string(&path).unwrap();
         assert!(out.contains("# header comment"), "comment preserved");
-        assert!(out.contains("export VERCEL_TOKEN=\"vc_live_123\""), "vercel set");
-        assert!(out.contains("export STRIPE_MODE=\"single\""), "mode line preserved");
+        assert!(
+            out.contains("export VERCEL_TOKEN=\"vc_live_123\""),
+            "vercel set"
+        );
+        assert!(
+            out.contains("export STRIPE_MODE=\"single\""),
+            "mode line preserved"
+        );
         assert!(!out.contains("STRIPE_SECRET_KEY"), "blank not written");
-        assert!(out.contains("export CONVEX_TEAM_TOKEN=\"cv_abc\""), "new key appended");
+        assert!(
+            out.contains("export CONVEX_TEAM_TOKEN=\"cv_abc\""),
+            "new key appended"
+        );
 
         // Re-run with all blanks → existing values must survive untouched.
         update_services_env_at(&path, &[("VERCEL_TOKEN".into(), "".into())]).unwrap();
         let out2 = std::fs::read_to_string(&path).unwrap();
-        assert!(out2.contains("export VERCEL_TOKEN=\"vc_live_123\""), "blank kept old value");
+        assert!(
+            out2.contains("export VERCEL_TOKEN=\"vc_live_123\""),
+            "blank kept old value"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn credential_groups_resolve_and_sanitize() {
-        // default / empty → the shared services.env (back-compat).
-        assert_eq!(group_env_path("default"), services_env_path());
-        assert_eq!(group_env_path(""), services_env_path());
+        // Default and empty resolve to the shared services.env. Assert the
+        // stable relative contract instead of comparing two independently
+        // resolved process-global OMEGA_DIR reads while other tests exercise
+        // the environment override in parallel.
+        assert!(group_env_path("default").ends_with("provisioning/services.env"));
+        assert!(group_env_path("").ends_with("provisioning/services.env"));
         // a named client → groups/<slug>.env
         let p = group_env_path("Acme Corp!");
         assert!(
@@ -268,9 +283,15 @@ fn parse_export(line: &str) -> Option<(String, String)> {
     // closing quote is dropped); otherwise the value ends at an inline `#`.
     let v = v.trim();
     let val = if let Some(rest) = v.strip_prefix('"') {
-        rest.split_once('"').map(|(inner, _)| inner).unwrap_or(rest).to_string()
+        rest.split_once('"')
+            .map(|(inner, _)| inner)
+            .unwrap_or(rest)
+            .to_string()
     } else if let Some(rest) = v.strip_prefix('\'') {
-        rest.split_once('\'').map(|(inner, _)| inner).unwrap_or(rest).to_string()
+        rest.split_once('\'')
+            .map(|(inner, _)| inner)
+            .unwrap_or(rest)
+            .to_string()
     } else {
         v.split('#').next().unwrap_or("").trim().to_string()
     };

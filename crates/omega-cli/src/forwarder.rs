@@ -23,12 +23,21 @@ pub type StatusSink = std::sync::Arc<std::sync::Mutex<Option<String>>>;
 /// A single forward request. `Text` is coalesce-able; `Key` is a discrete
 /// named token (Enter, Up, Space, BSpace…) that must not be merged or reordered.
 pub enum ForwardMsg {
-    Text { session: String, text: String },
-    Key { session: String, key: String },
+    Text {
+        session: String,
+        text: String,
+    },
+    Key {
+        session: String,
+        key: String,
+    },
     /// A user paste — forwarded as ONE bracketed-paste block (no auto-Enter)
     /// so the target app buffers it instead of submitting on every embedded
     /// newline. Flushes pending coalesced text first to preserve order.
-    Paste { session: String, text: String },
+    Paste {
+        session: String,
+        text: String,
+    },
 }
 
 fn set_err(sink: &StatusSink, msg: String) {
@@ -126,9 +135,10 @@ pub fn spawn_forwarder(mgr: SessionManager, sink: StatusSink) -> UnboundedSender
                     let mut closed = false;
                     loop {
                         match tokio::time::timeout(PASTE_COALESCE_WINDOW, rx.recv()).await {
-                            Ok(Some(ForwardMsg::Paste { session: s, text: t }))
-                                if s == session =>
-                            {
+                            Ok(Some(ForwardMsg::Paste {
+                                session: s,
+                                text: t,
+                            })) if s == session => {
                                 body.push_str(&t);
                             }
                             Ok(Some(other)) => {

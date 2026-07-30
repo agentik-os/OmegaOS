@@ -15,7 +15,7 @@
 │
 ├── OMEGA.md                           Universal system prompt (every agent)
 │
-├── rules/                             The typed doctrine — 6 Laws + named Rules (.md files; `omega rules list` prints the set)
+├── rules/                             The typed doctrine, 7 Laws + 47 named Rules
 ├── agents/                            14 Matrix agents + oracle/worker prompts
 ├── skills/                            Cross-LLM skills (pdfgen, audits, llm-council, browser-use, marketing pack, ...)
 ├── docs/                              Reference documentation
@@ -71,8 +71,8 @@ This way:
 Stored in `~/.omega/providers.toml`:
 
 ```toml
-default_provider = "claude"
-default_model    = "opus"
+default_provider = "codex"
+default_model    = "gpt-5.6-sol"
 
 [claude]
 type      = "oauth"

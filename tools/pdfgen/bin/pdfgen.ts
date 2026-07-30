@@ -75,7 +75,13 @@ async function sendTelegram(pdfPath: string, opts: { dm?: boolean; topic?: strin
   }
   if (opts.dm) {
     const { execFileSync } = await import("node:child_process");
-    execFileSync(telegramSh, ["file", "8626440209", pdfPath, opts.caption || filename]);
+    const chatId = process.env.OMEGA_TELEGRAM_CHAT_ID;
+    if (!chatId || !/^-?\d+$/.test(chatId)) {
+      throw new Error(
+        "OMEGA_TELEGRAM_CHAT_ID is required for raw pdfgen --send-dm. Prefer `omega pdf --send`, which reads the allow-listed OmegaOS Telegram configuration."
+      );
+    }
+    execFileSync(telegramSh, ["file", chatId, pdfPath, opts.caption || filename]);
     console.log(`[ok] sent to DM`);
   }
 }

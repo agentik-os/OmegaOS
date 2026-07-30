@@ -28,5 +28,6 @@ dirs.workspace = true
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
 regex = "1"
 chrono.workspace = true
+shlex.workspace = true
 # OSC 52 clipboard payload for the TUI mouse-selection (already in the lock).
 base64 = "0.22"

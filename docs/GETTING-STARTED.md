@@ -10,19 +10,18 @@ personal pieces are left — they take ~5 minutes.**
 
 ---
 
-## Step 1 — Connect your Claude account (required)
+## Step 1: Connect OpenAI Codex (default runtime)
 
-OmegaOS drives [Claude Code](https://claude.com/claude-code). Link your account:
+New OmegaOS and Oracle sessions use Codex by default. Link it once:
 
 ```
-claude          # opens Claude Code …
-/login          # … then type /login and follow the URL it prints
+codex login
+codex login status
 ```
 
-On a headless VPS: open the printed URL on your laptop, sign in, paste the code
-back in the terminal. Verify: `claude auth status` → `"loggedIn": true`.
-OmegaOS then shares this credential with every agent it spawns, refreshes the
-token proactively (cron, every 30 min), and self-heals expiries.
+On a headless VPS, use the displayed device flow. A successful status prints
+the active login method. Claude Code remains available as an explicit provider:
+run `claude`, enter `/login`, then select Claude per session or mission.
 
 ## Step 2 — Telegram remote control (recommended)
 
@@ -111,7 +110,7 @@ Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) �
 | Thing | How |
 |---|---|
 | Telegram bots | systemd user services, enabled + linger → survive reboots |
-| Token refresh | cron 30 min — keeps Claude OAuth fresh, syncs Mission Control |
+| Credential maintenance | reconciles provider-native credentials into OmegaOS state without printing secrets |
 | Patrol | cron 1 min — restarts the rmux daemon, resurrects crashed oracles |
 | Self-heal | cron 3 h — `omega doctor --fix` automatically |
 | Daily briefing | cron 08:00 — portfolio health digest in the Atlas topic |
@@ -121,7 +120,7 @@ Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) �
 
 - **Mission Control dashboard** (web UI, one container per agent — needs
   Docker): `omega-mc-up`, then open `http://<host>:8080`.
-- **More CLI agents**: `omega install codex|gemini|pi|hermes|glm` (or
+- **More CLI agents**: `omega install claude|gemini|pi|hermes|glm` (or
   Settings → Install agents in the TUI). All install user-space, no root.
 - **Global keybindings**: `omega install-bindings` (Ctrl+Space popup).
 - **Themes**: a gallery of TUI palettes with live preview (Settings → Theme) —

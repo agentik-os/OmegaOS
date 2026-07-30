@@ -200,6 +200,7 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "file": "...", "line": 4
   --files="$FILES_MODIFIED" \
   --url="$URL" \
   --user-need="$USER_NEED_QUOTE" \
+  --hinge="$HINGE_POINT" \
   --ticket="$TICKET_ID"
 ```
 

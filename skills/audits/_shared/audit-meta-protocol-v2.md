@@ -208,6 +208,13 @@ This catches confirmation bias — a single audit may rationalize a passing scor
 
 The gate accepts v1 with a warning until 2026-06-01, then v2-only.
 
+## Runner finalization
+
+After writing `verdict.json`, rerun the same audit runner invocation with
+`--finalize --threshold=100`. A missing or malformed V2 verdict exits 2. A
+valid verdict below 100 exits 1. Only exit 0 authorizes the audit to report a
+pass.
+
 ---
 
 *"100% trust requires 100% falsifiable evidence. Anything less is a comfortable lie."*

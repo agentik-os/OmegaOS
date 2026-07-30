@@ -103,6 +103,19 @@ if [[ -d "$LIB_ROOT/youraipowerup" && -f "$OMEGA_SRC/skills/powerup-library/SKIL
 fi
 
 # ── 2) build the atlas from whatever is installed ────────────────────────────
+# Compile the typed source catalog first. Atlas and RAG consume this artifact
+# when available; a failed compile leaves the previous catalog untouched and
+# is never disguised as a successful fresh index.
+OMEGA_BIN="$INSTALL_DIR/omega"
+[[ -x "$OMEGA_BIN" ]] || OMEGA_BIN="$(command -v omega 2>/dev/null || true)"
+if [[ -n "$OMEGA_BIN" && -d "$OMEGA_SRC/skills" ]]; then
+    "$OMEGA_BIN" skills compile \
+        --root "$OMEGA_SRC/skills" \
+        --out "$OMEGA_DIR/skill-catalog-v1.json" >/dev/null \
+        && ok "SkillCatalogV1 compiled ($OMEGA_DIR/skill-catalog-v1.json)" \
+        || warn "canonical skill catalog compile failed; Atlas will use its bounded legacy fallback"
+fi
+
 if [[ -f "$OMEGA_DIR/bin/omega-skills-atlas.py" ]]; then
     python3 "$OMEGA_DIR/bin/omega-skills-atlas.py" >/dev/null 2>&1 \
         && ok "Skill Atlas built ($OMEGA_DIR/artifacts/omega-skill-atlas.html)" \

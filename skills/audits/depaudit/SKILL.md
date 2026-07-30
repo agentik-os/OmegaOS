@@ -194,6 +194,7 @@ Format: `{"tasks": [{"id": "FIX-001", "finding": "...", "package": "lodash", "ec
 ~/.omega/lib/audit-runner.sh dep "$PROJECT_PATH" \
   --files="$FILES_MODIFIED" \
   --user-need="$USER_NEED_QUOTE" \
+  --hinge="$HINGE_POINT" \
   --ticket="$TICKET_ID"
 ```
 

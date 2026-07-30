@@ -351,6 +351,28 @@ fi
 # must mirror its <skill>/SKILL.md dirs into ~/.omega/skills/ or a fresh box
 # silently lacks the Motion/design families that live only there.
 if grep -q "Agentik-Skills mirrored" install.sh; then ok "Agentik-Skills → ~/.omega/skills mirror step present in install.sh"; else bad "Agentik-Skills mirror step missing from install.sh (cloned skills never reach ~/.omega/skills)"; fi
+if grep -q "post-mirror skill catalog reconciliation" install.sh && grep -q "post-mirror provider sync" install.sh; then
+  ok "skill Atlas/RAG and provider links are reconciled after the private library mirror"
+else
+  bad "post-mirror catalog/provider reconciliation missing (late skills stay stale)"
+fi
+if [ "$(grep -A28 "Copy agents from repo if available" crates/omega-cli/src/main.rs | grep -c 'else if entry.file_name().to_string_lossy().ends_with(".md")')" -eq 1 ] \
+  && grep -A28 "Copy agents from repo if available" crates/omega-cli/src/main.rs | grep -q 'std::fs::copy(entry.path(), &dst)'; then
+  ok "omega sync copies top-level agent markdown instead of silently skipping it"
+else
+  bad "omega sync does not reliably copy top-level agent markdown"
+fi
+if grep -q "Native skills synced to" crates/omega-cli/src/main.rs \
+  && grep -q "externally installed skills" crates/omega-cli/src/main.rs; then
+  ok "omega sync reconciles native skills without deleting external additions"
+else
+  bad "omega sync does not reconcile the native skill tree safely"
+fi
+if grep -q 'home.join(".agents").join("skills")' crates/omega-cli/src/main.rs && grep -q 'Codex skills synced' crates/omega-cli/src/main.rs; then
+  ok "Codex shared skill activation (~/.agents/skills) is wired from the canonical registry"
+else
+  bad "Codex shared skill activation missing (AGENTS.md mentions are not skill discovery)"
+fi
 # Quality Arsenal audit SKILLS shipped + wired (the registry is 23 audits; the
 # skill dirs must match so a fresh install can actually run them — excludes the
 # 3 non-audit dirs _shared / audit-orchestrator / audit-tracker).
@@ -368,7 +390,17 @@ if grep -q '"R-DESIGN"' crates/omega-core/src/rules.rs; then ok "R-DESIGN router
 # Design skills must not leak the maintainer's identity/paths.
 if grep -rqE 'Gareth|/home/hacker' skills/design/ 2>/dev/null; then bad "design skills leak Gareth/home path"; else ok "design skills clean (no Gareth/home leak)"; fi
 # PDF generator shipped + wired (all branded PDF output depends on it).
-if [ -d tools/pdfgen ] && grep -q "tools/pdfgen" install.sh; then ok "pdfgen shipped + wired in install.sh"; else bad "pdfgen not shipped/wired in install.sh"; fi
+if [ -d tools/pdfgen ] && [ -f skills/pdfgen/SKILL.md ] && grep -q "tools/pdfgen" install.sh; then
+  ok "pdfgen engine + discoverable skill contract shipped and wired in install.sh"
+else
+  bad "pdfgen engine or discoverable skill contract missing"
+fi
+if grep -q "OMEGA_TELEGRAM_CHAT_ID is required" tools/pdfgen/bin/pdfgen.ts \
+  && ! grep -qE 'execFileSync\\(telegramSh, \\[\"file\", \"[0-9-]+\"' tools/pdfgen/bin/pdfgen.ts; then
+  ok "raw pdfgen Telegram delivery requires an explicit allow-listed destination"
+else
+  bad "raw pdfgen Telegram delivery contains an implicit or hardcoded destination"
+fi
 # OAuth fallback helper shipped + wired (non-interactive token refresh).
 if [ -f docs/reference/oauth/claude-oauth.sh ] && grep -q "claude-oauth.sh" install.sh; then ok "OAuth helper shipped + wired in install.sh"; else bad "oauth helper not shipped/wired in install.sh"; fi
 # Reference docs tree shipped + wired (`omega docs` + $HOME Claude sessions read it).
@@ -446,6 +478,29 @@ if grep -q 'OMEGA_DIR/lib/audit-runner\.sh' install.sh && grep -q 'OMEGA_DIR/bin
   ok "install.sh ships the ~/.omega audit runtime (skills' absolute paths resolve)"
 else
   bad "install.sh does NOT install the ~/.omega audit runtime — audit SKILLs break on fresh clone"
+fi
+if [ -f skills/audits/registry.toml ] \
+  && grep -q 'skills/audits/registry.toml' crates/omega-core/src/audit.rs \
+  && grep -q -- '--finalize' skills/audits/_shared/audit-runner.sh; then
+  ok "audit registry is canonical and the runner has a fail-closed finalization gate"
+else
+  bad "audit registry/runner contract drifted (TOML SSOT or --finalize gate missing)"
+fi
+if scripts/tests/test_audit_runner.sh >/dev/null 2>&1; then
+  ok "audit runner rejects incomplete/failed evidence and enforces the score threshold"
+else
+  bad "audit runner behavioral contract failed"
+fi
+missing_hinge=""
+for audit_skill in skills/audits/*/SKILL.md; do
+  if grep -q 'audit-runner\.sh' "$audit_skill" && ! grep -q -- '--hinge=' "$audit_skill"; then
+    missing_hinge="$missing_hinge $audit_skill"
+  fi
+done
+if [ -z "$missing_hinge" ]; then
+  ok "every hybrid audit passes the mandatory hinge contract to the runner"
+else
+  bad "hybrid audit runner invocation missing --hinge:$missing_hinge"
 fi
 # 10c-bis. No skill or agent may reference the retired ~/.aisb dual-home (consolidated → ~/.omega).
 if grep -rqE '/\.aisb/' skills/ agents/ 2>/dev/null; then

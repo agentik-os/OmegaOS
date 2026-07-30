@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
-"""OmegaOS Skill Atlas: index every skill (native OmegaOS + Power-Up library) with
-its invocation command(s), emit skills-atlas.json + a searchable HTML catalog."""
-import os, re, json, html, datetime, glob
+"""OmegaOS Skill Atlas.
+
+The canonical input is SkillCatalogV1 exported by omega-core. During the staged
+migration, a recursive, bounded legacy reader remains available when that
+artifact is absent. Both paths exclude vendor/build trees and fail on duplicate
+skill identities instead of silently dropping one.
+"""
+import os, re, json, html, datetime, hashlib, sys, unicodedata
 
 HOME = os.path.expanduser("~")
 OMEGA = os.environ.get("OMEGA_DIR") or os.path.join(HOME, ".omega")
 NATIVE = os.path.join(OMEGA, "skills")
+CATALOG = os.environ.get("OMEGA_SKILL_CATALOG") or os.path.join(OMEGA, "skill-catalog-v1.json")
 POWERUP_MANIFEST = os.path.join(OMEGA, "skills-library/youraipowerup/MANIFEST.json")
+EXCLUDED_DIRS = {".git", ".venv", "build", "dist", "node_modules", "target", "vendor"}
+MAX_SKILL_BYTES = 2 * 1024 * 1024
+MAX_SKILLS = 10_000
 
 def parse_frontmatter(path):
-    """Return (name, description) handling single-line and folded (>|) scalars."""
-    try:
-        txt = open(path, encoding="utf-8", errors="replace").read()
-    except Exception:
-        return None, ""
+    """Legacy fallback parser for required name and description fields."""
+    if os.path.getsize(path) > MAX_SKILL_BYTES:
+        raise ValueError(f"skill exceeds {MAX_SKILL_BYTES} bytes: {path}")
+    txt = open(path, encoding="utf-8", errors="strict").read()
     m = re.match(r"^---\s*\n(.*?)\n---", txt, re.S)
     if not m:
-        return os.path.basename(os.path.dirname(path)), ""
+        raise ValueError(f"missing YAML frontmatter: {path}")
     block = m.group(1)
     lines = block.split("\n")
     name = None; desc = ""
@@ -40,49 +48,110 @@ def parse_frontmatter(path):
                     desc = v.strip('"\'')
         i += 1
     if not name:
-        name = os.path.basename(os.path.dirname(path))
+        raise ValueError(f"missing required name: {path}")
+    if not desc.strip():
+        raise ValueError(f"missing required description: {path}")
     return name, desc
 
-def derive_commands(name, path):
-    """Primary command = /<name> (Skill tool). Add /omg-<name> if that skill dir exists."""
+def derive_commands(name, group):
+    """Keep the legacy slash surface while exposing the provider-neutral name."""
     cmds = [f"/{name}"]
-    if os.path.isdir(os.path.join(NATIVE, f"omg-{name}")) and f"omg-{name}" != name:
+    if group == "Audits" and not name.startswith("omg-"):
         cmds.append(f"/omg-{name}")
     return cmds
 
-# ---- 1. native OmegaOS skills ----
-native = []
-for d in sorted(glob.glob(os.path.join(NATIVE, "*"))):
-    if not os.path.isdir(d):
-        continue
-    slug = os.path.basename(d)
-    sk = os.path.join(d, "SKILL.md")
-    if slug == "audits" or not os.path.isfile(sk):
-        continue
-    name, desc = parse_frontmatter(sk)
-    group = "Audits" if name.endswith("audit") or name.endswith("audits") else "Skills"
-    native.append({"name": name, "slug": slug, "description": desc,
-                   "commands": derive_commands(slug, sk), "group": group, "source": "omegaos"})
+def identity(value):
+    return unicodedata.normalize("NFKC", value).casefold()
 
-# audits subdir
-for d in sorted(glob.glob(os.path.join(NATIVE, "audits", "*"))):
-    if not os.path.isdir(d):
-        continue
-    sk = os.path.join(d, "SKILL.md")
-    if not os.path.isfile(sk):
-        continue
-    slug = os.path.basename(d)
-    name, desc = parse_frontmatter(sk)
-    native.append({"name": name, "slug": slug, "description": desc,
-                   "commands": [f"/{slug}", f"/omg-{slug}"], "group": "Audits", "source": "omegaos"})
+def validate_unique(rows):
+    seen = {}
+    for row in rows:
+        key = identity(row["name"])
+        if key in seen:
+            raise ValueError(
+                f"duplicate skill identity: {seen[key]['name']} and {row['name']}")
+        seen[key] = row
 
-# dedup native by name (installed dir may duplicate audits)
-seen = set(); native_u = []
-for r in native:
-    if r["name"] in seen:
-        continue
-    seen.add(r["name"]); native_u.append(r)
-native = native_u
+def canonical_native():
+    if not os.path.isfile(CATALOG):
+        return None, None
+    try:
+        data = json.load(open(CATALOG, encoding="utf-8"))
+        if data.get("schema_version") != 1:
+            raise ValueError(f"unsupported schema_version {data.get('schema_version')!r}")
+        digest = data.get("content_digest")
+        skills = data.get("skills")
+        if not isinstance(digest, str) or len(digest) < 32 or not isinstance(skills, list):
+            raise ValueError("canonical catalog is missing digest or skills")
+        rows = []
+        for skill in skills:
+            name = skill.get("name")
+            desc = skill.get("description")
+            rel = skill.get("relative_path")
+            if not all(isinstance(value, str) and value.strip() for value in (name, desc, rel)):
+                raise ValueError("canonical skill is missing name, description, or relative_path")
+            category = str(skill.get("category", "Custom"))
+            group = "Audits" if category.lower() == "audit" else category
+            if group.lower() in ("custom", "utility"):
+                group = "Skills"
+            rows.append({
+                "name": name,
+                "slug": os.path.dirname(rel).replace(os.sep, "/"),
+                "description": desc,
+                "commands": derive_commands(name, group),
+                "group": group,
+                "source": "omegaos",
+                "provider_states": skill.get("provider_states", {}),
+                "content_digest": skill.get("content_digest", ""),
+            })
+        rows.sort(key=lambda row: (identity(row["name"]), row["slug"]))
+        validate_unique(rows)
+        return rows, digest
+    except Exception as exc:
+        print(f"[atlas] canonical catalog invalid ({exc}); using legacy fallback",
+              file=sys.stderr)
+        return None, None
+
+def legacy_native():
+    rows = []
+    if not os.path.isdir(NATIVE):
+        return rows
+    for current, dirs, files in os.walk(NATIVE, topdown=True, followlinks=False):
+        dirs[:] = sorted(
+            name for name in dirs
+            if name not in EXCLUDED_DIRS and
+            not os.path.islink(os.path.join(current, name)))
+        if "SKILL.md" not in files:
+            continue
+        path = os.path.join(current, "SKILL.md")
+        if os.path.islink(path):
+            continue
+        name, desc = parse_frontmatter(path)
+        rel = os.path.relpath(path, NATIVE).replace(os.sep, "/")
+        group = "Audits" if "/audits/" in f"/{rel}" or name.endswith("audit") else "Skills"
+        rows.append({
+            "name": name,
+            "slug": os.path.dirname(rel),
+            "description": desc,
+            "commands": derive_commands(name, group),
+            "group": group,
+            "source": "omegaos-legacy",
+            "provider_states": {},
+            "content_digest": hashlib.sha256(
+                open(path, "rb").read().replace(b"\r\n", b"\n")).hexdigest(),
+        })
+        if len(rows) > MAX_SKILLS:
+            raise ValueError(f"legacy catalog exceeds {MAX_SKILLS} skills")
+    rows.sort(key=lambda row: (identity(row["name"]), row["slug"]))
+    validate_unique(rows)
+    return rows
+
+native, catalog_hash = canonical_native()
+if native is None:
+    native = legacy_native()
+    legacy_projection = json.dumps(native, ensure_ascii=False, sort_keys=True,
+                                   separators=(",", ":")).encode()
+    catalog_hash = "legacy-sha256:" + hashlib.sha256(legacy_projection).hexdigest()
 
 # ---- 2. power-up library ----
 powerups = []
@@ -95,16 +164,33 @@ if os.path.isfile(POWERUP_MANIFEST):
             "source": "powerup" if r["source"] == "powerup" else "bundle-501",
             "path": r["path"],
         })
+powerups.sort(key=lambda row: (identity(row["name"]), row.get("path", "")))
 
 atlas = {
     "generated": datetime.date.today().isoformat(),
+    "schema_version": 2,
+    "catalog_hash": catalog_hash,
     "native_count": len(native),
     "powerup_count": len(powerups),
     "total": len(native) + len(powerups),
     "native": native,
     "powerups": powerups,
 }
-json.dump(atlas, open(os.path.join(OMEGA, "skills-atlas.json"), "w"), indent=2, ensure_ascii=False)
+hash_payload = {
+    "catalog_hash": catalog_hash,
+    "native": native,
+    "powerups": powerups,
+}
+atlas["atlas_hash"] = hashlib.sha256(json.dumps(
+    hash_payload, ensure_ascii=False, sort_keys=True,
+    separators=(",", ":")).encode()).hexdigest()
+os.makedirs(OMEGA, exist_ok=True)
+atlas_path = os.path.join(OMEGA, "skills-atlas.json")
+atlas_tmp = atlas_path + ".tmp"
+with open(atlas_tmp, "w", encoding="utf-8") as handle:
+    json.dump(atlas, handle, indent=2, ensure_ascii=False, sort_keys=True)
+    handle.write("\n")
+os.replace(atlas_tmp, atlas_path)
 
 # ---- 3. HTML ----
 def esc(s): return html.escape(s or "")
@@ -211,6 +297,10 @@ q.addEventListener('input',filt);
 </script></body></html>"""
 
 os.makedirs(os.path.join(OMEGA, "artifacts"), exist_ok=True)
-open(os.path.join(OMEGA, "artifacts/omega-skill-atlas.html"), "w", encoding="utf-8").write(doc)
+html_path = os.path.join(OMEGA, "artifacts/omega-skill-atlas.html")
+html_tmp = html_path + ".tmp"
+with open(html_tmp, "w", encoding="utf-8") as handle:
+    handle.write(doc)
+os.replace(html_tmp, html_path)
 print(f"native={nc} powerup={pc} total={tot}")
 print("wrote ~/.omega/skills-atlas.json + ~/.omega/artifacts/omega-skill-atlas.html")

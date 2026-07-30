@@ -3,6 +3,8 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AuditDomain {
@@ -87,285 +89,123 @@ impl AuditSkill {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct AuditRegistry {
+    meta: AuditRegistryMeta,
+    audits: Vec<AuditRegistryEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditRegistryMeta {
+    total_audits: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuditRegistryEntry {
+    id: String,
+    name: String,
+    domain: String,
+    phases: u32,
+    max_score: u32,
+    triggers: Vec<String>,
+    read_only: bool,
+    answers: String,
+}
+
+const AUDIT_REGISTRY_TOML: &str = include_str!("../../../skills/audits/registry.toml");
+
+fn parse_domain(value: &str) -> Result<AuditDomain, String> {
+    match value {
+        "code" => Ok(AuditDomain::Code),
+        "flow" | "flows" => Ok(AuditDomain::Flow),
+        "design" => Ok(AuditDomain::Design),
+        "runtime" => Ok(AuditDomain::Runtime),
+        "feature" | "features" => Ok(AuditDomain::Feature),
+        "performance" => Ok(AuditDomain::Performance),
+        "security" => Ok(AuditDomain::Security),
+        "accessibility" => Ok(AuditDomain::Accessibility),
+        "seo" => Ok(AuditDomain::Seo),
+        "data" => Ok(AuditDomain::Data),
+        "api" => Ok(AuditDomain::Api),
+        "copy" => Ok(AuditDomain::Copy),
+        "dx" => Ok(AuditDomain::Dx),
+        "motion" => Ok(AuditDomain::Motion),
+        "automation" => Ok(AuditDomain::Automation),
+        "logic" => Ok(AuditDomain::Logic),
+        "retention" => Ok(AuditDomain::Retention),
+        "observability" => Ok(AuditDomain::Observability),
+        "dependencies" => Ok(AuditDomain::Dependencies),
+        "localization" => Ok(AuditDomain::Localization),
+        "release" => Ok(AuditDomain::Release),
+        "privacy" => Ok(AuditDomain::Privacy),
+        other => Err(format!("unknown audit domain: {other}")),
+    }
+}
+
+fn leak_string(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
+}
+
+fn load_canonical_audits() -> Result<Vec<AuditSkill>, String> {
+    let registry: AuditRegistry =
+        toml::from_str(AUDIT_REGISTRY_TOML).map_err(|error| error.to_string())?;
+    if registry.meta.total_audits != registry.audits.len() {
+        return Err(format!(
+            "registry meta declares {} audits but contains {}",
+            registry.meta.total_audits,
+            registry.audits.len()
+        ));
+    }
+
+    let mut ids = HashSet::new();
+    let mut audits = Vec::with_capacity(registry.audits.len());
+    for entry in registry.audits {
+        if entry.id.trim().is_empty()
+            || entry.name.trim().is_empty()
+            || entry.answers.trim().is_empty()
+            || entry.triggers.is_empty()
+            || entry.phases == 0
+            || entry.max_score == 0
+        {
+            return Err(format!("audit {} has incomplete metadata", entry.id));
+        }
+        if !ids.insert(entry.id.clone()) {
+            return Err(format!("duplicate audit id: {}", entry.id));
+        }
+
+        let domain = parse_domain(&entry.domain)?;
+        let id = leak_string(entry.id);
+        let triggers: Vec<&'static str> = entry.triggers.into_iter().map(leak_string).collect();
+        audits.push(AuditSkill {
+            id,
+            name: leak_string(entry.name),
+            domain,
+            phases: entry.phases,
+            max_score: entry.max_score,
+            normalized_max: 100,
+            description: leak_string(entry.answers),
+            triggers: Box::leak(triggers.into_boxed_slice()),
+            skill_path: leak_string(format!("audits/{id}/SKILL.md")),
+            read_only: entry.read_only,
+        });
+    }
+    Ok(audits)
+}
+
+fn canonical_audits() -> &'static Vec<AuditSkill> {
+    static AUDITS: OnceLock<Vec<AuditSkill>> = OnceLock::new();
+    AUDITS.get_or_init(|| {
+        load_canonical_audits()
+            .unwrap_or_else(|error| panic!("invalid embedded audit registry: {error}"))
+    })
+}
+
+/// Return the Quality Arsenal from the machine-readable TOML registry.
+///
+/// `skills/audits/registry.toml` is the only source of truth. The Rust
+/// catalogue is parsed from that file at runtime and cached for the process.
 pub fn all_audits() -> Vec<AuditSkill> {
-    vec![
-        AuditSkill {
-            id: "codeaudit",
-            name: "Code Architecture",
-            domain: AuditDomain::Code,
-            phases: 23,
-            max_score: 420,
-            normalized_max: 100,
-            description: "Is the code SOLID?",
-            triggers: &["code", "code audit", "audit code"],
-            skill_path: "audits/codeaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "flowaudit",
-            name: "User Flows",
-            domain: AuditDomain::Flow,
-            phases: 20,
-            max_score: 400,
-            normalized_max: 100,
-            description: "Does the experience WORK?",
-            triggers: &["flow", "user flow", "parcours"],
-            skill_path: "audits/flowaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "uiuxaudit",
-            name: "Design Quality",
-            domain: AuditDomain::Design,
-            phases: 23,
-            max_score: 420,
-            normalized_max: 100,
-            description: "Is the interface BEAUTIFUL?",
-            triggers: &["ux", "ui", "design audit"],
-            skill_path: "audits/uiuxaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "debugaudit",
-            name: "Runtime Bugs",
-            domain: AuditDomain::Runtime,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "What is BROKEN right now?",
-            triggers: &["debug", "runtime bug", "chaos"],
-            skill_path: "audits/debugaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "featureaudit",
-            name: "Feature Completeness",
-            domain: AuditDomain::Feature,
-            phases: 16,
-            max_score: 320,
-            normalized_max: 100,
-            description: "Is the product COMPLETE?",
-            triggers: &["feature", "completeness"],
-            skill_path: "audits/featureaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "perfaudit",
-            name: "Performance",
-            domain: AuditDomain::Performance,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is it FAST enough?",
-            triggers: &["perf", "performance", "core web vitals"],
-            skill_path: "audits/perfaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "secaudit",
-            name: "Security",
-            domain: AuditDomain::Security,
-            phases: 20,
-            max_score: 400,
-            normalized_max: 100,
-            description: "Is it SECURE?",
-            triggers: &["sec", "security", "owasp", "vulnerab"],
-            skill_path: "audits/secaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "a11yaudit",
-            name: "Accessibility",
-            domain: AuditDomain::Accessibility,
-            phases: 16,
-            max_score: 320,
-            normalized_max: 100,
-            description: "Is it ACCESSIBLE?",
-            triggers: &["a11y", "accessibility", "wcag"],
-            skill_path: "audits/a11yaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "seoaudit",
-            name: "SEO",
-            domain: AuditDomain::Seo,
-            phases: 20,
-            max_score: 400,
-            normalized_max: 100,
-            description: "Is it DISCOVERABLE?",
-            triggers: &["seo", "crawlability"],
-            skill_path: "audits/seoaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "dataaudit",
-            name: "Data Integrity",
-            domain: AuditDomain::Data,
-            phases: 16,
-            max_score: 320,
-            normalized_max: 100,
-            description: "Is the data INTACT?",
-            triggers: &["data integrity", "schema", "data audit"],
-            skill_path: "audits/dataaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "apiaudit",
-            name: "API Quality",
-            domain: AuditDomain::Api,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is the API SOLID?",
-            triggers: &["api audit", "api contracts"],
-            skill_path: "audits/apiaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "copyaudit",
-            name: "Copy & Messaging",
-            domain: AuditDomain::Copy,
-            phases: 14,
-            max_score: 280,
-            normalized_max: 100,
-            description: "Is the copy CLEAR?",
-            triggers: &["copy", "messaging"],
-            skill_path: "audits/copyaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "dxaudit",
-            name: "Developer Experience",
-            domain: AuditDomain::Dx,
-            phases: 16,
-            max_score: 320,
-            normalized_max: 100,
-            description: "Is the DX SMOOTH?",
-            triggers: &["dx", "developer experience"],
-            skill_path: "audits/dxaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "motionaudit",
-            name: "Motion Design",
-            domain: AuditDomain::Motion,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is the motion PURPOSEFUL?",
-            triggers: &["motion", "animation"],
-            skill_path: "audits/motionaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "automationaudit",
-            name: "Automation",
-            domain: AuditDomain::Automation,
-            phases: 22,
-            max_score: 330,
-            normalized_max: 100,
-            description: "Is automation RELIABLE?",
-            triggers: &["automation", "cron", "scripts"],
-            skill_path: "audits/automationaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "logicaudit",
-            name: "Systems Logic",
-            domain: AuditDomain::Logic,
-            phases: 20,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is the logic OPTIMAL?",
-            triggers: &["logic", "optimize logic"],
-            skill_path: "audits/logicaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "retentionaudit",
-            name: "Retention (READ-ONLY)",
-            domain: AuditDomain::Retention,
-            phases: 20,
-            max_score: 400,
-            normalized_max: 100,
-            description: "What FEATURES are missing?",
-            triggers: &["retention", "feature opportunities"],
-            skill_path: "audits/retentionaudit/SKILL.md",
-            read_only: true,
-        },
-        AuditSkill {
-            id: "observabilityaudit",
-            name: "Observability",
-            domain: AuditDomain::Observability,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Can we SEE what it does in prod?",
-            triggers: &["observability", "logging audit", "tracing audit", "metrics audit", "alerting audit", "slo audit", "can we debug prod"],
-            skill_path: "audits/observabilityaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "depaudit",
-            name: "Dependency & Supply-Chain",
-            domain: AuditDomain::Dependencies,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is the supply chain SAFE?",
-            triggers: &["dep", "depaudit", "dependency audit", "supply chain", "license audit", "lockfile integrity", "sbom"],
-            skill_path: "audits/depaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "i18naudit",
-            name: "i18n & Localization",
-            domain: AuditDomain::Localization,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is it WORLD-READY?",
-            triggers: &["i18n", "internationalization", "localization", "l10n", "translation audit", "hardcoded strings", "rtl audit"],
-            skill_path: "audits/i18naudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "releaseaudit",
-            name: "Release & Shipping-Safety",
-            domain: AuditDomain::Release,
-            phases: 20,
-            max_score: 400,
-            normalized_max: 100,
-            description: "Is shipping SAFE + reversible?",
-            triggers: &["release", "release audit", "ci/cd audit", "pipeline audit", "deploy safety", "rollback", "migration safety", "release readiness"],
-            skill_path: "audits/releaseaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "privacyaudit",
-            name: "Privacy & Data-Protection",
-            domain: AuditDomain::Privacy,
-            phases: 18,
-            max_score: 360,
-            normalized_max: 100,
-            description: "Is user data HANDLED LAWFULLY?",
-            triggers: &["privacy", "gdpr", "ccpa", "pii", "consent", "cookie compliance", "data retention", "dsar"],
-            skill_path: "audits/privacyaudit/SKILL.md",
-            read_only: false,
-        },
-        AuditSkill {
-            id: "refontaudit",
-            name: "Dashboard Refonte",
-            domain: AuditDomain::Design,
-            phases: 25,
-            max_score: 540,
-            normalized_max: 100,
-            description: "Should the dashboard be REDESIGNED (Linear/Vercel-grade)?",
-            triggers: &["refonte", "redesign dashboard", "comme linear", "comme vercel", "dashboard pro", "dashboard senior"],
-            skill_path: "audits/refontaudit/SKILL.md",
-            read_only: false,
-        },
-    ]
+    canonical_audits().clone()
 }
 
 /// Tokenize text into lowercase alphanumeric words (splitting on any
@@ -391,13 +231,15 @@ fn phrase_matches(words: &[String], phrase: &str) -> bool {
 
 /// Select audits relevant to a mission based on keyword matching.
 pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str> {
-    static AUDITS: std::sync::OnceLock<Vec<AuditSkill>> = std::sync::OnceLock::new();
-    let audits = AUDITS.get_or_init(all_audits);
+    let audits = canonical_audits();
     let lower = mission_text.to_lowercase();
     let words = tokenize(mission_text);
 
     // "full audit" / "audit complet" → every registered audit (all 23)
-    if lower.contains("full audit") || lower.contains("audit complet") || lower.contains("toutes les audits") {
+    if lower.contains("full audit")
+        || lower.contains("audit complet")
+        || lower.contains("toutes les audits")
+    {
         return audits.iter().map(|a| a.id).collect();
     }
 
@@ -417,7 +259,10 @@ pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str>
     }
 
     // UI changes → uiuxaudit + a11yaudit + motionaudit
-    if phrase_matches(&words, "ui") || phrase_matches(&words, "ux") || phrase_matches(&words, "design") {
+    if phrase_matches(&words, "ui")
+        || phrase_matches(&words, "ux")
+        || phrase_matches(&words, "design")
+    {
         for extra in &["uiuxaudit", "a11yaudit", "motionaudit"] {
             if !selected.contains(extra) {
                 selected.push(extra);
@@ -436,7 +281,10 @@ pub fn select_audits(mission_text: &str, _files: &[String]) -> Vec<&'static str>
 
 /// Select all audits for a specific domain.
 pub fn select_audits_for_domain(domain: AuditDomain) -> Vec<AuditSkill> {
-    all_audits().into_iter().filter(|a| a.domain == domain).collect()
+    all_audits()
+        .into_iter()
+        .filter(|a| a.domain == domain)
+        .collect()
 }
 
 /// Find a single audit by id.
@@ -566,9 +414,7 @@ impl AuditReport {
             .audits
             .iter()
             .map(|a| {
-                let name = find_audit(&a.audit_id)
-                    .map(|s| s.name)
-                    .unwrap_or("Unknown");
+                let name = find_audit(&a.audit_id).map(|s| s.name).unwrap_or("Unknown");
                 (name, a.raw_score, a.max_score as f32)
             })
             .collect();
@@ -609,7 +455,10 @@ pub struct AuditScope {
 
 /// Build a list of dispatch prompts for all audits selected for a mission.
 pub fn build_dispatch_prompts(mission_text: &str, scope: &AuditScope) -> Vec<(String, String)> {
-    let selected_ids = select_audits(mission_text, &scope.files.iter().map(|s| s.clone()).collect::<Vec<_>>());
+    let selected_ids = select_audits(
+        mission_text,
+        &scope.files.iter().map(|s| s.clone()).collect::<Vec<_>>(),
+    );
     selected_ids
         .into_iter()
         .filter_map(|id| {

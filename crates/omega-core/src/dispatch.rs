@@ -338,6 +338,33 @@ impl Dispatcher {
         // keyword signals ("ship", "god mode") must not be lost to
         // restructuring.
         let decision = routing::classify_mission(mission);
+        let mission_record =
+            crate::mission::Mission::new(project, mission, work_path.clone());
+        let ledger = crate::mission_ledger::MissionLedger::open(
+            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+        )?;
+        ledger.create_mission(
+            &mission_record,
+            &format!("dispatch:{}:create", mission_record.id.as_str()),
+            "omega-dispatch",
+        )?;
+        let mut classified = crate::mission_ledger::AppendEvent::new(
+            mission_record.id.clone(),
+            1,
+            format!("dispatch:{}:classified", mission_record.id.as_str()),
+            "omega-dispatch",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(crate::mission::MissionState::Classified);
+        classified.payload = serde_json::to_value(&decision)?;
+        ledger.append(classified)?;
+
+        // The legacy OracleState is now a projection carrying the same stable
+        // mission identity. It remains for existing readers during migration,
+        // but is never allowed to invent an empty mission for this path.
+        let oracle_state = OracleState::new(&oracle_name, &mission_record);
+        oracle_state.write(&self.config.state_dir)?;
+
         let ship = OraclePromptGenerator::should_ship(mission);
         let god_mode = OraclePromptGenerator::is_god_mode(mission);
 
@@ -377,6 +404,12 @@ impl Dispatcher {
 
         // Append complexity hint
         prompt.push_str(&format!("\n## Complexity: {:?}\n", decision.complexity));
+        prompt.push_str(&format!(
+            "\n## Mission Identity\nmission_id: `{}`\nrouter_version: `{}`\n\
+             This identity is stable. Session names and JSON files are projections only.\n",
+            mission_record.id.as_str(),
+            decision.router_version
+        ));
 
         // GIT SYNC PREFLIGHT (pull-before-work doctrine, runtime-enforced):
         // every mission starts from the CURRENT origin state — the dispatcher
@@ -428,8 +461,31 @@ impl Dispatcher {
                 )
             })?,
             None => crate::agents::Agent::from_name(&self.config.agent_command)
-                .unwrap_or(crate::agents::Agent::Claude),
+                .unwrap_or(crate::agents::Agent::Codex),
         };
+        let mut required = vec![
+            crate::providers::ProviderCapability::Reasoning,
+            crate::providers::ProviderCapability::ToolCalling,
+        ];
+        if !mission.to_lowercase().contains("read-only")
+            && !mission.to_lowercase().contains("lecture seule")
+        {
+            required.push(crate::providers::ProviderCapability::CodeEditing);
+        }
+        if matches!(
+            decision.topology,
+            routing::RoutingTopology::ManagerTools
+                | routing::RoutingTopology::ParallelWorkers
+                | routing::RoutingTopology::Council
+        ) {
+            required.push(crate::providers::ProviderCapability::Delegation);
+        }
+        crate::providers::ProvidersConfig::negotiate_provider(
+            Some(agent.name()),
+            &required,
+            &[crate::providers::ProviderCapability::LongContext],
+        )
+        .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             // Ultracode posture: the oracle is the strategic brain — it reasons
@@ -681,7 +737,18 @@ impl Dispatcher {
 
         let work_dir = state.working_dir.to_string_lossy().to_string();
         let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-            .unwrap_or(crate::agents::Agent::Claude);
+            .unwrap_or(crate::agents::Agent::Codex);
+        crate::providers::ProvidersConfig::negotiate_provider(
+            Some(agent.name()),
+            &[
+                crate::providers::ProviderCapability::Reasoning,
+                crate::providers::ProviderCapability::CodeEditing,
+                crate::providers::ProviderCapability::ToolCalling,
+                crate::providers::ProviderCapability::Delegation,
+            ],
+            &[],
+        )
+        .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
         if matches!(agent, crate::agents::Agent::Claude) {
             let mut opts = crate::agents::LaunchOptions::default();
             opts.effort = Some("xhigh".to_string());
@@ -858,6 +925,8 @@ mod resurrect_tests {
             session_name: "Acme-worker-auth".into(),
             task_id: "t1".into(),
             task_name: "auth".into(),
+            attempt_id: None,
+            plan_revision: None,
             files_owned: vec![],
             dispatched_at: Utc::now(),
             status: WorkerEntryStatus::DoneClean,

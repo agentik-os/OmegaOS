@@ -17,6 +17,12 @@ pub struct OmegaConfig {
     #[serde(default = "default_projects_dir")]
     pub projects_dir: PathBuf,
     pub projects: Vec<ProjectConfig>,
+    /// Runtime used when a caller does not provide an explicit agent.
+    ///
+    /// Missing fields use Codex. An explicit serialized value is always
+    /// preserved, including `claude`: config loading has no provenance proving
+    /// whether an old value was untouched or deliberately chosen.
+    #[serde(default = "default_agent_command")]
     pub agent_command: String,
     pub default_model: String,
     #[serde(default = "default_aisb_agent")]
@@ -95,8 +101,12 @@ impl AutoUpdatePolicy {
     }
 }
 
+fn default_agent_command() -> String {
+    "codex".to_string()
+}
+
 fn default_aisb_agent() -> String {
-    "claude".to_string()
+    "codex".to_string()
 }
 
 fn default_auto_master() -> bool {
@@ -208,18 +218,13 @@ impl Default for OmegaConfig {
             locks_dir: omega_dir.join("locks"),
             projects_dir: default_projects_dir(),
             projects: Vec::new(),
-            // Operator directive 2026-07-25 (reverses the 2026-07-23 Codex switch):
-            // Claude is the default coding agent everywhere again — oracles, workers,
-            // orchestrate, team, patrol re-spawn and the plain Telegram dispatch all
-            // resolve THIS field when no --agent is given. Codex stays a first-class
-            // per-mission choice (`--agent codex`, the /duo binome, the agent picker);
-            // it is not removed, it is simply no longer what you get by default.
-            agent_command: "claude".to_string(),
-            // "opus" is an ALIAS, resolved at dispatch time by
-            // dispatch::resolve_model_flag to "claude-opus-5[1m]" — Claude
-            // Opus 5 with the 1M context window. Operator directive
-            // 2026-07-24: that is the default brain for every session that
-            // does not deliberately pin another tier (R-MODEL).
+            // Codex is the default runtime for every new session whose caller
+            // does not deliberately choose another provider. Deserialization
+            // preserves every explicit value, including a legacy `claude`.
+            agent_command: default_agent_command(),
+            // This field is provider-specific. Codex reads its model/effort
+            // from ~/.codex/config.toml; "opus" remains the Claude default for
+            // missions that explicitly select Claude.
             default_model: "opus".to_string(),
             aisb_agent: default_aisb_agent(),
             auto_spawn_master: default_auto_master(),
@@ -540,8 +545,41 @@ mod tests {
         // silently discard the whole config on a fresh install.
         let cfg: OmegaConfig = toml::from_str(include_str!("../../../config/default.toml"))
             .expect("config/default.toml must deserialize into OmegaConfig");
-        assert_eq!(cfg.agent_command, "claude");
+        assert_eq!(cfg.agent_command, "codex");
+        assert_eq!(cfg.aisb_agent, "codex");
         assert_eq!(cfg.default_model, "opus");
+    }
+
+    #[test]
+    fn fresh_and_missing_agent_configuration_defaults_to_codex() {
+        let fresh = OmegaConfig::default();
+        assert_eq!(fresh.agent_command, "codex");
+        assert_eq!(fresh.aisb_agent, "codex");
+
+        // A partial pre-existing config with no agent field adopts the new
+        // default without requiring a rewrite of the operator's file.
+        let missing: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
+        assert_eq!(missing.agent_command, "codex");
+        assert_eq!(missing.aisb_agent, "codex");
+        assert_eq!(missing.default_model, "sonnet");
+    }
+
+    #[test]
+    fn explicit_agent_choices_are_never_migrated_by_config_loading() {
+        for explicit in ["claude", "gemini", "codex"] {
+            let body = format!("agent_command = \"{explicit}\"\naisb_agent = \"{explicit}\"\n");
+            let parsed: OmegaConfig = toml::from_str(&body).unwrap();
+            assert_eq!(parsed.agent_command, explicit);
+            assert_eq!(parsed.aisb_agent, explicit);
+        }
+
+        // `load_from` has no provenance that could distinguish an untouched
+        // legacy "claude" from a deliberate operator choice, so it preserves it.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "agent_command = \"claude\"\n").unwrap();
+        let loaded = OmegaConfig::load_from(&path).unwrap();
+        assert_eq!(loaded.agent_command, "claude");
     }
 
     #[test]
@@ -564,7 +602,7 @@ mod tests {
         // instead of nuking the whole file.
         let cfg: OmegaConfig = toml::from_str("default_model = \"sonnet\"\n").unwrap();
         assert_eq!(cfg.default_model, "sonnet"); // overridden
-        assert_eq!(cfg.agent_command, "claude"); // still the default, not empty
+        assert_eq!(cfg.agent_command, "codex"); // still the default, not empty
     }
 
     #[test]
@@ -592,7 +630,8 @@ mod tests {
     fn absent_config_is_default_not_error() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = OmegaConfig::load_from(&tmp.path().join("nonexistent.toml")).unwrap();
-        assert_eq!(cfg.agent_command, "claude");
+        assert_eq!(cfg.agent_command, "codex");
+        assert_eq!(cfg.aisb_agent, "codex");
     }
 
     #[test]

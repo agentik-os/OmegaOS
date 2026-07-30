@@ -6,7 +6,7 @@ A terminal control plane for running a fleet of AI coding agents in parallel, wh
 
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 
-OmegaOS is not a library you import. You install it on a Linux box and you get the `omega` command, a TUI for watching and killing sessions, and an orchestration layer that hands work to agents — plus a Telegram bridge if you want to drive it from your phone. The default agent runtime is Claude Code; what's different here is that every agent, however deep in the tree, carries the same non-negotiable rules, injected as plain text into its prompt. That's the doctrine, and it's where to start.
+OmegaOS is not a library you import. You install it on a Linux box and you get the `omega` command, a TUI for watching and killing sessions, an orchestration layer that hands work to agents, and a Telegram bridge for phone control. New sessions use OpenAI Codex by default. Claude Code, Gemini, Pi, Hermes, and GLM remain explicit choices. Every agent receives a compact, typed, role-scoped policy context compiled from the same doctrine.
 
 Current version: see [CHANGELOG.md](CHANGELOG.md) (`omega -V` on an installed box). I run it daily; expect rough edges.
 
@@ -61,7 +61,7 @@ The stack installs itself; only the personal pieces are left. **`omega guide`
 prints the full step-by-step** (also saved at `~/.omega/GETTING-STARTED.md`,
 and shown at the end of the install). In short:
 
-1. **Connect Claude** *(required)* — `claude` → `/login` → follow the URL. Check: `claude auth status`.
+1. **Connect Codex** *(required for the default runtime)*: run `codex login`, then check with `codex login status`. Claude remains optional through `claude` and `/login`.
 2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>` (the env form keeps the token out of the process list). For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
 3. **Service keys** *(optional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI-for-voice) powers auto-provisioning of new apps.
 4. **Add a project** — `omega` → **[N] New Project**, Telegram → *Import from GitHub*, or just drop a repo under `~/Station/<Category>/`.
@@ -75,15 +75,15 @@ OmegaOS doctor
   [+] binary           omega 0.1.6
   [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 26 Rules
-  [+] agent CLI        claude available
+  [+] doctrine         7 Laws + 47 Rules
+  [+] agent CLI        codex available
   [+] state dir        /home/vibe/.omega/state
   [+] telegram service omega-tg-bot active
   [+] hooks            track + verify present, registered in settings.json
   [+] secrets dir      /home/vibe/.omega present
   [+] memory           249088MB available
   [+] usage cache      usage cache 1 min old
-  [+] claude oauth     Claude OAuth valid
+  [+] codex auth       Codex login valid
   [+] telegram poller  1 poller
   [+] provisioning     provisioning: VERCEL_TOKEN, CONVEX_TEAM_TOKEN, STRIPE_SECRET_KEY
 ```
@@ -95,7 +95,7 @@ OmegaOS doctor
 - **Dispatch missions.** `omega dispatch <Project> "<mission>"` hands work to that project's oracle, which plans, spawns workers, and gates the result. `omega orchestrate` runs the full classify → plan → dispatch → monitor → gate pipeline in one command.
 - **Run typed plans.** `/omg-planner` decomposes a build into a typed DAG (`.planner/tracker.json`); `omega plan-run` executes it with structural can't-skip enforcement (Gate) and independent verify-command proof (Guardian).
 - **Bootstrap whole apps.** `/omg-new-project` provisions Vercel/Convex/GitHub/Clerk/Stripe from your keys, scaffolds the stack, then runs vision → PRD → plan → build.
-- **Parallelize safely.** Workers claim their files with real advisory locks (`fs2`), and `omega spawn-worker --worktree` gives each parallel worker its own git worktree with a clean merge at the end. Completion is a `done.json` with a status, not a vibe.
+- **Parallelize safely.** Workers claim their files with real advisory locks (`fs2`), and `omega spawn-worker --worktree` gives each parallel worker its own git worktree with a clean merge at the end. A done signal creates a candidate result. Only an independent verifier and the mission acceptance gate can close it.
 - **Audit everything.** A Quality Arsenal of 23 forensic Gestalt-Popper audits (`codeaudit`, `secaudit`, `perfaudit`, `a11yaudit`, …) auto-selected for what changed, plus `/omg-acceptance` — an autonomous browser-acceptance gate that sweeps every route and fixes what it finds.
 - **Convene a council.** `/omg-llm-council` puts one question to four different Claude models in parallel, has them peer-review each other anonymously, and synthesizes a verdict with the dissent intact — no API keys, it runs inside your existing session.
 - **Browse agentically.** `/omg-browser-use` drives a cloud browser for tasks scripted Playwright can't express.
@@ -108,9 +108,9 @@ Three ways in: the `ratatui` TUI (5 tabs: Sessions, Menu, Agentic, Settings, Hel
 
 ## The doctrine
 
-There's a typed registry of 6 Laws and a set of named operational Rules (26 at the time of writing — `omega rules list` prints the current set). It lives in Rust, at `crates/omega-core/src/rules.rs`, so it's a compiled artifact and not a YAML file someone forgot to update.
+There's a typed registry of 7 Laws and 47 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.
 
-**Laws are inviolable.** They bind every agent and they override every rule and every task. There are six:
+**Laws are inviolable.** They bind every agent and override every rule and task. There are seven:
 
 - **L0 — Ship the truth.** A change isn't done until a clean rebuild reproduces it and it's pushed. Anything less is a draft.
 - **L1 — Runtime is the only truth.** Code and comments state intent. Only running it reveals reality. When they disagree, runtime wins.
@@ -118,16 +118,15 @@ There's a typed registry of 6 Laws and a set of named operational Rules (26 at t
 - **L3 — Decide and proceed.** A dispatched agent is autonomous. It never stops to ask "should I continue?" It decides, executes, and reports after.
 - **L4 — Done means 100%, verified.** 92% is not done. Enumerate the tasks, finish each, verify each against runtime.
 - **L5 — Quality over speed.** No streamlined, lightweight, or quick variant of a real protocol. A 403 or a 401 is an abort, not a pass.
+- **L6 — Finish the mission.** Enumerate, execute, verify, and report every requested deliverable. A plan or partial phase is not a legal stopping point.
 
 **Rules are operational.** Named (R-SCOPE, R-VERIFY, R-CITE, …) and sorted into Universal, QualityGate, Orchestration, Reporting, and Safety. Each Rule is scoped to the roles it binds: Master, Oracle, Worker. A worker doesn't get burdened with orchestration rules it can't act on, and an oracle doesn't carry the worker's file-locking discipline. Same registry, different slices.
 
 ### The funnel
 
-This is the mechanism. One function, `rules::agent_context_block(scope)`, builds the role-scoped slice of Laws and Rules and injects it into the system prompt of every agent the moment it's dispatched.
+This is the mechanism. `rules::compile_rule_context_for_provider` combines the compact law kernel, role contract, mission-relevant rules, provider mechanics, and skill references. It rejects output above the context budget instead of truncating silently. Every compiled context has a deterministic digest for drift detection.
 
-A worker three levels down the tree carries the same six Laws as the Master at the top. Nobody can spawn a child that quietly drops L5 to go faster, because the child's prompt is assembled from the same registry by the same function.
-
-Because the doctrine is just text, it works the same whether the backend is Claude, GPT, Gemini, or something you add later.
+A worker three levels down the tree carries the same seven Laws as the Master. Operational procedures are loaded only when role, mission, risk, and provider require them. This keeps the invariants universal without injecting every runbook into every turn.
 
 See the whole thing:
 
@@ -245,7 +244,7 @@ I'd rather you know these going in.
 
 - **Linux-first.** Developed on a headless VPS. No Windows. macOS gets real fixes (launchd services, Homebrew path) but is less exercised.
 - The TUI assumes a 256-color terminal. On a 16-color terminal it'll be ugly.
-- The default agent runtime is Claude Code, so you need the `claude` CLI and an Anthropic account. Other agents (pi, codex, gemini, glm) install via `omega install` and run, but they're less exercised.
+- The default agent runtime is OpenAI Codex, so the `codex` CLI must be logged in. Claude Code, Gemini, Pi, Hermes, and GLM are supported explicit alternatives.
 - **Single machine.** The rmux daemon is local. There's no multi-host orchestration.
 - It's 0.1.x. I use it daily, but you'll find rough edges I haven't hit yet.
 

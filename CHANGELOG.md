@@ -8,6 +8,23 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 ## [Unreleased]
 
 ### Changed
+- **Orchestration V3 release candidate.** Mission and task-attempt state now
+  live in a SQLite WAL event ledger with expected-version CAS, idempotency,
+  fenced leases, and an outbox. Worker completion is a candidate claim, not
+  acceptance; Oracle delivery requires accepted attempts and recorded gates.
+- **Codex is the fresh-install default.** New OmegaOS, Oracle, and project
+  sessions select Codex while preserving every existing explicit provider
+  choice. Session provider identity is persisted for the TUI.
+- **Codex/rmux view fidelity.** Long Unicode input reflows to pane width, the
+  cursor follows the reflowed row, ANSI color survives capture, and the active
+  provider has a stable visual accent.
+- **Canonical skills and audits.** `SkillCatalogV1` drives install, Atlas, RAG,
+  and provider activation. The audit TOML now drives the Rust registry, while
+  the audit runner rejects incomplete evidence and validates final verdicts.
+- **Compact doctrine compiler.** All seven Laws remain universal; operational
+  rules are selected by role, mission, risk, and provider under a hard 24 KB
+  budget with a deterministic digest. Codex plans are recognized by the finish
+  guard alongside Claude plans.
 - **R-MODEL: Mythos safety boundary.** Fable 5 (`claude-fable-5`) ships safety
   classifiers that decline cybersecurity / bio / chem / model-distillation work
   (`stop_reason: "refusal"`). On the raw API a server-side fallback re-serves on

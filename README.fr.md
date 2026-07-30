@@ -10,15 +10,15 @@ Un plan de contrôle en terminal pour piloter en parallèle une flotte d'agents 
 
 OmegaOS n'est pas une bibliothèque qu'on importe. On l'installe sur une machine Linux. On récupère la commande `omega`, une TUI pour surveiller et tuer les sessions, et une couche d'orchestration qui distribue le travail aux agents. Il y a aussi un pont Telegram, si l'on veut piloter le tout depuis son téléphone.
 
-Le runtime d'agent par défaut, c'est Claude Code. Beaucoup d'outils savent faire tourner des agents en parallèle. Ce qui change ici, c'est que chaque agent, aussi profond soit-il dans l'arbre, porte les mêmes règles non négociables, injectées en texte brut dans son prompt. C'est la doctrine, et c'est par là qu'il faut commencer.
+Le runtime d'agent par défaut est OpenAI Codex. Claude Code, Gemini, Pi, Hermes et GLM restent disponibles comme choix explicites. Chaque agent reçoit un contexte compact, typé et adapté à son rôle, compilé depuis la même doctrine.
 
 Version courante : voir [CHANGELOG.md](CHANGELOG.md) (`omega -V` sur une machine installée). Je m'en sers tous les jours ; attendez-vous à des aspérités.
 
 ## La doctrine
 
-Il existe un registre typé de 6 Lois et de Règles opérationnelles nommées (26 à l'heure où j'écris — `omega rules list` affiche l'ensemble courant). Il vit en Rust, dans `crates/omega-core/src/rules.rs` : c'est donc un artefact compilé, et pas un fichier YAML que quelqu'un a oublié de mettre à jour.
+Il existe un registre typé de 7 Lois et de 47 Règles opérationnelles nommées. `omega rules list` affiche l'ensemble courant. Son compilateur vit dans `crates/omega-core/src/rules.rs` et impose un budget OmegaOS de 24 Ko.
 
-**Les Lois sont inviolables.** Elles s'imposent à chaque agent et priment sur toute règle et toute tâche. Il y en a six :
+**Les Lois sont inviolables.** Elles s'imposent à chaque agent et priment sur toute règle et toute tâche. Il y en a sept :
 
 - **L0 — Livrer la vérité.** Un changement n'est terminé que lorsqu'une recompilation propre le reproduit et qu'il est poussé. En dessous, c'est un brouillon.
 - **L1 — Le runtime est la seule vérité.** Le code et les commentaires énoncent l'intention. Seule l'exécution révèle la réalité. En cas de désaccord, c'est le runtime qui tranche.
@@ -26,14 +26,15 @@ Il existe un registre typé de 6 Lois et de Règles opérationnelles nommées (2
 - **L3 — Décider et avancer.** Un agent dépêché est autonome. Il ne s'arrête jamais pour demander « est-ce que je continue ? » Il décide, exécute, et rend compte ensuite.
 - **L4 — Terminé veut dire 100 %, vérifié.** 92 %, ce n'est pas terminé. On énumère les tâches, on finit chacune, on vérifie chacune face au runtime.
 - **L5 — La qualité avant la vitesse.** Pas de variante allégée, simplifiée ou expédiée d'un vrai protocole. Un 403 ou un 401, c'est un abandon, pas un succès.
+- **L6 - Finir la mission.** Énumérer, exécuter, vérifier et rapporter chaque livrable demandé. Un plan ou une phase partielle n'est pas un arrêt valide.
 
 **Les Règles sont opérationnelles.** Nommées (R-SCOPE, R-VERIFY, R-CITE…), réparties entre Universal, QualityGate, Orchestration, Reporting et Safety. Chaque Règle est cadrée selon les rôles auxquels elle s'applique : Master, Oracle, Worker. On n'encombre pas un worker de règles d'orchestration sur lesquelles il ne peut rien, et un oracle n'hérite pas de la discipline de verrouillage de fichiers du worker. Même registre, tranches différentes.
 
 ### L'entonnoir
 
-C'est là qu'est le mécanisme. Une seule fonction, `rules::agent_context_block(scope)`, construit la tranche de Lois et de Règles propre au rôle et l'injecte dans le system prompt de chaque agent à l'instant même où il est dépêché.
+C'est là qu'est le mécanisme. `rules::compile_rule_context_for_provider` combine le noyau compact des Lois, le contrat du rôle, les Règles pertinentes pour la mission et la mécanique du fournisseur. Il refuse tout contexte OmegaOS dépassant 24 Ko au lieu de le tronquer.
 
-Un worker situé trois niveaux plus bas dans l'arbre porte les six mêmes Lois que le Master tout en haut. Personne ne peut engendrer un enfant qui laisse discrètement tomber L5 pour aller plus vite, parce que le prompt de l'enfant est assemblé à partir du même registre par la même fonction.
+Un worker situé trois niveaux plus bas dans l'arbre porte les sept mêmes Lois que le Master tout en haut. Personne ne peut engendrer un enfant qui laisse discrètement tomber L5 pour aller plus vite, parce que le prompt de l'enfant est assemblé à partir du même registre par la même fonction.
 
 Comme la doctrine n'est que du texte, elle fonctionne à l'identique que le backend soit Claude, GPT, Gemini, ou quelque chose que vous ajouterez plus tard.
 
@@ -107,14 +108,14 @@ OmegaOS doctor
   [+] binary           omega 0.1.5
   [+] rmux daemon      connected, 6 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         6 Laws + 26 Rules
-  [+] agent CLI        claude available
+  [+] doctrine         7 Laws + 47 Rules
+  [+] agent CLI        codex available
   [+] state dir        /home/vibe/.omega/state
   [+] telegram service omega-tg-bot active
   [+] hooks            track + verify present, registered in settings.json
   [+] secrets dir      /home/vibe/.omega present
   [+] memory           249088MB available
-  [+] claude oauth     Claude OAuth valid
+  [+] codex auth       Codex login valid
   [+] telegram poller  1 poller
 ```
 
@@ -153,7 +154,7 @@ Autant que vous les sachiez avant de vous lancer.
 
 - **Linux d'abord.** Développé sur un VPS sans tête. Pas de Windows. macOS n'est pas testé mais devrait globalement marcher, puisque ce n'est que du Rust et rmux.
 - La TUI suppose un terminal 256 couleurs. Sur un terminal 16 couleurs, ce sera moche.
-- Le runtime d'agent par défaut, c'est Claude Code : il vous faut donc la CLI `claude` et un compte Anthropic. Les autres agents (pi, codex, gemini, glm) s'installent via `omega install` et tournent, mais ils sont moins éprouvés.
+- Le runtime d'agent par défaut est OpenAI Codex. La CLI `codex` doit être connectée. Claude Code, Gemini, Pi, Hermes et GLM restent des alternatives explicites.
 - **Une seule machine.** Le daemon rmux est local. Il n'y a pas d'orchestration multi-hôtes.
 - C'est du 0.1.x. Je m'en sers tous les jours, mais vous tomberez sur des aspérités que je n'ai pas encore rencontrées.
 

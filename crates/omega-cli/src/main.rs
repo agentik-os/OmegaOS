@@ -261,6 +261,12 @@ enum Commands {
         action: RulesAction,
     },
 
+    /// Compile and validate the canonical OmegaOS skill catalog
+    Skills {
+        #[command(subcommand)]
+        action: SkillsAction,
+    },
+
     /// Manage Quality Arsenal audits (23 Gestalt-Popper forensic audits)
     Audit {
         #[command(subcommand)]
@@ -711,8 +717,7 @@ fn command_owns_codex_reconciliation(command: &Option<Commands>) -> bool {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("omega=info".parse()?),
+            tracing_subscriber::EnvFilter::from_default_env().add_directive("omega=info".parse()?),
         )
         .with_target(false)
         .init();
@@ -753,11 +758,49 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Commands::Menu) | None => run_menu().await,
-        Some(Commands::New { name, dir, cmd, agent, prompt, files }) => {
-            cmd_new(&name, dir.as_deref(), cmd.as_deref(), agent.as_deref(), prompt.as_deref(), files).await
+        Some(Commands::New {
+            name,
+            dir,
+            cmd,
+            agent,
+            prompt,
+            files,
+        }) => {
+            cmd_new(
+                &name,
+                dir.as_deref(),
+                cmd.as_deref(),
+                agent.as_deref(),
+                prompt.as_deref(),
+                files,
+            )
+            .await
         }
-        Some(Commands::NewProject { name, stack, category, group, resume, from, skip, budget, build, dry_run }) => {
-            cmd_new_project(&name, &stack, &category, &group, resume, from.as_deref(), skip.as_deref(), budget, build, dry_run).await
+        Some(Commands::NewProject {
+            name,
+            stack,
+            category,
+            group,
+            resume,
+            from,
+            skip,
+            budget,
+            build,
+            dry_run,
+        }) => {
+            cmd_new_project(
+                &name,
+                &stack,
+                &category,
+                &group,
+                resume,
+                from.as_deref(),
+                skip.as_deref(),
+                budget,
+                build,
+                dry_run,
+            )
+            .await
         }
         Some(Commands::Agents) => cmd_agents(),
         Some(Commands::CleanJunk { force }) => cmd_clean_junk(force).await,
@@ -799,10 +842,28 @@ async fn main() -> Result<()> {
             }
         },
         Some(Commands::Telegram { action }) => cmd_telegram(action).await,
-        Some(Commands::Pdf { template, data, demo, theme, out, send, caption }) => {
-            cmd_pdf(&template, data.as_deref(), demo, &theme, &out, send, caption.as_deref()).await
+        Some(Commands::Pdf {
+            template,
+            data,
+            demo,
+            theme,
+            out,
+            send,
+            caption,
+        }) => {
+            cmd_pdf(
+                &template,
+                data.as_deref(),
+                demo,
+                &theme,
+                &out,
+                send,
+                caption.as_deref(),
+            )
+            .await
         }
         Some(Commands::Rules { action }) => cmd_rules(action),
+        Some(Commands::Skills { action }) => cmd_skills(action),
         Some(Commands::Audit { action }) => cmd_audit(action),
         Some(Commands::Sync) => cmd_sync(),
         Some(Commands::Update { check, auto, dir }) => {
@@ -816,28 +877,67 @@ async fn main() -> Result<()> {
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
         Some(Commands::Kill { name }) => cmd_kill(&name).await,
-        Some(Commands::Dispatch { project, mission, agent }) => {
-            cmd_dispatch(&project, &mission, agent.as_deref()).await
+        Some(Commands::Dispatch {
+            project,
+            mission,
+            agent,
+        }) => cmd_dispatch(&project, &mission, agent.as_deref()).await,
+        Some(Commands::Orchestrate {
+            project,
+            mission,
+            dir,
+            timeout,
+            no_gate,
+        }) => cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await,
+        Some(Commands::SpawnWorker {
+            task,
+            prompt,
+            dir,
+            project,
+            files,
+            force,
+            worktree,
+        }) => {
+            cmd_spawn_worker(
+                &task,
+                &prompt,
+                dir.as_deref(),
+                project.as_deref(),
+                files,
+                force,
+                worktree,
+            )
+            .await
         }
-        Some(Commands::Orchestrate { project, mission, dir, timeout, no_gate }) => {
-            cmd_orchestrate(&project, &mission, dir.as_deref(), timeout, no_gate).await
-        }
-        Some(Commands::SpawnWorker { task, prompt, dir, project, files, force, worktree }) => {
-            cmd_spawn_worker(&task, &prompt, dir.as_deref(), project.as_deref(), files, force, worktree).await
-        }
-        Some(Commands::Team { project, count, dir, members }) => {
-            cmd_team(&project, count, dir.as_deref(), &members).await
-        }
-        Some(Commands::Done { session, status, summary, commit }) => {
-            cmd_done(&session, &status, &summary, commit.as_deref()).await
-        }
-        Some(Commands::Progress { session, plan, task, status }) => {
-            cmd_progress(&session, plan.as_deref(), task.as_deref(), status.as_deref())
-        }
+        Some(Commands::Team {
+            project,
+            count,
+            dir,
+            members,
+        }) => cmd_team(&project, count, dir.as_deref(), &members).await,
+        Some(Commands::Done {
+            session,
+            status,
+            summary,
+            commit,
+        }) => cmd_done(&session, &status, &summary, commit.as_deref()).await,
+        Some(Commands::Progress {
+            session,
+            plan,
+            task,
+            status,
+        }) => cmd_progress(
+            &session,
+            plan.as_deref(),
+            task.as_deref(),
+            status.as_deref(),
+        ),
         Some(Commands::Inbox { oracle, action }) => cmd_inbox(&oracle, &action).await,
-        Some(Commands::Ship { project, message, unfreeze }) => {
-            cmd_ship(&project, &message, unfreeze).await
-        }
+        Some(Commands::Ship {
+            project,
+            message,
+            unfreeze,
+        }) => cmd_ship(&project, &message, unfreeze).await,
         Some(Commands::Patrol { interval, once }) => cmd_patrol(interval, once).await,
         Some(Commands::AisbChat) => cmd_aisb_chat().await,
         Some(Commands::KillAll { yes }) => cmd_kill_all(yes).await,
@@ -855,14 +955,21 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Doctor { pre_reset, fix, deep }) => {
+        Some(Commands::Doctor {
+            pre_reset,
+            fix,
+            deep,
+        }) => {
             if pre_reset {
                 cmd_doctor_pre_reset()
             } else {
                 cmd_doctor(fix, deep).await
             }
         }
-        Some(Commands::Backup { out, include_memory }) => cmd_backup(out, include_memory),
+        Some(Commands::Backup {
+            out,
+            include_memory,
+        }) => cmd_backup(out, include_memory),
         Some(Commands::Timeline { oracle }) => cmd_timeline(&oracle).await,
         Some(Commands::Resurrect { oracle }) => cmd_resurrect(oracle).await,
         Some(Commands::Provision { action }) => cmd_provision(action),
@@ -900,9 +1007,12 @@ async fn main() -> Result<()> {
         Some(Commands::Status { name }) => cmd_status(&name).await,
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
         Some(Commands::Capture { name }) => cmd_capture(&name).await,
-        Some(Commands::Stream { target, detach, interval, lines }) => {
-            cmd_stream(&target, detach, interval, lines).await
-        }
+        Some(Commands::Stream {
+            target,
+            detach,
+            interval,
+            lines,
+        }) => cmd_stream(&target, detach, interval, lines).await,
         Some(Commands::Log { session, count }) => cmd_log(&session, count).await,
         Some(Commands::Rpc) => omega_core::rpc::run_rpc_loop().await,
         Some(Commands::Route { mission }) => cmd_route(&mission),
@@ -922,8 +1032,7 @@ async fn main() -> Result<()> {
 /// Whether we pushed kitty keyboard-enhancement flags at TUI init
 /// (DESIGN-014) — every teardown path (quit + Ctrl+R restart) must pop
 /// exactly what was pushed, and nothing on legacy terminals.
-static KBD_ENHANCED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
+static KBD_ENHANCED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Pop the keyboard-enhancement flags if (and only if) a push recorded them.
 /// `swap(false)` keeps the bookkeeping exact: after the pop the flag reflects
@@ -942,8 +1051,7 @@ fn pop_kbd_enhancement(out: &mut impl std::io::Write) {
 /// the matching pop is exact. Used at init, after the standalone-attach
 /// handover returns, and on restart-failure TUI re-entry.
 fn push_kbd_enhancement(out: &mut impl std::io::Write) {
-    let supported =
-        crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+    let supported = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
     KBD_ENHANCED.store(supported, std::sync::atomic::Ordering::Relaxed);
     if supported {
         crossterm::execute!(
@@ -998,12 +1106,15 @@ async fn run_menu() -> Result<()> {
                     .and_then(|p| p.to_str().map(String::from))
                     .unwrap_or_else(|| "/home".to_string());
                 match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
-                    Ok(true) => app.status_message = Some(
-                        "Master AISB session spawned automatically — ready to delegate".to_string()
-                    ),
-                    Ok(false) => app.status_message = Some(
-                        "Master AISB already running".to_string()
-                    ),
+                    Ok(true) => {
+                        app.status_message = Some(
+                            "Master AISB session spawned automatically — ready to delegate"
+                                .to_string(),
+                        )
+                    }
+                    Ok(false) => {
+                        app.status_message = Some("Master AISB already running".to_string())
+                    }
                     Err(e) => eprintln!("Warning: Master AISB auto-spawn failed: {}", e),
                 }
                 let _ = app.refresh().await;
@@ -1273,9 +1384,8 @@ async fn run_tui_loop(
     // sleeps (~16s / ~20s); we run them in a detached task so the UI never
     // freezes, and the task writes the resulting ReauthStatus here. Drained into
     // `app.reauth_status` at the top of each tick.
-    let reauth_sink: std::sync::Arc<
-        std::sync::Mutex<Option<omega_tui::app::ReauthStatus>>,
-    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let reauth_sink: std::sync::Arc<std::sync::Mutex<Option<omega_tui::app::ReauthStatus>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
 
     // Single ordered keystroke forwarder. One consumer task drains a FIFO
     // mpsc channel and is the only task that reaches the SDK transport, so
@@ -1291,16 +1401,14 @@ async fn run_tui_loop(
     // (session switch OR terminal resize), not every tick.
     let mut last_resized: Option<(String, u16, u16)> = None;
     // Throttle for the per-session model/token meta scan (transcript parse).
-    let mut last_meta_refresh =
-        std::time::Instant::now() - std::time::Duration::from_secs(10);
+    let mut last_meta_refresh = std::time::Instant::now() - std::time::Duration::from_secs(10);
     // Per-session transcript mtime, so we re-scan the (possibly tens-of-MB)
     // JSONL only when it actually changed.
     let mut meta_mtimes: std::collections::HashMap<String, std::time::SystemTime> =
         std::collections::HashMap::new();
     // Throttle for the per-session git status (branch + age of oldest unpushed
     // commit). Shown in the status bar on the Sessions tab as e.g. `↑4h • main`.
-    let mut last_git_refresh =
-        std::time::Instant::now() - std::time::Duration::from_secs(60);
+    let mut last_git_refresh = std::time::Instant::now() - std::time::Duration::from_secs(60);
 
     loop {
         // Drain any error reported by a backgrounded keystroke forwarder.
@@ -1350,9 +1458,10 @@ async fn run_tui_loop(
             if let Some(entry) = app.selected_session() {
                 let name = entry.session.name.clone();
                 let cols = app.preview_inner_width;
-                // 1:1 with the visible panel — except the pre-existing
-                // .max(10) floor below: inner height <10 still gets rows=10
-                // (top 10−inner rows hidden on tiny terminals). Hidden extra rows (the
+                // Keep the rmux pane exactly aligned with the visible panel,
+                // including very short terminals. The old minimum of 10 rows
+                // hid the top of the composer whenever the viewport was
+                // shorter than 10 rows. Hidden extra rows (the
                 // old CHAT_INPUT_HEADROOM = 50 on chat focus) made every
                 // full-screen agent UI — e.g. the dynamic-workflow live view —
                 // lay out its header/status ~50 rows above the visible tail
@@ -1366,7 +1475,7 @@ async fn run_tui_loop(
                 // clipped lines act on a stale view; the [Pasted text #N]
                 // collapse that makes pastes immune is Claude-Code-specific —
                 // other CLI agents may differ).
-                let rows = app.preview_inner_height.max(10);
+                let rows = app.preview_inner_height.max(1);
                 if cols >= 20 {
                     let want = (name.clone(), cols, rows);
                     if last_resized.as_ref() != Some(&want) {
@@ -1443,8 +1552,8 @@ async fn run_tui_loop(
         let event_pending = crossterm::event::poll(std::time::Duration::ZERO)?;
         // Faster echo for a short window right after the user interacts, then
         // back to the idle cadence so we don't hammer the daemon at rest.
-        let interacting = last_input_at.elapsed()
-            < std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS);
+        let interacting =
+            last_input_at.elapsed() < std::time::Duration::from_millis(PREVIEW_ACTIVE_WINDOW_MS);
         let preview_refresh_interval = if interacting {
             std::time::Duration::from_millis(PREVIEW_ACTIVE_MS)
         } else {
@@ -1528,10 +1637,21 @@ async fn run_tui_loop(
                     // native drag-select + copy/paste; ON → clickable menus + scroll.
                     app.mouse_capture = !app.mouse_capture;
                     if app.mouse_capture {
-                        crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture).ok();
-                        app.status_message = Some("🖱  Mouse ON — click menus & scroll  ·  Ctrl-T for text selection".to_string());
+                        crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::event::EnableMouseCapture
+                        )
+                        .ok();
+                        app.status_message = Some(
+                            "🖱  Mouse ON — click menus & scroll  ·  Ctrl-T for text selection"
+                                .to_string(),
+                        );
                     } else {
-                        crossterm::execute!(terminal.backend_mut(), crossterm::event::DisableMouseCapture).ok();
+                        crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::event::DisableMouseCapture
+                        )
+                        .ok();
                         app.status_message = Some("📋 Selection mode — drag to select & copy/paste  ·  Ctrl-T to re-enable clicks".to_string());
                     }
                 }
@@ -1548,7 +1668,11 @@ async fn run_tui_loop(
                     // ENOENT. Prefer the canonical install path, then current_exe,
                     // then a bare PATH lookup.
                     use std::os::unix::process::CommandExt;
-                    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
+                    let home = dirs::home_dir().unwrap_or_else(|| {
+                        std::env::var("HOME")
+                            .map(std::path::PathBuf::from)
+                            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    });
                     let candidates = [
                         home.join(".local/bin/omega"),
                         std::env::current_exe().unwrap_or_default(),
@@ -1612,8 +1736,10 @@ async fn run_tui_loop(
                                 break;
                             }
                             Ok(s) => {
-                                app.status_message =
-                                    Some(format!("switch-client failed (exit {})", s.code().unwrap_or(-1)));
+                                app.status_message = Some(format!(
+                                    "switch-client failed (exit {})",
+                                    s.code().unwrap_or(-1)
+                                ));
                             }
                             Err(e) => {
                                 app.status_message = Some(format!("switch-client error: {}", e));
@@ -1664,18 +1790,24 @@ async fn run_tui_loop(
                             // (its persistent claude_stream subprocess handles
                             // chat independently of the rmux session).
                             if is_master && cfg.auto_spawn_master {
-                                if let Some(agent) = omega_core::agents::Agent::from_name(&cfg.aisb_agent) {
+                                if let Some(agent) =
+                                    omega_core::agents::Agent::from_name(&cfg.aisb_agent)
+                                {
                                     let cwd = std::env::current_dir()
                                         .ok()
                                         .and_then(|p| p.to_str().map(String::from))
                                         .unwrap_or_else(|| "/home".to_string());
                                     match omega_core::aisb::ensure_master(&mgr, agent, &cwd).await {
-                                        Ok(_) => app.status_message = Some(
-                                            format!("Killed {} → auto-respawned", name)
-                                        ),
-                                        Err(e) => app.status_message = Some(
-                                            format!("Killed {} but respawn failed: {}", name, e)
-                                        ),
+                                        Ok(_) => {
+                                            app.status_message =
+                                                Some(format!("Killed {} → auto-respawned", name))
+                                        }
+                                        Err(e) => {
+                                            app.status_message = Some(format!(
+                                                "Killed {} but respawn failed: {}",
+                                                name, e
+                                            ))
+                                        }
                                     }
                                 }
                             } else {
@@ -1697,9 +1829,7 @@ async fn run_tui_loop(
                             app.status_message =
                                 Some(format!("Killed {} session(s)", killed.len()));
                         }
-                        Err(e) => {
-                            app.status_message = Some(format!("Kill-all failed: {}", e))
-                        }
+                        Err(e) => app.status_message = Some(format!("Kill-all failed: {}", e)),
                     }
                     let _ = app.refresh().await;
                 }
@@ -1710,11 +1840,11 @@ async fn run_tui_loop(
                     let keep = tui_cleanup_keep(&app, &sessions);
                     match omega_core::cleanup::nuclear_cleanup(&mgr, &cfg, &keep).await {
                         Ok(report) => {
-                            app.status_message = Some(format!("Nuclear cleanup: {}", report.summary()));
+                            app.status_message =
+                                Some(format!("Nuclear cleanup: {}", report.summary()));
                         }
                         Err(e) => {
-                            app.status_message =
-                                Some(format!("Nuclear cleanup failed: {}", e))
+                            app.status_message = Some(format!("Nuclear cleanup failed: {}", e))
                         }
                     }
                     let _ = app.refresh().await;
@@ -1731,15 +1861,22 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::CreateSessionWithAgent { name, agent, prompt } => {
+                Action::CreateSessionWithAgent {
+                    name,
+                    agent,
+                    prompt,
+                } => {
                     let mgr = SessionManager::connect().await?;
                     match mgr
                         .create_session_with_agent(&name, None, agent, prompt.as_deref())
                         .await
                     {
                         Ok(_) => {
-                            app.status_message =
-                                Some(format!("Created {} with {} — opening chat…", name, agent.name()));
+                            app.status_message = Some(format!(
+                                "Created {} with {} — opening chat…",
+                                name,
+                                agent.name()
+                            ));
                             auto_focus_chat(app, &name).await;
                         }
                         Err(e) => {
@@ -1756,8 +1893,11 @@ async fn run_tui_loop(
                                 .await
                             {
                                 Ok(_) => {
-                                    app.status_message =
-                                        Some(format!("Created {} ({}) — opening chat…", name, agent.name()));
+                                    app.status_message = Some(format!(
+                                        "Created {} ({}) — opening chat…",
+                                        name,
+                                        agent.name()
+                                    ));
                                     auto_focus_chat(app, &name).await;
                                 }
                                 Err(e) => {
@@ -1770,7 +1910,13 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::CreateProject { name, category, stack, launch_prompt, launch_docs } => {
+                Action::CreateProject {
+                    name,
+                    category,
+                    stack,
+                    launch_prompt,
+                    launch_docs,
+                } => {
                     // Cross-user: resolve the category dir from config (projects_dir),
                     // NEVER a hardcoded ~/VibeCoding. The skill creates <base>/<name>.
                     let cfg = OmegaConfig::load().unwrap_or_default();
@@ -1785,8 +1931,10 @@ async fn run_tui_loop(
 
                     // Append an optional kickoff brief + doc contents so the project
                     // session starts from the user's idea / existing docs.
-                    let mut prompt =
-                        format!("/omega-new-project {} {} {} {}", stack, category, name, group);
+                    let mut prompt = format!(
+                        "/omega-new-project {} {} {} {}",
+                        stack, category, name, group
+                    );
                     if let Some(kick) = launch_prompt.as_deref() {
                         if !kick.trim().is_empty() {
                             prompt.push_str("\n\n--- PROJECT KICKOFF BRIEF ---\n");
@@ -1804,7 +1952,7 @@ async fn run_tui_loop(
                     }
 
                     let mgr = SessionManager::connect().await?;
-                    let agent = omega_core::agents::Agent::Claude;
+                    let agent = omega_core::agents::Agent::Codex;
                     match mgr
                         .create_session_with_agent(&session, base.to_str(), agent, Some(&prompt))
                         .await
@@ -1828,16 +1976,17 @@ async fn run_tui_loop(
                     match dispatcher.dispatch_oracle(&project, &mission).await {
                         Ok(oracle_name) => {
                             let sessions_dir = cfg.state_dir.join("sessions");
-                            if let Ok(mut log) =
-                                omega_core::session_log::SessionLog::create(&sessions_dir, &oracle_name, ".")
-                            {
+                            if let Ok(mut log) = omega_core::session_log::SessionLog::create(
+                                &sessions_dir,
+                                &oracle_name,
+                                ".",
+                            ) {
                                 let _ = log.append_message(
                                     "system",
                                     &format!("Mission dispatched: {}", mission),
                                 );
                             }
-                            app.status_message =
-                                Some(format!("◆ Dispatched: {}", oracle_name));
+                            app.status_message = Some(format!("◆ Dispatched: {}", oracle_name));
                             let _ = app.refresh().await;
                         }
                         Err(e) => {
@@ -1891,7 +2040,9 @@ async fn run_tui_loop(
                     tokio::spawn(async move {
                         let result = match SessionManager::connect().await {
                             Ok(mgr) => {
-                                match omega_core::oauth::request_reauth(&mgr, "tui", None, true).await {
+                                match omega_core::oauth::request_reauth(&mgr, "tui", None, true)
+                                    .await
+                                {
                                     Ok(Some(req)) => ReauthStatus::ShowUrl(req.auth_url),
                                     Ok(None) => ReauthStatus::Error(
                                         "re-login already pending or on cooldown".to_string(),
@@ -1965,8 +2116,7 @@ async fn run_tui_loop(
                         step: 0,
                         collected: Vec::new(),
                     };
-                    app.status_message =
-                        Some(format!("Step 1/{}: {}", fields.len(), fields[0].1));
+                    app.status_message = Some(format!("Step 1/{}: {}", fields.len(), fields[0].1));
                 }
                 Action::ProvisioningCommit { values } => {
                     match omega_core::provisioning::update_services_env(&values) {
@@ -1978,12 +2128,15 @@ async fn run_tui_loop(
                             ));
                         }
                         Err(e) => {
-                            app.status_message =
-                                Some(format!("Provisioning save failed: {}", e));
+                            app.status_message = Some(format!("Provisioning save failed: {}", e));
                         }
                     }
                 }
-                Action::TelegramSetupCommit { bot_token, chat_id, user_ids } => {
+                Action::TelegramSetupCommit {
+                    bot_token,
+                    chat_id,
+                    user_ids,
+                } => {
                     let cfg = omega_core::monitor::OmegaTelegramConfig {
                         bot_token: bot_token.clone(),
                         chat_id,
@@ -2028,9 +2181,7 @@ async fn run_tui_loop(
                             let service_ok = matches!(
                                 tokio::time::timeout(
                                     std::time::Duration::from_secs(8),
-                                    tokio::task::spawn_blocking(
-                                        omega_core::service::tg_bot_start
-                                    ),
+                                    tokio::task::spawn_blocking(omega_core::service::tg_bot_start),
                                 )
                                 .await,
                                 Ok(Ok(true))
@@ -2060,7 +2211,8 @@ async fn run_tui_loop(
                                         .ok()
                                         .and_then(|p| p.to_str().map(String::from))
                                         .unwrap_or_else(|| "/home".to_string());
-                                    let _ = omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
+                                    let _ =
+                                        omega_core::aisb::ensure_master(&mgr, agent, &cwd).await;
                                 }
                             }
                             let _ = app.refresh().await;
@@ -2096,9 +2248,13 @@ async fn run_tui_loop(
                     } else {
                         ""
                     };
-                    let cmd = format!("bash -c {}", shell_escape_for_bash(
-                        &format!("{}{}; echo; echo '─── done ───'; exec bash", command, post_install)
-                    ));
+                    let cmd = format!(
+                        "bash -c {}",
+                        shell_escape_for_bash(&format!(
+                            "{}{}; echo; echo '─── done ───'; exec bash",
+                            command, post_install
+                        ))
+                    );
                     match mgr.create_session(&name, None, Some(&cmd)).await {
                         Ok(_) => {
                             // Drop the cached provider state so the [+]/[x] badge
@@ -2116,14 +2272,20 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::EditSettingsField { config_key, current, masked } => {
+                Action::EditSettingsField {
+                    config_key,
+                    current,
+                    masked,
+                } => {
                     app.input_buffer = current;
                     app.input_mode = omega_tui::app::InputMode::EditSettingsField {
                         config_key: config_key.clone(),
                         masked,
                     };
-                    app.status_message =
-                        Some(format!("Editing {} — Enter to save, Esc to cancel", config_key));
+                    app.status_message = Some(format!(
+                        "Editing {} — Enter to save, Esc to cancel",
+                        config_key
+                    ));
                 }
                 Action::ToggleSettingsBool { config_key } => {
                     if let Err(e) = toggle_bool_config(&config_key) {
@@ -2184,7 +2346,9 @@ async fn run_tui_loop(
                             let _ = app.refresh_preview().await;
                         }
                         Err(e) => {
-                            omega_core::tuilog::log(format!("rename '{old}' → '{new}' FAILED: {e:#}"));
+                            omega_core::tuilog::log(format!(
+                                "rename '{old}' → '{new}' FAILED: {e:#}"
+                            ));
                             app.status_message = Some(format!("Rename failed: {}", e));
                         }
                     }
@@ -2195,8 +2359,9 @@ async fn run_tui_loop(
                             app.status_message = Some("[+] Telegram bot disconnected".to_string());
                         }
                         Ok(false) => {
-                            app.status_message =
-                                Some("Nothing to disconnect — no Telegram config present".to_string());
+                            app.status_message = Some(
+                                "Nothing to disconnect — no Telegram config present".to_string(),
+                            );
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Disconnect failed: {}", e));
@@ -2277,7 +2442,7 @@ async fn run_tui_loop(
                     // the Sessions tab's job, and silently attaching made "open"
                     // look like it did nothing.
                     //
-                    // A Claude open comes up as a CLEAN ORACLE: it is seeded with
+                    // Every provider comes up as a CLEAN ORACLE: it is seeded with
                     // the per-project oracle system prompt (identity + doctrine +
                     // protocol via OraclePromptGenerator) instead of a blank
                     // shell, so the operator lands in a project manager ready to
@@ -2301,10 +2466,11 @@ async fn run_tui_loop(
                         session = format!("{}-{}", base, n);
                         n += 1;
                     }
-                    // Seed a clean oracle identity for Claude opens; other agents
-                    // keep their own default (blank) entry.
-                    let oracle_prompt = if matches!(agent, omega_core::agents::Agent::Claude) {
-                        Some(omega_core::oracle_lifecycle::OraclePromptGenerator::generate(
+                    // Seed the same provider-neutral oracle identity for every
+                    // backend. Codex is the fresh-install default, but an
+                    // explicit operator choice remains authoritative.
+                    let oracle_prompt = Some(
+                        omega_core::oracle_lifecycle::OraclePromptGenerator::generate(
                             &name,
                             std::path::Path::new(&path),
                             &session,
@@ -2313,25 +2479,23 @@ async fn run_tui_loop(
                              report. Do NOT edit project code directly (delegate to workers).",
                             false,
                             false,
-                        ))
-                    } else {
-                        None
-                    };
+                        ),
+                    );
                     match mgr
-                        .create_session_with_agent(&session, Some(&path), agent, oracle_prompt.as_deref())
+                        .create_session_with_agent(
+                            &session,
+                            Some(&path),
+                            agent,
+                            oracle_prompt.as_deref(),
+                        )
                         .await
                     {
                         Ok(_) => {
-                            let kind = if matches!(agent, omega_core::agents::Agent::Claude) {
-                                "oracle"
-                            } else {
-                                "session"
-                            };
                             app.status_message = Some(format!(
                                 "▶ {} — new {} {} ({})",
                                 name,
                                 agent.name(),
-                                kind,
+                                "oracle",
                                 session
                             ));
                             auto_focus_chat(app, &session).await;
@@ -2484,10 +2648,7 @@ echo; echo '─── dry-run done ───'; exec bash",
                     //   local → that + kill oracle + rm -rf the local folder
                     //   all   → that + delete the GitHub repo (irreversible)
                     let omega_dir = std::env::var("OMEGA_DIR").unwrap_or_else(|_| {
-                        format!(
-                            "{}/.omega",
-                            dirs::home_dir().unwrap_or_default().display()
-                        )
+                        format!("{}/.omega", dirs::home_dir().unwrap_or_default().display())
                     });
                     let bot = format!("{}/telegram-bot/omega-tg-bot.ts", omega_dir);
                     let label = match mode {
@@ -2517,8 +2678,8 @@ echo; echo '─── dry-run done ───'; exec bash",
                 }
                 Action::GroupSetupCommit { group_id } => {
                     // Preserve any existing topic mappings / name when re-running.
-                    let mut cfg = omega_core::telegram_group::TelegramGroupConfig::load()
-                        .unwrap_or_default();
+                    let mut cfg =
+                        omega_core::telegram_group::TelegramGroupConfig::load().unwrap_or_default();
                     cfg.group_id = group_id;
                     cfg.setup_at = chrono::Utc::now().to_rfc3339();
                     match cfg.save() {
@@ -2529,8 +2690,7 @@ echo; echo '─── dry-run done ───'; exec bash",
                             ));
                         }
                         Err(e) => {
-                            app.status_message =
-                                Some(format!("Group setup save failed: {}", e));
+                            app.status_message = Some(format!("Group setup save failed: {}", e));
                         }
                     }
                 }
@@ -2546,7 +2706,9 @@ echo; echo '─── dry-run done ───'; exec bash",
             // Entering the Projects tab (which hosts the Projects group) →
             // reload the registry so projects added via `omega project add` in
             // another shell show up without restart.
-            if app.tab == omega_tui::app::Tab::Projects && tab_before != omega_tui::app::Tab::Projects {
+            if app.tab == omega_tui::app::Tab::Projects
+                && tab_before != omega_tui::app::Tab::Projects
+            {
                 app.refresh_projects();
             }
 
@@ -2660,15 +2822,29 @@ async fn cmd_new(
     if let Some(explicit_cmd) = cmd {
         let _session = mgr.create_session(name, dir, Some(explicit_cmd)).await?;
     } else if let Some(agent_name) = agent {
-        let agent_enum = omega_core::agents::Agent::from_name(agent_name)
-            .ok_or_else(|| anyhow::anyhow!("Unknown agent: {}. Run `omega agents` to list options.", agent_name))?;
+        let agent_enum = omega_core::agents::Agent::from_name(agent_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown agent: {}. Run `omega agents` to list options.",
+                agent_name
+            )
+        })?;
         if !agent_enum.is_available() {
-            eprintln!("Warning: {} not detected on this system. Session will be created anyway.", agent_enum.display_name());
+            eprintln!(
+                "Warning: {} not detected on this system. Session will be created anyway.",
+                agent_enum.display_name()
+            );
         }
-        let _session = mgr.create_session_with_agent(name, dir, agent_enum, prompt).await?;
+        let _session = mgr
+            .create_session_with_agent(name, dir, agent_enum, prompt)
+            .await?;
         println!("Agent: {}", agent_enum.display_name());
     } else {
-        let _session = mgr.create_session(name, dir, None).await?;
+        let default_agent = omega_core::agents::Agent::from_name(&config.agent_command)
+            .unwrap_or(omega_core::agents::Agent::Codex);
+        let _session = mgr
+            .create_session_with_agent(name, dir, default_agent, prompt)
+            .await?;
+        println!("Agent: {} (OmegaOS default)", default_agent.display_name());
     }
 
     println!("Created session: {}", name);
@@ -2680,7 +2856,7 @@ async fn cmd_new(
 
 /// Bootstrap a new project via the workflow-driven /omega-new-project pipeline.
 /// Mirrors the TUI `Action::CreateProject` path: resolve the category dir from
-/// config (never a hardcoded ~/VibeCoding), create it, and spawn a Claude
+/// config (never a hardcoded ~/VibeCoding), create it, and spawn a Codex
 /// session whose first line invokes the v2 command. `--dry-run` prints the plan
 /// and spawns nothing (zero mutation).
 #[allow(clippy::too_many_arguments)]
@@ -2702,14 +2878,29 @@ async fn cmd_new_project(
 
     // Assemble the flag string passed through to the /omega-new-project command.
     let mut flags = String::new();
-    if resume { flags.push_str(" --resume"); }
-    if let Some(f) = from { flags.push_str(&format!(" --from={}", f)); }
-    if let Some(s) = skip { flags.push_str(&format!(" --skip={}", s)); }
-    if let Some(b) = budget { flags.push_str(&format!(" --budget={}", b)); }
-    if build { flags.push_str(" --build"); }
-    if dry_run { flags.push_str(" --dry-run"); }
+    if resume {
+        flags.push_str(" --resume");
+    }
+    if let Some(f) = from {
+        flags.push_str(&format!(" --from={}", f));
+    }
+    if let Some(s) = skip {
+        flags.push_str(&format!(" --skip={}", s));
+    }
+    if let Some(b) = budget {
+        flags.push_str(&format!(" --budget={}", b));
+    }
+    if build {
+        flags.push_str(" --build");
+    }
+    if dry_run {
+        flags.push_str(" --dry-run");
+    }
 
-    let prompt = format!("/omega-new-project {} {} {} {}{}", stack, category, name, group, flags);
+    let prompt = format!(
+        "/omega-new-project {} {} {} {}{}",
+        stack, category, name, group, flags
+    );
 
     if dry_run {
         println!("omega new-project (DRY-RUN) — no session spawned, zero mutation");
@@ -2726,10 +2917,13 @@ async fn cmd_new_project(
     let _ = std::fs::create_dir_all(&base);
     let session = format!("{}-setup", name);
     let mgr = SessionManager::connect().await?;
-    let agent = omega_core::agents::Agent::Claude;
+    let agent = omega_core::agents::Agent::Codex;
     mgr.create_session_with_agent(&session, project_dir.to_str(), agent, Some(&prompt))
         .await?;
-    println!("New project '{}' ({}/{}) — bootstrap running in session '{}'", name, stack, category, session);
+    println!(
+        "New project '{}' ({}/{}) — bootstrap running in session '{}'",
+        name, stack, category, session
+    );
     println!("  dir: {}", project_dir.display());
     Ok(())
 }
@@ -2741,9 +2935,7 @@ async fn cmd_install_bindings() -> Result<()> {
     let popup_cmd = "display-popup -E -w 100% -h 100% \"omega menu\"";
 
     // Root-table bindings (no prefix required) — single reliable shortcut
-    let root_bindings: Vec<(&str, &str)> = vec![
-        ("C-Space", "Open OmegaOS menu (Ctrl+Space)"),
-    ];
+    let root_bindings: Vec<(&str, &str)> = vec![("C-Space", "Open OmegaOS menu (Ctrl+Space)")];
 
     // Prefix-table bindings (Ctrl-B then key)
     let prefix_bindings: Vec<(&str, &str)> = vec![
@@ -2764,7 +2956,11 @@ async fn cmd_install_bindings() -> Result<()> {
                 println!("[+] {} → {}", key, desc);
                 installed += 1;
             }
-            Ok(o) => failed.push(format!("{}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
+            Ok(o) => failed.push(format!(
+                "{}: {}",
+                key,
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
             Err(e) => failed.push(format!("{}: {}", key, e)),
         }
     }
@@ -2779,7 +2975,11 @@ async fn cmd_install_bindings() -> Result<()> {
                 println!("[+] C-b {} → {}", key, desc);
                 installed += 1;
             }
-            Ok(o) => failed.push(format!("C-b {}: {}", key, String::from_utf8_lossy(&o.stderr).trim())),
+            Ok(o) => failed.push(format!(
+                "C-b {}: {}",
+                key,
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
             Err(e) => failed.push(format!("C-b {}: {}", key, e)),
         }
     }
@@ -2901,7 +3101,10 @@ fn cmd_install(agent_name: &str, dry_run: bool) -> Result<()> {
 
     // Verify
     if agent.is_available() {
-        println!("\n[+] {} is now installed and on PATH.", agent.display_name());
+        println!(
+            "\n[+] {} is now installed and on PATH.",
+            agent.display_name()
+        );
     } else {
         println!(
             "\n[!] Installer reported success but `{}` is not on PATH yet.",
@@ -3067,7 +3270,11 @@ fn cmd_marketing(action: MarketingAction) -> Result<()> {
                 let ck = |b: bool| if b { "✓" } else { "·" };
                 println!(
                     "      context {}  strategy {}  copy {}  visual {}  branding {}",
-                    ck(p.has_context), ck(p.has_strategy), ck(p.has_copy), ck(p.has_visual), ck(p.has_branding)
+                    ck(p.has_context),
+                    ck(p.has_strategy),
+                    ck(p.has_copy),
+                    ck(p.has_visual),
+                    ck(p.has_branding)
                 );
             }
             Ok(())
@@ -3081,9 +3288,7 @@ fn cmd_marketing(action: MarketingAction) -> Result<()> {
 
 /// Resolve a project by name or slug (case-insensitive), fetching accounts so
 /// next-best-action can reason about connectivity.
-fn find_marketing_project(
-    query: &str,
-) -> Option<omega_core::marketing::MarketingProject> {
+fn find_marketing_project(query: &str) -> Option<omega_core::marketing::MarketingProject> {
     let q = query.to_lowercase();
     let projects = omega_core::marketing::list_marketing_projects();
     projects
@@ -3099,7 +3304,9 @@ fn cmd_marketing_capabilities(group: Option<String>, json: bool) -> Result<()> {
                 println!("null");
             } else {
                 println!("No capabilities.toml found.");
-                println!("Expected at tools/marketing-machine/capabilities.toml in the OmegaOS repo");
+                println!(
+                    "Expected at tools/marketing-machine/capabilities.toml in the OmegaOS repo"
+                );
                 println!("(override with OMEGA_MKT_CAPS=/path/to/capabilities.toml).");
             }
             return Ok(());
@@ -3293,7 +3500,11 @@ fn cmd_marketing_doctor(json: bool) -> Result<()> {
         "video mux + audio ducking".into(),
     ));
     let hf = bin_present("higgsfield");
-    checks.push(("higgsfield CLI".into(), hf, "image/video/soul engine".into()));
+    checks.push((
+        "higgsfield CLI".into(),
+        hf,
+        "image/video/soul engine".into(),
+    ));
 
     // --- zernio key ---
     checks.push((
@@ -3319,7 +3530,11 @@ fn cmd_marketing_doctor(json: bool) -> Result<()> {
         checks.push((
             "higgsfield account".into(),
             ok,
-            if ok { "credits/account reachable".into() } else { "CLI present but account call failed (login/credits?)".into() },
+            if ok {
+                "credits/account reachable".into()
+            } else {
+                "CLI present but account call failed (login/credits?)".into()
+            },
         ));
     }
 
@@ -3350,7 +3565,10 @@ fn cmd_marketing_doctor(json: bool) -> Result<()> {
             .iter()
             .map(|(n, ok, d)| serde_json::json!({ "name": n, "ok": ok, "detail": d }))
             .collect();
-        println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "checks": arr }))?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "checks": arr }))?
+        );
         return Ok(());
     }
 
@@ -3368,7 +3586,10 @@ fn cmd_marketing_doctor(json: bool) -> Result<()> {
     if missing == 0 {
         println!("All checked dependencies present.");
     } else {
-        println!("{} dependency/dependencies missing (keys live in ~/.omega/secrets/integrations.env).", missing);
+        println!(
+            "{} dependency/dependencies missing (keys live in ~/.omega/secrets/integrations.env).",
+            missing
+        );
     }
     Ok(())
 }
@@ -3390,6 +3611,25 @@ enum RulesAction {
         /// mission text mentions their topic. Omit to print the full block.
         #[arg(long)]
         mission: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillsAction {
+    /// Validate an owned skill root and print its deterministic catalog digest
+    Validate {
+        /// Explicit OmegaOS-owned skill root (defaults to ./skills, $OMEGA_SRC/skills, or ~/.omega/skills)
+        #[arg(long)]
+        root: Option<String>,
+    },
+    /// Compile the canonical JSON consumed by Atlas, RAG, and provider adapters
+    Compile {
+        /// Explicit OmegaOS-owned skill root
+        #[arg(long)]
+        root: Option<String>,
+        /// Output JSON (defaults to ~/.omega/skill-catalog-v1.json)
+        #[arg(long)]
+        out: Option<String>,
     },
 }
 
@@ -3490,7 +3730,13 @@ enum TelegramAction {
 async fn cmd_telegram(action: TelegramAction) -> Result<()> {
     use omega_core::monitor::OmegaTelegramConfig;
     match action {
-        TelegramAction::Setup { bot_token, chat_id, user_id, relay_session, label } => {
+        TelegramAction::Setup {
+            bot_token,
+            chat_id,
+            user_id,
+            relay_session,
+            label,
+        } => {
             // fix7-T1: resolve the token/chat pair. Two accepted shapes:
             //   omega telegram setup <bot_token> <chat_id> …             (classic)
             //   OMEGA_TG_TOKEN=<tok> omega telegram setup <chat_id> …    (token off argv)
@@ -3531,7 +3777,9 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             // so default the allow-list to it instead of writing a config the
             // bot will reject; only group ids (negative) can't be defaulted.
             let allow_user_ids = if user_id.is_empty() && chat_id > 0 {
-                println!("[i] --user-id not given — allow-list defaulted to your chat id ({chat_id})");
+                println!(
+                    "[i] --user-id not given — allow-list defaulted to your chat id ({chat_id})"
+                );
                 vec![chat_id]
             } else {
                 user_id
@@ -3560,7 +3808,10 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             if cfg.allow_user_ids.is_empty() {
                 println!("  Sender filter: NONE — bot refuses to serve until --user-id is set");
             } else {
-                println!("  Sender filter: only user_ids {:?} accepted", cfg.allow_user_ids);
+                println!(
+                    "  Sender filter: only user_ids {:?} accepted",
+                    cfg.allow_user_ids
+                );
             }
             // One poller per token (Telegram 409): when the installed service is
             // already polling, it re-reads telegram.toml within ~5s — telling the
@@ -3655,7 +3906,9 @@ async fn cmd_telegram(action: TelegramAction) -> Result<()> {
             println!("◆ Launching OmegaOS Telegram bot (Bun) — Atlas + 15 agents");
             // exec() replaces this process; it only returns on failure.
             let err = std::process::Command::new("bun").arg(&bot_ts).exec();
-            anyhow::bail!("Failed to launch the Bun Telegram bot ({err}). Is `bun` installed and on PATH?");
+            anyhow::bail!(
+                "Failed to launch the Bun Telegram bot ({err}). Is `bun` installed and on PATH?"
+            );
         }
     }
 }
@@ -3745,7 +3998,9 @@ fn get_config_value(cfg: &omega_core::providers::ProvidersConfig, key: &str) -> 
         ("claude", "model") => cfg.claude.model.clone(),
         ("claude", "effort") => cfg.claude.effort.clone(),
         ("claude", "api_key") => cfg.claude.api_key.clone(),
-        ("claude", "dangerously_skip_permissions") => cfg.claude.dangerously_skip_permissions.to_string(),
+        ("claude", "dangerously_skip_permissions") => {
+            cfg.claude.dangerously_skip_permissions.to_string()
+        }
         ("codex", "model") => cfg.codex.model.clone(),
         ("codex", "api_key") => cfg.codex.api_key.clone(),
         ("codex", "base_url") => cfg.codex.base_url.clone(),
@@ -3797,16 +4052,27 @@ fn set_config_value(
 
 fn cmd_monitor() -> Result<()> {
     use omega_core::monitor;
-    let snap = monitor::UsageSnapshot::read().ok().flatten().unwrap_or_default();
+    let snap = monitor::UsageSnapshot::read()
+        .ok()
+        .flatten()
+        .unwrap_or_default();
     let accounts = monitor::list_accounts();
     let bot = monitor::aisb_bot_status();
     let tg = monitor::OmegaTelegramConfig::read();
 
     println!("─── Billing ───");
-    println!("  5h session:  {:.1}%  ({}/{})", snap.precise_5h(),
-        snap.tokens_5h, snap.budget_5h);
-    println!("  Week:        {:.1}%  ({}/{})", snap.precise_week(),
-        snap.tokens_7d, snap.budget_week);
+    println!(
+        "  5h session:  {:.1}%  ({}/{})",
+        snap.precise_5h(),
+        snap.tokens_5h,
+        snap.budget_5h
+    );
+    println!(
+        "  Week:        {:.1}%  ({}/{})",
+        snap.precise_week(),
+        snap.tokens_7d,
+        snap.budget_week
+    );
     println!("  Account:     {} ({})", snap.active_account, snap.email);
     println!();
     println!("─── AISB Bot ───");
@@ -3816,7 +4082,12 @@ fn cmd_monitor() -> Result<()> {
     println!("─── Accounts ({}) ───", accounts.len());
     for acc in &accounts {
         let marker = if acc.is_active { "▶" } else { " " };
-        println!("  {} {}  {}", marker, acc.label, acc.email.as_deref().unwrap_or(""));
+        println!(
+            "  {} {}  {}",
+            marker,
+            acc.label,
+            acc.email.as_deref().unwrap_or("")
+        );
     }
     println!();
     println!("─── Omega Telegram ───");
@@ -3833,7 +4104,7 @@ async fn cmd_master() -> Result<()> {
     let mgr = SessionManager::connect().await?;
 
     let agent = omega_core::agents::Agent::from_name(&config.aisb_agent)
-        .unwrap_or(omega_core::agents::Agent::Claude);
+        .unwrap_or(omega_core::agents::Agent::Codex);
     let cwd = std::env::current_dir()?
         .to_str()
         .unwrap_or("/home")
@@ -3889,7 +4160,8 @@ fn cmd_mouse_test() -> Result<()> {
     crossterm::terminal::enable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
 
-    let (mut wheel, mut click, mut drag, mut arrows, mut other_keys) = (0u32, 0u32, 0u32, 0u32, 0u32);
+    let (mut wheel, mut click, mut drag, mut arrows, mut other_keys) =
+        (0u32, 0u32, 0u32, 0u32, 0u32);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let mut out = std::io::stdout();
     while std::time::Instant::now() < deadline {
@@ -3914,10 +4186,19 @@ fn cmd_mouse_test() -> Result<()> {
             Event::Key(k) => match k.code {
                 KeyCode::Up | KeyCode::Down => {
                     arrows += 1;
-                    let _ = write!(out, "  ← arrow key ({:?}) — wheel→arrow translation?\r\n", k.code);
+                    let _ = write!(
+                        out,
+                        "  ← arrow key ({:?}) — wheel→arrow translation?\r\n",
+                        k.code
+                    );
                 }
                 KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('c') if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => break,
+                KeyCode::Char('c')
+                    if k.modifiers
+                        .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                {
+                    break
+                }
                 _ => other_keys += 1,
             },
             _ => {}
@@ -3989,9 +4270,7 @@ async fn cmd_clean_junk(force: bool) -> Result<()> {
         println!("✓ No junk sessions — every session name is a clean slug.");
         return Ok(());
     }
-    println!(
-        "Junk sessions (rmux name ≠ sanitized slug — not created by omega):"
-    );
+    println!("Junk sessions (rmux name ≠ sanitized slug — not created by omega):");
     for j in &junk {
         println!("  • {:?}", j);
     }
@@ -4033,7 +4312,11 @@ fn cmd_agents() -> Result<()> {
     println!("Available agents:\n");
     for agent in omega_core::agents::Agent::all() {
         let status = if agent.is_available() { "[+]" } else { "[x]" };
-        let color = if agent.is_available() { "\x1b[32m" } else { "\x1b[31m" };
+        let color = if agent.is_available() {
+            "\x1b[32m"
+        } else {
+            "\x1b[31m"
+        };
         println!(
             "  {}{}\x1b[0m  {:8}  {}",
             color,
@@ -4171,7 +4454,10 @@ async fn cmd_claude_login() -> Result<()> {
             std::process::exit(1);
         }
         Err(e) => {
-            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": e.to_string() })
+            );
             std::process::exit(1);
         }
     }
@@ -4192,7 +4478,10 @@ async fn cmd_codex_login() -> Result<()> {
             Ok(())
         }
         Ok(Err(e)) => {
-            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": e.to_string() })
+            );
             std::process::exit(1);
         }
         Err(e) => {
@@ -4219,15 +4508,16 @@ async fn cmd_codex_login_status(pid: Option<u32>) -> Result<()> {
 async fn cmd_codex_login_abort(pid: u32) -> Result<()> {
     let result = tokio::task::spawn_blocking(move || omega_core::codex_login::abort(pid)).await?;
     println!("{}", codex_login_abort_json(&result));
-    if matches!(result.status, omega_core::codex_login::LoginStatus::Unknown { .. }) {
+    if matches!(
+        result.status,
+        omega_core::codex_login::LoginStatus::Unknown { .. }
+    ) {
         std::process::exit(1);
     }
     Ok(())
 }
 
-fn codex_login_status_label(
-    status: &omega_core::codex_login::LoginStatus,
-) -> String {
+fn codex_login_status_label(status: &omega_core::codex_login::LoginStatus) -> String {
     match status {
         omega_core::codex_login::LoginStatus::LoggedIn { mode } => {
             format!("logged in using {mode}")
@@ -4239,9 +4529,7 @@ fn codex_login_status_label(
     }
 }
 
-fn codex_login_status_json(
-    result: &omega_core::codex_login::FinishResult,
-) -> serde_json::Value {
+fn codex_login_status_json(result: &omega_core::codex_login::FinishResult) -> serde_json::Value {
     serde_json::json!({
         "ok": result.flow_succeeded,
         "status": codex_login_status_label(&result.status),
@@ -4249,9 +4537,7 @@ fn codex_login_status_json(
     })
 }
 
-fn codex_login_abort_json(
-    result: &omega_core::codex_login::AbortResult,
-) -> serde_json::Value {
+fn codex_login_abort_json(result: &omega_core::codex_login::AbortResult) -> serde_json::Value {
     let command_ok = !matches!(
         &result.status,
         omega_core::codex_login::LoginStatus::Unknown { .. }
@@ -4330,7 +4616,10 @@ async fn cmd_claude_login_code(code: &str) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            println!("{}", serde_json::json!({ "ok": false, "error": e.to_string() }));
+            println!(
+                "{}",
+                serde_json::json!({ "ok": false, "error": e.to_string() })
+            );
             std::process::exit(1);
         }
     }
@@ -4448,7 +4737,7 @@ async fn cmd_plan_run(path: &str) -> Result<()> {
         mgr: &mgr,
         state_dir: config.state_dir.clone(),
         project,
-        agent: omega_core::agents::Agent::Claude,
+        agent: omega_core::agents::Agent::Codex,
         poll: std::time::Duration::from_secs(5),
     };
 
@@ -4532,8 +4821,7 @@ impl Beat {
     }
 
     async fn stop(mut self) {
-        self.stop
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
             let _ = h.await;
         }
@@ -4562,6 +4850,278 @@ async fn cmd_dispatch(project: &str, mission: &str, agent: Option<&str>) -> Resu
 
     println!("◆ Oracle dispatched: {}", oracle_name);
     println!("  Mission: {}", mission);
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct V3WorkerAttempt {
+    mission_id: omega_core::mission::MissionId,
+    task_id: String,
+    attempt_id: String,
+    plan_revision: u64,
+}
+
+fn declared_verify_command(prompt: &str) -> Option<Vec<String>> {
+    let lines: Vec<&str> = prompt.lines().collect();
+    for (index, line) in lines.iter().enumerate() {
+        let lower = line.to_lowercase();
+        let marker = lower
+            .find("verify command:")
+            .or_else(|| lower.find("verify-command:"));
+        let Some(marker) = marker else {
+            continue;
+        };
+        let colon = line[marker..].find(':').map(|offset| marker + offset)?;
+        let mut command = line[colon + 1..].trim();
+        if command.is_empty() {
+            command = lines
+                .iter()
+                .skip(index + 1)
+                .map(|candidate| candidate.trim())
+                .find(|candidate| !candidate.is_empty() && !candidate.starts_with("```"))?;
+        }
+        command = command
+            .trim_start_matches("- ")
+            .trim()
+            .trim_matches('`')
+            .trim();
+        if command.is_empty()
+            || command
+                .chars()
+                .any(|ch| matches!(ch, ';' | '&' | '|' | '<' | '>' | '`' | '$' | '\n' | '\r'))
+        {
+            return None;
+        }
+        let argv = shlex::split(command)?;
+        if !argv.is_empty() {
+            return Some(argv);
+        }
+    }
+    None
+}
+
+fn declared_done_criteria(prompt: &str) -> Vec<String> {
+    for line in prompt.lines() {
+        let lower = line.to_lowercase();
+        if let Some(marker) = lower
+            .find("done criteria:")
+            .or_else(|| lower.find("done-criteria:"))
+        {
+            if let Some(colon) = line[marker..].find(':').map(|offset| marker + offset) {
+                let criterion = line[colon + 1..].trim().trim_start_matches("- ").trim();
+                if !criterion.is_empty() {
+                    return vec![criterion.to_string()];
+                }
+            }
+        }
+    }
+    vec!["All Done Criteria frozen in the immutable worker prompt are satisfied".to_string()]
+}
+
+fn prepare_v3_worker_attempt(
+    config: &OmegaConfig,
+    oracle_session: Option<&str>,
+    worker_name: &str,
+    task: &str,
+    prompt: &str,
+    work_dir: &str,
+    files: &[String],
+    provider: omega_core::agents::Agent,
+) -> Result<Option<V3WorkerAttempt>> {
+    let Some(oracle_session) = oracle_session else {
+        return Ok(None);
+    };
+    let Some(state) =
+        omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_session)?
+    else {
+        return Ok(None);
+    };
+    if state.mission_id.as_str().is_empty() {
+        return Ok(None);
+    }
+
+    let ledger_path = config.state_dir.join("mission-engine-v3.sqlite3");
+    if !ledger_path.exists() {
+        return Ok(None);
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
+    let Some(mut projection) = ledger.mission(&state.mission_id)? else {
+        return Ok(None);
+    };
+    let argv = declared_verify_command(prompt).ok_or_else(|| {
+        anyhow::anyhow!(
+            "worker brief has no safe, directly executable `Verify Command:`; \
+             shell operators are not accepted in immutable verifier contracts"
+        )
+    })?;
+    let task_contract = omega_core::mission::TaskContract {
+        schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+        task_id: omega_core::mission::TaskId::new(task),
+        name: task.to_string(),
+        prompt: prompt.to_string(),
+        acceptance_criteria: declared_done_criteria(prompt),
+        verifier_checks: vec![omega_core::mission::VerifierCheck {
+            schema_version: omega_core::mission::CONTRACT_SCHEMA_VERSION,
+            check_id: format!("verify-{task}"),
+            kind: omega_core::mission::VerifierCheckKind::Command {
+                argv,
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 120,
+        }],
+        required_capabilities: vec!["code_editing".to_string(), "tool_calling".to_string()],
+        scope: files.to_vec(),
+        risk: omega_core::routing::classify_mission(prompt).risk,
+        retry_policy: omega_core::mission::RetryPolicy::default(),
+        depends_on: Vec::new(),
+    };
+
+    let active_plan = ledger.active_plan(&state.mission_id)?;
+    let (plan_revision, plan_to_append) = match active_plan {
+        None => {
+            let plan = omega_core::mission::PlanContract::new(
+                state.mission_id.clone(),
+                1,
+                projection.version,
+                vec![task_contract],
+                vec!["independent_verification".to_string()],
+                Vec::new(),
+            )?;
+            (1, Some(plan))
+        }
+        Some(plan) => {
+            if let Some(existing) = plan
+                .tasks
+                .iter()
+                .find(|existing| existing.task_id.as_str() == task)
+            {
+                if existing != &task_contract {
+                    anyhow::bail!(
+                        "task `{task}` already exists in immutable plan revision {} with a \
+                         different contract; dispatch it under a new task id",
+                        plan.revision
+                    );
+                }
+                (plan.revision, None)
+            } else {
+                let protected: Vec<omega_core::mission::TaskId> =
+                    plan.tasks.iter().map(|item| item.task_id.clone()).collect();
+                let mut tasks = plan.tasks.clone();
+                tasks.push(task_contract);
+                let amended = plan.amend(plan.revision, projection.version, tasks, &protected)?;
+                (amended.revision, Some(amended))
+            }
+        }
+    };
+
+    if let Some(plan) = plan_to_append {
+        let mut event = omega_core::mission_ledger::AppendEvent::new(
+            state.mission_id.clone(),
+            projection.version,
+            format!(
+                "worker-plan:{}:{}:{}",
+                state.mission_id.as_str(),
+                task,
+                plan.revision
+            ),
+            worker_name,
+            if plan.revision == 1 {
+                "plan_accepted"
+            } else {
+                "plan_amended"
+            },
+        );
+        event.provider = Some(provider.name().to_string());
+        event.payload = serde_json::to_value(&plan)?;
+        event.plan = Some(plan);
+        event.next_mission_state = match projection.state {
+            omega_core::mission::MissionState::Classified
+            | omega_core::mission::MissionState::Blocked => {
+                Some(omega_core::mission::MissionState::Planned)
+            }
+            omega_core::mission::MissionState::Planned
+            | omega_core::mission::MissionState::Running => None,
+            current => anyhow::bail!(
+                "mission {} cannot accept a worker plan while in state {:?}",
+                state.mission_id.as_str(),
+                current
+            ),
+        };
+        projection = ledger.append(event)?.projection;
+    }
+
+    let attempt_id = format!(
+        "attempt-{}-{}",
+        worker_name,
+        chrono::Utc::now().timestamp_micros()
+    );
+    let mut queued = omega_core::mission_ledger::AppendEvent::new(
+        state.mission_id.clone(),
+        projection.version,
+        format!("worker-attempt:{attempt_id}:queued"),
+        worker_name,
+        "task_attempt_queued",
+    );
+    queued.provider = Some(provider.name().to_string());
+    queued.payload = serde_json::json!({
+        "worker": worker_name,
+        "task": task,
+        "working_dir": work_dir,
+    });
+    queued.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
+        task_id: task.to_string(),
+        attempt_id: attempt_id.clone(),
+        plan_revision,
+        expected_version: 0,
+        next_state: omega_core::mission::TaskAttemptState::Queued,
+    });
+    ledger.append(queued)?;
+
+    Ok(Some(V3WorkerAttempt {
+        mission_id: state.mission_id,
+        task_id: task.to_string(),
+        attempt_id,
+        plan_revision,
+    }))
+}
+
+fn transition_v3_worker_attempt(
+    config: &OmegaConfig,
+    worker_name: &str,
+    attempt: &V3WorkerAttempt,
+    next: omega_core::mission::TaskAttemptState,
+) -> Result<()> {
+    let ledger = omega_core::mission_ledger::MissionLedger::open(
+        config.state_dir.join("mission-engine-v3.sqlite3"),
+    )?;
+    let projection = ledger
+        .mission(&attempt.mission_id)?
+        .ok_or_else(|| anyhow::anyhow!("mission disappeared before worker transition"))?;
+    let task_projection = ledger
+        .task_attempt(&attempt.attempt_id)?
+        .ok_or_else(|| anyhow::anyhow!("task attempt disappeared before worker transition"))?;
+    let next_label = format!("{next:?}").to_lowercase();
+    let mut event = omega_core::mission_ledger::AppendEvent::new(
+        attempt.mission_id.clone(),
+        projection.version,
+        format!("worker-attempt:{}:{next_label}", attempt.attempt_id),
+        worker_name,
+        format!("task_attempt_{next_label}"),
+    );
+    event.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
+        task_id: attempt.task_id.clone(),
+        attempt_id: attempt.attempt_id.clone(),
+        plan_revision: attempt.plan_revision,
+        expected_version: task_projection.version,
+        next_state: next,
+    });
+    if next == omega_core::mission::TaskAttemptState::Running
+        && projection.state == omega_core::mission::MissionState::Planned
+    {
+        event.next_mission_state = Some(omega_core::mission::MissionState::Running);
+    }
+    ledger.append(event)?;
     Ok(())
 }
 
@@ -4651,7 +5211,9 @@ async fn cmd_spawn_worker(
     // (a just-finished worker whose result patrol/oracle hasn't consumed yet —
     // LLM oracles do double-fire spawn-worker), refuse instead of silently
     // destroying the unconsumed outcome of live or just-completed work.
-    let done_marker = config.state_dir.join(format!("worker-{}.done.json", worker_name));
+    let done_marker = config
+        .state_dir
+        .join(format!("worker-{}.done.json", worker_name));
     let refuse = |why: String| {
         // This dispatch claimed scope above — a refusal must release it, or the
         // rejected name holds its files hostage (no side effects on rejection).
@@ -4721,14 +5283,18 @@ async fn cmd_spawn_worker(
                     eprintln!("[+] worker isolated in worktree: {wt}");
                     work_dir = wt;
                 } else {
-                    eprintln!("[!] worktree create returned no path — running in shared dir {work_dir}");
+                    eprintln!(
+                        "[!] worktree create returned no path — running in shared dir {work_dir}"
+                    );
                 }
             }
             Ok(o) => eprintln!(
                 "[!] worktree create failed ({}) — running in shared dir {work_dir}",
                 String::from_utf8_lossy(&o.stderr).trim()
             ),
-            Err(e) => eprintln!("[!] worktree create error ({e}) — running in shared dir {work_dir}"),
+            Err(e) => {
+                eprintln!("[!] worktree create error ({e}) — running in shared dir {work_dir}")
+            }
         }
     }
 
@@ -4785,7 +5351,27 @@ async fn cmd_spawn_worker(
     //   * NO --bare — bare mode skips OAuth credential loading in Claude Code
     //     >= 2.1.x, so a bare worker dies at the login screen (see below).
     let agent = omega_core::agents::Agent::from_name(&config.agent_command)
-        .unwrap_or(omega_core::agents::Agent::Claude);
+        .unwrap_or(omega_core::agents::Agent::Codex);
+    omega_core::providers::ProvidersConfig::negotiate_provider(
+        Some(agent.name()),
+        &[
+            omega_core::providers::ProviderCapability::Reasoning,
+            omega_core::providers::ProviderCapability::CodeEditing,
+            omega_core::providers::ProviderCapability::ToolCalling,
+        ],
+        &[omega_core::providers::ProviderCapability::Delegation],
+    )
+    .map_err(|error| anyhow::anyhow!("provider capability negotiation failed: {error}"))?;
+    let v3_attempt = prepare_v3_worker_attempt(
+        &config,
+        oracle_session.as_deref(),
+        &worker_name,
+        task,
+        &full_prompt,
+        &work_dir,
+        files.as_deref().unwrap_or(&[]),
+        agent,
+    )?;
     let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
         let mut opts = omega_core::agents::LaunchOptions::default();
         opts.permission_mode = Some("bypassPermissions".to_string());
@@ -4821,13 +5407,40 @@ async fn cmd_spawn_worker(
         mgr.create_agent_session_with_opts(&worker_name, &work_dir, agent, Some(&full_prompt), opts)
             .await
     } else {
-        mgr.create_agent_session(&worker_name, &work_dir, &config.agent_command, Some(&full_prompt))
-            .await
+        mgr.create_agent_session(
+            &worker_name,
+            &work_dir,
+            &config.agent_command,
+            Some(&full_prompt),
+        )
+        .await
     };
     if let Err(e) = spawn_result {
+        if let Some(attempt) = &v3_attempt {
+            let _ = transition_v3_worker_attempt(
+                &config,
+                &worker_name,
+                attempt,
+                omega_core::mission::TaskAttemptState::Cancelled,
+            );
+        }
         // Roll back the scope claim so a failed spawn doesn't lock files forever.
         let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
         return Err(e);
+    }
+    if let Some(attempt) = &v3_attempt {
+        if let Err(error) = transition_v3_worker_attempt(
+            &config,
+            &worker_name,
+            attempt,
+            omega_core::mission::TaskAttemptState::Running,
+        ) {
+            let _ = mgr.kill_session(&worker_name).await;
+            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &worker_name);
+            return Err(error.context(
+                "worker spawn rolled back because the authoritative V3 running transition failed",
+            ));
+        }
     }
 
     // Register the worker under its oracle so the patrol routes its done/blocked
@@ -4860,20 +5473,25 @@ async fn cmd_spawn_worker(
         // so the worker→oracle link is ALWAYS persisted. Previously this only
         // updated an EXISTING state and silently dropped the link otherwise —
         // which is why the menu couldn't nest these workers under their oracle.
-        let mut state = omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                omega_core::oracle_lifecycle::OracleState::new_minimal(
-                    oracle_name,
-                    project_name.as_deref().unwrap_or(""),
-                    std::path::PathBuf::from(work_dir),
-                )
-            });
+        let mut state =
+            omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, oracle_name)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    omega_core::oracle_lifecycle::OracleState::new_minimal(
+                        oracle_name,
+                        project_name.as_deref().unwrap_or(""),
+                        std::path::PathBuf::from(work_dir),
+                    )
+                });
         state.register_worker(omega_core::oracle_lifecycle::WorkerEntry {
             session_name: worker_name.clone(),
             task_id: task.to_string(),
             task_name: task.to_string(),
+            attempt_id: v3_attempt
+                .as_ref()
+                .map(|attempt| attempt.attempt_id.clone()),
+            plan_revision: v3_attempt.as_ref().map(|attempt| attempt.plan_revision),
             files_owned: files.clone().unwrap_or_default(),
             dispatched_at: chrono::Utc::now(),
             status: omega_core::oracle_lifecycle::WorkerEntryStatus::Running,
@@ -5009,7 +5627,11 @@ async fn cmd_cleanup(yes: bool) -> Result<()> {
     if !yes {
         let targets = omega_core::cleanup::killable(&mgr, &keep).await;
         println!("NUCLEAR CLEANUP — would:");
-        println!("  -kill {} session(s): {}", targets.len(), targets.join(", "));
+        println!(
+            "  -kill {} session(s): {}",
+            targets.len(),
+            targets.join(", ")
+        );
         println!("  -prune stale state from dead sessions (scope claims, done/blocked signals)");
         println!("  -clear /tmp omega-*/claude-* scratch");
         println!("  -drop the Linux page cache (if permitted)");
@@ -5092,11 +5714,22 @@ fn provision_verify(group: &str) -> Result<()> {
     // on transport failure). `auth` is the full -H / -u argument list.
     fn http_status(url: &str, auth: &[&str]) -> Option<u32> {
         let mut cmd = std::process::Command::new("curl");
-        cmd.args(["-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "15"]);
+        cmd.args([
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            "15",
+        ]);
         cmd.args(auth);
         cmd.arg(url);
         let out = cmd.output().ok()?;
-        String::from_utf8_lossy(&out.stdout).trim().parse::<u32>().ok()
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<u32>()
+            .ok()
     }
 
     println!(
@@ -5199,7 +5832,12 @@ async fn cmd_timeline(oracle: &str) -> Result<()> {
             println!("◆ {} [{}]  phase={}", tl.oracle_name, tl.project, tl.phase);
             println!();
             for e in &tl.events {
-                println!("  {}  {} {}", e.at.format("%m-%d %H:%M:%S"), e.marker, e.text);
+                println!(
+                    "  {}  {} {}",
+                    e.at.format("%m-%d %H:%M:%S"),
+                    e.marker,
+                    e.text
+                );
             }
             println!("\n{} event(s)", tl.events.len());
         }
@@ -5328,7 +5966,9 @@ fn cmd_doctor_pre_reset() -> Result<()> {
         }
     }
 
-    println!("\n  Next: `omega backup`  (writes ~/omega-backup-<ts>.tgz — scp it OFF this machine).");
+    println!(
+        "\n  Next: `omega backup`  (writes ~/omega-backup-<ts>.tgz — scp it OFF this machine)."
+    );
     Ok(())
 }
 
@@ -5337,8 +5977,12 @@ fn cmd_doctor_pre_reset() -> Result<()> {
 fn cmd_backup(out: Option<String>, include_memory: bool) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let report =
-        omega_core::backup::run_backup(&config, out.map(std::path::PathBuf::from), include_memory, &ts)?;
+    let report = omega_core::backup::run_backup(
+        &config,
+        out.map(std::path::PathBuf::from),
+        include_memory,
+        &ts,
+    )?;
 
     println!("OmegaOS backup\n");
     println!("  archive : {}", report.archive.display());
@@ -5417,7 +6061,10 @@ async fn cmd_team(
         .map(|spec| {
             let parts: Vec<&str> = spec.splitn(2, ':').collect();
             let name = parts[0].to_string();
-            let prompt = parts.get(1).unwrap_or(&"Implement your assigned task").to_string();
+            let prompt = parts
+                .get(1)
+                .unwrap_or(&"Implement your assigned task")
+                .to_string();
             omega_core::team::TeamMember {
                 name,
                 role: "worker".to_string(),
@@ -5473,7 +6120,9 @@ fn cmd_progress(
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     let key = session.strip_prefix("oracle-").unwrap_or(session);
-    let path = config.state_dir.join(format!("oracle-{}.progress.json", key));
+    let path = config
+        .state_dir
+        .join(format!("oracle-{}.progress.json", key));
     // Preserve existing fields (chat/thread/msg/mission written by the bot).
     let mut obj: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
@@ -5498,10 +6147,12 @@ fn cmd_progress(
     if let Some(t) = task {
         let st = status.unwrap_or("done");
         // Upsert by title (case-insensitive).
-        if let Some(existing) = tasks
-            .iter_mut()
-            .find(|x| x.get("t").and_then(|v| v.as_str()).map(|s| s.eq_ignore_ascii_case(t)) == Some(true))
-        {
+        if let Some(existing) = tasks.iter_mut().find(|x| {
+            x.get("t")
+                .and_then(|v| v.as_str())
+                .map(|s| s.eq_ignore_ascii_case(t))
+                == Some(true)
+        }) {
             existing["s"] = serde_json::json!(st);
         } else {
             tasks.push(serde_json::json!({ "t": t, "s": st }));
@@ -5515,12 +6166,17 @@ fn cmd_progress(
     m.insert("tasks".into(), serde_json::json!(tasks));
     m.insert("done".into(), serde_json::json!(done));
     m.insert("total".into(), serde_json::json!(total));
-    m.insert("ts".into(), serde_json::json!(chrono::Utc::now().to_rfc3339()));
+    m.insert(
+        "ts".into(),
+        serde_json::json!(chrono::Utc::now().to_rfc3339()),
+    );
     std::fs::create_dir_all(&config.state_dir).ok();
     // Atomic tmp+rename (same idiom as done.rs): three readers poll this file
     // concurrently — patrol's stall pass, the TUI worker bars, the Telegram
     // card — so a torn read of a half-written JSON must be impossible.
-    let tmp = config.state_dir.join(format!(".oracle-{}.progress.json.tmp", key));
+    let tmp = config
+        .state_dir
+        .join(format!(".oracle-{}.progress.json.tmp", key));
     std::fs::write(&tmp, serde_json::to_string_pretty(&obj)?)?;
     std::fs::rename(&tmp, &path)?;
     println!("[+] progress {}/{} for oracle-{}", done, total, key);
@@ -5531,11 +6187,17 @@ fn cmd_progress(
     // time. When THIS progress tick completes the plan (100% done, no failure),
     // upgrade the stuck signal back to done_clean and auto-close the session,
     // mirroring the inline auto-close in cmd_done. Oracle sessions only.
+    let gate_passed = omega_core::gate::GateResult::read(&config.state_dir, session)
+        .ok()
+        .flatten()
+        .map(|g| g.overall_pass)
+        .unwrap_or(false);
     if session.starts_with("oracle-")
         && task.is_some()
         && status.unwrap_or("done") == "done"
         && total > 0
         && done == total
+        && gate_passed
         && !tasks
             .iter()
             .any(|x| x.get("s").and_then(|v| v.as_str()) == Some("fail"))
@@ -5548,18 +6210,18 @@ fn cmd_progress(
                 osignal.pending_actions.clear();
                 osignal.gate_pending = false;
                 osignal.finished_at = chrono::Utc::now();
-                osignal.duration_secs =
-                    (osignal.finished_at - osignal.started_at).num_seconds().max(0) as u64;
+                osignal.duration_secs = (osignal.finished_at - osignal.started_at)
+                    .num_seconds()
+                    .max(0) as u64;
                 osignal.write(&config.state_dir)?;
                 // The 1-min notifier cron may have already reported the transient
                 // Pending state and written its per-path .notified marker — without
                 // invalidating it, the corrected done_clean would NEVER be sent and
                 // the operator's record would permanently say "mission incomplète".
-                omega_core::done::OracleDoneSignal::invalidate_notified(
-                    &config.state_dir,
-                    session,
+                omega_core::done::OracleDoneSignal::invalidate_notified(&config.state_dir, session);
+                println!(
+                    "[+] L4 gate satisfied - done upgraded to done_clean, auto-closing session"
                 );
-                println!("[+] L4 gate satisfied - done upgraded to done_clean, auto-closing session");
                 if let Ok(exe) = std::env::current_exe() {
                     // Session names are sanitized to [A-Za-z0-9._-] (no shell
                     // metachars), so this format is injection-safe.
@@ -5574,8 +6236,267 @@ fn cmd_progress(
                 }
             }
         }
+    } else if session.starts_with("oracle-") && total > 0 && done == total && !gate_passed {
+        println!(
+            "[-] Plan complete, but independent quality gate is not accepted; mission remains pending"
+        );
     }
     Ok(())
+}
+
+fn v3_declared_artifacts(
+    state_dir: &std::path::Path,
+    session: &str,
+) -> Result<Vec<omega_core::done::DoneArtifact>> {
+    let Some((mission_id, task_id)) =
+        omega_core::oracle_lifecycle::OracleState::read_all(state_dir)
+            .into_iter()
+            .find_map(|state| {
+                state
+                    .workers
+                    .iter()
+                    .find(|worker| worker.session_name == session)
+                    .map(|worker| (state.mission_id.clone(), worker.task_id.clone()))
+            })
+    else {
+        return Ok(Vec::new());
+    };
+    if mission_id.as_str().is_empty() {
+        return Ok(Vec::new());
+    }
+    let ledger_path = state_dir.join("mission-engine-v3.sqlite3");
+    if !ledger_path.exists() {
+        return Ok(Vec::new());
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
+    let Some(plan) = ledger.active_plan(&mission_id)? else {
+        return Ok(Vec::new());
+    };
+    let Some(task) = plan
+        .tasks
+        .into_iter()
+        .find(|task| task.task_id.as_str() == task_id)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(task
+        .verifier_checks
+        .into_iter()
+        .map(|check| match check.kind {
+            omega_core::mission::VerifierCheckKind::Command {
+                argv,
+                expected_exit_code,
+                ..
+            } => omega_core::done::DoneArtifact::Command {
+                cmd: argv.join(" "),
+                exit_code: expected_exit_code,
+            },
+            omega_core::mission::VerifierCheckKind::Http {
+                url,
+                expected_status,
+            } => omega_core::done::DoneArtifact::Url {
+                url,
+                expected_status,
+            },
+            omega_core::mission::VerifierCheckKind::FileExists { path } => {
+                omega_core::done::DoneArtifact::FilePath { path }
+            }
+            omega_core::mission::VerifierCheckKind::GitObject { sha } => {
+                omega_core::done::DoneArtifact::GitSha { sha, branch: None }
+            }
+        })
+        .collect())
+}
+
+fn record_done_projection<T: serde::Serialize>(
+    state_dir: &std::path::Path,
+    session: &str,
+    value: &T,
+    idempotency_suffix: &str,
+    kind: &str,
+) -> Result<Option<omega_core::done::ProjectionProvenance>> {
+    let ledger_path = state_dir.join("mission-engine-v3.sqlite3");
+    if !ledger_path.exists() {
+        return Ok(None);
+    }
+
+    let states = omega_core::oracle_lifecycle::OracleState::read_all(state_dir);
+    let oracle = if omega_core::session::OmegaSession::classify(session).role
+        == omega_core::session::SessionRole::Oracle
+    {
+        states.into_iter().find(|state| {
+            state.oracle_name == session
+                || state.oracle_name.strip_prefix("oracle-") == session.strip_prefix("oracle-")
+        })
+    } else {
+        states.into_iter().find(|state| {
+            state
+                .workers
+                .iter()
+                .any(|worker| worker.session_name == session)
+        })
+    };
+    let Some(oracle) = oracle.filter(|state| !state.mission_id.as_str().is_empty()) else {
+        return Ok(None);
+    };
+    let worker_attempt = oracle
+        .workers
+        .iter()
+        .find(|worker| worker.session_name == session)
+        .and_then(|worker| {
+            Some((
+                worker.task_id.clone(),
+                worker.attempt_id.clone()?,
+                worker.plan_revision?,
+            ))
+        });
+
+    let ledger = omega_core::mission_ledger::MissionLedger::open(&ledger_path)?;
+    let Some(current) = ledger.mission(&oracle.mission_id)? else {
+        // This is a legacy OracleState created before the V3 ledger existed.
+        return Ok(None);
+    };
+    let mut event = omega_core::mission_ledger::AppendEvent::new(
+        oracle.mission_id,
+        current.version,
+        format!("{kind}:{session}:{idempotency_suffix}"),
+        session,
+        kind,
+    );
+    event.provider = Some(OmegaConfig::load().unwrap_or_default().agent_command);
+    event.correlation_id = Some(oracle.oracle_name);
+    event.payload = serde_json::to_value(value)?;
+    if let Some((task_id, attempt_id, plan_revision)) = worker_attempt {
+        if let Some(task) = ledger.task_attempt(&attempt_id)? {
+            if task.state == omega_core::mission::TaskAttemptState::Running {
+                event.task_attempt = Some(omega_core::mission_ledger::TaskAttemptMutation {
+                    task_id,
+                    attempt_id,
+                    plan_revision,
+                    expected_version: task.version,
+                    next_state: omega_core::mission::TaskAttemptState::CandidateDone,
+                });
+            }
+        }
+    }
+    let appended = ledger.append(event)?;
+
+    Ok(Some(omega_core::done::ProjectionProvenance {
+        source: "mission-engine-v3.sqlite3".to_string(),
+        event_id: appended.event.event_id,
+        event_sequence: appended.event.sequence,
+        mission_version: appended.projection.version,
+        projection_hash: appended.projection.projection_hash,
+    }))
+}
+
+fn finalize_v3_oracle_delivery(
+    state_dir: &std::path::Path,
+    session: &str,
+) -> Result<Option<omega_core::done::ProjectionProvenance>> {
+    let Some(state) = omega_core::oracle_lifecycle::OracleState::read(state_dir, session)? else {
+        return Ok(None);
+    };
+    if state.mission_id.as_str().is_empty() {
+        return Ok(None);
+    }
+    let ledger_path = state_dir.join("mission-engine-v3.sqlite3");
+    if !ledger_path.exists() {
+        return Ok(None);
+    }
+    let ledger = omega_core::mission_ledger::MissionLedger::open(ledger_path)?;
+    if ledger.mission(&state.mission_id)?.is_none() {
+        return Ok(None);
+    }
+    let Some(plan) = ledger.active_plan(&state.mission_id)? else {
+        anyhow::bail!("V3 delivery refused: no accepted immutable plan");
+    };
+    if plan.tasks.is_empty() {
+        anyhow::bail!("V3 delivery refused: the accepted plan is empty");
+    }
+    let attempts = ledger.task_attempts(&state.mission_id)?;
+    let unaccepted: Vec<String> = plan
+        .tasks
+        .iter()
+        .filter(|task| {
+            !attempts.iter().any(|attempt| {
+                attempt.task_id == task.task_id.as_str()
+                    && attempt.state == omega_core::mission::TaskAttemptState::Accepted
+            })
+        })
+        .map(|task| task.task_id.0.clone())
+        .collect();
+    if !unaccepted.is_empty() {
+        anyhow::bail!(
+            "V3 delivery refused: tasks lack an independently accepted attempt: {}",
+            unaccepted.join(", ")
+        );
+    }
+
+    let mut last = None;
+    loop {
+        let projection = ledger
+            .mission(&state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 mission projection disappeared"))?;
+        let next = match projection.state {
+            omega_core::mission::MissionState::Running => {
+                omega_core::mission::MissionState::Verifying
+            }
+            omega_core::mission::MissionState::Verifying => {
+                omega_core::mission::MissionState::Accepted
+            }
+            omega_core::mission::MissionState::Accepted => {
+                omega_core::mission::MissionState::Reporting
+            }
+            omega_core::mission::MissionState::Reporting => {
+                omega_core::mission::MissionState::Delivered
+            }
+            omega_core::mission::MissionState::Delivered => break,
+            current => anyhow::bail!(
+                "V3 delivery refused: mission is in non-deliverable state {:?}",
+                current
+            ),
+        };
+        let label = format!("{next:?}").to_lowercase();
+        let mut event = omega_core::mission_ledger::AppendEvent::new(
+            state.mission_id.clone(),
+            projection.version,
+            format!("oracle-delivery:{session}:{label}"),
+            session,
+            format!("mission_{label}"),
+        );
+        event.next_mission_state = Some(next);
+        event.payload = serde_json::json!({
+            "oracle": session,
+            "source": "independent_gate_and_accepted_task_attempts",
+        });
+        last = Some(ledger.append(event)?);
+    }
+
+    let outcome = if let Some(outcome) = last {
+        outcome
+    } else {
+        let projection = ledger
+            .mission(&state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 mission projection disappeared"))?;
+        let event = ledger
+            .events(&state.mission_id)?
+            .into_iter()
+            .last()
+            .ok_or_else(|| anyhow::anyhow!("V3 mission has no provenance event"))?;
+        omega_core::mission_ledger::AppendOutcome {
+            event,
+            projection,
+            idempotent_replay: true,
+        }
+    };
+    Ok(Some(omega_core::done::ProjectionProvenance {
+        source: "mission-engine-v3.sqlite3".to_string(),
+        event_id: outcome.event.event_id,
+        event_sequence: outcome.event.sequence,
+        mission_version: outcome.projection.version,
+        projection_hash: outcome.projection.projection_hash,
+    }))
 }
 
 async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&str>) -> Result<()> {
@@ -5587,7 +6508,10 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         "pending" => DoneStatus::Pending,
         "failed" => DoneStatus::Failed,
         "blocked" => DoneStatus::Blocked,
-        _ => anyhow::bail!("Invalid status: {}. Use: done_clean, pending, failed, blocked", status),
+        _ => anyhow::bail!(
+            "Invalid status: {}. Use: done_clean, pending, failed, blocked",
+            status
+        ),
     };
 
     // Role-aware done signal. An Oracle session emits an OracleDoneSignal
@@ -5618,31 +6542,76 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         let mut final_status = done_status;
         let mut gate_pending: Vec<String> = Vec::new();
         if final_status == omega_core::done::DoneStatus::DoneClean {
-            let pp = config.state_dir.join(format!("oracle-{}.progress.json", key));
-            if let Ok(pj) = std::fs::read_to_string(&pp)
+            let pp = config
+                .state_dir
+                .join(format!("oracle-{}.progress.json", key));
+            match std::fs::read_to_string(&pp)
                 .ok()
                 .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
                 .ok_or(())
             {
-                let total = pj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                let done = pj.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
-                let tasks = pj.get("tasks").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                let failed: Vec<String> = tasks.iter()
-                    .filter(|t| t.get("s").and_then(|v| v.as_str()) == Some("fail"))
-                    .filter_map(|t| t.get("t").and_then(|v| v.as_str()).map(|s| format!("échec: {}", s)))
-                    .collect();
-                let unfinished: Vec<String> = tasks.iter()
-                    .filter(|t| matches!(t.get("s").and_then(|v| v.as_str()), Some("todo") | Some("doing")))
-                    .filter_map(|t| t.get("t").and_then(|v| v.as_str()).map(|s| format!("non fait: {}", s)))
-                    .collect();
-                if total > 0 && (done < total || !failed.is_empty()) {
-                    final_status = omega_core::done::DoneStatus::Pending;
-                    gate_pending.extend(failed);
-                    gate_pending.extend(unfinished);
-                    if gate_pending.is_empty() {
-                        gate_pending.push(format!("plan {}/{} — pas 100% (L4)", done, total));
+                Ok(pj) => {
+                    let total = pj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let done = pj.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let tasks = pj
+                        .get("tasks")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default();
+                    let failed: Vec<String> = tasks
+                        .iter()
+                        .filter(|t| t.get("s").and_then(|v| v.as_str()) == Some("fail"))
+                        .filter_map(|t| {
+                            t.get("t")
+                                .and_then(|v| v.as_str())
+                                .map(|s| format!("échec: {}", s))
+                        })
+                        .collect();
+                    let unfinished: Vec<String> = tasks
+                        .iter()
+                        .filter(|t| {
+                            matches!(
+                                t.get("s").and_then(|v| v.as_str()),
+                                Some("todo") | Some("doing")
+                            )
+                        })
+                        .filter_map(|t| {
+                            t.get("t")
+                                .and_then(|v| v.as_str())
+                                .map(|s| format!("non fait: {}", s))
+                        })
+                        .collect();
+                    if total == 0 || done < total || !failed.is_empty() {
+                        final_status = omega_core::done::DoneStatus::Pending;
+                        gate_pending.extend(failed);
+                        gate_pending.extend(unfinished);
+                        if gate_pending.is_empty() {
+                            gate_pending.push(if total == 0 {
+                                "plan missionnel absent ou vide; acceptation impossible".to_string()
+                            } else {
+                                format!("plan {}/{} — pas 100% (L4)", done, total)
+                            });
+                        }
                     }
                 }
+                Err(_) => {
+                    final_status = omega_core::done::DoneStatus::Pending;
+                    gate_pending.push(
+                        "projection de plan absente ou illisible; acceptation impossible"
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        if final_status == omega_core::done::DoneStatus::DoneClean {
+            let gate_passed = omega_core::gate::GateResult::read(&config.state_dir, session)
+                .ok()
+                .flatten()
+                .map(|g| g.overall_pass)
+                .unwrap_or(false);
+            if !gate_passed {
+                final_status = omega_core::done::DoneStatus::Pending;
+                gate_pending.push("quality gate indépendante absente ou non acceptée".to_string());
             }
         }
         // WORKER CLOSE-GATE + CASCADE (zombie-worker fix, dentistrygpt incident):
@@ -5652,10 +6621,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // worker session alive forever (no signal → no reaper).
         let mut cascade_workers: Vec<String> = Vec::new();
         if final_status == omega_core::done::DoneStatus::DoneClean {
-            if let Ok(live) = async {
-                SessionManager::connect().await?.list_sessions().await
-            }
-            .await
+            if let Ok(live) = async { SessionManager::connect().await?.list_sessions().await }.await
             {
                 let lw = omega_core::oracle_lifecycle::live_workers_of_oracle(
                     &config.state_dir,
@@ -5681,9 +6647,8 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // Mark the L4-gate downgrade so `omega progress` / patrol can upgrade the
         // signal back to done_clean once the plan hits 100% (the oracle's own
         // final "report" task is unfinished at omega-done time by contract).
-        osignal.gate_pending =
-            done_status == omega_core::done::DoneStatus::DoneClean
-                && final_status == omega_core::done::DoneStatus::Pending;
+        osignal.gate_pending = done_status == omega_core::done::DoneStatus::DoneClean
+            && final_status == omega_core::done::DoneStatus::Pending;
         osignal.pending_actions = gate_pending;
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
@@ -5695,6 +6660,17 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 deploy_status: None,
             });
         }
+        osignal.projection = record_done_projection(
+            &config.state_dir,
+            session,
+            &osignal,
+            &osignal.finished_at.to_rfc3339(),
+            "legacy_oracle_completion_candidate",
+        )?;
+        if final_status == omega_core::done::DoneStatus::DoneClean {
+            osignal.projection =
+                finalize_v3_oracle_delivery(&config.state_dir, session)?.or(osignal.projection);
+        }
         osignal.write(&config.state_dir)?;
         // Release the scope claim on a clean close, mirroring the worker path.
         if osignal.is_closeable() {
@@ -5705,7 +6681,10 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // organized under ~/.omega/audit/<project>/audit.jsonl (governance trail — who
         // did what, when, with what result). Best-effort, never blocks the done signal.
         {
-            let dir = config.state_dir.parent().map(|p| p.join("audit").join(project));
+            let dir = config
+                .state_dir
+                .parent()
+                .map(|p| p.join("audit").join(project));
             if let Some(dir) = dir {
                 let _ = std::fs::create_dir_all(&dir);
                 let line = format!(
@@ -5716,7 +6695,11 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                     serde_json::to_string(summary).unwrap_or_else(|_| "\"\"".into()),
                 );
                 use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("audit.jsonl")) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join("audit.jsonl"))
+                {
                     let _ = f.write_all(line.as_bytes());
                 }
             }
@@ -5755,62 +6738,78 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
 
     let mut signal = DoneSignal::new(session, done_status, summary);
     signal.commit = commit.map(|s| s.to_string());
+    // A worker session represents one bounded task on the legacy projection.
+    // The independent artifact gate still decides acceptance; this avoids the
+    // ambiguous 0/0 count while keeping a no-op with zero evidence fail-closed.
+    if signal.status == DoneStatus::DoneClean {
+        signal.todos_total = 1;
+        signal.todos_completed = 1;
+    }
 
-    // Opus 4.8 ground-truth substrate: a worker's narration is inadmissible
-    // as proof. Auto-capture the REAL git state of the cwd (the worker runs
-    // `omega done` from its work_dir) so a legitimate done_clean carries a
-    // verifiable artifact + a non-self-report corroboration source. The
-    // patrol gate (verify_done_against_repo) then catches fabricated claims
-    // without false-positiving honest work.
+    // Candidate evidence only. Never add the current HEAD unconditionally:
+    // an unchanged repository made a no-op worker look independently proven.
+    // Explicit commits and actually changed paths are observations the patrol
+    // can verify. Acceptance and lease release happen later, outside the
+    // worker process.
     use omega_core::done::{CorroborationSource, DoneArtifact};
-    signal.corroboration.push(CorroborationSource::WorkerSelfReport);
+    signal
+        .corroboration
+        .push(CorroborationSource::WorkerSelfReport);
     if let Ok(cwd) = std::env::current_dir() {
-        let head = std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
+        if let Some(c) = commit.filter(|c| !c.trim().is_empty()) {
+            signal.artifacts.push(DoneArtifact::GitSha {
+                sha: c.to_string(),
+                branch: None,
+            });
+        }
+
+        let changed = std::process::Command::new("git")
+            .args(["status", "--porcelain", "--untracked-files=all"])
             .current_dir(&cwd)
             .output()
             .ok()
             .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty());
-        if let Some(head_sha) = head {
-            let branch = std::process::Command::new("git")
-                .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                .current_dir(&cwd)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
-                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-                .filter(|s| !s.is_empty() && s != "HEAD");
-            signal.artifacts.push(DoneArtifact::GitSha {
-                sha: head_sha.clone(),
-                branch: branch.clone(),
-            });
-            signal.corroboration.push(CorroborationSource::FilesystemCheck);
-            // If the worker named a specific commit that is NOT the current
-            // HEAD, record it as its own claim so the gate verifies it too.
-            if let Some(c) = commit {
-                if !c.is_empty() && c != head_sha && !head_sha.starts_with(c) {
-                    signal.artifacts.push(DoneArtifact::GitSha {
-                        sha: c.to_string(),
-                        branch,
-                    });
-                }
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        let mut observed_paths = std::collections::BTreeSet::new();
+        for line in changed.lines() {
+            // Porcelain v1 has a two-byte status and one separating space.
+            // Rename rows use `old -> new`; the destination is the artifact.
+            let raw = line.get(3..).unwrap_or("").trim();
+            let path = raw.rsplit_once(" -> ").map(|(_, new)| new).unwrap_or(raw);
+            if !path.is_empty() {
+                observed_paths.insert(path.trim_matches('"').to_string());
             }
         }
+        for path in observed_paths {
+            signal.artifacts.push(DoneArtifact::FilePath { path });
+        }
+        if signal
+            .artifacts
+            .iter()
+            .any(|a| matches!(a, DoneArtifact::FilePath { .. }))
+        {
+            signal
+                .corroboration
+                .push(CorroborationSource::FilesystemCheck);
+        }
     }
+    for artifact in v3_declared_artifacts(&config.state_dir, session)? {
+        signal.artifacts.push(artifact);
+    }
+    signal.projection = record_done_projection(
+        &config.state_dir,
+        session,
+        &signal,
+        &signal.finished_at.to_rfc3339(),
+        "legacy_worker_completion_candidate",
+    )?;
     signal.write(&config.state_dir)?;
 
-    // Release scope claim on done_clean. Gate ONLY on status, not is_complete():
-    // is_complete() also requires todos_completed >= todos_total, which a worker
-    // that never tracked todos trivially satisfies (0 >= 0) — that would release
-    // the scope on ANY done_clean signal even when the work isn't really finished.
-    // status == DoneClean is the authoritative completion signal here.
-    if signal.status == omega_core::done::DoneStatus::DoneClean {
-        let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, session);
-    }
-
-    println!("[+] Done signal written for: {}", session);
+    println!(
+        "[+] Candidate completion written for: {} (scope remains held until independent acceptance)",
+        session
+    );
     Ok(())
 }
 
@@ -5842,11 +6841,7 @@ async fn cmd_inbox(oracle: &str, action: &str) -> Result<()> {
             } else {
                 println!("Drained {} events:", events.len());
                 for event in &events {
-                    println!(
-                        "  [{:?}] {}",
-                        event.event_type,
-                        event.payload
-                    );
+                    println!("  [{:?}] {}", event.event_type, event.payload);
                 }
             }
         }
@@ -5869,11 +6864,8 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     };
 
     let ship_config = omega_core::ship::ShipConfig::default();
-    let pipeline = omega_core::ship::ShipPipeline::new(
-        project_dir,
-        config.state_dir.clone(),
-        ship_config,
-    );
+    let pipeline =
+        omega_core::ship::ShipPipeline::new(project_dir, config.state_dir.clone(), ship_config);
 
     if unfreeze {
         pipeline.unfreeze(project)?;
@@ -5882,12 +6874,17 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
     }
 
     if pipeline.is_frozen(project) {
-        println!("[x] Ship pipeline is FROZEN for {}. Use --unfreeze to clear.", project);
+        println!(
+            "[x] Ship pipeline is FROZEN for {}. Use --unfreeze to clear.",
+            project
+        );
         return Ok(());
     }
 
     println!("◆ Ship pipeline starting for {}...", project);
-    let result = pipeline.execute(project, message, &Vec::<String>::new()).await;
+    let result = pipeline
+        .execute(project, message, &Vec::<String>::new())
+        .await;
 
     for step in &result.steps_completed {
         let icon = if step.passed { "[+]" } else { "[x]" };
@@ -5905,7 +6902,10 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
             }
         }
         omega_core::ship::ShipOutcome::Failed => {
-            println!("[x] Ship failed: {}", result.error.as_deref().unwrap_or("unknown"));
+            println!(
+                "[x] Ship failed: {}",
+                result.error.as_deref().unwrap_or("unknown")
+            );
         }
         omega_core::ship::ShipOutcome::Frozen => {
             println!("[x] Ship pipeline is frozen — resolve the issue first");
@@ -5927,7 +6927,11 @@ async fn cmd_ship(project: &str, message: &str, unfreeze: bool) -> Result<()> {
 /// type again.
 async fn cmd_aisb_chat() -> Result<()> {
     use std::io::{BufRead, Write};
-    let home = dirs::home_dir().unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        std::env::var("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+    });
     let log = home.join(".omega/state/aisb-conversation.log");
     let inbox = home.join(".omega/state/aisb-local-inbox.jsonl");
     if let Some(p) = inbox.parent() {
@@ -6011,7 +7015,10 @@ async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
 
     if once {
         let report = patrol.run_once().await?;
-        println!("Sessions: {} (◆{} ●{})", report.total_sessions, report.oracles, report.workers);
+        println!(
+            "Sessions: {} (◆{} ●{})",
+            report.total_sessions, report.oracles, report.workers
+        );
         if !report.done_workers.is_empty() {
             println!("Done workers: {}", report.done_workers.join(", "));
         }
@@ -6064,27 +7071,52 @@ async fn cmd_gate(oracle: &str, mission: Option<&str>) -> Result<()> {
             ],
         );
         rubric.write(&config.state_dir, oracle)?;
-        println!("Rubric created for {}: {} criteria", oracle, rubric.criteria.len());
+        println!(
+            "Rubric created for {}: {} criteria",
+            oracle,
+            rubric.criteria.len()
+        );
         return Ok(());
     }
 
     // Prefer the ACTUAL gate result if the oracle has been graded — that is what
     // "check the gate" means. Falls back to showing the rubric (the criteria the
     // gate will grade against) when no result exists yet.
-    let result_path = config.state_dir.join(format!("{}.gate-result.json", oracle));
+    let result_path = config
+        .state_dir
+        .join(format!("{}.gate-result.json", oracle));
     if result_path.exists() {
         let content = std::fs::read_to_string(&result_path)?;
         let r: omega_core::gate::GateResult = serde_json::from_str(&content)?;
         let mark = |b: bool| if b { "PASS" } else { "FAIL" };
-        println!("Gate result for {} — {} ({:.1}/100)", oracle, mark(r.overall_pass), r.score);
-        println!("  rubric={}  consensus={}  adversarial={}  regression={}", mark(r.rubric_pass), mark(r.consensus_pass), mark(r.adversarial_pass), mark(r.regression_pass));
-        println!("  audit={}  token_budget={}  citation={}", mark(r.audit_pass), mark(r.token_budget_pass), mark(r.citation_pass));
+        println!(
+            "Gate result for {} — {} ({:.1}/100)",
+            oracle,
+            mark(r.overall_pass),
+            r.score
+        );
+        println!(
+            "  rubric={}  consensus={}  adversarial={}  regression={}",
+            mark(r.rubric_pass),
+            mark(r.consensus_pass),
+            mark(r.adversarial_pass),
+            mark(r.regression_pass)
+        );
+        println!(
+            "  audit={}  token_budget={}  citation={}",
+            mark(r.audit_pass),
+            mark(r.token_budget_pass),
+            mark(r.citation_pass)
+        );
         return Ok(());
     }
 
     match omega_core::gate::Rubric::read(&config.state_dir, oracle)? {
         Some(rubric) => {
-            println!("No gate result yet for {} — showing the rubric it will grade against.", oracle);
+            println!(
+                "No gate result yet for {} — showing the rubric it will grade against.",
+                oracle
+            );
             println!("Mission: {}", rubric.mission);
             println!("Criteria:");
             for c in &rubric.criteria {
@@ -6176,9 +7208,7 @@ async fn cmd_stream(target: &str, detach: bool, interval: u32, lines: u32) -> Re
     }
     if let Some(host) = t.host() {
         if !stream::is_safe_coordinate(host) {
-            anyhow::bail!(
-                "unsupported ssh host alias {host:?} — use the alias from ~/.ssh/config"
-            );
+            anyhow::bail!("unsupported ssh host alias {host:?} — use the alias from ~/.ssh/config");
         }
     }
 
@@ -6352,9 +7382,7 @@ async fn cmd_stream_list() -> Result<()> {
             ProbeOutcome::Sessions(sessions) => {
                 for s in sessions {
                     let target = match host {
-                        None => omega_core::stream::StreamTarget::Local {
-                            session: s.clone(),
-                        },
+                        None => omega_core::stream::StreamTarget::Local { session: s.clone() },
                         Some(h) => omega_core::stream::StreamTarget::Remote {
                             host: h.clone(),
                             session: s.clone(),
@@ -6666,23 +7694,46 @@ async fn cmd_log(session: &str, count: usize) -> Result<()> {
             for entry in &entries[start..] {
                 match entry {
                     omega_core::session_log::SessionEntry::Header(h) => {
-                        println!("[{}] SESSION {} cwd={}", h.timestamp.format("%H:%M:%S"), h.session_name, h.cwd);
+                        println!(
+                            "[{}] SESSION {} cwd={}",
+                            h.timestamp.format("%H:%M:%S"),
+                            h.session_name,
+                            h.cwd
+                        );
                     }
                     omega_core::session_log::SessionEntry::Message(m) => {
                         let preview: String = m.content.chars().take(80).collect();
-                        println!("[{}] {} {}", m.timestamp.format("%H:%M:%S"), m.role, preview);
+                        println!(
+                            "[{}] {} {}",
+                            m.timestamp.format("%H:%M:%S"),
+                            m.role,
+                            preview
+                        );
                     }
                     omega_core::session_log::SessionEntry::ToolCall(t) => {
                         println!("[{}] TOOL {}", t.timestamp.format("%H:%M:%S"), t.tool_name);
                     }
                     omega_core::session_log::SessionEntry::Done(d) => {
-                        println!("[{}] DONE {} — {}", d.timestamp.format("%H:%M:%S"), d.status, d.summary);
+                        println!(
+                            "[{}] DONE {} — {}",
+                            d.timestamp.format("%H:%M:%S"),
+                            d.status,
+                            d.summary
+                        );
                     }
                     omega_core::session_log::SessionEntry::Event(e) => {
-                        println!("[{}] EVENT {}", e.timestamp.format("%H:%M:%S"), e.event_type);
+                        println!(
+                            "[{}] EVENT {}",
+                            e.timestamp.format("%H:%M:%S"),
+                            e.event_type
+                        );
                     }
                     omega_core::session_log::SessionEntry::Compaction(c) => {
-                        println!("[{}] COMPACT {} entries", c.timestamp.format("%H:%M:%S"), c.entries_compacted);
+                        println!(
+                            "[{}] COMPACT {} entries",
+                            c.timestamp.format("%H:%M:%S"),
+                            c.entries_compacted
+                        );
                     }
                 }
             }
@@ -6700,8 +7751,14 @@ fn cmd_route(mission: &str) -> Result<()> {
     println!();
     println!("Complexity:        {}", decision.complexity.label());
     println!("Suggested agent:   {}", decision.suggested_agent);
-    println!("Recommended team:  {} agent(s)", decision.complexity.recommended_agents());
-    println!("Estimated time:    ~{} min", decision.complexity.estimated_minutes());
+    println!(
+        "Recommended team:  {} agent(s)",
+        decision.complexity.recommended_agents()
+    );
+    println!(
+        "Estimated time:    ~{} min",
+        decision.complexity.estimated_minutes()
+    );
     println!("Decompose:         {}", decision.decompose);
     println!("Use team:          {}", decision.use_team);
     println!("Use quality gate:  {}", decision.use_quality_gate);
@@ -6730,7 +7787,10 @@ fn cmd_completions(shell: &str) -> Result<()> {
         "fish" => Shell::Fish,
         "elvish" => Shell::Elvish,
         "powershell" | "ps" => Shell::PowerShell,
-        _ => anyhow::bail!("Unknown shell: {}. Use: bash, zsh, fish, elvish, powershell", shell),
+        _ => anyhow::bail!(
+            "Unknown shell: {}. Use: bash, zsh, fish, elvish, powershell",
+            shell
+        ),
     };
 
     let mut cmd = Cli::command();
@@ -6799,7 +7859,11 @@ async fn cmd_pdf(
     }
 
     let size = std::fs::metadata(pdf_path)?.len();
-    println!("[+] PDF generated: {} ({:.1} KB)", out, size as f64 / 1024.0);
+    println!(
+        "[+] PDF generated: {} ({:.1} KB)",
+        out,
+        size as f64 / 1024.0
+    );
 
     // Send via Telegram if requested
     if send_telegram {
@@ -6810,14 +7874,14 @@ async fn cmd_pdf(
 }
 
 fn find_pdfgen_dir(exe_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf> {
-    let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    // 1. ~/.omega/skills/pdfgen (canonical installed location)
-    let skills_dir = home.join(".omega/skills/pdfgen");
+    let omega_dir = omega_core::config::omega_dir();
+    // 1. $OMEGA_DIR/skills/pdfgen (canonical installed location)
+    let skills_dir = omega_dir.join("skills/pdfgen");
     if skills_dir.join("bin/pdfgen.ts").exists() {
         return Ok(skills_dir);
     }
-    // 2. ~/.omega/pdfgen (legacy installed location)
-    let user_dir = home.join(".omega/pdfgen");
+    // 2. $OMEGA_DIR/pdfgen (legacy installed location)
+    let user_dir = omega_dir.join("pdfgen");
     if user_dir.join("bin/pdfgen.ts").exists() {
         return Ok(user_dir);
     }
@@ -6834,8 +7898,9 @@ fn find_pdfgen_dir(exe_dir: Option<&std::path::Path>) -> Result<std::path::PathB
         }
     }
     anyhow::bail!(
-        "PDF generator not found. Expected at tools/pdfgen/ or ~/.omega/pdfgen/.\n\
-         Run `omega init` to set up, or copy the pdfgen/ directory manually."
+        "PDF generator not found. Expected at tools/pdfgen/ or {}/pdfgen/.\n\
+         Run `omega init` to set up, or copy the pdfgen/ directory manually.",
+        omega_dir.display()
     )
 }
 
@@ -6851,10 +7916,7 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
         cfg.chat_id
     };
 
-    let url = format!(
-        "https://api.telegram.org/bot{}/sendDocument",
-        cfg.bot_token
-    );
+    let url = format!("https://api.telegram.org/bot{}/sendDocument", cfg.bot_token);
 
     let file_bytes = tokio::fs::read(pdf_path).await.context("reading PDF")?;
     let filename = std::path::Path::new(pdf_path)
@@ -6872,7 +7934,8 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
         .part("document", part);
 
     if let Some(cap) = caption {
-        form = form.text("caption", cap.to_string())
+        form = form
+            .text("caption", cap.to_string())
             .text("parse_mode", "HTML".to_string());
     }
 
@@ -6880,7 +7943,12 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    let resp = client.post(&url).multipart(form).send().await.context("sendDocument")?;
+    let resp = client
+        .post(&url)
+        .multipart(form)
+        .send()
+        .await
+        .context("sendDocument")?;
     if resp.status().is_success() {
         println!("[+] PDF sent via Telegram");
     } else {
@@ -6928,12 +7996,14 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
                     println!("  {:16} {}", r.id, r.title);
                 }
             }
-            println!("\nRules dir: ~/.omega/rules/");
+            println!(
+                "\nRules dir: {}/rules/",
+                omega_core::config::omega_dir().display()
+            );
             println!("Export:    omega rules export");
         }
         RulesAction::Export => {
-            let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-            let rules_dir = home.join(".omega/rules");
+            let rules_dir = omega_core::config::omega_dir().join("rules");
             std::fs::create_dir_all(&rules_dir)?;
 
             // Idempotent: prune stale REGISTRY exports first so a re-export
@@ -6945,7 +8015,9 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
 
             let all = rules::all_rules();
             for r in &all {
-                let slug = r.title.to_lowercase()
+                let slug = r
+                    .title
+                    .to_lowercase()
                     .chars()
                     .map(|c| if c.is_alphanumeric() { c } else { '-' })
                     .collect::<String>();
@@ -6964,6 +8036,65 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
             }
             println!("\n{} rules exported to {}", all.len(), rules_dir.display());
         }
+    }
+    Ok(())
+}
+
+fn resolve_skill_root(explicit: Option<&str>) -> Result<std::path::PathBuf> {
+    if let Some(root) = explicit {
+        return Ok(std::path::PathBuf::from(root));
+    }
+    let cwd_skills = std::env::current_dir()?.join("skills");
+    if cwd_skills.is_dir() {
+        return Ok(cwd_skills);
+    }
+    if let Ok(src) = std::env::var("OMEGA_SRC") {
+        let candidate = std::path::PathBuf::from(src).join("skills");
+        if candidate.is_dir() {
+            return Ok(candidate);
+        }
+    }
+    Ok(omega_core::config::omega_dir().join("skills"))
+}
+
+fn cmd_skills(action: SkillsAction) -> Result<()> {
+    use omega_core::skill_registry::{OwnedSkillRoot, SkillCatalogV1};
+
+    let (root_arg, output) = match &action {
+        SkillsAction::Validate { root } => (root.as_deref(), None),
+        SkillsAction::Compile { root, out } => {
+            let target = out
+                .as_deref()
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| omega_core::config::omega_dir().join("skill-catalog-v1.json"));
+            (root.as_deref(), Some(target))
+        }
+    };
+    let root = resolve_skill_root(root_arg)?;
+    let catalog = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", &root)])?;
+
+    println!(
+        "[+] SkillCatalogV1: {} skills, {} warnings, sha256:{}",
+        catalog.skills.len(),
+        catalog.warnings.len(),
+        catalog.content_digest
+    );
+    println!("    owned root: {}", root.display());
+    for warning in catalog.warnings.iter().take(12) {
+        println!(
+            "    warning [{}] {}: {}",
+            warning.code, warning.skill, warning.message
+        );
+    }
+    if catalog.warnings.len() > 12 {
+        println!(
+            "    … {} additional migration warnings",
+            catalog.warnings.len() - 12
+        );
+    }
+    if let Some(path) = output {
+        catalog.write_json(&path)?;
+        println!("[+] Canonical catalog written: {}", path.display());
     }
     Ok(())
 }
@@ -7003,17 +8134,16 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
                 println!("Selected {} audit(s):\n", selected.len());
                 for id in &selected {
                     if let Some(a) = audit::find_audit(id) {
-                        println!(
-                            "  /{:<18} {} — {}",
-                            a.id, a.domain.label(), a.description
-                        );
+                        println!("  /{:<18} {} — {}", a.id, a.domain.label(), a.description);
                     }
                 }
             }
         }
         AuditAction::Results { oracle } => {
             let config = OmegaConfig::load().unwrap_or_default();
-            let path = config.state_dir.join(format!("{}.audit-report.json", oracle));
+            let path = config
+                .state_dir
+                .join(format!("{}.audit-report.json", oracle));
             if path.exists() {
                 let content = std::fs::read_to_string(&path)?;
                 let report: audit::AuditReport = serde_json::from_str(&content)?;
@@ -7041,7 +8171,10 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
                 )
             })?;
             println!("◆ Audit: {} ({})", skill.name, skill.domain.label());
-            println!("  Phases: {}, Max score: /{}", skill.phases, skill.max_score);
+            println!(
+                "  Phases: {}, Max score: /{}",
+                skill.phases, skill.max_score
+            );
             println!("  Skill:  {}", skill.skill_path);
             println!("  Dir:    {}", dir);
             if skill.read_only {
@@ -7116,7 +8249,11 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
 
     let branch = {
         let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
-        if b.is_empty() || b == "HEAD" { "main".to_string() } else { b }
+        if b.is_empty() || b == "HEAD" {
+            "main".to_string()
+        } else {
+            b
+        }
     };
 
     println!("  fetching origin/{}…", branch);
@@ -7316,7 +8453,10 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
         },
     };
     if !src.join(".git").exists() {
-        say(&format!("{} has no .git — cannot update in place", src.display()));
+        say(&format!(
+            "{} has no .git — cannot update in place",
+            src.display()
+        ));
         return Ok(());
     }
 
@@ -7331,7 +8471,11 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
 
     let branch = {
         let b = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
-        if b.is_empty() || b == "HEAD" { "main".to_string() } else { b }
+        if b.is_empty() || b == "HEAD" {
+            "main".to_string()
+        } else {
+            b
+        }
     };
 
     let fetch = std::process::Command::new("git")
@@ -7457,7 +8601,10 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
             history.record_success(&target, stamp);
             history.last_outcome = Some(format!("updated {} → {}", from, target));
             history.save(&state_dir).ok();
-            say(&format!("updated {} → {} ({} commits)", from, target, behind));
+            say(&format!(
+                "updated {} → {} ({} commits)",
+                from, target, behind
+            ));
             alert(&format!(
                 "✅ <b>OmegaOS updated</b>\n<code>{}</code> → <code>{}</code> ({} commit(s)).\nRestart a running TUI (Menu → R) to pick up the new binary.",
                 from, target, behind
@@ -7499,7 +8646,10 @@ fn alert(html: &str) {
     if !script.is_file() {
         return;
     }
-    let _ = std::process::Command::new("bash").arg(script).arg(html).status();
+    let _ = std::process::Command::new("bash")
+        .arg(script)
+        .arg(html)
+        .status();
 }
 
 fn resolve_omega_src() -> Option<std::path::PathBuf> {
@@ -7552,10 +8702,21 @@ fn prune_dangling_omega_links(dir: &std::path::Path, omega_dir: &std::path::Path
 
 fn cmd_sync() -> Result<()> {
     let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/tmp"));
-    let omega_dir = home.join(".omega");
+    let omega_dir = omega_core::config::omega_dir();
 
     // Ensure master dirs exist
-    for sub in &["rules", "agents", "agents/aisb", "skills", "hooks", "plugins", "docs", "projects", "state", "logs"] {
+    for sub in &[
+        "rules",
+        "agents",
+        "agents/aisb",
+        "skills",
+        "hooks",
+        "plugins",
+        "docs",
+        "projects",
+        "state",
+        "logs",
+    ] {
         std::fs::create_dir_all(omega_dir.join(sub))?;
     }
 
@@ -7573,6 +8734,36 @@ fn cmd_sync() -> Result<()> {
     let repo_src = resolve_omega_src();
     if repo_src.is_none() {
         println!("[i] OmegaOS repo checkout not found — skipping OMEGA.md/agents/pdfgen sync");
+    }
+    if let Some(src) = &repo_src {
+        let root = src.join("skills");
+        if root.is_dir() {
+            // Reconcile the shipped native tree before compiling or linking the
+            // catalog. No --delete: externally installed skills (for example
+            // Agent Reach or a private pack) remain valid installed additions.
+            let installed_skills = omega_dir.join("skills");
+            let status = std::process::Command::new("rsync")
+                .args(["-a", "--exclude=node_modules", "--exclude=.next"])
+                .arg(format!("{}/", root.display()))
+                .arg(format!("{}/", installed_skills.display()))
+                .status()
+                .context("failed to execute rsync while synchronizing native skills")?;
+            if !status.success() {
+                anyhow::bail!("native skill synchronization failed with status {}", status);
+            }
+            println!("[+] Native skills synced to {}", installed_skills.display());
+
+            use omega_core::skill_registry::{OwnedSkillRoot, SkillCatalogV1};
+            let catalog = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", &root)])?;
+            let output = omega_dir.join("skill-catalog-v1.json");
+            catalog.write_json(&output)?;
+            println!(
+                "[+] SkillCatalogV1: {} skills, sha256:{} → {}",
+                catalog.skills.len(),
+                catalog.content_digest,
+                output.display()
+            );
+        }
     }
 
     // Copy OMEGA.md to ~/.omega/ (the dst is also the Codex symlink target below,
@@ -7600,7 +8791,10 @@ fn cmd_sync() -> Result<()> {
                     for sub in std::fs::read_dir(entry.path()).into_iter().flatten() {
                         let sub = sub?;
                         if sub.file_name().to_string_lossy().ends_with(".md") {
-                            std::fs::copy(sub.path(), agents_dst.join("aisb").join(sub.file_name()))?;
+                            std::fs::copy(
+                                sub.path(),
+                                agents_dst.join("aisb").join(sub.file_name()),
+                            )?;
                         }
                     }
                 } else if entry.file_name().to_string_lossy().ends_with(".md") {
@@ -7621,7 +8815,12 @@ fn cmd_sync() -> Result<()> {
         if skills_src.exists() {
             std::fs::create_dir_all(&skills_dst)?;
             let status = std::process::Command::new("rsync")
-                .args(["-a", "--exclude=node_modules", "--exclude=.next", "--exclude=output"])
+                .args([
+                    "-a",
+                    "--exclude=node_modules",
+                    "--exclude=.next",
+                    "--exclude=output",
+                ])
                 .arg(format!("{}/", skills_src.display()))
                 .arg(format!("{}/", skills_dst.display()))
                 .status();
@@ -7646,7 +8845,9 @@ fn cmd_sync() -> Result<()> {
             let entry = entry?;
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            if !name_str.ends_with(".md") { continue; }
+            if !name_str.ends_with(".md") {
+                continue;
+            }
             let link = claude_rules.join(format!("omega-{}", name_str));
             if !link.exists() {
                 #[cfg(unix)]
@@ -7665,7 +8866,9 @@ fn cmd_sync() -> Result<()> {
         if skills_dir.exists() {
             for entry in std::fs::read_dir(&skills_dir)? {
                 let entry = entry?;
-                if !entry.file_type()?.is_dir() { continue; }
+                if !entry.file_type()?.is_dir() {
+                    continue;
+                }
                 let name = entry.file_name();
                 let link = claude_skills.join(&name);
                 if !link.exists() {
@@ -7699,13 +8902,18 @@ fn cmd_sync() -> Result<()> {
         let gemini_md = gemini_dir.join("GEMINI.md");
         // Same reasoning as the Codex block below: import the generated
         // full-doctrine AGENTS.md, not the OMEGA.md summary.
-        let omega_ref = "\n# OmegaOS\n@import ~/.omega/AGENTS.md\n";
+        let agents_import = format!("@import {}", omega_dir.join("AGENTS.md").display());
+        let omega_ref = format!("\n# OmegaOS\n{agents_import}\n");
         if gemini_md.exists() {
             let content = std::fs::read_to_string(&gemini_md)?;
-            if content.contains("@import ~/.omega/OMEGA.md") {
+            if content.contains("@import ~/.omega/OMEGA.md")
+                || (content.contains("@import ~/.omega/AGENTS.md")
+                    && !content.contains(&agents_import))
+            {
                 // Upgrade an install that predates the full-doctrine file.
-                let upgraded =
-                    content.replace("@import ~/.omega/OMEGA.md", "@import ~/.omega/AGENTS.md");
+                let upgraded = content
+                    .replace("@import ~/.omega/OMEGA.md", &agents_import)
+                    .replace("@import ~/.omega/AGENTS.md", &agents_import);
                 std::fs::write(&gemini_md, upgraded)?;
                 println!("[+] Gemini: GEMINI.md import upgraded to the full doctrine");
             } else if !content.contains("OmegaOS") {
@@ -7720,27 +8928,28 @@ fn cmd_sync() -> Result<()> {
 
     // ── Codex integration ──
     //
-    // Codex (and Gemini) load ONE instructions file, with no per-rule injection
-    // mechanism like Claude's ~/.claude/rules/ symlink farm. Pointing that file
-    // at OMEGA.md alone meant an OpenAI session saw the Laws plus a 7-rule
-    // teaser while the Claude session beside it was bound by the full registry.
-    // So generate ~/.omega/AGENTS.md = OMEGA.md + the COMPLETE doctrine, and
-    // point Codex at that instead — same rules, both agents.
+    // Codex and Gemini load one global instructions file. Compile a compact,
+    // provider-neutral kernel here; domain runbooks and selected skills remain
+    // discoverable on demand. Injecting the historical full doctrine duplicated
+    // 60-70 KB into every session and reduced adherence.
     let agents_full_dst = omega_dir.join("AGENTS.md");
     {
         let base = std::fs::read_to_string(&omega_md_dst).unwrap_or_default();
-        let doctrine = omega_core::rules::full_doctrine_markdown();
+        let compiled =
+            omega_core::rules::compile_rule_context(omega_core::rules::RuleScope::Worker, None)
+                .map_err(|error| anyhow::anyhow!("rule context compile failed: {error}"))?;
         let generated = format!(
-            "{}\n\n---\n\n# THE COMPLETE DOCTRINE (generated by `omega sync` — do not edit)\n\n\
-             Every Law and every Rule below is in force in THIS session. Claude Code receives \
-             the same set one file per rule from `~/.claude/rules/`; this file is how Codex, \
-             Gemini and any other single-instructions-file agent receive it.\n\n{}",
+            "{}\n\n---\n\n# ACTIVE OMEGAOS POLICY KERNEL (generated by `omega sync`, do not edit)\n\n\
+             Doctrine hash: `{}`. Full historical policy and runbooks remain available through \
+             `omega rules list`, `omega rules context`, and `~/.omega/rules/`.\n\n{}",
             base.trim_end(),
-            doctrine
+            compiled.digest,
+            compiled.markdown
         );
         std::fs::write(&agents_full_dst, generated)?;
         println!(
-            "[+] AGENTS.md (OMEGA.md + full doctrine) → {}",
+            "[+] AGENTS.md (OMEGA.md + compact policy kernel, {} bytes) → {}",
+            compiled.bytes,
             agents_full_dst.display()
         );
     }
@@ -7759,11 +8968,46 @@ fn cmd_sync() -> Result<()> {
         if !agents_md.exists() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&agents_full_dst, &agents_md)?;
-            println!("[+] Codex: AGENTS.md → ~/.omega/AGENTS.md (full doctrine)");
+            println!(
+                "[+] Codex: AGENTS.md → {} (compact policy kernel)",
+                agents_full_dst.display()
+            );
         }
     }
 
-    println!("\n[+] OmegaOS sync complete — all LLMs reference ~/.omega/");
+    // Codex activates reusable skills from the provider-neutral
+    // ~/.agents/skills directory. Link every skill the canonical registry can
+    // parse, including categorized/nested entries. Mentioning a slash command
+    // in AGENTS.md alone does not make a skill discoverable by Codex.
+    let codex_skills = home.join(".agents").join("skills");
+    std::fs::create_dir_all(&codex_skills)?;
+    prune_dangling_omega_links(&codex_skills, &omega_dir);
+    let skills_dir = omega_dir.join("skills");
+    if skills_dir.exists() {
+        let registry = omega_core::skill_registry::SkillRegistry::discover(&skills_dir)?;
+        for skill in registry.list() {
+            let Some(skill_dir) = skill.path.parent() else {
+                continue;
+            };
+            let link = codex_skills.join(&skill.name);
+            if link.exists() {
+                continue;
+            }
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(skill_dir, &link)?;
+            println!("  [+] Codex skill: ${}", skill.name);
+        }
+        println!(
+            "[+] Codex skills synced: {} canonical entries → {}",
+            registry.count(),
+            codex_skills.display()
+        );
+    }
+
+    println!(
+        "\n[+] OmegaOS sync complete: all LLMs reference {}",
+        omega_dir.display()
+    );
     Ok(())
 }
 
@@ -7910,10 +9154,115 @@ mod phase1_tests {
         assert!(command_owns_codex_reconciliation(&Some(
             Commands::CodexReconcile { json: true }
         )));
-        assert!(!command_owns_codex_reconciliation(&Some(Commands::Doctor {
-            pre_reset: false,
-            fix: false,
-            deep: false,
-        })));
+        assert!(!command_owns_codex_reconciliation(&Some(
+            Commands::Doctor {
+                pre_reset: false,
+                fix: false,
+                deep: false,
+            }
+        )));
+    }
+
+    #[test]
+    fn verifier_contract_parser_accepts_direct_argv_and_rejects_shell_operators() {
+        assert_eq!(
+            declared_verify_command(
+                "Done Criteria: green\nVerify Command: cargo test -p omega-core"
+            ),
+            Some(vec![
+                "cargo".to_string(),
+                "test".to_string(),
+                "-p".to_string(),
+                "omega-core".to_string(),
+            ])
+        );
+        assert!(declared_verify_command(
+            "Done Criteria: green\nVerify Command: cargo test && curl example.test"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn v3_worker_preparation_freezes_plan_and_queues_attempt_before_spawn() {
+        let state_dir = std::env::temp_dir().join(format!(
+            "omega-v3-worker-preparation-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        std::fs::create_dir_all(&state_dir).unwrap();
+        let mut config = OmegaConfig::default();
+        config.state_dir = state_dir.clone();
+
+        let mission =
+            omega_core::mission::Mission::new("OmegaOS", "implement safely", state_dir.clone());
+        let ledger = omega_core::mission_ledger::MissionLedger::open(
+            state_dir.join("mission-engine-v3.sqlite3"),
+        )
+        .unwrap();
+        ledger
+            .create_mission(&mission, "test-create", "test")
+            .unwrap();
+        let mut classified = omega_core::mission_ledger::AppendEvent::new(
+            mission.id.clone(),
+            1,
+            "test-classified",
+            "test",
+            "mission_classified",
+        );
+        classified.next_mission_state = Some(omega_core::mission::MissionState::Classified);
+        ledger.append(classified).unwrap();
+        let oracle_name = "oracle-OmegaOS-test";
+        omega_core::oracle_lifecycle::OracleState::new(oracle_name, &mission)
+            .write(&state_dir)
+            .unwrap();
+
+        let attempt = prepare_v3_worker_attempt(
+            &config,
+            Some(oracle_name),
+            "OmegaOS-worker-core",
+            "core",
+            "Done Criteria: ledger is authoritative\nVerify Command: cargo check --workspace",
+            state_dir.to_str().unwrap(),
+            &["crates/omega-core".to_string()],
+            omega_core::agents::Agent::Codex,
+        )
+        .unwrap()
+        .unwrap();
+        let plan = ledger.active_plan(&mission.id).unwrap().unwrap();
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].verifier_checks.len(), 1);
+        assert_eq!(
+            ledger
+                .task_attempt(&attempt.attempt_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            omega_core::mission::TaskAttemptState::Queued
+        );
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap().state,
+            omega_core::mission::MissionState::Planned
+        );
+
+        transition_v3_worker_attempt(
+            &config,
+            "OmegaOS-worker-core",
+            &attempt,
+            omega_core::mission::TaskAttemptState::Running,
+        )
+        .unwrap();
+        assert_eq!(
+            ledger
+                .task_attempt(&attempt.attempt_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            omega_core::mission::TaskAttemptState::Running
+        );
+        assert_eq!(
+            ledger.mission(&mission.id).unwrap().unwrap().state,
+            omega_core::mission::MissionState::Running
+        );
+        std::fs::remove_dir_all(state_dir).unwrap();
     }
 }

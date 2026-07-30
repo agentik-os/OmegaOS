@@ -36,6 +36,7 @@ toml = "0.8"
 toml_edit = "0.22"
 clap_complete = "4.5"
 thiserror = "1.0"
+shlex = "1.3"
 
 # Release profile tuned for a shipped single-binary tool: full LTO + one codegen
 # unit produce a smaller, faster binary; strip drops debug symbols. panic stays

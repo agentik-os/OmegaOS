@@ -85,6 +85,10 @@ pub struct OmegaSession {
     pub project: Option<String>,
     pub oracle_index: Option<u32>,
     pub working_dir: Option<PathBuf>,
+    /// Provider recorded at session creation. `None` for generic terminals
+    /// and sessions created by older OmegaOS versions.
+    #[serde(default)]
+    pub provider: Option<String>,
 }
 
 impl OmegaSession {
@@ -96,6 +100,7 @@ impl OmegaSession {
             project,
             oracle_index,
             working_dir: None,
+            provider: None,
         }
     }
 
@@ -160,6 +165,49 @@ impl OmegaSession {
     pub fn display_name(&self) -> &str {
         &self.name
     }
+}
+
+fn session_provider_path(name: &str) -> PathBuf {
+    crate::config::omega_dir()
+        .join("state")
+        .join(format!(
+            "session-provider-{}.json",
+            sanitize_session_name(name)
+        ))
+}
+
+fn record_session_provider(name: &str, agent: Agent) {
+    let path = session_provider_path(name);
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let tmp = path.with_extension("json.tmp");
+    let payload = serde_json::json!({
+        "session": sanitize_session_name(name),
+        "provider": agent.name(),
+        "recorded_at": chrono::Utc::now().to_rfc3339(),
+    });
+    if serde_json::to_vec_pretty(&payload)
+        .ok()
+        .and_then(|bytes| std::fs::write(&tmp, bytes).ok())
+        .is_some()
+    {
+        let _ = std::fs::rename(tmp, path);
+    }
+}
+
+fn read_session_provider(name: &str) -> Option<String> {
+    let payload: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(session_provider_path(name)).ok()?).ok()?;
+    let recorded_session = payload.get("session")?.as_str()?;
+    if recorded_session != sanitize_session_name(name) {
+        return None;
+    }
+    let provider = payload.get("provider")?.as_str()?;
+    Agent::from_name(provider).map(|agent| agent.name().to_string())
 }
 
 #[derive(Clone)]
@@ -274,11 +322,12 @@ impl SessionManager {
         agent_command: &str,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        // Resolve the agent type from its name (defaults to Claude for backwards-compat)
-        let agent = Agent::from_name(agent_command).unwrap_or(Agent::Claude);
+        // Invalid or absent provider names follow the current OmegaOS default.
+        let agent = Agent::from_name(agent_command).unwrap_or(Agent::Codex);
         let cmd = agent.launch_command(prompt);
-        self.create_session(name, Some(working_dir), Some(&cmd))
-            .await
+        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
+        record_session_provider(name, agent);
+        Ok(session)
     }
 
     pub async fn create_session_with_agent(
@@ -289,7 +338,9 @@ impl SessionManager {
         prompt: Option<&str>,
     ) -> Result<Session> {
         let cmd = agent.launch_command(prompt);
-        self.create_session(name, working_dir, Some(&cmd)).await
+        let session = self.create_session(name, working_dir, Some(&cmd)).await?;
+        record_session_provider(name, agent);
+        Ok(session)
     }
 
     /// Spawn an agent session with full LaunchOptions — for Claude this
@@ -304,15 +355,20 @@ impl SessionManager {
         opts: crate::agents::LaunchOptions,
     ) -> Result<Session> {
         let cmd = agent.launch_command_with(prompt, opts);
-        self.create_session(name, Some(working_dir), Some(&cmd))
-            .await
+        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
+        record_session_provider(name, agent);
+        Ok(session)
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<OmegaSession>> {
         let session_names = self.rmux.list_sessions().await?;
         let mut sessions: Vec<OmegaSession> = session_names
             .iter()
-            .map(|name| OmegaSession::classify(name.as_ref()))
+            .map(|name| {
+                let mut session = OmegaSession::classify(name.as_ref());
+                session.provider = read_session_provider(name.as_ref());
+                session
+            })
             .collect();
 
         sessions.sort_by(order_sessions);
@@ -333,6 +389,7 @@ impl SessionManager {
     pub async fn kill_session(&self, name: &str) -> Result<()> {
         let session = self.get_session(name).await?;
         session.kill().await?;
+        let _ = std::fs::remove_file(session_provider_path(name));
         // The pane handle we held is now dangling — drop it so any future
         // send_text/send_key for the same name re-resolves cleanly.
         self.invalidate_pane(name).await;

@@ -361,7 +361,7 @@ impl Orchestrator {
             })?;
         }
 
-        let agent = Agent::from_name(&task.agent).unwrap_or(Agent::Claude);
+        let agent = Agent::from_name(&task.agent).unwrap_or(Agent::Codex);
 
         // THE FUNNEL — inject the role-scoped Laws + operational rules. The
         // `omega orchestrate` dispatch path previously spawned oracles AND workers
@@ -404,12 +404,30 @@ impl Orchestrator {
             .config
             .state_dir
             .join(format!("worker-{}.done.json", session_name));
+        let is_oracle = session_name.starts_with("oracle-");
 
         let deadline = Instant::now() + max_wait;
         let mut interval = tokio::time::interval(self.options.poll_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
+            if is_oracle {
+                if let Ok(Some(oracle_done)) =
+                    crate::done::OracleDoneSignal::read(&self.config.state_dir, session_name)
+                {
+                    let mut signal = DoneSignal::new(
+                        session_name,
+                        oracle_done.status,
+                        &oracle_done.summary,
+                    );
+                    signal.todos_total = 1;
+                    signal.todos_completed =
+                        u32::from(oracle_done.status == DoneStatus::DoneClean);
+                    signal.pending_actions = oracle_done.pending_actions;
+                    signal.finished_at = oracle_done.finished_at;
+                    return Ok(signal);
+                }
+            }
             if done_path.exists() {
                 let content = std::fs::read_to_string(&done_path)
                     .map_err(|e| OrchestrationError::Other(e.into()))?;

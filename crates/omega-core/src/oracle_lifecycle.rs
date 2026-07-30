@@ -91,6 +91,12 @@ pub struct WorkerEntry {
     pub session_name: String,
     pub task_id: String,
     pub task_name: String,
+    /// V3 task-attempt identity. Absent on pre-ledger workers.
+    #[serde(default)]
+    pub attempt_id: Option<String>,
+    /// Immutable plan revision that authorized this attempt.
+    #[serde(default)]
+    pub plan_revision: Option<u64>,
     pub files_owned: Vec<String>,
     pub dispatched_at: DateTime<Utc>,
     pub status: WorkerEntryStatus,
@@ -1430,6 +1436,8 @@ mod tests {
             session_name: "Acme-worker-x".into(),
             task_id: "t1".into(),
             task_name: "x".into(),
+            attempt_id: None,
+            plan_revision: None,
             files_owned: vec![],
             dispatched_at: t0,
             status: WorkerEntryStatus::DoneClean,
@@ -1439,6 +1447,8 @@ mod tests {
             session_name: "Acme-worker-x".into(),
             task_id: "t1".into(),
             task_name: "x".into(),
+            attempt_id: None,
+            plan_revision: None,
             files_owned: vec![],
             dispatched_at: t1,
             status: WorkerEntryStatus::Running,

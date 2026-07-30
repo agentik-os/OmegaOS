@@ -82,10 +82,9 @@ pub async fn fetch_usage(client: &reqwest::Client) -> Option<UsageSnapshot> {
     // five_hour / seven_day may be an object {utilization} or a bare number.
     let extract = |key: &str| -> u32 {
         match json.get(key) {
-            Some(serde_json::Value::Object(o)) => o
-                .get("utilization")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.0) as u32,
+            Some(serde_json::Value::Object(o)) => {
+                o.get("utilization").and_then(|v| v.as_f64()).unwrap_or(0.0) as u32
+            }
             Some(serde_json::Value::Number(n)) => n.as_f64().unwrap_or(0.0) as u32,
             _ => 0,
         }
@@ -232,7 +231,10 @@ mod tests {
 
     #[test]
     fn alert_pct_is_max() {
-        let s = UsageSnapshot { session_pct: 72, week_pct: 81 };
+        let s = UsageSnapshot {
+            session_pct: 72,
+            week_pct: 81,
+        };
         assert_eq!(s.alert_pct(), 81);
     }
 

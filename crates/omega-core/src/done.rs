@@ -2,6 +2,10 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::{Duration as StdDuration, Instant};
+
+use crate::mission::{VerifierCheck, VerifierCheckKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoneSignal {
@@ -23,7 +27,6 @@ pub struct DoneSignal {
     // ground-truth-oriented done schema. Worker narration alone is no
     // longer admissible — these fields require artifact citations OR
     // explicit honest negatives.
-
     /// What is NOT done, failing, or unsigned-off — REQUIRED even when the
     /// worker thinks everything passed. The "great job" suppression that
     /// the model card catches. (#90)
@@ -65,6 +68,10 @@ pub struct DoneSignal {
     /// done_clean is accepted. (#8, #18, #25, #26, #72, #76)
     #[serde(default)]
     pub artifacts: Vec<DoneArtifact>,
+    /// Provenance of this compatibility JSON when it was projected from the
+    /// V3 mission ledger. `None` identifies a pre-V3 or standalone worker.
+    #[serde(default)]
+    pub projection: Option<ProjectionProvenance>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +154,15 @@ pub enum DoneArtifact {
     Note(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionProvenance {
+    pub source: String,
+    pub event_id: String,
+    pub event_sequence: u64,
+    pub mission_version: u64,
+    pub projection_hash: String,
+}
+
 impl DoneSignal {
     pub fn new(session: &str, status: DoneStatus, summary: &str) -> Self {
         Self {
@@ -165,6 +181,7 @@ impl DoneSignal {
             retry_thrash_count: 0,
             escalate_to_human: false,
             artifacts: Vec::new(),
+            projection: None,
         }
     }
 
@@ -187,6 +204,7 @@ impl DoneSignal {
             retry_thrash_count: 0,
             escalate_to_human: false,
             artifacts: Vec::new(),
+            projection: None,
         }
     }
 
@@ -216,14 +234,15 @@ impl DoneSignal {
     }
 
     pub fn is_complete(&self) -> bool {
-        self.status == DoneStatus::DoneClean && self.todos_completed >= self.todos_total
+        self.status == DoneStatus::DoneClean
+            && self.todos_total > 0
+            && self.todos_completed == self.todos_total
+            && self.pending_actions.is_empty()
+            && self.not_done.is_empty()
     }
 
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self.status,
-            DoneStatus::DoneClean | DoneStatus::Failed
-        )
+        matches!(self.status, DoneStatus::DoneClean | DoneStatus::Failed)
     }
 
     /// Read all done signals in state directory.
@@ -287,46 +306,82 @@ pub struct ArtifactCheck {
 /// `repo_root` is the directory the worker was supposed to operate in
 /// (typically the project working_dir). Pass `None` to skip git/path
 /// checks (e.g. for non-code workers).
-pub fn verify_done_against_repo(
+pub fn verify_done_against_repo(done: &DoneSignal, repo_root: Option<&Path>) -> GroundTruthVerdict {
+    verify_done_internal(done, repo_root, &[])
+}
+
+/// Verify a done signal and rerun only command/HTTP checks that were frozen in
+/// the accepted task contract. Legacy callers remain fail-closed: a command or
+/// URL cited only by worker narration is not executed and is not accepted.
+pub fn verify_done_against_contract(
     done: &DoneSignal,
     repo_root: Option<&Path>,
+    verifier_checks: &[VerifierCheck],
+) -> GroundTruthVerdict {
+    verify_done_internal(done, repo_root, verifier_checks)
+}
+
+fn verify_done_internal(
+    done: &DoneSignal,
+    repo_root: Option<&Path>,
+    verifier_checks: &[VerifierCheck],
 ) -> GroundTruthVerdict {
     let mut checks = Vec::with_capacity(done.artifacts.len());
     let mut failures = Vec::new();
 
     for art in &done.artifacts {
         let (ok, detail) = match art {
-            DoneArtifact::GitSha { sha, branch: _ } => {
-                check_git_sha(sha, repo_root)
-            }
+            DoneArtifact::GitSha { sha, branch: _ } => check_git_sha(sha, repo_root),
             DoneArtifact::GitBranch { name } => check_git_branch(name, repo_root),
             DoneArtifact::FilePath { path } => check_file_path(path, repo_root),
-            DoneArtifact::Command { cmd, exit_code } => (
-                true,
-                format!("recorded run: `{}` exited {}", cmd, exit_code),
-            ),
-            DoneArtifact::Url { url, expected_status } => (
-                true,
-                format!("declared probe: {} → {}", url, expected_status),
-            ),
-            DoneArtifact::Note(s) => (true, format!("note: {}", s)),
+            DoneArtifact::Command { cmd, exit_code } => {
+                verify_predeclared_command(cmd, *exit_code, repo_root, verifier_checks)
+            }
+            DoneArtifact::Url {
+                url,
+                expected_status,
+            } => verify_predeclared_http(url, *expected_status, verifier_checks),
+            DoneArtifact::Note(s) => (false, format!("note is context only, never proof: {}", s)),
         };
         if !ok {
             failures.push(detail.clone());
         }
-        checks.push(ArtifactCheck { artifact: art.clone(), passed: ok, detail });
+        checks.push(ArtifactCheck {
+            artifact: art.clone(),
+            passed: ok,
+            detail,
+        });
     }
 
-    // If status is done_clean but no artifacts cited at all + no
-    // independent corroboration, that's a single-source claim — flag
-    // it (#65). Worker-self-report alone never reaches done_clean.
-    if done.status == DoneStatus::DoneClean
-        && done.artifacts.is_empty()
-        && done.is_single_source()
-    {
-        failures.push(
-            "done_clean asserted with zero artifacts and no independent corroboration (single-source). Worker narration is inadmissible.".to_string(),
-        );
+    if done.status == DoneStatus::DoneClean {
+        if done.todos_total == 0 {
+            failures.push(
+                "done_clean rejected: the 0/0 task count proves no work and fails closed"
+                    .to_string(),
+            );
+        } else if done.todos_completed != done.todos_total {
+            failures.push(format!(
+                "done_clean rejected: completed {}/{} declared tasks",
+                done.todos_completed, done.todos_total
+            ));
+        }
+        if !done.pending_actions.is_empty() {
+            failures.push(format!(
+                "done_clean rejected: {} pending action(s) remain",
+                done.pending_actions.len()
+            ));
+        }
+        if !done.not_done.is_empty() {
+            failures.push(format!(
+                "done_clean rejected: {} item(s) explicitly not done",
+                done.not_done.len()
+            ));
+        }
+        if done.artifacts.is_empty() && done.is_single_source() {
+            failures.push(
+                "done_clean asserted with zero artifacts and no independent corroboration (single-source). Worker narration is inadmissible.".to_string(),
+            );
+        }
     }
 
     GroundTruthVerdict {
@@ -336,9 +391,249 @@ pub fn verify_done_against_repo(
     }
 }
 
+fn verify_predeclared_command(
+    claimed_cmd: &str,
+    claimed_exit: i32,
+    repo_root: Option<&Path>,
+    verifier_checks: &[VerifierCheck],
+) -> (bool, String) {
+    let approved = verifier_checks.iter().find(|check| {
+        matches!(
+            &check.kind,
+            VerifierCheckKind::Command {
+                argv,
+                expected_exit_code,
+                ..
+            } if argv.join(" ") == claimed_cmd && *expected_exit_code == claimed_exit
+        )
+    });
+    let Some(approved) = approved else {
+        return (
+            false,
+            format!(
+                "command was not an exact predeclared verifier and was not executed: `{claimed_cmd}`"
+            ),
+        );
+    };
+    let VerifierCheckKind::Command {
+        argv,
+        cwd,
+        expected_exit_code,
+    } = &approved.kind
+    else {
+        unreachable!("matched command verifier");
+    };
+    let Some(program) = argv.first().filter(|program| !program.is_empty()) else {
+        return (
+            false,
+            "predeclared verifier command has empty argv".to_string(),
+        );
+    };
+
+    let mut command = Command::new(program);
+    command
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(cwd) = cwd {
+        let Some(root) = repo_root else {
+            return (
+                false,
+                format!("verifier `{claimed_cmd}` declares cwd but no repo root was supplied"),
+            );
+        };
+        let root = match root.canonicalize() {
+            Ok(root) => root,
+            Err(error) => {
+                return (
+                    false,
+                    format!("cannot canonicalize verifier repo root: {error}"),
+                )
+            }
+        };
+        let requested = root.join(cwd);
+        let requested = match requested.canonicalize() {
+            Ok(requested) if requested.starts_with(&root) => requested,
+            Ok(_) => {
+                return (
+                    false,
+                    format!("predeclared verifier cwd escapes repo root: {cwd}"),
+                )
+            }
+            Err(error) => {
+                return (
+                    false,
+                    format!("cannot resolve predeclared verifier cwd `{cwd}`: {error}"),
+                )
+            }
+        };
+        command.current_dir(requested);
+    } else if let Some(root) = repo_root {
+        command.current_dir(root);
+    }
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return (
+                false,
+                format!("failed to execute predeclared verifier `{claimed_cmd}`: {error}"),
+            )
+        }
+    };
+    let deadline = Instant::now() + StdDuration::from_secs(approved.timeout_secs.max(1));
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let actual = status.code().unwrap_or(-1);
+                return if actual == *expected_exit_code {
+                    (
+                        true,
+                        format!(
+                            "predeclared verifier `{claimed_cmd}` reran with exit code {actual}"
+                        ),
+                    )
+                } else {
+                    (
+                        false,
+                        format!(
+                            "predeclared verifier `{claimed_cmd}` exited {actual}, expected {expected_exit_code}"
+                        ),
+                    )
+                };
+            }
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(StdDuration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return (
+                    false,
+                    format!(
+                        "predeclared verifier `{claimed_cmd}` timed out after {}s",
+                        approved.timeout_secs.max(1)
+                    ),
+                );
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return (
+                    false,
+                    format!("failed while waiting for verifier `{claimed_cmd}`: {error}"),
+                );
+            }
+        }
+    }
+}
+
+fn verify_predeclared_http(
+    claimed_url: &str,
+    claimed_status: u16,
+    verifier_checks: &[VerifierCheck],
+) -> (bool, String) {
+    let approved = verifier_checks.iter().find(|check| {
+        matches!(
+            &check.kind,
+            VerifierCheckKind::Http {
+                url,
+                expected_status
+            } if url == claimed_url && *expected_status == claimed_status
+        )
+    });
+    let Some(approved) = approved else {
+        return (
+            false,
+            format!(
+                "URL was not an exact predeclared verifier and was not requested: {claimed_url}"
+            ),
+        );
+    };
+    let Some(authority_and_path) = claimed_url
+        .strip_prefix("https://")
+        .or_else(|| claimed_url.strip_prefix("http://"))
+    else {
+        return (
+            false,
+            format!("predeclared URL has a non-HTTP scheme: {claimed_url}"),
+        );
+    };
+    let authority = authority_and_path.split('/').next().unwrap_or_default();
+    if authority.is_empty()
+        || authority.contains('@')
+        || claimed_url.chars().any(char::is_whitespace)
+        || claimed_url.chars().any(char::is_control)
+    {
+        return (
+            false,
+            format!("predeclared URL is unsafe or malformed: {claimed_url}"),
+        );
+    }
+
+    let timeout = approved.timeout_secs.max(1).to_string();
+    let output = Command::new("curl")
+        .args([
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--proto",
+            "=http,https",
+            "--max-time",
+            &timeout,
+            claimed_url,
+        ])
+        .stdin(Stdio::null())
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let actual = String::from_utf8_lossy(&output.stdout)
+                .trim()
+                .parse::<u16>();
+            match actual {
+                Ok(actual) if actual == claimed_status => (
+                    true,
+                    format!(
+                        "predeclared HTTP verifier returned {actual}: {claimed_url}"
+                    ),
+                ),
+                Ok(actual) => (
+                    false,
+                    format!(
+                        "predeclared HTTP verifier returned {actual}, expected {claimed_status}: {claimed_url}"
+                    ),
+                ),
+                Err(error) => (
+                    false,
+                    format!("HTTP verifier returned invalid status output: {error}"),
+                ),
+            }
+        }
+        Ok(output) => (
+            false,
+            format!(
+                "predeclared HTTP verifier failed with exit {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ),
+        Err(error) => (
+            false,
+            format!("could not run predeclared HTTP verifier: {error}"),
+        ),
+    }
+}
+
 fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (bool, String) {
     let Some(root) = repo_root else {
-        return (true, format!("no repo root — skipped SHA {}", sha));
+        return (
+            false,
+            format!("no repo root supplied; SHA {sha} was not verified"),
+        );
     };
     let out = std::process::Command::new("git")
         .args(["cat-file", "-e", sha])
@@ -348,7 +643,10 @@ fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (bool, String) {
         Ok(s) if s.success() => (true, format!("git SHA {} exists locally", sha)),
         Ok(_) => (
             false,
-            format!("claimed git SHA {} does NOT exist in repo — FABRICATED", sha),
+            format!(
+                "claimed git SHA {} does NOT exist in repo — FABRICATED",
+                sha
+            ),
         ),
         Err(e) => (false, format!("git lookup failed for {}: {}", sha, e)),
     }
@@ -356,7 +654,10 @@ fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (bool, String) {
 
 fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (bool, String) {
     let Some(root) = repo_root else {
-        return (true, format!("no repo root — skipped branch {}", name));
+        return (
+            false,
+            format!("no repo root supplied; branch {name} was not verified"),
+        );
     };
     let out = std::process::Command::new("git")
         .args(["rev-parse", "--verify", name])
@@ -372,11 +673,30 @@ fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (bool, String) {
 }
 
 fn check_file_path(path: &str, repo_root: Option<&Path>) -> (bool, String) {
-    let full = match repo_root {
-        Some(root) if !path.starts_with('/') => root.join(path),
-        _ => Path::new(path).to_path_buf(),
+    let candidate = Path::new(path);
+    let full = match (repo_root, candidate.is_absolute()) {
+        (_, true) => candidate.to_path_buf(),
+        (Some(root), false) => root.join(candidate),
+        (None, false) => {
+            return (
+                false,
+                format!("relative claimed path {path} cannot be verified without a repo root"),
+            )
+        }
     };
     if full.exists() {
+        if let Some(root) = repo_root {
+            let root = root.canonicalize();
+            let full_canonical = full.canonicalize();
+            if let (Ok(root), Ok(full_canonical)) = (root, full_canonical) {
+                if !candidate.is_absolute() && !full_canonical.starts_with(root) {
+                    return (
+                        false,
+                        format!("claimed relative path escapes repo root: {path}"),
+                    );
+                }
+            }
+        }
         (true, format!("file {} exists", full.display()))
     } else {
         (
@@ -386,6 +706,90 @@ fn check_file_path(path: &str, repo_root: Option<&Path>) -> (bool, String) {
                 full.display()
             ),
         )
+    }
+}
+
+#[cfg(test)]
+mod done_v3_tests {
+    use super::*;
+
+    fn complete_signal() -> DoneSignal {
+        let mut done = DoneSignal::stub("worker-a", DoneStatus::DoneClean);
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done
+    }
+
+    #[test]
+    fn done_clean_zero_of_zero_fails_closed() {
+        let done = DoneSignal::stub("worker-a", DoneStatus::DoneClean);
+        assert!(!done.is_complete());
+        let verdict = verify_done_against_repo(&done, None);
+        assert!(!verdict.passes);
+        assert!(verdict
+            .failures
+            .iter()
+            .any(|failure| failure.contains("0/0")));
+    }
+
+    #[test]
+    fn pending_or_not_done_items_reject_completion() {
+        let mut done = complete_signal();
+        done.pending_actions.push("deploy".to_string());
+        done.not_done.push("production check".to_string());
+        assert!(!done.is_complete());
+        let verdict = verify_done_against_repo(&done, None);
+        assert!(!verdict.passes);
+        assert!(verdict
+            .failures
+            .iter()
+            .any(|failure| failure.contains("pending action")));
+    }
+
+    #[test]
+    fn note_is_context_and_never_proof() {
+        let mut done = complete_signal();
+        done.artifacts
+            .push(DoneArtifact::Note("trust me".to_string()));
+        let verdict = verify_done_against_repo(&done, None);
+        assert!(!verdict.passes);
+        assert!(!verdict.checks[0].passed);
+    }
+
+    #[test]
+    fn undeclared_command_is_not_executed() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("must-not-exist");
+        let mut done = complete_signal();
+        done.artifacts.push(DoneArtifact::Command {
+            cmd: format!("touch {}", marker.display()),
+            exit_code: 0,
+        });
+        let verdict = verify_done_against_repo(&done, Some(temp.path()));
+        assert!(!verdict.passes);
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn exact_predeclared_command_is_rerun_without_a_shell() {
+        let mut done = complete_signal();
+        done.artifacts.push(DoneArtifact::Command {
+            cmd: "/bin/true".to_string(),
+            exit_code: 0,
+        });
+        let verifier = VerifierCheck {
+            schema_version: crate::mission::CONTRACT_SCHEMA_VERSION,
+            check_id: "true-check".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["/bin/true".to_string()],
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 2,
+        };
+        let verdict = verify_done_against_contract(&done, None, &[verifier]);
+        assert!(verdict.passes, "{:?}", verdict.failures);
+        assert!(verdict.checks[0].passed);
     }
 }
 
@@ -402,12 +806,7 @@ pub struct WorkerBlocked {
 }
 
 impl WorkerBlocked {
-    pub fn new(
-        session: &str,
-        question: &str,
-        best_guess: &str,
-        fallback_action: &str,
-    ) -> Self {
+    pub fn new(session: &str, question: &str, best_guess: &str, fallback_action: &str) -> Self {
         Self {
             session: session.to_string(),
             blocked_at: Utc::now(),
@@ -488,6 +887,10 @@ pub struct OracleDoneSignal {
     /// default keeps pre-existing done.json files readable (false = no gate).
     #[serde(default)]
     pub gate_pending: bool,
+    /// Provenance of this compatibility JSON when it was projected from the
+    /// V3 mission ledger. `None` identifies a pre-V3 Oracle.
+    #[serde(default)]
+    pub projection: Option<ProjectionProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -529,6 +932,7 @@ impl OracleDoneSignal {
             pending_actions: Vec::new(),
             lifecycle: OracleLifecycle::Ephemeral,
             gate_pending: false,
+            projection: None,
         }
     }
 
@@ -698,7 +1102,10 @@ mod oracle_done_tests {
 
         // Full session name (what patrol passes) resolves the bare-keyed file.
         let via_full = OracleDoneSignal::read(dir, "oracle-OmegaOS").unwrap();
-        assert!(via_full.is_some(), "patrol's full-name read must find the signal");
+        assert!(
+            via_full.is_some(),
+            "patrol's full-name read must find the signal"
+        );
         assert!(via_full.unwrap().is_closeable());
 
         // Bare key (what the close-gate passes) resolves the same file.
@@ -713,7 +1120,9 @@ mod oracle_done_tests {
         let sig = OracleDoneSignal::new("OmegaOS-2", "OmegaOS", DoneStatus::DoneClean, "mission");
         sig.write(dir).unwrap();
         assert!(dir.join("oracle-OmegaOS-2.done.json").exists());
-        assert!(OracleDoneSignal::read(dir, "oracle-OmegaOS-2").unwrap().is_some());
+        assert!(OracleDoneSignal::read(dir, "oracle-OmegaOS-2")
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -761,11 +1170,14 @@ mod oracle_done_tests {
             .unwrap()
             .flatten()
             .map(|e| e.file_name().to_string_lossy().to_string())
-            .filter(|n| {
-                n.starts_with("oracle-OmegaOS-prev") && n.ends_with(".done.json")
-            })
+            .filter(|n| n.starts_with("oracle-OmegaOS-prev") && n.ends_with(".done.json"))
             .collect();
-        assert_eq!(retired.len(), 1, "expected exactly one retired signal, got {:?}", retired);
+        assert_eq!(
+            retired.len(),
+            1,
+            "expected exactly one retired signal, got {:?}",
+            retired
+        );
     }
 
     #[test]

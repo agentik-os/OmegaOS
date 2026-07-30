@@ -8,7 +8,7 @@
 
 ## 1. What OmegaOS is
 
-OmegaOS is a control plane for a fleet of Claude Code agents on one box. It
+OmegaOS is a provider-neutral control plane for a fleet of coding agents on one box. New sessions use OpenAI Codex by default, while Claude Code, Gemini, Pi, Hermes, and GLM remain selectable. It
 turns a Linux machine (typically a VPS) into a place where you dispatch work in
 one sentence and a hierarchy of agents — a Master that routes, an oracle per
 project that plans, ephemeral workers that edit — executes it in parallel under
@@ -23,7 +23,7 @@ Every term below is load-bearing. Missions fail when these get conflated.
 | Term | Definition |
 |---|---|
 | **Session** | An rmux PTY with a role: **Master** (the routing brain), **Oracle** (per-project orchestrator), **Worker** (ephemeral editor), **Home** (your own interactive shells, e.g. `claude-1`), **System** (daemons like the Telegram bridge). `omega list` shows them. |
-| **Mission** | A request dispatched to an oracle (`omega dispatch <Project> "<mission>"` or a message in the project's Telegram topic). Tracked from dispatch to `done.json`. |
+| **Mission** | A request dispatched to an oracle (`omega dispatch <Project> "<mission>"` or a message in the project's Telegram topic). The SQLite mission ledger is authoritative; JSON, timeline, plan, and Telegram surfaces are projections. |
 | **Oracle** | One per project. It classifies, plans, dispatches workers, runs the quality gate, and reports. It **never edits project code itself** — the grader and the writer are different agents. |
 | **Worker** | Ephemeral, parallel, file-scope-locked editor. Named `<Project>-worker-<task>`. It does ONE task, verifies against runtime, and signals completion with `omega done`. |
 | **Workflow** | In-process fan-out *inside* one agent: spawn parallel sub-agents, adversarially verify their outputs, synthesize one answer. Cheaper than dispatching a worker per subtask; the default for review/research/audit/design work. |
@@ -32,11 +32,11 @@ Every term below is load-bearing. Missions fail when these get conflated.
 | **Atlas** | The orchestrator brain on Telegram — the discussion topic where you talk to the Master. Atlas classifies and routes; it does not do the work inline. |
 | **Skill** | A shipped `/omg-*` protocol (e.g. `/omg-planner`, `/omg-llm-council`). Installed under `~/.omega/skills/`; invoked by name inside a Claude session. |
 | **Audit** | A forensic quality skill from the 23-audit Quality Arsenal (`omega audit list`). Gestalt clarity gate + Popper falsification + 10x scrutiny on the hinge point. |
-| **done.json** | The only completion signal. A worker writes `~/.omega/state/worker-<session>.done.json` via `omega done`; without `status: done_clean` the work is not done, whatever the agent says. |
+| **done.json** | A compatibility projection of a candidate completion claim. `omega done` cannot self-accept work; the verifier and mission gate must record an accepted task attempt before delivery. |
 
 ## 3. The doctrine in 1 page
 
-Six Laws bind every agent, at every level, always. From the registry
+Seven Laws bind every agent, at every level, always. From the registry
 (`omega rules list` — source: `crates/omega-core/src/rules.rs`):
 
 - **L0 — Ship the truth, reproducible & pushed.** A change isn't done until it
@@ -57,8 +57,10 @@ Six Laws bind every agent, at every level, always. From the registry
 - **L5 — Quality over speed.** Tokens are unlimited; quality is the only
   constraint. Never a "streamlined/quick" variant of a real protocol. A
   403/401/blocked surface is an ABORT, never a PASS.
+- **L6 — Finish the mission.** Enumerate every deliverable, track it, execute
+  through the last item, verify each result, and only then report.
 
-The operational Rules (26 at the time of writing) implement the Laws, one
+The 47 operational Rules implement the Laws, one
 category at a time. One example each:
 
 | Category | Example rule |
@@ -69,10 +71,10 @@ category at a time. One example each:
 | Reporting | **R-CITE** — evidence or it didn't happen: every claim carries a file:line, log line, or screenshot. |
 | Safety | **R-SCOPE** — one writer per file: declare each worker's file scope; overlap → serialize or worktree-isolate. |
 
-Each Rule is scoped to the roles it binds (Master / Oracle / Worker), and the
-funnel — `rules::agent_context_block(scope)` — injects the role-scoped slice
-into every agent's prompt at dispatch. Nobody can spawn a child that quietly
-drops a Law.
+Each Rule is scoped by role, domain, risk, enforcement mode, and provider
+capability. The compiler emits a compact context below 24 KB and a deterministic
+digest. Nobody can spawn a child that quietly drops a Law, and provider-specific
+mechanics no longer pollute the universal kernel.
 
 ## 4. Driving it — the three cockpits
 
@@ -82,7 +84,7 @@ Five tabs (cycle with arrow keys; `Tab` toggles focus between panels):
 
 | Tab | What it does |
 |---|---|
-| **Sessions** | Live session list with roles and progress; the right panel mirrors the selected pane and accepts chat input. Kill, lock, rename, attach. |
+| **Sessions** | Live session list with roles and progress; the right panel mirrors the selected pane and accepts chat input. Codex/OpenAI panes preserve ANSI color, reflow long Unicode input to the visible width, paint the real cursor row, and show the persisted provider identity. Kill, lock, rename, attach. |
 | **Menu** | Launch actions: new Claude/Codex/Gemini/Pi/Hermes/GLM/terminal session, **[N] New Project**, dispatch to an oracle, refresh, protection toggle, kill / kill-all / nuclear cleanup, restart, quit. |
 | **Agentic** | The agentic state: projects (with per-project actions and a 3-tier delete), doctrine info, oracle/worker tree. |
 | **Settings** | Theme gallery (live preview — see [docs/THEMES.md](docs/THEMES.md)), provider/model config, API keys, agent installs, the Monitor group (billing, accounts, bot status, provisioning keys wizard). |
