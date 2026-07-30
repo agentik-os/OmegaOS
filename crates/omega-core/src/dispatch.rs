@@ -194,7 +194,14 @@ where
         let mut candidates: Vec<&OracleRegistryEntry> = entries
             .iter()
             .filter(|e| e.project == project)
-            .filter(|e| live_sessions.iter().any(|s| s == &e.session_name))
+            // LIVENESS IS PROVEN ON THE NAME WE WILL ADDRESS. Both registration
+            // sites set `session_name == oracle_name` today
+            // (oracle_lifecycle.rs:1126, :1182), so this is latent rather than
+            // active — but the pane that gets captured and typed into is
+            // addressed by `oracle_name` (`deliver_followup`), and the
+            // idle-reuse block below already matches on `oracle_name`. Proving
+            // one field while using the other costs nothing to close.
+            .filter(|e| live_sessions.iter().any(|s| s == &e.oracle_name))
             .filter(|e| closeable(&e.oracle_name) == Some(false))
             .filter(|e| !has_done_signal(&e.oracle_name))
             .collect();
