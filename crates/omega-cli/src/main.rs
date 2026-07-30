@@ -323,6 +323,12 @@ enum Commands {
         /// Defaults to the configured agent_command.
         #[arg(long)]
         agent: Option<String>,
+        /// Force a NEW oracle even when one is already working on this project.
+        /// Without it, a mission for a project whose oracle is still running is
+        /// delivered into that live session as a followup instead of spawning a
+        /// sibling.
+        #[arg(long = "new")]
+        new_oracle: bool,
     },
 
     /// Run a full orchestrated mission end-to-end (classify → plan → dispatch → monitor → gate)
@@ -881,7 +887,8 @@ async fn main() -> Result<()> {
             project,
             mission,
             agent,
-        }) => cmd_dispatch(&project, &mission, agent.as_deref()).await,
+            new_oracle,
+        }) => cmd_dispatch(&project, &mission, agent.as_deref(), new_oracle).await,
         Some(Commands::Orchestrate {
             project,
             mission,
@@ -4828,7 +4835,12 @@ impl Beat {
     }
 }
 
-async fn cmd_dispatch(project: &str, mission: &str, agent: Option<&str>) -> Result<()> {
+async fn cmd_dispatch(
+    project: &str,
+    mission: &str,
+    agent: Option<&str>,
+    new_oracle: bool,
+) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
     let mgr = SessionManager::connect().await?;
@@ -4838,17 +4850,23 @@ async fn cmd_dispatch(project: &str, mission: &str, agent: Option<&str>) -> Resu
     // rather than `?`-ing straight through and leaving a live beat behind.
     let beat = Beat::start("briefing the oracle");
     let dispatched = dispatcher
-        .dispatch_oracle_with_agent(project, mission, agent)
+        .dispatch_oracle_with_agent(project, mission, agent, new_oracle)
         .await;
     beat.stop().await;
-    let oracle_name = dispatched?;
+    let outcome = dispatched?;
+    let oracle_name = outcome.oracle_name.clone();
 
     // Create session log
     let sessions_dir = config.state_dir.join("sessions");
     let mut log = omega_core::session_log::SessionLog::create(&sessions_dir, &oracle_name, ".")?;
     log.append_message("system", &format!("Mission dispatched: {}", mission))?;
 
-    println!("◆ Oracle dispatched: {}", oracle_name);
+    // report_lines() owns the output contract: line 0 is always the canonical
+    // "Oracle dispatched: <name>" the Telegram bridge parses, and a followup
+    // adds its note on a separate line. See DispatchOutcome::report_lines.
+    for line in outcome.report_lines() {
+        println!("{}", line);
+    }
     println!("  Mission: {}", mission);
     Ok(())
 }
