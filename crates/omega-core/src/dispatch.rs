@@ -30,6 +30,114 @@ const FOLLOWUP_CONFIRM_ATTEMPTS: usize = 3;
 /// Wait between acceptance probes.
 const FOLLOWUP_CONFIRM_INTERVAL: Duration = Duration::from_secs(1);
 
+/// WHAT HAPPENED TO THE OPERATOR'S TEXT on the followup path — the whole point
+/// of this type is that "it did not work" is TWO different facts with two
+/// different answers, and collapsing them into one boolean delivered a mission
+/// twice.
+///
+/// THE INCIDENT, reproduced in runtime with the hardened binary installed. One
+/// `omega dispatch <project> '<text>'` against a live oracle: the paste landed
+/// in `oracle-dentistrygpt-4` (the text appeared in its conversation, its
+/// composer was empty afterwards), the confirmation did not recognise what it
+/// saw, the delivery reported failure, and the caller spawned
+/// `oracle-dentistrygpt-5` carrying the SAME `mission_text` in its state.json.
+/// The operator asked for one oracle and got two, which is the exact symptom
+/// the followup feature exists to remove.
+///
+/// THE INVARIANT THIS TYPE ENCODES: once a byte may have left for the target,
+/// the only remaining degree of freedom is how HONESTLY the delivery is
+/// reported. A second delivery is never one of the options. Spawning is legal
+/// only from [`FollowupOutcome::NotSent`], which is returned exclusively by the
+/// guards that run BEFORE the keystroke.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FollowupOutcome {
+    /// Nothing was typed: the composer never became typeable, the target
+    /// stopped qualifying, or the pane could not be re-read at the last look.
+    /// The mission is nowhere, so the caller falls back to a spawn.
+    NotSent,
+    /// The text reached the live target AND its acceptance was proven.
+    Delivered,
+    /// The text reached the live target and acceptance could NOT be proven
+    /// inside the bound. The caller must report this honestly and must NOT
+    /// spawn: the confirmation is an observation, not a delivery mechanism, and
+    /// its failure cannot un-send what is already in the session.
+    ///
+    /// A send that returns `Err` lands here too, deliberately. `send_paste_then
+    /// _submit` chunks the body and replays it (session.rs:595-657), so an error
+    /// out of it does NOT prove the pane never saw the markers — only a session
+    /// layer that reported "nothing left the wire" could, and it does not.
+    /// Unprovable means sent, on this path.
+    DeliveredUnconfirmed,
+}
+
+/// The result of the half of a followup that runs FROM THE KEYSTROKE ON, and
+/// the reason that half is its own function: this type has no "not sent" state,
+/// so no code below the send can ask for a spawn even by accident. The whole
+/// defect was one such value travelling up from a post-send path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SentOutcome {
+    /// The pane moved and the composer no longer holds the text.
+    Confirmed,
+    /// The target holds the text as far as anyone can tell, and the acceptance
+    /// probe could not prove it inside its bound.
+    Unconfirmed,
+}
+
+impl From<SentOutcome> for FollowupOutcome {
+    fn from(sent: SentOutcome) -> Self {
+        match sent {
+            SentOutcome::Confirmed => FollowupOutcome::Delivered,
+            SentOutcome::Unconfirmed => FollowupOutcome::DeliveredUnconfirmed,
+        }
+    }
+}
+
+/// Does this pane, captured after the send, show the paste as ACCEPTED?
+///
+/// The pure half of [`Dispatcher::confirm_followup_accepted`], so every shape
+/// below is executed by a test against a REAL capture instead of being asserted
+/// about in a comment. `sent` is [`crate::session_monitor::sent_slices`] of the
+/// mission, recorded at send time.
+///
+/// Three ways to be accepted, in the order they are trusted:
+///
+/// 1. THE TEXT IS IN THE TRANSCRIPT. Positive evidence, and the only signal
+///    that covers a QUEUED message: a busy agent echoes the paste above the
+///    composer box and keeps working. This is the nominal followup — the target
+///    is busy by definition — and it used to be scored as a failure.
+/// 2. THE QUEUED-MESSAGES PLACEHOLDER is in the composer. The agent draws it
+///    itself while holding messages it has not consumed; it is chrome, not a
+///    draft somebody typed.
+/// 3. THE PANE MOVED and the composer no longer holds text. The original
+///    signal, kept because it catches the case where the echo scrolled off.
+///
+/// A pane that has not changed at all proves nothing yet: the caller keeps
+/// looking until its bound.
+fn followup_was_accepted(pane: &str, before: &str, sent: &[String]) -> bool {
+    if crate::session_monitor::sent_text_reached_the_transcript(pane, sent) {
+        return true;
+    }
+    if crate::session_monitor::composer_shows_queued_messages(pane) {
+        return true;
+    }
+    pane != before && !composer_holds_text(pane)
+}
+
+/// THE SPAWN-OR-NOT DECISION, in one place and as a pure function.
+///
+/// `Some(delivery)` means the dispatch is over and reports itself as
+/// `delivery`; `None` means nothing was sent anywhere and the caller falls
+/// through to the spawn path. There is exactly one call site, so this is the
+/// production decision rather than a description of it — which is what makes it
+/// worth a test that a hand-written constant would not be.
+fn followup_disposition(outcome: FollowupOutcome) -> Option<DispatchDelivery> {
+    match outcome {
+        FollowupOutcome::Delivered => Some(DispatchDelivery::Followup),
+        FollowupOutcome::DeliveredUnconfirmed => Some(DispatchDelivery::FollowupUnconfirmed),
+        FollowupOutcome::NotSent => None,
+    }
+}
+
 /// Where a dispatch should be delivered. Computed by [`route_dispatch`] as a
 /// PURE function of the registry, the live rmux session list, and each oracle's
 /// closeable state — which is the only reason the decision is unit-testable
@@ -59,6 +167,10 @@ pub enum DispatchDelivery {
     /// typeable composer inside the bound, so a new oracle was spawned rather
     /// than risk the text landing in a shell.
     SpawnedPaneNotReady,
+    /// The mission text WAS typed into the live oracle, and its acceptance
+    /// could not be proven inside the confirmation bound. NO sibling was
+    /// spawned — see [`FollowupOutcome`] for why this state exists at all.
+    FollowupUnconfirmed,
 }
 
 /// The result of a dispatch: which oracle owns the mission, and how the text
@@ -92,6 +204,11 @@ impl DispatchOutcome {
                  nouvel oracle spawne)"
                     .to_string(),
             ),
+            DispatchDelivery::FollowupUnconfirmed => lines.push(
+                "  (suivi: texte envoye dans l oracle vivant, acceptation NON confirmee — \
+                 aucun nouvel oracle cree, verifier la session)"
+                    .to_string(),
+            ),
         }
         lines.push(format!("DISPATCH_DELIVERY={}", self.delivery.tag()));
         lines
@@ -103,17 +220,54 @@ impl DispatchDelivery {
     /// French line above is not it: a consumer parsing prose breaks on the day
     /// somebody rewords it. Exactly one line of the form
     /// `DISPATCH_DELIVERY=<tag>` is printed on every SUCCESS path, and these
-    /// three tags are the whole vocabulary.
+    /// four tags are the whole vocabulary.
     ///
     /// Line 0 stays the canonical `Oracle dispatched: <name>` — the Telegram
     /// bridge's regex owns that line and must keep matching it (see
     /// [`DispatchOutcome::report_lines`]).
+    ///
+    /// `followup_unconfirmed` IS A NEW WORD IN THAT VOCABULARY, and the bridge
+    /// does not know it yet: `telegram-bot/omega-tg-bot.ts` treats any
+    /// unrecognised tag as a spawn, which is exactly wrong here — no session
+    /// was created. That file is deliberately NOT touched by this change; the
+    /// mismatch is reported to the operator instead of fixed blind, because the
+    /// bridge also owns the progress-file handling a followup must not clobber.
+    /// EVERY state, in ONE list the contract tests iterate instead of each
+    /// keeping its own copy. The compiler cannot force a new variant in here —
+    /// but one edit now covers every test that enumerates the enum, instead of
+    /// three that quietly keep testing the old three.
+    pub const ALL: &'static [DispatchDelivery] = &[
+        DispatchDelivery::Spawned,
+        DispatchDelivery::Followup,
+        DispatchDelivery::SpawnedPaneNotReady,
+        DispatchDelivery::FollowupUnconfirmed,
+    ];
+
     pub fn tag(&self) -> &'static str {
         match self {
             DispatchDelivery::Spawned => "spawned",
             DispatchDelivery::Followup => "followup",
             DispatchDelivery::SpawnedPaneNotReady => "spawned_pane_not_ready",
+            DispatchDelivery::FollowupUnconfirmed => "followup_unconfirmed",
         }
+    }
+
+    /// Did this delivery put the text into an ALREADY-LIVE oracle instead of
+    /// creating a session?
+    ///
+    /// Callers that must not touch a live oracle's per-mission files ask THIS,
+    /// never `matches!(…, Followup)`. The CLI's session-journal guard is the
+    /// one that matters: `SessionLog::create` under a live oracle's name either
+    /// appends a second session header into the journal of the mission still
+    /// running or hides it behind a near-empty newer file (omega-cli
+    /// :4855-4885). An unconfirmed followup landed in that same live session,
+    /// so it is just as forbidden — and reading the enum by variant is what
+    /// would have silently reintroduced the bug when this variant was added.
+    pub fn went_to_live_oracle(&self) -> bool {
+        matches!(
+            self,
+            DispatchDelivery::Followup | DispatchDelivery::FollowupUnconfirmed
+        )
     }
 }
 
@@ -602,12 +756,27 @@ impl Dispatcher {
     /// exists anywhere.
     ///
     /// WHAT THIS PROVES, EXACTLY, and no more: the session still answers a
-    /// capture, its pane MOVED, and the composer no longer holds the text.
-    /// A capture that fails is the dead-session case and reads as NOT accepted.
-    /// The pane still holding the paste means it was buffered but never
-    /// submitted, so we keep looking until the bound. It does not prove the
-    /// agent understood the mission — nothing observable from outside could.
-    async fn confirm_followup_accepted(&self, oracle: &str, before: &str) -> bool {
+    /// capture, and the text reached the agent — either echoed into the
+    /// transcript (consumed or queued) or left a composer that no longer holds
+    /// it. A capture that fails is the dead-session case and reads as NOT
+    /// accepted. It does not prove the agent understood the mission — nothing
+    /// observable from outside could.
+    ///
+    /// THE BUSY AGENT IS THE NOMINAL CASE, and the first version of this probe
+    /// treated it as a failure. A followup targets an oracle that is working by
+    /// definition, and a working agent QUEUES the paste: the text is echoed
+    /// above the box and the box reads `❯ Press up to edit queued messages`,
+    /// which the "does the composer still hold text" test scores as buffered
+    /// and unsubmitted. Three probes later the delivery reported failure, the
+    /// caller spawned a sibling oracle, and the operator's one message had been
+    /// delivered twice. So the queued placeholder is read for what it is, and
+    /// the echo in the transcript is preferred over the composer's state — the
+    /// composer is not reliably empty even after a CONSUMED turn, since the
+    /// agent draws its own suggested next prompt in it.
+    async fn confirm_followup_accepted(&self, oracle: &str, before: &str, mission: &str) -> bool {
+        // Recorded from the message we sent, in short overlapping slices,
+        // because the pane hard-wraps it (session_monitor::sent_slices).
+        let sent = crate::session_monitor::sent_slices(mission);
         for attempt in 1..=FOLLOWUP_CONFIRM_ATTEMPTS {
             tokio::time::sleep(FOLLOWUP_CONFIRM_INTERVAL).await;
             let pane = match self.session_mgr.capture_pane(oracle).await {
@@ -621,30 +790,32 @@ impl Dispatcher {
                     return false;
                 }
             };
-            if pane == before {
-                continue; // nothing moved yet
+            if followup_was_accepted(&pane, before, &sent) {
+                return true;
             }
-            if composer_holds_text(&pane) {
-                continue; // buffered, not submitted
-            }
-            return true;
         }
         tracing::warn!(
             oracle = %oracle, attempts = FOLLOWUP_CONFIRM_ATTEMPTS,
-            "followup paste was never confirmed as accepted — refusing to report a success"
+            "followup paste was never confirmed as accepted — reporting it unconfirmed"
         );
         false
     }
 
     /// Deliver `mission` into an ALREADY-LIVE oracle instead of spawning a
-    /// sibling. Returns `Ok(false)` for EVERY way this can fail to deliver —
-    /// pane never typeable, target no longer valid, send error, acceptance
-    /// never confirmed — which tells the caller to fall through to the normal
-    /// spawn path. That is deliberate: this function has no failure mode that
-    /// is better served by killing the whole dispatch than by spawning, and a
-    /// `?` here used to do exactly that, leaving the operator's mission
-    /// undelivered anywhere while the neighbouring not-ready case fell back
-    /// cleanly.
+    /// sibling.
+    ///
+    /// THE RETURN TYPE IS THE FIX. It used to be `Ok(bool)`, where `false` meant
+    /// "fall through to the spawn path" and was returned for EVERY failure —
+    /// including the ones that happen AFTER the mission text has already been
+    /// typed into the live session. That is how one dispatch produced two
+    /// oracles carrying the same mission (see [`FollowupOutcome`]). The three
+    /// states are now distinguished at their source: only the guards above the
+    /// keystroke may return [`FollowupOutcome::NotSent`], and nothing below it
+    /// can.
+    ///
+    /// It still cannot fail the dispatch: there is no failure mode here better
+    /// served by killing the whole thing than by spawning or by reporting the
+    /// truth, and a `?` used to do exactly that.
     ///
     /// Deliberately does NOT create a `Mission` in the ledger, does NOT write an
     /// `OracleState`, does NOT clear the done signal, and does NOT clear the
@@ -661,7 +832,15 @@ impl Dispatcher {
     /// once the followup is confirmed — an append, by design, so `omega
     /// timeline` shows the operator that the running mission grew (loop_guard.rs
     /// :226-245: pure append, no rotation, no thrash or gate counter touched).
-    async fn deliver_followup(&self, oracle: &str, project: &str, mission: &str) -> Result<bool> {
+    async fn deliver_followup(
+        &self,
+        oracle: &str,
+        project: &str,
+        mission: &str,
+    ) -> FollowupOutcome {
+        // ── BEFORE THE KEYSTROKE ─────────────────────────────────────────────
+        // Every `return` in this block is a NotSent: no byte has left, the
+        // mission exists nowhere, and a spawn is both safe and necessary.
         if !self.wait_for_typeable_pane(oracle).await {
             tracing::warn!(
                 oracle = %oracle, project = %project,
@@ -669,7 +848,7 @@ impl Dispatcher {
                 "followup target never showed a typeable composer — spawning instead of typing \
                  into an unknown pane"
             );
-            return Ok(false);
+            return FollowupOutcome::NotSent;
         }
 
         // The probe may have slept for eight seconds. Re-read the route, then
@@ -681,7 +860,7 @@ impl Dispatcher {
                 "followup target stopped qualifying while we waited for its composer \
                  (closed, signalled, or gone) — spawning instead"
             );
-            return Ok(false);
+            return FollowupOutcome::NotSent;
         }
         let before = match self.session_mgr.capture_pane(oracle).await {
             Ok(pane) if pane_ready_for_followup(&pane) => pane,
@@ -691,17 +870,41 @@ impl Dispatcher {
                     "followup target's composer stopped being typeable at the last look — \
                      spawning instead"
                 );
-                return Ok(false);
+                return FollowupOutcome::NotSent;
             }
             Err(e) => {
                 tracing::warn!(
                     oracle = %oracle, error = %e,
                     "could not re-read the followup target's pane before typing — spawning instead"
                 );
-                return Ok(false);
+                return FollowupOutcome::NotSent;
             }
         };
 
+        // ── THE POINT OF NO RETURN ───────────────────────────────────────────
+        // Everything from the keystroke on lives in its own function whose
+        // return type CANNOT say "not sent". That is not a stylistic split: the
+        // defect being fixed is precisely a post-send path returning the value
+        // that means "spawn", and a comment asking the next editor not to do it
+        // again is worth less than a type that will not compile.
+        FollowupOutcome::from(
+            self.send_and_confirm_followup(oracle, project, mission, &before)
+                .await,
+        )
+    }
+
+    /// The half of a followup that runs FROM THE KEYSTROKE ON.
+    ///
+    /// [`SentOutcome`] has exactly two states and neither of them authorizes a
+    /// spawn — by construction, this function cannot ask for a second delivery
+    /// of text it has already sent.
+    async fn send_and_confirm_followup(
+        &self,
+        oracle: &str,
+        project: &str,
+        mission: &str,
+        before: &str,
+    ) -> SentOutcome {
         // BRACKETED PASTE, not a line-wise send. A mission body is multi-line
         // (it carries "## Attached files" and paths); `send_text` submits at the
         // first newline and would fracture one mission into a dozen half-turns.
@@ -710,43 +913,70 @@ impl Dispatcher {
         // chunks the body and replays the whole block on a stale pane, so a
         // failure can never leave a live composer stuck between the paste
         // markers eating the operator's keystrokes.
-        if let Err(e) = self
+        let send = self
             .session_mgr
             .send_paste_then_submit(oracle, mission)
-            .await
-        {
-            tracing::warn!(
-                oracle = %oracle, project = %project, error = %e,
-                "failed to type the followup into the live oracle — spawning instead of failing \
-                 the dispatch"
-            );
-            return Ok(false);
-        }
+            .await;
+        let sent_cleanly = match send {
+            Ok(()) => true,
+            Err(e) => {
+                // NOT a NotSent. The paste is chunked and replayed inside the
+                // session layer, so an error here can equally mean "the markers
+                // and half the body are in the composer" as "nothing left". The
+                // unprovable half is treated as sent, because the recoverable
+                // mistake is an honest report of an unconfirmed followup and
+                // the unrecoverable one is a second oracle.
+                tracing::warn!(
+                    oracle = %oracle, project = %project, error = %e,
+                    "the followup send returned an error — it cannot be proven that no byte \
+                     reached the live oracle, so no sibling is spawned; reporting the followup \
+                     as unconfirmed"
+                );
+                false
+            }
+        };
 
-        // NO CONFIRMATION, NO SUCCESS. An unconfirmed followup falls back to a
-        // spawn and is reported as such: the operator gets an oracle that
-        // certainly holds the mission, instead of a success line for a mission
-        // that may have died with its session. The residual cost of the
-        // fallback is a mission that landed twice, which is visible and
-        // recoverable; the cost of the alternative is silence.
-        if !self.confirm_followup_accepted(oracle, &before).await {
-            return Ok(false);
-        }
+        // CONFIRMATION DEGRADES THE REPORT, IT DOES NOT RE-DELIVER. The busy
+        // agent — the main use case — QUEUES a paste instead of consuming it,
+        // and the acceptance probe has already been observed failing to
+        // recognise that. When it fails, the operator is told the text is in
+        // the live session and unproven, which is the truth; spawning here is
+        // what turned one mission into two.
+        let confirmed =
+            sent_cleanly && self.confirm_followup_accepted(oracle, before, mission).await;
 
+        // The live oracle's own timeline records the followup either way — an
+        // unconfirmed one is exactly what an operator reading `omega timeline`
+        // needs to see, and hiding it would leave the text with no trace at all
+        // (the followup path writes no state.json and no session journal).
         crate::loop_guard::MissionLog::event(
             &self.config.state_dir,
             oracle,
             "followup",
             &format!(
-                "followup delivered into the live mission: {}",
+                "followup {} into the live mission: {}",
+                if confirmed {
+                    "delivered"
+                } else {
+                    "sent (acceptance NOT confirmed)"
+                },
                 mission.chars().take(140).collect::<String>()
             ),
         );
-        tracing::info!(
-            oracle = %oracle, project = %project,
-            "Followup routed into a live oracle — no sibling spawned"
-        );
-        Ok(true)
+        if confirmed {
+            tracing::info!(
+                oracle = %oracle, project = %project,
+                "Followup routed into a live oracle — no sibling spawned"
+            );
+            SentOutcome::Confirmed
+        } else {
+            tracing::warn!(
+                oracle = %oracle, project = %project,
+                "Followup went into the live oracle but was never confirmed accepted — \
+                 reporting it unconfirmed rather than delivering it a second time"
+            );
+            SentOutcome::Unconfirmed
+        }
     }
 
     /// Dispatch, optionally overriding the agent for THIS mission only.
@@ -823,17 +1053,24 @@ impl Dispatcher {
         let mut pane_not_ready = false;
         let preferred: Option<String> = match route {
             DispatchRoute::Followup { oracle } => {
-                if self.deliver_followup(&oracle, project, mission).await? {
+                let outcome = self.deliver_followup(&oracle, project, mission).await;
+                // The text is in the live oracle unless the outcome says
+                // NOTHING was sent. Whether the confirmation could prove it
+                // changes the REPORT and nothing else — this return is the fix,
+                // because the code below it used to be reachable with the
+                // mission already delivered, and it created a sibling oracle
+                // carrying the same mission_text.
+                if let Some(delivery) = followup_disposition(outcome) {
                     return Ok(DispatchOutcome {
                         oracle_name: oracle,
-                        delivery: DispatchDelivery::Followup,
+                        delivery,
                     });
                 }
-                // The followup could not be delivered (pane never typeable,
-                // target stopped qualifying, send failed, or acceptance was
-                // never confirmed). Fall through to a normal spawn — a followup
-                // that lands in a shell, or is lost, is worse than the sibling
-                // oracle we are trying to avoid.
+                // NOTHING WAS TYPED: the composer never became typeable, the
+                // target stopped qualifying, or its pane could not be re-read
+                // at the last look. The mission exists nowhere, so fall through
+                // to a normal spawn — a followup that lands in a shell, or is
+                // lost, is worse than the sibling oracle we are trying to avoid.
                 pane_not_ready = true;
                 // …but do NOT throw away the idle-recycling candidate on the
                 // way out. Asking the SAME router with `force_new` skips only
@@ -2099,11 +2336,7 @@ mod followup_routing_tests {
     #[test]
     fn followup_output_still_matches_the_telegram_bridge_regex() {
         let re = regex::Regex::new(BRIDGE_RE).unwrap();
-        for delivery in [
-            DispatchDelivery::Spawned,
-            DispatchDelivery::Followup,
-            DispatchDelivery::SpawnedPaneNotReady,
-        ] {
+        for &delivery in DispatchDelivery::ALL {
             let outcome = DispatchOutcome {
                 oracle_name: "oracle-dentistrygpt-2".to_string(),
                 delivery,
@@ -2150,6 +2383,18 @@ mod followup_routing_tests {
         let lines = fallback.report_lines();
         assert_eq!(lines.len(), 3);
         assert!(lines[1].contains("pas pret"));
+
+        let unconfirmed = DispatchOutcome {
+            oracle_name: "oracle-X".into(),
+            delivery: DispatchDelivery::FollowupUnconfirmed,
+        };
+        let lines = unconfirmed.report_lines();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].contains("NON confirmee"));
+        assert!(
+            lines[1].contains("aucun nouvel oracle"),
+            "the operator must not read this as a spawn: {lines:?}"
+        );
     }
 
     /// THE MACHINE CONTRACT, consumed by a parallel change in the Telegram
@@ -2158,14 +2403,24 @@ mod followup_routing_tests {
     /// somebody rewords it.
     #[test]
     fn every_success_path_prints_exactly_one_dispatch_delivery_line() {
-        for (delivery, tag) in [
+        let expected = [
             (DispatchDelivery::Spawned, "spawned"),
             (DispatchDelivery::Followup, "followup"),
             (
                 DispatchDelivery::SpawnedPaneNotReady,
                 "spawned_pane_not_ready",
             ),
-        ] {
+            (
+                DispatchDelivery::FollowupUnconfirmed,
+                "followup_unconfirmed",
+            ),
+        ];
+        assert_eq!(
+            expected.len(),
+            DispatchDelivery::ALL.len(),
+            "a delivery state was added without a spelling for its machine line"
+        );
+        for (delivery, tag) in expected {
             let outcome = DispatchOutcome {
                 oracle_name: "oracle-dentistrygpt-2".into(),
                 delivery,
@@ -2183,6 +2438,226 @@ mod followup_routing_tests {
             assert_eq!(machine[0], &format!("DISPATCH_DELIVERY={tag}"));
             // Line 0 stays the bridge's canonical line, ahead of it.
             assert!(lines[0].starts_with("◆ Oracle dispatched: "));
+        }
+    }
+
+    // ── Acceptance, against real captures ───────────────────────────────────
+
+    /// A live agent, BUSY, with our paste queued behind the turn it is running.
+    /// Captured from a real `claude` session on this machine: the paste was sent
+    /// with the same bracketed-paste + Enter sequence `deliver_followup` uses,
+    /// four seconds into a long reply.
+    const PANE_QUEUED: &str =
+        include_str!("../tests/fixtures/GOLDEN-followup-queued-by-busy-agent.txt");
+
+    /// The same experiment, three seconds later: the paste has been CONSUMED
+    /// (the agent answered it) and the composer is not empty either — the agent
+    /// has drawn its own suggested next prompt in it.
+    const PANE_CONSUMED_WITH_SUGGESTION: &str =
+        include_str!("../tests/fixtures/GOLDEN-followup-consumed-then-suggestion.txt");
+
+    /// THE CONFIRMATION FAILURE, REPRODUCED. This capture is what the acceptance
+    /// probe was actually looking at when it decided a delivered followup had
+    /// failed, and it is the nominal case: a followup targets a BUSY oracle by
+    /// definition, and a busy agent queues the paste.
+    ///
+    /// The old signal is asserted here as the FALSE it was — that is the whole
+    /// point of the fixture — and the new one as the TRUE it should always have
+    /// been.
+    #[test]
+    fn a_paste_queued_by_a_busy_agent_is_an_acceptance() {
+        let sent = crate::session_monitor::sent_slices(
+            "SENTINEL-QUEUED-FOLLOWUP alpha\nbravo charlie",
+        );
+        let before = "── an older frame ──";
+
+        // What the probe used to read: the composer's marker line carries the
+        // agent's `Press up to edit queued messages` placeholder, so "does the
+        // composer still hold text" says yes — buffered, never submitted.
+        assert!(
+            composer_holds_text(PANE_QUEUED),
+            "the placeholder is what made the old probe read this as unsent"
+        );
+        assert!(
+            !(PANE_QUEUED != before && !composer_holds_text(PANE_QUEUED)),
+            "the OLD acceptance signal must be shown failing on this real capture, \
+             or this fixture is not the incident"
+        );
+
+        // What it reads now: the text is echoed above the box, and the box is
+        // showing chrome rather than a draft.
+        assert!(crate::session_monitor::composer_shows_queued_messages(
+            PANE_QUEUED
+        ));
+        assert!(crate::session_monitor::sent_text_reached_the_transcript(
+            PANE_QUEUED,
+            &sent
+        ));
+        assert!(
+            followup_was_accepted(PANE_QUEUED, before, &sent),
+            "a queued followup IS accepted: it is in the session and the agent will take it"
+        );
+    }
+
+    /// The consumed case, and the reason acceptance cannot be defined as "the
+    /// composer went empty": one second after taking the turn, the agent drew
+    /// `❯ did it finish?` into the composer by itself. That is a suggestion, and
+    /// in captured text it is indistinguishable from a draft.
+    #[test]
+    fn a_consumed_paste_is_accepted_even_when_the_agent_suggests_the_next_prompt() {
+        let sent =
+            crate::session_monitor::sent_slices("SENTINEL-FOLLOWUP-TEXT line one\nline two");
+        assert!(
+            composer_holds_text(PANE_CONSUMED_WITH_SUGGESTION),
+            "the agent's own suggestion sits in the composer and reads as a draft"
+        );
+        assert!(
+            followup_was_accepted(PANE_CONSUMED_WITH_SUGGESTION, "── older ──", &sent),
+            "the text is in the transcript and was answered — that is accepted"
+        );
+    }
+
+    /// THE SHAPE THAT MUST STILL FAIL, or the probe would confirm anything: the
+    /// paste is sitting in the composer, unsubmitted, and appears NOWHERE else.
+    /// The composer box is stripped before the transcript is searched, so our
+    /// own text inside it can never be mistaken for its echo.
+    #[test]
+    fn a_paste_still_sitting_in_the_composer_is_not_accepted() {
+        let mission = "MISSION SUIVI: audite le module dispatch";
+        let sent = crate::session_monitor::sent_slices(mission);
+        let buffered = format!(
+            "● Working on it.\n\
+             ────────────────────────────────\n\
+             ❯ {mission}\n\
+             ────────────────────────────────\n\
+             \x20 ⏵⏵ bypass permissions on\n"
+        );
+        assert!(
+            !crate::session_monitor::sent_text_reached_the_transcript(&buffered, &sent),
+            "text inside the composer box is not text that reached the agent"
+        );
+        assert!(!crate::session_monitor::composer_shows_queued_messages(
+            &buffered
+        ));
+        assert!(
+            !followup_was_accepted(&buffered, "── older ──", &sent),
+            "an unsubmitted paste must keep the probe looking, then report unconfirmed"
+        );
+    }
+
+    /// A pane with NO evidence proves nothing: our text is not in the
+    /// transcript, the agent is not holding a queue, and nothing moved. The
+    /// probe keeps looking until its bound rather than confirming.
+    ///
+    /// (The queued capture is deliberately not used here: a pane that shows the
+    /// queue placeholder is evidence on its own, and it cannot be the `before`
+    /// of a real followup anyway — the pre-send guard requires an EMPTY
+    /// composer, which that placeholder is not.)
+    #[test]
+    fn a_pane_with_no_evidence_is_never_an_acceptance() {
+        let sent = crate::session_monitor::sent_slices("a mission that never arrived anywhere");
+        assert!(!followup_was_accepted(
+            PANE_CONSUMED_WITH_SUGGESTION,
+            PANE_CONSUMED_WITH_SUGGESTION,
+            &sent
+        ));
+    }
+
+    // ── ONE SEND IS ONE DELIVERY ────────────────────────────────────────────
+
+    /// THE DEFECT, AS A TEST. Reproduced in runtime with the hardened binary
+    /// installed: one `omega dispatch` against a live oracle pasted the mission
+    /// into `oracle-dentistrygpt-4` (the text appeared in its conversation, its
+    /// composer was empty afterwards), the acceptance probe did not recognise
+    /// what it saw, and the dispatcher fell back to spawning
+    /// `oracle-dentistrygpt-5` with the SAME `mission_text` in its state.json.
+    /// One message, two oracles.
+    ///
+    /// [`followup_disposition`] is the single production call site of that
+    /// decision, so this drives the real function: a send whose confirmation
+    /// failed must still END the dispatch (`Some`, never `None`), and must say
+    /// so honestly.
+    #[test]
+    fn a_sent_followup_whose_confirmation_failed_never_spawns() {
+        let disposition = followup_disposition(FollowupOutcome::DeliveredUnconfirmed);
+        let delivery = disposition.expect(
+            "the text is already in the live oracle — falling through to the spawn path here is \
+             the double delivery this whole change exists to remove",
+        );
+        assert_eq!(delivery, DispatchDelivery::FollowupUnconfirmed);
+
+        // …and the report says so, rather than claiming a clean followup.
+        let lines = DispatchOutcome {
+            oracle_name: "oracle-dentistrygpt-4".into(),
+            delivery,
+        }
+        .report_lines();
+        assert!(
+            lines[0].starts_with("◆ Oracle dispatched: oracle-dentistrygpt-4"),
+            "line 0 stays the bridge's canonical line: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("NON confirmee") && lines[1].contains("aucun nouvel oracle"),
+            "the operator must read that the text went out unproven, and that nothing was \
+             spawned: {lines:?}"
+        );
+        assert!(
+            lines.contains(&"DISPATCH_DELIVERY=followup_unconfirmed".to_string()),
+            "a third machine state, not a lie in one of the existing two: {lines:?}"
+        );
+    }
+
+    /// THE INVARIANT BEHIND IT. Once a byte may have left, the only remaining
+    /// freedom is the honesty of the report — never a second delivery. Every
+    /// state reachable AFTER the keystroke is enumerated here through the type
+    /// that the post-send half actually returns, so a new post-send state has
+    /// to be added to this match to compile, and a spawning one fails the test.
+    #[test]
+    fn no_state_reachable_after_the_keystroke_authorizes_a_spawn() {
+        for sent in [SentOutcome::Confirmed, SentOutcome::Unconfirmed] {
+            let outcome = FollowupOutcome::from(sent);
+            assert_ne!(
+                outcome,
+                FollowupOutcome::NotSent,
+                "{sent:?} came back as NOT SENT — the text is already in the session"
+            );
+            let delivery = followup_disposition(outcome).unwrap_or_else(|| {
+                panic!("{sent:?} fell through to the spawn path — that is the double delivery")
+            });
+            assert!(
+                delivery.went_to_live_oracle(),
+                "{sent:?} must report as a followup, not as a session that was created"
+            );
+        }
+    }
+
+    /// THE OTHER HALF, and the reason this is not simply "never spawn": when
+    /// NOTHING was typed, the mission exists nowhere and the spawn is the only
+    /// thing that delivers it. That path stays exactly as it was.
+    #[test]
+    fn a_followup_that_was_never_sent_still_falls_back_to_a_spawn() {
+        assert_eq!(followup_disposition(FollowupOutcome::NotSent), None);
+    }
+
+    /// The CLI must not open a session journal under a LIVE oracle's name — it
+    /// either appends a second session header into the journal of the mission
+    /// still running or hides it behind a near-empty newer file (omega-cli
+    /// :4855-4885). The guard reads `went_to_live_oracle()`; asking it by
+    /// variant is what left the new state uncovered.
+    #[test]
+    fn every_delivery_into_a_live_oracle_is_recognised_as_one() {
+        assert!(DispatchDelivery::Followup.went_to_live_oracle());
+        assert!(DispatchDelivery::FollowupUnconfirmed.went_to_live_oracle());
+        assert!(!DispatchDelivery::Spawned.went_to_live_oracle());
+        assert!(!DispatchDelivery::SpawnedPaneNotReady.went_to_live_oracle());
+        // A state that created a session is exactly a state whose tag does not
+        // begin with `followup`: the two spellings must not drift apart.
+        for &d in DispatchDelivery::ALL {
+            assert_eq!(
+                d.went_to_live_oracle(),
+                d.tag().starts_with("followup"),
+                "{d:?}: the tag and the live-oracle predicate disagree"
+            );
         }
     }
 

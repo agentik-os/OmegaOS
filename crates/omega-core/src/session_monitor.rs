@@ -712,6 +712,84 @@ pub fn composer_ready_for_paste(pane: &str) -> bool {
         .all(|l| is_composer_footer_line(l))
 }
 
+// ── Was a paste ACCEPTED? ───────────────────────────────────────────────────
+//
+// The section above answers "may text be typed here". This one answers the
+// question that comes one second later, and it is a DIFFERENT question with a
+// different failure mode: a followup that was accepted but not RECOGNISED as
+// accepted used to be re-delivered as a second oracle.
+
+/// What the agent draws on the composer's marker line while it is holding
+/// messages it has not consumed yet.
+///
+/// THE NOMINAL CASE, NOT AN ANOMALY, and the exact string was taken from a
+/// capture of a live agent rather than guessed. A followup goes to a BUSY
+/// oracle by definition — that is the whole point of the feature — and a busy
+/// agent QUEUES the paste instead of consuming it:
+///
+/// ```text
+///   ❯ SENTINEL-QUEUED-FOLLOWUP alpha
+///     bravo charlie
+/// ────────────────────────────────────────────────────────
+/// ❯ Press up to edit queued messages
+/// ────────────────────────────────────────────────────────
+///   ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt
+/// ```
+///
+/// The queued text is echoed ABOVE the box as a turn, and the box itself holds
+/// this placeholder. Read as "the composer is not empty", that pane says the
+/// paste was buffered and never submitted — which is exactly backwards, and is
+/// what made the acceptance probe fail on its main use case.
+const COMPOSER_QUEUED_PLACEHOLDER: &str = "Press up to edit queued messages";
+
+/// Is the composer showing the agent's own QUEUED-MESSAGES placeholder rather
+/// than text somebody typed?
+///
+/// Matched as the WHOLE content of the marker line, not as a substring of the
+/// pane: a placeholder is chrome the agent draws by itself, and requiring it to
+/// be the entire line keeps an operator's message that happens to quote it from
+/// reading as chrome (DEFECT 4 — match the structure, not the words).
+pub fn composer_shows_queued_messages(pane: &str) -> bool {
+    let Some(marker) = find_live_composer_marker(pane) else {
+        return false;
+    };
+    let lines: Vec<&str> = pane.lines().collect();
+    let Some(line) = lines.get(marker) else {
+        return false;
+    };
+    let mut chars = line.trim().chars();
+    match chars.next() {
+        Some(c) if PROMPT_MARKERS.contains(&c) => {
+            chars.as_str().trim() == COMPOSER_QUEUED_PLACEHOLDER
+        }
+        _ => false,
+    }
+}
+
+/// Did the text we sent reach the TRANSCRIPT — the part of the pane that is not
+/// the composer?
+///
+/// POSITIVE evidence of acceptance, and the only kind that covers both shapes a
+/// live agent produces: a consumed turn and a queued one both echo the message
+/// above the box, and neither depends on the composer being empty afterwards.
+/// It has to be, because the composer is NOT reliably empty after a successful
+/// followup — a capture taken one second after an accepted paste showed the
+/// agent's own suggested next prompt sitting in it (`❯ did it finish?`), which
+/// is indistinguishable from a draft in captured text.
+///
+/// `sent` is what [`sent_slices`] recorded AT SEND TIME, for the same reason
+/// the watcher records it: the pane hard-wraps, so only short overlapping
+/// windows survive (DEFECT 1). The composer box is stripped BEFORE the test and
+/// never after, and a pane whose box cannot be located answers `false` rather
+/// than matching text that may still be sitting unsent in it.
+pub fn sent_text_reached_the_transcript(pane: &str, sent: &[String]) -> bool {
+    if sent.is_empty() || find_input_box(pane).is_none() {
+        return false;
+    }
+    let transcript = strip_input_box(pane);
+    sent.iter().any(|slice| transcript.contains(slice.as_str()))
+}
+
 // ── Failure signals ─────────────────────────────────────────────────────────
 
 /// EXACT failure strings, WITH their punctuation.

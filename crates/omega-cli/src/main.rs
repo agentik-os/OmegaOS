@@ -4872,8 +4872,11 @@ fn write_dispatch_session_log(
     outcome: &omega_core::dispatch::DispatchOutcome,
     mission: &str,
 ) {
-    use omega_core::dispatch::DispatchDelivery;
-    if matches!(outcome.delivery, DispatchDelivery::Followup) {
+    // ASK THE PREDICATE, NOT THE VARIANT. `matches!(…, Followup)` here missed
+    // `FollowupUnconfirmed` the day it was added — a delivery that landed in the
+    // same live session and would have opened the same forbidden journal under
+    // its name. `went_to_live_oracle()` covers both by construction.
+    if outcome.delivery.went_to_live_oracle() {
         return;
     }
     let sessions_dir = config.state_dir.join("sessions");
