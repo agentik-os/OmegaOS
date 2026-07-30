@@ -41,3 +41,7 @@ add Funnel (public) without re-enabling `OD_API_TOKEN`.
 ## Update the pin
 
 Bump the commit here, re-run the installer (it fast-forwards the clone), then `docker compose pull`.
+
+## Local CLI mode (subscription, not BYOK)
+
+The daemon delegates generation to a coding-agent CLI on ITS PATH. In Docker that PATH has none, so the installer bakes `claude`+`codex` into an `od-omega` image (`Dockerfile.omega-agents`) and mounts a resolved copy of the operator's auth (`~/.omega/open-design-agent-home`, chown 1001) via `docker-compose.omega.yml`. Result: Open Design's agent picker detects claude/codex and runs on the operator's subscription. Opt out with `OMEGA_SKIP_OD_LOCALCLI=1` (then use the UI's BYOK). `omega-design agents` shows what's detected.
