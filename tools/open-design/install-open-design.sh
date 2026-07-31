@@ -117,6 +117,21 @@ if [[ -f "$(dirname "$0")/../../scripts/omega-design" ]]; then
     ln -sf "$OMEGA_DIR/bin/omega-design" "${INSTALL_DIR:-$HOME/.local/bin}/omega-design" 2>/dev/null || true
 fi
 
+# 6b) the /opendesign slash command (Claude): run + link on Telegram.
+CMD_DST="$HOME/.claude/commands"; mkdir -p "$CMD_DST"
+cat > "$CMD_DST/opendesign.md" <<'MD'
+# /opendesign
+
+Bring up Open Design and give the operator its link.
+Run in order, then report: `omega-design up`, `omega-design serve`,
+`omega-design telegram` (pushes the link to Telegram), `omega-design open`.
+Then tell the operator the URL (`omega-design url`), the SSH tunnel if there is
+no Tailscale (`omega-design ssh`), and that projects are under "Recent projects"
+or `omega-design import <project>`.
+MD
+sed 's/^# \/opendesign/# \/omg-opendesign/' "$CMD_DST/opendesign.md" > "$CMD_DST/omg-opendesign.md"
+ok "/opendesign command installed"
+
 # 7) verify
 i=0; until curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health" || [ $i -ge 30 ]; do sleep 2; i=$((i+1)); done
 if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/api/health"; then
