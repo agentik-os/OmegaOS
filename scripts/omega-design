@@ -119,6 +119,27 @@ Refonte : Recent projects (bas de la Home) ou <code>omega-design import &lt;proj
       printf "$msg" | xargs -0 "$OMEGA_DIR/bin/omega-alert-send.sh" >/dev/null 2>&1 && echo "  sent to Telegram: $URL" || echo "  telegram send failed"
     else echo "  omega-alert-send.sh not found"; fi
     ;;
+  settings) # the full settings block (also written to ~/.omega/open-design.info)
+    st=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/health" 2>/dev/null)
+    cmcp=$(claude mcp list 2>/dev/null | grep -i open-design | grep -o "Connected\|Failed" || echo "not set")
+    xmcp=$(grep -q "mcp_servers.open-design" "$HOME/.codex/config.toml" 2>/dev/null && echo "yes" || echo "no")
+    ag=$(omega-design agents 2>/dev/null | sed 's/detected local CLIs: //')
+    cat <<TXT
+Open Design — settings
+  Status            : $([ "$st" = 200 ] && echo "running (healthy)" || echo "stopped")
+  View link         : $URL
+$([ -n "$SSH_HINT" ] && echo "  SSH tunnel        : $SSH_HINT")
+  API (tools)       : ${BASE}/v1  (loopback)
+  Connected agents  : ${ag:-none}   (subscription: claude=Anthropic, codex=OpenAI)
+  Claude drives it  : MCP $cmcp
+  Codex drives it   : MCP config $xmcp
+  API token         : ~/.omega/secrets/open-design.env
+  Projects mounted  : ${OMEGA_PROJECTS_ROOT:-$HOME/Station} (read-write) — see: omega-design projects
+  Redesign a project: "Recent projects" (Home) or  omega-design import <project>
+  Commands          : omega-design status|url|ssh|open|telegram|agents|projects|import|import-all|up|serve
+  Reproducible      : omega update re-runs the installer (Phase 6.916) if installed — keeps all of the above.
+TXT
+    ;;
   open|info) # the operator-facing quick card
     st=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/health" 2>/dev/null)
     cat <<TXT
