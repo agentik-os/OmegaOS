@@ -97,6 +97,31 @@ set -sa terminal-features ",*:RGB"
 # dependency so wheel-scroll → copy-mode scrollback works everywhere.
 set -sa terminal-features ",*:mouse"
 
+# Alternate-scroll fallback — trackpad/wheel inside the FULLSCREEN views of the
+# agent CLIs (Codex's Ctrl+T transcript, `less`, `git log`, any altscreen TUI).
+#
+# The rmux default binding is
+#   WheelUpPane { if '#{||:#{alternate_on},#{pane_in_mode},#{mouse_any_flag}}' { send -M } { copy-mode -e } }
+# so an app on the ALTERNATE SCREEN takes the `send -M` branch — and `send -M`
+# encodes nothing when the app never requested mouse reporting
+# (input_keys/mouse.rs: `pane_mode & ALL_MOUSE_MODES == 0` → None). The wheel
+# bytes are then dropped on the floor: scroll is DEAD, not merely inert.
+# Measured (2026-07-31, rmux 0.3.1):
+#   claude (altscreen renderer)  → alt=1 mouse_any=1 sgr=1  → wheel forwarded, fine
+#   claude CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 → alt=0 mouse_any=0 → wheel = rmux scrollback
+#   codex 0.146 main view        → alt=0 mouse_any=0        → wheel = rmux scrollback
+#   codex 0.146 Ctrl+T transcript→ alt=1 mouse_any=0        → WHEEL DEAD (this fix)
+# Codex itself asks for DECSET 1007 (alternate scroll = "send me arrow keys for
+# the wheel"), which rmux does not implement (csi_helpers.rs has no 1007 arm),
+# so honoring it here at the binding layer is exactly what the app expects.
+#
+# Order of the three branches matters: app-requested mouse and copy-mode keep
+# their existing behavior untouched, ONLY the previously-dead altscreen case
+# gains the arrow-key translation (3 lines per notch, the xterm convention).
+# Quoted-string if-shell form, never the brace form (see the M-Up NOTE above).
+bind-key -n WheelUpPane   if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'if-shell -F "#{alternate_on}" "send-keys -N3 Up" "copy-mode -e"'
+bind-key -n WheelDownPane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'if-shell -F "#{alternate_on}" "send-keys -N3 Down"'
+
 # Focus events: let editors / Claude know when the pane gains or loses focus
 # (autosave, pause-on-blur, etc.).
 set -g focus-events on

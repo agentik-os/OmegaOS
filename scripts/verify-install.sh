@@ -51,6 +51,16 @@ else
   bad "rmux Alt+Up/Down scroll bindings missing from rmux.conf.omega"
 fi
 
+# 4b-bis. Alternate-scroll fallback: an altscreen TUI that never requests mouse
+#     reporting (Codex's Ctrl+T transcript, less, git log) gets NOTHING from
+#     `send -M`, so the wheel must be translated to arrow keys instead.
+if grep -qE "bind-key -n WheelUpPane +if-shell" config/rmux.conf.omega 2>/dev/null \
+   && grep -qE "bind-key -n WheelDownPane +if-shell" config/rmux.conf.omega 2>/dev/null; then
+  ok "rmux alternate-scroll fallback bound (wheel works in altscreen TUIs)"
+else
+  bad "rmux WheelUp/WheelDownPane alternate-scroll bindings missing from rmux.conf.omega"
+fi
+
 # 4c. Status-bar clock is localized via `omega clock` (not the rmux server's
 #     UTC strftime), so the bar shows the operator's wall time on a headless VPS.
 if grep -q "omega clock" config/rmux.conf.omega 2>/dev/null; then ok "rmux status clock localized via omega clock"; else bad "rmux status clock not wired to omega clock"; fi
