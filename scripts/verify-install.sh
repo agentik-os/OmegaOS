@@ -440,11 +440,21 @@ if [ -d docs ] && [ -f docs/ARCHITECTURE.md ] && grep -q "OMEGA_SRC/docs" instal
 # CLIs: `omega marketing capabilities/status/next` reads capabilities.toml, and
 # a fresh box has no checkout to fall back on. Credentials are deliberately NOT
 # part of the payload (keys stay in ~/.omega/secrets/integrations.env).
+# projects.tsv and AUDIT.md are operator-specific marketing data, gitignored on
+# purpose ("never ship to the public OmegaOS repo") — requiring them here made
+# the parity gate unpassable from a clean clone. install.sh copies them only
+# when present, so they are checked as OPTIONAL, never as shipped payload.
 mm_missing=""
-for f in capabilities.toml scaffold.sh projects.tsv README.md AUDIT.md growth/GROWTH-KIT.md growth/OUTLIER-ENGINE.md; do
+for f in capabilities.toml scaffold.sh README.md growth/GROWTH-KIT.md growth/OUTLIER-ENGINE.md; do
   [ -f "tools/marketing-machine/$f" ] || mm_missing="$mm_missing $f"
 done
 if [ -n "$mm_missing" ]; then bad "marketing-machine payload incomplete:$mm_missing"; else ok "marketing-machine payload complete (registry + scaffolder + growth kit)"; fi
+# The operator-private files must stay gitignored AND stay optional in install.sh.
+if grep -qF '/tools/marketing-machine/projects.tsv' .gitignore \
+  && grep -qF '/tools/marketing-machine/AUDIT.md' .gitignore \
+  && grep -q '\[\[ -f "\$MM_SRC/\$_mm_f" \]\] && cp -f' install.sh; then
+  ok "marketing-machine operator data gitignored + copied only when present"
+else bad "marketing-machine operator data (projects.tsv/AUDIT.md) not gitignored or copied unconditionally"; fi
 if grep -q 'MM_DST="\$OMEGA_DIR/marketing-machine"' install.sh && grep -q 'cp -f "\$MM_SRC/\$_mm_f"' install.sh; then
   ok "marketing-machine installed to ~/.omega by install.sh (checkout-independent)"
 else bad "marketing-machine payload not copied into ~/.omega by install.sh"; fi
