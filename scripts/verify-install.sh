@@ -71,6 +71,16 @@ else
   bad "rmux modified-wheel takeover bindings missing from rmux.conf.omega"
 fi
 
+# 4b-quater. Non-modal scroll: the wheel enters copy-mode with no key, and any
+#     typed key must cancel the mode AND still reach the pane, otherwise the
+#     first character of every sentence typed after a scroll is swallowed.
+CM_RESEND=$(grep -cE "^bind-key -T copy-mode .+ 'send-keys -X cancel ; send-keys " config/rmux.conf.omega 2>/dev/null || echo 0)
+if [[ "$CM_RESEND" -ge 70 ]] && grep -qF "bind-key -T copy-mode Any 'send-keys -X cancel'" config/rmux.conf.omega 2>/dev/null; then
+  ok "rmux non-modal scroll wired ($CM_RESEND keys cancel-and-deliver + Any fallback)"
+else
+  bad "rmux non-modal scroll bindings missing/incomplete in rmux.conf.omega (got $CM_RESEND cancel-and-deliver keys)"
+fi
+
 # 4c. Status-bar clock is localized via `omega clock` (not the rmux server's
 #     UTC strftime), so the bar shows the operator's wall time on a headless VPS.
 if grep -q "omega clock" config/rmux.conf.omega 2>/dev/null; then ok "rmux status clock localized via omega clock"; else bad "rmux status clock not wired to omega clock"; fi
