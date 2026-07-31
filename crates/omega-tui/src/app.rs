@@ -1231,6 +1231,15 @@ pub struct App {
     /// history mode; reused on every subsequent frame so we don't re-capture
     /// the whole buffer at the idle cadence. Cleared when we return to the tail.
     pub preview_history_for: Option<String>,
+    /// Styled rows for the SCROLLED-BACK preview, parsed out of
+    /// `capture-pane -e`. Kept separate from `preview_styled` on purpose:
+    /// that one is the live tail (exactly one viewport, cursor-aware, drives
+    /// the menu-highlight heuristic and the no-scroll case), while this is a
+    /// whole 500k-line history that the plain-text scroll math owns. Sharing
+    /// one field would have made the history inherit the tail's assumptions.
+    /// Without it, scrolling up dropped every color and the mirror of a Claude
+    /// or Codex conversation turned grayscale.
+    pub preview_history_styled: Option<Vec<omega_core::session::PreviewLine>>,
     /// Mouse drag-selection over the preview mirror (tmux-style: capture stays
     /// ON, so wheel-scroll keeps working while you select). Screen-absolute
     /// cell where the left button went down / last drag position.
@@ -1379,6 +1388,7 @@ impl App {
             preview_follow_tail: true,
             preview_needs_history: false,
             preview_history_for: None,
+            preview_history_styled: None,
             preview_select_anchor: None,
             preview_select_head: None,
             preview_select_dragging: false,
@@ -2063,8 +2073,11 @@ impl App {
         // scroll into instead of an empty void.
         if self.preview_follow_tail {
             // Back on the tail: drop any cached scrollback so the next scroll-up
-            // re-captures fresh history (picking up lines added since).
+            // re-captures fresh history (picking up lines added since). The
+            // styled rows are part of that cache and must die with it, or the
+            // renderer would paint stale history over the live tail.
             self.preview_history_for = None;
+            self.preview_history_styled = None;
             // Tail path: capture STYLED rows + text + REAL cursor together.
             // Styled rows carry the `/` selector highlight + Claude's
             // colored UI; plain text is kept as a fallback + for scroll math.
@@ -2152,7 +2165,13 @@ impl App {
                 self.preview_fail_streak = 0;
                 match mgr.capture_pane_history(&name, 500_000).await {
                     Ok(content) => {
-                        self.preview_content = content;
+                        // The capture now carries its attributes (-e), so split
+                        // it once into styled rows for the renderer and stripped
+                        // text for everything downstream that must never see an
+                        // escape byte: the scroll math, and the drag-select copy.
+                        let (rows, plain) = omega_core::session::styled_rows_from_ansi(&content);
+                        self.preview_content = plain;
+                        self.preview_history_styled = Some(rows);
                         self.preview_history_for = Some(name.clone());
                         self.preview_fail_streak = 0;
                     }
@@ -2169,6 +2188,7 @@ impl App {
                             self.preview_content = String::from("(session has no pane content)");
                         }
                         self.preview_history_for = None;
+                        self.preview_history_styled = None;
                     }
                 }
             }

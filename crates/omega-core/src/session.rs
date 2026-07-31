@@ -749,6 +749,13 @@ impl SessionManager {
     /// SLOW PATH: only used while the user is actively browsing history
     /// (`preview_follow_tail == false`); the live tail keeps the fast
     /// `capture_pane` snapshot path.
+    /// `-e` KEEPS THE COLORS. Without it rmux flattens every attribute and the
+    /// mirror turned grayscale the instant the user scrolled up — the live tail
+    /// goes through `capture_pane_styled` (real cells, real colors) while this
+    /// path returned plain text, so scrolling visibly drained the color out of
+    /// a Claude or Codex conversation. Callers that want plain text run the
+    /// result through [`styled_rows_from_ansi`], which returns both the styled
+    /// rows and the stripped text.
     pub async fn capture_pane_history(
         &self,
         session_name: &str,
@@ -758,6 +765,7 @@ impl SessionManager {
             .args([
                 "capture-pane",
                 "-p",
+                "-e",
                 "-t",
                 session_name,
                 "-S",
@@ -1006,6 +1014,201 @@ fn is_pane_stale(err: &rmux_sdk::RmuxError) -> bool {
         rmux_sdk::RmuxError::PaneNotFound { .. }
             | rmux_sdk::RmuxError::OwnedSessionLeaseLost { .. }
     )
+}
+
+/// Parse `capture-pane -e` output into styled rows PLUS the stripped plain
+/// text, in one pass.
+///
+/// The live preview builds its spans from real snapshot cells; the history
+/// preview only has the escaped text rmux prints, so it needs the attributes
+/// read back OUT of the stream. Both feed the same [`PreviewLine`] renderer, so
+/// scrolling up no longer drops to grayscale.
+///
+/// Deliberately narrow: it understands SGR (`CSI … m`) and SKIPS any other CSI
+/// (rmux only emits SGR here, but a stray sequence must not leak into the text)
+/// plus OSC strings up to their terminator. Unknown SGR parameters are ignored
+/// rather than guessed. The plain text is returned alongside because the
+/// selection/copy path must never see escape bytes.
+pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
+    let mut rows: Vec<PreviewLine> = Vec::new();
+    let mut plain = String::new();
+
+    for raw_line in input.split('\n') {
+        let mut line: PreviewLine = Vec::new();
+        let mut cur = String::new();
+        let (mut fg, mut bg) = (None, None);
+        let (mut bold, mut dim, mut italic, mut underline) = (false, false, false, false);
+
+        let flush = |cur: &mut String,
+                         line: &mut PreviewLine,
+                         fg: Option<PreviewColor>,
+                         bg: Option<PreviewColor>,
+                         bold: bool,
+                         dim: bool,
+                         italic: bool,
+                         underline: bool| {
+            if !cur.is_empty() {
+                line.push(PreviewSpan {
+                    text: std::mem::take(cur),
+                    fg,
+                    bg,
+                    bold,
+                    dim,
+                    italic,
+                    underline,
+                });
+            }
+        };
+
+        let mut chars = raw_line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '\u{1b}' {
+                cur.push(c);
+                plain.push(c);
+                continue;
+            }
+            match chars.peek() {
+                Some('[') => {
+                    chars.next();
+                    let mut params = String::new();
+                    let mut final_byte = None;
+                    for c in chars.by_ref() {
+                        if c.is_ascii_alphabetic() || c == '~' {
+                            final_byte = Some(c);
+                            break;
+                        }
+                        params.push(c);
+                    }
+                    if final_byte != Some('m') {
+                        continue; // non-SGR CSI: consumed, never rendered
+                    }
+                    flush(
+                        &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
+                    );
+                    let nums: Vec<i32> = params
+                        .split(';')
+                        .map(|p| p.trim().parse::<i32>().unwrap_or(0))
+                        .collect();
+                    let mut i = 0;
+                    while i < nums.len() {
+                        match nums[i] {
+                            0 => {
+                                fg = None;
+                                bg = None;
+                                bold = false;
+                                dim = false;
+                                italic = false;
+                                underline = false;
+                            }
+                            1 => bold = true,
+                            2 => dim = true,
+                            3 => italic = true,
+                            4 => underline = true,
+                            22 => {
+                                bold = false;
+                                dim = false;
+                            }
+                            23 => italic = false,
+                            24 => underline = false,
+                            30..=37 => fg = Some(PreviewColor::Indexed((nums[i] - 30) as u8)),
+                            39 => fg = None,
+                            40..=47 => bg = Some(PreviewColor::Indexed((nums[i] - 40) as u8)),
+                            49 => bg = None,
+                            90..=97 => fg = Some(PreviewColor::Indexed((nums[i] - 90 + 8) as u8)),
+                            100..=107 => {
+                                bg = Some(PreviewColor::Indexed((nums[i] - 100 + 8) as u8))
+                            }
+                            38 | 48 => {
+                                let target_is_fg = nums[i] == 38;
+                                let color = match nums.get(i + 1) {
+                                    Some(5) => {
+                                        let c = nums.get(i + 2).copied().unwrap_or(0);
+                                        i += 2;
+                                        Some(PreviewColor::Indexed(c.clamp(0, 255) as u8))
+                                    }
+                                    Some(2) => {
+                                        let r = nums.get(i + 2).copied().unwrap_or(0);
+                                        let g = nums.get(i + 3).copied().unwrap_or(0);
+                                        let b = nums.get(i + 4).copied().unwrap_or(0);
+                                        i += 4;
+                                        Some(PreviewColor::Rgb(
+                                            r.clamp(0, 255) as u8,
+                                            g.clamp(0, 255) as u8,
+                                            b.clamp(0, 255) as u8,
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+                                if target_is_fg {
+                                    fg = color;
+                                } else {
+                                    bg = color;
+                                }
+                            }
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                }
+                Some(']') => {
+                    // OSC: swallow to BEL or ST.
+                    chars.next();
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' {
+                            break;
+                        }
+                        if c == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ => {
+                    chars.next();
+                }
+            }
+        }
+        flush(
+            &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
+        );
+        rows.push(line);
+        plain.push('\n');
+    }
+    if plain.ends_with('\n') {
+        plain.pop();
+    }
+    (rows, plain)
+}
+
+#[cfg(test)]
+mod ansi_parse_tests {
+    use super::{styled_rows_from_ansi, PreviewColor};
+
+    #[test]
+    fn strips_escapes_from_plain_text_and_keeps_colors() {
+        let (rows, plain) =
+            styled_rows_from_ansi("\u{1b}[38;5;196mROUGE\u{1b}[39m ok\n\u{1b}[1;34mBLEU\u{1b}[0m");
+        assert_eq!(plain, "ROUGE ok\nBLEU");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0][0].text, "ROUGE");
+        assert!(matches!(rows[0][0].fg, Some(PreviewColor::Indexed(196))));
+        assert_eq!(rows[0][1].text, " ok");
+        assert!(rows[0][1].fg.is_none());
+        assert_eq!(rows[1][0].text, "BLEU");
+        assert!(rows[1][0].bold);
+        assert!(matches!(rows[1][0].fg, Some(PreviewColor::Indexed(4))));
+    }
+
+    #[test]
+    fn parses_truecolor_and_drops_non_sgr_sequences() {
+        let (rows, plain) =
+            styled_rows_from_ansi("\u{1b}[2K\u{1b}[38;2;10;20;30mRGB\u{1b}[m tail");
+        assert_eq!(plain, "RGB tail");
+        assert!(matches!(rows[0][0].fg, Some(PreviewColor::Rgb(10, 20, 30))));
+        assert!(rows[0][1].fg.is_none());
+    }
 }
 
 #[cfg(test)]

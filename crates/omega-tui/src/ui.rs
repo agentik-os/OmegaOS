@@ -1564,6 +1564,23 @@ pub(crate) fn draw_sessions_right(
                 }
             })
             .collect()
+    } else if let Some(history) = &app.preview_history_styled {
+        // Scrolled-back path: the deep capture now carries its attributes
+        // (capture-pane -e, parsed by styled_rows_from_ansi), so history keeps
+        // the colors of the Claude / Codex conversation instead of going
+        // grayscale the moment the wheel moves. Straight ANSI render only — the
+        // menu-highlight heuristic above is cursor-driven and the cursor only
+        // means something on the live tail.
+        history
+            .iter()
+            .map(|row| {
+                Line::from(
+                    row.iter()
+                        .map(|sp| Span::styled(sp.text.clone(), preview_span_style(sp)))
+                        .collect::<Vec<Span>>(),
+                )
+            })
+            .collect()
     } else {
         app.preview_content
             .lines()
