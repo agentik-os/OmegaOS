@@ -1774,6 +1774,31 @@ async fn run_tui_loop(
                             crossterm::terminal::EnterAlternateScreen
                         )?;
                         crossterm::terminal::enable_raw_mode()?;
+                        // Re-arm the input modes the ATTACHED CLIENT turned off
+                        // on its way out. rmux's client disables mouse reporting
+                        // and bracketed paste when it detaches (rmux-server
+                        // outer_terminal.rs disable_mouse_sequence: ?1000l ?1002l
+                        // ?1006l) — it is undoing ITS OWN setup, but the sequences
+                        // hit the shared terminal, so they also silently disarm
+                        // OURS. Init enabled both; without this they stay off for
+                        // the whole rest of the run, and the symptom is brutal:
+                        // after one single attach round-trip the wheel does
+                        // nothing in the menu, clicks do nothing, and a long
+                        // paste fragments into per-character keys. The Ctrl+R
+                        // restart path below already re-arms them for exactly
+                        // this reason; the attach path was the one that forgot.
+                        // Gated on app.mouse_capture so a deliberate Ctrl-T
+                        // "mouse OFF" (native terminal selection) is not undone.
+                        if app.mouse_capture {
+                            let _ = crossterm::execute!(
+                                terminal.backend_mut(),
+                                crossterm::event::EnableMouseCapture
+                            );
+                        }
+                        let _ = crossterm::execute!(
+                            terminal.backend_mut(),
+                            crossterm::event::EnableBracketedPaste
+                        );
                         // Fresh alt-screen kbd stack — re-probe + re-push,
                         // same guarded sequence as init (FIX-C ordering:
                         // after EnterAlternateScreen + raw mode).

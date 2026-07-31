@@ -4702,6 +4702,23 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         None
     });
 
+    // (3) Mouse capture OFF is the single most confusing state this TUI can be
+    // in: the wheel does nothing, clicks do nothing, and NOTHING on screen says
+    // why. Ctrl-T toggles it globally (handle_key checks it before anything
+    // else, so it fires even from chat focus) — and Ctrl-T is exactly the key
+    // Claude uses for its todo panel and Codex for its transcript, so an
+    // operator reaching for those silently disarms their own mouse and then
+    // reports "the scroll is completely broken". The toggle only ever printed a
+    // transient status line that the next refresh wiped. Make the state
+    // PERSISTENT on the bar and name the way out. Not memoized: it must flip
+    // the instant Ctrl-T is pressed, and it outranks the two warnings above
+    // because it is the one the operator is actively fighting.
+    let env_warn = if app.mouse_capture {
+        env_warn
+    } else {
+        Some("🖱 mouse OFF — Ctrl-T to re-enable wheel + click")
+    };
+
     // Left side: Ω badge (no bg, bold) + selected session + status message
     let left = Paragraph::new(Line::from(vec![
         Span::styled(
