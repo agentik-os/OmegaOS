@@ -107,6 +107,18 @@ except Exception: pass" 2>/dev/null)"
     ROOT="${OMEGA_PROJECTS_ROOT:-$HOME/Station}"
     echo "Projects under $ROOT (use the full path as the working directory in Open Design):"
     find "$ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed "s#/.git##" | sort | sed 's/^/  /' | head -60 ;;
+  telegram|tg) # push the view link + how-to to the operator on Telegram
+    st=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/health" 2>/dev/null)
+    ag=$(omega-design agents 2>/dev/null | sed 's/detected local CLIs: //')
+    msg="\xF0\x9F\x8E\xA8 <b>Open Design</b> $([ "$st" = 200 ] && echo live || echo '(not running)')
+Voir / construire : $URL
+$([ -n "$SSH_HINT" ] && echo "Sans Tailscale : <code>$SSH_HINT</code>")
+Agents : $ag
+Refonte : Recent projects (bas de la Home) ou <code>omega-design import &lt;projet&gt;</code>"
+    if [ -x "$OMEGA_DIR/bin/omega-alert-send.sh" ]; then
+      printf "$msg" | xargs -0 "$OMEGA_DIR/bin/omega-alert-send.sh" >/dev/null 2>&1 && echo "  sent to Telegram: $URL" || echo "  telegram send failed"
+    else echo "  omega-alert-send.sh not found"; fi
+    ;;
   open|info) # the operator-facing quick card
     st=$(curl -sf -o /dev/null -w "%{http_code}" "${BASE}/api/health" 2>/dev/null)
     cat <<TXT
