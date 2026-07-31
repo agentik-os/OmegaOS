@@ -61,6 +61,16 @@ else
   bad "rmux WheelUp/WheelDownPane alternate-scroll bindings missing from rmux.conf.omega"
 fi
 
+# 4b-ter. Modified wheel takes over from applications that capture mouse
+#     reporting; both modifiers are required because terminals may consume
+#     Shift+wheel before rmux ever receives it.
+if grep -qF "bind-key -n S-WheelUpPane copy-mode -e" config/rmux.conf.omega 2>/dev/null \
+   && grep -qF "bind-key -n M-WheelUpPane copy-mode -e" config/rmux.conf.omega 2>/dev/null; then
+  ok "rmux modified-wheel takeover bindings present (Shift and Alt)"
+else
+  bad "rmux modified-wheel takeover bindings missing from rmux.conf.omega"
+fi
+
 # 4c. Status-bar clock is localized via `omega clock` (not the rmux server's
 #     UTC strftime), so the bar shows the operator's wall time on a headless VPS.
 if grep -q "omega clock" config/rmux.conf.omega 2>/dev/null; then ok "rmux status clock localized via omega clock"; else bad "rmux status clock not wired to omega clock"; fi

@@ -122,6 +122,24 @@ set -sa terminal-features ",*:mouse"
 bind-key -n WheelUpPane   if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'if-shell -F "#{alternate_on}" "send-keys -N3 Up" "copy-mode -e"'
 bind-key -n WheelDownPane if-shell -F '#{||:#{pane_in_mode},#{mouse_any_flag}}' 'send-keys -M' 'if-shell -F "#{alternate_on}" "send-keys -N3 Down"'
 
+# Dual-access wheel bindings for applications that capture mouse reporting.
+# Claude's fullscreen renderer requests 1000+1006, so rmux no longer sees the
+# wheel as a root binding: there is no copy-mode and no rmux drag-select while
+# the application owns the mouse stream. A modified wheel gives rmux the
+# explicit takeover path without changing the naked wheel's application path.
+#
+# The alternate screen suspends the rmux grid history. Therefore copy-mode here
+# is a takeover of the current alternate view, not a way to reveal the same
+# conversation in rmux scrollback: it shows only the alternate-screen content.
+# Bind both Shift and Alt because many terminal emulators intercept
+# Shift+wheel for their own scrollback and never emit it to rmux.
+bind-key -n S-WheelUpPane copy-mode -e
+bind-key -n M-WheelUpPane copy-mode -e
+# No modified down binding is needed. Once copy-mode is active, its copy-mode
+# table already handles WheelUpPane and WheelDownPane via scroll-up/scroll-down.
+# Also, WheelDownPane doing nothing in a normal shell pane is not a regression:
+# rmux 0.3.1 defines no root-table WheelDownPane default binding at all.
+
 # Focus events: let editors / Claude know when the pane gains or loses focus
 # (autosave, pause-on-blur, etc.).
 set -g focus-events on
