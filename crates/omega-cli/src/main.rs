@@ -3040,12 +3040,45 @@ async fn cmd_install_bindings() -> Result<()> {
         }
     }
 
-    // Always write the persistent config (overwrite to keep in sync with this binary)
+    // The persistent config: PREFER THE SHIPPED FILE, and never clobber a
+    // richer one.
+    //
+    // This used to unconditionally overwrite ~/.omega/rmux.conf.omega with the
+    // small inline stub below, "to keep in sync with this binary". That was
+    // destructive, and on the documented path: install.sh copies the real
+    // config/rmux.conf.omega (mouse on, forced terminal-features, 500k history,
+    // the Omega chrome, the alternate-scroll fallback and the non-modal scroll
+    // key table) and then prints "run 'omega install-bindings' to activate" —
+    // so the activation step deleted everything it was supposed to activate.
+    // A fresh user ended up with three popup bindings and no working mouse.
+    //
+    // Order now: the repo checkout's config wins; otherwise an existing file is
+    // left untouched; the stub is only a last resort for a machine with neither.
+    // Then source the result so "activate" really activates it.
     let omega_dir = dirs::home_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
         .join(".omega");
     std::fs::create_dir_all(&omega_dir)?;
     let conf_path = omega_dir.join("rmux.conf.omega");
+    let shipped = resolve_omega_src().map(|src| src.join("config/rmux.conf.omega"));
+    let mut wrote_shipped = false;
+    if let Some(shipped) = shipped.filter(|p| p.is_file()) {
+        // Same file? Nothing to do — do not rewrite it just to touch the mtime.
+        let same = std::fs::read(&shipped).ok() == std::fs::read(&conf_path).ok();
+        if !same {
+            std::fs::copy(&shipped, &conf_path)?;
+            println!("[+] Shipped rmux config installed → {}", conf_path.display());
+        } else {
+            println!("[+] rmux config already current → {}", conf_path.display());
+        }
+        wrote_shipped = true;
+    } else if conf_path.is_file() {
+        println!(
+            "[i] Keeping existing {} (repo checkout not found — refusing to overwrite it)",
+            conf_path.display()
+        );
+        wrote_shipped = true;
+    }
     let content = r#"# OmegaOS rmux bindings — open the session menu from any rmux session.
 #
 # Option+Z and Option+/ were REMOVED — they spawned a nested popup that
@@ -3062,8 +3095,19 @@ bind-key -n C-Space display-popup -E -w 100% -h 100% "omega menu"
 bind-key o display-popup -E -w 100% -h 100% "omega menu"
 bind-key z display-popup -E -w 100% -h 100% "omega menu"
 "#;
-    std::fs::write(&conf_path, content)?;
-    println!("[+] Persistent config written to {}", conf_path.display());
+    if !wrote_shipped {
+        std::fs::write(&conf_path, content)?;
+        println!(
+            "[+] Minimal fallback config written to {} (no repo checkout found)",
+            conf_path.display()
+        );
+    }
+    // Apply it live — the whole point of "activate". Best-effort: a machine with
+    // no running rmux server just gets it on the next session.
+    let _ = std::process::Command::new("rmux")
+        .arg("source-file")
+        .arg(&conf_path)
+        .output();
 
     // Also patch the user's ~/.rmux.conf to source this file if not already done.
     if let Some(home) = dirs::home_dir() {
