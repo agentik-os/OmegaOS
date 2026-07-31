@@ -86,19 +86,52 @@ def _rows_hash(rows):
                          separators=(",", ":")).encode()
     return hashlib.sha256(payload).hexdigest()
 
+OPENAI_URL = "https://api.openai.com/v1/embeddings"
+
+def _omniroute_embed_url():
+    """OmniRoute /v1/embeddings if the gateway is up AND actually serves an
+    embedding provider; else None. Prefer the OmegaOS API gateway so embedding
+    calls get its routing + fallback; degrade cleanly to OpenAI-direct otherwise.
+    Override with OMEGA_EMBED_BASE_URL (e.g. http://127.0.0.1:20128/v1)."""
+    base = os.environ.get("OMEGA_EMBED_BASE_URL")
+    if base:
+        return base.rstrip("/") + "/embeddings"
+    port = os.environ.get("OMNIROUTE_PORT", "20128")
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=3) as r:
+            d = json.load(r); models = d.get("data", d) if isinstance(d, dict) else d
+            if any("embed" in (m.get("id") or "").lower() for m in models):
+                return f"http://127.0.0.1:{port}/v1/embeddings"
+    except Exception:
+        pass
+    return None
+
+def _embed_batch(url, chunk, key):
+    body = json.dumps({"model": MODEL, "input": chunk}).encode()
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(url, data=body, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.load(resp)
+    return [d["embedding"] for d in sorted(data["data"], key=lambda x: x["index"])]
+
 def _embed(texts, key):
-    """Batch-embed via OpenAI REST (stdlib only)."""
+    """Batch-embed. Route via OmniRoute (/v1) when it can serve embeddings, else
+    OpenAI-direct; on an OmniRoute error, fall back to OpenAI-direct per batch."""
+    primary = _omniroute_embed_url()
     out = []
     B = 256
     for i in range(0, len(texts), B):
         chunk = texts[i:i+B]
-        body = json.dumps({"model": MODEL, "input": chunk}).encode()
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/embeddings", data=body,
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.load(resp)
-        out.extend(d["embedding"] for d in sorted(data["data"], key=lambda x: x["index"]))
+        if primary:
+            try:
+                out.extend(_embed_batch(primary, chunk, key)); continue
+            except Exception as e:
+                print(f"[rag] OmniRoute embeddings failed ({str(e)[:60]}); OpenAI-direct fallback",
+                      file=sys.stderr)
+                primary = None  # stop retrying the gateway this run
+        out.extend(_embed_batch(OPENAI_URL, chunk, key))
     return out
 
 def build():
