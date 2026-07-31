@@ -1292,10 +1292,21 @@ function extractForceNew(text: string): { text: string; forceNew: boolean } {
 // How `omega dispatch` delivered the mission. The CLI prints exactly ONE such
 // line. ABSENT = an older binary that only ever spawns → fall back to "spawned",
 // i.e. the historical behaviour, so the bridge keeps working against an omega
-// that has not been rebuilt yet. Any unknown future value is treated as a spawn
-// too: only an explicit `followup` changes what the bridge does.
+// that has not been rebuilt yet. Any unknown value is treated as a spawn too,
+// which stays the right default for a tag this bridge has never heard of.
 const DELIVERY_RE = /^[ \t]*DISPATCH_DELIVERY=([A-Za-z_]+)[ \t]*\r?$/m;
 const dispatchDelivery = (out: string) => (out.match(DELIVERY_RE)?.[1] || "spawned").toLowerCase();
+// …with ONE family carved out of that fallback: every tag whose name starts with
+// `followup` means the text went into an oracle that was ALREADY LIVE and NO new
+// session was created. `followup_unconfirmed` is the second member (the text was
+// typed into the live pane, the acceptance could not be PROVEN), and matching the
+// prefix rather than the exact word absorbs the next one too — which matters,
+// because the failure mode of guessing wrong here is not cosmetic: the spawn path
+// resets the live oracle's progress file and stacks a second watching[] entry.
+// Mirrors DispatchDelivery::went_to_live_oracle() on the Rust side
+// (crates/omega-core/src/dispatch.rs:270). `spawned_pane_not_ready` does NOT
+// start with `followup` and stays a spawn, which is exactly what it is.
+const isFollowupDelivery = (tag: string) => tag.startsWith("followup");
 // Run `omega dispatch`, forcing a new oracle when asked. An omega OLDER than the
 // followup routing has no `--new` flag at all and clap REJECTS the whole command
 // ("error: unexpected argument '--new' found" — verified against the installed
@@ -1325,7 +1336,8 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
   //   · a second watching[] entry for one oracle leaves a card frozen forever,
   //     since pollReports resolves exactly ONE entry per done.json.
   // Same de-dup key as rehydrateWatching() (prefix-insensitive, R-CITE: :1237).
-  if (dispatchDelivery(out) === "followup") {
+  const delivery = dispatchDelivery(out);
+  if (isFollowupDelivery(delivery)) {
     if (!watching.some(w => normOracle(w.oracle) === normOracle(oracle))) {
       // Not tracked in THIS process (bot restarted, or another chat launched it).
       // Adopt the live card if the progress file already carries one; only create
@@ -1344,8 +1356,17 @@ async function dispatchToOracle(project: string, mission: string, chat: number, 
     }
     // Say it plainly: on the operator's main surface a followup was until now
     // indistinguishable from a fresh oracle. And name the escape hatch.
-    return card(`${project.toUpperCase()} · SUIVI`,
+    //
+    // UNCONFIRMED is the same routing with one honest caveat: the text WAS typed
+    // into the live session, the acceptance was not PROVEN. Silence there would
+    // be the worse lie of the two, so it costs the operator one line telling him
+    // what to check, and never a second oracle.
+    const unconfirmed = delivery === "followup_unconfirmed";
+    return card(`${project.toUpperCase()} · SUIVI${unconfirmed ? " (non confirmé)" : ""}`,
       ` ↩ Ton message a rejoint la <b>mission en cours</b> de <code>${esc(oracle)}</code>.\n` +
+      (unconfirmed
+        ? ` ⚠ Envoyé dans la session vivante, mais <b>sans accusé de réception prouvé</b> : vérifie la session si rien ne bouge.\n`
+        : "") +
       ` Aucun nouvel oracle : la carte de progression déjà postée reste la bonne.\n\n` +
       ` Mission <b>séparée</b> ? Commence par <code>new:</code> →\n <code>new: ${esc(forced.text.slice(0, 60))}</code>`);
   }
