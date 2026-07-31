@@ -169,6 +169,25 @@ except Exception: pass" 2>/dev/null)"
     done < <(find "$PROJECTS_ROOT" -maxdepth 3 -name .git -type d 2>/dev/null | sed 's#/.git##' | sort -u)
     ok "Imported $N new OmegaOS project(s) into Open Design (existing skipped)"
     info "Refonte: open $VIEW → pick a project. Composio/connector keys: omega-design composio <KEY> (server-side; the tailnet UI is loopback-only by design)."
+
+    # 7c) SETTINGS: persist all the info (link + connections + commands) where the
+    # operator can always find it, and surface it in `omega guide`.
+    "$OMEGA_DIR/bin/omega-design" settings > "$OMEGA_DIR/open-design.info" 2>/dev/null || true
+    GS="$OMEGA_DIR/GETTING-STARTED.md"
+    if [[ -f "$GS" ]] && ! grep -q "## Open Design" "$GS" 2>/dev/null; then
+        {
+          echo ""
+          echo "## Open Design (design engine)"
+          echo ""
+          echo "- View: **$VIEW** (tailnet; SSH tunnel if no Tailscale: \`omega-design ssh\`)"
+          echo "- Runs on your subscription (claude + codex, Local CLI); drives from chat via MCP (\`/opendesign\`)."
+          echo "- Full settings: \`omega-design settings\` (also saved at \`~/.omega/open-design.info\`)."
+          echo "- Redesign a project: \"Recent projects\" on the Home, or \`omega-design import <project>\`."
+        } >> "$GS"
+        ok "Open Design added to GETTING-STARTED.md (omega guide) + ~/.omega/open-design.info"
+    else
+        ok "Open Design settings written → ~/.omega/open-design.info"
+    fi
 else
     warn "Open Design did not report healthy yet (check: docker logs open-design)"
 fi
