@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════════════
+# omega-omniroute — drive OmniRoute (diegosouzapw/OmniRoute), the OmegaOS BYOK/
+# API gateway. ONE OpenAI-compatible /v1 endpoint fronting 290+ providers with
+# smart routing, auto-fallback, token compression, and 40+ free providers.
+#
+# USE IT FOR API-BASED LLM CALLS ONLY (embeddings, BYOK tools, background/cheap
+# fan-out). NEVER route the subscription CLIs (claude/codex) through it — that
+# converts your subscription into per-token API cost.
+#
+#   omega-omniroute status            container + serve + endpoint
+#   omega-omniroute url               tailnet dashboard URL
+#   omega-omniroute v1                the /v1 base URL for tools (OPENAI_BASE_URL)
+#   omega-omniroute models            list routed models
+#   omega-omniroute up | down | serve lifecycle
+#   omega-omniroute api <path> [curl] raw call, e.g. omega-omniroute api /v1/models
+# ═══════════════════════════════════════════════════════════════════════════
+set -uo pipefail
+OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
+PORT="${OMNIROUTE_PORT:-20128}"
+BASE="http://127.0.0.1:${PORT}"
+TS_HOST="$(tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(json.load(sys.stdin)['Self']['DNSName'].rstrip('.'))" 2>/dev/null || true)"
+if [ -n "$TS_HOST" ]; then URL="https://${TS_HOST}:${PORT}"; else URL="http://localhost:${PORT}"; fi
+
+case "${1:-status}" in
+  url) echo "$URL" ;;
+  v1)  echo "${BASE}/v1" ;;
+  status)
+    echo "OmniRoute (API gateway)"
+    docker ps --filter name=omniroute --format '  container: {{.Status}}  {{.Ports}}' 2>/dev/null || echo "  container: (docker unavailable)"
+    tailscale serve status 2>/dev/null | grep -q ":${PORT}" && echo "  dashboard: $URL (tailnet-only)" || echo "  dashboard: NOT served (omega-omniroute serve)"
+    echo "  /v1 for tools: ${BASE}/v1   (set OPENAI_BASE_URL to this for API-based calls)"
+    curl -sf -o /dev/null -w "  models endpoint: HTTP %{http_code}\n" "${BASE}/v1/models" 2>/dev/null || echo "  models: unreachable"
+    ;;
+  up)      docker start omniroute 2>/dev/null || echo "  not created — run tools/omniroute/install-omniroute.sh" ;;
+  down)    docker stop omniroute 2>/dev/null ;;
+  serve)   tailscale serve --bg --https=${PORT} "${BASE}" && echo "served at $URL" ;;
+  models)  curl -s "${BASE}/v1/models" 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);m=d.get('data',d) if isinstance(d,dict) else d;print(f'{len(m)} models'); [print(' -',x.get('id')) for x in m[:40]]" 2>/dev/null ;;
+  api)  shift; p="${1:-/v1/models}"; shift 2>/dev/null || true; curl -s "$@" "${BASE}${p}" ;;
+  *) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -18 ;;
+esac
