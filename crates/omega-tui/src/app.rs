@@ -2067,6 +2067,9 @@ impl App {
                 // failure counter so a dead session's streak can't poison the
                 // next session that becomes selected.
                 self.preview_content = String::new();
+                self.preview_styled = None;
+                self.preview_cursor = None;
+                self.preview_revision = 0;
                 self.preview_fail_streak = 0;
                 self.preview_session = None;
                 self.preview_history_for = None;
@@ -3333,6 +3336,7 @@ mod preview_cache_tests {
     async fn paused_history_empty_gap_invalidates_owner_before_same_session_reappears() {
         const MISSING_SESSION_A: &str = "preview-history-missing-empty-gap-a-0ff3aa1";
         const STALE_PLAIN_A: &str = "stale plain history across empty gap";
+        const STALE_LIVE_STYLED_A: &str = "stale live styled preview across empty gap";
         const STALE_STYLED_A: &str = "stale styled history across empty gap";
 
         let entry = SessionEntry {
@@ -3348,6 +3352,14 @@ mod preview_cache_tests {
         app.current_session = None;
         app.preview_follow_tail = false;
         app.preview_content = STALE_PLAIN_A.to_string();
+        app.preview_styled = Some(
+            omega_core::session::styled_rows_from_ansi(&format!(
+                "\x1b[31m{STALE_LIVE_STYLED_A}\x1b[0m"
+            ))
+            .0,
+        );
+        app.preview_cursor = Some((4, 7, true));
+        app.preview_revision = 42;
         app.preview_session = Some(MISSING_SESSION_A.to_string());
         app.preview_history_for = Some(MISSING_SESSION_A.to_string());
         app.preview_history_styled = Some(
@@ -3364,14 +3376,17 @@ mod preview_cache_tests {
         assert_eq!(
             (
                 app.preview_content.is_empty(),
+                app.preview_styled.is_none(),
+                app.preview_cursor.is_none(),
+                app.preview_revision,
                 app.preview_session.is_none(),
                 app.preview_history_for.is_none(),
                 app.preview_history_styled.is_none(),
                 app.preview_fail_streak,
                 empty_frame.contains("(select a session to preview)"),
             ),
-            (true, true, true, true, 0, true),
-            "an empty list must invalidate every paused-preview cache owner: {empty_frame:?}"
+            (true, true, true, 0, true, true, true, 0, true),
+            "an empty list must invalidate every preview cache owner: {empty_frame:?}"
         );
 
         app.sessions.push(entry);

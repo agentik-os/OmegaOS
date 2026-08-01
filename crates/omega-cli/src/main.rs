@@ -1339,6 +1339,19 @@ async fn auto_focus_chat(app: &mut omega_tui::app::App, session_name: &str) {
     let _ = app.refresh_preview().await;
 }
 
+fn should_refresh_preview_after_event(
+    selected_before: usize,
+    selected_after: usize,
+    tab_before: omega_tui::app::Tab,
+    tab_after: omega_tui::app::Tab,
+    selected_session_before: Option<&str>,
+    selected_session_after: Option<&str>,
+) -> bool {
+    selected_after != selected_before
+        || tab_after != tab_before
+        || selected_session_after != selected_session_before
+}
+
 async fn run_tui_loop(
     terminal: &mut ratatui::Terminal<ratatui::prelude::CrosstermBackend<std::io::Stdout>>,
     app: &mut omega_tui::app::App,
@@ -1612,6 +1625,9 @@ async fn run_tui_loop(
                 saw_resize = true;
             }
             let selected_before = app.selected;
+            let selected_session_before = app
+                .selected_session()
+                .map(|entry| entry.session.name.clone());
             let tab_before = app.tab;
             let detail_focused_before = app.detail_focused;
             // F-7: a status notice lives until the NEXT keypress — or mouse
@@ -2795,7 +2811,15 @@ echo; echo '─── dry-run done ───'; exec bash",
                 });
             }
 
-            if app.selected != selected_before || app.tab != tab_before {
+            if should_refresh_preview_after_event(
+                selected_before,
+                app.selected,
+                tab_before,
+                app.tab,
+                selected_session_before.as_deref(),
+                app.selected_session()
+                    .map(|entry| entry.session.name.as_str()),
+            ) {
                 let _ = app.refresh_preview().await;
             }
 
@@ -9174,6 +9198,18 @@ async fn cmd_init() -> Result<()> {
 #[cfg(test)]
 mod phase1_tests {
     use super::*;
+
+    #[test]
+    fn same_index_session_identity_change_refreshes_preview() {
+        assert!(should_refresh_preview_after_event(
+            0,
+            0,
+            omega_tui::app::Tab::Sessions,
+            omega_tui::app::Tab::Sessions,
+            Some("post-refresh-session-a-e941357"),
+            Some("post-refresh-session-b-e941357"),
+        ));
+    }
 
     #[test]
     fn codex_login_status_json_shape_is_stable() {
