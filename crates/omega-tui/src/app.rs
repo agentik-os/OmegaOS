@@ -1318,19 +1318,46 @@ pub struct App {
     pub reauth_status: ReauthStatus,
 }
 
+fn resolve_current_session_with<E, D>(mut env_var: E, mut display_session: D) -> Option<String>
+where
+    E: FnMut(&str) -> Option<String>,
+    D: FnMut(&str) -> Option<String>,
+{
+    fn nonempty(value: String) -> Option<String> {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_string())
+    }
+
+    env_var("RMUX_PANE")
+        .and_then(nonempty)
+        .and_then(|pane| display_session(&pane))
+        .and_then(nonempty)
+        .or_else(|| env_var("RMUX_SESSION").and_then(nonempty))
+        // Legacy fallback for users coming from a tmux setup
+        .or_else(|| env_var("TMUX_SESSION").and_then(nonempty))
+}
+
 impl App {
     pub fn new(config: OmegaConfig) -> Self {
-        let current_session = std::env::var("RMUX")
-            .ok()
-            .and_then(|rmux_var| {
-                rmux_var
-                    .split(',')
-                    .next()
-                    .map(|s| s.to_string())
-            })
-            .or_else(|| std::env::var("RMUX_SESSION").ok())
-            // Legacy fallback for users coming from a tmux setup
-            .or_else(|| std::env::var("TMUX_SESSION").ok());
+        let current_session = resolve_current_session_with(
+            |name| std::env::var(name).ok(),
+            |pane| {
+                let output = std::process::Command::new("rmux")
+                    .args([
+                        "display-message",
+                        "-p",
+                        "-t",
+                        pane,
+                        "#{session_name}",
+                    ])
+                    .output()
+                    .ok()?;
+                if !output.status.success() {
+                    return None;
+                }
+                String::from_utf8(output.stdout).ok()
+            },
+        );
 
         Self {
             tab: Tab::Sessions,
@@ -3026,8 +3053,62 @@ mod reanchor_tests {
 #[cfg(test)]
 mod preview_cache_tests {
     use super::*;
+    use crate::ui::draw_sessions_right;
     use omega_core::config::OmegaConfig;
     use omega_core::session::{OmegaSession, PreviewSpan};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn current_session_resolution_prefers_rmux_pane_name_over_rmux_tuple() {
+        let mut queried = Vec::new();
+        let resolved = resolve_current_session_with(
+            |name| {
+                queried.push(name.to_string());
+                match name {
+                    "RMUX" => Some("/tmp/rmux-1004/default,4242,%7".to_string()),
+                    "RMUX_PANE" => Some("%7".to_string()),
+                    "RMUX_SESSION" => Some("rmux-session-fallback".to_string()),
+                    "TMUX_SESSION" => Some("tmux-session-fallback".to_string()),
+                    _ => None,
+                }
+            },
+            |pane| {
+                assert_eq!(pane, "%7");
+                Some("omegaos-worker-preview-session-identity".to_string())
+            },
+        );
+
+        assert_eq!(
+            resolved.as_deref(),
+            Some("omegaos-worker-preview-session-identity")
+        );
+        assert!(
+            !queried.iter().any(|name| name == "RMUX"),
+            "the socket,pid,pane tuple must never participate in identity resolution"
+        );
+
+        let rmux_fallback = resolve_current_session_with(
+            |name| match name {
+                "RMUX_PANE" => Some("  ".to_string()),
+                "RMUX_SESSION" => Some(" rmux-session-fallback ".to_string()),
+                "TMUX_SESSION" => Some("tmux-session-fallback".to_string()),
+                _ => None,
+            },
+            |_| panic!("an empty pane identifier must not be resolved"),
+        );
+        assert_eq!(rmux_fallback.as_deref(), Some("rmux-session-fallback"));
+
+        let legacy_fallback = resolve_current_session_with(
+            |name| match name {
+                "RMUX_PANE" => Some("%9".to_string()),
+                "RMUX_SESSION" => Some("  ".to_string()),
+                "TMUX_SESSION" => Some(" tmux-session-fallback ".to_string()),
+                _ => None,
+            },
+            |_| Some("\n".to_string()),
+        );
+        assert_eq!(legacy_fallback.as_deref(), Some("tmux-session-fallback"));
+    }
 
     #[tokio::test]
     async fn refresh_preview_clears_styled_history_before_static_current_session() {
@@ -3061,6 +3142,31 @@ mod preview_cache_tests {
         assert!(
             app.preview_history_styled.is_none(),
             "the static message must win over another session's styled history"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(110, 8)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_sessions_right(frame, &mut app, area, false);
+            })
+            .expect("render static preview");
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains(
+                "(this is the session running OmegaOS — preview disabled to prevent recursion)"
+            ),
+            "the rendered panel must contain the static self-preview message"
+        );
+        assert!(
+            !rendered.contains("stale session-a task card"),
+            "the rendered panel must not contain the prior session's styled task card"
         );
     }
 
