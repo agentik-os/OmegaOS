@@ -2044,6 +2044,8 @@ impl App {
                 // selected session's frozen mirror under this session's title.
                 self.preview_styled = None;
                 self.preview_cursor = None;
+                self.preview_history_for = None;
+                self.preview_history_styled = None;
                 return Ok(());
             }
         }
@@ -2062,6 +2064,8 @@ impl App {
                 .to_string();
             self.preview_styled = None;
             self.preview_cursor = None;
+            self.preview_history_for = None;
+            self.preview_history_styled = None;
             return Ok(());
         }
 
@@ -3012,5 +3016,47 @@ mod reanchor_tests {
         app.status_sticky_at = std::time::Instant::now()
             .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         assert!(!app.status_sticky_unexpired(), "an expired window must not shield");
+    }
+}
+
+#[cfg(test)]
+mod preview_cache_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use omega_core::session::{OmegaSession, PreviewSpan};
+
+    #[tokio::test]
+    async fn refresh_preview_clears_styled_history_before_static_current_session() {
+        let selected_name = "session-b";
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = vec![SessionEntry {
+            session: OmegaSession::classify(selected_name),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        }];
+        app.selected = 0;
+        app.current_session = Some(selected_name.to_string());
+        app.preview_history_for = Some("session-a".to_string());
+        let stale_history: Vec<Vec<PreviewSpan>> =
+            omega_core::session::styled_rows_from_ansi("\x1b[35mstale session-a task card\x1b[0m")
+                .0;
+        app.preview_history_styled = Some(stale_history);
+
+        app.refresh_preview().await.expect("static preview refresh");
+
+        assert_eq!(
+            app.preview_content,
+            "(this is the session running OmegaOS — preview disabled to prevent recursion)"
+        );
+        assert!(
+            app.preview_history_for.is_none(),
+            "the static session must not retain another session's history identity"
+        );
+        assert!(
+            app.preview_history_styled.is_none(),
+            "the static message must win over another session's styled history"
+        );
     }
 }
