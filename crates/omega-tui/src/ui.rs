@@ -1398,8 +1398,15 @@ pub(crate) fn draw_sessions_right(
     let viewport_height = area.height.saturating_sub(2);
 
     let mut preview_lines: Vec<Line> = if app.preview_content.is_empty() {
+        let empty_copy = match selected_name.as_deref() {
+            Some(name) if app.preview_fail_streak > 0 => {
+                format!("(retrying preview for {name}...)")
+            }
+            Some(name) => format!("(loading preview for {name}...)"),
+            None => "(select a session to preview)".to_string(),
+        };
         vec![Line::from(Span::styled(
-            "(select a session to preview)",
+            empty_copy,
             Style::default().fg(th::dim()),
         ))]
     } else if let Some(styled) = &app.preview_styled {
@@ -1692,7 +1699,7 @@ pub(crate) fn draw_sessions_right(
     // Reading state, spelled out. A reader on a phone could not tell whether
     // the text was still going to slide away under them; PAUSED says the view
     // is theirs and names the key that gives it back to the tail.
-    let scroll_indicator = if !app.preview_follow_tail {
+    let scroll_indicator = if !app.preview_follow_tail && max_scroll > 0 {
         format!(" ⏸ PAUSED [{}/{}] End→live ", scroll, max_scroll)
     } else if max_scroll > 0 {
         format!(" [{}/{}] ", scroll, max_scroll)
