@@ -2050,6 +2050,8 @@ impl App {
 
     fn prepare_preview_session_switch(&mut self, name: &str) {
         if self.preview_session.as_deref() != Some(name) {
+            self.clear_preview_selection();
+            self.preview_screen_rows.clear();
             self.preview_content.clear();
             self.preview_styled = None;
             self.preview_cursor = None;
@@ -2066,6 +2068,8 @@ impl App {
                 // No session selected → nothing can fail. Zero the per-session
                 // failure counter so a dead session's streak can't poison the
                 // next session that becomes selected.
+                self.clear_preview_selection();
+                self.preview_screen_rows.clear();
                 self.preview_content = String::new();
                 self.preview_styled = None;
                 self.preview_cursor = None;
@@ -3062,8 +3066,10 @@ mod preview_cache_tests {
     use omega_core::session::{OmegaSession, PreviewSpan};
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn render_sessions_preview(app: &mut App) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(140, 10)).expect("test terminal");
+    fn render_sessions_preview_on(
+        terminal: &mut Terminal<TestBackend>,
+        app: &mut App,
+    ) -> String {
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -3077,6 +3083,11 @@ mod preview_cache_tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>()
+    }
+
+    fn render_sessions_preview(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(140, 10)).expect("test terminal");
+        render_sessions_preview_on(&mut terminal, app)
     }
 
     #[test]
@@ -3144,6 +3155,7 @@ mod preview_cache_tests {
         }];
         app.selected = 0;
         app.current_session = Some(selected_name.to_string());
+        app.preview_follow_tail = false;
         app.preview_history_for = Some("session-a".to_string());
         let stale_history: Vec<Vec<PreviewSpan>> =
             omega_core::session::styled_rows_from_ansi("\x1b[35mstale session-a task card\x1b[0m")
@@ -3188,6 +3200,105 @@ mod preview_cache_tests {
         assert!(
             !rendered.contains("stale session-a task card"),
             "the rendered panel must not contain the prior session's styled task card"
+        );
+        assert!(
+            !rendered.contains("PAUSED"),
+            "a static current-session frame cannot be paused at zero of zero: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn no_session_refresh_drops_copyable_rows_and_drag() {
+        let mut app = App::new(OmegaConfig::default());
+        app.preview_content = "stale session-a body".to_string();
+        app.preview_session = Some("session-a".to_string());
+        app.preview_follow_tail = false;
+        app.sessions_preview_area = Some(ratatui::layout::Rect::new(0, 0, 40, 8));
+        app.preview_screen_rows = vec!["stale session-a copy marker".to_string()];
+        app.preview_select_anchor = Some((1, 1));
+        app.preview_select_head = Some((8, 1));
+        app.preview_select_dragging = true;
+
+        app.refresh_preview().await.expect("empty preview refresh");
+
+        assert!(app.preview_screen_rows.is_empty());
+        assert!(app.preview_select_anchor.is_none());
+        assert!(app.preview_select_head.is_none());
+        assert!(!app.preview_select_dragging);
+        assert_eq!(
+            app.take_preview_selection_text(),
+            None,
+            "an empty reset must make the prior frame impossible to copy"
+        );
+    }
+
+    #[test]
+    fn empty_preview_never_renders_paused_zero_of_zero() {
+        let mut app = App::new(OmegaConfig::default());
+        app.preview_follow_tail = false;
+        let rendered = render_sessions_preview(&mut app);
+        assert!(rendered.contains("(select a session to preview)"));
+        assert!(
+            !rendered.contains("PAUSED"),
+            "an empty preview cannot be paused at zero of zero: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn same_index_session_identity_render_transition_replaces_a_with_b() {
+        const SESSION_A: &str = "same-index-session-a";
+        const SESSION_B: &str = "same-index-session-b";
+        const MARKER_A: &str = "ONLY_SESSION_A_MARKER";
+        const MARKER_B: &str = "ONLY_SESSION_B_MARKER";
+
+        let entry = |name| SessionEntry {
+            session: OmegaSession::classify(name),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        };
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = vec![entry(SESSION_A)];
+        app.selected = 0;
+        app.preview_session = Some(SESSION_A.to_string());
+        app.preview_content = MARKER_A.to_string();
+        app.preview_follow_tail = false;
+        app.preview_scroll = 2;
+
+        let mut terminal = Terminal::new(TestBackend::new(140, 10)).expect("test terminal");
+        let frame_a = render_sessions_preview_on(&mut terminal, &mut app);
+        assert!(frame_a.contains(SESSION_A));
+        assert!(frame_a.contains(MARKER_A));
+
+        app.sessions[0] = entry(SESSION_B);
+        app.prepare_preview_session_switch(SESSION_B);
+
+        let loading_b = render_sessions_preview_on(&mut terminal, &mut app);
+        assert!(loading_b.contains(SESSION_B));
+        assert!(
+            loading_b.contains(&format!("(loading preview for {SESSION_B}...)")),
+            "a selected target with no body needs target-aware loading copy: {loading_b:?}"
+        );
+        assert!(!loading_b.contains("(select a session to preview)"));
+        assert!(!loading_b.contains(MARKER_A));
+        assert!(
+            !loading_b.contains("PAUSED"),
+            "a transient empty target cannot show PAUSED zero-of-zero: {loading_b:?}"
+        );
+
+        app.preview_content = (0..12)
+            .map(|row| format!("{MARKER_B} row {row}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let frame_b = render_sessions_preview_on(&mut terminal, &mut app);
+
+        assert!(frame_b.contains(SESSION_B));
+        assert!(frame_b.contains(MARKER_B));
+        assert!(!frame_b.contains(MARKER_A));
+        assert!(
+            frame_b.contains("PAUSED"),
+            "an ordinary capturable A-to-B switch must preserve paused history mode: {frame_b:?}"
         );
     }
 
@@ -3234,6 +3345,11 @@ mod preview_cache_tests {
             tick_one.contains(MISSING_SESSION_B),
             "the first failed tick must be rendered under session B's title: {tick_one:?}"
         );
+        assert!(
+            tick_one.contains(&format!("(retrying preview for {MISSING_SESSION_B}...)")),
+            "the transiently missing target needs target-aware retry copy: {tick_one:?}"
+        );
+        assert!(!tick_one.contains("(select a session to preview)"));
         assert_eq!(
             (
                 tick_one.contains(STALE_PLAIN_A),
@@ -3424,6 +3540,11 @@ mod preview_cache_tests {
         app.preview_revision = 42;
         app.preview_session = Some("session-a".to_string());
         app.preview_fail_streak = 3;
+        app.sessions_preview_area = Some(ratatui::layout::Rect::new(0, 0, 40, 8));
+        app.preview_screen_rows = vec!["stale copy row".to_string()];
+        app.preview_select_anchor = Some((1, 1));
+        app.preview_select_head = Some((6, 1));
+        app.preview_select_dragging = true;
 
         let paused_history =
             omega_core::session::styled_rows_from_ansi("\x1b[33mpaused history row\x1b[0m").0;
@@ -3444,6 +3565,15 @@ mod preview_cache_tests {
         assert_eq!(app.preview_revision, 0);
         assert_eq!(app.preview_session.as_deref(), Some("session-b"));
         assert_eq!(app.preview_fail_streak, 0);
+        assert!(app.preview_screen_rows.is_empty());
+        assert!(app.preview_select_anchor.is_none());
+        assert!(app.preview_select_head.is_none());
+        assert!(!app.preview_select_dragging);
+        assert_eq!(
+            app.take_preview_selection_text(),
+            None,
+            "the prior target's rendered rows must not remain copyable"
+        );
         assert_eq!(
             app.preview_history_for.as_deref(),
             Some("session-a"),
