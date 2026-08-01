@@ -2020,6 +2020,17 @@ impl App {
         self.settings_field_selected = if self.settings_field_selected == 0 { max - 1 } else { self.settings_field_selected - 1 };
     }
 
+    fn prepare_live_preview_session_switch(&mut self, name: &str) {
+        if self.preview_session.as_deref() != Some(name) {
+            self.preview_content.clear();
+            self.preview_styled = None;
+            self.preview_cursor = None;
+            self.preview_revision = 0;
+            self.preview_fail_streak = 0;
+            self.preview_session = Some(name.to_string());
+        }
+    }
+
     pub async fn refresh_preview(&mut self) -> anyhow::Result<()> {
         let name = match self.selected_session() {
             Some(e) => e.session.name.clone(),
@@ -2088,16 +2099,9 @@ impl App {
             // Revision gate: only pay the full restyle+flatten when the pane
             // actually changed. Force a fresh capture (since=0) on a session
             // switch so the new pane's content always loads.
+            self.prepare_live_preview_session_switch(&name);
             let cache_valid = self.preview_styled.is_some()
                 && self.preview_session.as_deref() == Some(name.as_str());
-            // preview_fail_streak is a PER-SESSION counter. On a session switch
-            // (the rendered session no longer matches `name`) the new pane's
-            // capture status is independent, so zero the streak — otherwise a
-            // stale streak from the previous session can trip the ≥3 "dead pane"
-            // threshold on the new session's very first transient failure.
-            if self.preview_session.as_deref() != Some(name.as_str()) {
-                self.preview_fail_streak = 0;
-            }
             let since = if cache_valid { self.preview_revision } else { 0 };
             match mgr.capture_pane_styled(&name, since).await {
                 // Pane unchanged since last render — keep the cached preview,
@@ -2146,9 +2150,9 @@ impl App {
                         self.preview_content = String::from("(session has no pane content)");
                         self.preview_styled = None;
                         self.preview_cursor = None;
-                        self.preview_session = None;
                     }
-                    // else: retain last-good preview_{content,styled,cursor,session}.
+                    // else: retain this target's last-good frame, or the cleared
+                    // frame prepared above when this tick switched sessions.
                 }
             }
         } else {
@@ -3057,6 +3061,63 @@ mod preview_cache_tests {
         assert!(
             app.preview_history_styled.is_none(),
             "the static message must win over another session's styled history"
+        );
+    }
+
+    #[test]
+    fn switching_live_preview_clears_previous_session_frame_once() {
+        let mut app = App::new(OmegaConfig::default());
+        app.preview_content = "Prompt: not sent".to_string();
+        app.preview_styled = Some(
+            omega_core::session::styled_rows_from_ansi(
+                "\x1b[35mPrompt: not sent\x1b[0m\n\x1b[36mold styled row\x1b[0m",
+            )
+            .0,
+        );
+        app.preview_cursor = Some((4, 7, true));
+        app.preview_revision = 42;
+        app.preview_session = Some("session-a".to_string());
+        app.preview_fail_streak = 3;
+
+        let paused_history =
+            omega_core::session::styled_rows_from_ansi("\x1b[33mpaused history row\x1b[0m").0;
+        app.preview_history_for = Some("session-a".to_string());
+        app.preview_history_styled = Some(paused_history.clone());
+
+        app.prepare_live_preview_session_switch("session-b");
+
+        assert_eq!(app.preview_content, "");
+        assert!(
+            app.preview_styled.is_none(),
+            "the new session must not inherit old styled rows"
+        );
+        assert!(
+            app.preview_cursor.is_none(),
+            "the new session must not inherit the old cursor"
+        );
+        assert_eq!(app.preview_revision, 0);
+        assert_eq!(app.preview_session.as_deref(), Some("session-b"));
+        assert_eq!(app.preview_fail_streak, 0);
+        assert_eq!(
+            app.preview_history_for.as_deref(),
+            Some("session-a"),
+            "live-tail switch preparation must not change paused-history ownership"
+        );
+        let paused_history_after = app
+            .preview_history_styled
+            .as_ref()
+            .expect("paused-history rows must remain cached")
+            .iter()
+            .map(|line| line.iter().map(|span| span.text.as_str()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(paused_history_after, "paused history row");
+
+        app.preview_fail_streak = 1;
+        app.prepare_live_preview_session_switch("session-b");
+        assert_eq!(
+            app.preview_fail_streak, 1,
+            "a retry for the same target must retain its failure streak"
         );
     }
 }
