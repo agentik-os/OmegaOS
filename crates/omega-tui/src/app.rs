@@ -1194,8 +1194,9 @@ pub struct App {
     /// Pane revision of the currently-cached styled preview. The capture is
     /// skipped (no restyle/flatten) when the pane's revision still matches this.
     pub preview_revision: u64,
-    /// Session name the cached preview/revision belongs to — reset the gate on
-    /// a session switch so the new pane always gets a fresh capture.
+    /// Session target that owns `preview_content` and the cached live preview.
+    /// Bound once on a session switch so another target's frame is cleared and
+    /// capture retries for the same target retain their failure streak.
     pub preview_session: Option<String>,
     /// Consecutive pane-capture failures for the current session. A pane in
     /// transition (a login pane swap, a zoom/terminal-resize reflow, a brief
@@ -2047,7 +2048,7 @@ impl App {
         self.settings_field_selected = if self.settings_field_selected == 0 { max - 1 } else { self.settings_field_selected - 1 };
     }
 
-    fn prepare_live_preview_session_switch(&mut self, name: &str) {
+    fn prepare_preview_session_switch(&mut self, name: &str) {
         if self.preview_session.as_deref() != Some(name) {
             self.preview_content.clear();
             self.preview_styled = None;
@@ -2070,6 +2071,8 @@ impl App {
                 return Ok(());
             }
         };
+
+        self.prepare_preview_session_switch(&name);
 
         // Avoid recursion: if previewing the session we're running inside, show static msg
         if let Some(ref cur) = self.current_session {
@@ -2126,7 +2129,6 @@ impl App {
             // Revision gate: only pay the full restyle+flatten when the pane
             // actually changed. Force a fresh capture (since=0) on a session
             // switch so the new pane's content always loads.
-            self.prepare_live_preview_session_switch(&name);
             let cache_valid = self.preview_styled.is_some()
                 && self.preview_session.as_deref() == Some(name.as_str());
             let since = if cache_valid { self.preview_revision } else { 0 };
@@ -2194,10 +2196,6 @@ impl App {
             // so the next scroll-up gets a fresh deep capture. Depth matches the
             // rmux history-limit so the user can scroll to the very top.
             if self.preview_history_for.as_deref() != Some(name.as_str()) {
-                // Session switch in history-browse mode: same per-session reset
-                // as the tail path so a prior session's streak can't poison this
-                // one's ≥3 dead-pane threshold on the first transient failure.
-                self.preview_fail_streak = 0;
                 match mgr.capture_pane_history(&name, 500_000).await {
                     Ok(content) => {
                         // The capture now carries its attributes (-e), so split
@@ -3058,6 +3056,23 @@ mod preview_cache_tests {
     use omega_core::session::{OmegaSession, PreviewSpan};
     use ratatui::{backend::TestBackend, Terminal};
 
+    fn render_sessions_preview(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(140, 10)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_sessions_right(frame, app, area, false);
+            })
+            .expect("render sessions preview");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>()
+    }
+
     #[test]
     fn current_session_resolution_prefers_rmux_pane_name_over_rmux_tuple() {
         let mut queried = Vec::new();
@@ -3170,8 +3185,149 @@ mod preview_cache_tests {
         );
     }
 
+    #[tokio::test]
+    async fn paused_history_switch_to_missing_session_clears_stale_frame_and_reaches_placeholder()
+    {
+        const SESSION_A: &str = "preview-history-session-a";
+        const MISSING_SESSION_B: &str = "preview-history-missing-session-b-0ff3aa1";
+        const STALE_PLAIN_A: &str = "stale plain frame owned by session a";
+        const STALE_STYLED_A: &str = "stale styled frame owned by session a";
+
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = [SESSION_A, MISSING_SESSION_B]
+            .into_iter()
+            .map(|name| SessionEntry {
+                session: OmegaSession::classify(name),
+                progress: None,
+                is_current: false,
+                is_protected: false,
+                tree_prefix: String::new(),
+            })
+            .collect();
+        app.selected = 1;
+        app.current_session = None;
+        app.preview_follow_tail = false;
+        app.preview_content = STALE_PLAIN_A.to_string();
+        app.preview_session = Some(SESSION_A.to_string());
+        app.preview_history_for = Some(SESSION_A.to_string());
+        app.preview_history_styled = Some(
+            omega_core::session::styled_rows_from_ansi(&format!(
+                "\x1b[35m{STALE_STYLED_A}\x1b[0m"
+            ))
+            .0,
+        );
+
+        app.refresh_preview().await.expect("first failed history refresh");
+        let tick_one = render_sessions_preview(&mut app);
+
+        app.refresh_preview().await.expect("second failed history refresh");
+        app.refresh_preview().await.expect("third failed history refresh");
+        let sustained_failure = render_sessions_preview(&mut app);
+
+        assert!(
+            tick_one.contains(MISSING_SESSION_B),
+            "the first failed tick must be rendered under session B's title: {tick_one:?}"
+        );
+        assert_eq!(
+            (
+                tick_one.contains(STALE_PLAIN_A),
+                tick_one.contains(STALE_STYLED_A),
+                app.preview_fail_streak,
+                sustained_failure.contains("(session has no pane content)"),
+            ),
+            (false, false, 3, true),
+            "a missing history target must clear session A on tick 1 and reach the existing placeholder threshold; tick_one={tick_one:?}; sustained={sustained_failure:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_history_switch_to_missing_session_clears_prior_static_frame() {
+        const STATIC_SESSION: &str = "preview-static-current-session";
+        const MISSING_HISTORY_SESSION: &str =
+            "preview-history-missing-after-static-session-0ff3aa1";
+        const RECURSION_MESSAGE: &str =
+            "(this is the session running OmegaOS — preview disabled to prevent recursion)";
+
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = [STATIC_SESSION, MISSING_HISTORY_SESSION]
+            .into_iter()
+            .map(|name| SessionEntry {
+                session: OmegaSession::classify(name),
+                progress: None,
+                is_current: false,
+                is_protected: false,
+                tree_prefix: String::new(),
+            })
+            .collect();
+        app.selected = 0;
+        app.current_session = Some(STATIC_SESSION.to_string());
+        app.preview_follow_tail = false;
+        app.preview_session = Some(MISSING_HISTORY_SESSION.to_string());
+
+        app.refresh_preview().await.expect("static preview refresh");
+        let static_frame = render_sessions_preview(&mut app);
+        assert_eq!(app.preview_session.as_deref(), Some(STATIC_SESSION));
+        assert!(
+            static_frame.contains(RECURSION_MESSAGE),
+            "the setup must render the static recursion frame: {static_frame:?}"
+        );
+
+        app.selected = 1;
+        app.refresh_preview()
+            .await
+            .expect("failed history refresh after static frame");
+        let switched_frame = render_sessions_preview(&mut app);
+
+        assert!(
+            switched_frame.contains(MISSING_HISTORY_SESSION),
+            "the failed tick must be rendered under the new history target: {switched_frame:?}"
+        );
+        assert!(
+            !switched_frame.contains(RECURSION_MESSAGE),
+            "the prior static recursion frame must not render under the new history target: {switched_frame:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_history_same_session_reuses_cached_frame() {
+        const SESSION_A: &str = "preview-history-cached-session-a";
+        const CACHED_PLAIN: &str = "cached plain history for session a";
+        const CACHED_STYLED: &str = "cached styled history for session a";
+
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = vec![SessionEntry {
+            session: OmegaSession::classify(SESSION_A),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        }];
+        app.selected = 0;
+        app.current_session = None;
+        app.preview_follow_tail = false;
+        app.preview_content = CACHED_PLAIN.to_string();
+        app.preview_session = Some(SESSION_A.to_string());
+        app.preview_history_for = Some(SESSION_A.to_string());
+        app.preview_history_styled = Some(
+            omega_core::session::styled_rows_from_ansi(&format!(
+                "\x1b[36m{CACHED_STYLED}\x1b[0m"
+            ))
+            .0,
+        );
+
+        app.refresh_preview().await.expect("cached history refresh");
+        let rendered = render_sessions_preview(&mut app);
+
+        assert_eq!(app.preview_content, CACHED_PLAIN);
+        assert_eq!(app.preview_history_for.as_deref(), Some(SESSION_A));
+        assert!(
+            rendered.contains(CACHED_STYLED),
+            "same-session paused history must reuse its styled cache: {rendered:?}"
+        );
+    }
+
     #[test]
-    fn switching_live_preview_clears_previous_session_frame_once() {
+    fn switching_preview_target_clears_previous_session_frame_once() {
         let mut app = App::new(OmegaConfig::default());
         app.preview_content = "Prompt: not sent".to_string();
         app.preview_styled = Some(
@@ -3190,7 +3346,7 @@ mod preview_cache_tests {
         app.preview_history_for = Some("session-a".to_string());
         app.preview_history_styled = Some(paused_history.clone());
 
-        app.prepare_live_preview_session_switch("session-b");
+        app.prepare_preview_session_switch("session-b");
 
         assert_eq!(app.preview_content, "");
         assert!(
@@ -3207,7 +3363,7 @@ mod preview_cache_tests {
         assert_eq!(
             app.preview_history_for.as_deref(),
             Some("session-a"),
-            "live-tail switch preparation must not change paused-history ownership"
+            "target switch preparation must not change paused-history ownership"
         );
         let paused_history_after = app
             .preview_history_styled
@@ -3220,7 +3376,7 @@ mod preview_cache_tests {
         assert_eq!(paused_history_after, "paused history row");
 
         app.preview_fail_streak = 1;
-        app.prepare_live_preview_session_switch("session-b");
+        app.prepare_preview_session_switch("session-b");
         assert_eq!(
             app.preview_fail_streak, 1,
             "a retry for the same target must retain its failure streak"
