@@ -13,6 +13,7 @@ sys.path, and never executed directly.
 import json
 import os
 import re
+import unicodedata
 
 # A verification is a pair: an admissible verification command followed by its
 # successful tool result. Merely opening a shell, or writing "tests passed" in
@@ -47,6 +48,66 @@ VERIFY_FAILURE_RE = re.compile(
     r"Traceback \(most recent call last\)",
     re.I,
 )
+
+# ── R-PREFLIGHT ──────────────────────────────────────────────────────────────
+# A preflight is the structured hand-off an INTERACTIVE session gives the
+# operator BEFORE touching anything with a real blast radius: Goal, Blocking
+# questions, Assumptions, Plan — then it stops and waits for approval. The
+# finish guard has to recognise it, otherwise a thorough (read-only) preflight
+# trips the planless-work check and gets refused, which is a false positive —
+# the one defect a guard cannot afford.
+#
+# The marker must OPEN a line, may be wrapped in markdown heading / bold /
+# emphasis markup, and is either the whole line or is followed by a ':' or '.'
+# delimiter. That last condition is what keeps ordinary prose ("Plan the
+# migration carefully…") from scoring a family.
+FINAL_MESSAGE_MAX = 4000
+PREFLIGHT_MIN_FAMILIES = 3
+TEXT_BLOCK_TYPES = ("text", "output_text", "input_text", "response_text")
+
+
+def _marker_re(alternatives):
+    return re.compile(
+        r"^[ \t]*(?:[#>]{1,6}[ \t]*)*(?:[*_~`]{1,3})?[ \t]*"
+        r"(?:" + alternatives + r")\b"
+        r"[ \t]*(?:[*_~`]{1,3})?[ \t]*"
+        r"(?:[.:]|[ \t\r]*$)",
+        re.M,
+    )
+
+
+# Accent- and case-insensitive: matched against text already normalized by
+# _fold(), so "Hypothèses" and "hypotheses" are the same marker.
+PREFLIGHT_MARKERS = (
+    _marker_re(r"goal|objectif"),
+    _marker_re(r"blocking questions?|questions? bloquantes?"),
+    _marker_re(r"assumptions?|hypotheses?"),
+    _marker_re(r"plan"),
+)
+
+
+def _fold(text):
+    """Lowercase + strip diacritics (NFD, drop combining marks).
+
+    Same normalization as scripts/hooks/omega-prompt-scan.sh, so FR and EN
+    sessions are read by one set of markers. Line structure is preserved.
+    """
+    folded = unicodedata.normalize("NFD", text.lower())
+    return "".join(c for c in folded if unicodedata.category(c) != "Mn")
+
+
+def is_preflight(text):
+    """True when `text` is a structured preflight awaiting approval.
+
+    Pure function of the text so it is testable on its own — analyze() only
+    supplies the last assistant message.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    folded = _fold(text)
+    hits = sum(1 for marker in PREFLIGHT_MARKERS if marker.search(folded))
+    return hits >= PREFLIGHT_MIN_FAMILIES
+
 
 SHELL_TOOLS = (
     "Bash",
@@ -119,6 +180,45 @@ def _walk_tool_results(obj):
             yield from _walk_tool_results(value)
 
 
+def _is_assistant_record(rec):
+    """Defensive: providers disagree on where the role lives."""
+    if not isinstance(rec, dict):
+        return False
+    if rec.get("type") == "assistant" or rec.get("role") == "assistant":
+        return True
+    for key in ("message", "payload"):
+        nested = rec.get(key)
+        if isinstance(nested, dict) and (
+            nested.get("role") == "assistant" or nested.get("type") == "assistant"
+        ):
+            return True
+    return False
+
+
+def _walk_text_blocks(obj):
+    if isinstance(obj, dict):
+        if obj.get("type") in TEXT_BLOCK_TYPES:
+            text = obj.get("text")
+            if isinstance(text, str) and text.strip():
+                yield text
+            return
+        # A tool_result carries the WORLD's words, never the assistant's.
+        if obj.get("type") in ("tool_result", "function_call_output", "custom_tool_call_output"):
+            return
+        for value in obj.values():
+            yield from _walk_text_blocks(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _walk_text_blocks(value)
+
+
+def _assistant_text(rec):
+    try:
+        return "\n".join(_walk_text_blocks(rec)).strip()
+    except Exception:
+        return ""
+
+
 def _command_from_input(inp):
     return str(inp.get("command") or inp.get("cmd") or "")
 
@@ -143,7 +243,7 @@ def analyze(transcript_path):
     callers can fail open — a hook must never break a session.
 
     Keys: open_items, total_tasks, plan_ever, edited, verified, mutations,
-    tool_calls.
+    tool_calls, final_message, preflight.
     """
     if not transcript_path or not os.path.isfile(transcript_path):
         return None
@@ -152,6 +252,7 @@ def analyze(transcript_path):
     edited = verified = plan_ever = False
     mutations = tool_calls = 0
     pending_verifications = {}
+    final_message = ""
 
     try:
         with open(transcript_path, "r", errors="replace") as fh:
@@ -166,6 +267,12 @@ def analyze(transcript_path):
                 # A sub-agent's own plan is ITS business, not this session's.
                 if isinstance(rec, dict) and rec.get("isSidechain"):
                     continue
+                # The LAST assistant text wins: a preflight is the final word of
+                # the turn, and any later prose replaces it.
+                if _is_assistant_record(rec):
+                    text = _assistant_text(rec)
+                    if text:
+                        final_message = text[-FINAL_MESSAGE_MAX:]
                 for tu in _walk_tool_uses(rec):
                     name = tu.get("name") or ""
                     inp = tu.get("input") or {}
@@ -241,6 +348,8 @@ def analyze(transcript_path):
         "verified": verified,
         "mutations": mutations,
         "tool_calls": tool_calls,
+        "final_message": final_message,
+        "preflight": is_preflight(final_message),
     }
 
 

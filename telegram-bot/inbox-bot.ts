@@ -21,7 +21,7 @@
  *
  * Setup:  omega-inbox-bot-up <BOT_TOKEN> [YOUR_TELEGRAM_USER_ID]
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync, copyFileSync, chmodSync } from "fs";
 import { homedir } from "os";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
@@ -32,14 +32,25 @@ const INDEX = `${MEDIA}/index.jsonl`;
 
 // Minimal TOML scalar reader (same approach the Rust side uses for telegram.toml):
 // we only need bot_token / chat_id / pair_code / enabled, so a line regex beats a TOML dep.
-function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string; enabled?: boolean } {
+function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string; enabled?: boolean; fanout?: string[]; fanout_secrets?: boolean } {
   try {
     const t = readFileSync(CONF, "utf8");
     const tok = t.match(/^\s*bot_token\s*=\s*"([^"]*)"/m)?.[1];
     const cid = t.match(/^\s*chat_id\s*=\s*(-?\d+)/m)?.[1];
     const pc = t.match(/^\s*pair_code\s*=\s*"([^"]*)"/m)?.[1];
     const en = t.match(/^\s*enabled\s*=\s*(true|false)/m)?.[1];
-    return { bot_token: tok, chat_id: cid != null ? Number(cid) : undefined, pair_code: pc, enabled: en ? en === "true" : undefined };
+    // fanout = ["/Shared/deposit", "/some/other/box"]  — where a deposit is
+    // MIRRORED so a second session (another Unix account) can read it.
+    const fo = t.match(/^\s*fanout\s*=\s*\[([^\]]*)\]/m)?.[1];
+    const fs = t.match(/^\s*fanout_secrets\s*=\s*(true|false)/m)?.[1];
+    return {
+      bot_token: tok,
+      chat_id: cid != null ? Number(cid) : undefined,
+      pair_code: pc,
+      enabled: en ? en === "true" : undefined,
+      fanout: fo != null ? [...fo.matchAll(/"([^"]+)"/g)].map((m) => m[1]) : undefined,
+      fanout_secrets: fs ? fs === "true" : undefined,
+    };
   } catch { return {}; }
 }
 
@@ -53,6 +64,62 @@ const API = `https://api.telegram.org/bot${TOKEN}`;
 const FILE_API = `https://api.telegram.org/file/bot${TOKEN}`;
 mkdirSync(MEDIA, { recursive: true });
 mkdirSync(`${OMEGA_DIR}/inbox-bot`, { recursive: true });
+
+// ---- Fan-out: one deposit, both sessions -----------------------------------
+//
+// MEDIA lives under ~/.omega, and a home is 0700: the OTHER account on this box
+// (the AltReality session) cannot read a single byte of it. That is a Unix
+// permission fact, not a setting, so a deposit was only ever reaching whichever
+// session owns the bot. Every deposit is therefore MIRRORED into a directory
+// whose group (`agentik`) both accounts share.
+const FANOUT: string[] = conf.fanout && conf.fanout.length ? conf.fanout : existsSync("/Shared/deposit") ? ["/Shared/deposit"] : [];
+// A shared directory is readable by another Unix account, so a private key
+// copied into it is a leaked private key (R-PROJ / R-SECRETS-VAULT). Credential
+// material stays home unless the operator says otherwise — and it is never
+// silent: the reply says what was held back and how to share it anyway.
+const SECRETISH = /(\.(p8|pem|key|env|p12|jks|keystore|ppk|crt|pfx)$)|(^|[._-])(id_rsa|id_ed25519)|credential|secret|token|passwd|private[._-]?key/i;
+const looksSecret = (f: string) => SECRETISH.test(f.split("/").pop() || "");
+
+/** Mirror one deposited file (+ its caption sidecar) into every fan-out box.
+ *  Returns the boxes it reached, and whether it was held back as a credential. */
+function fanout(file: string, caption = "", force = false): { shared: string[]; held: boolean } {
+  if (!FANOUT.length || !existsSync(file)) return { shared: [], held: false };
+  const base = file.split("/").pop()!;
+  if (looksSecret(base) && !force && conf.fanout_secrets !== true) return { shared: [], held: true };
+
+  const shared: string[] = [];
+  for (const dir of FANOUT) {
+    try {
+      mkdirSync(dir, { recursive: true });
+      const dst = `${dir}/${base}`;
+      copyFileSync(file, dst);
+      try { chmodSync(dst, 0o664); } catch {}
+      if (caption) {
+        writeFileSync(`${dst}.txt`, caption);
+        try { chmodSync(`${dst}.txt`, 0o664); } catch {}
+      }
+      const idx = `${dir}/index.jsonl`;
+      appendFileSync(idx, JSON.stringify({ ts: stamp(), file: base, caption, from: "deposit-bot" }) + "\n");
+      try { chmodSync(idx, 0o664); } catch {}
+      shared.push(dir);
+    } catch (e: any) {
+      console.error(`[deposit] fanout -> ${dir} failed: ${e?.message || e}`);
+    }
+  }
+  return { shared, held: false };
+}
+
+// CLI mode — `bun inbox-bot.ts --fanout <file> [caption]` runs the same code
+// path the bot runs, so the mirror is testable and can backfill by hand without
+// a second implementation to drift.
+if (process.argv[2] === "--fanout") {
+  const f = process.argv[3];
+  if (!f) { console.error("usage: inbox-bot.ts --fanout <file> [caption]"); process.exit(2); }
+  const r = fanout(f, process.argv[4] || "", true);
+  console.log(r.shared.length ? `[deposit] fanned out to ${r.shared.join(", ")}` : "[deposit] no fan-out destination");
+  process.exit(r.shared.length ? 0 : 1);
+}
+
 if (!TOKEN) {
   console.log(`[deposit] no token yet — waiting. Connect: omega-inbox-bot-up <BOT_TOKEN> [USER_ID]  (writes ${CONF})`);
   // Idle instead of crash-looping under systemd Restart=always until a token exists.
@@ -115,15 +182,28 @@ async function handle(msg: any) {
   }
   if (chat !== allowed) { console.log(`[deposit] drop message from non-allowed chat ${chat}`); return; }
 
-  const caption = (msg.caption || msg.text || "").trim();
+  const rawCaption = (msg.caption || msg.text || "").trim();
+  // `!share` anywhere in the caption forces a credential-looking file into the
+  // shared box. Strip it so the marker never lands in the saved sidecar.
+  const force = /(^|\s)!share(\s|$)/i.test(rawCaption);
+  const caption = rawCaption.replace(/(^|\s)!share(\s|$)/i, " ").trim();
+
+  // One line for the Telegram reply: where the deposit actually went.
+  const reach = (r: { shared: string[]; held: boolean }) =>
+    r.held
+      ? "\n🔒 gardé privé (ressemble à une clé) — renvoie-le avec la légende !share pour le partager aussi"
+      : r.shared.length
+        ? "\n🔗 partagé aussi avec la session AltReality"
+        : "";
 
   if (Array.isArray(msg.photo) && msg.photo.length) {
     const p = await download(msg.photo[msg.photo.length - 1].file_id, "jpg");
     if (p) {
       if (caption) writeFileSync(p.replace(/\.jpg$/, ".txt"), caption);
       note({ ts: stamp(), kind: "photo", path: p, caption });
-      console.log(`[deposit] photo ${p}${caption ? ` — "${caption}"` : ""}`);
-      await tg("sendMessage", { chat_id: chat, text: `📥 reçu : ${p.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}` });
+      const r = fanout(p, caption, force);
+      console.log(`[deposit] photo ${p}${caption ? ` — "${caption}"` : ""}${r.shared.length ? ` → ${r.shared.join(", ")}` : ""}`);
+      await tg("sendMessage", { chat_id: chat, text: `📥 reçu : ${p.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}${reach(r)}` });
     } else await tg("sendMessage", { chat_id: chat, text: "⚠️ échec du téléchargement, réessaie." });
     return;
   }
@@ -143,8 +223,9 @@ async function handle(msg: any) {
       const fin = existsSync(named) ? named : p;
       if (caption) writeFileSync(`${fin}.txt`, caption);
       note({ ts: stamp(), kind: "document", path: fin, caption });
-      console.log(`[deposit] doc ${fin}`);
-      await tg("sendMessage", { chat_id: chat, text: `📥 reçu : ${fin.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}` });
+      const r = fanout(fin, caption, force);
+      console.log(`[deposit] doc ${fin}${r.shared.length ? ` → ${r.shared.join(", ")}` : r.held ? " (held: credential-looking)" : ""}`);
+      await tg("sendMessage", { chat_id: chat, text: `📥 reçu : ${fin.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}${reach(r)}` });
     } else await tg("sendMessage", { chat_id: chat, text: "⚠️ échec du téléchargement, réessaie." });
     return;
   }
@@ -153,8 +234,9 @@ async function handle(msg: any) {
     const p = `${MEDIA}/${stamp()}_note.txt`;
     writeFileSync(p, caption);
     note({ ts: stamp(), kind: "note", path: p, caption });
-    console.log(`[deposit] note: ${caption}`);
-    await tg("sendMessage", { chat_id: chat, text: "📝 note enregistrée." });
+    const r = fanout(p, "", force);
+    console.log(`[deposit] note: ${caption}${r.shared.length ? ` → ${r.shared.join(", ")}` : ""}`);
+    await tg("sendMessage", { chat_id: chat, text: `📝 note enregistrée.${reach(r)}` });
   }
 }
 

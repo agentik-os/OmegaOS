@@ -179,6 +179,11 @@ fi
 # 9. Self-containment assets (reset-survival): persistent service, hooks, identity.
 if [ -f telegram-bot/omega-tg-bot.ts ] && [ -f scripts/omega-tg-up.sh ] && grep -q "omega-tg-bot.ts" install.sh && grep -q "omega-tg-up" install.sh; then ok "Telegram command bot shipped + wired (omega-tg-bot + omega-tg-up + systemd service)"; else bad "Telegram command bot (omega-tg-bot.ts / omega-tg-up.sh) not shipped/wired in install.sh"; fi
 if [ -f telegram-bot/inbox-bot.ts ] && [ -f scripts/inbox-bot-up.sh ] && grep -q "inbox-bot.ts" install.sh && grep -q "inbox-bot-up" install.sh && grep -q "omega-inbox-bot.service" install.sh; then ok "Deposit bot shipped + wired (inbox-bot + inbox-bot-up + omega-inbox-bot.service)"; else bad "Deposit bot (inbox-bot.ts / inbox-bot-up.sh) not shipped/wired in install.sh"; fi
+# A deposit must reach EVERY session that needs it. ~/.omega lives under a 0700
+# home, so a second Unix account (a paired session on the same box) cannot read
+# it at all — the bot mirrors each deposit into a group-shared box instead, and
+# holds credential-looking files back so a shared box never becomes a key leak.
+if grep -q "function fanout" telegram-bot/inbox-bot.ts && grep -q "SECRETISH" telegram-bot/inbox-bot.ts; then ok "deposit fan-out present (second session reachable, credentials held back)"; else bad "deposit fan-out missing — a deposit reaches only the bot owner's home"; fi
 if [ -f scripts/omega-mc-up.sh ] && grep -q "omega-mc-up.sh" install.sh && grep -q "agentik-telegram" install.sh; then ok "OmegaMC optional multi-agent backend shipped + wired (omega-mc-up + agentik-telegram clone)"; else bad "OmegaMC (omega-mc-up.sh / agentik-telegram clone) not shipped/wired in install.sh"; fi
 if ls scripts/hooks/*.sh >/dev/null 2>&1 && grep -q "scripts/hooks" install.sh; then ok "tracking + verify hooks shipped + installed"; else bad "hooks not shipped/wired"; fi
 if [ -f agents/identity/SOUL.template.md ] && grep -q "SOUL.template" install.sh; then ok "SOUL identity template shipped + installed"; else bad "SOUL template not shipped/wired"; fi

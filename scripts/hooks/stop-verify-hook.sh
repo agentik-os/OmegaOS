@@ -69,6 +69,19 @@ if st is None:
 
 open_items = st["open_items"]
 
+# R-PREFLIGHT — a preflight awaiting approval is a LEGAL stop. Before anything
+# with a real blast radius, an interactive session investigates, hands over
+# Goal / Blocking questions / Assumptions / Plan, and STOPS without having
+# mutated a file. Refusing that stop is a false positive, and a false positive
+# is the only fatal defect a guard can have — it teaches everyone to ignore it.
+# The exemption is self-limiting BY DESIGN: it is gated on mutations == 0, so
+# the instant the session writes a file the guard behaves exactly as before.
+# Presenting a plan INSTEAD of executing remains an illegal stop (L6) once work
+# has begun. Checked ahead of both branches — a preflight that also opened plan
+# tasks is still a preflight.
+if st.get("preflight") and st.get("mutations", 0) == 0:
+    sys.exit(0)
+
 # Real work, but no tracked plan was ever opened. This is the hole the other two
 # checks cannot see: a session that never calls a plan tool has no open tasks to
 # inspect, so a multi-part mission can lose its tail tasks silently. Thresholds
