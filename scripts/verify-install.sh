@@ -354,6 +354,20 @@ wf_count=$(ls .claude/workflows/*.js 2>/dev/null | wc -l)
 if [ "$wf_count" -gt 0 ] && grep -q 'CLAUDE_WF_DST' install.sh; then ok "saved workflow graphs shipped ($wf_count in .claude/workflows/ → ~/.claude/workflows/)"; else bad "workflow graphs not shipped by install.sh (R-GRAPH step 9 broken on a fresh clone)"; fi
 if [ -x scripts/check-workflows.sh ] && ./scripts/check-workflows.sh >/dev/null 2>&1; then ok "every saved workflow graph parses (check-workflows.sh)"; else bad "a saved workflow graph fails the syntax gate — run ./scripts/check-workflows.sh"; fi
 if grep -q '"R-GRAPH"' crates/omega-core/src/rules.rs && grep -q 'pipeline()' .claude/commands/dynamic.md; then ok "R-GRAPH compiled + /dynamic carries the graph playbook"; else bad "R-GRAPH missing from the registry or /dynamic lacks the playbook"; fi
+# R-PREFLIGHT parity: the preflight is doctrine ONLY if all three halves ship —
+# the compiled rule, the prompt-time trigger that fires while the decision can
+# still be made, and the finish-guard exemption that lets a zero-mutation
+# preflight stop. A rule whose pause its own Stop hook refuses is worse than no
+# rule at all: it trains the agent to ignore the guard (Law 0 + R-MONITOR).
+if grep -q '"R-PREFLIGHT"' crates/omega-core/src/rules.rs \
+   && grep -q 'R-PREFLIGHT' scripts/hooks/omega-prompt-scan.sh \
+   && grep -q 'preflight' scripts/hooks/stop-verify-hook.sh \
+   && grep -q 'is_preflight' scripts/hooks/omega_plan_state.py \
+   && grep -q 'PREFLIGHT' scripts/hooks/omega-session-contract.sh; then
+    ok "R-PREFLIGHT compiled + prompt-scan trigger + finish-guard exemption + session contract"
+else
+    bad "R-PREFLIGHT incomplete — the rule, the prompt-scan branch, the finish-guard exemption and the session contract must all ship together"
+fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
 # HONEST contract: install.sh DEFERS this pack by default (opt-in
 # OMEGA_WITH_COMPANION=1) — the gate asserts the opt-in branch exists; it must
