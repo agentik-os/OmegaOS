@@ -2068,6 +2068,9 @@ impl App {
                 // next session that becomes selected.
                 self.preview_content = String::new();
                 self.preview_fail_streak = 0;
+                self.preview_session = None;
+                self.preview_history_for = None;
+                self.preview_history_styled = None;
                 return Ok(());
             }
         };
@@ -3323,6 +3326,72 @@ mod preview_cache_tests {
         assert!(
             rendered.contains(CACHED_STYLED),
             "same-session paused history must reuse its styled cache: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_history_empty_gap_invalidates_owner_before_same_session_reappears() {
+        const MISSING_SESSION_A: &str = "preview-history-missing-empty-gap-a-0ff3aa1";
+        const STALE_PLAIN_A: &str = "stale plain history across empty gap";
+        const STALE_STYLED_A: &str = "stale styled history across empty gap";
+
+        let entry = SessionEntry {
+            session: OmegaSession::classify(MISSING_SESSION_A),
+            progress: None,
+            is_current: false,
+            is_protected: false,
+            tree_prefix: String::new(),
+        };
+        let mut app = App::new(OmegaConfig::default());
+        app.sessions = vec![entry.clone()];
+        app.selected = 0;
+        app.current_session = None;
+        app.preview_follow_tail = false;
+        app.preview_content = STALE_PLAIN_A.to_string();
+        app.preview_session = Some(MISSING_SESSION_A.to_string());
+        app.preview_history_for = Some(MISSING_SESSION_A.to_string());
+        app.preview_history_styled = Some(
+            omega_core::session::styled_rows_from_ansi(&format!(
+                "\x1b[35m{STALE_STYLED_A}\x1b[0m"
+            ))
+            .0,
+        );
+
+        app.sessions.clear();
+        app.refresh_preview().await.expect("empty-list refresh");
+        let empty_frame = render_sessions_preview(&mut app);
+
+        assert_eq!(
+            (
+                app.preview_content.is_empty(),
+                app.preview_session.is_none(),
+                app.preview_history_for.is_none(),
+                app.preview_history_styled.is_none(),
+                app.preview_fail_streak,
+                empty_frame.contains("(select a session to preview)"),
+            ),
+            (true, true, true, true, 0, true),
+            "an empty list must invalidate every paused-preview cache owner: {empty_frame:?}"
+        );
+
+        app.sessions.push(entry);
+        app.refresh_preview()
+            .await
+            .expect("same missing session refresh after empty gap");
+        let reappeared_frame = render_sessions_preview(&mut app);
+
+        assert_eq!(app.preview_session.as_deref(), Some(MISSING_SESSION_A));
+        assert_eq!(
+            app.preview_fail_streak, 1,
+            "the reappearing target must attempt one fresh capture"
+        );
+        assert!(
+            !reappeared_frame.contains(STALE_PLAIN_A),
+            "stale plain history must not render after the empty gap: {reappeared_frame:?}"
+        );
+        assert!(
+            !reappeared_frame.contains(STALE_STYLED_A),
+            "stale styled history must not render after the empty gap: {reappeared_frame:?}"
         );
     }
 
