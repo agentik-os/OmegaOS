@@ -2296,6 +2296,20 @@ if [[ -d "$OMEGA_SRC/.claude/commands" ]]; then
     fi
 fi
 
+# Ship the saved workflow graphs (.claude/workflows/*.js) — the topologies Rule
+# R-GRAPH says to keep as assets instead of re-deriving every run. Claude Code
+# resolves a user-scope script by name: Workflow({name: "adversarial-review"}).
+CLAUDE_WF_DST="$HOME/.claude/workflows"
+if [[ -d "$OMEGA_SRC/.claude/workflows" ]]; then
+    mkdir -p "$CLAUDE_WF_DST"
+    cp -f "$OMEGA_SRC/.claude/workflows/"*.js "$CLAUDE_WF_DST/" 2>/dev/null || true
+    cp -f "$OMEGA_SRC/.claude/workflows/README.md" "$CLAUDE_WF_DST/" 2>/dev/null || true
+    WF_SHIPPED=$(ls "$CLAUDE_WF_DST/"*.js 2>/dev/null | wc -l)
+    if [[ "$WF_SHIPPED" -gt 0 ]]; then
+        ok "Saved workflow graphs installed ($WF_SHIPPED in $CLAUDE_WF_DST/ — R-GRAPH, /dynamic)"
+    fi
+fi
+
 # Export operational rules to ~/.omega/rules/
 # Two passes:
 #   1. Copy the canonical .md files from the repo (covers disk-only rules)

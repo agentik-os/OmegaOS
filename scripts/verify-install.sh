@@ -342,6 +342,13 @@ if grep -qE '^[0-9]\. .*/omg-vision' skills/new-project/SKILL.md && grep -qE '^[
 if ! grep -q '"\$OMG_CMD_DST/planner.md"' install.sh && ! grep -q '/planner.md"' install.sh; then ok "no bare /planner stub (uses /omg-planner — no collision)"; else bad "install.sh still writes a bare /planner stub (collides)"; fi
 # Every OmegaOS command exposed as /omg-* (canonical) AND /omega-* (legacy alias — non-breaking).
 if grep -q 'omg-${bn#omega-}' install.sh && grep -q 'omg-dynamic' install.sh; then ok "/omg-* aliases generated for all OmegaOS commands (legacy /omega-* kept)"; else bad "/omg-* alias loop missing from install.sh"; fi
+# R-GRAPH parity: the graph doctrine is only real if all three halves ship — the
+# compiled rule, the saved topologies, and the install step that copies them.
+# A saved graph that a fresh clone does not get is a graph nobody can run (Law 0).
+wf_count=$(ls .claude/workflows/*.js 2>/dev/null | wc -l)
+if [ "$wf_count" -gt 0 ] && grep -q 'CLAUDE_WF_DST' install.sh; then ok "saved workflow graphs shipped ($wf_count in .claude/workflows/ → ~/.claude/workflows/)"; else bad "workflow graphs not shipped by install.sh (R-GRAPH step 9 broken on a fresh clone)"; fi
+if [ -x scripts/check-workflows.sh ] && ./scripts/check-workflows.sh >/dev/null 2>&1; then ok "every saved workflow graph parses (check-workflows.sh)"; else bad "a saved workflow graph fails the syntax gate — run ./scripts/check-workflows.sh"; fi
+if grep -q '"R-GRAPH"' crates/omega-core/src/rules.rs && grep -q 'pipeline()' .claude/commands/dynamic.md; then ok "R-GRAPH compiled + /dynamic carries the graph playbook"; else bad "R-GRAPH missing from the registry or /dynamic lacks the playbook"; fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
 # HONEST contract: install.sh DEFERS this pack by default (opt-in
 # OMEGA_WITH_COMPANION=1) — the gate asserts the opt-in branch exists; it must
@@ -488,11 +495,11 @@ else bad "install.sh still cp's over a possibly-running binary (ETXTBSY aborts t
 #      install.sh does NOT create. OmegaOS ships on a blank VPS: an audit skill that
 #      shells out to `~/.claude/lib/hinge-analyzer.sh` or reads `~/.claude/DEPRECATED.md`
 #      silently breaks on a fresh clone. install.sh only provisions ~/.claude/commands/,
-#      ~/.claude/settings.json, and ~/.claude/.credentials.json — anything else under
-#      ~/.claude/ (lib/data/agents/resources/rules/projects/…) or under /home/hacker/ is a leak.
-#      Documented blank-VPS warnings ("never reference ~/.claude/…") are prose, not leaks.
+#      ~/.claude/workflows/, ~/.claude/settings.json, and ~/.claude/.credentials.json — anything
+#      else under ~/.claude/ (lib/data/agents/resources/rules/projects/…) or under /home/hacker/
+#      is a leak. Documented blank-VPS warnings ("never reference ~/.claude/…") are prose, not leaks.
 leaks=$(grep -rhnE '(~/\.claude/|/home/hacker/)[A-Za-z0-9_./-]+' skills/audits/*/SKILL.md skills/audits/_shared/* 2>/dev/null \
-  | grep -vE '~/\.claude/(commands/|settings\.json|\.credentials\.json)' \
+  | grep -vE '~/\.claude/(commands/|workflows/|settings\.json|\.credentials\.json)' \
   | grep -vE '~/\.claude/\.\.\.' \
   | grep -vE '(blank-VPS|never reference|never reach|forbids|ships them|shipped INSIDE|vendored next)')
 if [ -z "$leaks" ]; then
