@@ -2363,9 +2363,32 @@ async fn run_tui_loop(
                     }
                 }
                 Action::CommitSettingsEdit { config_key, value } => {
-                    // The TUI theme lives in ~/.omega/config.toml (OmegaConfig),
-                    // not providers.toml — handle it before the provider path.
-                    if config_key == "general.theme" {
+                    // Auto-update policy lives in ~/.omega/config.toml with its
+                    // own writer (it must survive a rewrite of that file), so it
+                    // takes the same detour as the theme below. Without this
+                    // branch the value falls through to providers.toml and is
+                    // saved SILENTLY to a file nothing reads it from.
+                    if config_key == "general.auto_update" {
+                        // `parse` never fails (unknown text falls back to
+                        // `apply`, deliberately — a typo must not quietly stop
+                        // updates), and the picker only offers the three valid
+                        // values, so there is no invalid path to handle here.
+                        let policy = omega_core::config::AutoUpdatePolicy::parse(&value);
+                        match OmegaConfig::set_auto_update(policy) {
+                            Ok(()) => {
+                                app.config = OmegaConfig::load().unwrap_or_default();
+                                app.status_message = Some(format!(
+                                    "Auto-update set to '{}' — saved [+]",
+                                    policy.as_str()
+                                ));
+                            }
+                            Err(e) => {
+                                app.status_message = Some(format!("Save failed: {}", e));
+                            }
+                        }
+                    } else if config_key == "general.theme" {
+                        // Same reason as above: the theme lives in
+                        // ~/.omega/config.toml, not providers.toml.
                         let mut c = OmegaConfig::load().unwrap_or_default();
                         c.theme = value.clone();
                         if let Err(e) = save_omega_config(&c) {

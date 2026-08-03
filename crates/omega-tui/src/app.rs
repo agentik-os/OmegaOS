@@ -608,6 +608,42 @@ pub(crate) fn agent_available_cached(agent: omega_core::agents::Agent) -> bool {
     })
 }
 
+/// One line summarising whether this box is keeping itself current, for the
+/// top of Settings → General.
+///
+/// Read from `~/.omega/state/auto-update.json` (written by the daily cron), NOT
+/// from `omega update --check`: this runs on every Settings frame, and `--check`
+/// does a network `git fetch`. The System tab renders the same state in full
+/// (`render_info_overview`); here it is one line, because the operator reading
+/// it is about to press the button underneath it, not audit the history.
+pub fn update_status_line(config: &OmegaConfig) -> String {
+    let st = omega_core::auto_update::AutoUpdateState::load(&config.state_dir);
+    let ago = |t: chrono::DateTime<chrono::Utc>| -> String {
+        let mins = (chrono::Utc::now() - t).num_minutes().max(0);
+        if mins < 60 {
+            format!("{}m ago", mins)
+        } else if mins < 60 * 48 {
+            format!("{}h ago", mins / 60)
+        } else {
+            format!("{}d ago", mins / (60 * 24))
+        }
+    };
+    let checked = match st.last_check {
+        Some(t) => ago(t),
+        // Never having checked is a real state, not a blank: the cron may not
+        // be installed on this box at all.
+        None => "never".to_string(),
+    };
+    let outcome = st.last_outcome.as_deref().unwrap_or("no run recorded yet");
+    format!(
+        "OmegaOS v{} · auto-update: {} · last check {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        config.auto_update.as_str(),
+        checked,
+        outcome
+    )
+}
+
 pub fn fields_for_section(
     section: SettingsSection,
     providers: &omega_core::providers::ProvidersConfig,
@@ -627,6 +663,34 @@ pub fn fields_for_section(
 
     match section {
         SettingsSection::General => {
+            // ── Keeping OmegaOS current ──────────────────────────────────
+            // The update runs as a DETACHED session (Action::RunShellCommand),
+            // never in-process: `omega update` rebuilds the binary this very
+            // TUI is running from, and the build takes minutes. Spawning it
+            // keeps the UI alive and makes the pull + build watchable live.
+            out.push(SettingsField::Info(update_status_line(config)));
+            out.push(SettingsField::Action {
+                label: "[Check] for an OmegaOS update (changes nothing)".to_string(),
+                command: "omega update --check".to_string(),
+                confirm_first: false,
+            });
+            out.push(SettingsField::Action {
+                label: "[Update] OmegaOS now (pull + rebuild + reinstall)".to_string(),
+                command: "omega update".to_string(),
+                confirm_first: true,
+            });
+            out.push(SettingsField::Select {
+                label: "Auto-update (daily 03:30)".to_string(),
+                config_key: "general.auto_update".to_string(),
+                options: vec!["apply".to_string(), "check".to_string(), "off".to_string()],
+                current_index: match config.auto_update {
+                    omega_core::config::AutoUpdatePolicy::Apply => 0,
+                    omega_core::config::AutoUpdatePolicy::Check => 1,
+                    omega_core::config::AutoUpdatePolicy::Off => 2,
+                },
+            });
+            out.push(SettingsField::Info(String::new())); // spacer
+
             out.push(SettingsField::Info(format!(
                 "Default AISB agent: {}",
                 config.aisb_agent
@@ -3595,5 +3659,127 @@ mod preview_cache_tests {
             app.preview_fail_streak, 1,
             "a retry for the same target must retain its failure streak"
         );
+    }
+}
+
+#[cfg(test)]
+mod settings_update_tests {
+    use super::*;
+    use omega_core::config::{AutoUpdatePolicy, OmegaConfig};
+
+    fn general_fields(config: &OmegaConfig) -> Vec<SettingsField> {
+        let providers = omega_core::providers::ProvidersConfig::default();
+        fields_for_section(SettingsSection::General, &providers, config)
+    }
+
+    fn action(fields: &[SettingsField], needle: &str) -> (String, bool) {
+        fields
+            .iter()
+            .find_map(|f| match f {
+                SettingsField::Action {
+                    label,
+                    command,
+                    confirm_first,
+                } if command == needle => Some((label.clone(), *confirm_first)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no action running `{}` in General: {:?}", needle, fields))
+    }
+
+    #[test]
+    fn general_offers_check_and_update_with_confirm_on_the_destructive_half() {
+        let config = OmegaConfig::default();
+        let fields = general_fields(&config);
+
+        // `--check` changes nothing, so it fires on the first Enter.
+        let (_, check_confirms) = action(&fields, "omega update --check");
+        assert!(
+            !check_confirms,
+            "a read-only check must not cost two presses"
+        );
+
+        // The real update rebuilds and replaces the running binary — two-press.
+        let (label, update_confirms) = action(&fields, "omega update");
+        assert!(
+            update_confirms,
+            "the real update must be armed before it fires"
+        );
+        assert!(
+            label.contains("Update"),
+            "the row must read as an update button: {}",
+            label
+        );
+    }
+
+    #[test]
+    fn auto_update_select_points_at_the_saved_policy() {
+        for (policy, expected) in [
+            (AutoUpdatePolicy::Apply, "apply"),
+            (AutoUpdatePolicy::Check, "check"),
+            (AutoUpdatePolicy::Off, "off"),
+        ] {
+            let mut config = OmegaConfig::default();
+            config.auto_update = policy;
+            let fields = general_fields(&config);
+            let (options, idx) = fields
+                .iter()
+                .find_map(|f| match f {
+                    SettingsField::Select {
+                        config_key,
+                        options,
+                        current_index,
+                        ..
+                    } if config_key == "general.auto_update" => {
+                        Some((options.clone(), *current_index))
+                    }
+                    _ => None,
+                })
+                .expect("General must expose the auto-update policy");
+            assert_eq!(
+                options[idx], expected,
+                "the picker must open on the SAVED policy, not on the first option"
+            );
+        }
+    }
+
+    #[test]
+    fn status_line_reports_never_checked_without_inventing_a_date() {
+        let mut config = OmegaConfig::default();
+        // A path that cannot exist → the same state as a box whose update cron
+        // has never run. It must say so, not render a blank or a fake time.
+        config.state_dir = std::path::PathBuf::from("/nonexistent/omega-settings-test");
+        let line = update_status_line(&config);
+        assert!(line.contains("OmegaOS v"), "must name the running version: {}", line);
+        assert!(line.contains("last check never"), "must admit it never checked: {}", line);
+    }
+
+    #[test]
+    fn status_line_reads_the_cron_state_when_there_is_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "omega-settings-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = omega_core::auto_update::AutoUpdateState {
+            last_check: Some(chrono::Utc::now()),
+            last_outcome: Some("already up to date".to_string()),
+            ..Default::default()
+        };
+        state.save(&dir).unwrap();
+
+        let mut config = OmegaConfig::default();
+        config.state_dir = dir.clone();
+        let line = update_status_line(&config);
+        assert!(
+            line.contains("already up to date"),
+            "the last outcome is the whole point of the line: {}",
+            line
+        );
+        assert!(
+            line.contains("0m ago"),
+            "a check from this second must read as fresh: {}",
+            line
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
