@@ -21,7 +21,7 @@
  *
  * Setup:  omega-inbox-bot-up <BOT_TOKEN> [YOUR_TELEGRAM_USER_ID]
  */
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync, copyFileSync, chmodSync } from "fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync, copyFileSync, chmodSync, linkSync, unlinkSync } from "fs";
 import { homedir } from "os";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
@@ -32,7 +32,7 @@ const INDEX = `${MEDIA}/index.jsonl`;
 
 // Minimal TOML scalar reader (same approach the Rust side uses for telegram.toml):
 // we only need bot_token / chat_id / pair_code / enabled, so a line regex beats a TOML dep.
-function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string; enabled?: boolean; fanout?: string[]; fanout_secrets?: boolean } {
+function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string; enabled?: boolean; fanout?: string[]; fanout_secrets?: boolean; boxes?: string[] } {
   try {
     const t = readFileSync(CONF, "utf8");
     const tok = t.match(/^\s*bot_token\s*=\s*"([^"]*)"/m)?.[1];
@@ -43,6 +43,9 @@ function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string;
     // MIRRORED so a second session (another Unix account) can read it.
     const fo = t.match(/^\s*fanout\s*=\s*\[([^\]]*)\]/m)?.[1];
     const fs = t.match(/^\s*fanout_secrets\s*=\s*(true|false)/m)?.[1];
+    // boxes = ["Home", "AltReality", "Omega", "Box"] — the named sub-boxes a
+    // deposit is filed into. Rename or extend the set without touching the code.
+    const bx = t.match(/^\s*boxes\s*=\s*\[([^\]]*)\]/m)?.[1];
     return {
       bot_token: tok,
       chat_id: cid != null ? Number(cid) : undefined,
@@ -50,6 +53,7 @@ function readConf(): { bot_token?: string; chat_id?: number; pair_code?: string;
       enabled: en ? en === "true" : undefined,
       fanout: fo != null ? [...fo.matchAll(/"([^"]+)"/g)].map((m) => m[1]) : undefined,
       fanout_secrets: fs ? fs === "true" : undefined,
+      boxes: bx != null ? [...bx.matchAll(/"([^"]+)"/g)].map((m) => m[1]) : undefined,
     };
   } catch { return {}; }
 }
@@ -80,33 +84,77 @@ const FANOUT: string[] = conf.fanout && conf.fanout.length ? conf.fanout : exist
 const SECRETISH = /(\.(p8|pem|key|env|p12|jks|keystore|ppk|crt|pfx)$)|(^|[._-])(id_rsa|id_ed25519)|credential|secret|token|passwd|private[._-]?key/i;
 const looksSecret = (f: string) => SECRETISH.test(f.split("/").pop() || "");
 
-/** Mirror one deposited file (+ its caption sidecar) into every fan-out box.
- *  Returns the boxes it reached, and whether it was held back as a credential. */
-function fanout(file: string, caption = "", force = false): { shared: string[]; held: boolean } {
-  if (!FANOUT.length || !existsSync(file)) return { shared: [], held: false };
-  const base = file.split("/").pop()!;
-  if (looksSecret(base) && !force && conf.fanout_secrets !== true) return { shared: [], held: true };
+// The four named boxes the operator files a deposit into. A deposit with no tag
+// goes to ALL of them — the box is a distribution point, not a sorting chore, and
+// the operator should never have to remember a tag for a file to be reachable.
+// Tag one or more in the caption (#home #alt #omega #box) to narrow it.
+const BOXES: string[] = conf.boxes && conf.boxes.length ? conf.boxes : ["Home", "AltReality", "Omega", "Box"];
+const BOX_TAGS: Record<string, RegExp> = {
+  Home: /#home\b/i,
+  AltReality: /#(alt|altreality|alt-reality)\b/i,
+  Omega: /#(omega|omegaos)\b/i,
+  Box: /#box\b/i,
+};
+/** Which boxes this caption asks for. No recognised tag → every box. */
+function boxesFor(caption: string): string[] {
+  const picked = BOXES.filter((b) => BOX_TAGS[b]?.test(caption));
+  return picked.length ? picked : BOXES;
+}
 
+/** Same bytes in N boxes for the price of one: a hard link when the box sits on
+ *  the same filesystem (it does — they are subdirectories of the master), a copy
+ *  when it does not. Four boxes must not mean four times the disk. */
+function place(src: string, dst: string): void {
+  try {
+    if (existsSync(dst)) unlinkSync(dst);
+  } catch {}
+  try {
+    linkSync(src, dst);
+  } catch {
+    copyFileSync(src, dst);
+  }
+  try { chmodSync(dst, 0o664); } catch {}
+}
+
+/** Mirror one deposited file (+ its caption sidecar) into every fan-out box, and
+ *  file it into the named boxes the caption asks for.
+ *  Returns the boxes it reached, and whether it was held back as a credential. */
+function fanout(file: string, caption = "", force = false): { shared: string[]; boxes: string[]; held: boolean } {
+  if (!FANOUT.length || !existsSync(file)) return { shared: [], boxes: [], held: false };
+  const base = file.split("/").pop()!;
+  if (looksSecret(base) && !force && conf.fanout_secrets !== true) return { shared: [], boxes: [], held: true };
+
+  const targets = boxesFor(caption);
   const shared: string[] = [];
+  const reached = new Set<string>();
   for (const dir of FANOUT) {
     try {
       mkdirSync(dir, { recursive: true });
-      const dst = `${dir}/${base}`;
-      copyFileSync(file, dst);
-      try { chmodSync(dst, 0o664); } catch {}
+      const master = `${dir}/${base}`;
+      copyFileSync(file, master);
+      try { chmodSync(master, 0o664); } catch {}
       if (caption) {
-        writeFileSync(`${dst}.txt`, caption);
-        try { chmodSync(`${dst}.txt`, 0o664); } catch {}
+        writeFileSync(`${master}.txt`, caption);
+        try { chmodSync(`${master}.txt`, 0o664); } catch {}
       }
+
+      for (const box of targets) {
+        const bdir = `${dir}/${box}`;
+        mkdirSync(bdir, { recursive: true });
+        place(master, `${bdir}/${base}`);
+        if (caption) place(`${master}.txt`, `${bdir}/${base}.txt`);
+        reached.add(box);
+      }
+
       const idx = `${dir}/index.jsonl`;
-      appendFileSync(idx, JSON.stringify({ ts: stamp(), file: base, caption, from: "deposit-bot" }) + "\n");
+      appendFileSync(idx, JSON.stringify({ ts: stamp(), file: base, caption, boxes: targets, from: "deposit-bot" }) + "\n");
       try { chmodSync(idx, 0o664); } catch {}
       shared.push(dir);
     } catch (e: any) {
       console.error(`[deposit] fanout -> ${dir} failed: ${e?.message || e}`);
     }
   }
-  return { shared, held: false };
+  return { shared, boxes: [...reached], held: false };
 }
 
 // CLI mode — `bun inbox-bot.ts --fanout <file> [caption]` runs the same code
@@ -114,9 +162,14 @@ function fanout(file: string, caption = "", force = false): { shared: string[]; 
 // a second implementation to drift.
 if (process.argv[2] === "--fanout") {
   const f = process.argv[3];
-  if (!f) { console.error("usage: inbox-bot.ts --fanout <file> [caption]"); process.exit(2); }
-  const r = fanout(f, process.argv[4] || "", true);
-  console.log(r.shared.length ? `[deposit] fanned out to ${r.shared.join(", ")}` : "[deposit] no fan-out destination");
+  if (!f) { console.error("usage: inbox-bot.ts --fanout <file> [caption] [--force]"); process.exit(2); }
+  // The credential guard applies here too — a backfill loop must not be the hole
+  // that walks every old key into the shared box. `--force` is the deliberate
+  // operator override, the CLI twin of the `!share` caption.
+  const forced = process.argv.includes("--force");
+  const r = fanout(f, process.argv[4] && process.argv[4] !== "--force" ? process.argv[4] : "", forced);
+  if (r.held) { console.log(`[deposit] ${f.split("/").pop()} HELD (credential-looking) — re-run with --force to share it`); process.exit(3); }
+  console.log(r.shared.length ? `[deposit] ${f.split("/").pop()} → ${r.shared.join(", ")} [${r.boxes.join(" ")}]` : "[deposit] no fan-out destination");
   process.exit(r.shared.length ? 0 : 1);
 }
 
@@ -189,11 +242,11 @@ async function handle(msg: any) {
   const caption = rawCaption.replace(/(^|\s)!share(\s|$)/i, " ").trim();
 
   // One line for the Telegram reply: where the deposit actually went.
-  const reach = (r: { shared: string[]; held: boolean }) =>
+  const reach = (r: { shared: string[]; boxes: string[]; held: boolean }) =>
     r.held
       ? "\n🔒 gardé privé (ressemble à une clé) — renvoie-le avec la légende !share pour le partager aussi"
       : r.shared.length
-        ? "\n🔗 partagé aussi avec la session AltReality"
+        ? `\n📦 ${r.boxes.join(" · ")}\n🔗 lisible par les sessions VIBE et AltReality`
         : "";
 
   if (Array.isArray(msg.photo) && msg.photo.length) {
