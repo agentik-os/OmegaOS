@@ -145,11 +145,64 @@ SMALL = re.compile(
     r"correction|small fix|tiny|trivial|quick fix|just rename|rename this|rename the|"
     r"renomme)\b")
 
+# MACHINE-GENERATED PROMPTS ARE NOT ASKS. Measured on 147 real prompts from this
+# box: the first cut of this branch fired on 36% of them, and the top offenders
+# were not asks at all — an oracle control message (`## Mission …`), a skill
+# preamble (`Base directory for this skill: …`), a pasted PRD. A nudge that
+# fires on one prompt in three is wallpaper, and wallpaper is how an operator
+# learns to ignore every alert (R-MONITOR: a false positive is the only fatal
+# defect an alerting surface has).
+MACHINE = re.compile(
+    r"^\s*(?:##\s*Mission\b|#\s*Mission\b)|"
+    r"Base directory for this skill:|"
+    r"<(?:system-reminder|command-name|local-command)|"
+    r"^\s*\[(?:INFO|OK|WARN|ERROR)\]", re.M)
+
+# Pasted material is CONTEXT, not the ask: a fenced block, a quoted block, or a
+# document body under its own headings. The operator's own words are what gets
+# scanned; the paste only ever gets to inform, never to trigger.
+FENCE = re.compile(r"```.*?```|~~~.*?~~~", re.S)
+QUOTED = re.compile(r"(?m)^\s*>.*$")
+DOC_BODY = re.compile(r"(?m)^\s{0,3}#{1,6}\s+\S")
+
+
+def operator_words(text):
+    """The prompt with pasted material removed."""
+    text = FENCE.sub(" ", text)
+    text = QUOTED.sub(" ", text)
+    # A document starts at its first heading — everything from there down is the
+    # pasted artifact (PRD, spec, report), not the instruction that carries it.
+    head = DOC_BODY.search(text)
+    if head:
+        text = text[: head.start()]
+    return text
+
+
+# Sentence-level co-occurrence. "delete the stale docs and by the way the login
+# page is fine" is not an auth change: the category and the verb have to land in
+# the SAME sentence before this fires.
+SENTENCE_SPLIT = re.compile(r"[.!?\n;]+")
+VERB_RE = re.compile(
+    r"\b(?:fix|build|create|add|update|refactor|migrate|deploy|implement|remove|"
+    r"delete|drop|rename|publish|ship|write|wire|change|switch|move|rewrite|"
+    r"corrige|construis|cree|ajoute|mets? a jour|met a jour|refactorise|migre|"
+    r"deploie|implemente|supprime|renomme|publie|ecris|branche|change|passe|"
+    r"remplace|reecris)\b")
+
 blast_hits = []
-if len(prompt) >= 60 and len(prompt.split()) >= 8 and verbs and not SMALL.search(low):
-    for name, pat in BLAST:
-        if re.search(pat, low):
-            blast_hits.append(name)
+scan_text = operator_words(low)
+if (
+    len(prompt) >= 60
+    and len(scan_text.split()) >= 8
+    and not SMALL.search(low)
+    and not MACHINE.search(prompt)
+):
+    for sentence in SENTENCE_SPLIT.split(scan_text):
+        if not VERB_RE.search(sentence):
+            continue
+        for name, pat in BLAST:
+            if name not in blast_hits and re.search(pat, sentence):
+                blast_hits.append(name)
 
 high_blast = bool(blast_hits)
 
