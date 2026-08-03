@@ -2,7 +2,7 @@
 
 Терминальный control plane для параллельного управления флотом ИИ-агентов, пишущих код, — где каждый агент подчиняется одному и тому же типизированному своду правил.
 
-[English](README.md) | [Français](README.fr.md) | Русский | [中文](README.zh.md)
+[English](README.md) | [Français](README.fr.md) | Русский | [中文](README.zh.md) | [Español](README.es-ES.md)
 
 > Канонична и наиболее актуальна [английская версия README](README.md); этот перевод может отставать.
 

@@ -2,7 +2,7 @@
 
 A terminal control plane for running a fleet of AI coding agents in parallel, where every agent obeys the same typed rulebook.
 
-[English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [中文](README.zh.md)
+[English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | [中文](README.zh.md) | [Español](README.es-ES.md)
 
 [![CI](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml/badge.svg)](https://github.com/agentik-os/OmegaOS/actions/workflows/ci.yml) ![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg) ![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)
 

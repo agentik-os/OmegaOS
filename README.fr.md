@@ -2,7 +2,7 @@
 
 Un plan de contrôle en terminal pour piloter en parallèle une flotte d'agents de codage IA, où chaque agent obéit au même corpus de règles typé.
 
-[English](README.md) | Français | [Русский](README.ru.md) | [中文](README.zh.md)
+[English](README.md) | Français | [Русский](README.ru.md) | [中文](README.zh.md) | [Español](README.es-ES.md)
 
 > Le [README anglais](README.md) est la version canonique et la plus à jour ; cette traduction peut avoir un temps de retard.
 

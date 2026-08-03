@@ -2,7 +2,7 @@
 
 一个终端控制平面，用于并行运行一支 AI 编码 agent 编队，编队里的每个 agent 都遵守同一套类型化规则手册。
 
-[English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | 中文
+[English](README.md) | [Français](README.fr.md) | [Русский](README.ru.md) | 中文 | [Español](README.es-ES.md)
 
 > [英文版 README](README.md) 是权威且最新的版本；本翻译可能略有滞后。
 
