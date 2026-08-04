@@ -9,6 +9,9 @@
     "bin/",
     "README.md"
   ],
+  "scripts": {
+    "test": "node test/installer.test.js"
+  },
   "engines": {
     "node": ">=16"
   },

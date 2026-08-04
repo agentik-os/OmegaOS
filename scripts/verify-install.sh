@@ -372,6 +372,53 @@ if grep -q '"R-PREFLIGHT"' crates/omega-core/src/rules.rs \
 else
     bad "R-PREFLIGHT incomplete — the rule, the prompt-scan branch, the finish-guard exemption and the session contract must all ship together"
 fi
+
+# Oracle lifecycle contract parity (Law 0). Split deliberately into two halves,
+# because they can be proven at different times.
+#
+# (a) STRUCTURAL, always enforced. The three doctrine asset classes must be
+#     carried into ~/.omega by DIRECTORY or by GLOB, never by literal filename.
+#     That property is the whole reason a rule, a docs page or an agent prompt
+#     written today reaches a fresh install with no install.sh edit at all.
+#     Naming assets one by one is the failure mode this guards: the copy block
+#     keeps passing while the newest file is silently left behind.
+LC_STRUCT_OK=1
+grep -qF 'cp "$OMEGA_SRC/rules"/*.md "$OMEGA_DIR/rules/"' install.sh \
+  || { bad "install.sh does not copy rules/*.md by glob (a NEW rule file would not reach a fresh install)"; LC_STRUCT_OK=0; }
+grep -qF 'cp -r "$OMEGA_SRC/docs/"* "$OMEGA_DIR/docs/"' install.sh \
+  || { bad "install.sh does not copy the docs/ tree wholesale (a NEW docs page would not reach a fresh install)"; LC_STRUCT_OK=0; }
+grep -qF 'cp -r "$OMEGA_SRC/agents/"* "$AGENTS_DIR/"' install.sh \
+  || { bad "install.sh does not copy the agents/ tree wholesale (a NEW agent prompt would not reach a fresh install)"; LC_STRUCT_OK=0; }
+grep -qF '"$INSTALL_DIR/omega" rules export' install.sh \
+  || { bad "install.sh never runs 'omega rules export' (code-registered rules would never reach ~/.omega/rules)"; LC_STRUCT_OK=0; }
+[ "$LC_STRUCT_OK" = "1" ] && ok "doctrine assets carried generically (rules/*.md glob + docs/ tree + agents/ tree + omega rules export): a NEW rule/doc/agent ships with no install.sh edit"
+
+# (b) CONTENT, honest about what it cannot see. Did the lifecycle assets
+#     actually LAND in ~/.omega? The rule and its docs page may be written on a
+#     concurrent branch, and the check must then SKIP and print why: a check
+#     that cannot see its subject must never report a pass, because a vacuous
+#     pass is exactly how a missing asset ships.
+LC_HOME="${OMEGA_DIR:-$HOME/.omega}"
+LC_RULE_SRC=$(grep -oE '"[A-Z0-9_-]*LIFECYCLE[A-Z0-9_-]*"' crates/omega-core/src/rules.rs 2>/dev/null | wc -l)
+LC_DOC_SRC=$(find docs -iname '*lifecycle*.md' 2>/dev/null | wc -l)
+if [ "$LC_RULE_SRC" -eq 0 ] && [ "$LC_DOC_SRC" -eq 0 ]; then
+  ok "oracle lifecycle contract assets absent from this branch (0 LIFECYCLE rule ids in rules.rs, 0 docs/*lifecycle*.md): landing check SKIPPED, nothing to verify yet"
+elif [ ! -d "$LC_HOME" ]; then
+  ok "$LC_HOME absent (OmegaOS never installed here): lifecycle landing check SKIPPED (sources present: $LC_RULE_SRC rule ids, $LC_DOC_SRC docs pages)"
+else
+  LC_LANDED=1
+  LC_DOC_DST=$(find "$LC_HOME/docs" -iname '*lifecycle*.md' 2>/dev/null | wc -l)
+  LC_RULE_DST=$(grep -rliE 'lifecycle' "$LC_HOME/rules" 2>/dev/null | wc -l)
+  if [ "$LC_DOC_SRC" -gt 0 ] && [ "$LC_DOC_DST" -eq 0 ]; then
+    bad "lifecycle docs page(s) in the repo but none under $LC_HOME/docs (re-run install.sh, or the docs copy step regressed)"
+    LC_LANDED=0
+  fi
+  if [ "$LC_RULE_SRC" -gt 0 ] && [ "$LC_RULE_DST" -eq 0 ]; then
+    bad "lifecycle rule registered in rules.rs but nothing lifecycle-shaped exported to $LC_HOME/rules (re-run 'omega rules export')"
+    LC_LANDED=0
+  fi
+  [ "$LC_LANDED" = "1" ] && ok "oracle lifecycle contract landed in $LC_HOME (docs pages: $LC_DOC_DST, rule files: $LC_RULE_DST)"
+fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
 # HONEST contract: install.sh DEFERS this pack by default (opt-in
 # OMEGA_WITH_COMPANION=1) — the gate asserts the opt-in branch exists; it must

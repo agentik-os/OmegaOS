@@ -21,6 +21,7 @@ bottom the whole time. `--plain` disables the animation and shows a simple bar.
 ```bash
 npx omega-os --dir /opt/omega   # custom location
 npx omega-os --plain            # disable animation, simple bar only
+npx omega-os --no-telegram      # skip the guided Telegram remote-control setup
 npx omega-os --help
 ```
 
