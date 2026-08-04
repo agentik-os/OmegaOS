@@ -30,6 +30,7 @@ pub mod trajectory;
 pub mod formatting;
 pub mod gate;
 pub mod graph;
+pub mod graph_executor;
 pub mod guardian;
 pub mod inbox;
 pub mod intent;
