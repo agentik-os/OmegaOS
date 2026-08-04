@@ -104,11 +104,11 @@ OmegaOS doctor
 - **Operate it.** `omega doctor` (whole-stack health), `patrol` (session watchdog), `usage` (token budget + Telegram alerts), `backup` (irreproducible `~/.omega` state → one tgz), `cleanup` / `kill-all`, `timeline` (replay a mission), `resurrect` (revive a crashed oracle), `provision` (per-client credential groups).
 - **Resolve Linear tickets end to end.** `/omg-linear` fixes, captures evidence, audits to 100/100, comments, and moves the ticket to review — never to Done; a human does that. See [Linear integration](#linear-integration).
 
-Three ways in: the `ratatui` TUI (5 tabs: Sessions, Menu, Agentic, Settings, Help), the `omega` CLI (40+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
+Three ways in: the `ratatui` TUI (5 tabs: Sessions, Menu, Agentic, Settings, Help), the `omega` CLI (60+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
 
 ## The doctrine
 
-There's a typed registry of 7 Laws and 47 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.
+There's a typed registry of 7 Laws and 51 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.
 
 **Laws are inviolable.** They bind every agent and override every rule and task. There are seven:
 
@@ -143,7 +143,7 @@ Four levels, top to bottom:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (5 tabs) · CLI (40+ cmds) · Telegram hub                   │
+│  TUI (5 tabs) · CLI (60+ cmds) · Telegram hub                   │
 │                      ↓ intent                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 2 — Master (persistent brain — the Atlas topic)          │
@@ -163,7 +163,7 @@ Four levels, top to bottom:
 
 **Level 3 — Oracle.** One per project. It classifies the request, plans, dispatches workers, and runs the quality gate at the end. An oracle orchestrates. It does not edit project code itself, so the grader and the writer are never the same agent.
 
-**Level 4 — Workers.** Ephemeral. They run in parallel, each scoped to its own files by a file-lock claim (advisory locks via `fs2`) — and optionally to its own git worktree. A worker signals completion by writing a `done.json` with status `done_clean`, `pending`, or `failed`; without that status it isn't done.
+**Level 4 — Workers.** Ephemeral. They run in parallel, each scoped to its own files by a file-lock claim (advisory locks via `fs2`) — and optionally to its own git worktree. A worker signals completion by writing a `done.json` with status `done_clean`, `pending`, `failed`, or `blocked`; without that status it isn't done. Writing the signal is also what closes it: see [how a worker closes](#how-a-worker-closes).
 
 ### How a mission runs
 
@@ -176,6 +176,44 @@ Verification is deliberately adversarial: a worker reporting "done" doesn't end 
 This depends on the doctrine funnel above: every agent, at every level, gets its role-scoped Laws and Rules injected the moment it's dispatched.
 
 This README section is itself an example. A workflow produced it. One agent wrote the draft, independent readers went through it hunting for AI-generated prose, another agent revised against what they flagged, and native speakers handled the translation. So no part of this text came from a single unreviewed pass.
+
+### How a worker closes
+
+A worker's `done.json` is not just a report, it is the trigger for its own teardown. When a terminal status lands (`done_clean`, `failed`, or `blocked`), `omega done` closes that session's pane, releases its file-scope claim so the next worker can claim those paths, and unregisters its git worktree when the worktree holds nothing unsaved. `pending` is deliberately not a stop, and a worker with no signal at all is still working and is never touched.
+
+`omega reap` is the same reconciliation run by hand, for the stragglers:
+
+```
+omega reap --dry-run     # print what would close, change nothing
+omega reap               # close every worker holding a terminal signal
+omega reap <session>     # just this one
+```
+
+It is idempotent. Reaping twice does what reaping once does, and an already-closed session is a quiet exit 0.
+
+Two properties matter more than they look. The scope claim is released *before* the pane dies, because a leaked claim outlives the worker and rejects the next `spawn-worker` on those files with an owner nobody can find. And a worktree carrying uncommitted or unmerged work is kept, always: losing a worker's commits is worse than leaving a directory behind, and the leftover directory is recoverable while the commits are not.
+
+The `patrol` watchdog runs the same logic on a timer for workers whose oracle died mid-mission. That sweep is bounded at both ends: it waits out a grace period so a re-dispatch can't be raced, and it ignores any completion signal too old to have plausibly governed a live worker.
+
+### When a mission is a graph, not a list
+
+Most missions are a list of tasks with dependencies, and `omega dispatch` handles those. Some are not. When a mission needs a branch taken on a classification, a stage that repeats until it stops finding anything, or a step that must not run unattended, `omega-core` carries a typed, persisted mission **graph** instead.
+
+The vocabulary is small. Nodes are units of work; edges are the dependencies between them. A **router** resolves a classification string through an exact table lookup and then a default, so the same classification lands on the same node on every machine and in every replay. A model may produce the classification, but it never decides the branch. **Fan-out** is the set of nodes the executor reports as runnable right now, given the edges and the budgets.
+
+**Convergence** is enforced structurally rather than hoped for. Every back edge carries a finite iteration bound, and graph validation refuses a graph that is still cyclic once the bounded edges are cut. At runtime three counters only ever move forward (attempts per node, traversals per edge, lifecycle transitions), so no sequence of steps can spin forever. Bounded retries live on the node itself, and an attempt is counted *before* the ceiling is tested, so a limit of three runs a node exactly three times. Re-entering a loop does not refund the budget. When a node fails terminally with no live fallback, everything reachable only through it is reported as cancelled rather than left queued, and "nothing will ever be ready" is a distinct answer from "nothing is ready yet".
+
+In front of execution sits the **risk gate**, which is R-DESTRUCT expressed as a type. The executor decides what *may* run from edges and budgets alone, which means a node that drops a schema is runnable by exactly the same test as one that prints a file. The gate is the check that stands in between. A node with no risk classification defaults to elevated, never safe: the absence of a classification is not evidence that something is harmless. Running unattended, an escalated node produces a durable escalation record naming the step and what would be lost, rather than a prompt nobody is there to answer. Approvals and denials are attributed and refuse an empty approver, so an agent cannot write its own permission slip.
+
+```
+omega risk-gate show    <graph.json> <node>
+omega risk-gate approve <graph.json> <node> --approver "<who>"
+omega risk-gate deny    <graph.json> <node> --approver "<who>"
+```
+
+`--approver` is a required flag on both verdicts, not a courtesy: the attribution is the point.
+
+The graph itself is a library primitive in `omega-core` (`graph.rs` for the vocabulary, `graph_executor.rs` for the decision core, `graph_risk.rs` for the gate), not a CLI surface: `omega risk-gate` is the operator-facing half. The core is deliberately pure, with no process spawn, no network, no filesystem and no clock anywhere in it, which is the only reason a mission replays from persisted state and reaches the same decisions on another machine. `docs/GRAPH-EXECUTION-LAYER.md` is the full contract.
 
 ## Stack
 
