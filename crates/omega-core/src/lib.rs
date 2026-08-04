@@ -29,6 +29,7 @@ pub mod telegram_group;
 pub mod trajectory;
 pub mod formatting;
 pub mod gate;
+pub mod graph;
 pub mod guardian;
 pub mod inbox;
 pub mod intent;
