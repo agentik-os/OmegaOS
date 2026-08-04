@@ -417,15 +417,18 @@ enum Commands {
     ///   omega progress <s> --task "audit" --status done       (mark one task)
     ///   omega progress <s>                                    (READ IT BACK, no write)
     /// status = done | fail | doing | todo, and nothing else is accepted.
-    /// A re-stated plan KEEPS the status of a title it already knows (a new title
-    /// starts todo), marking a task `doing` sends the previous `doing` back to
-    /// `todo`, and `done` is a one-way door: walking it back is refused, exit 1,
+    /// A re-stated plan KEEPS the status of a title it already knows and DROPS
+    /// every title it leaves out, so re-state the WHOLE plan or you delete the
+    /// finished items you omitted. Marking a task `doing` sends the previous
+    /// `doing` back to `todo`. A `done` task never returns to `todo` or `doing`
+    /// (it may still be corrected to `fail`): a walk-back is refused, exit 1,
     /// with nothing written — one invocation is all-or-nothing.
     Progress {
         /// Session name (e.g. oracle-dentistrygpt-7)
         session: String,
         /// Set the full plan: a pipe-separated task list. A title already in the
-        /// plan keeps its status; only a new title starts as todo.
+        /// plan keeps its status, a new title starts as todo, and a title left
+        /// out is REMOVED — always pass the complete plan.
         #[arg(long)]
         plan: Option<String>,
         /// Upsert one task by title (use with --status).
@@ -6818,6 +6821,30 @@ fn parse_todo_status(status: &str) -> Result<omega_core::oracle_todo::TodoStatus
     })
 }
 
+/// Whether this close arms the gate-pending upgrade — the flag that lets a
+/// later `omega progress` tick, or patrol, rewrite the signal back to
+/// `done_clean`.
+///
+/// A named predicate rather than an inline `&&` because the third argument is
+/// the one that is easy to drop and impossible to notice. The flag arms TWO
+/// upgraders and only one of them reads the ledger: patrol re-derives the L4
+/// rule from the raw JSON and trusts the on-disk `done` / `total` counters
+/// (omega-core/src/patrol.rs:1131-1146). So a file that is valid JSON but not a
+/// valid PLAN — an `s` value this vocabulary does not know, an entry with no
+/// `t` — is refused by every surface here and still reads `3 == 3` to patrol,
+/// which would flip the honest refusal to `done_clean` within one cycle. That
+/// case is never armed, and nothing legitimate is lost: `omega progress` exits
+/// 1 on such a file, so there is no honest upgrade waiting to happen.
+fn arms_gate_upgrade(
+    requested: omega_core::done::DoneStatus,
+    final_status: omega_core::done::DoneStatus,
+    ledger_unreadable: bool,
+) -> bool {
+    requested == omega_core::done::DoneStatus::DoneClean
+        && final_status == omega_core::done::DoneStatus::Pending
+        && !ledger_unreadable
+}
+
 /// The French refusal lines `cmd_done` records in `pending_actions`, derived
 /// from the ledger rather than from a second reading of the raw JSON.
 ///
@@ -6929,11 +6956,11 @@ fn cmd_progress(
     let mut todo =
         omega_core::oracle_todo::OracleTodo::load(&config.state_dir, session).map_err(|e| {
             anyhow::anyhow!(
-                "{e}\nThe plan was NOT changed. Repair the file in place — tasks[].s must be one \
-                 of todo|doing|done|fail and each entry needs both `t` and `s`; `omega progress \
-                 {session}` still prints what it holds. Prefer repairing to deleting: the file \
-                 also carries the Telegram card's chat/msgId, and deleting it orphans the live \
-                 card the next time the bot restarts."
+                "{e}\nThe plan was NOT changed. Repair the file in place — the error above \
+                 names the spot; tasks[] entries need both `t` and `s`, and `s` must be one of \
+                 todo|doing|done|fail. `omega progress {session}` still prints what it holds. \
+                 Prefer repairing to deleting: the file also carries the Telegram card's \
+                 chat/msgId, and deleting it orphans the live card at the bot's next restart."
             )
         })?;
     if let Some(p) = plan {
@@ -7337,6 +7364,10 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         let mut final_status = done_status;
         let mut gate_pending: Vec<String> = Vec::new();
         let mut ledger: Option<omega_core::oracle_todo::OracleTodo> = None;
+        // Set only when the plan file exists and does not PARSE. It is tracked
+        // separately from the downgrade because it must NOT arm the gate-pending
+        // upgrade — see where `osignal.gate_pending` is assigned.
+        let mut ledger_unreadable = false;
         if final_status == omega_core::done::DoneStatus::DoneClean {
             match omega_core::oracle_todo::OracleTodo::load(&config.state_dir, session) {
                 Ok(todo) => {
@@ -7382,6 +7413,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 // fail-closed with the wording the bot and patrol already parse.
                 Err(_) => {
                     final_status = omega_core::done::DoneStatus::Pending;
+                    ledger_unreadable = true;
                     gate_pending.push(
                         "projection de plan absente ou illisible; acceptation impossible"
                             .to_string(),
@@ -7447,16 +7479,30 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                     Err(refusal) => anyhow::bail!("done_clean REFUSED — {}", refusal),
                 }
             } else if ledger.is_none() {
-                // The zombie-worker guard is a safety invariant, and it now reads
-                // through the ledger. Today this cannot happen — the only route to a
-                // still-clean `final_status` is the `Ok(todo)` arm that sets `ledger`
-                // — but a future path that reaches done_clean without loading the
-                // plan would skip the guard SILENTLY and close over live workers.
+                // Unreachable today: the only route to a still-clean `final_status`
+                // is the `Ok(todo)` arm that sets `ledger`. Kept because a future
+                // path reaching done_clean without a plan would skip the guard in
+                // total silence.
                 anyhow::bail!(
                     "done_clean REFUSED — the mission plan could not be loaded, so the \
-                     zombie-worker guard cannot run. Re-run once `omega progress {} ` reads \
+                     zombie-worker guard cannot run. Re-run once `omega progress {}` reads \
                      the plan back cleanly.",
                     session
+                );
+            } else {
+                // The REACHABLE gap, and it is pre-existing rather than introduced
+                // here: the ledger loaded but the daemon did not answer, so the live
+                // worker list is unknown. The old code skipped the guard here too —
+                // silently, which is the part worth ending. Closing anyway is the
+                // deliberate choice (a dead daemon must not strand an oracle that
+                // finished), but an oracle that closes without ever checking its
+                // workers has to SAY so: nothing is cascaded and no worker scope
+                // claim is released on this path, so a leftover claim can reject the
+                // next spawn-worker on the same files (R-SCOPE).
+                println!(
+                    "[!] session daemon unreachable — closing WITHOUT the zombie-worker \
+                     check; no worker session was cascaded. Verify with `omega workers` \
+                     and close any straggler explicitly (`omega kill <worker>`)."
                 );
             }
         }
@@ -7466,8 +7512,10 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // Mark the L4-gate downgrade so `omega progress` / patrol can upgrade the
         // signal back to done_clean once the plan hits 100% (the oracle's own
         // final "report" task is unfinished at omega-done time by contract).
-        osignal.gate_pending = done_status == omega_core::done::DoneStatus::DoneClean
-            && final_status == omega_core::done::DoneStatus::Pending;
+        //
+        // NOT for an unreadable ledger — see `arms_gate_upgrade`, where that
+        // exclusion is stated and tested.
+        osignal.gate_pending = arms_gate_upgrade(done_status, final_status, ledger_unreadable);
         osignal.pending_actions = gate_pending;
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
@@ -8122,9 +8170,14 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
     // must still SHOW the mess it is refusing to close over.
     if omega_core::oracle_todo::OracleTodo::load(&config.state_dir, name).is_err() {
         verdict.refused = true;
-        verdict
-            .reasons
-            .push("projection de plan absente ou illisible; acceptation impossible".to_string());
+        // REPLACE, never append: `cmd_done` writes this one line and nothing else
+        // for an unreadable plan (its own gate check is skipped once the status is
+        // already Pending). Appending would leave `omega status` narrating the same
+        // file with a longer list — counts read off a plan it just admitted it
+        // cannot parse — which is the divergence between surfaces this change
+        // exists to end.
+        verdict.reasons =
+            vec!["projection de plan absente ou illisible; acceptation impossible".to_string()];
     }
     let phase = state
         .as_ref()
@@ -10779,6 +10832,25 @@ mod lifecycle_tests {
             .upsert("a", omega_core::oracle_todo::TodoStatus::Todo, None)
             .is_err());
         assert_eq!(todo.counts(), (1, 1));
+    }
+
+    #[test]
+    fn an_unreadable_plan_never_arms_the_gate_upgrade() {
+        use omega_core::done::DoneStatus::{Blocked, DoneClean, Failed, Pending};
+        // The legitimate case: the oracle's own final "report" task is unfinished
+        // at omega-done time by contract, so the next progress tick upgrades it.
+        assert!(arms_gate_upgrade(DoneClean, Pending, false));
+        // The case that must never arm: patrol's upgrader re-derives L4 from the
+        // RAW json and trusts the on-disk counters, so a file that is valid JSON
+        // but not a valid plan reads 3/3 to patrol while every CLI surface refuses
+        // it. Arming it lets patrol flip an honest refusal to done_clean.
+        assert!(!arms_gate_upgrade(DoneClean, Pending, true));
+        // Nothing else arms it: no downgrade happened, or the request was already
+        // an honest non-clean status.
+        assert!(!arms_gate_upgrade(DoneClean, DoneClean, false));
+        assert!(!arms_gate_upgrade(DoneClean, Failed, false));
+        assert!(!arms_gate_upgrade(Pending, Pending, false));
+        assert!(!arms_gate_upgrade(Blocked, Pending, false));
     }
 
     #[test]
