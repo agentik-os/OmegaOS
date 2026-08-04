@@ -398,26 +398,38 @@ grep -qF '"$INSTALL_DIR/omega" rules export' install.sh \
 #     concurrent branch, and the check must then SKIP and print why: a check
 #     that cannot see its subject must never report a pass, because a vacuous
 #     pass is exactly how a missing asset ships.
+#     The rule half asserts ONE EXACT ID, R-ORACLE-LEDGER, at both ends. The id
+#     is what `omega rules export` writes into the exported basename
+#     (R-ORACLE-LEDGER-the-oracle-ledger-and-a-close-that-leave.md), so the same
+#     literal is checkable in the source registry and in ~/.omega/rules. Two
+#     ways this check was previously vacuous, both fixed here: a source pattern
+#     that no registered id can match (the rule ships as R-ORACLE-LEDGER, never
+#     as *LIFECYCLE*) makes the whole half unreachable and prints "rule files:
+#     0" while passing, and a destination CONTENT grep for the word "lifecycle"
+#     is satisfied by any unrelated rule that merely mentions it. Match the id,
+#     and match it on the basename.
 LC_HOME="${OMEGA_DIR:-$HOME/.omega}"
-LC_RULE_SRC=$(grep -oE '"[A-Z0-9_-]*LIFECYCLE[A-Z0-9_-]*"' crates/omega-core/src/rules.rs 2>/dev/null | wc -l)
+LC_RULE_ID="R-ORACLE-LEDGER"
+LC_RULE_SRC=$(grep -cE "id:[[:space:]]*\"$LC_RULE_ID\"" crates/omega-core/src/rules.rs 2>/dev/null)
 LC_DOC_SRC=$(find docs -iname '*lifecycle*.md' 2>/dev/null | wc -l)
 if [ "$LC_RULE_SRC" -eq 0 ] && [ "$LC_DOC_SRC" -eq 0 ]; then
-  ok "oracle lifecycle contract assets absent from this branch (0 LIFECYCLE rule ids in rules.rs, 0 docs/*lifecycle*.md): landing check SKIPPED, nothing to verify yet"
+  ok "oracle lifecycle contract assets absent from this branch (0 $LC_RULE_ID registrations in rules.rs, 0 docs/*lifecycle*.md): landing check SKIPPED, nothing to verify yet"
 elif [ ! -d "$LC_HOME" ]; then
-  ok "$LC_HOME absent (OmegaOS never installed here): lifecycle landing check SKIPPED (sources present: $LC_RULE_SRC rule ids, $LC_DOC_SRC docs pages)"
+  ok "$LC_HOME absent (OmegaOS never installed here): lifecycle landing check SKIPPED (sources present: $LC_RULE_SRC $LC_RULE_ID registration(s), $LC_DOC_SRC docs pages)"
 else
   LC_LANDED=1
   LC_DOC_DST=$(find "$LC_HOME/docs" -iname '*lifecycle*.md' 2>/dev/null | wc -l)
-  LC_RULE_DST=$(grep -rliE 'lifecycle' "$LC_HOME/rules" 2>/dev/null | wc -l)
+  LC_RULE_DST=$(find "$LC_HOME/rules" -maxdepth 1 -type f \
+                  \( -name "$LC_RULE_ID.md" -o -name "$LC_RULE_ID-*.md" \) 2>/dev/null | wc -l)
   if [ "$LC_DOC_SRC" -gt 0 ] && [ "$LC_DOC_DST" -eq 0 ]; then
     bad "lifecycle docs page(s) in the repo but none under $LC_HOME/docs (re-run install.sh, or the docs copy step regressed)"
     LC_LANDED=0
   fi
   if [ "$LC_RULE_SRC" -gt 0 ] && [ "$LC_RULE_DST" -eq 0 ]; then
-    bad "lifecycle rule registered in rules.rs but nothing lifecycle-shaped exported to $LC_HOME/rules (re-run 'omega rules export')"
+    bad "$LC_RULE_ID registered in rules.rs but no $LC_RULE_ID*.md exported to $LC_HOME/rules (re-run 'omega rules export')"
     LC_LANDED=0
   fi
-  [ "$LC_LANDED" = "1" ] && ok "oracle lifecycle contract landed in $LC_HOME (docs pages: $LC_DOC_DST, rule files: $LC_RULE_DST)"
+  [ "$LC_LANDED" = "1" ] && ok "oracle lifecycle contract landed in $LC_HOME (docs pages: $LC_DOC_DST, $LC_RULE_ID files: $LC_RULE_DST)"
 fi
 # Companion tools + skills (SST multi-LLM) shipped and sourced by install.sh.
 # HONEST contract: install.sh DEFERS this pack by default (opt-in
