@@ -35,6 +35,29 @@ const ORACLE_CLOSE_GRACE_SECS: i64 = 120;
 // race the sweep.
 const ORPHAN_WORKER_GRACE_SECS: i64 = 300;
 
+// Ceiling on how old a done signal may be and still authorize an orphan reap.
+//
+// The grace above is a FLOOR and was the only bound, which is safe on the
+// registered-parent branch (the signal is read by exact oracle name, and a
+// same-name re-dispatch clears it first) but NOT on the project-match branch
+// below, which accepts any closeable signal sharing the worker's project. A
+// project accumulates done.json files forever, so the oldest one kept matching
+// and authorized killing workers it never governed.
+//
+// Measured incident (2026-08-04): `oracle-OmegaOS-4.done.json`, done_clean and
+// finished 2026-06-28, matched every freshly spawned `OmegaOS-worker-*` and the
+// sweep closed three README workers within 60s of spawn each, before any of
+// them could write a file or a done signal.
+//
+// A genuine orphan is swept within GRACE + one patrol tick of its mission
+// finishing, so a signal older than this ceiling cannot still have live
+// legitimate orphans: anything running under it is a NEW worker. The window is
+// deliberately generous (24h) to tolerate patrol downtime, and erring toward
+// leaving a worker alive matches this module's own doctrine that losing a
+// worker's commits is far worse than leaking one - a leak is recoverable with
+// `omega reap`, a wrongful kill destroys unsaved work.
+const ORPHAN_SIGNAL_MAX_AGE_SECS: i64 = 86_400;
+
 #[derive(Debug)]
 pub struct PatrolReport {
     pub total_sessions: usize,
@@ -1805,11 +1828,21 @@ fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
 
 /// Orphan-worker predicate (pure + testable). A live worker whose governing
 /// oracle session is GONE is reaped only when that oracle's mission is over
-/// (closeable done signal) AND the generous orphan grace has elapsed since
-/// `finished_at` — a same-name re-dispatch clears the stale signal before
-/// spawning, so the sweep can never act on a superseded mission's signal.
+/// (closeable done signal) AND `finished_at` sits inside the reap WINDOW:
+/// at least the generous grace has elapsed (so a same-name re-dispatch, which
+/// clears the stale signal first, can never race the sweep) and no more than
+/// [`ORPHAN_SIGNAL_MAX_AGE_SECS`] has elapsed.
+///
+/// The ceiling is what makes this safe on the project-match branch. Matching by
+/// project alone means the signal was NOT necessarily written by this worker's
+/// parent, so "grace elapsed" cannot imply "this signal governs this worker" —
+/// an ancient done_clean stayed eligible forever and reaped brand-new workers.
+/// A real orphan is swept within grace plus one tick; past the ceiling, a live
+/// worker is by definition a newer one that this mission never dispatched.
 fn should_reap_orphan(closeable: bool, finished_secs: i64) -> bool {
-    closeable && finished_secs >= ORPHAN_WORKER_GRACE_SECS
+    closeable
+        && finished_secs >= ORPHAN_WORKER_GRACE_SECS
+        && finished_secs <= ORPHAN_SIGNAL_MAX_AGE_SECS
 }
 
 /// Freshness guard predicate (pure + testable). A done signal whose
@@ -1980,6 +2013,26 @@ mod tests {
         // Closeable + grace elapsed → reap.
         assert!(should_reap_orphan(true, ORPHAN_WORKER_GRACE_SECS));
         assert!(should_reap_orphan(true, ORPHAN_WORKER_GRACE_SECS + 600));
+    }
+
+    #[test]
+    fn orphan_sweep_ignores_an_ancient_signal_that_never_governed_the_worker() {
+        // Regression, measured 2026-08-04. `oracle-OmegaOS-4.done.json` was
+        // done_clean and 3_185_365s (36.9 days) old. On the project-match branch
+        // it kept matching every newly spawned `OmegaOS-worker-*`, and the sweep
+        // closed three README workers within 60s of spawn — before any of them
+        // could write a file or a done signal. Grace-elapsed alone said "reap".
+        const INCIDENT_AGE_SECS: i64 = 3_185_365;
+        assert!(INCIDENT_AGE_SECS > ORPHAN_SIGNAL_MAX_AGE_SECS);
+        assert!(
+            !should_reap_orphan(true, INCIDENT_AGE_SECS),
+            "a 36-day-old done signal must never authorize reaping a live worker"
+        );
+
+        // The window is closed at the top and stays open right up to it, so a
+        // genuine orphan (swept within grace + one tick) is still reaped.
+        assert!(should_reap_orphan(true, ORPHAN_SIGNAL_MAX_AGE_SECS));
+        assert!(!should_reap_orphan(true, ORPHAN_SIGNAL_MAX_AGE_SECS + 1));
     }
 
     #[test]
