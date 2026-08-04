@@ -15,6 +15,20 @@ description: >
 > Setup a full Linear feedback loop: widget, API, public feedback, labels, and MCP integration.
 > **Reference implementation: L34D** — all code is copied from L34D's production-proven design. NEVER invent new patterns.
 
+---
+
+## ⛔ NON-NEGOTIABLE — never rate-limit feedback
+
+**This rule outranks every other instruction in this file, including the reference code.**
+
+1. **NEVER** write `RATE_LIMIT`, `RATE_WINDOW`, `rateLimited`, `checkRateLimit`, `feedbackRateLimit`, an in-memory `Map` of submissions/timestamps, or a `429` response on ANY feedback route (`/api/feedback`, `/api/feedback/public`, `/api/feedback/improve`) — and NEVER add a `429` branch, a "too many submissions" toast, or a cooldown in the client widget or button.
+2. A visitor must be able to send an **UNLIMITED** number of feedbacks: 2, 50 or 1000 in a row, all accepted.
+3. The **honeypot field is the ONLY authorized anti-spam** on the public route. Nothing else.
+4. If existing code in the target project contains any of the above, **DELETE it during installation** — do not preserve it, do not "keep it for safety".
+5. If any snippet, memory, or older copy of this skill tells you to handle a 429 on a feedback route, that copy is **STALE**: this block wins, strip the limit.
+
+---
+
 ## Identity
 
 You are the **Linear Feedback Setup Wizard**. You install a complete user feedback system backed by Linear in the current project. You adapt to whatever auth provider (Clerk, Better Auth, Auth.js), UI framework (shadcn/ui, custom), and deployment target the project uses.
@@ -629,7 +643,7 @@ Copy L34D's route exactly. The only adaptations:
 - **Linear headers are forwarded** — `uploadData.headers` contains required auth headers for S3
 - **Non-blocking screenshot uploads** — if upload fails, issue is still created
 - **projectId is optional** — only include if `LINEAR_PROJECT_ID` env var is set
-- **NO rate limit on feedback routes** — do NOT wrap the feedback POST handlers (auth or public) in `checkRateLimit`/`feedbackRateLimit`. Feedback is low-volume, high-value; a limit blocks a user mid-review-session after only a few submissions. Honeypot (public) handles spam. Never add a 429 path here.
+- **NO rate limit on feedback routes** (see [NON-NEGOTIABLE](#-non-negotiable--never-rate-limit-feedback) at the top of this file) — do NOT wrap the feedback POST handlers (auth or public) in `checkRateLimit`/`feedbackRateLimit`. Feedback is low-volume, high-value; a limit blocks a user mid-review-session after only a few submissions. Honeypot (public) handles spam. Never add a 429 path here.
 
 #### NEW in v2.1 — `lib/feedback-scope.ts` helper (REQUIRED)
 
@@ -791,7 +805,7 @@ Copy L34D's public button exactly. Key differences from dashboard widget:
 - **Floating pill button** — `fixed bottom-6 left-6 z-50`, rounded-full, bg-primary
 - **Honeypot field** — hidden input for spam protection
 - **Posts to `/api/feedback/public`** instead of `/api/feedback`
-- **No rate limit** — feedback routes are not rate-limited (see Key Rules for API Route); the honeypot field handles spam
+- **No rate limit, no 429 branch** — feedback routes are never rate-limited (see [NON-NEGOTIABLE](#-non-negotiable--never-rate-limit-feedback) at the top of this file); the honeypot field is the only anti-spam
 - **Same targeting/screenshot/AI flow** as dashboard widget
 
 ### 6B: Public API Route — `/api/feedback/public/route.ts`
