@@ -10733,8 +10733,12 @@ mod lifecycle_tests {
             ("merge", "todo"),
         ]);
         let (done, total) = todo.counts();
+        let reasons = l4_refusal_reasons(&todo);
+        // Pinned literally as well as by equivalence: two empty vectors would
+        // satisfy the comparison below without either surface saying anything.
+        assert_eq!(reasons, vec!["échec: deploy", "non fait: merge"]);
         assert_eq!(
-            l4_refusal_reasons(&todo),
+            reasons,
             closure_verdict(
                 total as usize,
                 done as usize,
@@ -10749,10 +10753,12 @@ mod lifecycle_tests {
 
     #[test]
     fn an_absent_ledger_refuses_with_the_absent_plan_wording() {
+        let reasons = l4_refusal_reasons(&omega_core::oracle_todo::OracleTodo::new("oracle-t"));
         assert_eq!(
-            l4_refusal_reasons(&omega_core::oracle_todo::OracleTodo::new("oracle-t")),
-            closure_verdict(0, 0, &[], &[], true, &[]).reasons
+            reasons,
+            vec!["plan missionnel absent ou vide; acceptation impossible"]
         );
+        assert_eq!(reasons, closure_verdict(0, 0, &[], &[], true, &[]).reasons);
     }
 
     #[test]
