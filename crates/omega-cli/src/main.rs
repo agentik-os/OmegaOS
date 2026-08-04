@@ -307,10 +307,20 @@ enum Commands {
         name: String,
     },
 
-    /// Kill a session
+    /// Kill a session. On an ORACLE this is a mission CLOSURE, not a pane kill:
+    /// its live workers are cascaded, EVERY affected scope claim is released,
+    /// and the git worktree of a `--worktree` worker is unregistered when it
+    /// holds no unsaved work. Killing an already-dead session is a no-op that
+    /// exits 0, so the command is safe to run twice.
     Kill {
         /// Session name
         name: String,
+        /// Close an oracle even though some of its workers are still RUNNING
+        /// (they are killed too). Without it a running worker REFUSES the
+        /// closure, which is the safe default: an oracle killed out from under
+        /// a live worker leaves that worker holding a scope claim forever.
+        #[arg(long)]
+        force: bool,
     },
 
     /// Dispatch a mission to an oracle
@@ -405,6 +415,7 @@ enum Commands {
     /// chat/thread/msg fields. Two ways to drive it:
     ///   omega progress <s> --plan "audit|fix N+1|merge"      (set the plan; all todo)
     ///   omega progress <s> --task "audit" --status done       (mark one task)
+    ///   omega progress <s>                                    (READ IT BACK, no write)
     /// status = done | fail | doing | todo.
     Progress {
         /// Session name (e.g. oracle-dentistrygpt-7)
@@ -418,6 +429,10 @@ enum Commands {
         /// Status for --task: done | fail | doing | todo.
         #[arg(long)]
         status: Option<String>,
+        /// Read-back only: print the plan as JSON instead of a checklist.
+        /// Ignored when --plan/--task make this a write.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Read/drain oracle inbox events (JSONL event queue)
@@ -553,10 +568,17 @@ enum Commands {
         files: Vec<String>,
     },
 
-    /// Show session status and pane content
+    /// Show session status and pane content. For an ORACLE it also answers the
+    /// one question an operator actually has in front of a live mission — "can
+    /// this close yet" — with its phase, its plan counts, its current task, its
+    /// workers split running/terminal, and the closure verdict with its reason.
     Status {
         /// Session name
         name: String,
+        /// Oracle lifecycle as JSON (no pane dump). Ignored for a non-oracle
+        /// session, which keeps the plain pane-tail output.
+        #[arg(long)]
+        json: bool,
     },
 
     /// Send text to a session
@@ -882,7 +904,7 @@ async fn main() -> Result<()> {
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
-        Some(Commands::Kill { name }) => cmd_kill(&name).await,
+        Some(Commands::Kill { name, force }) => cmd_kill(&name, force).await,
         Some(Commands::Dispatch {
             project,
             mission,
@@ -933,11 +955,13 @@ async fn main() -> Result<()> {
             plan,
             task,
             status,
+            json,
         }) => cmd_progress(
             &session,
             plan.as_deref(),
             task.as_deref(),
             status.as_deref(),
+            json,
         ),
         Some(Commands::Inbox { oracle, action }) => cmd_inbox(&oracle, &action).await,
         Some(Commands::Ship {
@@ -1011,7 +1035,7 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Gate { oracle, mission }) => cmd_gate(&oracle, mission.as_deref()).await,
         Some(Commands::Scope { session, files }) => cmd_scope(&session, &files).await,
-        Some(Commands::Status { name }) => cmd_status(&name).await,
+        Some(Commands::Status { name, json }) => cmd_status(&name, json).await,
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
         Some(Commands::Capture { name }) => cmd_capture(&name).await,
         Some(Commands::Stream {
@@ -4536,30 +4560,443 @@ async fn cmd_attach(name: &str) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_kill(name: &str) -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
-    let mgr = SessionManager::connect().await?;
-    mgr.kill_session(name).await?;
-    let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
-    // Killing an oracle = closing its mission. Drop the lifecycle state too,
-    // or patrol resurrects the session the operator just killed (workers
-    // non-terminal + phase < 24h) and the stuck-alert cron keeps watching a
-    // ghost — `omega kill` is the documented close action in that very alert.
-    if name.starts_with("oracle-") {
-        let _ = omega_core::oracle_lifecycle::OracleState::remove(&config.state_dir, name);
-        let key = name.strip_prefix("oracle-").unwrap_or(name);
-        for f in [
-            format!("oracle-{key}.progress.json"),
-            format!("oracle-{key}.stuck-alerted"),
-            // Resurrect markers are stamped with the FULL session name after
-            // an `oracle-` prefix (giving oracle-oracle-X) — remove both forms.
-            format!("oracle-{key}.resurrect-attempt"),
-            format!("oracle-{name}.resurrect-attempt"),
-        ] {
-            let _ = std::fs::remove_file(config.state_dir.join(f));
+/// What `omega kill` decided to do, resolved BEFORE anything is touched.
+///
+/// Splitting the decision from the execution is what makes the close-gate
+/// testable at all: the alternative is a live rmux daemon plus a real oracle
+/// with real workers, which is why the cascade was never covered and why the
+/// scope-claim leak below survived so long.
+#[derive(Debug, PartialEq, Eq)]
+enum KillPlan {
+    /// Nothing live under that name and nothing to cascade. A second `omega
+    /// kill` must be a quiet exit 0, never `Session not found` — the stuck-oracle
+    /// alert cron tells the operator to run `omega kill oracle-<key>`, and an
+    /// operator who already ran it once was being handed a hard error for
+    /// obeying the alert twice.
+    AlreadyClosed,
+    /// An oracle whose workers are still WORKING. Closing it strands them:
+    /// they keep their scope claims, so the next `spawn-worker` on those files
+    /// is rejected by a claim whose owner nobody can find any more.
+    Refused { running: Vec<String> },
+    /// Go ahead. `cascade` is killed first, the target last (the target may be
+    /// the pane running this very command).
+    Proceed { cascade: Vec<String> },
+}
+
+/// The close-gate, as a pure function of what is live.
+///
+/// `workers` is empty for a non-oracle target, which collapses this to
+/// "proceed when live, already-closed when not" for a plain session.
+fn decide_kill(
+    target_live: bool,
+    workers: &omega_core::oracle_lifecycle::LiveWorkers,
+    force: bool,
+) -> KillPlan {
+    // Same gate, same reason, and deliberately the same wording as the
+    // done_clean refusal in `cmd_done`: an oracle does not close while its
+    // workers run. `omega kill` was the hole in that gate — it closed the
+    // oracle unconditionally and left every worker alive with no parent.
+    if !workers.running.is_empty() && !force {
+        return KillPlan::Refused {
+            running: workers.running.clone(),
+        };
+    }
+    // Without --force only FINISHED workers cascade (they are what `cmd_done`
+    // cascades too). With --force the running ones go down as well, because
+    // the operator has now said so explicitly.
+    let cascade = if force {
+        workers.all()
+    } else {
+        workers.terminal.clone()
+    };
+    if !target_live && cascade.is_empty() {
+        return KillPlan::AlreadyClosed;
+    }
+    KillPlan::Proceed { cascade }
+}
+
+/// Whether a worker's git worktree may be unregistered.
+///
+/// Losing a worker's commits is far worse than leaking a directory, so this
+/// is deliberately conservative and every uncertain case keeps the worktree.
+#[derive(Debug, PartialEq, Eq)]
+enum WorktreeVerdict {
+    /// Not an OmegaOS-created linked worktree. Never touched: an operator's
+    /// own worktree, or a worker that ran in the shared checkout (spawn-worker
+    /// falls back to the shared dir when `git worktree add` fails), and
+    /// unregistering THAT would take the operator's own checkout down.
+    NotOurs,
+    /// Uncommitted or untracked files live in it. `git worktree remove` would
+    /// need --force to delete them, which is exactly what must not happen here.
+    Dirty,
+    /// The branch carries commits the main worktree does not have yet, i.e.
+    /// `omega-git-merge` never integrated it. Removing the worktree here would
+    /// leave those commits reachable only from a branch nobody is looking at.
+    Unmerged { commits: u32 },
+    /// Registered, clean, and fully contained in the main worktree's HEAD.
+    Removable,
+}
+
+/// Decide from already-gathered git output, so the rule is testable without a
+/// repository: `git status --porcelain` (empty = clean) and the count from
+/// `git rev-list --count <main-head>..HEAD`.
+fn worktree_verdict(
+    is_omega_linked_worktree: bool,
+    porcelain_status: &str,
+    unmerged_commits: u32,
+) -> WorktreeVerdict {
+    if !is_omega_linked_worktree {
+        return WorktreeVerdict::NotOurs;
+    }
+    if !porcelain_status.trim().is_empty() {
+        return WorktreeVerdict::Dirty;
+    }
+    if unmerged_commits > 0 {
+        return WorktreeVerdict::Unmerged {
+            commits: unmerged_commits,
+        };
+    }
+    WorktreeVerdict::Removable
+}
+
+/// Run a git command and return its trimmed stdout, or None when git itself
+/// failed. Every worktree probe below is advisory: an unreadable repository
+/// must leave the worktree alone, never remove it on a guess.
+fn git_probe(dir: &std::path::Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The branch slug `omega-git-branch.sh` derives from a worker's session name,
+/// reproduced exactly: lowercase, spaces to `-`, drop everything outside
+/// `[a-z0-9-]`, trim the edges. `_mk_branch` then builds
+/// `omega/<slug>-<shortid>` and names the worktree directory after the branch
+/// minus its `omega/` prefix, which is what makes a worker's tree findable
+/// from its session name alone.
+fn worker_branch_slug(session_name: &str) -> String {
+    let s: String = session_name
+        .chars()
+        .map(|c| {
+            if c == ' ' {
+                '-'
+            } else {
+                c.to_ascii_lowercase()
+            }
+        })
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .collect();
+    let trimmed = s.trim_matches('-');
+    if trimmed.is_empty() {
+        "worker".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Whether a worktree DIRECTORY name was generated for `slug`.
+///
+/// The tail after the slug must be a real `_mk_branch` suffix — an 8-hex
+/// shortid, optionally plus the numeric `-1`, `-2`, … collision counter — and
+/// not merely a longer worker name that happens to start the same way. Without
+/// the shortid test, a worker `foo` would claim the tree of a worker
+/// `foo-bar-1a2b3c4d`.
+fn worktree_dir_belongs_to(dir_name: &str, slug: &str) -> bool {
+    let is_short_id = |s: &str| s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit());
+    let Some(tail) = dir_name
+        .strip_prefix(slug)
+        .and_then(|t| t.strip_prefix('-'))
+    else {
+        return false;
+    };
+    match tail.split_once('-') {
+        None => is_short_id(tail),
+        Some((id, n)) => is_short_id(id) && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()),
+    }
+}
+
+/// Every worktree under `$OMEGA_DIR/worktrees` that belongs to `worker_name`.
+///
+/// This exists because the session list CANNOT answer it: `list_sessions`
+/// builds each entry with `OmegaSession::classify`, which leaves `working_dir`
+/// at `None` and only fills `provider`, so reading a worker's directory off
+/// its live session yields nothing and the whole cleanup below silently never
+/// ran. The layout is walked instead, one level (the repo bucket
+/// `worktrees/<repo>/`) and two, because both shapes exist on disk.
+///
+/// Over-matching is safe by construction here and under-matching is not: an
+/// extra candidate still faces `worktree_verdict`, which keeps anything
+/// carrying uncommitted or unmerged work, so the worst case is that a stale
+/// already-merged tree is collected too. Missing the real one is what leaks.
+fn worker_worktrees(omega_dir: &std::path::Path, worker_name: &str) -> Vec<std::path::PathBuf> {
+    fn is_worker_worktree(p: &std::path::Path, slug: &str) -> bool {
+        p.is_dir()
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| worktree_dir_belongs_to(n, slug))
+            // A LINKED worktree has a `.git` FILE; a main checkout has a `.git`
+            // directory. Never hand a main checkout to the remover.
+            && p.join(".git").is_file()
+    }
+
+    let slug = worker_branch_slug(worker_name);
+    let mut found = Vec::new();
+    let Ok(top) = std::fs::read_dir(omega_dir.join("worktrees")) else {
+        return found;
+    };
+    for entry in top.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        if is_worker_worktree(&p, &slug) {
+            found.push(p.clone());
+        }
+        if let Ok(inner) = std::fs::read_dir(&p) {
+            for e in inner.flatten() {
+                let q = e.path();
+                if is_worker_worktree(&q, &slug) {
+                    found.push(q);
+                }
+            }
         }
     }
-    println!("Killed session: {}", name);
+    found
+}
+
+/// Unregister the git worktree a `--worktree` worker ran in, when and only
+/// when it holds nothing the operator could still want.
+///
+/// The candidate directory comes from `worker_worktrees`, but the MAIN
+/// worktree it is measured against is always resolved from `git worktree list
+/// --porcelain` rather than assumed: `omega-git-branch.sh` suffixes the branch
+/// (against existing refs) and the directory (against the filesystem)
+/// INDEPENDENTLY, so the two can disagree and nothing here may depend on them
+/// matching. Both guards below are re-checked on the real path before anything
+/// is removed.
+///
+/// Prints one line per worktree it looked at, because the whole point of the
+/// keep decision is that the operator learns where the unrecovered work is.
+fn cleanup_worker_worktree(omega_dir: &std::path::Path, work_dir: &std::path::Path) {
+    // A LINKED worktree has a `.git` FILE (`gitdir: …/.git/worktrees/<name>`);
+    // the main checkout has a `.git` directory. That single test is what keeps
+    // this off the operator's own repository.
+    if !work_dir.join(".git").is_file() {
+        return;
+    }
+    // Second guard: only trees OmegaOS itself created, under
+    // `$OMEGA_DIR/worktrees/<repo-basename>/`. A linked worktree the operator
+    // made by hand elsewhere is none of our business.
+    if !work_dir.starts_with(omega_dir.join("worktrees")) {
+        return;
+    }
+
+    // The first `worktree ` line of the porcelain listing is the MAIN
+    // worktree — that is the tree the operator actually works in and therefore
+    // the one a worker's commits have to be merged into to count as saved.
+    // Parse the value as everything after "worktree ", never a whitespace
+    // split: a path containing a space would otherwise be truncated, and a
+    // truncated path is what gets handed to a remove command.
+    let listing = match git_probe(work_dir, &["worktree", "list", "--porcelain"]) {
+        Some(l) => l,
+        None => return,
+    };
+    let (mut main_top, mut main_head) = (None, None);
+    for line in listing.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            if main_top.is_none() {
+                main_top = Some(p.to_string());
+            }
+        } else if let Some(h) = line.strip_prefix("HEAD ") {
+            if main_head.is_none() {
+                main_head = Some(h.to_string());
+            }
+        }
+    }
+    let (Some(main_top), Some(main_head)) = (main_top, main_head) else {
+        return;
+    };
+
+    let status = git_probe(work_dir, &["status", "--porcelain"]).unwrap_or_else(|| "?".to_string());
+    // `<main-head>..HEAD` counts the commits this branch has that the main
+    // worktree does not. Zero means `omega-git-merge` already integrated it.
+    // An unreadable count is treated as "has work" (u32::MAX below would be a
+    // lie about the number, so fall back to 1 and say so as Unmerged).
+    let ahead = git_probe(
+        work_dir,
+        &["rev-list", "--count", &format!("{main_head}..HEAD")],
+    )
+    .and_then(|s| s.parse::<u32>().ok())
+    .unwrap_or(1);
+    let verdict = worktree_verdict(true, &status, ahead);
+    let wt = work_dir.display();
+    match verdict {
+        WorktreeVerdict::Removable => {
+            // No --force: git's own refusal on a dirty tree is kept as a second
+            // net behind our own check. Run it from the MAIN worktree, since the
+            // tree being removed is the one we would otherwise be standing in.
+            let removed = git_probe(
+                std::path::Path::new(&main_top),
+                &["worktree", "remove", &work_dir.to_string_lossy()],
+            )
+            .is_some();
+            // prune only unregisters worktrees whose directory is already gone,
+            // so it is safe whether or not the remove above succeeded.
+            let _ = git_probe(std::path::Path::new(&main_top), &["worktree", "prune"]);
+            if removed {
+                println!("  worktree removed: {wt}");
+            } else {
+                println!("  worktree KEPT (git refused to remove it): {wt}");
+            }
+        }
+        WorktreeVerdict::Dirty => {
+            println!("  worktree KEPT — uncommitted work still in it: {wt}");
+        }
+        WorktreeVerdict::Unmerged { commits } => {
+            println!("  worktree KEPT — {commits} commit(s) not merged into the main tree: {wt}");
+        }
+        WorktreeVerdict::NotOurs => {}
+    }
+}
+
+/// Drop the lifecycle state of a closed oracle.
+///
+/// Without this, patrol resurrects the session the operator just killed
+/// (workers non-terminal + phase < 24h) and the stuck-alert cron keeps
+/// watching a ghost — and `omega kill` is the close action that very alert
+/// tells the operator to run. Idempotent: everything here is a remove that
+/// tolerates an already-absent file.
+fn clear_oracle_state(state_dir: &std::path::Path, name: &str) {
+    let _ = omega_core::oracle_lifecycle::OracleState::remove(state_dir, name);
+    let key = name.strip_prefix("oracle-").unwrap_or(name);
+    for f in [
+        format!("oracle-{key}.progress.json"),
+        format!("oracle-{key}.stuck-alerted"),
+        // Resurrect markers are stamped with the FULL session name after
+        // an `oracle-` prefix (giving oracle-oracle-X) — remove both forms.
+        format!("oracle-{key}.resurrect-attempt"),
+        format!("oracle-{name}.resurrect-attempt"),
+    ] {
+        let _ = std::fs::remove_file(state_dir.join(f));
+    }
+}
+
+/// `omega kill <session> [--force]` — a controlled mission closure.
+///
+/// Before this, killing an oracle killed exactly one pane and released exactly
+/// one scope claim. Its workers stayed alive with no parent, and their claims
+/// stayed on disk forever: the next `spawn-worker` touching those files was
+/// then rejected by `claim_or_reject` against an owner whose session no longer
+/// existed. That recurring failure is what this closure exists to end.
+///
+/// Every step is INDEPENDENT and best-effort. A pane that will not die must
+/// not skip the scope release, and a git probe that fails must not skip the
+/// state cleanup: a half-run closure leaks exactly the thing being fixed.
+async fn cmd_kill(name: &str, force: bool) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let omega_dir = config
+        .state_dir
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_default();
+    let mgr = SessionManager::connect().await?;
+    // Snapshot the live sessions ONCE, before anything is killed: the working
+    // dir recorded here is the only handle on a worker's worktree, and it is
+    // gone the moment the session is.
+    let live = mgr.list_sessions().await.unwrap_or_default();
+    let target_live = live.iter().any(|s| s.name == name);
+
+    let is_oracle = omega_core::session::OmegaSession::classify(name).role
+        == omega_core::session::SessionRole::Oracle;
+    let workers = if is_oracle {
+        omega_core::oracle_lifecycle::live_workers_of_oracle(&config.state_dir, name, &live)
+    } else {
+        omega_core::oracle_lifecycle::LiveWorkers::default()
+    };
+
+    let cascade = match decide_kill(target_live, &workers, force) {
+        KillPlan::Refused { running } => {
+            // Same shape as the done_clean refusal: name them, say why, and
+            // give the two ways forward. Naming them matters — "some workers
+            // are running" sends the operator hunting through `omega list`.
+            anyhow::bail!(
+                "kill REFUSED — {} worker(s) of this oracle are still running: {}.\n\
+                 Closing the oracle now would strand them: they keep their scope claims, \
+                 and the next `omega spawn-worker` on those files is rejected by a claim \
+                 whose owner no longer exists (zombie-worker guard).\n\
+                 Wait for their done signals (`omega workers`), close them explicitly \
+                 (`omega kill <worker>`), or re-run with --force to take them down too.",
+                running.len(),
+                running.join(", ")
+            );
+        }
+        KillPlan::AlreadyClosed => {
+            // Still run the state cleanup: a session that died on its own (a
+            // crash, an OOM, a killed pane) leaves exactly the claims and
+            // markers this command exists to reclaim, and reclaiming them
+            // twice is a no-op.
+            let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
+            // …and the same is true of the worktree. A worker that died before
+            // committing is the single most common way an unrecovered tree is
+            // left behind, and its session is exactly the one that is already
+            // gone by the time anyone runs this. Returning here without looking
+            // would defeat the guard in the case it was written for: nothing is
+            // removed unless it is clean AND merged, so this only ever collects
+            // an empty tree or PRINTS where the unrecovered work is.
+            if !is_oracle {
+                for dir in worker_worktrees(&omega_dir, name) {
+                    cleanup_worker_worktree(&omega_dir, &dir);
+                }
+            }
+            if is_oracle {
+                clear_oracle_state(&config.state_dir, name);
+            }
+            println!("Session {} is already closed — nothing live to kill.", name);
+            return Ok(());
+        }
+        KillPlan::Proceed { cascade } => cascade,
+    };
+
+    // WORKERS FIRST, target last: the target may be the pane running this very
+    // command, so anything after killing it may never execute.
+    for w in &cascade {
+        // The scope release comes BEFORE the kill on purpose. If the kill hangs
+        // or the daemon drops the connection, the claim is already gone —
+        // a leaked claim is the failure with the long tail, a surviving pane is
+        // visible in `omega list` and the operator can retry.
+        let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, w);
+        for dir in worker_worktrees(&omega_dir, w) {
+            cleanup_worker_worktree(&omega_dir, &dir);
+        }
+        match mgr.kill_session(w).await {
+            Ok(()) => println!("  cascaded worker closed: {}", w),
+            Err(e) => println!("  cascaded worker {} could not be killed ({})", w, e),
+        }
+    }
+
+    let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, name);
+    if is_oracle {
+        clear_oracle_state(&config.state_dir, name);
+    } else {
+        // A worker killed directly gets the same worktree treatment as one
+        // that was cascaded.
+        for dir in worker_worktrees(&omega_dir, name) {
+            cleanup_worker_worktree(&omega_dir, &dir);
+        }
+    }
+
+    // Kept as the last line and byte-identical to what it always printed: the
+    // Telegram bot renders this stdout verbatim in its session card.
+    match mgr.kill_session(name).await {
+        Ok(()) => println!("Killed session: {}", name),
+        Err(e) => println!("Killed session: {} (pane cleanup reported: {})", name, e),
+    }
     Ok(())
 }
 
@@ -6296,13 +6733,122 @@ async fn cmd_team(
 /// Live mission progress: merge-write ~/.omega/state/oracle-<key>.progress.json,
 /// preserving the bot-written chat/thread/msg fields so the Telegram bot can edit
 /// the progress card in place. Oracles call this as they complete plan tasks.
+/// One plan task as stored in `oracle-<key>.progress.json`: `{t: title, s: status}`.
+#[derive(Debug, PartialEq, Eq)]
+struct PlanTask {
+    title: String,
+    status: String,
+}
+
+/// The status glyph, identical to the one the Telegram progress card renders
+/// (`taskList` in omega-tg-bot.ts). Same plan, same symbols, whichever surface
+/// the operator or the oracle is looking at.
+fn plan_task_glyph(status: &str) -> char {
+    match status {
+        "done" => '✓',
+        "fail" => '✗',
+        "doing" => '▸',
+        _ => '☐',
+    }
+}
+
+/// Read the `tasks` array out of a progress document. Anything malformed is
+/// skipped rather than fatal: this file is written by three producers (the
+/// CLI, the Telegram bot, patrol) and a read-back that panics on one odd entry
+/// is worse than a read-back that shows the rest.
+fn parse_plan_tasks(doc: &serde_json::Value) -> Vec<PlanTask> {
+    doc.get("tasks")
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| {
+                    Some(PlanTask {
+                        title: t.get("t")?.as_str()?.to_string(),
+                        status: t
+                            .get("s")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("todo")
+                            .to_string(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Render the plan the way an oracle needs to READ it after a compaction:
+/// every task, its glyph, and the counts. Pure, so the format is pinned by a
+/// unit test instead of by whoever last looked at a terminal.
+fn render_plan_checklist(key: &str, tasks: &[PlanTask]) -> String {
+    if tasks.is_empty() {
+        return format!("oracle-{key}: no plan recorded (0 tasks).");
+    }
+    let done = tasks.iter().filter(|t| t.status == "done").count();
+    let mut out = format!("oracle-{}: plan {}/{}\n", key, done, tasks.len());
+    for t in tasks {
+        out.push_str(&format!("{} {}\n", plan_task_glyph(&t.status), t.title));
+    }
+    out.pop();
+    out
+}
+
+/// `omega progress <session>` with no mutating flag: PRINT the plan, write
+/// nothing.
+///
+/// It used to merge-write the file and print a bare `[+] progress 3/7`, so an
+/// oracle resuming after a compaction had no way to read its own plan back —
+/// the only surface that showed the task list was the Telegram card, which an
+/// agent cannot see. Worse, the silent rewrite restamped `ts` on every look,
+/// which is precisely the field patrol's stall detector reads: merely LOOKING
+/// at a stalled mission made it look alive.
+fn cmd_progress_readback(state_dir: &std::path::Path, session: &str, json: bool) -> Result<()> {
+    let key = session.strip_prefix("oracle-").unwrap_or(session);
+    let path = state_dir.join(format!("oracle-{}.progress.json", key));
+    let doc: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    let tasks = parse_plan_tasks(&doc);
+    if json {
+        let done = tasks.iter().filter(|t| t.status == "done").count();
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": session,
+                "oracle": format!("oracle-{key}"),
+                "exists": path.exists(),
+                "total": tasks.len(),
+                "done": done,
+                "ts": doc.get("ts").and_then(|v| v.as_str()),
+                "tasks": tasks
+                    .iter()
+                    .map(|t| serde_json::json!({ "t": t.title, "s": t.status }))
+                    .collect::<Vec<_>>(),
+            })
+        );
+    } else if !path.exists() {
+        println!("oracle-{key}: no plan file yet ({}).", path.display());
+    } else {
+        println!("{}", render_plan_checklist(key, &tasks));
+    }
+    Ok(())
+}
+
 fn cmd_progress(
     session: &str,
     plan: Option<&str>,
     task: Option<&str>,
     status: Option<&str>,
+    json: bool,
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
+    // READ-BACK: no --plan and no --task means the caller is asking WHAT the
+    // plan is, not changing it. `--status` alone is deliberately counted as
+    // non-mutating: it was already a no-op (the status is only ever read
+    // inside `if let Some(t) = task`), so nothing that works today changes.
+    if plan.is_none() && task.is_none() {
+        return cmd_progress_readback(&config.state_dir, session, json);
+    }
     let key = session.strip_prefix("oracle-").unwrap_or(session);
     let path = config
         .state_dir
@@ -6409,10 +6955,17 @@ fn cmd_progress(
                 if let Ok(exe) = std::env::current_exe() {
                     // Session names are sanitized to [A-Za-z0-9._-] (no shell
                     // metachars), so this format is injection-safe.
+                    //
+                    // --force because this branch has already DECIDED to close:
+                    // the plan is 100% and the independent gate accepted it. A
+                    // straggler worker must be cascaded down with the oracle,
+                    // not allowed to veto a close that the L4 gate just
+                    // granted — vetoing it is how the oracle pane and every one
+                    // of its workers stayed alive after a finished mission.
                     let _ = std::process::Command::new("bash")
                         .arg("-c")
                         .arg(format!(
-                            "sleep 3; '{}' kill '{}' >/dev/null 2>&1",
+                            "sleep 3; '{}' kill '{}' --force >/dev/null 2>&1",
                             exe.to_string_lossy(),
                             session
                         ))
@@ -6904,6 +7457,15 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 // so this format is injection-safe. Workers first, oracle last —
                 // the oracle pane is the one running THIS command.
                 let exe = exe.to_string_lossy();
+                //
+                // --force on the oracle kill: `omega kill` refuses by default
+                // when a worker is still running, and that gate has ALREADY
+                // been evaluated above (a running worker bailed out of this
+                // whole branch). Without --force a worker that started or was
+                // re-registered in the seconds between the two checks would
+                // silently veto the auto-close and leave the oracle pane open
+                // forever, which is a regression of the close contract, not a
+                // safety win.
                 let worker_kills: String = cascade_workers
                     .iter()
                     .map(|w| format!("'{}' kill '{}' >/dev/null 2>&1; ", exe, w))
@@ -6911,7 +7473,7 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
                 let _ = std::process::Command::new("bash")
                     .arg("-c")
                     .arg(format!(
-                        "sleep 3; {}'{}' kill '{}' >/dev/null 2>&1",
+                        "sleep 3; {}'{}' kill '{}' --force >/dev/null 2>&1",
                         worker_kills, exe, session
                     ))
                     .spawn();
@@ -7333,13 +7895,201 @@ async fn cmd_scope(session: &str, files: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_status(name: &str) -> Result<()> {
-    let mgr = SessionManager::connect().await?;
-    let content = mgr.capture_pane(name).await?;
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(30);
-    for line in &lines[start..] {
-        println!("{}", line);
+/// Whether a mission could close right now, and if not, why not.
+///
+/// This is the SAME gate `cmd_done` applies, in the same order and with the
+/// same wording, so `omega status` can never promise a close that `omega done`
+/// then refuses. Keeping it a pure function is the only way to assert that
+/// equivalence in a test.
+#[derive(Debug, PartialEq, Eq)]
+struct ClosureVerdict {
+    refused: bool,
+    reasons: Vec<String>,
+}
+
+fn closure_verdict(
+    total: usize,
+    done: usize,
+    failed: &[String],
+    unfinished: &[String],
+    gate_passed: bool,
+    running_workers: &[String],
+) -> ClosureVerdict {
+    let mut reasons = Vec::new();
+    // (1) L4 completeness gate — cmd_done downgrades done_clean to pending here.
+    if total == 0 {
+        reasons.push("plan missionnel absent ou vide; acceptation impossible".to_string());
+    } else if done < total || !failed.is_empty() {
+        for f in failed {
+            reasons.push(format!("échec: {f}"));
+        }
+        for u in unfinished {
+            reasons.push(format!("non fait: {u}"));
+        }
+        if reasons.is_empty() {
+            reasons.push(format!("plan {done}/{total} — pas 100% (L4)"));
+        }
+    }
+    // (2) The independent quality gate. A self-graded mission is not accepted.
+    if !gate_passed {
+        reasons.push("quality gate indépendante absente ou non acceptée".to_string());
+    }
+    // (3) The zombie-worker guard, the only one that is a hard bail in cmd_done.
+    if !running_workers.is_empty() {
+        reasons.push(format!(
+            "{} worker(s) still running: {}",
+            running_workers.len(),
+            running_workers.join(", ")
+        ));
+    }
+    ClosureVerdict {
+        refused: !reasons.is_empty(),
+        reasons,
+    }
+}
+
+/// `omega status <session> [--json]`.
+///
+/// A NON-oracle session keeps the original behaviour byte for byte (the last
+/// 30 lines of its pane), because that is what every prompt template and the
+/// `/omega-status` command tell an agent to read.
+///
+/// An ORACLE gets the lifecycle block FIRST, then the same pane tail. The old
+/// output answered "what is it printing right now" but never "is this mission
+/// closeable", so the operator had to reconstruct the close-gate by hand from
+/// three state files, and usually reconstructed it wrong.
+async fn cmd_status(name: &str, json: bool) -> Result<()> {
+    let is_oracle = omega_core::session::OmegaSession::classify(name).role
+        == omega_core::session::SessionRole::Oracle;
+    if !is_oracle {
+        let mgr = SessionManager::connect().await?;
+        let content = mgr.capture_pane(name).await?;
+        let lines: Vec<&str> = content.lines().collect();
+        let start = lines.len().saturating_sub(30);
+        for line in &lines[start..] {
+            println!("{}", line);
+        }
+        return Ok(());
+    }
+
+    let config = OmegaConfig::load().unwrap_or_default();
+    let key = name.strip_prefix("oracle-").unwrap_or(name);
+    // Everything below is best-effort: a dead oracle whose daemon connection is
+    // gone is exactly when the operator most needs to read its lifecycle, so a
+    // failed connect must degrade to "no live data", never to an error.
+    let mgr = SessionManager::connect().await.ok();
+    let live = match &mgr {
+        Some(m) => m.list_sessions().await.unwrap_or_default(),
+        None => Vec::new(),
+    };
+    let session_live = live.iter().any(|s| s.name == name);
+    let state = omega_core::oracle_lifecycle::OracleState::read(&config.state_dir, name)
+        .ok()
+        .flatten();
+    let workers =
+        omega_core::oracle_lifecycle::live_workers_of_oracle(&config.state_dir, name, &live);
+
+    let doc: serde_json::Value = std::fs::read_to_string(
+        config
+            .state_dir
+            .join(format!("oracle-{}.progress.json", key)),
+    )
+    .ok()
+    .and_then(|s| serde_json::from_str(&s).ok())
+    .unwrap_or_else(|| serde_json::json!({}));
+    let tasks = parse_plan_tasks(&doc);
+    let total = tasks.len();
+    let done = tasks.iter().filter(|t| t.status == "done").count();
+    let failed: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.status == "fail")
+        .map(|t| t.title.clone())
+        .collect();
+    let unfinished: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.status == "todo" || t.status == "doing")
+        .map(|t| t.title.clone())
+        .collect();
+    let doing: Option<&PlanTask> = tasks.iter().find(|t| t.status == "doing");
+    let gate_passed = omega_core::gate::GateResult::read(&config.state_dir, name)
+        .ok()
+        .flatten()
+        .map(|g| g.overall_pass)
+        .unwrap_or(false);
+    let verdict = closure_verdict(
+        total,
+        done,
+        &failed,
+        &unfinished,
+        gate_passed,
+        &workers.running,
+    );
+    let phase = state
+        .as_ref()
+        .map(|s| s.phase.label().to_string())
+        .unwrap_or_else(|| "(no lifecycle state)".to_string());
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": name,
+                "live": session_live,
+                "phase": phase,
+                "project": state.as_ref().map(|s| s.project.clone()),
+                "plan": { "done": done, "total": total },
+                "doing": doing.map(|t| t.title.clone()),
+                "workers": { "running": workers.running, "terminal": workers.terminal },
+                "gate_passed": gate_passed,
+                "closeable": !verdict.refused,
+                "refused_because": verdict.reasons,
+            })
+        );
+        return Ok(());
+    }
+
+    println!("─── {} ───", name);
+    println!(
+        "  session   {}",
+        if session_live { "live" } else { "not live" }
+    );
+    println!("  phase     {}", phase);
+    println!("  plan      {}/{}", done, total);
+    println!(
+        "  doing     {}",
+        doing.map(|t| t.title.as_str()).unwrap_or("(none)")
+    );
+    println!(
+        "  workers   {} running, {} terminal",
+        workers.running.len(),
+        workers.terminal.len()
+    );
+    for w in &workers.running {
+        println!("    ▸ {}", w);
+    }
+    for w in &workers.terminal {
+        println!("    ✓ {}", w);
+    }
+    if verdict.refused {
+        println!("  closure   REFUSED");
+        for r in &verdict.reasons {
+            println!("            - {}", r);
+        }
+    } else {
+        println!("  closure   allowed (`omega done {} done_clean …`)", name);
+    }
+
+    // The pane tail still follows, unchanged, so an agent told to read
+    // `omega status <session>` sees everything it used to see.
+    if let Some(m) = &mgr {
+        if let Ok(content) = m.capture_pane(name).await {
+            println!("─── pane ───");
+            let lines: Vec<&str> = content.lines().collect();
+            let start = lines.len().saturating_sub(30);
+            for line in &lines[start..] {
+                println!("{}", line);
+            }
+        }
     }
     Ok(())
 }
@@ -9460,5 +10210,382 @@ mod phase1_tests {
             omega_core::mission::MissionState::Running
         );
         std::fs::remove_dir_all(state_dir).unwrap();
+    }
+}
+
+/// Unit tests for the ORACLE LIFECYCLE decisions of `omega kill`, `omega
+/// progress` and `omega status`.
+///
+/// The whole reason those decisions were extracted into pure functions is
+/// right here: exercising them through the commands would need a live rmux
+/// daemon, a real oracle and real worker sessions, which is exactly why the
+/// cascade, the close-gate and the worktree guard were never covered, and why
+/// the scope-claim leak survived so long.
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+    use omega_core::oracle_lifecycle::LiveWorkers;
+
+    fn workers(running: &[&str], terminal: &[&str]) -> LiveWorkers {
+        LiveWorkers {
+            running: running.iter().map(|s| s.to_string()).collect(),
+            terminal: terminal.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    // --- omega kill: which sessions cascade, and when a kill is refused -----
+
+    #[test]
+    fn kill_cascades_only_finished_workers_by_default() {
+        let plan = decide_kill(true, &workers(&[], &["w-a", "w-b"]), false);
+        assert_eq!(
+            plan,
+            KillPlan::Proceed {
+                cascade: vec!["w-a".to_string(), "w-b".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn kill_is_refused_while_a_worker_is_still_running() {
+        let plan = decide_kill(true, &workers(&["w-live"], &["w-done"]), false);
+        assert_eq!(
+            plan,
+            KillPlan::Refused {
+                running: vec!["w-live".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn force_cascades_running_workers_too() {
+        let plan = decide_kill(true, &workers(&["w-live"], &["w-done"]), true);
+        // Terminal first, then running — LiveWorkers::all()'s order.
+        assert_eq!(
+            plan,
+            KillPlan::Proceed {
+                cascade: vec!["w-done".to_string(), "w-live".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn second_kill_on_a_dead_session_is_already_closed_not_an_error() {
+        assert_eq!(
+            decide_kill(false, &LiveWorkers::default(), false),
+            KillPlan::AlreadyClosed
+        );
+        // …and it stays a no-op with --force: nothing live means nothing to do.
+        assert_eq!(
+            decide_kill(false, &LiveWorkers::default(), true),
+            KillPlan::AlreadyClosed
+        );
+    }
+
+    #[test]
+    fn a_dead_oracle_with_surviving_workers_still_cascades() {
+        // The zombie leak itself: the oracle pane is gone but its finished
+        // workers are alive holding scope claims. "Already closed" here would
+        // leave them there forever.
+        assert_eq!(
+            decide_kill(false, &workers(&[], &["w-orphan"]), false),
+            KillPlan::Proceed {
+                cascade: vec!["w-orphan".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn a_plain_session_has_no_workers_and_never_refuses() {
+        assert_eq!(
+            decide_kill(true, &LiveWorkers::default(), false),
+            KillPlan::Proceed { cascade: vec![] }
+        );
+    }
+
+    // --- omega kill: whether a worktree is safe to remove -------------------
+
+    #[test]
+    fn worktree_with_uncommitted_work_is_kept() {
+        assert_eq!(
+            worktree_verdict(true, " M crates/omega-cli/src/main.rs\n", 0),
+            WorktreeVerdict::Dirty
+        );
+        // Untracked-only counts as dirty too: those files are unrecoverable.
+        assert_eq!(
+            worktree_verdict(true, "?? notes.md\n", 0),
+            WorktreeVerdict::Dirty
+        );
+    }
+
+    #[test]
+    fn worktree_with_unmerged_commits_is_kept() {
+        assert_eq!(
+            worktree_verdict(true, "", 3),
+            WorktreeVerdict::Unmerged { commits: 3 }
+        );
+    }
+
+    #[test]
+    fn clean_and_merged_worktree_is_removable() {
+        assert_eq!(
+            worktree_verdict(true, "   \n", 0),
+            WorktreeVerdict::Removable
+        );
+    }
+
+    #[test]
+    fn a_tree_omegaos_did_not_create_is_never_touched() {
+        // Even perfectly clean and merged: it is not ours to unregister.
+        assert_eq!(worktree_verdict(false, "", 0), WorktreeVerdict::NotOurs);
+        assert_eq!(worktree_verdict(false, " M x", 9), WorktreeVerdict::NotOurs);
+    }
+
+    // --- omega kill: finding the worktree a worker ran in -------------------
+
+    #[test]
+    fn the_branch_slug_matches_omega_git_branch_sh() {
+        // The real pairing on disk: session `OmegaOS-worker-cli-lifecycle` ran
+        // in `worktrees/OmegaOS/omegaos-worker-cli-lifecycle-40347920`.
+        assert_eq!(
+            worker_branch_slug("OmegaOS-worker-cli-lifecycle"),
+            "omegaos-worker-cli-lifecycle"
+        );
+        // Spaces become dashes, everything outside [a-z0-9-] is dropped, and
+        // the edges are trimmed — `tr`/`sed` in _mk_branch, in that order.
+        assert_eq!(worker_branch_slug("Foo Bar_v2.1!"), "foo-barv21");
+        assert_eq!(worker_branch_slug("--Edge--"), "edge");
+        // A name with nothing usable left falls back, exactly like the script.
+        assert_eq!(worker_branch_slug("!!!"), "worker");
+    }
+
+    #[test]
+    fn a_worktree_dir_is_claimed_only_with_a_real_shortid_suffix() {
+        let slug = "omegaos-worker-cli-lifecycle";
+        assert!(worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle-40347920",
+            slug
+        ));
+        // The `-1`, `-2`, … collision counter _mk_branch appends.
+        assert!(worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle-40347920-2",
+            slug
+        ));
+        // A LONGER worker name that merely starts the same way is NOT ours —
+        // this is the case that would otherwise delete another worker's tree.
+        assert!(!worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle-extra-1a2b3c4d",
+            slug
+        ));
+        // No shortid at all, wrong length, or non-hex: never claimed.
+        assert!(!worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle",
+            slug
+        ));
+        assert!(!worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle-4034792",
+            slug
+        ));
+        assert!(!worktree_dir_belongs_to(
+            "omegaos-worker-cli-lifecycle-zzzzzzzz",
+            slug
+        ));
+        // A different worker entirely.
+        assert!(!worktree_dir_belongs_to(
+            "dentistrygpt-worker-hor05-codeaudit-0cc9215d",
+            slug
+        ));
+    }
+
+    #[test]
+    fn a_multi_dash_worker_name_still_resolves_its_tree() {
+        // Real tree on disk; the slug itself carries dashes, so the shortid
+        // test cannot just split on the last dash.
+        let slug = worker_branch_slug("dentistrygpt-worker-bal01-debugaudit-harness-rerun");
+        assert!(worktree_dir_belongs_to(
+            "dentistrygpt-worker-bal01-debugaudit-harness-rerun-6ebe8107",
+            &slug
+        ));
+    }
+
+    #[test]
+    fn the_worktree_walker_finds_a_real_tree_on_disk() {
+        // Walks a real directory layout, because the bug this replaced was not
+        // a wrong rule but a source that was always empty: the unit rules below
+        // all passed while nothing ever called them.
+        let omega_dir = std::env::temp_dir().join(format!(
+            "omega-worktree-walk-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_micros()
+        ));
+        let root = omega_dir.join("worktrees");
+        // Nested under a repo bucket, the shape spawn-worker actually creates.
+        let mine = root.join("OmegaOS").join("omegaos-worker-cli-40347920");
+        // A sibling worker: same bucket, different slug, must never be claimed.
+        let other = root.join("OmegaOS").join("omegaos-worker-docs-40347920");
+        // Flat at the top level, the older shape still present on disk.
+        let flat = root.join("omegaos-worker-cli-aabbccdd");
+        for d in [&mine, &other, &flat] {
+            std::fs::create_dir_all(d).unwrap();
+            // A LINKED worktree's `.git` is a FILE.
+            std::fs::write(d.join(".git"), "gitdir: /somewhere/.git/worktrees/x").unwrap();
+        }
+        // A MAIN checkout (`.git` is a directory) is rejected even though its
+        // name matches — this is the guard that keeps a real repo safe.
+        let main_checkout = root.join("OmegaOS").join("omegaos-worker-cli-99887766");
+        std::fs::create_dir_all(main_checkout.join(".git")).unwrap();
+
+        let mut found = worker_worktrees(&omega_dir, "OmegaOS-worker-cli");
+        found.sort();
+        // Sorted: the repo bucket `OmegaOS/` sorts before the flat `omegaos-…`
+        // entry, uppercase first.
+        assert_eq!(found, vec![mine.clone(), flat.clone()]);
+        assert!(!found.contains(&other));
+        assert!(!found.contains(&main_checkout));
+
+        // An unknown worker resolves to nothing rather than to someone else's.
+        assert!(worker_worktrees(&omega_dir, "OmegaOS-worker-nope").is_empty());
+        // A missing worktrees root is not an error.
+        assert!(worker_worktrees(std::path::Path::new("/nonexistent-omega"), "x").is_empty());
+
+        std::fs::remove_dir_all(&omega_dir).unwrap();
+    }
+
+    // --- omega progress: the read-back checklist ---------------------------
+
+    #[test]
+    fn checklist_glyphs_match_the_telegram_card() {
+        assert_eq!(plan_task_glyph("done"), '✓');
+        assert_eq!(plan_task_glyph("fail"), '✗');
+        assert_eq!(plan_task_glyph("doing"), '▸');
+        assert_eq!(plan_task_glyph("todo"), '☐');
+        // Anything unknown falls back to todo, exactly like taskList() does.
+        assert_eq!(plan_task_glyph("banana"), '☐');
+    }
+
+    #[test]
+    fn checklist_renders_every_task_with_its_counts() {
+        let doc = serde_json::json!({
+            "tasks": [
+                { "t": "audit code", "s": "done" },
+                { "t": "fix N+1",    "s": "doing" },
+                { "t": "merge",      "s": "todo" },
+                { "t": "deploy",     "s": "fail" },
+            ]
+        });
+        let tasks = parse_plan_tasks(&doc);
+        assert_eq!(tasks.len(), 4);
+        assert_eq!(
+            render_plan_checklist("omegaos-3", &tasks),
+            "oracle-omegaos-3: plan 1/4\n✓ audit code\n▸ fix N+1\n☐ merge\n✗ deploy"
+        );
+    }
+
+    #[test]
+    fn checklist_survives_a_malformed_task_entry() {
+        // Three producers write this file; one bad entry must not blank the
+        // whole read-back an oracle is resuming from.
+        let doc = serde_json::json!({
+            "tasks": [
+                { "t": "good", "s": "done" },
+                { "s": "done" },
+                { "t": "no status" },
+            ]
+        });
+        let tasks = parse_plan_tasks(&doc);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[1].status, "todo");
+        assert_eq!(
+            render_plan_checklist("k", &tasks),
+            "oracle-k: plan 1/2\n✓ good\n☐ no status"
+        );
+    }
+
+    #[test]
+    fn an_empty_plan_says_so_instead_of_printing_nothing() {
+        assert_eq!(
+            render_plan_checklist("k", &[]),
+            "oracle-k: no plan recorded (0 tasks)."
+        );
+        assert!(parse_plan_tasks(&serde_json::json!({})).is_empty());
+    }
+
+    // --- omega status: the closure verdict ---------------------------------
+
+    #[test]
+    fn closure_is_allowed_only_when_every_gate_is_green() {
+        assert_eq!(
+            closure_verdict(3, 3, &[], &[], true, &[]),
+            ClosureVerdict {
+                refused: false,
+                reasons: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn an_absent_plan_refuses_the_closure_with_cmd_dones_wording() {
+        let v = closure_verdict(0, 0, &[], &[], true, &[]);
+        assert!(v.refused);
+        assert_eq!(
+            v.reasons,
+            vec!["plan missionnel absent ou vide; acceptation impossible".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_unfinished_plan_names_the_tasks_that_are_not_done() {
+        let v = closure_verdict(
+            3,
+            1,
+            &["deploy".to_string()],
+            &["merge".to_string()],
+            true,
+            &[],
+        );
+        assert!(v.refused);
+        assert_eq!(
+            v.reasons,
+            vec!["échec: deploy".to_string(), "non fait: merge".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_complete_plan_with_no_titles_still_reports_the_ratio() {
+        // done < total but the titles were unreadable: never claim "all good".
+        let v = closure_verdict(7, 4, &[], &[], true, &[]);
+        assert_eq!(v.reasons, vec!["plan 4/7 — pas 100% (L4)".to_string()]);
+    }
+
+    #[test]
+    fn a_missing_quality_gate_refuses_the_closure() {
+        let v = closure_verdict(2, 2, &[], &[], false, &[]);
+        assert!(v.refused);
+        assert_eq!(
+            v.reasons,
+            vec!["quality gate indépendante absente ou non acceptée".to_string()]
+        );
+    }
+
+    #[test]
+    fn running_workers_refuse_the_closure_and_are_named() {
+        let v = closure_verdict(
+            1,
+            1,
+            &[],
+            &[],
+            true,
+            &["w-a".to_string(), "w-b".to_string()],
+        );
+        assert!(v.refused);
+        assert_eq!(v.reasons, vec!["2 worker(s) still running: w-a, w-b"]);
+    }
+
+    #[test]
+    fn every_failing_gate_is_reported_at_once_not_one_per_run() {
+        // An operator fixing them one at a time, one `omega status` per fix,
+        // is the slow path this exists to avoid.
+        let v = closure_verdict(2, 1, &[], &["merge".to_string()], false, &["w".to_string()]);
+        assert_eq!(v.reasons.len(), 3);
     }
 }
