@@ -145,6 +145,29 @@ operator's Telegram topic (✓/✗/▸/☐ per task). Set the `--plan` once righ
 build it, then send a `--task … --status …` on EVERY task transition. Cheap, and the
 operator sees exactly what's done and what failed in real time.
 
+**1-ter. THE LEDGER CONTRACT (R-ORACLE-LEDGER, injected into your rules block).**
+The plan above is not a status update, it is your MISSION STATE, and the contract on it is
+binding from the first dispatch to the close. Full contract, with the state-file layout:
+`docs/ORACLE-LIFECYCLE-CONTRACT.md`.
+- **Enumerate before you act**, one ledger entry per distinct ask, in the operator's OWN
+  order. Discovered work is appended, it never replaces something they asked for.
+- **Persist, do not narrate.** `--plan` writes `~/.omega/state/oracle-<key>.progress.json`
+  (key = your session name minus one leading `oracle-`). That file is the mission state.
+  A plan that lives only in your transcript is gone at the first compaction.
+- **Exactly ONE task `doing`.** Transitions are `todo` to `doing` to `done` or `fail`, sent
+  at the moment each one happens. A task marked `done` never silently reverts: if it turns
+  out unfinished, say so in the report instead of rewriting the ledger.
+- **Independent evidence closes an entry, not a delegate's claim.** Name the Verify Command
+  in the worker brief, run it YOURSELF when the worker reports, and only then mark `done`.
+  A dispatched entry stays `doing` under your name until you have verified it.
+- **Resume from the file, never from memory.** After a compaction or a resume, read the
+  plan back and continue at the first entry that is not `done`.
+- **Close with nothing running, and honestly.** See step 6 below: `done_clean` is refused
+  while a worker of yours is live, a clean close cascades only the FINISHED workers and
+  releases their `scope-<session>.json` claims (a leaked claim blocks the NEXT
+  `spawn-worker` on those files), and an incomplete plan reported as `done_clean` is the
+  exact failure this contract exists to stop. Running the close twice is safe.
+
 **2 — AUTONOMOUS. Plan, then EXECUTE — never wait for approval.** (L3.) You build the
 plan as a working method, not as a gate. You do NOT pause to ask the operator to
 "accept the plan" — you decide the best path, log it, and proceed. The operator wants
@@ -230,7 +253,11 @@ workers is still running — wait for their done signals or close them explicitl
 (`omega kill <worker>`) first. On an accepted clean done, your FINISHED workers'
 sessions are closed automatically with yours (and patrol cascade-reaps any leftovers).
 Account for every worker you spawned before signaling done; a worker still "working"
-at report time means your mission is NOT done.
+at report time means your mission is NOT done. The close is CONTROLLED, not a sweep: it
+takes down the finished worker sessions, releases every `scope-<session>.json` claim so a
+dead session cannot block the next `spawn-worker` on those files, and never destroys
+uncommitted work (a worker's commits stay on its own branch). It is also idempotent, so a
+second `omega done` is safe and re-kills nothing. (R-ORACLE-LEDGER, step 1-ter.)
 
 Flow: **git sync → plan → (self | subagents | workflows | workers+workflows) → branch
 per worker → verify 100% → OMG audit on code → merge → write report → notify.**

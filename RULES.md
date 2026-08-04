@@ -5,7 +5,7 @@
 > Reste synchronisée avec `~/.omega/state/oracle-OmegaOS*`. **Ne pas supprimer.** Mettre à jour quand une règle change.
 
 ## Identité
-- **Projet** : OmegaOS — *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (7 Lois + 43 Règles compilées dans le binaire — `omega rules list` affiche l'ensemble courant).
+- **Projet** : OmegaOS, *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (7 Lois + 50 Règles compilées dans le binaire ; `omega rules list` affiche l'ensemble courant).
 - **Owner** : agentik-os (org GitHub). Mainteneur humain : à préciser.
 - **Repo** : `github.com/agentik-os/OmegaOS` · branche `main`
 - **Forme** : produit installable (pas une lib). `npx omega-os` ou `git clone … && ./install.sh` → commande `omega`, TUI `ratatui` (7 onglets), bridge Telegram. Version workspace `0.1.6` (npm `omega-os@1.5.4`).
@@ -27,7 +27,7 @@
 - **Release profile** : `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, panic `unwind` conservé (une task qui panique ne doit pas tuer l'orchestrateur).
 
 ## Intouchable (source de vérité)
-- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (7 Lois L0–L6 + 28 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
+- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (7 Lois L0 à L6 + 50 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
 - `OMEGA.md` = instructions universelles chargées par TOUS les agents LLM. **Ne pas éditer ici sans intention.**
 - `~/.omega/` = état runtime + credentials + rules éditables. **Hors repo, jamais commité** (gitignored).
 
@@ -38,6 +38,7 @@
 - **Secrets hors repo** : tokens / creds vivent dans `~/.omega/` uniquement (gitignored), JAMAIS dans le repo.
 - **Build propre** : commits passent build + lint + typecheck. CI build le workspace avec `-D warnings` + suite de tests comme gates durs (clippy/rustfmt advisory).
 - **Pas de `--force`, pas de `--no-verify`.** Vérification par runtime live avant merge.
+- **R-ORACLE-LEDGER (contrat de cycle de vie d'un oracle)** : un oracle énumère chaque demande avant d'agir, persiste cette énumération en plan durable (`omega progress <session> --plan "a|b|c"` écrit `oracle-<clé>.progress.json`), garde exactement UNE tâche `doing`, et ne ferme que sur une preuve qu'il a vérifiée lui-même. `omega done <session> done_clean` est REFUSÉ tant qu'un de ses workers tourne encore ; une fermeture propre ne cascade que les workers FINIS, relâche chaque `scope-<session>.json` et ne détruit jamais de travail non commité. Un plan incomplet annoncé `done_clean` est exactement le défaut que cette règle interdit. Contrat complet : `docs/ORACLE-LIFECYCLE-CONTRACT.md`. Règle compilée dans `rules.rs`, exportée vers `~/.omega/rules/`.
 
 ## Pointeurs (à lire, ne pas recopier ici)
 - `OMEGA.md` — instructions universelles agents (les 7 Lois L0–L6, orchestration, behavior, tools).
