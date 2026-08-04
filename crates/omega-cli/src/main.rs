@@ -5268,7 +5268,10 @@ async fn cmd_reap(target: Option<&str>, dry_run: bool) -> Result<()> {
                 let was_live = *verdict == ReapVerdict::Reap;
                 if dry_run {
                     let state = if was_live { "live" } else { "already closed" };
-                    println!("  {}: WOULD be reaped (terminal signal, {})", session, state);
+                    println!(
+                        "  {}: WOULD be reaped (terminal signal, {})",
+                        session, state
+                    );
                     continue;
                 }
                 reaped += 1;
