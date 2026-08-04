@@ -6929,9 +6929,11 @@ fn cmd_progress(
     let mut todo =
         omega_core::oracle_todo::OracleTodo::load(&config.state_dir, session).map_err(|e| {
             anyhow::anyhow!(
-                "{e}\nThe plan was NOT changed. Fix the file by hand (tasks[].s must be one of \
-                 todo|doing|done|fail, and each entry needs both `t` and `s`), or delete it to \
-                 start the plan over — `omega progress {session}` still prints what it holds."
+                "{e}\nThe plan was NOT changed. Repair the file in place — tasks[].s must be one \
+                 of todo|doing|done|fail and each entry needs both `t` and `s`; `omega progress \
+                 {session}` still prints what it holds. Prefer repairing to deleting: the file \
+                 also carries the Telegram card's chat/msgId, and deleting it orphans the live \
+                 card the next time the bot restarts."
             )
         })?;
     if let Some(p) = plan {
