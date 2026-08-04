@@ -1115,59 +1115,55 @@ impl Patrol {
                 }
 
                 // ── L4 gate-pending upgrade (backstop for a missed progress tick) ──
-                // `omega done` downgrades done_clean → Pending while the plan is
-                // <100% (gate_pending=true); `omega progress` upgrades it back when
-                // the final task lands. If that tick was missed, resolve it here:
-                // a 100%-done, no-failure plan satisfies the L4 gate.
+                // `omega done` downgrades done_clean → Pending for EITHER of two
+                // reasons: the plan is <100%, or the independent quality gate is
+                // absent / not accepted. `omega progress` upgrades it back only
+                // when BOTH have since been satisfied. If that tick was missed,
+                // resolve it here — against the same two conditions, so the two
+                // copies of the rule can never disagree.
+                //
+                // This used to read the raw `done` / `total` counters off the
+                // progress JSON and ignore the gate entirely, so a mission
+                // refused ONLY by the missing gate was auto-accepted within one
+                // patrol cycle and the gate's refusal text was cleared with it.
+                // The ledger is now the source of truth (the counters can be
+                // stale or hand-edited, and `is_complete` also refuses a plan
+                // holding a failed task), and an unreadable ledger or an absent
+                // gate leaves the signal HONESTLY pending.
                 if !stale && done.status == DoneStatus::Pending && done.gate_pending {
-                    let key = session
-                        .name
-                        .strip_prefix("oracle-")
-                        .unwrap_or(&session.name);
-                    let pp = self
-                        .config
-                        .state_dir
-                        .join(format!("oracle-{}.progress.json", key));
-                    if let Some(pj) = std::fs::read_to_string(&pp)
-                        .ok()
-                        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-                    {
-                        let total = pj.get("total").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let done_n = pj.get("done").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let any_fail = pj
-                            .get("tasks")
-                            .and_then(|v| v.as_array())
-                            .map(|ts| {
-                                ts.iter().any(|t| {
-                                    t.get("s").and_then(|v| v.as_str()) == Some("fail")
-                                })
-                            })
+                    let plan_complete =
+                        crate::oracle_todo::OracleTodo::load(&self.config.state_dir, &session.name)
+                            .map(|t| t.is_complete())
                             .unwrap_or(false);
-                        if total > 0 && done_n == total && !any_fail {
-                            done.status = DoneStatus::DoneClean;
-                            done.pending_actions.clear();
-                            done.gate_pending = false;
-                            done.finished_at = Utc::now();
-                            done.duration_secs =
-                                (done.finished_at - done.started_at).num_seconds().max(0) as u64;
-                            let _ = done.write(&self.config.state_dir);
-                            // The notifier may have already reported the
-                            // transient Pending state and written its per-path
-                            // marker — invalidate it so the corrected
-                            // done_clean is notified exactly once.
-                            OracleDoneSignal::invalidate_notified(
-                                &self.config.state_dir,
-                                &session.name,
-                            );
-                            tracing::info!(
-                                oracle = %session.name,
-                                "L4 gate satisfied — pending upgraded to done_clean"
-                            );
-                            report.actions_taken.push(format!(
-                                "L4 gate satisfied for {} — upgraded pending to done_clean",
-                                session.name
-                            ));
-                        }
+                    // `None` = no gate result on disk at all, which is a
+                    // REFUSAL here, never a pass (L5: an absent verdict is not
+                    // an accepted one).
+                    let gate_overall_pass =
+                        crate::gate::GateResult::read(&self.config.state_dir, &session.name)
+                            .ok()
+                            .flatten()
+                            .map(|g| g.overall_pass);
+                    if may_upgrade_gate_pending(plan_complete, gate_overall_pass) {
+                        done.status = DoneStatus::DoneClean;
+                        done.pending_actions.clear();
+                        done.gate_pending = false;
+                        done.finished_at = Utc::now();
+                        done.duration_secs =
+                            (done.finished_at - done.started_at).num_seconds().max(0) as u64;
+                        let _ = done.write(&self.config.state_dir);
+                        // The notifier may have already reported the
+                        // transient Pending state and written its per-path
+                        // marker — invalidate it so the corrected
+                        // done_clean is notified exactly once.
+                        OracleDoneSignal::invalidate_notified(&self.config.state_dir, &session.name);
+                        tracing::info!(
+                            oracle = %session.name,
+                            "L4 gate satisfied — pending upgraded to done_clean"
+                        );
+                        report.actions_taken.push(format!(
+                            "L4 gate satisfied for {} — upgraded pending to done_clean",
+                            session.name
+                        ));
                     }
                 }
 
@@ -1775,6 +1771,22 @@ impl WorkerCloseMarker {
     }
 }
 
+/// L4 gate-pending upgrade predicate (pure + testable). Patrol may rewrite a
+/// `gate_pending` signal back to `done_clean` only when BOTH refusals `omega
+/// done` can record have since been lifted: the plan is genuinely complete
+/// (`OracleTodo::is_complete`, not the raw counters) AND the independent
+/// quality gate reports `overall_pass`.
+///
+/// The gate argument is an `Option` on purpose, because ABSENT and FAILED are
+/// two different states that must not be collapsed at the call site: `None` is
+/// "no `GateResult` on disk", `Some(false)` is "the gate ran and refused", and
+/// only `Some(true)` is an accepted verdict. Both refusals leave the signal
+/// pending, which is the whole point — a `done_clean` nobody verified is worse
+/// than an honest pending that waits (R-VERIFY, L5).
+fn may_upgrade_gate_pending(plan_complete: bool, gate_overall_pass: Option<bool>) -> bool {
+    plan_complete && gate_overall_pass == Some(true)
+}
+
 /// Reap predicate (Task#6, pure + testable). Given whether the parent oracle
 /// has consumed the worker_done event (`oracle_acked`) and how long the worker
 /// has been Closeable, decide whether to reap NOW. Reap when the oracle ack'd OR
@@ -1924,6 +1936,37 @@ mod tests {
     fn ignores_retrying_and_normal_output() {
         assert_eq!(detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"), None);
         assert_eq!(detect_fatal_agent_error("just working on it\n❯"), None);
+    }
+
+    #[test]
+    fn gate_upgrade_needs_complete_plan_and_passing_gate() {
+        // The ONLY accepting shape: the plan is 100% and the independent gate
+        // ran and passed.
+        assert!(may_upgrade_gate_pending(true, Some(true)));
+    }
+
+    #[test]
+    fn gate_upgrade_refused_when_gate_absent() {
+        // The defect this predicate exists to close: patrol used to read only
+        // the plan counters, so a mission refused ONLY because no GateResult
+        // was ever written was auto-accepted on the next cycle.
+        assert!(!may_upgrade_gate_pending(true, None));
+    }
+
+    #[test]
+    fn gate_upgrade_refused_when_gate_failed() {
+        // The gate ran and said no. An explicit refusal is at least as binding
+        // as a missing one.
+        assert!(!may_upgrade_gate_pending(true, Some(false)));
+    }
+
+    #[test]
+    fn gate_upgrade_refused_when_plan_incomplete_whatever_the_gate() {
+        // The plan condition is independent: no gate verdict rescues an
+        // unfinished (or failed, per `is_complete`) plan.
+        assert!(!may_upgrade_gate_pending(false, Some(true)));
+        assert!(!may_upgrade_gate_pending(false, Some(false)));
+        assert!(!may_upgrade_gate_pending(false, None));
     }
 
     #[test]
