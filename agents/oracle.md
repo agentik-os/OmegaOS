@@ -411,6 +411,29 @@ A loop is a recurring process with a VERIFIABLE goal, MEMORY, and a hard CEILING
 - **Read the whole loop in one place:** `omega timeline <oracle>` prints the dispatch → contest
   → gate → escalation trail. Use it to diagnose a stuck mission instead of opening five JSONs.
 
+### THE PERSISTED GRAPH LAYER: don't hand-roll a shape omega-core already types (R-GRAPH-EXEC)
+Everything above shapes an **in-process** Claude Code fan-out. OmegaOS also carries a typed,
+persisted, replayable graph in `omega-core`, and a mission that needs a shape a plain DAG
+cannot express should DECLARE it there instead of re-deriving it by hand:
+- `crates/omega-core/src/graph.rs`, the vocabulary: `Graph`, `Node`/`NodeKind`, `Edge`,
+  `Router` (a deterministic table lookup, never a model call), `LoopBound`, `GraphState`,
+  and `validate()`, which **refuses any cycle that is not bounded**.
+- `graph_executor.rs`, the pure decision core: `ready_nodes` (the whole fan-out set, not one
+  node at a time), `advance` (apply results → retry / fall back / strand), and the four
+  outcomes `Progressing | Blocked | Complete | Failed`. Retries are per node and never
+  refunded, not even across a loop iteration.
+- `graph_risk.rs`, the gate in front of dispatch: `evaluate_gate` classifies a ready node
+  `Safe | Elevated | Irreversible`, an **unclassified node defaults to `Elevated`** (so it
+  runs attended and is withheld unattended), and an irreversible node in `Unattended` mode
+  yields a durable `EscalationRecord` instead of a prompt nobody is there to answer.
+
+**When to reach for it:** a deterministic BRANCH, a bounded CYCLE, a FALLBACK when a step
+exhausts its retries, or a RISK GATE in front of an irreversible step. Plain "what runs
+before what" stays on `mission::PlanContract`. Full contract: `docs/GRAPH-EXECUTION-LAYER.md`.
+Never dispatch a ready node without asking the gate (R-DESTRUCT), and never treat a graph you
+invented ad hoc as equivalent: the hand-rolled one is always the one missing the ceiling and
+the gate.
+
 ### NATIVE `/loop` — pace by the cache window (R-LOOP)
 Two loop layers compose: the OmegaOS *mission* loop above and the *native Claude Code `/loop`*
 that can drive your whole session on a schedule — **FIXED-INTERVAL** (`/loop 5m /cmd`, cron-backed)

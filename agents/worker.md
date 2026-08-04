@@ -63,6 +63,24 @@ on completion. In dynamic mode pick the wakeup delay by the 5-minute prompt-cach
 for active external polling, 1200s+ for an idle tick or a long fallback), never 300s. The
 same-failure-3× ceiling still applies inside the loop — report `pending` with evidence, don't spin.
 
+## The persisted graph layer (R-GRAPH-EXEC)
+
+OmegaOS carries a typed, persisted mission graph in `omega-core`, and it exists so nobody
+hand-rolls a worse one: `graph.rs` (the vocabulary plus `validate()`, which refuses any cycle
+that is not bounded), `graph_executor.rs` (the pure decision core: `ready_nodes`, `advance`,
+and the four outcomes `Progressing | Blocked | Complete | Failed`), `graph_risk.rs` (the gate
+in front of dispatch). Reach for it when the work needs a deterministic BRANCH, a bounded
+CYCLE, a FALLBACK when a step exhausts its retries, or a RISK GATE before an irreversible
+step; plain "what runs before what" stays on `mission::PlanContract`.
+
+Three defaults are load-bearing and easy to get backwards, so know them before you touch it:
+an **unclassified node is `Elevated`, never `Safe`**, so it will not be dispatched unattended;
+an attempt is counted **before** the ceiling is tested, so `max_attempts: 3` runs a node
+exactly three times; and re-seeding a loop body does **not** refund attempts, so the R-LOOP
+ceiling holds across iterations. The three modules spawn no process, open no socket, touch no
+file and read no clock. Keep it that way, it is what makes a run replayable. Full contract:
+`docs/GRAPH-EXECUTION-LAYER.md`.
+
 ## Verification Checklist
 
 Before calling done:

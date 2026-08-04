@@ -5,7 +5,7 @@
 > Reste synchronisée avec `~/.omega/state/oracle-OmegaOS*`. **Ne pas supprimer.** Mettre à jour quand une règle change.
 
 ## Identité
-- **Projet** : OmegaOS, *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (7 Lois + 50 Règles compilées dans le binaire ; `omega rules list` affiche l'ensemble courant).
+- **Projet** : OmegaOS, *agentic terminal operating system*. Plan de contrôle terminal pour piloter une flotte d'agents de code IA en parallèle, où chaque agent obéit au même rulebook typé (7 Lois + 51 Règles compilées dans le binaire ; `omega rules list` affiche l'ensemble courant).
 - **Owner** : agentik-os (org GitHub). Mainteneur humain : à préciser.
 - **Repo** : `github.com/agentik-os/OmegaOS` · branche `main`
 - **Forme** : produit installable (pas une lib). `npx omega-os` ou `git clone … && ./install.sh` → commande `omega`, TUI `ratatui` (7 onglets), bridge Telegram. Version workspace `0.1.6` (npm `omega-os@1.5.4`).
@@ -27,7 +27,7 @@
 - **Release profile** : `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, panic `unwind` conservé (une task qui panique ne doit pas tuer l'orchestrateur).
 
 ## Intouchable (source de vérité)
-- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (7 Lois L0 à L6 + 50 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
+- `crates/omega-core/src/rules.rs` = SSOT de la doctrine (7 Lois L0 à L6 + 51 Règles nommées typées `RuleKind::{Law, Rule}`). Artefact compilé, pas un YAML oublié. **Ne pas contourner.**
 - `OMEGA.md` = instructions universelles chargées par TOUS les agents LLM. **Ne pas éditer ici sans intention.**
 - `~/.omega/` = état runtime + credentials + rules éditables. **Hors repo, jamais commité** (gitignored).
 
@@ -39,6 +39,7 @@
 - **Build propre** : commits passent build + lint + typecheck. CI build le workspace avec `-D warnings` + suite de tests comme gates durs (clippy/rustfmt advisory).
 - **Pas de `--force`, pas de `--no-verify`.** Vérification par runtime live avant merge.
 - **R-ORACLE-LEDGER (contrat de cycle de vie d'un oracle)** : un oracle énumère chaque demande avant d'agir, persiste cette énumération en plan durable (`omega progress <session> --plan "a|b|c"` écrit `oracle-<clé>.progress.json`), garde exactement UNE tâche `doing`, et ne ferme que sur une preuve qu'il a vérifiée lui-même. `omega done <session> done_clean` est REFUSÉ tant qu'un de ses workers tourne encore ; une fermeture propre ne cascade que les workers FINIS, relâche chaque `scope-<session>.json` et ne détruit jamais de travail non commité. Un plan incomplet annoncé `done_clean` est exactement le défaut que cette règle interdit. Contrat complet : `docs/ORACLE-LIFECYCLE-CONTRACT.md`. Règle compilée dans `rules.rs`, exportée vers `~/.omega/rules/`.
+- **R-GRAPH-EXEC (couche graphe persistée)** : une mission dont la forme réelle est un GRAPHE (branchement sur une classification, boucle jusqu'à épuisement, étape qui ne doit pas tourner sans personne devant) se DÉCLARE comme un `Graph` d'`omega-core` et se pilote par `graph_executor::advance` ; elle ne se re-dérive pas à la main à chaque run. `graph.rs` = vocabulaire persisté + `validate()`, `graph_executor.rs` = noyau de décision pur (ensemble prêt, retries bornés, propagation d'échec), `graph_risk.rs` = gate human-in-the-loop. Trois défauts porteurs, à ne pas inverser : un nœud NON classifié vaut `Elevated` (jamais `Safe`), la tentative est comptée AVANT le test du plafond (`max_attempts: 3` = exactement trois exécutions), et un re-seed de boucle ne rembourse pas les tentatives (le plafond R-LOOP tient d'une itération à l'autre). En `Unattended`, un nœud irréversible produit un `EscalationRecord` durable, jamais un prompt que personne ne lira ; une approbation non signée est refusée. Aucun des trois modules ne lance de process, n'ouvre de socket, n'écrit sur disque ni ne lit d'horloge : c'est ce qui rend un run rejouable. Contrat complet : `docs/GRAPH-EXECUTION-LAYER.md`. Complète R-GRAPH (la FORME d'un fan-out Workflow), R-LOOP (le plafond) et R-DESTRUCT (le gate). Règle compilée dans `rules.rs`, exportée vers `~/.omega/rules/`.
 
 ## Pointeurs (à lire, ne pas recopier ici)
 - `OMEGA.md` — instructions universelles agents (les 7 Lois L0–L6, orchestration, behavior, tools).
