@@ -111,10 +111,19 @@ impl TodoStatus {
     /// unfinished state. An oracle that re-states its plan after a compaction,
     /// or a worker that re-reports an item it already closed, must not be able
     /// to walk a finished task backwards without anyone noticing. `Done ->
-    /// Fail` IS allowed, and is not a hole in that rule: it lands in a terminal
-    /// state, not an unfinished one, and it is the honest direction — an item
-    /// whose verification later collapsed has to have somewhere to go, or the
-    /// only way to report it is to lie about it.
+    /// Fail` IS allowed: it lands in a terminal state, not an unfinished one,
+    /// and it is the honest direction — an item whose verification later
+    /// collapsed has to have somewhere to go, or the only way to report it is
+    /// to lie about it.
+    ///
+    /// Stated honestly, that rule is one-STEP, not absolute. `Done -> Fail ->
+    /// Todo` walks a finished item back to unfinished in two legal moves, and
+    /// this type cannot see it: a status enum has no memory of where the item
+    /// has been. Closing that would take a "was ever done" bit on the ITEM,
+    /// which is a schema change and is deliberately not made here. What the
+    /// edges do buy is that the walk-back can never be SILENT — it has to pass
+    /// through `Fail`, which `has_failures` reports, `evaluate_closure` refuses
+    /// a clean close over, and `honest_status` downgrades to `Failed`.
     ///
     /// The identity move is allowed on every status, and that is deliberate
     /// rather than an oversight: `upsert` is the only way to attach evidence to
@@ -153,9 +162,11 @@ impl TodoStatus {
 }
 
 /// A rejected status change, shaped after [`crate::mission::InvalidTransition`]
-/// (whose constructor is private to that module, so this is a sibling type
-/// rather than a reuse). It names the item because the operator-facing message
-/// "done -> todo rejected" is useless without knowing WHICH task tried it.
+/// but deliberately NOT a reuse of it: that type stringifies `from` and `to`
+/// through `Debug` and carries a machine name, whereas a caller here wants the
+/// statuses back as `TodoStatus` to branch on them, plus the item title. It
+/// names the item because the operator-facing message "done -> todo rejected"
+/// is useless without knowing WHICH task tried it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidTodoTransition {
     pub item: Option<String>,
@@ -323,6 +334,12 @@ impl OracleTodo {
             anyhow::anyhow!("{} is not a readable progress file: {}", path.display(), e)
         })?;
         todo.session = session.to_string();
+        // INVARIANT 3 is a property of the LEDGER, not just of this module's
+        // write path, and every other producer writes this file without any
+        // notion of it. Repairing on the way in is what makes the invariant
+        // true for a file we did not write, and it is the only reason
+        // `current()` has a single answer after a compaction.
+        todo.enforce_single_doing();
         Ok(todo)
     }
 
@@ -347,6 +364,14 @@ impl OracleTodo {
         let previous = std::mem::take(&mut self.tasks);
         for title in titles {
             let title = title.as_ref();
+            // A plan that names the same item twice must not become two
+            // entries. `matches` ignores case deliberately, so "deploy" and
+            // "Deploy" are ONE item: admitting both would let `counts` count a
+            // single finished task twice, and `upsert` could then only ever
+            // address the first of the pair.
+            if self.tasks.iter().any(|t| t.matches(title)) {
+                continue;
+            }
             match previous.iter().find(|p| p.matches(title)) {
                 // Preserve everything the previous entry knew, but adopt the
                 // NEW spelling of the title: the oracle just told us how it
@@ -514,11 +539,31 @@ impl OracleTodo {
     /// And it is ATOMIC: tmp file plus rename, the idiom `cmd_progress`,
     /// `done.rs` and `oracle_lifecycle.rs` already use, so a reader never
     /// catches a half-written plan.
+    ///
+    /// The BOUND on that merge, because an overstated guarantee is worse than a
+    /// stated limit: it protects FOREIGN top-level keys only. `tasks`, `done`,
+    /// `total` and `ts` are overwritten wholesale from memory, so a task edit
+    /// another producer made since this plan was loaded is LOST — last writer
+    /// wins on the task list. That is survivable today only because the foreign
+    /// keys are written once at dispatch while the task list has one writer at
+    /// a time; a second concurrent task writer would need a version check here,
+    /// not a wider merge.
     pub fn save(&self, state_dir: &Path, session: &str) -> Result<()> {
         std::fs::create_dir_all(state_dir)?;
         let path = Self::path(state_dir, session);
         let key = session.strip_prefix("oracle-").unwrap_or(session);
-        let tmp = state_dir.join(format!(".oracle-{}.progress.json.tmp", key));
+        // The tmp name carries THIS process's pid. `cmd_progress` writes
+        // `.oracle-<key>.progress.json.tmp` (omega-cli/src/main.rs:6363) with
+        // the same key derivation, so a shared name is not a cosmetic clash:
+        // two writers racing on one oracle would have one `rename` publish the
+        // OTHER's half-flushed file as the live document, which is both a torn
+        // read and — because `load` fails closed on unparseable JSON — a plan
+        // that can never be opened again.
+        let tmp = state_dir.join(format!(
+            ".oracle-{}.progress.json.{}.tmp",
+            key,
+            std::process::id()
+        ));
 
         // Start from what is on disk RIGHT NOW so a concurrent producer's keys
         // are preserved, then fill in anything we remember that disk no longer
@@ -668,6 +713,21 @@ pub fn evaluate_closure(
     existing_signal: Option<&OracleDoneSignal>,
     requested: DoneStatus,
 ) -> Result<ClosurePlan, ClosureRefusal> {
+    // An honest non-clean status is never refused. `pending` / `failed` /
+    // `blocked` are precisely what a blocked oracle must be able to emit, and
+    // gating them behind the same conditions as `done_clean` would leave a
+    // stuck mission with no legal way to report at all. Nothing closes on such
+    // a signal either: the oracle stays alive, so its workers keep their
+    // sessions and their scope claims.
+    //
+    // This runs BEFORE the idempotence check on purpose. An oracle whose
+    // verification collapsed after a clean close has to be able to say so, and
+    // answering `already_closed` to a `failed` request would swallow exactly
+    // that correction — invariant 4 defeated by a check order.
+    if requested != DoneStatus::DoneClean {
+        return Ok(ClosurePlan::default());
+    }
+
     // IDEMPOTENCE. A second close of an already-closed oracle is a no-op, not
     // an error and not a second cascade. `omega done` is re-run routinely (a
     // resumed session that lost its context, patrol upgrading a gate_pending
@@ -678,16 +738,6 @@ pub fn evaluate_closure(
             already_closed: true,
             ..Default::default()
         });
-    }
-
-    // An honest non-clean status is never refused. `pending` / `failed` /
-    // `blocked` are precisely what a blocked oracle must be able to emit, and
-    // gating them behind the same conditions as `done_clean` would leave a
-    // stuck mission with no legal way to report at all. Nothing closes on such
-    // a signal either: the oracle stays alive, so its workers keep their
-    // sessions and their scope claims.
-    if requested != DoneStatus::DoneClean {
-        return Ok(ClosurePlan::default());
     }
 
     if !live.running.is_empty() {
@@ -1193,6 +1243,174 @@ mod tests {
         assert_eq!(
             reloaded.render_checklist(),
             "✓ analyze\n▸ fix\n☐ verify\n1/3"
+        );
+    }
+
+    /// The sibling ships this exact matrix (`mission.rs`), and copying the API
+    /// without it lets the two halves drift silently: `upsert` calls
+    /// `can_transition_to` while `transition` answers from the same table by
+    /// hand. Four variants make it sixteen assertions.
+    #[test]
+    fn transition_api_and_transition_matrix_agree_for_every_state_pair() {
+        let states = [
+            TodoStatus::Todo,
+            TodoStatus::Doing,
+            TodoStatus::Done,
+            TodoStatus::Fail,
+        ];
+        for from in states {
+            for to in states {
+                assert_eq!(
+                    from.transition(to).is_ok(),
+                    from.can_transition_to(to),
+                    "{from:?} -> {to:?}"
+                );
+            }
+        }
+        // The untitled `Display` arm is reachable only through `transition`.
+        let err = TodoStatus::Done.transition(TodoStatus::Todo).unwrap_err();
+        assert_eq!(err.item, None);
+        assert_eq!(err.to_string(), "invalid todo transition: done -> todo");
+    }
+
+    /// The merge branch of `save` — the module's most safety-critical line, and
+    /// the one a load-then-save round trip CANNOT exercise, because `load` has
+    /// already captured every foreign key into `extra`. Only a write that lands
+    /// BETWEEN the load and the save proves the re-read is real.
+    #[test]
+    fn save_keeps_a_foreign_key_written_after_this_plan_was_loaded() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        let path = OracleTodo::path(dir, "oracle-academy-2");
+        std::fs::write(&path, REAL_MERGED).unwrap();
+
+        let mut todo = OracleTodo::load(dir, "oracle-academy-2").unwrap();
+
+        // The bot re-posts its card and rewrites `msgId` while we hold a plan
+        // loaded from before. Carrying our stale copy back would kill the live
+        // progress card, which is the whole reason the merge exists.
+        let mut disk: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        disk["msgId"] = Value::from(9999);
+        disk["newKeyFromAnotherProducer"] = Value::from("keep me");
+        std::fs::write(&path, serde_json::to_string_pretty(&disk).unwrap()).unwrap();
+
+        todo.upsert("fix", TodoStatus::Done, None).unwrap();
+        todo.save(dir, "oracle-academy-2").unwrap();
+
+        let after = read_json(&path);
+        assert_eq!(
+            after["msgId"],
+            Value::from(9999),
+            "the fresher msgId must survive our stale copy"
+        );
+        assert_eq!(after["newKeyFromAnotherProducer"], Value::from("keep me"));
+        // And the keys this module DOES own still moved.
+        assert_eq!(after["done"], Value::from(2));
+        assert_eq!(after["total"], Value::from(2));
+    }
+
+    /// INVARIANT 3 on the READ path. `cmd_progress` enforces no single-doing
+    /// rule, so two `doing` entries is a shape this file genuinely arrives in,
+    /// and it is exactly the input the repair path was written for.
+    #[test]
+    fn load_repairs_a_file_another_producer_left_with_two_doing_items() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            OracleTodo::path(dir, "oracle-academy"),
+            r#"{"tasks":[{"t":"a","s":"doing"},{"t":"b","s":"doing"}],"done":0,"total":2}"#,
+        )
+        .unwrap();
+
+        let todo = OracleTodo::load(dir, "oracle-academy").unwrap();
+        assert_eq!(
+            todo.tasks
+                .iter()
+                .filter(|t| t.status == TodoStatus::Doing)
+                .count(),
+            1,
+            "the ledger must have ONE answer to 'what was I doing'"
+        );
+        assert_eq!(
+            todo.current().map(|t| t.title.as_str()),
+            Some("a"),
+            "with no timestamp to separate them, plan order decides"
+        );
+        assert_eq!(todo.tasks[1].status, TodoStatus::Todo);
+    }
+
+    /// A duplicated title used to mint an item `upsert` could never address,
+    /// because `position` always resolves the FIRST match — a mission that no
+    /// legal sequence of calls could ever bring to 100%.
+    #[test]
+    fn a_plan_that_names_one_item_twice_becomes_one_item() {
+        let mut todo = OracleTodo::new("oracle-academy");
+        todo.set_plan(["fix login", "Fix Login", "ship"]);
+        assert_eq!(
+            todo.tasks.len(),
+            2,
+            "case is not identity: that is one item"
+        );
+
+        todo.upsert("fix login", TodoStatus::Done, None).unwrap();
+        todo.upsert("ship", TodoStatus::Done, None).unwrap();
+        assert!(todo.is_complete(), "every item must be closeable");
+
+        // And a re-statement must not double-count the finished one.
+        todo.set_plan(["fix login", "FIX LOGIN", "ship"]);
+        assert_eq!(todo.counts(), (2, 2));
+    }
+
+    /// The check order in `evaluate_closure`: idempotence must not swallow a
+    /// correction. An oracle whose verification collapsed after a clean close
+    /// has to be able to say so.
+    #[test]
+    fn an_honest_failure_after_a_clean_close_is_not_swallowed_as_already_closed() {
+        let mut todo = OracleTodo::new("oracle-academy");
+        todo.set_plan(["a"]);
+        todo.upsert("a", TodoStatus::Done, None).unwrap();
+        let live = LiveWorkers::default();
+        let closed = oracle_signal("academy", DoneStatus::DoneClean);
+
+        for status in [DoneStatus::Failed, DoneStatus::Blocked, DoneStatus::Pending] {
+            let plan = evaluate_closure(&todo, &live, Some(&closed), status).unwrap();
+            assert!(
+                !plan.already_closed,
+                "{status:?} is a correction, not a re-close"
+            );
+        }
+        // A repeated done_clean is still idempotent.
+        let plan = evaluate_closure(&todo, &live, Some(&closed), DoneStatus::DoneClean).unwrap();
+        assert!(plan.already_closed);
+    }
+
+    /// The one-STEP bound on invariant 2, pinned honestly rather than claimed
+    /// away: `Done -> Fail -> Todo` is legal, and the guarantee is that it can
+    /// never be SILENT.
+    #[test]
+    fn walking_done_back_through_fail_is_legal_but_never_silent() {
+        let mut todo = OracleTodo::new("oracle-academy");
+        todo.set_plan(["a"]);
+        todo.upsert("a", TodoStatus::Done, None).unwrap();
+        assert!(todo.is_complete());
+
+        todo.upsert("a", TodoStatus::Fail, Some("verification collapsed"))
+            .unwrap();
+        assert!(todo.has_failures());
+        assert_eq!(
+            honest_status(DoneStatus::DoneClean, &todo),
+            DoneStatus::Failed
+        );
+
+        todo.upsert("a", TodoStatus::Todo, None).unwrap();
+        assert!(
+            !todo.is_complete(),
+            "the plan must not read complete again after a walk-back"
+        );
+        assert_eq!(
+            honest_status(DoneStatus::DoneClean, &todo),
+            DoneStatus::Pending
         );
     }
 }
