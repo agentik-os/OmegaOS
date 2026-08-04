@@ -7516,6 +7516,21 @@ async fn cmd_done(session: &str, status: &str, summary: &str, commit: Option<&st
         // NOT for an unreadable ledger — see `arms_gate_upgrade`, where that
         // exclusion is stated and tested.
         osignal.gate_pending = arms_gate_upgrade(done_status, final_status, ledger_unreadable);
+        if osignal.gate_pending {
+            // Arming the upgrade hands the verdict to a reader that does NOT use
+            // the ledger: patrol recomputes nothing and trusts the on-disk `done`
+            // / `total` (omega-core/src/patrol.rs:1131-1146). This gate has just
+            // refused the close on the TASKS, so if those counters disagree with
+            // the task list, patrol reads the stale pair, sees 2 == 2 over a plan
+            // that is really 1 of 2, and upgrades a refusal it never re-derived.
+            // `save` rewrites both counters from the tasks (and merges the bot's
+            // keys back), so the numbers patrol is about to read are the ones this
+            // gate just judged. Best-effort: a failed heal must not sink the
+            // signal, it only leaves the pre-existing drift in place.
+            if let Some(todo) = ledger.as_ref() {
+                let _ = todo.save(&config.state_dir, session);
+            }
+        }
         osignal.pending_actions = gate_pending;
         if let Some(c) = commit.filter(|c| !c.is_empty()) {
             osignal.ship = Some(omega_core::done::OracleShipResult {
