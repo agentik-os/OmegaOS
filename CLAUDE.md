@@ -41,7 +41,7 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 - Session protection, kill history, auto-discovery
 
 ### From Omega System (Orchestration)
-- 14 AISB Matrix agents (Oracle, Morpheus, Seraph, Keymaker, etc.)
+- 16 AISB Matrix agents (Oracle, Morpheus, Seraph, Keymaker, Trinity, etc.)
 - Quality gates (rubric, grader consensus, Popper falsification)
 - Done.json webhook → Telegram reports
 - Multi-account Claude rotation for unlimited budget
