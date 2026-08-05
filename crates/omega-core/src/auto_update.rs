@@ -147,6 +147,19 @@ pub struct AutoUpdateState {
     pub consecutive_failures: u32,
     /// Human-readable outcome of the last run, for `omega update --check`.
     pub last_outcome: Option<String>,
+    /// Fingerprint of the doctrine the last install put on disk.
+    ///
+    /// Kept so a rebuild can be asked whether the RULES moved, which a commit
+    /// sha cannot answer: most commits change no rule at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrine_fingerprint: Option<String>,
+    /// When the fingerprint above last CHANGED — not when it was last written.
+    ///
+    /// This is the cutoff a session check needs. A session started after this
+    /// carries the current doctrine no matter how many binaries have been
+    /// installed since, so a doctrine-neutral rebuild stops flagging live work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doctrine_changed_at: Option<DateTime<Utc>>,
 }
 
 impl AutoUpdateState {
@@ -201,6 +214,28 @@ impl AutoUpdateState {
         self.last_applied_commit = Some(target.to_string());
         self.failing_commit = None;
         self.consecutive_failures = 0;
+        self.record_doctrine(&crate::rules::doctrine_fingerprint(), at);
+    }
+
+    /// Note the doctrine this install carries, moving `doctrine_changed_at`
+    /// ONLY when the fingerprint actually differs.
+    ///
+    /// Stamping the time on every install would defeat the point: the cutoff
+    /// would advance on doctrine-neutral rebuilds and the session check would
+    /// flag live work again, which is the false positive this exists to kill.
+    ///
+    /// A FIRST observation (no fingerprint on record) is not a change. There is
+    /// nothing to compare against, and calling it one would flag every session
+    /// running when a machine upgrades into this version, once, for no reason.
+    pub fn record_doctrine(&mut self, fingerprint: &str, at: DateTime<Utc>) {
+        let changed = self
+            .doctrine_fingerprint
+            .as_deref()
+            .is_some_and(|previous| previous != fingerprint);
+        self.doctrine_fingerprint = Some(fingerprint.to_string());
+        if changed {
+            self.doctrine_changed_at = Some(at);
+        }
     }
 }
 
@@ -480,6 +515,70 @@ mod tests {
             last_applied_commit: Some(commit.to_string()),
             ..Default::default()
         }
+    }
+
+    fn at(secs: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(secs, 0).expect("valid timestamp")
+    }
+
+    #[test]
+    fn a_first_doctrine_observation_is_not_a_change() {
+        // Otherwise every machine upgrading INTO this version would flag every
+        // session it happens to be running, once, for nothing.
+        let mut st = AutoUpdateState::default();
+        st.record_doctrine("aaaa1111", at(1_000));
+        assert_eq!(st.doctrine_fingerprint.as_deref(), Some("aaaa1111"));
+        assert_eq!(
+            st.doctrine_changed_at, None,
+            "nothing to compare against yet"
+        );
+    }
+
+    #[test]
+    fn a_doctrine_neutral_rebuild_does_not_move_the_cutoff() {
+        // This is the whole point: the cutoff must not advance on a rebuild
+        // that changed no rule, or the session check goes back to crying wolf.
+        let mut st = AutoUpdateState::default();
+        st.record_doctrine("aaaa1111", at(1_000));
+        st.record_doctrine("aaaa1111", at(2_000));
+        st.record_doctrine("aaaa1111", at(3_000));
+        assert_eq!(st.doctrine_changed_at, None);
+    }
+
+    #[test]
+    fn a_real_doctrine_change_moves_the_cutoff_once() {
+        let mut st = AutoUpdateState::default();
+        st.record_doctrine("aaaa1111", at(1_000));
+        st.record_doctrine("bbbb2222", at(2_000));
+        assert_eq!(st.doctrine_changed_at, Some(at(2_000)));
+
+        // ...and a neutral rebuild after it leaves the mark where it was, so a
+        // session started at 2_500 stays correctly unflagged.
+        st.record_doctrine("bbbb2222", at(3_000));
+        assert_eq!(st.doctrine_changed_at, Some(at(2_000)));
+    }
+
+    #[test]
+    fn a_successful_apply_records_the_doctrine_it_installed() {
+        let mut st = AutoUpdateState::default();
+        st.record_success("abc1234", at(1_000));
+        assert_eq!(
+            st.doctrine_fingerprint.as_deref(),
+            Some(crate::rules::doctrine_fingerprint().as_str()),
+            "an install must record the doctrine it actually put on disk"
+        );
+    }
+
+    #[test]
+    fn the_new_doctrine_fields_survive_an_old_state_file() {
+        // A state file written before these fields existed must still load, or
+        // upgrading would wipe the failure memory it does carry.
+        let json = r#"{"last_check":null,"last_applied":null,"last_applied_commit":"abc1234",
+                       "failing_commit":null,"consecutive_failures":0,"last_outcome":null}"#;
+        let st: AutoUpdateState = serde_json::from_str(json).expect("old file loads");
+        assert_eq!(st.last_applied_commit.as_deref(), Some("abc1234"));
+        assert_eq!(st.doctrine_fingerprint, None);
+        assert_eq!(st.doctrine_changed_at, None);
     }
 
     #[test]

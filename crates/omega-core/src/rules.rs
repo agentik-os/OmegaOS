@@ -1891,3 +1891,90 @@ mod tests {
         );
     }
 }
+
+/// A stable fingerprint of the doctrine THIS binary carries.
+///
+/// Exists so a rebuild can be asked the only question that matters to a running
+/// agent: did the rules change? Comparing binary mtimes cannot answer it — a
+/// build that touched no rule still produces a newer binary, and every session
+/// started before it then looks stale when its doctrine is byte-identical.
+/// Measured 2026-08-05, a 29-line change to the CLI flagged nine sessions whose
+/// doctrine had not moved at all, which is exactly the false positive that
+/// teaches an operator to ignore the line (R-MONITOR).
+///
+/// Covers every field an agent is actually briefed with — id, kind, category,
+/// title, the rule text and its origin — in registry order, with a separator
+/// that cannot appear in the content, so a field ending where the next begins
+/// can never collide with a different split. `applies_to` and `scopes` are in
+/// too: a rule that stops reaching workers has changed for the worker even if
+/// its text did not.
+///
+/// blake3 rather than `DefaultHasher`: this value is compared ACROSS builds and
+/// machines, and the std hasher explicitly does not promise stability between
+/// either.
+pub fn doctrine_fingerprint() -> String {
+    let mut hasher = blake3::Hasher::new();
+    for rule in all_rules() {
+        for field in [
+            rule.id.to_string(),
+            format!("{:?}", rule.kind),
+            format!("{:?}", rule.category),
+            rule.title.to_string(),
+            rule.description.to_string(),
+            rule.reason.to_string(),
+            format!("{:?}", rule.applies_to),
+            format!("{:?}", rule.scopes),
+        ] {
+            hasher.update(field.as_bytes());
+            hasher.update(b"\x1f");
+        }
+        hasher.update(b"\x1e");
+    }
+    hasher.finalize().to_hex()[..16].to_string()
+}
+
+#[cfg(test)]
+mod fingerprint_tests {
+    use super::*;
+
+    #[test]
+    fn the_fingerprint_is_stable_across_calls() {
+        // If this ever flaps, every install would look like a doctrine change
+        // and the check it feeds would go back to crying wolf.
+        assert_eq!(doctrine_fingerprint(), doctrine_fingerprint());
+    }
+
+    #[test]
+    fn the_fingerprint_is_short_and_hex() {
+        let fp = doctrine_fingerprint();
+        assert_eq!(fp.len(), 16, "meant to be readable in a state file: {fp}");
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit()), "{fp}");
+    }
+
+    #[test]
+    fn a_changed_rule_changes_the_fingerprint() {
+        // The property the whole mechanism rests on, proven on the same hasher
+        // the real function uses rather than by mutating the registry.
+        let hash_of = |text: &str| {
+            let mut h = blake3::Hasher::new();
+            h.update(text.as_bytes());
+            h.finalize().to_hex()[..16].to_string()
+        };
+        assert_ne!(hash_of("R-X: do the thing"), hash_of("R-X: do the other thing"));
+    }
+
+    #[test]
+    fn field_boundaries_cannot_collide() {
+        // Without a separator, ("ab","c") and ("a","bc") hash identically and a
+        // rule edit that only moves a boundary would be invisible.
+        let joined = |parts: &[&str]| {
+            let mut h = blake3::Hasher::new();
+            for p in parts {
+                h.update(p.as_bytes());
+                h.update(b"\x1f");
+            }
+            h.finalize().to_hex()[..16].to_string()
+        };
+        assert_ne!(joined(&["ab", "c"]), joined(&["a", "bc"]));
+    }
+}

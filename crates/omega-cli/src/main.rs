@@ -10284,20 +10284,38 @@ async fn cmd_reconcile(report_only: bool) -> Result<()> {
     // well not exist. So the wording claims only what mtime can prove. Making
     // this exact would mean recording a doctrine fingerprint per install and
     // comparing against the last build whose fingerprint actually changed.
-    match binary_mtime() {
-        Some(installed_at) => {
-            let stale = sessions_older_than(installed_at);
+    // The cutoff is the last install whose DOCTRINE actually changed, not the
+    // last install. Binary mtime over-reported badly: a 29-line CLI change,
+    // touching no rule, flagged nine live sessions whose doctrine block was
+    // byte-identical (measured 2026-08-05). A check that cries wolf teaches the
+    // operator to skip the line, and then it may as well not exist (R-MONITOR).
+    //
+    // No recorded change means no install has yet observed a doctrine SHIFT on
+    // this box, so there is nothing a session could be behind on. Falling back
+    // to mtime here would reintroduce the false positive on exactly the
+    // machines that just upgraded into this version.
+    let history = omega_core::auto_update::AutoUpdateState::load(&config.state_dir);
+    match history.doctrine_changed_at {
+        Some(changed_at) => {
+            let stale = sessions_older_than(changed_at);
             if !stale.is_empty() {
                 needs_human.push(format!(
-                    "{} session(s) were started by an earlier build, so they carry the doctrine \
-                     compiled then — identical unless that build changed a rule (restart them \
-                     once their work is done): {}",
+                    "{} session(s) predate the last doctrine change ({}) and were briefed with \
+                     the rules as they stood before it (restart them once their work is done): {}",
                     stale.len(),
+                    changed_at.format("%Y-%m-%d %H:%M UTC"),
                     stale.join(", ")
                 ));
             }
         }
-        None => needs_human.push("could not stat the installed omega binary".to_string()),
+        None => {
+            // Say it rather than stay silent: "no finding" and "cannot yet
+            // tell" are different facts, and only one of them is reassuring.
+            println!(
+                "    [i] no doctrine change recorded yet on this box, so no session can be \
+                 measured against one — the next install that moves a rule sets the mark"
+            );
+        }
     }
 
     // Everything doctor already knows how to see, folded in rather than
@@ -10343,13 +10361,6 @@ fn sessions_older_than(cutoff: chrono::DateTime<chrono::Utc>) -> Vec<String> {
         .collect()
 }
 
-/// When was the installed binary put there? Used to tell which live sessions
-/// were briefed by a previous one.
-fn binary_mtime() -> Option<chrono::DateTime<chrono::Utc>> {
-    let exe = std::env::current_exe().ok()?;
-    let modified = std::fs::metadata(&exe).ok()?.modified().ok()?;
-    Some(chrono::DateTime::<chrono::Utc>::from(modified))
-}
 
 async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
     use omega_core::auto_update::{decide, AutoUpdateState, CheckoutState, Decision, SkipReason};

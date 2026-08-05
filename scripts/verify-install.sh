@@ -690,6 +690,8 @@ grep -q 'fn binary_provenance' crates/omega-core/src/doctor.rs || { bad "doctor 
 grep -q 'installed_head_mismatch' crates/omega-core/src/auto_update.rs || { bad "auto-update no longer owes an install when HEAD moved past the installed commit — a machine that authors commits would never rebuild"; RECONCILE_OK=0; }
 grep -q 'spawn_reconcile_session' crates/omega-cli/src/main.rs || { bad "a successful auto-update no longer launches the reconcile session"; RECONCILE_OK=0; }
 grep -q 'binary_stale' crates/omega-cli/src/main.rs || { bad "the interactive 'omega update' no longer notices a stale binary — only the cron would, and the two must agree"; RECONCILE_OK=0; }
+grep -q 'fn doctrine_fingerprint' crates/omega-core/src/rules.rs || { bad "the doctrine fingerprint is gone — the session check would fall back to crying wolf on every doctrine-neutral rebuild"; RECONCILE_OK=0; }
+grep -q 'doctrine_changed_at' crates/omega-cli/src/main.rs || { bad "reconcile no longer measures sessions against the last DOCTRINE change"; RECONCILE_OK=0; }
 [ "$RECONCILE_OK" = "1" ] && ok "post-update reconcile wired (install.sh + cron), provenance recorded and checked"
 
 # 11. New self-healing assets shipped + wired (token-refresh, shared-credential, scrollback alias).
