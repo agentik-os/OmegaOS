@@ -10559,7 +10559,35 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
 
             history.record_success(&target, stamp);
             history.last_outcome = Some(format!("updated {} → {}", from, target));
-            history.save(&state_dir).ok();
+
+            // This save is the ONLY thing that stops a nightly rebuild loop,
+            // so its failure can no longer be swallowed.
+            //
+            // Since an install is now owed whenever HEAD is not the recorded
+            // commit, a machine that installs successfully but cannot WRITE
+            // that record owes the same install again tomorrow, and every
+            // night after, forever. `record_failure` never fires — the install
+            // succeeded — so FAILURE_CAP never engages and nothing bounds it.
+            // And a state dir we cannot write is a state dir no bookkeeping
+            // can bound, so the only honest ceiling is a human (R-LOOP).
+            // This lands on every install that auto-updates, client boxes
+            // included, which is exactly why it gets an alert and not a
+            // swallowed `.ok()`.
+            if let Err(e) = history.save(&state_dir) {
+                say(&format!(
+                    "installed {} but COULD NOT record it ({e}) — this box will reinstall \
+                     every night until {} is writable",
+                    target,
+                    state_dir.display()
+                ));
+                alert(&format!(
+                    "⚠️ <b>OmegaOS updated but cannot remember it</b>\ninstalled <code>{}</code>, but writing <code>{}</code> failed: {}\nUntil that is fixed this machine rebuilds itself every night.",
+                    target,
+                    state_dir.display(),
+                    e
+                ));
+            }
+
             say(&format!(
                 "updated {} → {} ({} commits)",
                 from, target, behind
