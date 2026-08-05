@@ -10184,6 +10184,7 @@ fn node_command(
 fn run_node(
     graph: &omega_core::graph::Graph,
     id: &omega_core::graph::NodeId,
+    cwd: &std::path::Path,
 ) -> omega_core::graph_executor::NodeReport {
     use omega_core::graph_executor::NodeReport;
 
@@ -10194,7 +10195,12 @@ fn run_node(
         );
     };
 
-    match std::process::Command::new("bash").arg("-c").arg(&command).output() {
+    match std::process::Command::new("bash")
+        .arg("-c")
+        .arg(&command)
+        .current_dir(cwd)
+        .output()
+    {
         Ok(out) if out.status.success() => NodeReport::succeeded(id.clone()),
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
@@ -10245,6 +10251,21 @@ async fn cmd_graph_run(
     let default_state = format!("{}.state.json", graph_path);
     let state_path = state_path.unwrap_or(&default_state);
     let mut state = load_graph_state(Some(state_path), &graph)?;
+
+    // Node commands run in the GRAPH's directory, not the caller's.
+    //
+    // A run whose steps resolve relative paths against whatever directory
+    // somebody happened to invoke it from is not replayable, which is the one
+    // property this whole layer is built to have. Found the hard way: a test
+    // graph containing `echo dedupe: 4 -> 3` left a file named `3` in the repo
+    // root, because the shell read the arrow as a redirect and the cwd was
+    // wherever the command was typed. Anchoring to the graph makes a mission
+    // self-contained and its side effects land where its author can see them.
+    let graph_dir = std::path::Path::new(graph_path)
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
 
     let mode = if unattended {
         ExecutionMode::Unattended
@@ -10377,9 +10398,10 @@ async fn cmd_graph_run(
                         .iter()
                         .map(|id| {
                             let graph = &graph;
+                            let cwd = graph_dir.as_path();
                             scope.spawn(move || {
                                 println!("    ▸ {}", id.as_str());
-                                run_node(graph, id)
+                                run_node(graph, id, cwd)
                             })
                         })
                         .collect();

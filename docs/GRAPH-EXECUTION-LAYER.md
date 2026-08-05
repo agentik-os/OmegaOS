@@ -680,6 +680,13 @@ the thing that mattered. Unattended, it leaves an `EscalationRecord` beside the 
 exits 2; attended, it prints the exact `omega risk-gate approve` line. Either way the
 approval is signed, and a re-run honours it.
 
+**Node commands run in the GRAPH's directory, not the caller's.** A run whose steps resolve
+relative paths against whatever directory somebody happened to invoke it from is not
+replayable, which is the one property this layer exists to have. Found the hard way: a test
+graph containing `echo dedupe: 4 -> 3` left a file named `3` in the repo root, because the
+shell read the arrow as a redirect and the cwd was wherever the command was typed. Anchoring
+to the graph makes a mission self-contained and its side effects land where its author looks.
+
 The ready set runs CONCURRENTLY, which is the whole reason to express a mission as a graph
 rather than a list. Measured on a five-node diamond whose two parallel nodes sleep 2s each:
 3s wall clock, against 5s if they had been serialized.
