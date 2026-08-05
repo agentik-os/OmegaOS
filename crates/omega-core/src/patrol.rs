@@ -275,8 +275,7 @@ impl Patrol {
                     let repo_root = crate::session::OmegaSession::classify(&session.name)
                         .project
                         .as_deref()
-                        .and_then(|p| self.config.find_project(p).map(|pc| pc.path.clone()))
-                        .map(std::path::PathBuf::from);
+                        .and_then(|p| resolve_repo_root(&self.config, p));
                     let mut effective_status = done.status;
                     let mut contest_reason: Option<String> = None;
                     let v3_worker = oracle_states.iter().find_map(|state| {
@@ -329,12 +328,12 @@ impl Patrol {
                             repo_root.as_deref(),
                             &verifier_checks,
                         );
-                        let fabrication = verdict.checks.iter().any(|c| !c.passed);
+                        let fabrication = verdict_contests_worker(&verdict);
                         if fabrication {
                             let reasons: Vec<String> = verdict
                                 .checks
                                 .iter()
-                                .filter(|c| !c.passed)
+                                .filter(|c| c.outcome.is_contradicted())
                                 .map(|c| c.detail.clone())
                                 .collect();
                             contest_reason = Some(reasons.join("; "));
@@ -1934,6 +1933,50 @@ fn is_retired_done_name(name: &str) -> bool {
     }
 }
 
+/// The ONLY predicate that may contest a worker's `done_clean`.
+///
+/// A check that RAN and refuted the claim is a concrete fabrication. A check
+/// that could not run — no repo root, `git` absent, a command that was never
+/// predeclared — proves nothing and must not contest anything: it still fails
+/// the verdict, so the work falls through to `Pending` with its scope held.
+/// This used to be `any(|c| !c.passed)`, which could not tell those apart and
+/// escalated four unverifiable checks to a human as fabrications on mission
+/// OmegaOS-m-8fe7d35df5bf.
+fn verdict_contests_worker(verdict: &crate::done::GroundTruthVerdict) -> bool {
+    verdict.checks.iter().any(|c| c.outcome.is_contradicted())
+}
+
+/// Resolve the repo root the ground-truth gate must check a worker's artifacts
+/// against.
+///
+/// There were two project registries and the gate read the wrong one.
+/// `~/.omega/projects.json` (`ProjectRegistry`) is the live one — 25 projects on
+/// this machine — while `config.projects` from `~/.omega/config.toml` is
+/// literally `projects = []`. Reading only the config handed the gate a `None`
+/// root, every git/file check went unverified, and an unverifiable check was
+/// then branded a fabrication. The registry is consulted FIRST; the config
+/// remains the fallback so nothing regresses where it IS populated.
+fn resolve_repo_root(config: &OmegaConfig, project: &str) -> Option<std::path::PathBuf> {
+    resolve_repo_root_in(
+        &crate::project_manager::ProjectRegistry::registry_path(),
+        config,
+        project,
+    )
+}
+
+/// Testable core of [`resolve_repo_root`]: the registry path is explicit so a
+/// test never reads (or writes) the machine's real `~/.omega/projects.json`.
+fn resolve_repo_root_in(
+    registry_path: &std::path::Path,
+    config: &OmegaConfig,
+    project: &str,
+) -> Option<std::path::PathBuf> {
+    crate::project_manager::ProjectRegistry::load_from(registry_path)
+        .find(project)
+        .map(|managed| managed.path.clone())
+        .or_else(|| config.find_project(project).map(|pc| pc.path.clone()))
+}
+
 /// Detect a fatal, non-recoverable agent error in a session's pane output — the
 /// agent is stuck on an error rather than working or idle. Only the tail (the
 /// live error, not old scrollback) is inspected. A content-filter block and a
@@ -2148,5 +2191,114 @@ mod tests {
             lines.push("normal output line");
         }
         assert_eq!(detect_fatal_agent_error(&lines.join("\n")), None);
+    }
+
+    fn done_citing_sha(sha: &str) -> crate::done::DoneSignal {
+        let mut done = crate::done::DoneSignal::stub("Proj-worker-x", DoneStatus::DoneClean);
+        done.todos_total = 1;
+        done.todos_completed = 1;
+        done.artifacts.push(crate::done::DoneArtifact::GitSha {
+            sha: sha.to_string(),
+            branch: None,
+        });
+        done
+    }
+
+    /// MANDATORY TEST 1 (patrol half). A real SHA that could not be looked up
+    /// (no repo root) must NOT contest the worker: patrol falls through to the
+    /// `!verdict.passes` branch, which is `Pending` with the scope held — never
+    /// `Failed`, never a contested-fabrication escalation.
+    #[test]
+    fn unverifiable_check_never_contests_a_worker() {
+        let done = done_citing_sha("0123456789abcdef0123456789abcdef01234567");
+        let verdict = crate::done::verify_done_against_repo(&done, None);
+        assert!(
+            !verdict_contests_worker(&verdict),
+            "an unrun check was branded a fabrication: {:?}",
+            verdict.failures
+        );
+        // The classification patrol then applies, verbatim from the call site.
+        let effective = if verdict_contests_worker(&verdict) {
+            DoneStatus::Failed
+        } else if !verdict.passes {
+            DoneStatus::Pending
+        } else {
+            done.status
+        };
+        assert_eq!(effective, DoneStatus::Pending);
+    }
+
+    /// MANDATORY TEST 2 (patrol half). The detector is NOT weakened: a bogus
+    /// SHA looked up in a REAL repo still contests the worker and still lands
+    /// on `Failed`.
+    #[test]
+    fn contradicted_check_still_contests_a_worker() {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success());
+        let done = done_citing_sha("0123456789abcdef0123456789abcdef01234567");
+        let verdict = crate::done::verify_done_against_repo(&done, Some(temp.path()));
+        assert!(
+            verdict_contests_worker(&verdict),
+            "a proven fabrication must still be caught: {:?}",
+            verdict.failures
+        );
+        let effective = if verdict_contests_worker(&verdict) {
+            DoneStatus::Failed
+        } else if !verdict.passes {
+            DoneStatus::Pending
+        } else {
+            done.status
+        };
+        assert_eq!(effective, DoneStatus::Failed);
+    }
+
+    /// MANDATORY TEST 3. The registry (`projects.json`) is the real one, and
+    /// `config.projects` is empty on a real machine — that split-brain is why
+    /// `repo_root` was `None` in the first place. Uses a tempdir registry: the
+    /// machine's own `~/.omega/projects.json` is never read or written
+    /// (project_manager.rs:429 records the day a test clobbered it).
+    #[test]
+    fn repo_root_resolves_from_the_projects_registry_when_config_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let registry_path = tmp.path().join("projects.json");
+        let project_path = tmp.path().join("Station/SideBusiness/OmegaOS");
+        std::fs::create_dir_all(&project_path).unwrap();
+        std::fs::write(
+            &registry_path,
+            serde_json::json!({
+                "projects": [{
+                    "name": "OmegaOS",
+                    "path": project_path,
+                    "icon": null,
+                    "telegram_topic_id": null,
+                    "oracle_session": null,
+                    "git_email": null,
+                    "created_at": "2026-08-05T00:00:00Z"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let config = OmegaConfig::default();
+        assert!(
+            config.find_project("OmegaOS").is_none(),
+            "premise: config.projects does not carry the project"
+        );
+        assert_eq!(
+            resolve_repo_root_in(&registry_path, &config, "OmegaOS"),
+            Some(project_path),
+            "the real registry must be consulted first"
+        );
+        // Unknown project, empty config → still None (no invented root).
+        assert_eq!(
+            resolve_repo_root_in(&registry_path, &config, "NotAProject"),
+            None
+        );
     }
 }
