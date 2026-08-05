@@ -651,3 +651,31 @@ mod tests {
         }
     }
 }
+
+/// Locate the OmegaOS source checkout on this machine, if there is one.
+///
+/// Lives here rather than in the CLI because `doctor` needs the same answer:
+/// two resolvers would drift, and the one that drifts is the one that decides
+/// whether your binary is stale. `$OMEGA_SRC` wins, then the current directory,
+/// then the usual install locations. A candidate only counts when it carries
+/// BOTH `OMEGA.md` and `crates/omega-core` — a bare directory named OmegaOS is
+/// not a checkout.
+pub fn resolve_omega_src() -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(src) = std::env::var("OMEGA_SRC") {
+        if !src.is_empty() {
+            candidates.push(std::path::PathBuf::from(src));
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd);
+    }
+    if let Some(home) = dirs::home_dir() {
+        candidates.push(home.join("Station/SideBusiness/OmegaOS"));
+        candidates.push(home.join("Station/OmegaOS"));
+        candidates.push(home.join("OmegaOS"));
+    }
+    candidates
+        .into_iter()
+        .find(|p| p.join("OMEGA.md").is_file() && p.join("crates/omega-core").is_dir())
+}

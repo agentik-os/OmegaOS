@@ -292,6 +292,13 @@ enum Commands {
         /// directory, then the usual install locations.
         #[arg(long)]
         dir: Option<String>,
+        /// Record the checkout's HEAD as the commit now installed, and exit.
+        /// `install.sh` calls this at the end of a successful install so a
+        /// hand-run installer leaves the same honest provenance the cron does.
+        /// Without it, `auto-update.json` keeps naming whatever the cron last
+        /// installed, and the staleness check has nothing true to compare to.
+        #[arg(long)]
+        record_installed: bool,
     },
 
     /// Install Option+Z / Option+/ rmux keybindings (apply now, no daemon restart)
@@ -321,6 +328,30 @@ enum Commands {
         /// a live worker leaves that worker holding a scope claim forever.
         #[arg(long)]
         force: bool,
+    },
+
+    /// Reconcile this install after an update: re-apply everything mechanical,
+    /// then report what needs a human.
+    ///
+    /// An OmegaOS update installs a binary. It does not, by itself, bring the
+    /// things AROUND the binary back in line: the exported doctrine on disk,
+    /// the record of what was installed, worker sessions whose done signal was
+    /// never swept, projects that moved or lost their canon docs, sessions
+    /// still running on the doctrine of the previous binary. Each of those
+    /// drifts quietly and is only ever noticed by accident.
+    ///
+    /// The split is deliberate. Anything DETERMINISTIC is fixed in place, with
+    /// no opinion required. Anything needing judgement — a project doc that no
+    /// longer matches its repo, a live session mid-turn on old doctrine — is
+    /// REPORTED and left alone, because a reconciler that rewrites your project
+    /// docs or restarts your working sessions unattended is a worse problem
+    /// than the drift it set out to fix.
+    ///
+    /// Exits non-zero when anything needs a human, so a cron can alert on it.
+    Reconcile {
+        /// Report the drift and change nothing at all.
+        #[arg(long)]
+        report_only: bool,
     },
 
     /// Reap finished workers: close every worker session that already wrote a
@@ -929,13 +960,21 @@ async fn main() -> Result<()> {
         Some(Commands::Skills { action }) => cmd_skills(action),
         Some(Commands::Audit { action }) => cmd_audit(action),
         Some(Commands::Sync) => cmd_sync(),
-        Some(Commands::Update { check, auto, dir }) => {
-            if auto {
+        Some(Commands::Update {
+            check,
+            auto,
+            dir,
+            record_installed,
+        }) => {
+            if record_installed {
+                cmd_update_record_installed(dir.as_deref())
+            } else if auto {
                 cmd_update_auto(dir.as_deref()).await
             } else {
                 cmd_update(check, dir.as_deref())
             }
         }
+        Some(Commands::Reconcile { report_only }) => cmd_reconcile(report_only).await,
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -9645,7 +9684,7 @@ async fn send_pdf_telegram(pdf_path: &str, caption: Option<&str>) -> Result<()> 
 }
 
 fn cmd_rules(action: RulesAction) -> Result<()> {
-    use omega_core::rules::{self, RuleKind};
+    use omega_core::rules;
     match action {
         RulesAction::Context { scope, mission } => {
             let s = match scope.to_lowercase().as_str() {
@@ -9689,37 +9728,8 @@ fn cmd_rules(action: RulesAction) -> Result<()> {
         }
         RulesAction::Export => {
             let rules_dir = omega_core::config::omega_dir().join("rules");
-            std::fs::create_dir_all(&rules_dir)?;
-
-            // Idempotent: prune stale REGISTRY exports first so a re-export
-            // always mirrors the current registry exactly (no lingering old-id
-            // files when rules are renamed or removed) — while .md files whose
-            // id is NOT in the compiled registry survive: those are disk-only
-            // rules (install.sh copies repo rules/ before this export runs).
-            rules::prune_registered_exports(&rules_dir);
-
-            let all = rules::all_rules();
-            for r in &all {
-                let slug = r
-                    .title
-                    .to_lowercase()
-                    .chars()
-                    .map(|c| if c.is_alphanumeric() { c } else { '-' })
-                    .collect::<String>();
-                let slug = slug.trim_matches('-').replace("--", "-");
-                let fname = format!("{}-{}.md", r.id, &slug[..slug.len().min(40)]);
-                let kind_label = match r.kind {
-                    RuleKind::Law => "Law",
-                    RuleKind::Rule => "Rule",
-                };
-                let content = format!(
-                    "# {} — {}\n\n**Kind:** {}\n**Category:** {:?}\n**Added:** {}\n\n## Rule\n\n{}\n\n## Origin\n\n{}\n",
-                    r.id, r.title, kind_label, r.category, r.added_at, r.description, r.reason
-                );
-                std::fs::write(rules_dir.join(&fname), &content)?;
-                println!("  [+] {}", fname);
-            }
-            println!("\n{} rules exported to {}", all.len(), rules_dir.display());
+            let n = export_rules_to(&rules_dir, true)?;
+            println!("\n{} rules exported to {}", n, rules_dir.display());
         }
     }
     Ok(())
@@ -10065,6 +10075,244 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
 /// pushed through the alert funnel. The decision itself lives in
 /// `omega_core::auto_update::decide`, which is pure and unit-tested; this
 /// function only gathers the facts and carries out the verdict.
+/// Stamp `auto-update.json` with the commit that was just installed.
+///
+/// Called by `install.sh` at the end of a successful install. Before this
+/// existed, only the cron ever wrote that file, so every hand-run install left
+/// it naming an older commit — and since the staleness check compares HEAD to
+/// that field, a lie there is worse than an absence: it reports a stale binary
+/// as current. Measured on the source box 2026-08-05, the field still named a
+/// commit from five days and thirty commits earlier.
+///
+/// Deliberately quiet and non-fatal: an installer must not fail because it
+/// could not write a bookkeeping file. A missing record degrades to "unknown
+/// provenance", which `decide()` treats as "do not owe an install" rather than
+/// as a rebuild loop.
+/// Write every compiled rule to `rules_dir` as its own .md, and return how many.
+///
+/// Extracted so `omega rules export` and `omega reconcile` cannot drift: the
+/// reconciler regenerating the doctrine differently from the command that
+/// exports it is precisely the kind of silent divergence it exists to catch.
+///
+/// Idempotent: stale REGISTRY exports are pruned first so a re-export mirrors
+/// the current registry exactly (no lingering old-id files when rules are
+/// renamed or removed) — while .md files whose id is NOT in the compiled
+/// registry survive: those are disk-only rules (install.sh copies repo rules/
+/// before this export runs).
+fn export_rules_to(rules_dir: &std::path::Path, verbose: bool) -> Result<usize> {
+    use omega_core::rules::{self, RuleKind};
+    std::fs::create_dir_all(rules_dir)?;
+    rules::prune_registered_exports(rules_dir);
+
+    let all = rules::all_rules();
+    for r in &all {
+        let slug = r
+            .title
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>();
+        let slug = slug.trim_matches('-').replace("--", "-");
+        let fname = format!("{}-{}.md", r.id, &slug[..slug.len().min(40)]);
+        let kind_label = match r.kind {
+            RuleKind::Law => "Law",
+            RuleKind::Rule => "Rule",
+        };
+        let content = format!(
+            "# {} — {}\n\n**Kind:** {}\n**Category:** {:?}\n**Added:** {}\n\n## Rule\n\n{}\n\n## Origin\n\n{}\n",
+            r.id, r.title, kind_label, r.category, r.added_at, r.description, r.reason
+        );
+        std::fs::write(rules_dir.join(&fname), &content)?;
+        if verbose {
+            println!("  [+] {}", fname);
+        }
+    }
+    Ok(all.len())
+}
+
+fn cmd_update_record_installed(dir: Option<&str>) -> Result<()> {
+    use omega_core::auto_update::AutoUpdateState;
+
+    let Some(src) = (match dir {
+        Some(d) => Some(std::path::PathBuf::from(d)),
+        None => resolve_omega_src(),
+    }) else {
+        eprintln!("omega update --record-installed: no OmegaOS checkout found, not recording");
+        return Ok(());
+    };
+
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(&src)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if head.is_empty() {
+        eprintln!(
+            "omega update --record-installed: {} has no readable HEAD, not recording",
+            src.display()
+        );
+        return Ok(());
+    }
+
+    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let state_dir = config.state_dir.clone();
+    let mut history = AutoUpdateState::load(&state_dir);
+    history.record_success(&head, chrono::Utc::now());
+    history.last_outcome = Some(format!("installed {} from {}", head, src.display()));
+
+    match history.save(&state_dir) {
+        Ok(()) => println!("  recorded installed commit: {}", head),
+        Err(e) => eprintln!(
+            "omega update --record-installed: could not write state ({e}) — \
+             the staleness check will read this install as unknown provenance"
+        ),
+    }
+    Ok(())
+}
+
+/// Bring everything AROUND the binary back in line after an update, then say
+/// what is left that a human has to decide.
+///
+/// Ordered so the cheap deterministic repairs land before anything is judged:
+/// a report written against un-regenerated doctrine would accuse the machine of
+/// drift the reconciler was about to fix itself.
+async fn cmd_reconcile(report_only: bool) -> Result<()> {
+    let config = omega_core::config::OmegaConfig::load().unwrap_or_default();
+    let mut needs_human: Vec<String> = Vec::new();
+
+    println!(
+        "◆ OmegaOS reconcile{}",
+        if report_only { " (report only)" } else { "" }
+    );
+    println!();
+
+    // ---- Mechanical, fixed in place -------------------------------------
+    println!("  Mechanical");
+    if report_only {
+        println!("    (skipped — report-only)");
+    } else {
+        // Doctrine on disk must mirror the registry compiled into THIS binary.
+        // A new binary with the previous binary's rule files on disk is the
+        // most common post-update drift, and the one no one ever notices.
+        let rules_dir = omega_core::config::omega_dir().join("rules");
+        match export_rules_to(&rules_dir, false) {
+            Ok(n) => println!("    [+] doctrine re-exported ({} rules)", n),
+            Err(e) => needs_human.push(format!("could not re-export doctrine: {e}")),
+        }
+
+        // Whatever installed this binary may not have recorded which commit it
+        // was. Without that record nothing downstream can prove staleness.
+        if let Err(e) = cmd_update_record_installed(None) {
+            needs_human.push(format!("could not record the installed commit: {e}"));
+        }
+
+        // Workers that finished but whose pane was never closed.
+        if let Err(e) = cmd_reap(None, false).await {
+            needs_human.push(format!("reap failed: {e}"));
+        }
+    }
+    println!();
+
+    // ---- Judgement, reported only ---------------------------------------
+    println!("  Needs a human");
+
+    // Registered projects that no longer exist, or carry no canon doc. Both are
+    // real, both are recoverable, and neither is safe to "fix" automatically:
+    // deleting a registry entry and writing a project's CLAUDE.md are the
+    // operator's calls.
+    let registry = omega_core::project_manager::ProjectRegistry::load();
+    for p in &registry.projects {
+        if !p.path.exists() {
+            needs_human.push(format!(
+                "project '{}' is registered at {} which does not exist",
+                p.name,
+                p.path.display()
+            ));
+            continue;
+        }
+        let has_doc = ["CLAUDE.md", "AGENTS.md", "OMEGA.md"]
+            .iter()
+            .any(|f| p.path.join(f).is_file());
+        if !has_doc {
+            needs_human.push(format!(
+                "project '{}' has no CLAUDE.md / AGENTS.md / OMEGA.md — agents get no project doctrine there",
+                p.name
+            ));
+        }
+    }
+
+    // Sessions older than the binary were briefed with the PREVIOUS doctrine
+    // block: the rules are injected at spawn time, so a running session keeps
+    // whatever was compiled in when it started. Restarting one mid-turn would
+    // destroy work, so this is named, never acted on.
+    match binary_mtime() {
+        Some(installed_at) => {
+            let stale = sessions_older_than(installed_at);
+            if !stale.is_empty() {
+                needs_human.push(format!(
+                    "{} session(s) predate this binary and still carry the previous doctrine \
+                     (restart them once their work is done): {}",
+                    stale.len(),
+                    stale.join(", ")
+                ));
+            }
+        }
+        None => needs_human.push("could not stat the installed omega binary".to_string()),
+    }
+
+    // Everything doctor already knows how to see, folded in rather than
+    // re-derived — including the binary-provenance check.
+    for c in omega_core::doctor::run_all(&config).await {
+        if c.health == omega_core::doctor::Health::Fail {
+            needs_human.push(format!("doctor: {} — {}", c.name, c.detail));
+        }
+    }
+
+    if needs_human.is_empty() {
+        println!("    nothing — this install is coherent");
+        println!();
+        return Ok(());
+    }
+    for item in &needs_human {
+        println!("    [!] {}", item);
+    }
+    println!();
+    println!("  {} item(s) need a human.", needs_human.len());
+    std::process::exit(1);
+}
+
+/// Live sessions created before `cutoff`, by name.
+///
+/// The creation time comes from rmux itself (`#{session_created}`, a unix
+/// timestamp) rather than the session SDK, which does not carry one. A session
+/// that cannot be read is deliberately NOT reported as stale: a false "restart
+/// this" against a session doing real work is far worse than missing one.
+fn sessions_older_than(cutoff: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+    let out = std::process::Command::new(omega_core::stream::rmux_bin())
+        .args(["list-sessions", "-F", "#{session_name} #{session_created}"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (name, ts) = line.rsplit_once(' ')?;
+            let secs: i64 = ts.trim().parse().ok()?;
+            let created = chrono::DateTime::from_timestamp(secs, 0)?;
+            (created < cutoff).then(|| name.trim().to_string())
+        })
+        .collect()
+}
+
+/// When was the installed binary put there? Used to tell which live sessions
+/// were briefed by a previous one.
+fn binary_mtime() -> Option<chrono::DateTime<chrono::Utc>> {
+    let exe = std::env::current_exe().ok()?;
+    let modified = std::fs::metadata(&exe).ok()?.modified().ok()?;
+    Some(chrono::DateTime::<chrono::Utc>::from(modified))
+}
+
 async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
     use omega_core::auto_update::{decide, AutoUpdateState, CheckoutState, Decision, SkipReason};
 
@@ -10290,12 +10538,70 @@ async fn cmd_update_auto(dir: Option<&str>) -> Result<()> {
                 "updated {} → {} ({} commits)",
                 from, target, behind
             ));
+
+            // A new binary is not a coherent install. The doctrine on disk is
+            // still the previous binary's, finished workers may still hold
+            // panes, and every session running right now was briefed by the
+            // binary we just replaced. Reconcile in its OWN detached session
+            // rather than inline: the cron must not sit through it, and the
+            // operator can read what it found with `omega stream`. Only ever
+            // launched after an install that actually happened, so a machine
+            // with nothing to update spawns nothing.
+            let reconcile_report = spawn_reconcile_session();
+
             alert(&format!(
-                "✅ <b>OmegaOS updated</b>\n<code>{}</code> → <code>{}</code> ({} commit(s)).\nRestart a running TUI (Menu → R) to pick up the new binary.",
-                from, target, behind
+                "✅ <b>OmegaOS updated</b>\n<code>{}</code> → <code>{}</code> ({} commit(s)).\n{}\nRestart a running TUI (Menu → R) to pick up the new binary.",
+                from, target, behind, reconcile_report
             ));
             Ok(())
         }
+    }
+}
+
+/// Launch the post-update reconciliation in its own detached rmux session.
+///
+/// Detached on purpose: the caller is a cron at 03:30 that must not block, and
+/// a session is watchable afterwards (`omega stream omega-reconcile`) whereas
+/// inline output vanishes into a log nobody opens. Returns the sentence to put
+/// in the operator's alert — never an error, because failing to launch the
+/// tidy-up must not turn a SUCCESSFUL update into a reported failure.
+fn spawn_reconcile_session() -> String {
+    const NAME: &str = "omega-reconcile";
+    let rmux = omega_core::stream::rmux_bin();
+
+    // One reconciler at a time. A second one racing the first would re-export
+    // the same doctrine underneath it and double-report every finding.
+    let already = std::process::Command::new(&rmux)
+        .args(["has-session", "-t", NAME])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if already {
+        return format!(
+            "Reconcile already running (<code>omega stream {}</code>).",
+            NAME
+        );
+    }
+
+    let exe = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "omega".to_string());
+    // `read` holds the pane open so the report is still there to read; without
+    // it the session dies the instant reconcile exits and the findings are lost.
+    let cmd =
+        format!("{exe} reconcile; echo; echo '[reconcile done — press Enter to close]'; read _");
+
+    match std::process::Command::new(&rmux)
+        .args(["new-session", "-d", "-s", NAME, &cmd])
+        .status()
+    {
+        Ok(s) if s.success() => format!(
+            "Reconciling this install in session <code>{}</code> — read it with <code>omega stream {}</code>.",
+            NAME, NAME
+        ),
+        _ => format!(
+            "Could not launch the reconcile session — run <code>omega reconcile</code> by hand."
+        ),
     }
 }
 
@@ -10337,24 +10643,10 @@ fn alert(html: &str) {
         .status();
 }
 
+/// Re-exported from omega-core so the CLI and `doctor` can never disagree about
+/// where the checkout is — see `config::resolve_omega_src`.
 fn resolve_omega_src() -> Option<std::path::PathBuf> {
-    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-    if let Ok(src) = std::env::var("OMEGA_SRC") {
-        if !src.is_empty() {
-            candidates.push(std::path::PathBuf::from(src));
-        }
-    }
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd);
-    }
-    if let Some(home) = dirs::home_dir() {
-        candidates.push(home.join("Station/SideBusiness/OmegaOS"));
-        candidates.push(home.join("Station/OmegaOS"));
-        candidates.push(home.join("OmegaOS"));
-    }
-    candidates
-        .into_iter()
-        .find(|p| p.join("OMEGA.md").is_file() && p.join("crates/omega-core").is_dir())
+    omega_core::config::resolve_omega_src()
 }
 
 /// Prune dangling omega-managed symlinks from a ~/.claude integration dir.

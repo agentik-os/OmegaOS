@@ -672,6 +672,25 @@ for marker in stop-verify-hook omega-session-contract omega-prompt-scan omega-pl
 done
 [ "$HOOK_PARITY_OK" = "1" ] && ok "anti-abandon hooks shipped, copied (*.sh + *.py) and registered by install.sh"
 
+# 10b. Post-update coherence: an install must reconcile itself, and the
+# staleness check must have something true to compare against.
+#
+# The defect this pins: `install.sh` used to install a binary and record
+# NOTHING about which commit it was, so `auto-update.json` kept naming whatever
+# the nightly cron last installed. The staleness check compares HEAD to that
+# field, so a stale record reports a stale binary as CURRENT — measured on the
+# source box 2026-08-05, five days and thirty commits adrift while `omega
+# doctor` printed "all systems healthy". Both halves have to stay wired or the
+# drift becomes invisible again.
+RECONCILE_OK=1
+grep -q 'omega" reconcile' install.sh || { bad "install.sh never runs 'omega reconcile' — an install would leave the doctrine, the installed-commit record and finished workers untouched"; RECONCILE_OK=0; }
+grep -q 'fn cmd_reconcile' crates/omega-cli/src/main.rs || { bad "omega reconcile is gone from the CLI"; RECONCILE_OK=0; }
+grep -q 'record_installed' crates/omega-cli/src/main.rs || { bad "omega update --record-installed is gone — installs would stop recording their provenance"; RECONCILE_OK=0; }
+grep -q 'fn binary_provenance' crates/omega-core/src/doctor.rs || { bad "doctor lost its binary-provenance check — a stale binary would read as healthy again"; RECONCILE_OK=0; }
+grep -q 'installed_head_mismatch' crates/omega-core/src/auto_update.rs || { bad "auto-update no longer owes an install when HEAD moved past the installed commit — a machine that authors commits would never rebuild"; RECONCILE_OK=0; }
+grep -q 'spawn_reconcile_session' crates/omega-cli/src/main.rs || { bad "a successful auto-update no longer launches the reconcile session"; RECONCILE_OK=0; }
+[ "$RECONCILE_OK" = "1" ] && ok "post-update reconcile wired (install.sh + cron), provenance recorded and checked"
+
 # 11. New self-healing assets shipped + wired (token-refresh, shared-credential, scrollback alias).
 if [ -f scripts/omega-token-refresh.sh ] && grep -q "omega-token-refresh.sh" install.sh; then ok "token-refresh helper shipped + wired in install.sh"; else bad "token-refresh helper not shipped/wired in install.sh"; fi
 if grep -q "OMEGA-CRON-TOKEN-REFRESH-v1" install.sh; then ok "token-refresh cron scheduled by install.sh"; else bad "token-refresh cron not in install.sh"; fi

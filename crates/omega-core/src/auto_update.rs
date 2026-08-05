@@ -107,17 +107,22 @@ impl Decision {
         match self {
             Self::Disabled => "auto-update is off (config: auto_update)".to_string(),
             Self::UpToDate => "already up to date".to_string(),
-            // behind == 0 here means the source was already fast-forwarded and
-            // only the install failed, so this is a retry, not a new update.
+            // behind == 0 here means nothing was pulled, yet an install is
+            // still owed: either the fast-forward landed and the install then
+            // failed, or the checkout moved on its own (a locally authored
+            // commit) and no install ever ran for it. The wording must cover
+            // both — claiming a failed install on a machine that simply
+            // committed would send the reader hunting for an error that never
+            // happened.
             Self::Apply { behind, target } if *behind == 0 => format!(
-                "source is at {} but its install did not finish — installing it again",
+                "source is at {} but the installed binary is not — installing it",
                 target
             ),
             Self::Apply { behind, target } => {
                 format!("{} commit(s) behind — installing {}", behind, target)
             }
             Self::NotifyOnly { behind, target } if *behind == 0 => format!(
-                "source is at {} but its install did not finish — check-only policy, not installing",
+                "source is at {} but the installed binary is not — check-only policy, not installing",
                 target
             ),
             Self::NotifyOnly { behind, target } => format!(
@@ -224,9 +229,31 @@ pub fn decide(
     // and the install was never retried — the failure cap never even engaged
     // because this branch returned first. An install is still owed whenever the
     // commit we last failed on is the one checked out.
+    //
+    // The SECOND way to owe an install has nothing to do with failure: the
+    // checkout can move forward without this cron ever pulling it. A machine
+    // that AUTHORS commits — the box OmegaOS is developed on, or anyone who
+    // commits locally and pushes — is never `behind`, so `behind == 0` returned
+    // UpToDate forever and the binary was only ever refreshed by someone
+    // remembering to run install.sh by hand. Measured on the source box on
+    // 2026-08-05: `last_applied_commit` still read a commit from five days
+    // earlier while HEAD had moved 30+ commits, and `omega update --check`
+    // cheerfully reported "up to date" against a demonstrably stale binary.
+    //
+    // So: HEAD not being the commit we last installed is itself an owed
+    // install. `None` is deliberately NOT an owed install — it means no install
+    // ever recorded its provenance, and owing one on every run would put a
+    // machine with an unwritable state file into a nightly rebuild loop.
+    let installed_head_mismatch = !state.head.is_empty()
+        && history
+            .last_applied_commit
+            .as_deref()
+            .is_some_and(|installed| installed != state.head.as_str());
+
     let install_owed = !state.head.is_empty()
-        && history.failing_commit.as_deref() == Some(state.head.as_str())
-        && history.consecutive_failures > 0;
+        && ((history.failing_commit.as_deref() == Some(state.head.as_str())
+            && history.consecutive_failures > 0)
+            || installed_head_mismatch);
 
     if state.behind == 0 && !install_owed {
         return Decision::UpToDate;
@@ -443,6 +470,113 @@ mod tests {
         assert_eq!(
             decide(AutoUpdatePolicy::Apply, &s, &AutoUpdateState::default(), None),
             Decision::UpToDate
+        );
+    }
+
+    /// The state a machine is in when it AUTHORED the commit: nothing to pull,
+    /// no failure ever, but the binary predates HEAD.
+    fn installed(commit: &str) -> AutoUpdateState {
+        AutoUpdateState {
+            last_applied_commit: Some(commit.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_locally_authored_commit_owes_an_install() {
+        // The defect this closes: the box OmegaOS is developed on commits and
+        // pushes, so it is NEVER behind, and every night returned UpToDate
+        // against a binary built from an older commit. Nothing failed here —
+        // the install simply never ran for this commit.
+        let d = decide(
+            AutoUpdatePolicy::Apply,
+            &ff_done_install_failed(), // head == "abc1234", behind 0, clean
+            &installed("52ddd33"),     // but the binary came from an older one
+            None,
+        );
+        assert_eq!(
+            d,
+            Decision::Apply {
+                behind: 0,
+                target: "abc1234".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn the_message_for_an_owed_install_claims_no_failure() {
+        // It must read the same whether the install failed or never ran: on a
+        // machine that merely committed, "its install did not finish" sends the
+        // reader hunting for an error that does not exist.
+        let msg = Decision::Apply {
+            behind: 0,
+            target: "abc1234".to_string(),
+        }
+        .describe();
+        assert!(msg.contains("the installed binary is not"), "{msg}");
+        assert!(!msg.to_lowercase().contains("did not finish"), "{msg}");
+    }
+
+    #[test]
+    fn the_installed_commit_matching_head_is_the_quiet_outcome() {
+        // The overwhelmingly common case must stay silent, or the new check
+        // turns every night into a rebuild.
+        assert_eq!(
+            decide(
+                AutoUpdatePolicy::Apply,
+                &ff_done_install_failed(),
+                &installed("abc1234"),
+                None
+            ),
+            Decision::UpToDate
+        );
+    }
+
+    #[test]
+    fn unknown_provenance_never_forces_a_rebuild_loop() {
+        // `None` means no install ever recorded what it installed — an install
+        // predating this field, or a state file that cannot be written. Owing an
+        // install on that would rebuild the workspace every single night,
+        // forever, on a machine that is perfectly current.
+        assert_eq!(
+            decide(
+                AutoUpdatePolicy::Apply,
+                &ff_done_install_failed(),
+                &AutoUpdateState::default(), // last_applied_commit: None
+                None
+            ),
+            Decision::UpToDate
+        );
+    }
+
+    #[test]
+    fn an_owed_install_still_never_clobbers_unpushed_work() {
+        // Committed locally but not pushed: the install is owed, yet a
+        // fast-forward would destroy the local commits. The refusal wins.
+        let mut s = ff_done_install_failed();
+        s.ahead = 2;
+        assert_eq!(
+            decide(AutoUpdatePolicy::Apply, &s, &installed("52ddd33"), None),
+            Decision::Skip {
+                reason: SkipReason::LocalCommits { ahead: 2 }
+            }
+        );
+    }
+
+    #[test]
+    fn an_owed_install_is_reported_under_the_check_policy() {
+        let d = decide(
+            AutoUpdatePolicy::Check,
+            &ff_done_install_failed(),
+            &installed("52ddd33"),
+            None,
+        );
+        assert_eq!(
+            d,
+            Decision::NotifyOnly {
+                behind: 0,
+                target: "abc1234".to_string()
+            }
         );
     }
 

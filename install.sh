@@ -2955,6 +2955,24 @@ if [[ -f "$OMEGA_SRC/GUIDE.md" ]]; then
     cp -f "$OMEGA_SRC/GUIDE.md" "$OMEGA_DIR/GUIDE.md"
 fi
 
+# A new binary is not a coherent install. `omega reconcile` re-exports the
+# doctrine to match the registry this binary actually carries, stamps WHICH
+# commit was installed (until that existed only the nightly cron wrote that
+# record, so every hand-run install left it naming an older commit — and the
+# staleness check compares HEAD against it, so a stale record reports a stale
+# binary as current: on the source box that gap ran five days and thirty
+# commits before anyone noticed), sweeps finished workers, then names what
+# still needs a human.
+#
+# Run inline here, not in a detached session: someone is watching an install,
+# and the findings belong on their screen. `|| true` because reconcile exits
+# non-zero when it found something for a human — that is a report, not an
+# install failure, and it must never fail the install.
+if [[ -x "$INSTALL_DIR/omega" ]]; then
+    echo ""
+    OMEGA_SRC="$OMEGA_SRC" "$INSTALL_DIR/omega" reconcile || true
+fi
+
 echo ""
 echo -e "${GREEN}${BOLD}═══════════════════════════════════════════${NC}"
 echo -e "${GREEN}${BOLD}  OmegaOS v${OMEGA_VERSION} installed successfully!${NC}"

@@ -43,6 +43,66 @@ impl Check {
     }
 }
 
+/// Is the installed binary the one this checkout would build?
+///
+/// The comparison is `auto-update.json:last_applied_commit` (what an install
+/// last recorded putting on disk) against the checkout's HEAD. There is no
+/// build-time sha embedded in the binary, and adding one would only move the
+/// question — an install that never records itself is unverifiable either way,
+/// so the honest fix is to make BOTH install paths record, then compare.
+///
+/// Three outcomes, and the middle one matters most:
+///   - no checkout on this box (an `npx omega-os` install): nothing to compare,
+///     stay quiet rather than invent a complaint;
+///   - no recorded provenance: WARN, not FAIL — an install predating the record
+///     is not proof of staleness, and failing on it would cry wolf on every
+///     machine that upgrades into this version;
+///   - recorded commit ≠ HEAD: FAIL, and say the command that fixes it.
+fn binary_provenance(config: &OmegaConfig) -> Check {
+    let Some(src) = crate::config::resolve_omega_src() else {
+        return Check::ok(
+            "binary provenance",
+            "no source checkout on this box (npx install)",
+        );
+    };
+
+    let head = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(&src)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+
+    if head.is_empty() {
+        return Check::ok(
+            "binary provenance",
+            format!("{} has no readable git HEAD", src.display()),
+        );
+    }
+
+    let history = crate::auto_update::AutoUpdateState::load(&config.state_dir);
+    match history.last_applied_commit.as_deref() {
+        Some(installed) if installed == head => {
+            Check::ok("binary provenance", format!("built from HEAD ({head})"))
+        }
+        Some(installed) => Check::fail(
+            "binary provenance",
+            format!(
+                "installed binary is from {installed}, checkout HEAD is {head} — \
+                 run: cd {} && ./install.sh",
+                src.display()
+            ),
+        ),
+        None => Check::warn(
+            "binary provenance",
+            format!(
+                "no install recorded which commit it installed, so staleness cannot be \
+                 proven (HEAD is {head}) — the next ./install.sh records it"
+            ),
+        ),
+    }
+}
+
 /// Run a `systemctl --user` query, returning its trimmed stdout (or None if
 /// systemd / the unit isn't available — a soft condition, not an error).
 fn systemctl_user(args: &[&str]) -> Option<String> {
@@ -152,6 +212,17 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
 
     // 1. Binary version.
     checks.push(Check::ok("binary", format!("omega {}", env!("CARGO_PKG_VERSION"))));
+
+    // 1b. Binary PROVENANCE — is the installed binary built from the checkout
+    // that is on disk right now?
+    //
+    // Every other check here reads the source tree or ~/.omega, so all of them
+    // stay green while the binary drifts behind the checkout it is supposed to
+    // come from. That is exactly what happened on the source box: doctor
+    // reported "all systems healthy" for five days over a binary thirty commits
+    // old. A green board that structurally cannot see the failure is worse than
+    // a missing check, because it is read as proof.
+    checks.push(binary_provenance(config));
 
     // 2. rmux daemon reachable.
     match SessionManager::connect().await {
