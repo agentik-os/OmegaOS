@@ -397,6 +397,45 @@ never stash, reset or discard your work. (`npx omega-os` also updates an
 existing clone, but it dies on a dirty checkout with a raw git error and can
 clone a second copy if run from a different directory — prefer `omega update`.)
 
+An update that pulls nothing is not the same as an install that is current. If
+you commit to the checkout yourself, git has nothing to fetch, yet the binary
+still predates your commit. `omega update` now owes an install whenever HEAD is
+not the commit that was actually installed, and `omega doctor` carries a
+**binary provenance** line that goes red with the command that fixes it:
+
+```
+[x] binary provenance   installed binary is from a54e09e, checkout HEAD is 3e84acd
+                        — run: cd ~/Station/SideBusiness/OmegaOS && ./install.sh
+```
+
+### Reconciling after an update
+
+A new binary is not a coherent install. The doctrine exported on disk is still
+the previous binary's, finished workers may still hold their panes, and every
+session running right now was briefed by the binary you just replaced.
+
+```bash
+omega reconcile                # fix what is mechanical, report the rest
+omega reconcile --report-only  # change nothing, just tell me
+```
+
+It repairs only what is deterministic: re-exports the doctrine to match the
+registry this binary carries, records which commit is installed, sweeps workers
+that already wrote a terminal done signal. Everything needing judgement is
+**named and left alone** — a project registered at a path that no longer
+exists, a project with no `CLAUDE.md` / `AGENTS.md` / `OMEGA.md` for agents to
+read, a live session still running on the previous doctrine. It will not
+rewrite your project docs and will not restart your sessions: a reconciler
+doing that unattended is a worse problem than the drift it set out to fix.
+It exits non-zero while anything is left for you, so a cron can alert on it.
+
+You rarely run it by hand. `install.sh` runs it inline at the end of every
+install, and a successful nightly update launches it in its own session:
+
+```bash
+omega stream omega-reconcile   # read what the nightly update found
+```
+
 ### Staying current on its own
 
 Every install schedules a **daily check at 03:30** that installs what it finds:

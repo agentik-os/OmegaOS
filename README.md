@@ -33,6 +33,7 @@ The installer downloads prebuilt `rmux` + `omega` binaries for your platform whe
 ```
 omega update           # fetch + fast-forward + reinstall
 omega update --check   # what would change? (touches nothing)
+omega reconcile        # after an update: fix what is mechanical, report the rest
 ```
 
 It updates the checkout it finds (`$OMEGA_SRC`, the current directory, then
@@ -72,10 +73,11 @@ Here is a real `omega doctor` run:
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.6
-  [+] rmux daemon      connected, 6 live session(s)
+  [+] binary           omega 0.1.9
+  [+] binary provenance built from HEAD (3e84acd)
+  [+] rmux daemon      connected, 3 live session(s)
   [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         7 Laws + 47 Rules
+  [+] doctrine         7 Laws + 51 Rules
   [+] agent CLI        codex available
   [+] state dir        /home/vibe/.omega/state
   [+] telegram service omega-tg-bot active
