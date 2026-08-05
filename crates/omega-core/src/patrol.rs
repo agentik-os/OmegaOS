@@ -2274,7 +2274,6 @@ mod tests {
                 "projects": [{
                     "name": "OmegaOS",
                     "path": project_path,
-                    "icon": null,
                     "telegram_topic_id": null,
                     "oracle_session": null,
                     "git_email": null,

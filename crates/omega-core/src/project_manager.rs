@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 pub struct ManagedProject {
     pub name: String,
     pub path: PathBuf,
-    pub icon: Option<String>,
     pub telegram_topic_id: Option<i64>,
     pub oracle_session: Option<String>,
     pub git_email: Option<String>,
@@ -294,11 +293,7 @@ _What problem does this solve and for whom?_
 /// writing the machine's real `~/.omega/projects.json`. The old test called
 /// `create_project` directly and rewrote the operator's registry every time the
 /// suite ran; on 2026-07-29 that replaced 25 projects with one.
-pub fn scaffold_project(
-    name: &str,
-    location: &Path,
-    icon: Option<&str>,
-) -> Result<ManagedProject> {
+pub fn scaffold_project(name: &str, location: &Path) -> Result<ManagedProject> {
     let project_path = location.join(name);
     std::fs::create_dir_all(&project_path)
         .with_context(|| format!("creating project dir at {}", project_path.display()))?;
@@ -332,7 +327,6 @@ pub fn scaffold_project(
     let project = ManagedProject {
         name: name.to_string(),
         path: project_path,
-        icon: icon.map(|s| s.to_string()),
         telegram_topic_id: None,
         oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
@@ -346,8 +340,8 @@ pub fn scaffold_project(
 
 /// Scaffold a project AND register it, so `/projects` sees it. This is the
 /// production entry point; tests use `scaffold_project` instead.
-pub fn create_project(name: &str, location: &Path, icon: Option<&str>) -> Result<ManagedProject> {
-    let project = scaffold_project(name, location, icon)?;
+pub fn create_project(name: &str, location: &Path) -> Result<ManagedProject> {
+    let project = scaffold_project(name, location)?;
     let mut registry = ProjectRegistry::load();
     registry.projects.retain(|p| p.name != name);
     registry.projects.push(project.clone());
@@ -366,7 +360,6 @@ pub fn add_existing_project(path: &Path) -> Result<ManagedProject> {
     let project = ManagedProject {
         name: name.clone(),
         path: path.to_path_buf(),
-        icon: None,
         telegram_topic_id: None,
         oracle_session: Some(format!("oracle-{}", name)),
         git_email: None,
@@ -411,8 +404,7 @@ pub fn scan_directory(root: &Path) -> Vec<ManagedProject> {
             found.push(ManagedProject {
                 name: name.to_string(),
                 path: p,
-                icon: None,
-                telegram_topic_id: None,
+                        telegram_topic_id: None,
                 oracle_session: None,
                 git_email: None,
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -437,7 +429,7 @@ mod tests {
     #[test]
     fn scaffolding_creates_the_expected_layout() {
         let tmp = tempfile::tempdir().unwrap();
-        let project = scaffold_project("TestApp", tmp.path(), Some("🚀")).unwrap();
+        let project = scaffold_project("TestApp", tmp.path()).unwrap();
         assert_eq!(project.name, "TestApp");
         assert!(project.path.join("CLAUDE.md").exists());
         assert!(project.path.join("docs/VISION.md").exists());
@@ -448,7 +440,7 @@ mod tests {
     #[test]
     fn registry_add_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
-        let project = scaffold_project("TestApp", tmp.path(), Some("🚀")).unwrap();
+        let project = scaffold_project("TestApp", tmp.path()).unwrap();
 
         let mut registry = ProjectRegistry::default();
         registry.add(project.clone());
@@ -497,7 +489,7 @@ mod tests {
         let path = tmp.path().join("projects.json");
         let scaffold_dir = tempfile::tempdir().unwrap();
         let mut reg = ProjectRegistry::default();
-        reg.add(scaffold_project("A", scaffold_dir.path(), None).unwrap());
+        reg.add(scaffold_project("A", scaffold_dir.path()).unwrap());
         reg.save_to(&path).unwrap();
 
         let back = ProjectRegistry::load_from(&path);
@@ -509,7 +501,7 @@ mod tests {
     #[test]
     fn telegram_toggle_roundtrip() {
         // Absent field → None → enabled (default ON, backward-compatible).
-        let legacy = r#"{"projects":[{"name":"A","path":"/p/a","icon":null,"telegram_topic_id":null,"oracle_session":null,"git_email":null,"created_at":"x"}]}"#;
+        let legacy = r#"{"projects":[{"name":"A","path":"/p/a","telegram_topic_id":null,"oracle_session":null,"git_email":null,"created_at":"x"}]}"#;
         let reg: ProjectRegistry = serde_json::from_str(legacy).unwrap();
         assert!(reg.find("A").unwrap().telegram_enabled(), "absent telegram must default to enabled");
 
@@ -548,8 +540,7 @@ mod tests {
         ManagedProject {
             name: "x".into(),
             path: PathBuf::from(path),
-            icon: None,
-            telegram_topic_id: None,
+                telegram_topic_id: None,
             oracle_session: None,
             git_email: None,
             created_at: "t".into(),

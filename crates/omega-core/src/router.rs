@@ -16,7 +16,6 @@ pub struct ProjectEntry {
     pub path: PathBuf,
     pub aliases: Vec<String>,
     pub topic_id: Option<i64>,
-    pub icon: Option<String>,
     pub oracle_session: String,
     pub git_email: Option<String>,
 }
@@ -29,7 +28,6 @@ impl ProjectEntry {
             path,
             aliases: Vec::new(),
             topic_id: None,
-            icon: None,
             oracle_session,
             git_email: None,
         }
@@ -42,11 +40,6 @@ impl ProjectEntry {
 
     pub fn with_topic_id(mut self, topic_id: i64) -> Self {
         self.topic_id = Some(topic_id);
-        self
-    }
-
-    pub fn with_icon(mut self, icon: &str) -> Self {
-        self.icon = Some(icon.to_string());
         self
     }
 }
@@ -117,9 +110,6 @@ impl ProjectRegistry {
             if let Some(tid) = e.topic_id {
                 entry = entry.with_topic_id(tid);
             }
-            if let Some(icon) = e.icon {
-                entry = entry.with_icon(&icon);
-            }
             entry.git_email = e.git_email;
             registry.register(entry);
         }
@@ -150,7 +140,6 @@ struct ProjectFileEntry {
     path: String,
     aliases: Option<Vec<String>>,
     topic_id: Option<i64>,
-    icon: Option<String>,
     git_email: Option<String>,
 }
 
@@ -462,14 +451,12 @@ mod tests {
         reg.register(
             ProjectEntry::new("Causio", PathBuf::from("/home/user/projects/Causio"))
                 .with_aliases(vec!["causio".into()])
-                .with_topic_id(28)
-                .with_icon("???"),
+                .with_topic_id(28),
         );
         reg.register(
             ProjectEntry::new("Kommu", PathBuf::from("/home/user/projects/Kommu"))
                 .with_aliases(vec!["kommu".into()])
-                .with_topic_id(31)
-                .with_icon("??"),
+                .with_topic_id(31),
         );
         reg.register(
             ProjectEntry::new("DentistryGPT", PathBuf::from("/home/user/projects/DentistryGPT"))
@@ -591,7 +578,6 @@ mod tests {
                 name: "TestProject".into(),
                 path: PathBuf::from("/tmp/test"),
                 category: ProjectCategory::Work,
-                icon: None,
             },
         ];
         let reg = ProjectRegistry::from_config(&configs);

@@ -165,7 +165,6 @@ pub struct ProjectConfig {
     pub name: String,
     pub path: PathBuf,
     pub category: ProjectCategory,
-    pub icon: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,7 +412,6 @@ impl OmegaConfig {
                                 name: name.to_string(),
                                 path,
                                 category: category.clone(),
-                                icon: None,
                             });
                         }
                     }
