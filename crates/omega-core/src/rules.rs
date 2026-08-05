@@ -1414,6 +1414,28 @@ pub fn markdown_rule_ids(dir: &std::path::Path) -> std::collections::BTreeSet<St
 /// clear-everything loop wiped them, making install.sh's disk-only pass dead
 /// code. Returns the number of files pruned; best-effort, never fails.
 pub fn prune_registered_exports(dir: &std::path::Path) -> usize {
+    prune_registered_exports_except(dir, &std::collections::BTreeSet::new())
+}
+
+/// Prune stale exports while SPARING the files named in `keep`.
+///
+/// The plain prune above wipes every registered id and lets the writer put them
+/// back, which leaves a window where the directory holds FEWER rules than the
+/// registry. Anything reading doctrine in that window sees a partial set — the
+/// registry-parity test is one such reader, and an agent being briefed during
+/// an install is another, which is the one that actually matters.
+///
+/// Reproduced 2026-08-05 rather than assumed: the parity test failed 2 times in
+/// 25 while 200 exports ran concurrently.
+///
+/// So the export writes first and prunes after, passing the filenames it just
+/// wrote. A stale file and its replacement share an ID and differ only in slug,
+/// so a reader in the (now much smaller) window sees an extra retired FILE at
+/// worst and never a missing current RULE.
+pub fn prune_registered_exports_except(
+    dir: &std::path::Path,
+    keep: &std::collections::BTreeSet<String>,
+) -> usize {
     let registry: std::collections::BTreeSet<&'static str> =
         all_rules().iter().map(|r| r.id).collect();
     let mut pruned = 0usize;
@@ -1421,6 +1443,12 @@ pub fn prune_registered_exports(dir: &std::path::Path) -> usize {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if keep.contains(name) {
                 continue;
             }
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {

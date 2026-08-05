@@ -10448,7 +10448,14 @@ async fn cmd_graph_run(
 fn export_rules_to(rules_dir: &std::path::Path, verbose: bool) -> Result<usize> {
     use omega_core::rules::{self, RuleKind};
     std::fs::create_dir_all(rules_dir)?;
-    rules::prune_registered_exports(rules_dir);
+
+    // WRITE FIRST, PRUNE AFTER. Pruning first wipes every registered id and
+    // trusts the write pass to put them back, which leaves a window where the
+    // directory holds fewer rules than the registry — and anything reading
+    // doctrine in that window sees a partial set. The parity test is one such
+    // reader (it failed 2 in 25 under concurrent exports, measured), and an
+    // agent being briefed while an install runs is the one that matters.
+    let mut written: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     let all = rules::all_rules();
     for r in &all {
@@ -10472,7 +10479,14 @@ fn export_rules_to(rules_dir: &std::path::Path, verbose: bool) -> Result<usize> 
         if verbose {
             println!("  [+] {}", fname);
         }
+        written.insert(fname);
     }
+
+    // Now the stale ones, sparing everything just written. A stale file and its
+    // replacement share an ID and differ only in slug, so a reader in the
+    // remaining window sees an extra retired FILE at worst, never a missing
+    // current RULE.
+    rules::prune_registered_exports_except(rules_dir, &written);
     Ok(all.len())
 }
 
