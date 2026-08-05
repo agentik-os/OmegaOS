@@ -646,6 +646,48 @@ loop {
 itself, which is exactly why a whole mission can be replayed from a persisted `GraphState`
 and reach the same decisions.
 
+### The shipped driver
+
+That loop is no longer only an example. `omega graph run` is it, and it is the reason the
+executor is exercised rather than merely tested:
+
+```bash
+omega graph run mission.json                 # attended, resumes from mission.json.state.json
+omega graph run mission.json --dry-run       # gate everything ready, run nothing
+omega graph run mission.json --unattended    # the mode a dispatched agent runs in
+```
+
+A node declares what to run in a `command` field; the driver executes it and turns the exit
+status into a `NodeReport` (0 succeeds, anything else fails with the tail of stderr as the
+reason, which is what a later `Failed` outcome then names). A node with NO command fails
+loudly rather than succeeding silently, because a graph whose nodes do nothing would
+otherwise report `Complete` and look like a mission that ran.
+
+Three things the driver settles that the loop above leaves open, each for a reason:
+
+**State is persisted after every step, before anything is dispatched.** A run killed
+mid-dispatch must resume knowing the node was attempted. Writing afterwards would hand a
+thrashing node a fresh retry budget on every crash, which is the unbounded loop the retry
+policy exists to prevent.
+
+**The whole ready set is gated before any of it runs.** Gating inside the dispatch loop would
+let the nodes ahead of a held one run first, so a refusal would arrive after the run had
+already moved and the approval would be for a state that no longer exists.
+
+**A held node stops the run, it is never skipped.** Skipping would let the graph converge
+around a step a human refused to authorize and report `Complete` on a mission that never did
+the thing that mattered. Unattended, it leaves an `EscalationRecord` beside the state and
+exits 2; attended, it prints the exact `omega risk-gate approve` line. Either way the
+approval is signed, and a re-run honours it.
+
+The ready set runs CONCURRENTLY, which is the whole reason to express a mission as a graph
+rather than a list. Measured on a five-node diamond whose two parallel nodes sleep 2s each:
+3s wall clock, against 5s if they had been serialized.
+
+What it is deliberately NOT: wired into oracle dispatch. That path runs on other people's
+installs and already has its own DAG in `mission::PlanContract`. This is additive, and it
+drives the graphs you hand it.
+
 ---
 
 ## Reading it back

@@ -692,6 +692,8 @@ grep -q 'spawn_reconcile_session' crates/omega-cli/src/main.rs || { bad "a succe
 grep -q 'binary_stale' crates/omega-cli/src/main.rs || { bad "the interactive 'omega update' no longer notices a stale binary — only the cron would, and the two must agree"; RECONCILE_OK=0; }
 grep -q 'fn doctrine_fingerprint' crates/omega-core/src/rules.rs || { bad "the doctrine fingerprint is gone — the session check would fall back to crying wolf on every doctrine-neutral rebuild"; RECONCILE_OK=0; }
 grep -q 'doctrine_changed_at' crates/omega-cli/src/main.rs || { bad "reconcile no longer measures sessions against the last DOCTRINE change"; RECONCILE_OK=0; }
+grep -q 'fn cmd_graph_run' crates/omega-cli/src/main.rs || { bad "omega graph run is gone — graph_executor::advance would have no driver again, and an untouched executor is an untested one"; RECONCILE_OK=0; }
+grep -q 'evaluate_gate' crates/omega-cli/src/main.rs || { bad "the graph driver no longer consults the risk gate before dispatch (R-DESTRUCT)"; RECONCILE_OK=0; }
 [ "$RECONCILE_OK" = "1" ] && ok "post-update reconcile wired (install.sh + cron), provenance recorded and checked"
 
 # 11. New self-healing assets shipped + wired (token-refresh, shared-credential, scrollback alias).

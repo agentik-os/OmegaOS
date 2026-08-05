@@ -354,6 +354,23 @@ enum Commands {
         report_only: bool,
     },
 
+    /// Run a mission graph: drive `graph_executor::advance` to a terminal
+    /// outcome, with the risk gate in front of every dispatch.
+    ///
+    /// The decision core never runs anything itself — that is what makes a run
+    /// replayable off a persisted state — so this is the driver it was written
+    /// for. A node declares what to run in a `command` field; the driver
+    /// executes it, turns its exit status into a `NodeReport`, and hands the
+    /// batch back to `advance`.
+    ///
+    /// Deliberately NOT wired into oracle dispatch. That path runs on other
+    /// people's installs and already has its own DAG (`mission::PlanContract`);
+    /// this is additive and drives the graphs you hand it.
+    Graph {
+        #[command(subcommand)]
+        action: GraphAction,
+    },
+
     /// Reap finished workers: close every worker session that already wrote a
     /// TERMINAL done signal (done_clean, failed, blocked), release its scope
     /// claim, and unregister its git worktree when it holds nothing unsaved.
@@ -975,6 +992,15 @@ async fn main() -> Result<()> {
             }
         }
         Some(Commands::Reconcile { report_only }) => cmd_reconcile(report_only).await,
+        Some(Commands::Graph { action }) => match action {
+            GraphAction::Run {
+                graph,
+                state,
+                unattended,
+                dry_run,
+                max_steps,
+            } => cmd_graph_run(&graph, state.as_deref(), unattended, dry_run, max_steps).await,
+        },
         Some(Commands::InstallBindings) => cmd_install_bindings().await,
         Some(Commands::List) => cmd_list().await,
         Some(Commands::Attach { name }) => cmd_attach(&name).await,
@@ -3831,6 +3857,33 @@ fn cmd_marketing_doctor(json: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The graph-driver surface. Thin: every decision belongs to
+/// `omega_core::graph_executor` and `graph_risk`, this only runs what they
+/// authorize and reports what happened.
+#[derive(Subcommand)]
+enum GraphAction {
+    /// Drive the graph to a terminal outcome.
+    Run {
+        /// Path to the graph JSON.
+        graph: String,
+        /// Where the run state lives, so an interrupted run RESUMES instead of
+        /// restarting. Defaults to `<graph>.state.json` beside the graph.
+        #[arg(long)]
+        state: Option<String>,
+        /// Evaluate as an UNATTENDED run (nobody is watching), the mode a
+        /// dispatched oracle or worker runs in. Default is attended.
+        #[arg(long)]
+        unattended: bool,
+        /// Gate and print what WOULD run now, execute nothing, advance nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Backstop for a driver bug, never a substitute for the graph's own
+        /// bounds, which already guarantee termination (R-LOOP).
+        #[arg(long, default_value_t = 1000)]
+        max_steps: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -10101,6 +10154,251 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
 /// pushed through the alert funnel. The decision itself lives in
 /// `omega_core::auto_update::decide`, which is pure and unit-tested; this
 /// function only gathers the facts and carries out the verdict.
+// ---------------------------------------------------------------------------
+// graph run — the driver the decision core was written for
+// ---------------------------------------------------------------------------
+
+/// What a node declares it wants run, if anything.
+///
+/// A node with no `command` is a HARD failure, never a silent success: a graph
+/// whose nodes do nothing would otherwise report `Complete` and look like a
+/// mission that ran, which is the worst possible answer to "did it work".
+fn node_command(
+    graph: &omega_core::graph::Graph,
+    id: &omega_core::graph::NodeId,
+) -> Option<String> {
+    graph
+        .node(id)?
+        .extra
+        .get("command")?
+        .as_str()
+        .map(|s| s.to_string())
+}
+
+/// Run one node's command and turn the process result into a report.
+///
+/// Exit 0 is the only success. Everything else carries a reason built from the
+/// tail of stderr, because `advance` records that reason and a later
+/// `Failed` outcome names the cause instead of telling the operator only that
+/// something, somewhere, went wrong.
+fn run_node(
+    graph: &omega_core::graph::Graph,
+    id: &omega_core::graph::NodeId,
+) -> omega_core::graph_executor::NodeReport {
+    use omega_core::graph_executor::NodeReport;
+
+    let Some(command) = node_command(graph, id) else {
+        return NodeReport::failed(
+            id.clone(),
+            "node declares no `command`, so the driver has nothing to run for it",
+        );
+    };
+
+    match std::process::Command::new("bash").arg("-c").arg(&command).output() {
+        Ok(out) if out.status.success() => NodeReport::succeeded(id.clone()),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().join(" / ");
+            NodeReport::failed(
+                id.clone(),
+                format!(
+                    "exit {}: {}",
+                    out.status.code().unwrap_or(-1),
+                    if tail.is_empty() { "no stderr" } else { tail.trim() }
+                ),
+            )
+        }
+        Err(e) => NodeReport::failed(id.clone(), format!("could not spawn the command: {e}")),
+    }
+}
+
+/// Drive a graph to a terminal outcome.
+///
+/// The loop is the one `docs/GRAPH-EXECUTION-LAYER.md` prescribes, with two
+/// things the doc leaves to the caller made explicit here.
+///
+/// STATE IS PERSISTED AFTER EVERY STEP, before anything is dispatched. A run
+/// killed mid-dispatch must resume knowing the node was attempted; writing
+/// afterwards would hand a thrashing node a fresh retry budget on every crash,
+/// which is exactly the unbounded loop the retry policy exists to prevent.
+///
+/// A HELD NODE STOPS THE RUN rather than being skipped. Skipping it would let
+/// the graph converge around a step a human refused to authorize and report
+/// `Complete` on a mission that never did the thing that mattered.
+async fn cmd_graph_run(
+    graph_path: &str,
+    state_path: Option<&str>,
+    unattended: bool,
+    dry_run: bool,
+    max_steps: usize,
+) -> Result<()> {
+    use omega_core::graph_executor::{advance, ExecutionOutcome, NodeReport};
+    use omega_core::graph_risk::{evaluate_gate, ExecutionMode, GateDecision};
+
+    let graph = load_graph(graph_path)?;
+    graph
+        .validate()
+        .map_err(|e| anyhow::anyhow!("{} is not a runnable graph: {:?}", graph_path, e))?;
+
+    // Default the state beside the graph so a resumed run needs no extra flag —
+    // the common case is re-running the same command after an interruption.
+    let default_state = format!("{}.state.json", graph_path);
+    let state_path = state_path.unwrap_or(&default_state);
+    let mut state = load_graph_state(Some(state_path), &graph)?;
+
+    let mode = if unattended {
+        ExecutionMode::Unattended
+    } else {
+        ExecutionMode::Attended
+    };
+
+    println!("◆ graph {} ({} nodes)", graph_path, graph.nodes.len());
+    println!("  state: {}", state_path);
+    println!("  mode:  {}", if unattended { "unattended" } else { "attended" });
+    println!();
+
+    let persist = |state: &omega_core::graph::GraphState| -> Result<()> {
+        let json = serde_json::to_string_pretty(state)?;
+        let tmp = format!("{}.tmp", state_path);
+        std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp))?;
+        std::fs::rename(&tmp, state_path).with_context(|| format!("replacing {}", state_path))?;
+        Ok(())
+    };
+
+    let mut reports: Vec<NodeReport> = Vec::new();
+
+    for step_no in 1..=max_steps {
+        let step = advance(&graph, &mut state, &reports)
+            .map_err(|e| anyhow::anyhow!("executor refused the step: {:?}", e))?;
+        persist(&state)?;
+        reports.clear();
+
+        for id in &step.retrying {
+            println!("  [~] {} failed, retrying (budget left)", id.as_str());
+        }
+        for id in &step.exhausted {
+            println!("  [x] {} failed terminally (retry budget spent)", id.as_str());
+        }
+        for id in &step.fallbacks {
+            println!("  [>] fallback {} unlocked", id.as_str());
+        }
+        for (from, to) in &step.loops_taken {
+            println!("  [o] loop edge {} -> {} traversed", from.as_str(), to.as_str());
+        }
+
+        match &step.outcome {
+            ExecutionOutcome::Complete => {
+                println!("\n✓ complete — every node settled, nothing failed unrecovered");
+                return Ok(());
+            }
+            ExecutionOutcome::Blocked { unreachable } => {
+                println!("\n✗ blocked — nothing can become ready. Unreachable:");
+                for id in unreachable {
+                    println!("    {}", id.as_str());
+                }
+                std::process::exit(1);
+            }
+            ExecutionOutcome::Failed { node, reason } => {
+                println!("\n✗ failed — {} : {}", node.as_str(), reason);
+                std::process::exit(1);
+            }
+            ExecutionOutcome::Progressing { ready } => {
+                println!("  step {}: {} ready", step_no, ready.len());
+
+                // GATE EVERY node before ANY of them runs. Gating inside the
+                // dispatch loop would let the nodes ahead of a held one run
+                // first, so a refusal would arrive after the run had already
+                // moved — the approval would be for a state that no longer
+                // exists.
+                let mut authorized = Vec::new();
+                for id in ready {
+                    match evaluate_gate(&graph, &state, id, mode) {
+                        GateDecision::Proceed => authorized.push(id.clone()),
+                        GateDecision::RequireApproval {
+                            node,
+                            risk,
+                            reason,
+                            what_is_lost,
+                        } => {
+                            println!("\n⛔ HELD  {} ({:?})", node.as_str(), risk);
+                            println!("   reason:       {}", reason);
+                            println!("   what is lost: {}", what_is_lost);
+                            if unattended {
+                                // Unattended, a prompt is not a safety
+                                // mechanism, it is a mission that stalls in
+                                // silence. Leave the durable artifact instead.
+                                let record = GateDecision::RequireApproval {
+                                    node: node.clone(),
+                                    risk,
+                                    reason: reason.clone(),
+                                    what_is_lost: what_is_lost.clone(),
+                                }
+                                .into_escalation(chrono::Utc::now());
+                                if let Some(record) = record {
+                                    let path = format!("{}.escalation.json", state_path);
+                                    std::fs::write(&path, serde_json::to_string_pretty(&record)?)?;
+                                    println!("   escalation written to {}", path);
+                                }
+                            }
+                            println!(
+                                "   resolve with: omega risk-gate approve {} {} --state {} --approver <who>",
+                                graph_path,
+                                node.as_str(),
+                                state_path
+                            );
+                            std::process::exit(2);
+                        }
+                        GateDecision::Refuse { node, reason } => {
+                            println!("\n⛔ REFUSED {} — {}", node.as_str(), reason);
+                            println!("   the gate will not put this in front of a human as it stands; fix the graph");
+                            std::process::exit(2);
+                        }
+                    }
+                }
+
+                if dry_run {
+                    println!("\n(--dry-run) would run now, and nothing else was touched:");
+                    for id in &authorized {
+                        println!(
+                            "    {}  {}",
+                            id.as_str(),
+                            node_command(&graph, id).unwrap_or_else(|| "<no command>".into())
+                        );
+                    }
+                    return Ok(());
+                }
+
+                // The ready set is exactly what may run CONCURRENTLY — that is
+                // the whole reason to express a mission as a graph rather than
+                // a list, so running it serially here would throw the value
+                // away while keeping the ceremony.
+                reports = std::thread::scope(|scope| {
+                    let handles: Vec<_> = authorized
+                        .iter()
+                        .map(|id| {
+                            let graph = &graph;
+                            scope.spawn(move || {
+                                println!("    ▸ {}", id.as_str());
+                                run_node(graph, id)
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .filter_map(|h| h.join().ok())
+                        .collect::<Vec<_>>()
+                });
+            }
+        }
+    }
+
+    anyhow::bail!(
+        "stopped after {} steps without a terminal outcome — the graph's own bounds should have \
+         ended it, so this is a driver bug worth reporting, not a graph to re-run",
+        max_steps
+    )
+}
+
 /// Stamp `auto-update.json` with the commit that was just installed.
 ///
 /// Called by `install.sh` at the end of a successful install. Before this
