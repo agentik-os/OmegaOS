@@ -10269,17 +10269,29 @@ async fn cmd_reconcile(report_only: bool) -> Result<()> {
         }
     }
 
-    // Sessions older than the binary were briefed with the PREVIOUS doctrine
-    // block: the rules are injected at spawn time, so a running session keeps
+    // Sessions older than the binary were briefed by a PREVIOUS build: the
+    // doctrine block is injected at spawn time, so a running session keeps
     // whatever was compiled in when it started. Restarting one mid-turn would
     // destroy work, so this is named, never acted on.
+    //
+    // The comparison is binary MTIME, which over-reports and must say so.
+    // A rebuild that touched no rule leaves the doctrine byte-identical, yet
+    // every session started before it still looks older — measured 2026-08-05,
+    // a 29-line change to main.rs flagged nine sessions whose doctrine had not
+    // moved at all. It never under-reports, which is the safe direction, but a
+    // check that cries wolf is the one defect an alerting system cannot afford
+    // (R-MONITOR): the operator learns to skip the line, and then it may as
+    // well not exist. So the wording claims only what mtime can prove. Making
+    // this exact would mean recording a doctrine fingerprint per install and
+    // comparing against the last build whose fingerprint actually changed.
     match binary_mtime() {
         Some(installed_at) => {
             let stale = sessions_older_than(installed_at);
             if !stale.is_empty() {
                 needs_human.push(format!(
-                    "{} session(s) predate this binary and still carry the previous doctrine \
-                     (restart them once their work is done): {}",
+                    "{} session(s) were started by an earlier build, so they carry the doctrine \
+                     compiled then — identical unless that build changed a rule (restart them \
+                     once their work is done): {}",
                     stale.len(),
                     stale.join(", ")
                 ));
