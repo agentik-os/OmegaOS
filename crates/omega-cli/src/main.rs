@@ -9971,11 +9971,35 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
 
     // Report the FULL state before deciding anything — a dirty tree is what
     // blocks an update, so it must be visible even when already up to date.
+    //
+    // "Nothing to pull" is NOT "nothing to install", and this interactive path
+    // has to know that as surely as the cron does. HEAD can move without this
+    // command ever fetching anything — you commit to the checkout yourself —
+    // and then git is genuinely current while the BINARY is not. Reporting
+    // "up to date" there is the exact lie the cron used to tell: measured on
+    // the source box, `omega update --check` said "nothing changed" against a
+    // binary thirty commits old.
+    let head = git(&["rev-parse", "--short", "HEAD"]);
+    let installed = {
+        let cfg = omega_core::config::OmegaConfig::load().unwrap_or_default();
+        omega_core::auto_update::AutoUpdateState::load(&cfg.state_dir).last_applied_commit
+    };
+    // `None` is unknown provenance, never a claim of staleness — an install
+    // predating that record must not be reported as behind.
+    let binary_stale = !head.is_empty() && installed.as_deref().is_some_and(|i| i != head.as_str());
+
     let up_to_date = behind_n == 0 && ahead_n == 0;
     if up_to_date {
         println!("  up to date with origin/{}", branch);
     } else {
         println!("  {} commit(s) behind, {} ahead", behind_n, ahead_n);
+    }
+    if binary_stale {
+        println!(
+            "  installed binary: built from {} — checkout HEAD is {}",
+            installed.as_deref().unwrap_or("?"),
+            head
+        );
     }
     if dirty {
         println!("  local changes: present (never touched by update)");
@@ -9988,6 +10012,8 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
                 " — an update would stop, see above"
             } else if behind_n > 0 {
                 " — an update would fast-forward + reinstall"
+            } else if binary_stale {
+                " — an update would reinstall (the binary is behind the checkout)"
             } else {
                 ""
             }
@@ -9995,7 +10021,7 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    if up_to_date && !dirty {
+    if up_to_date && !dirty && !binary_stale {
         println!("✓ already up to date — nothing to do");
         return Ok(());
     }
