@@ -290,10 +290,49 @@ pub struct GroundTruthVerdict {
     pub failures: Vec<String>,
 }
 
+/// What a single artifact check actually established.
+///
+/// A two-valued `passed: bool` cannot say "the check could not run", so an
+/// UNRUN check (no repo root supplied, `git` missing, an io error) used to be
+/// indistinguishable from a proven fabrication. Patrol read that `false` as a
+/// concrete fabrication, contested the worker, and escalated a human — four
+/// spurious escalations on mission OmegaOS-m-8fe7d35df5bf. The doctrine it
+/// broke is patrol's own: a concrete fabrication is a failure, weak or absent
+/// proof stays a candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckOutcome {
+    /// The check ran and the artifact is really there.
+    Verified,
+    /// The check could NOT run, so it establishes nothing either way:
+    /// no repo root was supplied, the tool failed to execute, the claim was
+    /// never predeclared and was therefore not rerun. Absent proof — never
+    /// evidence of fabrication.
+    Unverifiable,
+    /// The check ran against the real environment and the artifact is NOT
+    /// there (or the rerun refuted the claim). This is the fabrication.
+    Contradicted,
+}
+
+impl CheckOutcome {
+    /// True only for a check that ran and confirmed the artifact.
+    pub fn is_verified(self) -> bool {
+        matches!(self, CheckOutcome::Verified)
+    }
+
+    /// True only for a check that ran and REFUTED the claim. This is the sole
+    /// predicate that may contest a worker.
+    pub fn is_contradicted(self) -> bool {
+        matches!(self, CheckOutcome::Contradicted)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ArtifactCheck {
     pub artifact: DoneArtifact,
+    /// Kept for every existing caller: exactly `outcome.is_verified()`.
+    /// Never read it to decide "fabricated" — use `outcome`.
     pub passed: bool,
+    pub outcome: CheckOutcome,
     pub detail: String,
 }
 
@@ -330,7 +369,7 @@ fn verify_done_internal(
     let mut failures = Vec::new();
 
     for art in &done.artifacts {
-        let (ok, detail) = match art {
+        let (outcome, detail) = match art {
             DoneArtifact::GitSha { sha, branch: _ } => check_git_sha(sha, repo_root),
             DoneArtifact::GitBranch { name } => check_git_branch(name, repo_root),
             DoneArtifact::FilePath { path } => check_file_path(path, repo_root),
@@ -341,14 +380,20 @@ fn verify_done_internal(
                 url,
                 expected_status,
             } => verify_predeclared_http(url, *expected_status, verifier_checks),
-            DoneArtifact::Note(s) => (false, format!("note is context only, never proof: {}", s)),
+            // A note proves nothing, but it also refutes nothing: it is the
+            // absence of evidence, not evidence of fabrication.
+            DoneArtifact::Note(s) => (
+                CheckOutcome::Unverifiable,
+                format!("note is context only, never proof: {}", s),
+            ),
         };
-        if !ok {
+        if !outcome.is_verified() {
             failures.push(detail.clone());
         }
         checks.push(ArtifactCheck {
             artifact: art.clone(),
-            passed: ok,
+            passed: outcome.is_verified(),
+            outcome,
             detail,
         });
     }
@@ -396,7 +441,7 @@ fn verify_predeclared_command(
     claimed_exit: i32,
     repo_root: Option<&Path>,
     verifier_checks: &[VerifierCheck],
-) -> (bool, String) {
+) -> (CheckOutcome, String) {
     let approved = verifier_checks.iter().find(|check| {
         matches!(
             &check.kind,
@@ -409,7 +454,7 @@ fn verify_predeclared_command(
     });
     let Some(approved) = approved else {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!(
                 "command was not an exact predeclared verifier and was not executed: `{claimed_cmd}`"
             ),
@@ -425,7 +470,7 @@ fn verify_predeclared_command(
     };
     let Some(program) = argv.first().filter(|program| !program.is_empty()) else {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             "predeclared verifier command has empty argv".to_string(),
         );
     };
@@ -439,7 +484,7 @@ fn verify_predeclared_command(
     if let Some(cwd) = cwd {
         let Some(root) = repo_root else {
             return (
-                false,
+                CheckOutcome::Unverifiable,
                 format!("verifier `{claimed_cmd}` declares cwd but no repo root was supplied"),
             );
         };
@@ -447,7 +492,7 @@ fn verify_predeclared_command(
             Ok(root) => root,
             Err(error) => {
                 return (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!("cannot canonicalize verifier repo root: {error}"),
                 )
             }
@@ -457,13 +502,13 @@ fn verify_predeclared_command(
             Ok(requested) if requested.starts_with(&root) => requested,
             Ok(_) => {
                 return (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!("predeclared verifier cwd escapes repo root: {cwd}"),
                 )
             }
             Err(error) => {
                 return (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!("cannot resolve predeclared verifier cwd `{cwd}`: {error}"),
                 )
             }
@@ -477,7 +522,7 @@ fn verify_predeclared_command(
         Ok(child) => child,
         Err(error) => {
             return (
-                false,
+                CheckOutcome::Unverifiable,
                 format!("failed to execute predeclared verifier `{claimed_cmd}`: {error}"),
             )
         }
@@ -489,14 +534,14 @@ fn verify_predeclared_command(
                 let actual = status.code().unwrap_or(-1);
                 return if actual == *expected_exit_code {
                     (
-                        true,
+                        CheckOutcome::Verified,
                         format!(
                             "predeclared verifier `{claimed_cmd}` reran with exit code {actual}"
                         ),
                     )
                 } else {
                     (
-                        false,
+                        CheckOutcome::Contradicted,
                         format!(
                             "predeclared verifier `{claimed_cmd}` exited {actual}, expected {expected_exit_code}"
                         ),
@@ -510,7 +555,7 @@ fn verify_predeclared_command(
                 let _ = child.kill();
                 let _ = child.wait();
                 return (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!(
                         "predeclared verifier `{claimed_cmd}` timed out after {}s",
                         approved.timeout_secs.max(1)
@@ -521,7 +566,7 @@ fn verify_predeclared_command(
                 let _ = child.kill();
                 let _ = child.wait();
                 return (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!("failed while waiting for verifier `{claimed_cmd}`: {error}"),
                 );
             }
@@ -533,7 +578,7 @@ fn verify_predeclared_http(
     claimed_url: &str,
     claimed_status: u16,
     verifier_checks: &[VerifierCheck],
-) -> (bool, String) {
+) -> (CheckOutcome, String) {
     let approved = verifier_checks.iter().find(|check| {
         matches!(
             &check.kind,
@@ -545,7 +590,7 @@ fn verify_predeclared_http(
     });
     let Some(approved) = approved else {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!(
                 "URL was not an exact predeclared verifier and was not requested: {claimed_url}"
             ),
@@ -556,7 +601,7 @@ fn verify_predeclared_http(
         .or_else(|| claimed_url.strip_prefix("http://"))
     else {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!("predeclared URL has a non-HTTP scheme: {claimed_url}"),
         );
     };
@@ -567,7 +612,7 @@ fn verify_predeclared_http(
         || claimed_url.chars().any(char::is_control)
     {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!("predeclared URL is unsafe or malformed: {claimed_url}"),
         );
     }
@@ -596,25 +641,25 @@ fn verify_predeclared_http(
                 .parse::<u16>();
             match actual {
                 Ok(actual) if actual == claimed_status => (
-                    true,
+                    CheckOutcome::Verified,
                     format!(
                         "predeclared HTTP verifier returned {actual}: {claimed_url}"
                     ),
                 ),
                 Ok(actual) => (
-                    false,
+                    CheckOutcome::Contradicted,
                     format!(
                         "predeclared HTTP verifier returned {actual}, expected {claimed_status}: {claimed_url}"
                     ),
                 ),
                 Err(error) => (
-                    false,
+                    CheckOutcome::Unverifiable,
                     format!("HTTP verifier returned invalid status output: {error}"),
                 ),
             }
         }
         Ok(output) => (
-            false,
+            CheckOutcome::Unverifiable,
             format!(
                 "predeclared HTTP verifier failed with exit {:?}: {}",
                 output.status.code(),
@@ -622,16 +667,17 @@ fn verify_predeclared_http(
             ),
         ),
         Err(error) => (
-            false,
+            CheckOutcome::Unverifiable,
             format!("could not run predeclared HTTP verifier: {error}"),
         ),
     }
 }
 
-fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (bool, String) {
+fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) {
     let Some(root) = repo_root else {
+        // Nothing was looked up. Saying FABRICATED here is a lie.
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!("no repo root supplied; SHA {sha} was not verified"),
         );
     };
@@ -640,22 +686,31 @@ fn check_git_sha(sha: &str, repo_root: Option<&Path>) -> (bool, String) {
         .current_dir(root)
         .status();
     match out {
-        Ok(s) if s.success() => (true, format!("git SHA {} exists locally", sha)),
+        Ok(s) if s.success() => (
+            CheckOutcome::Verified,
+            format!("git SHA {} exists locally", sha),
+        ),
+        // git ran and answered: the object is not in this repo.
         Ok(_) => (
-            false,
+            CheckOutcome::Contradicted,
             format!(
                 "claimed git SHA {} does NOT exist in repo — FABRICATED",
                 sha
             ),
         ),
-        Err(e) => (false, format!("git lookup failed for {}: {}", sha, e)),
+        // git itself never ran (missing binary, io error) — that is our
+        // failure, not the worker's.
+        Err(e) => (
+            CheckOutcome::Unverifiable,
+            format!("git lookup failed for {}: {}", sha, e),
+        ),
     }
 }
 
-fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (bool, String) {
+fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) {
     let Some(root) = repo_root else {
         return (
-            false,
+            CheckOutcome::Unverifiable,
             format!("no repo root supplied; branch {name} was not verified"),
         );
     };
@@ -664,24 +719,32 @@ fn check_git_branch(name: &str, repo_root: Option<&Path>) -> (bool, String) {
         .current_dir(root)
         .output();
     match out {
-        Ok(o) if o.status.success() => (true, format!("git branch {} exists", name)),
-        _ => (
-            false,
+        Ok(o) if o.status.success() => (
+            CheckOutcome::Verified,
+            format!("git branch {} exists", name),
+        ),
+        Ok(_) => (
+            CheckOutcome::Contradicted,
             format!("claimed git branch {} NOT found — FABRICATED", name),
+        ),
+        Err(e) => (
+            CheckOutcome::Unverifiable,
+            format!("git lookup failed for branch {}: {}", name, e),
         ),
     }
 }
 
-fn check_file_path(path: &str, repo_root: Option<&Path>) -> (bool, String) {
+fn check_file_path(path: &str, repo_root: Option<&Path>) -> (CheckOutcome, String) {
     let candidate = Path::new(path);
     let full = match (repo_root, candidate.is_absolute()) {
         (_, true) => candidate.to_path_buf(),
         (Some(root), false) => root.join(candidate),
         (None, false) => {
+            // No root to resolve it against: the path was never looked up.
             return (
-                false,
+                CheckOutcome::Unverifiable,
                 format!("relative claimed path {path} cannot be verified without a repo root"),
-            )
+            );
         }
     };
     if full.exists() {
@@ -691,16 +754,20 @@ fn check_file_path(path: &str, repo_root: Option<&Path>) -> (bool, String) {
             if let (Ok(root), Ok(full_canonical)) = (root, full_canonical) {
                 if !candidate.is_absolute() && !full_canonical.starts_with(root) {
                     return (
-                        false,
+                        CheckOutcome::Contradicted,
                         format!("claimed relative path escapes repo root: {path}"),
                     );
                 }
             }
         }
-        (true, format!("file {} exists", full.display()))
-    } else {
         (
-            false,
+            CheckOutcome::Verified,
+            format!("file {} exists", full.display()),
+        )
+    } else {
+        // The lookup ran against the real filesystem and the file is absent.
+        (
+            CheckOutcome::Contradicted,
             format!(
                 "claimed file path {} does NOT exist — FABRICATED",
                 full.display()
@@ -768,6 +835,84 @@ mod done_v3_tests {
         let verdict = verify_done_against_repo(&done, Some(temp.path()));
         assert!(!verdict.passes);
         assert!(!marker.exists());
+    }
+
+    /// Create a throwaway git repo holding one real object, and return
+    /// (tempdir, that object's SHA). `git hash-object -w` needs no commit and
+    /// therefore no git identity, and the SHA it returns is one `git cat-file
+    /// -e` really confirms.
+    fn repo_with_a_real_object() -> (tempfile::TempDir, String) {
+        let temp = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(temp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+        std::fs::write(temp.path().join("payload.txt"), b"ground truth").unwrap();
+        let out = std::process::Command::new("git")
+            .args(["hash-object", "-w", "payload.txt"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git hash-object");
+        assert!(out.status.success(), "git hash-object failed");
+        let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        assert_eq!(sha.len(), 40, "expected a full object SHA, got {sha:?}");
+        (temp, sha)
+    }
+
+    /// MANDATORY TEST 1 (done.rs half). A REAL sha checked with NO repo root
+    /// was never looked up, so it is `Unverifiable` — absent proof. Branding
+    /// it `Contradicted` is the false positive that escalated four honest
+    /// workers to a human on mission OmegaOS-m-8fe7d35df5bf.
+    #[test]
+    fn real_sha_without_a_repo_root_is_unverifiable_not_contradicted() {
+        let (temp, sha) = repo_with_a_real_object();
+        // The SHA is genuinely real: with the root, the same check verifies it.
+        let mut done = complete_signal();
+        done.artifacts.push(DoneArtifact::GitSha {
+            sha: sha.clone(),
+            branch: None,
+        });
+        let grounded = verify_done_against_repo(&done, Some(temp.path()));
+        assert_eq!(grounded.checks[0].outcome, CheckOutcome::Verified);
+
+        // Same real SHA, no root supplied: nothing ran, nothing is refuted.
+        let verdict = verify_done_against_repo(&done, None);
+        assert_eq!(
+            verdict.checks[0].outcome,
+            CheckOutcome::Unverifiable,
+            "an unrun check must never be reported as a fabrication: {}",
+            verdict.checks[0].detail
+        );
+        assert!(!verdict.checks[0].outcome.is_contradicted());
+        assert!(
+            !verdict.checks[0].passed,
+            "`passed` stays outcome-is-Verified"
+        );
+        assert!(!verdict.passes, "absent proof still fails the verdict");
+    }
+
+    /// MANDATORY TEST 2 (done.rs half). The detector is NOT weakened: a bogus
+    /// SHA looked up in a REAL repo is `Contradicted` — a concrete fabrication.
+    #[test]
+    fn bogus_sha_with_a_real_repo_root_is_contradicted() {
+        let (temp, _real) = repo_with_a_real_object();
+        let mut done = complete_signal();
+        done.artifacts.push(DoneArtifact::GitSha {
+            sha: "0123456789abcdef0123456789abcdef01234567".to_string(),
+            branch: None,
+        });
+        let verdict = verify_done_against_repo(&done, Some(temp.path()));
+        assert_eq!(
+            verdict.checks[0].outcome,
+            CheckOutcome::Contradicted,
+            "a lookup that ran and found nothing IS the fabrication: {}",
+            verdict.checks[0].detail
+        );
+        assert!(verdict.checks[0].outcome.is_contradicted());
+        assert!(verdict.checks[0].detail.contains("FABRICATED"));
+        assert!(!verdict.passes);
     }
 
     #[test]
