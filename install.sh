@@ -2068,6 +2068,41 @@ else
     info "browser-use skill browser-use not found — skipping"
 fi
 
+# Install the pixelrag skill — SCREENSHOT a page and READ the image instead of parsing
+# HTML (StarTrail-org/PixelRAG, Apache-2.0). Markdown + thin wrapper only: the Python
+# venv (~/.omega/skills/pixelrag/.venv) and `pip install pixelrag` are a RUNTIME OPT-IN
+# created lazily on first `pixelrag shot` — install.sh NEVER pip-installs and never
+# pulls the torch/faiss embedding extras (R-BROWSER boundary, same as browser-use).
+# Needs no API key and no account: the hosted visual index is public.
+PXR_SRC="$OMEGA_SRC/skills/pixelrag"
+PXR_DST="$OMEGA_DIR/skills/pixelrag"
+if [[ -d "$PXR_SRC" ]]; then
+    mkdir -p "$PXR_DST"
+    cp -r "$PXR_SRC"/* "$PXR_DST/"
+    # The wrapper is named `pixelrag` (no .sh extension), so the generic *.sh chmod
+    # patterns miss it — set the exec bit explicitly (cp -r drops it).
+    chmod +x "$PXR_DST/pixelrag" 2>/dev/null || true
+    find "$PXR_DST" -name "*.sh" -exec chmod +x {} + 2>/dev/null || true
+    PXR_CMD="$HOME/.claude/commands"; mkdir -p "$PXR_CMD"
+    for cmd in pixelrag omg-pixelrag; do
+        cat > "$PXR_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run the pixelrag skill — render a page or document to screenshot tiles and READ the
+image, or search a public visual index of 8.28M Wikipedia pages and read the matching
+screenshot crop. Read and follow the complete instructions in:
+
+\`$PXR_DST/SKILL.md\`
+
+Caveats: the venv + \`pip install pixelrag\` are a runtime opt-in created on first use;
+no API key is needed; do not put secrets or client-identifying detail in a search query.
+EOF
+    done
+    ok "pixelrag skill installed: pixelrag → ~/.omega/skills/pixelrag/ (/pixelrag + /omg-pixelrag)"
+else
+    info "pixelrag skill not found — skipping"
+fi
+
 # Install the orchestration planner skill (engine-native).
 # OmegaOS slash commands are namespaced `/omg-*` to avoid colliding with the
 # user's other commands (e.g. a pre-existing prose `/planner`).

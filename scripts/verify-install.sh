@@ -338,6 +338,9 @@ if [ -f skills/10x/SKILL.md ] && [ -f skills/pitch/SKILL.md ] && [ -f skills/gho
 if [ -f skills/watch/SKILL.md ] && [ -f skills/watch/scripts/watch.py ] && [ -f skills/watch/LICENSE ] && grep -q 'WATCH_SRC="$OMEGA_SRC/skills/watch"' install.sh && grep -q "omg-watch" install.sh; then ok "watch video-analysis skill (/watch /omg-watch) shipped + wired"; else bad "watch skill missing or not wired in install.sh"; fi
 if [ -f skills/artifact-design/SKILL.md ] && grep -q 'ARTD_SRC="$OMEGA_SRC/skills/artifact-design"' install.sh && grep -q "omg-artifact-design" install.sh; then ok "artifact-design skill (/artifact-design /omg-artifact-design) shipped + wired"; else bad "artifact-design skill missing or not wired in install.sh"; fi
 if [ -f skills/secrets-vault/SKILL.md ] && [ -f skills/secrets-vault/bin/vault-restore.sh ] && grep -q 'SV_SRC="$OMEGA_SRC/skills/secrets-vault"' install.sh && grep -q "omg-secrets-vault" install.sh; then ok "secrets-vault skill (/secrets-vault /omg-secrets-vault) shipped + wired"; else bad "secrets-vault skill missing or not wired in install.sh"; fi
+# The wrapper has no .sh extension, so the generic chmod patterns miss it — assert the
+# explicit chmod is present, else a fresh install ships it non-executable.
+if [ -f skills/pixelrag/SKILL.md ] && [ -x skills/pixelrag/pixelrag ] && grep -q 'PXR_SRC="$OMEGA_SRC/skills/pixelrag"' install.sh && grep -q 'chmod +x "$PXR_DST/pixelrag"' install.sh && grep -q "omg-pixelrag" install.sh; then ok "pixelrag skill (/pixelrag /omg-pixelrag) shipped + wired"; else bad "pixelrag skill missing or not wired in install.sh"; fi
 # Linear skill must not LEAK a maintainer-private path (it may mention them in
 # negative "does NOT read ~/.claude" prose; only a real ~/.claude/ or /home/hacker
 # path token is a leak). Check for the home-dir literal specifically.
