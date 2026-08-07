@@ -10,11 +10,18 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TTS_DIR="$OMEGA_DIR/tts"
 PY="${OMEGA_TTS_PYTHON:-python3}"
 FAILED=""
+# VibeVoice is pinned: upstream removed its 1.5B TTS code once already (Sept 2025,
+# "disabled due to widespread misuse"), so an unpinned clone is not reproducible.
+VIBEVOICE_REPO="https://github.com/microsoft/VibeVoice.git"
+VIBEVOICE_PIN="94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
 
 info() { printf '\033[36m[tts]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[tts]\033[0m %s\n' "$*"; }
 
 mkdir -p "$TTS_DIR/venvs" "$TTS_DIR/workers" "$TTS_DIR/models/piper" "$TTS_DIR/out" "$TTS_DIR/logs"
+# Seed the operator preference ONCE, never overwrite a real choice. A fresh install
+# must not silently pull VibeVoice's ~2 GB: it is English-only and opt-in by design.
+[[ -f "$TTS_DIR/config.json" ]] || printf '%s\n' '{"disabled": ["vibevoice"]}' > "$TTS_DIR/config.json"
 cp -f "$SRC_DIR/ttsd.py" "$TTS_DIR/ttsd.py"
 cp -f "$SRC_DIR/workers/"*.py "$TTS_DIR/workers/"
 
@@ -71,6 +78,33 @@ if is_disabled chatterbox; then info "chatterbox disabled by config — skipped"
     info "chatterbox (Resemble — top quality, heavy; CPU torch)…"
     mkvenv chatterbox chatterbox-tts --extra-index-url https://download.pytorch.org/whl/cpu \
         || { warn "chatterbox install failed"; FAILED="$FAILED chatterbox"; }
+fi
+
+# VibeVoice-Realtime-0.5B (Microsoft) — ENGLISH long-form / podcast. DISABLED BY
+# DEFAULT in the shipped config: it pulls ~2 GB of weights plus CPU torch, and its
+# French is measured unusable (53.8% word error rate round-tripped through Whisper,
+# vs 5.1% for piper/kokoro), so it must never become a default French voice.
+# Enable deliberately: remove "vibevoice" from ~/.omega/tts/config.json "disabled".
+if is_disabled vibevoice; then info "vibevoice disabled by config — skipped"; else
+    info "vibevoice (Microsoft VibeVoice-Realtime-0.5B — English long-form; ~2 GB)…"
+    if [[ -d "$TTS_DIR/vibevoice/.git" ]]; then
+        git -C "$TTS_DIR/vibevoice" fetch --depth 1 origin "$VIBEVOICE_PIN" >/dev/null 2>&1 \
+            && git -C "$TTS_DIR/vibevoice" checkout -q "$VIBEVOICE_PIN" 2>/dev/null || true
+    else
+        git clone -q "$VIBEVOICE_REPO" "$TTS_DIR/vibevoice" >/dev/null 2>&1 \
+            && git -C "$TTS_DIR/vibevoice" checkout -q "$VIBEVOICE_PIN" 2>/dev/null || true
+    fi
+    if [[ -f "$TTS_DIR/vibevoice/pyproject.toml" ]]; then
+        # torch CPU wheels first so the default CUDA build (multi-GB, useless here) is never pulled.
+        if mkvenv vibevoice torch --index-url https://download.pytorch.org/whl/cpu \
+           && mkvenv vibevoice --editable "$TTS_DIR/vibevoice[streamingtts]" soundfile; then
+            info "vibevoice installed — weights download lazily on first synthesis"
+        else
+            warn "vibevoice install failed"; FAILED="$FAILED vibevoice"
+        fi
+    else
+        warn "vibevoice clone failed (network?) — will retry on the next run"; FAILED="$FAILED vibevoice"
+    fi
 fi
 
 # systemd user service (Linux). The daemon is stdlib-only → system python3.

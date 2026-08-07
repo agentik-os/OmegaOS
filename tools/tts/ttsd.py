@@ -58,6 +58,11 @@ ENGINES = {
         "venv": f"{VENVS}/piper", "worker": "piper_worker.py",
         "note": "ultra-rapide, voix plus robotique",
     },
+    "vibevoice": {
+        "label": "VibeVoice 0.5B (EN)", "kind": "local",
+        "venv": f"{VENVS}/vibevoice", "worker": "vibevoice_worker.py",
+        "note": "ANGLAIS uniquement — long-form/podcast, ~2 s de calcul par s",
+    },
     "elevenlabs": {
         "label": "ElevenLabs (API)", "kind": "api",
         "note": "qualité référence — nécessite ELEVENLABS_API_KEY",
