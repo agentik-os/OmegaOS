@@ -1040,6 +1040,7 @@ pub enum MonitorAction {
     ProvisioningSetup,
     RefreshBilling,
     OpenDashboard,
+    UpdateOmega,
 }
 
 impl MonitorAction {
@@ -1051,6 +1052,7 @@ impl MonitorAction {
             MonitorAction::ProvisioningSetup,
             MonitorAction::RefreshBilling,
             MonitorAction::OpenDashboard,
+            MonitorAction::UpdateOmega,
         ]
     }
     pub fn label(&self) -> &'static str {
@@ -1061,6 +1063,7 @@ impl MonitorAction {
             MonitorAction::ProvisioningSetup => "Set up project provisioning keys   (Vercel/Convex/GitHub/Stripe)",
             MonitorAction::RefreshBilling => "Refresh billing now   (live OAuth usage check)",
             MonitorAction::OpenDashboard => "Open Dashboard   (OmegaMC Telegram dashboard — replaces aisb-master)",
+            MonitorAction::UpdateOmega => "Update OmegaOS now   (pull + rebuild + reinstall — your ~/.omega state is preserved)",
         }
     }
     pub fn shortcut(&self) -> &'static str {
@@ -1071,6 +1074,7 @@ impl MonitorAction {
             MonitorAction::ProvisioningSetup => "P",
             MonitorAction::RefreshBilling => "B",
             MonitorAction::OpenDashboard => "O",
+            MonitorAction::UpdateOmega => "U",
         }
     }
     /// Resolve the "Open Dashboard" action against the real filesystem.

@@ -1658,6 +1658,7 @@ code produit.",
         KeyCode::Char('D') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::TelegramDisconnect,
         KeyCode::Char('B') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::RefreshBilling,
         KeyCode::Char('O') if app.tab == Tab::Settings && app.settings_on_monitor() => open_dashboard_action(app),
+        KeyCode::Char('U') if app.tab == Tab::Settings && app.settings_on_monitor() => execute_monitor_action(MonitorAction::UpdateOmega),
 
         // Projects tab: 'n' opens a guided "register existing folder" modal
         // (the in-TUI replacement for the `omega project add` CLI hint). For a
@@ -2033,6 +2034,15 @@ fn execute_monitor_action(action: MonitorAction) -> Action {
         // handlers route through `open_dashboard_action(app)` directly. This
         // arm is unreachable in practice but keeps the match total.
         MonitorAction::OpenDashboard => Action::None,
+        // Update runs as a DETACHED session (same reason the General-section
+        // update does): `omega update` rebuilds the very binary this TUI runs
+        // from and the build takes minutes, so spawning it keeps the UI alive
+        // and makes the pull + build watchable. `omega update` is fast-forward
+        // only, never over local changes, and preserves ~/.omega state.
+        MonitorAction::UpdateOmega => Action::RunShellCommand {
+            label: "OmegaOS update".to_string(),
+            command: "omega update".to_string(),
+        },
     }
 }
 
