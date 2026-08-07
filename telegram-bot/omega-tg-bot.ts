@@ -72,19 +72,32 @@ function readKV(path: string, re: RegExp): Record<string, string> {
 const OPENAI_KEY =
   readKV(`${OMEGA_DIR}/provisioning/services.env`, /^\s*export\s+([A-Z_]+)\s*=\s*"?([^"]*)"?\s*$/).OPENAI_API_KEY ||
   readKV(MC_ENV, /^([A-Z_]+)=(.*)$/).OPENAI_API_KEY || "";
-async function transcribeVoice(fileId: string): Promise<string> {
-  if (!OPENAI_KEY) return "";
+// Whisper AUTO-DETECTS the language — we never pass one, so a mixed FR/EN operator
+// is transcribed correctly either way. `verbose_json` (not the default `json`) is what
+// returns the detected `language`, at no extra cost, so we surface it in the echo:
+// seeing 🇫🇷/🇬🇧 is how you catch a misdetection instead of debugging a weird reply.
+const LANG_FLAG: Record<string, string> = { french: "🇫🇷", english: "🇬🇧" };
+type Transcript = { text: string; lang: string };
+async function transcribeVoice(fileId: string, filename = "voice.ogg"): Promise<Transcript> {
+  if (!OPENAI_KEY) return { text: "", lang: "" };
   try {
     const gf = await tg("getFile", { file_id: fileId });
-    const fp = gf?.result?.file_path; if (!fp) return "";
+    const fp = gf?.result?.file_path; if (!fp) return { text: "", lang: "" };
     const audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`, { signal: AbortSignal.timeout(30_000) })).arrayBuffer();
     const fd = new FormData();
-    fd.append("file", new Blob([audio]), "voice.ogg");
+    fd.append("file", new Blob([audio]), filename);
     fd.append("model", "whisper-1");
+    fd.append("response_format", "verbose_json");
     const r = await fetch("https://api.openai.com/v1/audio/transcriptions", { method: "POST", headers: { authorization: `Bearer ${OPENAI_KEY}` }, body: fd, signal: AbortSignal.timeout(120_000) });
     const j: any = await r.json();
-    return (j?.text || "").trim();
-  } catch { return ""; }
+    return { text: (j?.text || "").trim(), lang: String(j?.language || "") };
+  } catch { return { text: "", lang: "" }; }
+}
+// One echo shape for every spoken input, so the operator always sees WHAT was heard and
+// in WHICH language before the bot acts on it.
+function heardLine(t: Transcript): string {
+  const flag = LANG_FLAG[t.lang.toLowerCase()] || (t.lang ? `[${esc(t.lang)}]` : "");
+  return `🎤 ${flag} <i>«${esc(t.text)}»</i>`;
 }
 // File input: ANY attachment — a photo, a document of any type (PDF, .txt, .csv,
 // code, zip…), a video, or an audio file — is downloaded to ${OMEGA_DIR}/state/tg-media/
@@ -3341,16 +3354,18 @@ async function agentBotMain(agentId: string) {
           if (isCompanion && allowed(q.from?.id ?? 0)) await onNovaCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0, botName, bot?.model);
           continue;
         }
-        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.video_note && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
         const chatId = msg.chat.id, from = msg.from?.id ?? 0, thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         let text = (msg.text || msg.caption || "").trim();
-        // Voice → Whisper transcription (same path as the hub bot), then handled as text.
-        if (!text && msg.voice) {
+        // Voice note OR round video note → Whisper (same path as the hub bot), then as text.
+        const spoken = msg.voice || msg.video_note;
+        if (!text && spoken) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
-          text = await transcribeVoice(msg.voice.file_id);
-          if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
-          await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
+          const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : "note.mp4");
+          if (!heard.text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          text = heard.text;
+          await send(chatId, heardLine(heard), undefined, thread);
         }
         // Any attachment (photo / document / video / audio) → download it locally; aggregated with the text below.
         const file = (msg.photo || msg.document || msg.video || msg.audio) ? await saveIncomingFile(msg) : "";
@@ -3625,17 +3640,21 @@ async function main() {
           if (!allowed(q.from?.id ?? 0)) continue;
           await onCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0); continue;
         }
-        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
+        const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.video_note && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
         const chat = msg.chat, chatId = chat.id, from = msg.from?.id ?? 0;
         const thread = msg.message_thread_id;
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
-        // Voice → Whisper transcription, then handled exactly like a text message.
+        // Voice note OR round video note → Whisper transcription, then handled exactly
+        // like a text message. A video_note used to fail the guard above and vanish with
+        // no reply at all; it is an mp4, which Whisper accepts, so only the filename differs.
         let text = (msg.text || msg.caption || "").trim();
-        if (!text && msg.voice) {
+        const spoken = msg.voice || msg.video_note;
+        if (!text && spoken) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
-          text = await transcribeVoice(msg.voice.file_id);
-          if (!text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
-          await send(chatId, `🎤 <i>«${esc(text)}»</i>`, undefined, thread);
+          const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : "note.mp4");
+          if (!heard.text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          text = heard.text;
+          await send(chatId, heardLine(heard), undefined, thread);
         }
         // Any attachment (photo / document / video / audio) → download it locally. NOT
         // baked into `text` here: mission-bound fragments (album photos, caption-split
