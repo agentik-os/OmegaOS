@@ -73,13 +73,14 @@ all installed by `./install.sh`:
   with it first; the OpenAI Whisper API is only a fallback if you set `OPENAI_API_KEY`.
 - **Voice out (TTS)** — the `omega-ttsd` gateway (Piper/Kokoro, `tools/tts/`). `/voice on`
   makes the librarian also answer as a spoken note, rendered locally.
-- **Clean diagrams** — `beautiful-mermaid` (MIT), installed into `~/.omega/telegram-bot`
-  by `bun install` during setup. It renders Mermaid to a self-contained SVG offline, so the
-  librarian delivers crisp diagram files (a PNG preview + a full-screen HTML) instead of
-  ASCII that breaks in chat.
+- **Clean diagrams** — real **Mermaid** via the OmegaOS diagram skill (`render.sh` → mermaid-cli,
+  which lazy-installs its Chromium on first render). Layout never overlaps, and the librarian
+  delivers a complete PNG + an interactive full-screen HTML (zoom / export / share) instead of
+  ASCII that breaks in chat. Long answers come back as a clean paper-style HTML document.
 
 None of these need a paid key. If a piece is missing on your box the bot degrades
-gracefully (text instead of voice, the diagram skill instead of beautiful-mermaid).
+gracefully (text instead of voice; a diagram still ships as a file even if Chromium
+is not yet cached).
 
 ## Step 3 — Service keys for auto-provisioning (optional)
 

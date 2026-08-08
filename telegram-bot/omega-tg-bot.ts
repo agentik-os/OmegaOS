@@ -1072,17 +1072,36 @@ async function personaChat(text: string, agentId: string, personaPath: string | 
 }
 function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string): (t: string) => Promise<string> {
   return async (t: string) => {
-    let out = await personaChat(t, agentId, personaPath, dir, model, label);
-    // Clean diagrams: [[DIAGRAM: <code> | title]] → rendered PNG + modern HTML file
-    // (ASCII diagrams break in Telegram; this delivers real files instead).
-    out = await deliverDiagrams(chatId, thread, out);
-    // The persona delivers files (mind maps, cheat-sheets, flashcard decks) via [[SEND: /path | caption]].
-    for (const sm of out.matchAll(SEND_MARK)) {
+    const raw = await personaChat(t, agentId, personaPath, dir, model, label);
+    // 1) Render every [[DIAGRAM: …]] with REAL mermaid (never overlaps) → viewer HTML + PNG.
+    const { text: t1, diagrams } = await extractDiagrams(raw);
+    // 2) Deliver any [[SEND: /path | caption]] files the persona produced.
+    let text = t1;
+    for (const sm of [...text.matchAll(SEND_MARK)]) {
       const p = sm[1].trim(), cap = (sm[2] || "").trim();
-      const ok = await sendFileToChat(chatId, p, thread, cap || undefined);
-      if (!ok) await send(chatId, `⚠️ Could not send the file: <code>${esc(p)}</code> (missing?)`, undefined, thread);
+      if (!(await sendFileToChat(chatId, p, thread, cap || undefined))) await send(chatId, `⚠️ Could not send: <code>${esc(p)}</code>`, undefined, thread);
     }
-    return out.replace(SEND_MARK, "").trim();
+    text = text.replace(SEND_MARK, "").trim();
+    // 3) LONG answers become a clean paper-style HTML file (Telegram truncates ~4096 chars, and
+    //    a big answer reads better as a document). Diagrams are embedded inline in the report.
+    //    Short answers stay inline; their diagram(s) go as the interactive viewer + full PNG.
+    const isLong = text.length > 1200 || (diagrams.length > 0 && text.length > 500) || diagrams.length >= 2;
+    if (isLong) {
+      const title = deriveTitle(text);
+      const tmp = `${OMEGA_DIR}/state/tg-media`; try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
+      const path = `${tmp}/report-${BOT_ID}-${Date.now()}.html`;
+      try { writeFileSync(path, reportHtml(title, text, diagrams)); } catch {}
+      // Send the complete diagram image(s) to Telegram too (the operator asked to always get them).
+      for (const d of diagrams) if (d.png) await sendFileToChat(chatId, d.png, thread, `📊 ${d.title}`);
+      await sendFileToChat(chatId, path, thread, `📄 ${title}`);
+      return reportTeaser(title, text);
+    }
+    // short: inline text, and deliver each diagram as full PNG + interactive viewer
+    for (const d of diagrams) {
+      if (d.png) await sendFileToChat(chatId, d.png, thread, `📊 ${d.title}`);
+      await sendFileToChat(chatId, d.viewer, thread, "📄 Open to zoom / export / share");
+    }
+    return text.replace(/DIAGRAM\d+/g, "").replace(/\n{3,}/g, "\n\n").trim() || "✓";
   };
 }
 
@@ -1173,20 +1192,24 @@ const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
 // the user can open in any browser. Falls back to client-side Mermaid HTML if the
 // server-side render is unavailable, so a diagram is ALWAYS delivered as a real file.
 const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)(?:\s*\|\s*([^\]\n]+?))?\s*\]\]/g;
-// Diagrams are rendered with `beautiful-mermaid` (MIT, lukilabs) — a SELF-CONTAINED,
-// in-process Mermaid→SVG engine: real <text> (not <foreignObject>), correct word spacing,
-// modern nodes, ZERO network/CDN and ZERO Chromium for the SVG itself. The HTML embeds that
-// SVG so it opens perfectly offline. The Telegram PNG preview is a tight headless-Chromium
-// screenshot of the SVG (beautiful-mermaid uses CSS color-mix that rsvg-convert can't
-// rasterize). If the engine or Chromium is missing, we degrade gracefully.
-async function renderMermaidSvg(code: string): Promise<string | null> {
+// Diagrams are rendered by REAL Mermaid via the OmegaOS diagram skill (render.sh → mermaid-cli
+// in Chromium). Real mermaid.js means real dagre layout: nodes NEVER overlap, labels wrap,
+// every diagram type works — the correctness bar the operator requires. (An earlier attempt
+// with beautiful-mermaid reimplemented layout and produced overlapping/clipped graphs.)
+// A theme config gives it a modern palette; htmlLabels stays on (foreignObject), which renders
+// perfectly both when the SVG is inlined in a browser and when Chromium rasterizes the PNG.
+const MERMAID_THEME = `{"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"15px","primaryColor":"#EEF0FF","primaryTextColor":"#0F172A","primaryBorderColor":"#6D5EFC","lineColor":"#94A3B8","secondaryColor":"#E6FBFF","tertiaryColor":"#EAF7F0","clusterBkg":"#F7F8FF","clusterBorder":"#C7CBFF"},"flowchart":{"curve":"basis","padding":14,"nodeSpacing":45,"rankSpacing":55}}`;
+async function renderMermaidSvg(code: string, outBase: string): Promise<string | null> {
+  const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
+  if (!existsSync(render)) return null;
   try {
-    const mod: any = await import("beautiful-mermaid");
-    const fn = mod.renderMermaidSVG || mod.default?.renderMermaidSVG;
-    if (!fn) return null;
-    const svg: string = await fn(code, { theme: { bg: "#ffffff", fg: "#0f172a" }, font: "Inter" });
-    return svg && svg.includes("<svg") ? svg : null;
-  } catch { return null; }
+    const src = `${outBase}.mmd`, cfg = `${outBase}.theme.json`;
+    writeFileSync(src, code);
+    writeFileSync(cfg, MERMAID_THEME);
+    Bun.spawnSync(["bash", render, src, outBase], { stdout: "pipe", stderr: "pipe", timeout: 120_000, env: { ...process.env, MMDC_CONFIG: cfg } });
+    if (statSync(`${outBase}.svg`).size > 0) { const s = readFileSync(`${outBase}.svg`, "utf8"); return s.includes("<svg") ? s : null; }
+  } catch {}
+  return null;
 }
 // Cached puppeteer Chromium (pulled by mermaid-cli). Used only to rasterize the SVG to a PNG.
 function resolveChrome(): string | null {
@@ -1223,80 +1246,188 @@ function svgToPng(svg: string, outBase: string): string | null {
 // A FULL-SCREEN, edge-to-edge page on a WHITE DOT-PAPER background (no gradient, no banner,
 // no card): the canvas fills the phone. The SVG is embedded inline (self-contained, offline),
 // with a tiny title pill, floating zoom buttons and native pinch-zoom.
-function diagramHtml(title: string, svg: string): string {
+function diagramHtml(title: string, svg: string, pngDataUri = ""): string {
   const safeTitle = (title || "Diagram").replace(/[<>&]/g, "");
   const inner = (svg || "").replace(/^[\s\S]*?(<svg)/, "$1");
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=6,user-scalable=yes,viewport-fit=cover">
-<title>${safeTitle}</title>
+  return DIAGRAM_VIEWER_HTML.replace(/__TITLE__/g, safeTitle).replace("__SVG__", inner).replace("__PNG__", pngDataUri);
+}
+// A self-contained interactive diagram VIEWER: white dot-paper canvas, real pan + zoom
+// (buttons, wheel, drag, pinch), a modern glass toolbar, and working Export-PNG / Share.
+// No external assets. __TITLE__ / __SVG__ are filled per diagram.
+const DIAGRAM_VIEWER_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>__TITLE__</title>
 <style>
-:root{--ink:#0f172a;--muted:#64748b;--accent:#6d5efc;--dot:#dfe3ef}
-*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#ffffff;color:var(--ink)}
-/* white paper with a soft dot grid — no gradients anywhere */
-#stage{position:fixed;inset:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:18px;
- touch-action:pan-x pan-y pinch-zoom;background-color:#ffffff;
- background-image:radial-gradient(var(--dot) 1.4px, transparent 1.4px);background-size:20px 20px;background-position:-9px -9px}
-#diagram{transform-origin:center center;transition:transform .1s ease;will-change:transform;max-width:100%}
-#diagram svg{max-width:94vw;max-height:90vh;height:auto;display:block}
-#diagram svg rect{rx:12px;ry:12px}
-.title{position:fixed;left:12px;top:calc(10px + env(safe-area-inset-top));z-index:5;font:600 12.5px/1 Inter,system-ui,sans-serif;color:var(--muted);background:rgba(255,255,255,.72);border:1px solid #e6e8f0;padding:7px 12px;border-radius:999px}
-.zoom{position:fixed;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:5;display:flex;gap:10px}
-.zoom button{width:46px;height:46px;border:none;border-radius:15px;font-size:22px;font-weight:700;color:#fff;background:var(--accent);box-shadow:0 6px 18px -6px rgba(2,6,23,.45)}
-.zoom button:active{transform:scale(.94)}
-.hint{position:fixed;left:50%;bottom:calc(12px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:5;font:500 11px/1 Inter,system-ui,sans-serif;color:#94a3b8}
+:root{--ink:#0f172a;--muted:#64748b;--accent:#6d5efc;--dot:#e2e6f0;--glass:rgba(255,255,255,.78);--line:#e6e8f0}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff;color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+#stage{position:fixed;inset:0;overflow:hidden;background-color:#fff;background-image:radial-gradient(var(--dot) 1.5px,transparent 1.5px);background-size:22px 22px;background-position:-11px -11px;cursor:grab;touch-action:none}
+#stage.drag{cursor:grabbing}
+#wrap{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
+#wrap svg{display:block}#wrap svg rect{rx:12px;ry:12px}
+.title{position:fixed;left:14px;top:calc(12px + env(safe-area-inset-top));z-index:5;font-weight:600;font-size:13px;color:var(--muted);background:var(--glass);border:1px solid var(--line);padding:8px 13px;border-radius:999px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:2px;padding:6px;background:var(--glass);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 10px 30px -12px rgba(2,6,23,.35)}
+.bar button{display:grid;place-items:center;width:42px;height:42px;border:none;background:transparent;color:var(--ink);border-radius:11px;cursor:pointer;transition:background .12s,transform .08s}
+.bar button:hover{background:rgba(109,94,252,.10);color:var(--accent)}
+.bar button:active{transform:scale(.90)}
+.bar .sep{width:1px;height:22px;background:var(--line);margin:0 4px}
+.bar svg{width:20px;height:20px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+.pct{min-width:44px;text-align:center;font-size:12px;font-weight:600;color:var(--muted);font-variant-numeric:tabular-nums}
 </style></head><body>
-<div id="stage"><div id="diagram">${inner}</div></div>
-<div class="title">${safeTitle}</div>
-<div class="zoom"><button onclick="z(-.18)" aria-label="zoom out">−</button><button onclick="z(.18)" aria-label="zoom in">＋</button></div>
-<div class="hint">double-tap to reset · pinch to zoom</div>
-<script>let s=1;const d=document.getElementById('diagram');function z(x){s=Math.min(6,Math.max(.4,s+x));d.style.transform='scale('+s+')';}
-addEventListener('dblclick',()=>{s=1;d.style.transform='scale(1)';});</script>
-</body></html>`;
+<div id="stage"><div id="wrap">__SVG__</div></div>
+<div class="title">__TITLE__</div>
+<div class="bar">
+ <button id="out" title="Zoom out"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="20" y1="20" x2="16.5" y2="16.5"/></svg></button>
+ <span class="pct" id="pct">100%</span>
+ <button id="in" title="Zoom in"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/><line x1="20" y1="20" x2="16.5" y2="16.5"/></svg></button>
+ <div class="sep"></div>
+ <button id="fit" title="Fit to screen"><svg viewBox="0 0 24 24"><path d="M4 9V5a1 1 0 0 1 1-1h4"/><path d="M20 9V5a1 1 0 0 0-1-1h-4"/><path d="M4 15v4a1 1 0 0 0 1 1h4"/><path d="M20 15v4a1 1 0 0 1-1 1h-4"/></svg></button>
+ <button id="exp" title="Export PNG"><svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M8 11l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></button>
+ <button id="shr" title="Share"><svg viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg></button>
+</div>
+<script>
+const stage=document.getElementById('stage'),wrap=document.getElementById('wrap'),svg=wrap.querySelector('svg'),pct=document.getElementById('pct');
+let sw=0,sh=0;(function(){const vb=svg.viewBox&&svg.viewBox.baseVal;sw=(vb&&vb.width)||svg.getBoundingClientRect().width||800;sh=(vb&&vb.height)||svg.getBoundingClientRect().height||600;svg.setAttribute('width',sw);svg.setAttribute('height',sh);})();
+let k=1,x=0,y=0,fit=1;
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+function apply(){wrap.style.transform='translate('+x+'px,'+y+'px) scale('+k+')';pct.textContent=Math.round(k/fit*100)+'%';}
+function fitView(){const r=stage.getBoundingClientRect();fit=Math.min(r.width/sw,r.height/sh)*0.9;k=fit;x=(r.width-sw*k)/2;y=(r.height-sh*k)/2;apply();}
+function zoomAt(f,cx,cy){const r=stage.getBoundingClientRect();cx=cx==null?r.width/2:cx;cy=cy==null?r.height/2:cy;const nk=clamp(k*f,fit*0.4,fit*10);x=cx-(cx-x)*(nk/k);y=cy-(cy-y)*(nk/k);k=nk;apply();}
+document.getElementById('in').onclick=()=>zoomAt(1.25);
+document.getElementById('out').onclick=()=>zoomAt(0.8);
+document.getElementById('fit').onclick=fitView;
+stage.addEventListener('wheel',e=>{e.preventDefault();zoomAt(e.deltaY<0?1.12:0.892,e.clientX,e.clientY);},{passive:false});
+// drag to pan (mouse + single touch) and pinch to zoom (two touches)
+let pts=new Map(),last=null,pd=0;
+stage.addEventListener('pointerdown',e=>{stage.setPointerCapture(e.pointerId);pts.set(e.pointerId,{x:e.clientX,y:e.clientY});stage.classList.add('drag');if(pts.size===1)last={x:e.clientX,y:e.clientY};});
+stage.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId))return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});const a=[...pts.values()];if(a.length===2){const d=Math.hypot(a[0].x-a[1].x,a[0].y-a[1].y);const mx=(a[0].x+a[1].x)/2,my=(a[0].y+a[1].y)/2;if(pd)zoomAt(d/pd,mx,my);pd=d;}else if(last){x+=e.clientX-last.x;y+=e.clientY-last.y;last={x:e.clientX,y:e.clientY};apply();}});
+function up(e){pts.delete(e.pointerId);if(pts.size<2)pd=0;if(pts.size===0){last=null;stage.classList.remove('drag');}else last=[...pts.values()][0];}
+stage.addEventListener('pointerup',up);stage.addEventListener('pointercancel',up);
+stage.addEventListener('dblclick',fitView);
+// export / share as PNG. Prefer the server-rendered PNG embedded as a data URI (perfect
+// text, incl. foreignObject labels a canvas can't rasterize); fall back to canvas.
+const EMB="__PNG__";
+async function pngBlob(){if(EMB&&EMB.startsWith('data:'))return await (await fetch(EMB)).blob();return await new Promise((res,rej)=>{const data=new XMLSerializer().serializeToString(svg);const img=new Image();const url=URL.createObjectURL(new Blob([data],{type:'image/svg+xml;charset=utf-8'}));img.onload=()=>{const c=document.createElement('canvas');c.width=Math.round(sw*2);c.height=Math.round(sh*2);const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.drawImage(img,0,0,c.width,c.height);URL.revokeObjectURL(url);c.toBlob(b=>b?res(b):rej(),'image/png');};img.onerror=rej;img.src=url;});}
+function dl(b,n){const u=URL.createObjectURL(b),a=document.createElement('a');a.href=u;a.download=n;a.click();setTimeout(()=>URL.revokeObjectURL(u),1500);}
+document.getElementById('exp').onclick=async()=>{try{dl(await pngBlob(),(document.title||'diagram')+'.png');}catch(e){}};
+document.getElementById('shr').onclick=async()=>{try{const b=await pngBlob();const f=new File([b],(document.title||'diagram')+'.png',{type:'image/png'});if(navigator.canShare&&navigator.canShare({files:[f]}))await navigator.share({files:[f],title:document.title});else dl(b,(document.title||'diagram')+'.png');}catch(e){}};
+addEventListener('resize',fitView);fitView();
+</script></body></html>`;
+type Diagram = { title: string; svg: string | null; png: string | null; viewer: string };
+// Render ONE diagram (real mermaid): the interactive viewer HTML + a complete PNG.
+async function renderDiagramAssets(code: string, title: string, outBase: string): Promise<Diagram> {
+  const svg = await renderMermaidSvg(code.trim(), outBase);
+  const png = svg ? svgToPng(svg, outBase) : null;
+  let dataUri = "";
+  if (png) { try { dataUri = `data:image/png;base64,${Buffer.from(readFileSync(png)).toString("base64")}`; } catch {} }
+  const viewer = `${outBase}.html`;
+  try { writeFileSync(viewer, diagramHtml(title || "Diagram", svg || "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'></svg>", dataUri)); } catch {}
+  return { title, svg, png, viewer };
 }
-// Render a diagram to files: a full-screen self-contained HTML + a tight PNG preview.
-async function renderDiagram(code: string, title: string): Promise<{ html: string; png: string | null }> {
-  const tmp = `${OMEGA_DIR}/state/tg-media`;
-  try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
-  const stamp = `${BOT_ID}-${Date.now()}`;
-  const clean = code.trim();
-  const outBase = `${tmp}/dg-${stamp}`;
-  let svg: string | null = null, png: string | null = null;
-  // 1) beautiful-mermaid (in-process, self-contained). 2) fallback to the OmegaOS diagram
-  //    skill (d2 / mermaid-cli) so a box without beautiful-mermaid still renders something.
-  svg = await renderMermaidSvg(clean);
-  if (svg) {
-    png = svgToPng(svg, outBase);
-  } else {
-    try {
-      const isMermaid = /^(%%\{|graph|flowchart|sequenceDiagram|mindmap|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|quadrantChart|gitGraph)/m.test(clean) || /-->|==>|--x|-\.->/.test(clean);
-      const srcPath = `${outBase}.${isMermaid ? "mmd" : "d2"}`;
-      writeFileSync(srcPath, clean);
-      const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
-      if (existsSync(render)) {
-        Bun.spawnSync(["bash", render, srcPath, outBase], { stdout: "pipe", stderr: "pipe", timeout: 90_000 });
-        try { if (statSync(`${outBase}.svg`).size > 0) svg = readFileSync(`${outBase}.svg`, "utf8"); } catch {}
-        try { if (statSync(`${outBase}.png`).size > 0) png = `${outBase}.png`; } catch {}
-      }
-    } catch {}
+// Extract every [[DIAGRAM: …]] from a reply, render each, and return the text with each
+// marker replaced by a stable token (so a report can embed the diagram inline at its place).
+const DTOKEN = (i: number) => `DIAGRAM${i}`;
+async function extractDiagrams(raw: string): Promise<{ text: string; diagrams: Diagram[] }> {
+  const tmp = `${OMEGA_DIR}/state/tg-media`; try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
+  const diagrams: Diagram[] = [];
+  const jobs = [...raw.matchAll(DIAGRAM_MARK)];
+  let text = raw;
+  for (let i = 0; i < jobs.length; i++) {
+    const m = jobs[i]; const code = (m[1] || "").trim(); const title = (m[2] || "Diagram").trim();
+    if (!code) { text = text.replace(m[0], ""); continue; }
+    const d = await renderDiagramAssets(code, title, `${tmp}/dg-${BOT_ID}-${Date.now()}-${i}`);
+    diagrams.push(d);
+    text = text.replace(m[0], `\n\n${DTOKEN(i)}\n\n`);
   }
-  const htmlPath = `${outBase}.html`;
-  try { writeFileSync(htmlPath, diagramHtml(title || "Diagram", svg || "<svg xmlns='http://www.w3.org/2000/svg' width='10' height='10'></svg>")); } catch {}
-  return { html: htmlPath, png };
+  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), diagrams };
 }
-// Turn every [[DIAGRAM: …]] marker in a reply into delivered files; returns the text
-// with the markers stripped (the prose stays, the broken ASCII is replaced by real files).
-async function deliverDiagrams(chat: number, thread: number | undefined, out: string): Promise<string> {
-  const jobs = [...out.matchAll(DIAGRAM_MARK)];
-  for (const m of jobs) {
-    const code = (m[1] || "").trim(); const title = (m[2] || "Diagram").trim();
-    if (!code) continue;
-    try {
-      const { html, png } = await renderDiagram(code, title);
-      if (png) await sendFileToChat(chat, png, thread, `📊 ${title}`);
-      await sendFileToChat(chat, html, thread, png ? "📄 Full-screen version — open in a browser" : `📊 ${title} — open in a browser`);
-    } catch {}
+// Compact Markdown → HTML for a document (headings, bold/italic/code, code blocks, quotes,
+// unordered + ordered lists, tables, rules, paragraphs). Enough for the librarian's output.
+function mdDoc(md: string): string {
+  const esc2 = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const inline = (s: string) => esc2(s)
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, '<a href="$2">$1</a>');
+  const lines = md.replace(/\r/g, "").split("\n");
+  const out: string[] = []; let i = 0;
+  const flushList = (tag: string, items: string[]) => { if (items.length) out.push(`<${tag}>${items.map(x => `<li>${inline(x)}</li>`).join("")}</${tag}>`); };
+  while (i < lines.length) {
+    const ln = lines[i];
+    if (/^```/.test(ln)) { const buf: string[] = []; i++; while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]); i++; out.push(`<pre><code>${esc2(buf.join("\n"))}</code></pre>`); continue; }
+    if (/^\s*$/.test(ln)) { i++; continue; }
+    const h = ln.match(/^(#{1,6})\s+(.*)$/); if (h) { const n = h[1].length; out.push(`<h${n}>${inline(h[2])}</h${n}>`); i++; continue; }
+    if (/^\s*([-*_])\1{2,}\s*$/.test(ln)) { out.push("<hr>"); i++; continue; }
+    if (/^\s*>/.test(ln)) { const buf: string[] = []; while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, "")); out.push(`<blockquote>${inline(buf.join(" "))}</blockquote>`); continue; }
+    if (/^\s*\|.*\|\s*$/.test(ln) && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1])) {
+      const row = (s: string) => s.trim().replace(/^\||\|$/g, "").split("|").map(c => c.trim());
+      const head = row(ln); i += 2; const body: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) body.push(row(lines[i++]));
+      out.push(`<table><thead><tr>${head.map(c => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${body.map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`);
+      continue;
+    }
+    if (/^\s*[-*•]\s+/.test(ln)) { const items: string[] = []; while (i < lines.length && /^\s*[-*•]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*[-*•]\s+/, "")); flushList("ul", items); continue; }
+    if (/^\s*\d+[.)]\s+/.test(ln)) { const items: string[] = []; while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) items.push(lines[i++].replace(/^\s*\d+[.)]\s+/, "")); flushList("ol", items); continue; }
+    const buf: string[] = []; while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^(#{1,6}\s|```|\s*[-*•]\s|\s*\d+[.)]\s|\s*>|\s*\|)/.test(lines[i])) buf.push(lines[i++]);
+    out.push(`<p>${inline(buf.join(" "))}</p>`);
   }
-  return out.replace(DIAGRAM_MARK, "").replace(/\n{3,}/g, "\n\n").trim();
+  return out.join("\n");
+}
+function deriveTitle(md: string): string {
+  const h = md.match(/^#{1,6}\s+(.+)$/m) || md.match(/^\*\*(.+?)\*\*/m);
+  let t = (h ? h[1] : (md.split("\n").find(l => l.trim()) || "Alexandria")).replace(/[#*`_>]/g, "").trim();
+  return t.slice(0, 70) || "Alexandria";
+}
+// Paper-style HTML report: a clean reading document (centered column on a soft paper desk),
+// premium typography, print-friendly, with the diagrams embedded inline at their place.
+function reportHtml(title: string, md: string, diagrams: Diagram[]): string {
+  let body = mdDoc(md);
+  // swap each DIAGRAMi token (it lands inside a <p>) for the inline SVG figure
+  diagrams.forEach((d, i) => {
+    const fig = d.svg
+      ? `<figure class="dg">${d.svg.replace(/^[\s\S]*?(<svg)/, "$1")}${d.title && d.title !== "Diagram" ? `<figcaption>${esc(d.title)}</figcaption>` : ""}</figure>`
+      : "";
+    body = body.replace(new RegExp(`<p>\\s*${DTOKEN(i)}\\s*</p>`), fig).replace(DTOKEN(i), fig);
+  });
+  const t = esc(title);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${t}</title>
+<style>
+:root{--ink:#1a2233;--soft:#5b6577;--line:#e7e9f0;--accent:#6d5efc;--paper:#ffffff;--desk:#eef1f7;--code:#f4f6fb}
+@media(prefers-color-scheme:dark){:root{--ink:#e7ebf3;--soft:#9aa4b8;--line:#232b3a;--accent:#8b7cff;--paper:#0f1420;--desk:#0a0e17;--code:#131a28}}
+*{box-sizing:border-box}html,body{margin:0}body{background:var(--desk);color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.68;-webkit-font-smoothing:antialiased}
+.wrap{max-width:760px;margin:0 auto;padding:28px 18px 80px}
+.sheet{background:var(--paper);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px -30px rgba(15,23,42,.35);padding:clamp(22px,5vw,52px)}
+.brand{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.brand .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+h1.doc{font-size:clamp(24px,5.4vw,34px);line-height:1.18;margin:.5rem 0 1.4rem;letter-spacing:-.02em}
+h1,h2,h3,h4{line-height:1.25;margin:1.6em 0 .5em;letter-spacing:-.01em}
+h2{font-size:1.4rem;padding-top:.4rem;border-top:1px solid var(--line)}h3{font-size:1.16rem}h4{font-size:1.02rem;color:var(--soft)}
+p{margin:.7em 0}a{color:var(--accent)}
+ul,ol{padding-left:1.3em;margin:.6em 0}li{margin:.28em 0}
+strong{font-weight:700}em{font-style:italic}
+code{background:var(--code);padding:.12em .4em;border-radius:6px;font:0.9em ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto}pre code{background:none;padding:0}
+blockquote{margin:1em 0;padding:.4em 1.1em;border-left:3px solid var(--accent);color:var(--soft);background:linear-gradient(90deg,rgba(109,94,252,.06),transparent)}
+table{width:100%;border-collapse:collapse;margin:1em 0;font-size:.95em;display:block;overflow-x:auto}
+th,td{border:1px solid var(--line);padding:8px 11px;text-align:left}th{background:var(--code);font-weight:700}
+hr{border:none;border-top:1px solid var(--line);margin:1.6em 0}
+figure.dg{margin:1.4em 0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:16px;overflow-x:auto;text-align:center;background-image:radial-gradient(#eef1f7 1.3px,transparent 1.3px);background-size:18px 18px}
+figure.dg svg{max-width:100%;height:auto}figure.dg svg rect{rx:12px;ry:12px}
+figure.dg figcaption{margin-top:8px;font-size:12.5px;color:var(--soft)}
+.foot{margin-top:26px;text-align:center;color:var(--soft);font-size:12px}
+@media print{body{background:#fff}.sheet{box-shadow:none;border:none;border-radius:0}.wrap{padding:0;max-width:none}}
+</style></head><body><div class="wrap"><article class="sheet">
+<div class="brand"><span class="dot"></span> Alexandria · Librarian</div>
+<h1 class="doc">${t}</h1>
+${body}
+<div class="foot">Generated by Alexandria OS</div>
+</article></div></body></html>`;
+}
+// A short chat teaser that points to the attached full answer (no truncated wall of text).
+function reportTeaser(title: string, md: string): string {
+  const plain = md.replace(new RegExp(DTOKEN(0).replace(/0$/, "\\d+"), "g"), "").replace(/[#*`>_|]/g, "").replace(/\n{2,}/g, "\n").trim();
+  const firstPara = (plain.split("\n").find(l => l.trim().length > 40) || plain.slice(0, 220)).trim().slice(0, 240);
+  return `<b>📄 ${esc(title)}</b>\n${esc(firstPara)}${firstPara.length >= 240 ? "…" : ""}\n\n<i>Réponse complète, mise en page proprement, dans le fichier ci-joint.</i>`;
 }
 // Voice layer over a finished companion reply. mode "both": voice note follows
 // the text. mode "voice": the placeholder shows a teaser, and is deleted once

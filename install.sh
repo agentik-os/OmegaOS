@@ -529,16 +529,9 @@ install_command_bot() {
     # must not depend on Phase 5's mkdir for its own copy targets.
     mkdir -p "$OMEGA_DIR/telegram-bot" "$OMEGA_DIR/bin" "$OMEGA_DIR/logs"
     cp -f "$OMEGA_SRC/telegram-bot/omega-tg-bot.ts" "$OMEGA_DIR/telegram-bot/omega-tg-bot.ts"
-    # Bot npm deps (beautiful-mermaid = self-contained Mermaid->SVG for the Librarian's
-    # clean diagram files). Copy the manifest + lockfile and `bun install` so a fresh box
-    # renders diagrams offline. Non-fatal: without it the bot falls back to the diagram skill.
-    cp -f "$OMEGA_SRC/telegram-bot/package.json" "$OMEGA_DIR/telegram-bot/package.json" 2>/dev/null || true
-    cp -f "$OMEGA_SRC/telegram-bot/bun.lock" "$OMEGA_DIR/telegram-bot/bun.lock" 2>/dev/null || true
-    if [[ -f "$OMEGA_DIR/telegram-bot/package.json" ]] && command -v bun >/dev/null 2>&1; then
-        ( cd "$OMEGA_DIR/telegram-bot" && bun install --production >/dev/null 2>&1 ) \
-            && echo "  → telegram-bot deps installed (beautiful-mermaid)" \
-            || echo "  → telegram-bot deps install skipped (bun install failed — diagrams fall back to the diagram skill)"
-    fi
+    # The Librarian's clean diagrams are rendered by REAL Mermaid via the OmegaOS diagram
+    # skill (render.sh → mermaid-cli, which lazy-installs its Chromium on first render) — no
+    # extra npm dependency here. Voice (omega-transcribe / omega-ttsd) is installed in Phase 5.
     if [[ -f "$OMEGA_SRC/scripts/omega-tg-up.sh" ]]; then
         cp -f "$OMEGA_SRC/scripts/omega-tg-up.sh" "$OMEGA_DIR/bin/omega-tg-up.sh"
         chmod +x "$OMEGA_DIR/bin/omega-tg-up.sh"
