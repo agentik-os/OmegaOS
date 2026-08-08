@@ -1055,6 +1055,28 @@ function personaPromptFor(agentId: string, path?: string): string {
 function personaLang(dir: string): string { try { return readFileSync(`${dir}/ledger/LANGUAGE.txt`, "utf8").trim(); } catch { return ""; } }
 // Per-persona voice reply: the TTS engine name (omega-ttsd) or "" = text-only.
 function personaVoice(dir: string): string { try { return readFileSync(`${dir}/ledger/VOICE.txt`, "utf8").trim(); } catch { return ""; } }
+// ── Guided /setup (inline keyboard) + "ask for the input" when a content command has none ──
+const libPendingInput: Record<number, string> = {};        // from → bare command awaiting its input
+const libSetupState: Record<number, Record<string, string>> = {}; // from → collected /setup answers
+const SETUP_STEPS: { key: string; q: string; opts: [string, string][] }[] = [
+  { key: "style", q: "1/4 · How do you learn best?", opts: [["🖼 Visual (diagrams, maps)", "visual"], ["📖 Verbal (text, talking)", "verbal"], ["🛠 Hands-on (do it)", "handson"], ["🔀 Mixed", "mixed"]] },
+  { key: "attention", q: "2/4 · What session shape fits you?", opts: [["⚡ Short bursts", "short bursts"], ["🌊 Long deep dives", "long deep dives"], ["🔀 Depends", "flexible"]] },
+  { key: "memory", q: "3/4 · What makes ideas stick for you?", opts: [["📚 Stories", "stories"], ["🎨 Vivid images", "vivid images"], ["🔁 Repetition", "spaced repetition"], ["🥊 Challenge me", "being challenged"]] },
+  { key: "lang", q: "4/4 · Reply language?", opts: [["🇬🇧 English", "en"], ["🇫🇷 Français", "fr"], ["🇪🇸 Español", "es"], ["🌐 Follow me (auto)", "auto"]] },
+];
+const setupKb = (step: number) => kb([...SETUP_STEPS[step].opts.map(o => [{ text: o[0], callback_data: `bkset:${step}:${o[1]}`.slice(0, 64) }]), [{ text: "✍️ or just tell me in a message", callback_data: "bkset:chat" }]]);
+// Content commands that make no sense without an argument → prompt for it instead of a no-op.
+const NEEDS_INPUT: Record<string, string> = {
+  book: "📖 Which book? Send me the title (author helps).", espresso: "☕ Which book for the 90-second version?",
+  chapter: "📑 Which book (chapter by chapter), or which chapter number?", idea: "🗺 Which idea or topic should I map across books?",
+  compare: "⚔️ Which books or authors should I compare? (e.g. Atomic Habits vs Tiny Habits)", vs: "⚔️ Which two? (e.g. Deep Work vs Flow)",
+  apply: "🔧 Which idea, and to what? (e.g. Antifragile to my business)", challenge: "🥊 What idea, plan or belief should I challenge?",
+  decision: "🎯 What decision are you weighing?", council: "🏛 What question should the council debate?",
+  teach: "🧑‍🏫 What should I teach you?", memory: "🧠 What concept should I make unforgettable?",
+  cards: "🃏 Flashcards on what? (topic or last book)", map: "📊 What concept should I diagram?", visual: "📊 What should I visualize?",
+  focus: "⏱ What idea for a 5-minute focus session?", audio: "🎧 What topic for listen mode?", best: "🏆 Best 50 books + 50 tips on what topic?",
+  bestsellers: "📈 Top 100 best-sellers in which niche?", readingpath: "📚 A reading path toward what goal?",
+};
 async function personaChat(text: string, agentId: string, personaPath: string | undefined, dir: string, model: string, label: string): Promise<string> {
   Bun.spawnSync(["mkdir", "-p", `${dir}/ledger`]);
   // A message STARTING with "/" (e.g. "/espresso Deep Work") would be swallowed by the
@@ -3731,7 +3753,7 @@ async function agentBotMain(agentId: string) {
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
   let offset = 0;
   while (true) {
-    const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: isCompanion ? ["message", "callback_query"] : ["message"] });
+    const r = await tg("getUpdates", { offset, timeout: 50, allowed_updates: (isCompanion || isGeneric) ? ["message", "callback_query"] : ["message"] });
     if (!r.ok) { await Bun.sleep(2000); continue; }
     for (const u of r.result) {
       offset = u.update_id + 1;
@@ -3740,6 +3762,25 @@ async function agentBotMain(agentId: string) {
         if (u.callback_query) {
           const q = u.callback_query; await tg("answerCallbackQuery", { callback_query_id: q.id });
           if (isCompanion && allowed(q.from?.id ?? 0)) await onNovaCallback(q.data || "", q.message.chat.id, q.message.message_id, q.from?.id ?? 0, botName, bot?.model);
+          // Guided /setup for the librarian persona: each tap advances the wizard.
+          if (isGeneric && allowed(q.from?.id ?? 0) && (q.data || "").startsWith("bkset:")) {
+            const cid = q.message.chat.id, mid = q.message.message_id, uid = q.from?.id ?? 0;
+            const parts = (q.data || "").split(":");
+            if (parts[1] === "chat") { await edit(cid, mid, "👍 Just tell me about yourself in a message — what you do, how you like to learn — and I'll calibrate."); continue; }
+            const step = Number(parts[1]); const val = parts.slice(2).join(":");
+            (libSetupState[uid] ||= {})[SETUP_STEPS[step].key] = val;
+            if (step + 1 < SETUP_STEPS.length) { await edit(cid, mid, `<b>🎛 Setup</b>\n${esc(SETUP_STEPS[step + 1].q)}`, setupKb(step + 1)); continue; }
+            // finalize → write PROFILE.md (+ LANGUAGE.txt)
+            const a = libSetupState[uid] || {}; const langMap: Record<string, string> = { en: "English", fr: "Français", es: "Español", auto: "" };
+            try { Bun.spawnSync(["mkdir", "-p", `${personaDir}/ledger`]); } catch {}
+            const lang = langMap[a.lang ?? "auto"];
+            try { if (lang) writeFileSync(`${personaDir}/ledger/LANGUAGE.txt`, lang); else unlinkSync(`${personaDir}/ledger/LANGUAGE.txt`); } catch {}
+            const profile = `# Learning profile (from /setup)\n- Learning style: ${a.style || "mixed"}\n- Session shape: ${a.attention || "flexible"}\n- Memory that sticks: ${a.memory || "stories"}\n- Reply language: ${a.lang === "auto" || !a.lang ? "auto (English default)" : lang}\n\nAdapt every explanation, analogy, diagram and drill to this. The user can refine it anytime by telling me more.`;
+            try { writeFileSync(`${personaDir}/ledger/PROFILE.md`, profile); } catch {}
+            delete libSetupState[uid];
+            await edit(cid, mid, `✅ <b>Calibrated.</b>\n• Learning: <b>${esc(a.style || "mixed")}</b> · ${esc(a.attention || "flexible")}\n• Memory: <b>${esc(a.memory || "stories")}</b>\n• Language: <b>${esc(a.lang === "auto" || !a.lang ? "auto (English)" : lang)}</b>\n\nTry <code>/book Atomic Habits</code> or just tell me a book, an idea or a decision. Refine anytime by telling me more about you.`);
+            continue;
+          }
           continue;
         }
         const msg = u.message; if (!msg?.text && !msg?.voice && !msg?.video_note && !msg?.photo && !msg?.document && !msg?.video && !msg?.audio) continue;
@@ -3829,6 +3870,24 @@ async function agentBotMain(agentId: string) {
             await send(chatId, `🔊 Voice replies <b>on</b> using <code>${esc(engine)}</code> (on-device). Every reply also comes as a voice note. Turn off: <code>/voice off</code>.`, undefined, thread);
             continue;
           }
+          // /setup — a real guided wizard (inline keyboard), not just a brain interview.
+          if (text === "/setup" || text === "/reset") {
+            libSetupState[from] = {};
+            await send(chatId, `<b>🎛 Setup</b> — I'll calibrate on how you learn (4 quick taps, or tap the last option to just talk).\n${esc(SETUP_STEPS[0].q)}`, setupKb(0), thread);
+            continue;
+          }
+          // Bare content command (no argument) → ask for the input instead of a no-op.
+          const bare = text.match(/^\/([a-z]+)$/i);
+          if (bare && NEEDS_INPUT[bare[1].toLowerCase()]) {
+            libPendingInput[from] = bare[1].toLowerCase();
+            await send(chatId, NEEDS_INPUT[bare[1].toLowerCase()], undefined, thread);
+            continue;
+          }
+          // A pending command captures the next plain message as its argument.
+          if (libPendingInput[from] && text && !text.startsWith("/")) {
+            text = `/${libPendingInput[from]} ${text}`;
+            delete libPendingInput[from];
+          } else if (text.startsWith("/")) { delete libPendingInput[from]; }
           const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
           const replyNote = replyTo ? `## L'opérateur répond à CE message :\n«${replyTo.slice(0, 600)}»\n\n` : "";
           const prompt = replyNote + (file ? withFileNote(text, file) : text);
