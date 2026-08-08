@@ -78,12 +78,44 @@ const OPENAI_KEY =
 // seeing 🇫🇷/🇬🇧 is how you catch a misdetection instead of debugging a weird reply.
 const LANG_FLAG: Record<string, string> = { french: "🇫🇷", english: "🇬🇧" };
 type Transcript = { text: string; lang: string };
+// OmegaOS's OWN open-source transcription (faster-whisper, on-device, no key, no billing):
+// the `omega-transcribe` CLI shipped by install.sh. Tried FIRST so a fresh box needs no
+// OpenAI key to talk to its bots by voice. Resolved lazily so a box without it just falls
+// through to the OpenAI path.
+function resolveTranscribe(): string | null {
+  for (const p of [`${OMEGA_DIR}/bin/omega-transcribe`, `${homedir()}/.local/bin/omega-transcribe`]) {
+    try { if (statSync(p).isFile()) return p; } catch {}
+  }
+  return null;
+}
+async function transcribeLocal(audio: ArrayBuffer, filename: string): Promise<Transcript> {
+  const bin = resolveTranscribe(); if (!bin) return { text: "", lang: "" };
+  const tmp = `${OMEGA_DIR}/state/tg-media`;
+  try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
+  const ext = (filename.split(".").pop() || "ogg").replace(/[^a-z0-9]/gi, "") || "ogg";
+  const path = `${tmp}/stt-${BOT_ID}-${Date.now()}.${ext}`;
+  try {
+    writeFileSync(path, Buffer.from(audio));
+    // base model = fast + light; auto language detection. 4-minute ceiling for a note.
+    const proc = Bun.spawnSync([bin, path, "--output", "json"], { stdout: "pipe", stderr: "pipe", timeout: 240_000 });
+    const out = proc.stdout?.toString() || "";
+    try { const j = JSON.parse(out); return { text: String(j?.full_text || "").trim(), lang: String(j?.language || "") }; } catch { return { text: "", lang: "" }; }
+  } catch { return { text: "", lang: "" }; }
+  finally { try { unlinkSync(path); } catch {} }
+}
 async function transcribeVoice(fileId: string, filename = "voice.ogg"): Promise<Transcript> {
-  if (!OPENAI_KEY) return { text: "", lang: "" };
+  let audio: ArrayBuffer;
   try {
     const gf = await tg("getFile", { file_id: fileId });
     const fp = gf?.result?.file_path; if (!fp) return { text: "", lang: "" };
-    const audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`, { signal: AbortSignal.timeout(30_000) })).arrayBuffer();
+    audio = await (await fetch(`https://api.telegram.org/file/bot${TOKEN}/${fp}`, { signal: AbortSignal.timeout(30_000) })).arrayBuffer();
+  } catch { return { text: "", lang: "" }; }
+  // 1) OmegaOS local open-source transcription first (no key, on-device).
+  const local = await transcribeLocal(audio, filename);
+  if (local.text) return local;
+  // 2) Fallback: OpenAI Whisper API if a key is configured.
+  if (!OPENAI_KEY) return { text: "", lang: "" };
+  try {
     const fd = new FormData();
     fd.append("file", new Blob([audio]), filename);
     fd.append("model", "whisper-1");
@@ -1021,6 +1053,8 @@ function personaPromptFor(agentId: string, path?: string): string {
 // The active reply language: a one-word/code the user set via /language, stored per persona.
 // Empty = follow the persona's own resolution rule (English by default).
 function personaLang(dir: string): string { try { return readFileSync(`${dir}/ledger/LANGUAGE.txt`, "utf8").trim(); } catch { return ""; } }
+// Per-persona voice reply: the TTS engine name (omega-ttsd) or "" = text-only.
+function personaVoice(dir: string): string { try { return readFileSync(`${dir}/ledger/VOICE.txt`, "utf8").trim(); } catch { return ""; } }
 async function personaChat(text: string, agentId: string, personaPath: string | undefined, dir: string, model: string, label: string): Promise<string> {
   Bun.spawnSync(["mkdir", "-p", `${dir}/ledger`]);
   // A message STARTING with "/" (e.g. "/espresso Deep Work") would be swallowed by the
@@ -1039,6 +1073,9 @@ async function personaChat(text: string, agentId: string, personaPath: string | 
 function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string): (t: string) => Promise<string> {
   return async (t: string) => {
     let out = await personaChat(t, agentId, personaPath, dir, model, label);
+    // Clean diagrams: [[DIAGRAM: <code> | title]] → rendered PNG + modern HTML file
+    // (ASCII diagrams break in Telegram; this delivers real files instead).
+    out = await deliverDiagrams(chatId, thread, out);
     // The persona delivers files (mind maps, cheat-sheets, flashcard decks) via [[SEND: /path | caption]].
     for (const sm of out.matchAll(SEND_MARK)) {
       const p = sm[1].trim(), cap = (sm[2] || "").trim();
@@ -1128,6 +1165,96 @@ async function sendFileToChat(chat: number, path: string, thread?: number, capti
 }
 // Nova attaches files by emitting [[SEND: /abs/path | optional caption]] in her reply.
 const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
+
+// ── Clean diagrams (ASCII breaks in Telegram): a persona emits a diagram as code
+// inside [[DIAGRAM: <mermaid|d2 code> | title]], the bot RENDERS it via the OmegaOS
+// diagram skill (render.sh → SVG + PNG) and delivers a crisp PNG (never breaks in
+// chat) PLUS a modern, self-contained HTML file (inline SVG, zoomable, pro design)
+// the user can open in any browser. Falls back to client-side Mermaid HTML if the
+// server-side render is unavailable, so a diagram is ALWAYS delivered as a real file.
+const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)(?:\s*\|\s*([^\]\n]+?))?\s*\]\]/g;
+function diagramHtml(title: string, svg: string | null, rawCode: string, isMermaid: boolean): string {
+  const safeTitle = title.replace(/[<>&]/g, "");
+  // Modern, theme-aware, self-contained page. If we have server-rendered SVG we inline
+  // it (offline, no dependency); otherwise the page renders the Mermaid source itself.
+  const body = svg
+    ? `<div class="stage" id="stage"><div class="diagram" id="diagram">${svg}</div></div>`
+    : `<div class="stage" id="stage"><pre class="mermaid" id="diagram">${rawCode.replace(/[<]/g, "&lt;")}</pre></div>`;
+  const mermaidRuntime = svg ? "" : `<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({startOnLoad:true,theme:(matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"neutral",securityLevel:"loose"});</script>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${safeTitle || "Diagram"} · Alexandria</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--accent:#6d5efc;--accent2:#22d3ee}
+@media(prefers-color-scheme:dark){:root{--bg:#0b0f1a;--card:#111827;--ink:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--accent:#8b7cff;--accent2:#22d3ee}}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;display:flex;flex-direction:column;min-height:100vh}
+header{padding:22px 24px;background:linear-gradient(120deg,var(--accent),var(--accent2));color:#fff}
+header h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.2px}
+header p{margin:4px 0 0;opacity:.9;font-size:12.5px}
+main{flex:1;display:flex;padding:18px;overflow:auto}
+.wrap{margin:auto;width:100%;max-width:1100px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 40px -12px rgba(2,6,23,.25);overflow:hidden}
+.toolbar{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
+.toolbar button{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:9px;padding:5px 10px;font-size:12px}
+.toolbar .sp{flex:1}
+.stage{overflow:auto;padding:22px;display:flex;justify-content:center;align-items:center;min-height:52vh;background:radial-gradient(circle at 20% 10%,rgba(109,94,252,.06),transparent 40%)}
+.diagram,svg,.mermaid{max-width:100%;height:auto;transform-origin:center;transition:transform .12s ease}
+footer{padding:12px 18px;color:var(--muted);font-size:11.5px;text-align:center}
+footer b{color:var(--ink)}
+</style></head>
+<body>
+<header><h1>${safeTitle || "Diagram"}</h1><p>Generated by Alexandria · open in any browser · pinch or use +/− to zoom</p></header>
+<main><div class="wrap"><div class="card">
+<div class="toolbar"><button onclick="z(0.1)">＋</button><button onclick="z(-0.1)">－</button><button onclick="zr()">Reset</button><span class="sp"></span><span>self-contained · ${svg ? "vector SVG" : "live Mermaid"}</span></div>
+${body}
+</div></div></main>
+<footer>Made with <b>Alexandria OS</b> · OmegaOS</footer>
+<script>let s=1;const d=document.getElementById('diagram');function z(x){s=Math.min(3,Math.max(.4,s+x));d.style.transform='scale('+s+')';}function zr(){s=1;d.style.transform='scale(1)';}</script>
+${mermaidRuntime}
+</body></html>`;
+}
+// Render a diagram to files. Returns absolute paths (png/svg may be null if the
+// server-side render failed; html is always produced).
+function renderDiagram(code: string, title: string): { html: string; png: string | null } {
+  const tmp = `${OMEGA_DIR}/state/tg-media`;
+  try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
+  const stamp = `${BOT_ID}-${Date.now()}`;
+  const clean = code.trim();
+  // Detect Mermaid (its keywords) vs D2, choose the input extension render.sh dispatches on.
+  const isMermaid = /^(graph|flowchart|sequenceDiagram|mindmap|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|quadrantChart|gitGraph|flowchart\s)/m.test(clean) || /-->|==>|--x|-\.->/.test(clean);
+  const ext = isMermaid ? "mmd" : "d2";
+  const srcPath = `${tmp}/dg-${stamp}.${ext}`;
+  const outBase = `${tmp}/dg-${stamp}`;
+  let svg: string | null = null, png: string | null = null;
+  try {
+    writeFileSync(srcPath, clean);
+    const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
+    if (existsSync(render)) {
+      // Bounded: a hung renderer must never stall the reply. Chromium is cached after first use.
+      Bun.spawnSync(["bash", render, srcPath, outBase], { stdout: "pipe", stderr: "pipe", timeout: 90_000 });
+      try { if (statSync(`${outBase}.svg`).size > 0) svg = readFileSync(`${outBase}.svg`, "utf8"); } catch {}
+      try { if (statSync(`${outBase}.png`).size > 0) png = `${outBase}.png`; } catch {}
+    }
+  } catch {}
+  const htmlPath = `${outBase}.html`;
+  try { writeFileSync(htmlPath, diagramHtml(title || "Diagram", svg, clean, isMermaid)); } catch {}
+  return { html: htmlPath, png };
+}
+// Turn every [[DIAGRAM: …]] marker in a reply into delivered files; returns the text
+// with the markers stripped (the prose stays, the broken ASCII is replaced by real files).
+async function deliverDiagrams(chat: number, thread: number | undefined, out: string): Promise<string> {
+  const jobs = [...out.matchAll(DIAGRAM_MARK)];
+  for (const m of jobs) {
+    const code = (m[1] || "").trim(); const title = (m[2] || "Diagram").trim();
+    if (!code) continue;
+    try {
+      const { html, png } = renderDiagram(code, title);
+      if (png) await sendFileToChat(chat, png, thread, `📊 ${title}`);
+      await sendFileToChat(chat, html, thread, png ? undefined : `📊 ${title} — open in a browser`);
+    } catch {}
+  }
+  return out.replace(DIAGRAM_MARK, "").replace(/\n{3,}/g, "\n\n").trim();
+}
 // Voice layer over a finished companion reply. mode "both": voice note follows
 // the text. mode "voice": the placeholder shows a teaser, and is deleted once
 // the note lands (synthesis failed → the full text is restored: never lose an
@@ -1599,7 +1726,7 @@ async function react(chat: number, msgId: number, emoji: string) {
 }
 // One funnel for every brain call: 🤔 reaction (seen it) + a live placeholder, run
 // the Master, then edit the placeholder with HTML-formatted output + ✅ reaction.
-async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas", speak = false) {
+async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas", speak = false, voiceEngine?: string) {
   react(chat, userMsgId, "🤔");
   await tg("sendChatAction", { chat_id: chat, action: "typing", message_thread_id: thread });
   const ph = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", message_thread_id: thread, text: `🧠 <i>${label} thinking…</i>` });
@@ -1636,6 +1763,10 @@ async function brainReply(chat: number, userMsgId: number, thread: number | unde
         ? await edit(chat, phId, "🎙️ <i>réponse vocale en préparation…</i>", undefined, thread)
         : await (phId ? edit(chat, phId, html, undefined, thread) : send(chat, html, undefined, thread));
       if (speak) speakReply(chat, thread, out, phId).catch(() => {});
+      // Persona voice: a self-contained TTS note via the local open-source omega-ttsd
+      // gateway, independent of Nova's global voice prefs. The text reply always lands
+      // first; the voice note follows, fire-and-forget (synthesis can be slow on CPU).
+      if (voiceEngine) synthVoice(voiceEngine, out).then(v => { if (v instanceof Uint8Array) return sendVoiceNote(chat, v, thread); }).catch(() => {});
       return r;
     })
     .then(() => react(chat, userMsgId, "✅"))
@@ -3395,10 +3526,12 @@ async function agentBotMain(agentId: string) {
     : isGeneric ? [
     { command: "setup", description: "🎛 Calibrate me on how you learn & remember" },
     { command: "language", description: "🌐 Set my reply language (default English)" },
+    { command: "voice", description: "🔊 Voice replies on/off (on-device TTS)" },
     { command: "book", description: "📖 Full X-ray of a book" },
     { command: "espresso", description: "☕ A book in 90 seconds" },
     { command: "chapter", description: "📑 A book chapter by chapter, in full detail (or one chapter)" },
     { command: "best", description: "🏆 Top 50 books worldwide + 50 actionable tips on a topic" },
+    { command: "bestsellers", description: "📈 Top 100 best-sellers in any niche" },
     { command: "idea", description: "🗺 Atlas of an idea across many books" },
     { command: "compare", description: "⚔️ Put books or authors in combat" },
     { command: "challenge", description: "🥊 Sparring: I break then rebuild your idea" },
@@ -3446,7 +3579,7 @@ async function agentBotMain(agentId: string) {
         if (!text && spoken) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
           const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : msg.video_note ? "note.mp4" : (msg.audio?.file_name || "audio.mp3"));
-          if (!heard.text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          if (!heard.text) { await send(chatId, "🎤 transcription unavailable — install OmegaOS local transcription (<code>omega-transcribe</code>, open-source faster-whisper) or set OPENAI_API_KEY.", undefined, thread); continue; }
           text = heard.text;
           await send(chatId, heardLine(heard), undefined, thread);
         }
@@ -3506,12 +3639,28 @@ async function agentBotMain(agentId: string) {
             }
             continue;
           }
+          // /voice on|off|<engine> — reply with a spoken note via OmegaOS's local
+          // open-source TTS (omega-ttsd: Piper/Kokoro, on-device). Text always lands first.
+          if (text === "/voice" || text.startsWith("/voice ")) {
+            const arg = text.replace(/^\/voice\s*/i, "").trim().toLowerCase();
+            try { Bun.spawnSync(["mkdir", "-p", `${personaDir}/ledger`]); } catch {}
+            if (!arg) {
+              const cur = personaVoice(personaDir);
+              await send(chatId, cur ? `🔊 Voice replies: <b>on</b> (engine <code>${esc(cur)}</code>). Turn off with <code>/voice off</code>.` : `🔇 Voice replies: <b>off</b>. Turn on with <code>/voice on</code> (local open-source TTS). Pick an engine with e.g. <code>/voice piper</code> or <code>/voice kokoro</code>.`, undefined, thread);
+              continue;
+            }
+            if (/^(off|no|text)$/i.test(arg)) { try { unlinkSync(`${personaDir}/ledger/VOICE.txt`); } catch {} await send(chatId, "🔇 Voice replies off — text only.", undefined, thread); continue; }
+            const engine = /^(on|yes|voice)$/i.test(arg) ? "piper" : arg;
+            try { writeFileSync(`${personaDir}/ledger/VOICE.txt`, engine); } catch {}
+            await send(chatId, `🔊 Voice replies <b>on</b> using <code>${esc(engine)}</code> (on-device). Every reply also comes as a voice note. Turn off: <code>/voice off</code>.`, undefined, thread);
+            continue;
+          }
           const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
           const replyNote = replyTo ? `## L'opérateur répond à CE message :\n«${replyTo.slice(0, 600)}»\n\n` : "";
           const prompt = replyNote + (file ? withFileNote(text, file) : text);
           const ctx = histContext(chatId, thread);
           histAppend(chatId, thread, "operator", (replyTo ? `(reply to: ${replyTo.slice(0, 100)}) ` : "") + (text || "(file)"), agentId);
-          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, personaBrain(agentId, bot?.persona, personaDir, personaModel, chatId, thread, botName), botName, false);
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, personaBrain(agentId, bot?.persona, personaDir, personaModel, chatId, thread, botName), botName, false, personaVoice(personaDir) || undefined);
           continue;
         }
         // SECURITY (Trinity): persona-chat brain — instant, no oracle dispatch.
@@ -3770,7 +3919,7 @@ async function main() {
         if (!text && spoken) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
           const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : "note.mp4");
-          if (!heard.text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
+          if (!heard.text) { await send(chatId, "🎤 transcription unavailable — install OmegaOS local transcription (<code>omega-transcribe</code>, open-source faster-whisper) or set OPENAI_API_KEY.", undefined, thread); continue; }
           text = heard.text;
           await send(chatId, heardLine(heard), undefined, thread);
         }
