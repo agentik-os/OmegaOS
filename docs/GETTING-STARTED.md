@@ -60,6 +60,27 @@ automatically at startup.
 recreated on each machine, never committed to any repo (R-TGSEC — each bot
 answers only its allow-listed users).
 
+### The Librarian bot (Alexandria) + its open-source media stack
+
+From the command bot's **Menu → 🤖 Agents → 📚 Link your librarian (Alexandria)**,
+paste a @BotFather token and you get a personal librarian / learning engine on its
+own Telegram bot (English by default, `/setup` to calibrate, `/best`, `/book`,
+`/chapter`, `/challenge`, …). It uses **only open-source, on-device media tooling**,
+all installed by `./install.sh`:
+
+- **Voice in (transcription)** — `omega-transcribe` (faster-whisper, `tools/transcription/`).
+  On-device, no API key, 99 languages. The bot transcribes voice notes and audio files
+  with it first; the OpenAI Whisper API is only a fallback if you set `OPENAI_API_KEY`.
+- **Voice out (TTS)** — the `omega-ttsd` gateway (Piper/Kokoro, `tools/tts/`). `/voice on`
+  makes the librarian also answer as a spoken note, rendered locally.
+- **Clean diagrams** — `beautiful-mermaid` (MIT), installed into `~/.omega/telegram-bot`
+  by `bun install` during setup. It renders Mermaid to a self-contained SVG offline, so the
+  librarian delivers crisp diagram files (a PNG preview + a full-screen HTML) instead of
+  ASCII that breaks in chat.
+
+None of these need a paid key. If a piece is missing on your box the bot degrades
+gracefully (text instead of voice, the diagram skill instead of beautiful-mermaid).
+
 ## Step 3 — Service keys for auto-provisioning (optional)
 
 `/omg-new-project` can provision Vercel + Convex + GitHub + Clerk + Stripe for

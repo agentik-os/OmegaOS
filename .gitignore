@@ -40,3 +40,4 @@ test-results/
 /tools/marketing-machine/projects.tsv
 /docs/marketing-machine-upgrade-research.md
 /tools/marketing-machine/AUDIT.md
+telegram-bot/node_modules/
