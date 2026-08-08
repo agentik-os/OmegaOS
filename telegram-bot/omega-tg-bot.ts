@@ -1092,11 +1092,12 @@ async function personaChat(text: string, agentId: string, personaPath: string | 
   return runClaude(safe, sys, dir, label,
     dir, ["--model", model, "--max-turns", "24"], PERSONA_TIMEOUT_MS);
 }
-function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string): (t: string) => Promise<string> {
+function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string, cmdHint = ""): (t: string) => Promise<string> {
   return async (t: string) => {
     const raw = await personaChat(t, agentId, personaPath, dir, model, label);
     // 1) Render every [[DIAGRAM: …]] with REAL mermaid (never overlaps) → viewer HTML + PNG.
-    const { text: t1, diagrams } = await extractDiagrams(raw);
+    //    Mermaid is sanitized first (bad model syntax repaired); the title comes from the reply.
+    const { text: t1, diagrams } = await extractDiagrams(raw, cmdHint, deriveTitle(raw));
     // 2) Deliver any [[SEND: /path | caption]] files the persona produced.
     let text = t1;
     for (const sm of [...text.matchAll(SEND_MARK)]) {
@@ -1110,8 +1111,8 @@ function personaBrain(agentId: string, personaPath: string | undefined, dir: str
     const isLong = text.length > 1200 || (diagrams.length > 0 && text.length > 500) || diagrams.length >= 2;
     if (isLong) {
       const title = deriveTitle(text);
-      const tmp = `${OMEGA_DIR}/state/tg-media`; try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
-      const path = `${tmp}/report-${BOT_ID}-${Date.now()}.html`;
+      const dir = `${OMEGA_DIR}/state/tg-media/${BOT_ID}-${Date.now()}`; try { Bun.spawnSync(["mkdir", "-p", dir]); } catch {}
+      const path = `${dir}/${slug(title)}${cmdHint ? "-" + slug(cmdHint) : ""}.html`;
       try { writeFileSync(path, reportHtml(title, text, diagrams)); } catch {}
       // Send the complete diagram image(s) to Telegram too (the operator asked to always get them).
       for (const d of diagrams) if (d.png) await sendFileToChat(chatId, d.png, thread, `📊 ${d.title}`);
@@ -1213,7 +1214,8 @@ const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
 // chat) PLUS a modern, self-contained HTML file (inline SVG, zoomable, pro design)
 // the user can open in any browser. Falls back to client-side Mermaid HTML if the
 // server-side render is unavailable, so a diagram is ALWAYS delivered as a real file.
-const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)(?:\s*\|\s*([^\]\n]+?))?\s*\]\]/g;
+// Marker carries the Mermaid code ONLY (no "| title": | collides with Mermaid edge labels).
+const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)\s*\]\]/g;
 // Diagrams are rendered by REAL Mermaid via the OmegaOS diagram skill (render.sh → mermaid-cli
 // in Chromium). Real mermaid.js means real dagre layout: nodes NEVER overlap, labels wrap,
 // every diagram type works — the correctness bar the operator requires. (An earlier attempt
@@ -1221,12 +1223,22 @@ const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)(?:\s*\|\s*([^\]\n]+?))?\s*\]\]/g
 // A theme config gives it a modern palette; htmlLabels stays on (foreignObject), which renders
 // perfectly both when the SVG is inlined in a browser and when Chromium rasterizes the PNG.
 const MERMAID_THEME = `{"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"15px","primaryColor":"#EEF0FF","primaryTextColor":"#0F172A","primaryBorderColor":"#6D5EFC","lineColor":"#94A3B8","secondaryColor":"#E6FBFF","tertiaryColor":"#EAF7F0","clusterBkg":"#F7F8FF","clusterBorder":"#C7CBFF"},"flowchart":{"curve":"basis","padding":14,"nodeSpacing":45,"rankSpacing":55}}`;
+// Models emit imperfect Mermaid. Repair the common breakers BEFORE rendering so a diagram
+// never silently fails: strip code fences, turn literal "\n" in labels into <br/>, and drop a
+// stray "| Title" that leaked from the old marker convention (its | collided with edge labels).
+function sanitizeMermaid(code: string): string {
+  let c = code.trim();
+  c = c.replace(/^```(?:mermaid)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  c = c.replace(/\\n/g, "<br/>");
+  c = c.replace(/\s*\|\s*[A-Za-z][^|\n\]]{3,}\s*$/, "");
+  return c.trim();
+}
 async function renderMermaidSvg(code: string, outBase: string): Promise<string | null> {
   const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
   if (!existsSync(render)) return null;
   try {
     const src = `${outBase}.mmd`, cfg = `${outBase}.theme.json`;
-    writeFileSync(src, code);
+    writeFileSync(src, sanitizeMermaid(code));
     writeFileSync(cfg, MERMAID_THEME);
     Bun.spawnSync(["bash", render, src, outBase], { stdout: "pipe", stderr: "pipe", timeout: 120_000, env: { ...process.env, MMDC_CONFIG: cfg } });
     if (statSync(`${outBase}.svg`).size > 0) { const s = readFileSync(`${outBase}.svg`, "utf8"); return s.includes("<svg") ? s : null; }
@@ -1348,19 +1360,26 @@ async function renderDiagramAssets(code: string, title: string, outBase: string)
 // Extract every [[DIAGRAM: …]] from a reply, render each, and return the text with each
 // marker replaced by a stable token (so a report can embed the diagram inline at its place).
 const DTOKEN = (i: number) => `DIAGRAM${i}`;
-async function extractDiagrams(raw: string): Promise<{ text: string; diagrams: Diagram[] }> {
-  const tmp = `${OMEGA_DIR}/state/tg-media`; try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
+async function extractDiagrams(raw: string, cmdHint = "", baseTitle = "Diagram"): Promise<{ text: string; diagrams: Diagram[] }> {
+  const tmp = `${OMEGA_DIR}/state/tg-media`;
   const diagrams: Diagram[] = [];
   const jobs = [...raw.matchAll(DIAGRAM_MARK)];
   let text = raw;
   for (let i = 0; i < jobs.length; i++) {
-    const m = jobs[i]; const code = (m[1] || "").trim(); const title = (m[2] || "Diagram").trim();
+    const m = jobs[i]; const code = (m[1] || "").trim();
     if (!code) { text = text.replace(m[0], ""); continue; }
-    const d = await renderDiagramAssets(code, title, `${tmp}/dg-${BOT_ID}-${Date.now()}-${i}`);
+    const title = jobs.length > 1 ? `${baseTitle} (${i + 1})` : baseTitle;
+    // Clean, human filename "<book-or-topic>-<command>.png/.html" in a unique dir (no disk
+    // collision; the basename Telegram shows stays readable).
+    const dir = `${tmp}/${BOT_ID}-${Date.now()}-${i}`; try { Bun.spawnSync(["mkdir", "-p", dir]); } catch {}
+    const name = `${slug(baseTitle)}${cmdHint ? "-" + slug(cmdHint) : ""}${jobs.length > 1 ? "-" + (i + 1) : ""}` || "diagram";
+    const d = await renderDiagramAssets(code, title, `${dir}/${name}`);
+    // A diagram that failed to render (bad model syntax we could not repair) drops its token
+    // rather than shipping an empty box; the prose stays intact.
     diagrams.push(d);
-    text = text.replace(m[0], `\n\n${DTOKEN(i)}\n\n`);
+    text = text.replace(m[0], d.svg ? `\n\n${DTOKEN(i)}\n\n` : "");
   }
-  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), diagrams };
+  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), diagrams: diagrams.filter(d => d.svg) };
 }
 // Compact Markdown → HTML for a document (headings, bold/italic/code, code blocks, quotes,
 // unordered + ordered lists, tables, rules, paragraphs). Enough for the librarian's output.
@@ -1397,8 +1416,13 @@ function mdDoc(md: string): string {
 }
 function deriveTitle(md: string): string {
   const h = md.match(/^#{1,6}\s+(.+)$/m) || md.match(/^\*\*(.+?)\*\*/m);
-  let t = (h ? h[1] : (md.split("\n").find(l => l.trim()) || "Alexandria")).replace(/[#*`_>]/g, "").trim();
-  return t.slice(0, 70) || "Alexandria";
+  let t = (h ? h[1] : (md.split("\n").find(l => l.trim()) || "Agentik Book OS")).replace(/[#*`_>]/g, "").trim();
+  return t.slice(0, 70) || "Agentik Book OS";
+}
+// A filesystem-safe slug for naming deliverables "<book-or-topic>-<command>.html".
+function slug(s: string): string {
+  return (s || "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/mode\s*[:·-]?\s*\w+/i, "").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "diagram";
 }
 // Paper-style HTML report: a clean reading document (centered column on a soft paper desk),
 // premium typography, print-friendly, with the diagrams embedded inline at their place.
@@ -1439,10 +1463,10 @@ figure.dg figcaption{margin-top:8px;font-size:12.5px;color:var(--soft)}
 .foot{margin-top:26px;text-align:center;color:var(--soft);font-size:12px}
 @media print{body{background:#fff}.sheet{box-shadow:none;border:none;border-radius:0}.wrap{padding:0;max-width:none}}
 </style></head><body><div class="wrap"><article class="sheet">
-<div class="brand"><span class="dot"></span> Alexandria · Librarian</div>
+<div class="brand"><span class="dot"></span> Agentik Book {OS}</div>
 <h1 class="doc">${t}</h1>
 ${body}
-<div class="foot">Generated by Alexandria OS</div>
+<div class="foot">Generated by Agentik Book {OS}</div>
 </article></div></body></html>`;
 }
 // A short chat teaser that points to the attached full answer (no truncated wall of text).
@@ -3893,7 +3917,8 @@ async function agentBotMain(agentId: string) {
           const prompt = replyNote + (file ? withFileNote(text, file) : text);
           const ctx = histContext(chatId, thread);
           histAppend(chatId, thread, "operator", (replyTo ? `(reply to: ${replyTo.slice(0, 100)}) ` : "") + (text || "(file)"), agentId);
-          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, personaBrain(agentId, bot?.persona, personaDir, personaModel, chatId, thread, botName), botName, false, personaVoice(personaDir) || undefined);
+          const cmdHint = (text.match(/^\/([a-z]+)/i)?.[1] || "").toLowerCase();
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, personaBrain(agentId, bot?.persona, personaDir, personaModel, chatId, thread, botName, cmdHint), botName, false, personaVoice(personaDir) || undefined);
           continue;
         }
         // SECURITY (Trinity): persona-chat brain — instant, no oracle dispatch.
