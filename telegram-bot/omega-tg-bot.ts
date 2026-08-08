@@ -1242,8 +1242,10 @@ const MERMAID_THEME = `{"theme":"base","themeVariables":{"fontFamily":"Inter, sy
 function sanitizeMermaid(code: string): string {
   let c = code.trim();
   c = c.replace(/^```(?:mermaid)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  c = c.replace(/\\n/g, "<br/>");
-  c = c.replace(/\s*\|\s*[A-Za-z][^|\n\]]{3,}\s*$/, "");
+  c = c.replace(/\\n/g, "<br/>");   // literal \n in a label → Mermaid line break
+  // Defensive: strip a LEAKED trailing "| Multi Word Title" (it contains a space). A legit last
+  // edge target is a single token ("A -->|x| B", "…| LATE") with NO space, so it is never touched.
+  c = c.replace(/\s*\|\s*[A-Za-z][^|\n\]]*\s[^|\n\]]*\s*$/, "");
   return c.trim();
 }
 async function renderMermaidSvg(code: string, outBase: string): Promise<string | null> {
