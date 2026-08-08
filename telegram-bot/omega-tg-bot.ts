@@ -149,7 +149,12 @@ const AGENT_BOTS_FILE = `${OMEGA_DIR}/agent-bots.json`;
 // the companion's default model id.
 // `agent` pins which provider this project's bot dispatches on (default claude);
 // a trailing "… avec codex" in a message still overrides it per mission.
-type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security"; model?: string; agent?: AgentPick };
+// kind "persona": a GENERIC persona-chat brain (like security, but fully data-driven).
+// `persona` is the path to the system-prompt markdown (default ~/.omega/agents/<id>.md),
+// `dir` its working directory (default ~/.omega/personas/<id>, given as --add-dir so it can
+// read/write its own ledger and send files), `model` the Claude id. This is how the Librarian
+// (@AGK_knowledge_bot) and any future persona bot are wired with ZERO code per persona.
+type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security" | "persona"; model?: string; agent?: AgentPick; persona?: string; dir?: string };
 function loadAgentBots(): Record<string, AgentBot> { try { return JSON.parse(readFileSync(AGENT_BOTS_FILE, "utf8")); } catch { return {}; } }
 function saveAgentBots(b: Record<string, AgentBot>) { try { writeFileSync(AGENT_BOTS_FILE, JSON.stringify(b, null, 2)); } catch {} }
 
@@ -991,6 +996,42 @@ function securityBrain(chatId: number, thread: number | undefined, model?: strin
   return async (t: string) => {
     let out = await security(t, model || SECURITY_MODEL, label);
     // Trinity delivers reports / PoCs / captures via [[SEND: /path | caption]].
+    for (const sm of out.matchAll(SEND_MARK)) {
+      const p = sm[1].trim(), cap = (sm[2] || "").trim();
+      const ok = await sendFileToChat(chatId, p, thread, cap || undefined);
+      if (!ok) await send(chatId, `⚠️ Could not send the file: <code>${esc(p)}</code> (missing?)`, undefined, thread);
+    }
+    return out.replace(SEND_MARK, "").trim();
+  };
+}
+
+// ── GENERIC PERSONA (agent-bot kind "persona"): a data-driven persona-chat brain.
+// Same shape as the companion/security brains, but EVERYTHING comes from the
+// agent-bots.json entry: `persona` (system-prompt file), `dir` (working dir, given
+// as --add-dir so the persona keeps its own ledger + sends files), `model`. Zero
+// code per persona — the Librarian and any future persona bot are pure config.
+const PERSONA_MODEL_DEFAULT = "claude-sonnet-4-6";
+const PERSONA_TIMEOUT_MS = 900_000;
+function personaPromptFor(agentId: string, path?: string): string {
+  for (const p of [path, `${OMEGA_DIR}/agents/${agentId}.md`].filter(Boolean) as string[]) {
+    try { return readFileSync(p, "utf8"); } catch {}
+  }
+  return "You are a helpful, sharp personal assistant on Telegram. Answer in the user's language, lead with the answer, keep it phone-readable.";
+}
+async function personaChat(text: string, agentId: string, personaPath: string | undefined, dir: string, model: string, label: string): Promise<string> {
+  Bun.spawnSync(["mkdir", "-p", `${dir}/ledger`]);
+  // A message STARTING with "/" (e.g. "/espresso Deep Work") would be swallowed by the
+  // claude CLI as its own slash command ("Unknown command: /espresso"). The persona's
+  // commands are defined in ITS system prompt, so wrap the message in a header: the model
+  // still reads the "/command", but the CLI no longer sees a leading slash.
+  const safe = /^\s*\//.test(text) ? `Message de l'utilisateur :\n${text}` : text;
+  return runClaude(safe, personaPromptFor(agentId, personaPath), dir, label,
+    dir, ["--model", model, "--max-turns", "24"], PERSONA_TIMEOUT_MS);
+}
+function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string): (t: string) => Promise<string> {
+  return async (t: string) => {
+    let out = await personaChat(t, agentId, personaPath, dir, model, label);
+    // The persona delivers files (mind maps, cheat-sheets, flashcard decks) via [[SEND: /path | caption]].
     for (const sm of out.matchAll(SEND_MARK)) {
       const p = sm[1].trim(), cap = (sm[2] || "").trim();
       const ok = await sendFileToChat(chatId, p, thread, cap || undefined);
@@ -3313,7 +3354,10 @@ async function agentBotMain(agentId: string) {
   const project = bot?.project || agentId;
   const isCompanion = bot?.kind === "companion";
   const isSecurity = bot?.kind === "security";
-  const isPersona = isCompanion || isSecurity;  // a persona-chat brain, not a project oracle
+  const isGeneric = bot?.kind === "persona";  // data-driven persona (e.g. the Librarian)
+  const isPersona = isCompanion || isSecurity || isGeneric;  // a persona-chat brain, not a project oracle
+  const personaDir = bot?.dir || `${OMEGA_DIR}/personas/${agentId}`;
+  const personaModel = bot?.model || PERSONA_MODEL_DEFAULT;
   // The persona's display name is its Telegram name (self-changeable via the
   // Bot API) — the label follows it on restart, never a hard-coded string.
   const botName: string = isPersona ? ((await tg("getMe", {}))?.result?.first_name || (isSecurity ? "Trinity" : "Assistant")) : "";
@@ -3335,9 +3379,31 @@ async function agentBotMain(agentId: string) {
     { command: "kairos", description: "🧭 Ma vision KAIROS — voir & modifier" },
     { command: "aide", description: "Ce que tu sais faire" },
   ] : isSecurity ? [{ command: "start", description: "White-hat security operator (recon → scan → exploit/PoC → report)" }]
-    : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
+    : isGeneric ? [
+    { command: "setup", description: "🎛 Me calibrer sur ta façon d'apprendre" },
+    { command: "book", description: "📖 Rayon-X complet d'un livre" },
+    { command: "espresso", description: "☕ Un livre en 90 secondes" },
+    { command: "best", description: "🏆 Top 50 livres mondiaux + 50 conseils actionnables sur un sujet" },
+    { command: "idea", description: "🗺 Atlas d'une idée à travers plusieurs livres" },
+    { command: "compare", description: "⚔️ Comparer/opposer des livres ou auteurs" },
+    { command: "challenge", description: "🥊 Sparring : je détruis puis je renforce ton idée" },
+    { command: "council", description: "🏛 Conseil de perspectives sur une décision" },
+    { command: "apply", description: "🔧 Appliquer une idée à ton business" },
+    { command: "decision", description: "🎯 Labo de décision" },
+    { command: "teach", description: "🧑‍🏫 Feynman : enfant / opérateur / expert" },
+    { command: "memory", description: "🧠 Forger une mémoire durable d'une notion" },
+    { command: "drill", description: "🎮 Quiz de rappel actif" },
+    { command: "cards", description: "🃏 Flashcards" },
+    { command: "map", description: "📊 Transformer un concept en diagramme" },
+    { command: "focus", description: "⏱ Micro-session 5 min : idée→exemple→challenge→appli→rappel" },
+    { command: "audio", description: "🎧 Mode écoute : séquences courtes, une question à la fois" },
+    { command: "readingpath", description: "📚 Parcours de lecture ciblé" },
+    { command: "review", description: "🔁 Réviser (répétition espacée)" },
+    { command: "gem", description: "💎 Une pépite sous-cotée pour ton contexte" },
+    { command: "start", description: "Ce que je sais faire" },
+  ] : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
-  console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : isSecurity ? `security "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
+  console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : isSecurity ? `security "${botName}"` : isGeneric ? `persona "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
   setInterval(() => pollReports().catch(() => {}), 12000);  // Monitor: relay oracle done.json
@@ -3359,10 +3425,12 @@ async function agentBotMain(agentId: string) {
         if (!allowed(from)) { console.log(`drop from ${from}`); continue; }
         let text = (msg.text || msg.caption || "").trim();
         // Voice note OR round video note → Whisper (same path as the hub bot), then as text.
-        const spoken = msg.voice || msg.video_note;
+        // For a persona bot (e.g. the Librarian) an AUDIO FILE (mp3/m4a forwarded) is ALSO
+        // transcribed — the operator asked to "talk to it" with any audio, not just voice notes.
+        const spoken = msg.voice || msg.video_note || (isGeneric ? msg.audio : undefined);
         if (!text && spoken) {
           await tg("sendChatAction", { chat_id: chatId, action: "typing", message_thread_id: thread });
-          const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : "note.mp4");
+          const heard = await transcribeVoice(spoken.file_id, msg.voice ? "voice.ogg" : msg.video_note ? "note.mp4" : (msg.audio?.file_name || "audio.mp3"));
           if (!heard.text) { await send(chatId, "🎤 transcription indisponible (configure OPENAI_API_KEY dans provisioning).", undefined, thread); continue; }
           text = heard.text;
           await send(chatId, heardLine(heard), undefined, thread);
@@ -3394,6 +3462,22 @@ async function agentBotMain(agentId: string) {
         // Companion: /menu opens the button menu; /start greets + shows it.
         if (isCompanion && (text === "/menu" || text === "/start")) {
           await send(chatId, `<b>⚡ ${esc(botName)}</b>\nTon assistante personnelle sur le VPS — je te challenge sur ta vie, je tiens ta base de connaissance, je t'envoie tes briefings (7h/21h), je te donne les actus Anthropic, et je peux connecter tes comptes (Gmail, X, LinkedIn, Reddit, YouTube). Choisis :`, novaMenuKb(), thread);
+          continue;
+        }
+        // GENERIC PERSONA (e.g. the Librarian): data-driven persona-chat brain — no oracle dispatch.
+        // Every message (and every slash command) is handled by the brain itself via its system
+        // prompt; the persona owns its own ledger under personaDir. Files come back via [[SEND: …]].
+        if (isGeneric) {
+          if (text === "/start" || text === "/menu") {
+            await send(chatId, `<b>📚 ${esc(botName)}</b>\nTon libraire personnel. Donne-moi un livre, une idée, une décision ou un problème, et je le transforme en compréhension, mémoire durable et action. Tape <b>/setup</b> pour m'adapter à ta façon d'apprendre, ou <b>/aide</b> / le menu pour voir les commandes. Tu peux aussi m'envoyer un vocal ou un fichier (PDF/EPUB).`, undefined, thread);
+            continue;
+          }
+          const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
+          const replyNote = replyTo ? `## L'opérateur répond à CE message :\n«${replyTo.slice(0, 600)}»\n\n` : "";
+          const prompt = replyNote + (file ? withFileNote(text, file) : text);
+          const ctx = histContext(chatId, thread);
+          histAppend(chatId, thread, "operator", (replyTo ? `(reply to: ${replyTo.slice(0, 100)}) ` : "") + (text || "(file)"), agentId);
+          await brainReply(chatId, msg.message_id, thread, `${ctx}${prompt}`, personaBrain(agentId, bot?.persona, personaDir, personaModel, chatId, thread, botName), botName, false);
           continue;
         }
         // SECURITY (Trinity): persona-chat brain — instant, no oracle dispatch.

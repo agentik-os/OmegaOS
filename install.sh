@@ -1737,6 +1737,41 @@ EOF
     fi
 done
 
+# Install ALEXANDRIA OS — the personal librarian / knowledge-engine skill (+ its
+# distributable reference manual). Copies -> ~/.omega/skills/alexandria/ + a Skill-tool
+# symlink + /alexandria & /omg-alexandria stubs. The SAME persona also runs as a
+# dedicated Telegram agent-bot (kind "persona"): the reference manual is shipped as
+# ~/.omega/agents/librarian.md (via the agents copy above), and a token is wired with
+# `omega-agent-bot`-style config. install.sh does NOT hard-code any bot token (secrets
+# live in ~/.omega only), so a fresh install ships the skill + persona and the operator
+# binds a bot with: a "librarian" entry in ~/.omega/agent-bots.json (kind persona,
+# persona=~/.omega/agents/librarian.md, dir=~/.omega/personas/librarian) + the systemd unit.
+ALX_SRC="$OMEGA_SRC/skills/alexandria"
+ALX_DST="$OMEGA_DIR/skills/alexandria"
+if [[ -d "$ALX_SRC" ]]; then
+    mkdir -p "$ALX_DST"
+    cp -r "$ALX_SRC"/* "$ALX_DST/"
+    ln -sfn "$ALX_DST" "$HOME/.claude/skills/alexandria" 2>/dev/null || true
+    mkdir -p "$OMEGA_DIR/personas/librarian/ledger"
+    ALX_CMD="$HOME/.claude/commands"; mkdir -p "$ALX_CMD"
+    for cmd in "alexandria" "omg-alexandria"; do
+        cat > "$ALX_CMD/$cmd.md" <<EOF
+# /$cmd
+
+Run ALEXANDRIA OS — the personal librarian / knowledge-engine. Read and follow the
+complete instructions in:
+
+\`$ALX_DST/SKILL.md\`  (full manual: \`$ALX_DST/reference/ALEXANDRIA.md\`)
+
+Start with /setup to calibrate on the user's learning style. Use every mode, template,
+and the persistent ledger it provides.
+EOF
+    done
+    ok "Alexandria skill installed: alexandria → ~/.omega/skills/alexandria/ (/alexandria + /omg-alexandria)"
+else
+    info "Alexandria skill not found — skipping"
+fi
+
 # Install Stax — the dashboard vision structure (panels-inside-panels UX framework).
 # 1) clone/refresh the framework checkout (tracks agentik-os/stax LATEST main — cheap,
 #    git only, no app build); 2) install the /stax converter skill + slash stubs;
