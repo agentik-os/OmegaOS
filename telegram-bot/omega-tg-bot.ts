@@ -1173,71 +1173,96 @@ const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
 // the user can open in any browser. Falls back to client-side Mermaid HTML if the
 // server-side render is unavailable, so a diagram is ALWAYS delivered as a real file.
 const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)(?:\s*\|\s*([^\]\n]+?))?\s*\]\]/g;
-function diagramHtml(title: string, svg: string | null, rawCode: string, isMermaid: boolean): string {
-  const safeTitle = title.replace(/[<>&]/g, "");
-  // Modern, theme-aware, self-contained page. If we have server-rendered SVG we inline
-  // it (offline, no dependency); otherwise the page renders the Mermaid source itself.
-  const body = svg
-    ? `<div class="stage" id="stage"><div class="diagram" id="diagram">${svg}</div></div>`
-    : `<div class="stage" id="stage"><pre class="mermaid" id="diagram">${rawCode.replace(/[<]/g, "&lt;")}</pre></div>`;
-  const mermaidRuntime = svg ? "" : `<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({startOnLoad:true,theme:(matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"neutral",securityLevel:"loose"});</script>`;
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${safeTitle || "Diagram"} · Alexandria</title>
+// Light theme directive for the CLIENT-SIDE fallback (when server render is unavailable):
+// modern colours only. Server rendering carries the theme via the mmdc config instead.
+const MERMAID_INIT = `%%{init: {"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"16px","primaryColor":"#EEF0FF","primaryTextColor":"#0F172A","primaryBorderColor":"#6D5EFC","lineColor":"#94A3B8","secondaryColor":"#E6FBFF","tertiaryColor":"#EAF7F0"},"flowchart":{"curve":"basis","padding":16,"nodeSpacing":50,"rankSpacing":60}}}%%`;
+// Shared Mermaid render assets (theme config + CSS for modern rounded boxes + puppeteer
+// no-sandbox). Rendered by Chromium via mmdc so box text keeps its SPACING (rsvg-convert
+// mangles Mermaid's per-word tspans into "DeepWork"). Written once, reused every render.
+const MERMAID_CFG = `{"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"16px","primaryColor":"#EEF0FF","primaryTextColor":"#0F172A","primaryBorderColor":"#6D5EFC","lineColor":"#94A3B8","secondaryColor":"#E6FBFF","tertiaryColor":"#EAF7F0","clusterBkg":"#F7F8FF","clusterBorder":"#C7CBFF"},"flowchart":{"curve":"basis","padding":16,"nodeSpacing":50,"rankSpacing":60}}`;
+const MERMAID_CSS = `.node rect,.node polygon,.node circle,.node ellipse{rx:14px;ry:14px;filter:drop-shadow(0 2px 6px rgba(2,6,23,.12));stroke-width:1.5px}.cluster rect{rx:16px;ry:16px}.edgePath path{stroke-width:1.7px}.nodeLabel,text{font-weight:600}`;
+const MERMAID_PP = `{"args":["--no-sandbox","--disable-setuid-sandbox","--disable-gpu","--disable-dev-shm-usage"]}`;
+function resolveNpx(): string | null {
+  for (const p of ["/usr/bin/npx", "/usr/local/bin/npx", `${homedir()}/.local/bin/npx`, `${homedir()}/.bun/bin/npx`]) {
+    try { if (statSync(p).isFile()) return p; } catch {}
+  }
+  return null;
+}
+// A FULL-SCREEN, edge-to-edge page: the canvas fills the phone (no banner, no card, no
+// window-in-a-window). Just the diagram, a subtle backdrop, a tiny translucent title pill
+// and floating zoom buttons. Native pinch-zoom works too (user-scalable).
+function diagramHtml(title: string, svg: string | null, rawCode: string): string {
+  const safeTitle = (title || "Diagram").replace(/[<>&]/g, "");
+  const inner = svg
+    ? svg
+    : `<pre class="mermaid">${(MERMAID_INIT + "\n" + rawCode).replace(/[<]/g, "&lt;")}</pre>`;
+  const mermaidRuntime = svg ? "" : `<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";mermaid.initialize({startOnLoad:true,securityLevel:"loose"});</script>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=6,user-scalable=yes,viewport-fit=cover">
+<title>${safeTitle}</title>
 <style>
-:root{--bg:#f6f7fb;--card:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--accent:#6d5efc;--accent2:#22d3ee}
-@media(prefers-color-scheme:dark){:root{--bg:#0b0f1a;--card:#111827;--ink:#e5e7eb;--muted:#94a3b8;--line:#1f2937;--accent:#8b7cff;--accent2:#22d3ee}}
-*{box-sizing:border-box}html,body{margin:0;height:100%}
-body{background:var(--bg);color:var(--ink);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;display:flex;flex-direction:column;min-height:100vh}
-header{padding:22px 24px;background:linear-gradient(120deg,var(--accent),var(--accent2));color:#fff}
-header h1{margin:0;font-size:18px;font-weight:700;letter-spacing:.2px}
-header p{margin:4px 0 0;opacity:.9;font-size:12.5px}
-main{flex:1;display:flex;padding:18px;overflow:auto}
-.wrap{margin:auto;width:100%;max-width:1100px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;box-shadow:0 12px 40px -12px rgba(2,6,23,.25);overflow:hidden}
-.toolbar{display:flex;gap:8px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line);color:var(--muted);font-size:12px}
-.toolbar button{cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--ink);border-radius:9px;padding:5px 10px;font-size:12px}
-.toolbar .sp{flex:1}
-.stage{overflow:auto;padding:22px;display:flex;justify-content:center;align-items:center;min-height:52vh;background:radial-gradient(circle at 20% 10%,rgba(109,94,252,.06),transparent 40%)}
-.diagram,svg,.mermaid{max-width:100%;height:auto;transform-origin:center;transition:transform .12s ease}
-footer{padding:12px 18px;color:var(--muted);font-size:11.5px;text-align:center}
-footer b{color:var(--ink)}
-</style></head>
-<body>
-<header><h1>${safeTitle || "Diagram"}</h1><p>Generated by Alexandria · open in any browser · pinch or use +/− to zoom</p></header>
-<main><div class="wrap"><div class="card">
-<div class="toolbar"><button onclick="z(0.1)">＋</button><button onclick="z(-0.1)">－</button><button onclick="zr()">Reset</button><span class="sp"></span><span>self-contained · ${svg ? "vector SVG" : "live Mermaid"}</span></div>
-${body}
-</div></div></main>
-<footer>Made with <b>Alexandria OS</b> · OmegaOS</footer>
-<script>let s=1;const d=document.getElementById('diagram');function z(x){s=Math.min(3,Math.max(.4,s+x));d.style.transform='scale('+s+')';}function zr(){s=1;d.style.transform='scale(1)';}</script>
+:root{--bg:#f4f6fb;--ink:#0f172a;--muted:#64748b;--accent:#6d5efc}
+@media(prefers-color-scheme:dark){:root{--bg:#0a0e17;--ink:#e5e7eb;--muted:#94a3b8;--accent:#8b7cff}}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--bg);color:var(--ink)}
+#stage{position:fixed;inset:0;overflow:auto;display:flex;align-items:center;justify-content:center;padding:14px;
+ touch-action:pan-x pan-y pinch-zoom;background:radial-gradient(1200px 600px at 22% 12%,rgba(109,94,252,.12),transparent 55%),radial-gradient(900px 500px at 85% 90%,rgba(34,211,238,.10),transparent 55%),var(--bg)}
+#diagram{transform-origin:center center;transition:transform .1s ease;will-change:transform}
+#diagram svg,#diagram .mermaid svg{max-width:96vw;max-height:92vh;width:auto;height:auto;display:block}
+#diagram .node rect,#diagram .node polygon,#diagram .node ellipse,#diagram .node circle{rx:14px;ry:14px;stroke-width:1.5px;filter:drop-shadow(0 2px 6px rgba(2,6,23,.12))}
+#diagram .cluster rect{rx:16px;ry:16px}#diagram .edgePath path{stroke-width:1.7px}
+.title{position:fixed;left:12px;top:calc(10px + env(safe-area-inset-top));z-index:5;font:600 12.5px/1 Inter,system-ui,sans-serif;color:var(--muted);background:color-mix(in srgb,var(--bg) 55%,transparent);border:1px solid color-mix(in srgb,var(--muted) 25%,transparent);padding:7px 12px;border-radius:999px;backdrop-filter:blur(8px)}
+.zoom{position:fixed;right:14px;bottom:calc(14px + env(safe-area-inset-bottom));z-index:5;display:flex;gap:10px}
+.zoom button{width:46px;height:46px;border:none;border-radius:15px;font-size:22px;font-weight:700;color:#fff;background:var(--accent);box-shadow:0 8px 22px -8px rgba(2,6,23,.6)}
+.zoom button:active{transform:scale(.94)}
+</style></head><body>
+<div id="stage"><div id="diagram">${inner}</div></div>
+<div class="title">${safeTitle}</div>
+<div class="zoom"><button onclick="z(-.18)" aria-label="zoom out">−</button><button onclick="z(.18)" aria-label="zoom in">＋</button></div>
+<script>let s=1;const d=document.getElementById('diagram');function z(x){s=Math.min(6,Math.max(.4,s+x));d.style.transform='scale('+s+')';}
+addEventListener('dblclick',()=>{s=1;d.style.transform='scale(1)';});</script>
 ${mermaidRuntime}
 </body></html>`;
 }
-// Render a diagram to files. Returns absolute paths (png/svg may be null if the
-// server-side render failed; html is always produced).
+// Render a diagram to files: a crisp modern PNG (Chromium-rendered, correct spacing +
+// rounded boxes) for the Telegram preview, and a full-screen zoomable HTML (inline SVG).
 function renderDiagram(code: string, title: string): { html: string; png: string | null } {
   const tmp = `${OMEGA_DIR}/state/tg-media`;
   try { Bun.spawnSync(["mkdir", "-p", tmp]); } catch {}
   const stamp = `${BOT_ID}-${Date.now()}`;
-  const clean = code.trim();
-  // Detect Mermaid (its keywords) vs D2, choose the input extension render.sh dispatches on.
-  const isMermaid = /^(graph|flowchart|sequenceDiagram|mindmap|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|quadrantChart|gitGraph|flowchart\s)/m.test(clean) || /-->|==>|--x|-\.->/.test(clean);
+  let clean = code.trim();
+  const isMermaid = /^(%%\{|graph|flowchart|sequenceDiagram|mindmap|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|timeline|quadrantChart|gitGraph)/m.test(clean) || /-->|==>|--x|-\.->/.test(clean);
   const ext = isMermaid ? "mmd" : "d2";
   const srcPath = `${tmp}/dg-${stamp}.${ext}`;
   const outBase = `${tmp}/dg-${stamp}`;
   let svg: string | null = null, png: string | null = null;
   try {
     writeFileSync(srcPath, clean);
-    const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
-    if (existsSync(render)) {
-      // Bounded: a hung renderer must never stall the reply. Chromium is cached after first use.
-      Bun.spawnSync(["bash", render, srcPath, outBase], { stdout: "pipe", stderr: "pipe", timeout: 90_000 });
-      try { if (statSync(`${outBase}.svg`).size > 0) svg = readFileSync(`${outBase}.svg`, "utf8"); } catch {}
-      try { if (statSync(`${outBase}.png`).size > 0) png = `${outBase}.png`; } catch {}
+    if (isMermaid) {
+      // Chromium via mmdc: perfect text/spacing + our CSS (rounded boxes, shadows).
+      const npx = resolveNpx();
+      if (npx) {
+        const cfg = `${outBase}.cfg.json`, css = `${outBase}.css`, pp = `${outBase}.pp.json`;
+        try { writeFileSync(cfg, MERMAID_CFG); writeFileSync(css, MERMAID_CSS); writeFileSync(pp, MERMAID_PP); } catch {}
+        const common = ["-y", "@mermaid-js/mermaid-cli", "-i", srcPath, "-p", pp, "-c", cfg, "-C", css, "-b", "transparent"];
+        // PNG (2x, for the chat preview) then SVG (for the zoomable HTML).
+        Bun.spawnSync([npx, ...common, "-o", `${outBase}.png`, "-s", "2"], { stdout: "pipe", stderr: "pipe", timeout: 120_000 });
+        Bun.spawnSync([npx, ...common, "-o", `${outBase}.svg`], { stdout: "pipe", stderr: "pipe", timeout: 120_000 });
+        try { if (statSync(`${outBase}.png`).size > 0) png = `${outBase}.png`; } catch {}
+        try { if (statSync(`${outBase}.svg`).size > 0) svg = readFileSync(`${outBase}.svg`, "utf8"); } catch {}
+      }
+    }
+    // Fallback (non-mermaid, or mmdc unavailable): the OmegaOS diagram skill (d2/mermaid → SVG+PNG).
+    if (!svg) {
+      const render = `${OMEGA_DIR}/skills/diagram/render.sh`;
+      if (existsSync(render)) {
+        Bun.spawnSync(["bash", render, srcPath, outBase], { stdout: "pipe", stderr: "pipe", timeout: 90_000 });
+        try { if (statSync(`${outBase}.svg`).size > 0) svg = readFileSync(`${outBase}.svg`, "utf8"); } catch {}
+        if (!png) { try { if (statSync(`${outBase}.png`).size > 0) png = `${outBase}.png`; } catch {} }
+      }
     }
   } catch {}
   const htmlPath = `${outBase}.html`;
-  try { writeFileSync(htmlPath, diagramHtml(title || "Diagram", svg, clean, isMermaid)); } catch {}
+  try { writeFileSync(htmlPath, diagramHtml(title || "Diagram", svg, clean)); } catch {}
   return { html: htmlPath, png };
 }
 // Turn every [[DIAGRAM: …]] marker in a reply into delivered files; returns the text

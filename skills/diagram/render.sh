@@ -85,7 +85,13 @@ render_mermaid() {
   write_mmdc_cfg
   note "rendering Mermaid via npx @mermaid-js/mermaid-cli (first run downloads the CLI + Chromium)…"
   # -p: puppeteer config (no-sandbox). -b transparent keeps slides clean.
-  npx -y @mermaid-js/mermaid-cli -i "$IN" -o "$SVG" -p "$MMDC_CFG" -b transparent >&2
+  # Optional MERMAID CONFIG (-c) and THEME (-t) from the environment: callers that need
+  # SVG-native labels (htmlLabels:false, so the PNG keeps its box text) or a custom theme
+  # set MMDC_CONFIG=<file.json> / MMDC_THEME=<name>. Absent → default Mermaid rendering.
+  local extra=()
+  [ -n "${MMDC_CONFIG:-}" ] && [ -f "$MMDC_CONFIG" ] && extra+=(-c "$MMDC_CONFIG")
+  [ -n "${MMDC_THEME:-}" ] && extra+=(-t "$MMDC_THEME")
+  npx -y @mermaid-js/mermaid-cli -i "$IN" -o "$SVG" -p "$MMDC_CFG" "${extra[@]}" -b transparent >&2
 }
 
 render_d2() {
