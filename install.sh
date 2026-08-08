@@ -859,6 +859,16 @@ if [[ -f "$OMEGA_SRC/tools/agent-reach/install-agent-reach.sh" ]]; then
         || info "Agent Reach setup had warnings (non-fatal)"
 fi
 
+# Transcription — local open-source audio transcription via faster-whisper.
+# No API key, no per-minute billing, 100% on-device. Supports MP3/WAV/M4A/…
+# and 99 languages. The Whisper 'base' model is lazy-downloaded on first use
+# (~140MB); upgrade to medium/large-v3 with --model for higher accuracy.
+# Command after install: omega-transcribe <file> [--model base|medium|large-v3]
+if [[ -f "$OMEGA_SRC/tools/transcription/install-transcription.sh" ]]; then
+    bash "$OMEGA_SRC/tools/transcription/install-transcription.sh" \
+        || info "Transcription setup had warnings (non-fatal)"
+fi
+
 # Lidless — macOS menu-bar toggle for lid-close sleep, so a dispatched agent
 # keeps running while the operator shuts the laptop and walks away. OPT-IN and
 # never auto-run: it writes a sudoers rule and needs an admin password, and it
