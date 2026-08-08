@@ -1202,7 +1202,18 @@ async function sendFileToChat(chat: number, path: string, thread?: number, capti
     if (caption) fd.append("caption", caption.slice(0, 1024));
     fd.append(field, new Blob([buf]), name);
     const r: any = await (await fetch(`${API}/${method}`, { method: "POST", body: fd })).json();
-    return !!r?.ok;
+    if (r?.ok) return true;
+    // A very wide/tall diagram PNG can be rejected by sendPhoto (Telegram's dimension/ratio
+    // limits). Fall back to sendDocument so the image still reaches the chat.
+    if (method === "sendPhoto") {
+      const fd2 = new FormData(); fd2.append("chat_id", String(chat));
+      if (thread) fd2.append("message_thread_id", String(thread));
+      if (caption) fd2.append("caption", caption.slice(0, 1024));
+      fd2.append("document", new Blob([buf]), name);
+      const r2: any = await (await fetch(`${API}/sendDocument`, { method: "POST", body: fd2 })).json();
+      return !!r2?.ok;
+    }
+    return false;
   } catch { return false; }
 }
 // Nova attaches files by emitting [[SEND: /abs/path | optional caption]] in her reply.
@@ -1215,7 +1226,9 @@ const SEND_MARK = /\[\[SEND:\s*([^\]|]+?)(?:\s*\|\s*([^\]]+))?\]\]/g;
 // the user can open in any browser. Falls back to client-side Mermaid HTML if the
 // server-side render is unavailable, so a diagram is ALWAYS delivered as a real file.
 // Marker carries the Mermaid code ONLY (no "| title": | collides with Mermaid edge labels).
-const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)\s*\]\]/g;
+// The (?!\]) lookahead stops the closing ]] from eating a node's own trailing ] when the last
+// node abuts the marker (…"]  +  ]]  =  …"]]] → without it the node's ] is lost and Mermaid dies).
+const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)\s*\]\](?!\])/g;
 // Diagrams are rendered by REAL Mermaid via the OmegaOS diagram skill (render.sh → mermaid-cli
 // in Chromium). Real mermaid.js means real dagre layout: nodes NEVER overlap, labels wrap,
 // every diagram type works — the correctness bar the operator requires. (An earlier attempt
