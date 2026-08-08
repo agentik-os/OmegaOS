@@ -3397,6 +3397,7 @@ async function agentBotMain(agentId: string) {
     { command: "language", description: "🌐 Set my reply language (default English)" },
     { command: "book", description: "📖 Full X-ray of a book" },
     { command: "espresso", description: "☕ A book in 90 seconds" },
+    { command: "chapter", description: "📑 A book chapter by chapter, in full detail (or one chapter)" },
     { command: "best", description: "🏆 Top 50 books worldwide + 50 actionable tips on a topic" },
     { command: "idea", description: "🗺 Atlas of an idea across many books" },
     { command: "compare", description: "⚔️ Put books or authors in combat" },
