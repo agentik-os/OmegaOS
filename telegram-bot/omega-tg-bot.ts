@@ -10,7 +10,7 @@
  * Single poller per bot token. config ← ~/.omega/telegram.toml.
  */
 import { $ } from "bun";
-import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
@@ -1018,6 +1018,9 @@ function personaPromptFor(agentId: string, path?: string): string {
   }
   return "You are a helpful, sharp personal assistant on Telegram. Answer in the user's language, lead with the answer, keep it phone-readable.";
 }
+// The active reply language: a one-word/code the user set via /language, stored per persona.
+// Empty = follow the persona's own resolution rule (English by default).
+function personaLang(dir: string): string { try { return readFileSync(`${dir}/ledger/LANGUAGE.txt`, "utf8").trim(); } catch { return ""; } }
 async function personaChat(text: string, agentId: string, personaPath: string | undefined, dir: string, model: string, label: string): Promise<string> {
   Bun.spawnSync(["mkdir", "-p", `${dir}/ledger`]);
   // A message STARTING with "/" (e.g. "/espresso Deep Work") would be swallowed by the
@@ -1025,7 +1028,12 @@ async function personaChat(text: string, agentId: string, personaPath: string | 
   // commands are defined in ITS system prompt, so wrap the message in a header: the model
   // still reads the "/command", but the CLI no longer sees a leading slash.
   const safe = /^\s*\//.test(text) ? `Message de l'utilisateur :\n${text}` : text;
-  return runClaude(safe, personaPromptFor(agentId, personaPath), dir, label,
+  // Inject the active language deterministically (default English) so the reply language is
+  // never left to chance; the user changes it with /language.
+  const lang = personaLang(dir);
+  const sys = personaPromptFor(agentId, personaPath) +
+    `\n\n## ACTIVE REPLY LANGUAGE\nReply in: ${lang || "English (default — the user has not chosen a language; if they clearly write in another language, follow it, otherwise English)"}. Framework names may stay in English.`;
+  return runClaude(safe, sys, dir, label,
     dir, ["--model", model, "--max-turns", "24"], PERSONA_TIMEOUT_MS);
 }
 function personaBrain(agentId: string, personaPath: string | undefined, dir: string, model: string, chatId: number, thread: number | undefined, label: string): (t: string) => Promise<string> {
@@ -2217,11 +2225,14 @@ async function view(name: string): Promise<{ text: string; markup: any }> {
       // Like Nova, the security operator (Trinity) binds to its own bot from here —
       // its own kind:"security" entry, independent of the optional MC dashboard.
       const trinityRow: Btn[] = [{ text: "🛡 Link your security agent (Trinity)", callback_data: "agent:tglink:trinity" }];
+      // Like Nova/Trinity, the Librarian (Alexandria) binds its own bot from here —
+      // a kind:"persona" entry pointing at the shipped ALEXANDRIA OS system prompt.
+      const libRow: Btn[] = [{ text: "📚 Link your librarian (Alexandria)", callback_data: "agent:tglink:librarian" }];
       const ags = await mcAgents();
-      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova) and 🛡 security agent (Trinity) below."), markup: kb([novaRow, trinityRow, [back()]]) };
+      if (!ags.length) return { text: card("AISB AGENTS", " ⚠️ Dashboard unreachable. Start it: <code>omega-mc-up</code>.\n\n 💞 You can still link your personal companion bot (Nova), 🛡 security agent (Trinity) and 📚 librarian (Alexandria) below."), markup: kb([novaRow, trinityRow, libRow, [back()]]) };
       const rows: Btn[][] = [];
       for (let i = 0; i < ags.length; i += 2) rows.push(ags.slice(i, i + 2).map(a => ({ text: a.id.slice(0, 28), callback_data: `agent:info:${a.id}`.slice(0, 64) })));
-      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot.\n 🛡 “Link your security agent” wires Trinity — a white-hat pentest operator on its own bot."), markup: kb([...rows, novaRow, trinityRow, [back()]]) };
+      return { text: card(`AISB AGENTS — ${ags.length}`, " Tap an agent for its role. To talk to it, use its dedicated bot (see /dashboard).\n 💞 “Link your companion” wires Nova — your personal assistant on her own bot.\n 🛡 “Link your security agent” wires Trinity — a white-hat pentest operator on its own bot.\n 📚 “Link your librarian” wires Alexandria — turns any book or idea into understanding, memory and action."), markup: kb([...rows, novaRow, trinityRow, libRow, [back()]]) };
     }
     case "dashboard": {
       await resolvePublicIP();
@@ -2600,6 +2611,8 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
       ? `<b>💞 Link your companion (Nova)</b>\n1) Create her bot via @BotFather (<code>/newbot</code> — pick her name).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nShe'll be <b>whitelisted to you alone</b>: a personal assistant who chats from your life store, remembers you, and hands heavy project work to Atlas.`
       : /^(trinity|security)$/i.test(arg)
       ? `<b>🛡 Link your security agent (Trinity)</b>\n1) Create a bot via @BotFather (<code>/newbot</code>).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nIt'll be <b>whitelisted to you alone</b>: a white-hat security operator (offensive + defensive), pre-authorized for your in-scope work — recon → scan → exploit/PoC → report, with non-negotiable hard limits. Point it only at assets you own or are contracted to test.`
+      : /^(librarian|alexandria|knowledge)$/i.test(arg)
+      ? `<b>📚 Link your librarian (Alexandria)</b>\n1) Create a bot via @BotFather (<code>/newbot</code> — pick its name).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nIt'll be <b>whitelisted to you alone</b>: a personal librarian and learning engine that turns any book, idea or decision into understanding, durable memory and action. Replies in <b>English by default</b> — send it <code>/setup</code> to calibrate on how you learn, or <code>/language fr</code> to switch. You can talk to it by voice, and send it PDF/EPUB book files.`
       : `<b>🔗 Link a Telegram bot — ${esc(arg)}</b>\n1) Create a bot via @BotFather (or reuse one).\n2) Send me its <b>token</b> here (format <code>123456:ABC…</code>).\n\nThe bot will be <b>whitelisted to you alone</b>, and when you talk to it you'll be addressing the oracle of project <b>${esc(arg)}</b> (scoped to this project only).`;
     return edit(chat, msgId, body, kb([[{ text: "✖ Cancel", callback_data: "acct:cancel" }], [back("agents")]]));
   }
@@ -3380,27 +3393,28 @@ async function agentBotMain(agentId: string) {
     { command: "aide", description: "Ce que tu sais faire" },
   ] : isSecurity ? [{ command: "start", description: "White-hat security operator (recon → scan → exploit/PoC → report)" }]
     : isGeneric ? [
-    { command: "setup", description: "🎛 Me calibrer sur ta façon d'apprendre" },
-    { command: "book", description: "📖 Rayon-X complet d'un livre" },
-    { command: "espresso", description: "☕ Un livre en 90 secondes" },
-    { command: "best", description: "🏆 Top 50 livres mondiaux + 50 conseils actionnables sur un sujet" },
-    { command: "idea", description: "🗺 Atlas d'une idée à travers plusieurs livres" },
-    { command: "compare", description: "⚔️ Comparer/opposer des livres ou auteurs" },
-    { command: "challenge", description: "🥊 Sparring : je détruis puis je renforce ton idée" },
-    { command: "council", description: "🏛 Conseil de perspectives sur une décision" },
-    { command: "apply", description: "🔧 Appliquer une idée à ton business" },
-    { command: "decision", description: "🎯 Labo de décision" },
-    { command: "teach", description: "🧑‍🏫 Feynman : enfant / opérateur / expert" },
-    { command: "memory", description: "🧠 Forger une mémoire durable d'une notion" },
-    { command: "drill", description: "🎮 Quiz de rappel actif" },
+    { command: "setup", description: "🎛 Calibrate me on how you learn & remember" },
+    { command: "language", description: "🌐 Set my reply language (default English)" },
+    { command: "book", description: "📖 Full X-ray of a book" },
+    { command: "espresso", description: "☕ A book in 90 seconds" },
+    { command: "best", description: "🏆 Top 50 books worldwide + 50 actionable tips on a topic" },
+    { command: "idea", description: "🗺 Atlas of an idea across many books" },
+    { command: "compare", description: "⚔️ Put books or authors in combat" },
+    { command: "challenge", description: "🥊 Sparring: I break then rebuild your idea" },
+    { command: "council", description: "🏛 Council of perspectives on a decision" },
+    { command: "apply", description: "🔧 Apply an idea to your business" },
+    { command: "decision", description: "🎯 Decision lab" },
+    { command: "teach", description: "🧑‍🏫 Feynman: child / operator / expert" },
+    { command: "memory", description: "🧠 Forge durable memory of a concept" },
+    { command: "drill", description: "🎮 Active-recall quiz" },
     { command: "cards", description: "🃏 Flashcards" },
-    { command: "map", description: "📊 Transformer un concept en diagramme" },
-    { command: "focus", description: "⏱ Micro-session 5 min : idée→exemple→challenge→appli→rappel" },
-    { command: "audio", description: "🎧 Mode écoute : séquences courtes, une question à la fois" },
-    { command: "readingpath", description: "📚 Parcours de lecture ciblé" },
-    { command: "review", description: "🔁 Réviser (répétition espacée)" },
-    { command: "gem", description: "💎 Une pépite sous-cotée pour ton contexte" },
-    { command: "start", description: "Ce que je sais faire" },
+    { command: "map", description: "📊 Turn a concept into a diagram" },
+    { command: "focus", description: "⏱ 5-min micro-session: idea→example→challenge→apply→recall" },
+    { command: "audio", description: "🎧 Listen mode: short sequences, one question at a time" },
+    { command: "readingpath", description: "📚 Targeted reading path" },
+    { command: "review", description: "🔁 Review (spaced repetition)" },
+    { command: "gem", description: "💎 An underrated idea for your context" },
+    { command: "start", description: "What I can do" },
   ] : [{ command: "start", description: `Talk to the ${project} project oracle` }] });
   await tg("deleteWebhook", { drop_pending_updates: false });
   console.log(`agent-bot up: ${agentId} → ${isCompanion ? `companion "${botName}"` : isSecurity ? `security "${botName}"` : isGeneric ? `persona "${botName}"` : `project ${project}`}, botId=${BOT_ID}, allow=${ALLOW.join(",")}`);
@@ -3469,7 +3483,26 @@ async function agentBotMain(agentId: string) {
         // prompt; the persona owns its own ledger under personaDir. Files come back via [[SEND: …]].
         if (isGeneric) {
           if (text === "/start" || text === "/menu") {
-            await send(chatId, `<b>📚 ${esc(botName)}</b>\nTon libraire personnel. Donne-moi un livre, une idée, une décision ou un problème, et je le transforme en compréhension, mémoire durable et action. Tape <b>/setup</b> pour m'adapter à ta façon d'apprendre, ou <b>/aide</b> / le menu pour voir les commandes. Tu peux aussi m'envoyer un vocal ou un fichier (PDF/EPUB).`, undefined, thread);
+            await send(chatId, `<b>📚 ${esc(botName)}</b>\nYour personal librarian. Give me a book, an idea, a decision or a problem and I turn it into understanding, durable memory and action. Send <b>/setup</b> to calibrate on how you learn, or open the menu for all commands. I reply in <b>English by default</b> — switch anytime with <b>/language fr</b> (or any language). You can also send me a voice note or a file (PDF/EPUB).`, undefined, thread);
+            continue;
+          }
+          // /language <code|name> — deterministic per-persona reply-language setting (bot code,
+          // no brain round-trip). "/language" alone shows the current setting.
+          if (text === "/language" || text === "/langue" || text.startsWith("/language ") || text.startsWith("/langue ")) {
+            const arg = text.replace(/^\/(language|langue)\s*/i, "").trim();
+            if (!arg) {
+              const cur = personaLang(personaDir) || "English (default)";
+              await send(chatId, `🌐 Current reply language: <b>${esc(cur)}</b>\nChange it with <code>/language fr</code>, <code>/language english</code>, <code>/language español</code>… or <code>/language auto</code> to follow the language you write in.`, undefined, thread);
+              continue;
+            }
+            try { Bun.spawnSync(["mkdir", "-p", `${personaDir}/ledger`]); } catch {}
+            if (/^(auto|default|reset)$/i.test(arg)) {
+              try { unlinkSync(`${personaDir}/ledger/LANGUAGE.txt`); } catch {}
+              await send(chatId, `🌐 Language set to <b>auto</b> — I'll follow the language you write in (English by default).`, undefined, thread);
+            } else {
+              try { writeFileSync(`${personaDir}/ledger/LANGUAGE.txt`, arg); } catch {}
+              await send(chatId, `🌐 Language set to <b>${esc(arg)}</b>. I'll reply in ${esc(arg)} from now on.`, undefined, thread);
+            }
             continue;
           }
           const replyTo = (msg.reply_to_message?.text || msg.reply_to_message?.caption || "").trim();
@@ -3819,13 +3852,20 @@ async function main() {
             // switches agentBotMain to the Trinity persona brain (Opus, in-scope
             // pre-authorized, hard limits baked in) instead of a project oracle.
             const isSecurity = /^(trinity|security)$/i.test(agentId);
+            // librarian/alexandria = ALEXANDRIA OS: kind:"persona" pointing at the shipped
+            // system prompt, with its own working dir + ledger. English by default (§language).
+            const isLibrarian = /^(librarian|alexandria|knowledge)$/i.test(agentId);
+            const libPersona = `${OMEGA_DIR}/agents/librarian.md`;
+            const libDir = `${OMEGA_DIR}/personas/librarian`;
+            if (isLibrarian) { try { Bun.spawnSync(["mkdir", "-p", `${libDir}/ledger`]); } catch {} }
             // Project = the agent id if it's a known project, else the agent id itself.
             const project = isCompanion
               ? (LIFESTYLE_DIR.split("/").pop() || "LifeStyle")
               : isSecurity ? "security"
+              : isLibrarian ? "librarian"
               : ((repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId);
             const bots = loadAgentBots();
-            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : isSecurity ? { kind: "security" } : {}) };
+            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : isSecurity ? { kind: "security" } : isLibrarian ? { kind: "persona", persona: libPersona, dir: libDir, model: "claude-sonnet-4-6" } : {}) };
             saveAgentBots(bots);
             try { Bun.spawnSync(["chmod", "600", AGENT_BOTS_FILE]); } catch {}
             const spawn = spawnAgentBot(agentId);
@@ -3834,6 +3874,8 @@ async function main() {
               ? `<b>💞 Companion linked</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to her: she chats from your life store (<code>${esc(LIFESTYLE_DIR)}</code>), edits her own persona (<code>PERSONA.md</code>), and hands heavy project work to Atlas.\nGive her a name + voice: just tell her.`
               : isSecurity
               ? `<b>🛡 Security agent linked (Trinity)</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: a white-hat operator (offensive + defensive), pre-authorized for your in-scope work — <i>recon → scan → exploit/PoC → report</i>, with non-negotiable hard limits. Keep targets to assets you own or are contracted to test.`
+              : isLibrarian
+              ? `<b>📚 Librarian linked (Alexandria)</b>\nBot ${esc(me)} started, whitelisted to you alone.\nIt turns any book, idea or decision into understanding, memory and action. Replies in <b>English by default</b>.\nSend it <code>/start</code>, then <code>/setup</code> to calibrate on how you learn. Try <code>/best productivity</code> or <code>/book Atomic Habits</code>. Voice notes and PDF/EPUB files welcome. Switch language anytime: <code>/language fr</code>.`
               : `<b>✅ Bot linked to “${esc(agentId)}”</b>\nBot ${esc(me)} started, whitelisted to you alone.\nTalk to it: you're addressing the <b>${esc(project)} oracle</b> (scoped to this project — team, workers, workflows).`;
             await send(chatId, spawn === "ok"
               ? okMsg
