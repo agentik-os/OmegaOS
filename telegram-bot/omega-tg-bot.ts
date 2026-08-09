@@ -1235,7 +1235,8 @@ const DIAGRAM_MARK = /\[\[DIAGRAM:\s*([\s\S]+?)\s*\]\](?!\])/g;
 // with beautiful-mermaid reimplemented layout and produced overlapping/clipped graphs.)
 // A theme config gives it a modern palette; htmlLabels stays on (foreignObject), which renders
 // perfectly both when the SVG is inlined in a browser and when Chromium rasterizes the PNG.
-const MERMAID_THEME = `{"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"15px","primaryColor":"#EEF0FF","primaryTextColor":"#0F172A","primaryBorderColor":"#6D5EFC","lineColor":"#94A3B8","secondaryColor":"#E6FBFF","tertiaryColor":"#EAF7F0","clusterBkg":"#F7F8FF","clusterBorder":"#C7CBFF"},"flowchart":{"curve":"basis","padding":14,"nodeSpacing":45,"rankSpacing":55}}`;
+// Black & white minimalist theme (Agentik whitepaper): white nodes, black borders/text, grey edges.
+const MERMAID_THEME = `{"theme":"base","themeVariables":{"fontFamily":"Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif","fontSize":"15px","primaryColor":"#ffffff","primaryTextColor":"#0a0a0a","primaryBorderColor":"#0a0a0a","lineColor":"#6b7280","secondaryColor":"#f4f4f4","tertiaryColor":"#fafafa","clusterBkg":"#fafafa","clusterBorder":"#c9c9c9","edgeLabelBackground":"#ffffff"},"flowchart":{"curve":"basis","padding":14,"nodeSpacing":45,"rankSpacing":55}}`;
 // Models emit imperfect Mermaid. Repair the common breakers BEFORE rendering so a diagram
 // never silently fails: strip code fences, turn literal "\n" in labels into <br/>, and drop a
 // stray "| Title" that leaked from the old marker convention (its | collided with edge labels).
@@ -1307,16 +1308,20 @@ const DIAGRAM_VIEWER_HTML = `<!doctype html><html lang="en"><head><meta charset=
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>__TITLE__</title>
 <style>
-:root{--ink:#0f172a;--muted:#64748b;--accent:#6d5efc;--dot:#e2e6f0;--glass:rgba(255,255,255,.78);--line:#e6e8f0}
+:root{--ink:#0a0a0a;--muted:#6b7280;--accent:#0a0a0a;--dot:#e6e6e6;--glass:rgba(255,255,255,.82);--line:#e6e6e6}
+@media(prefers-color-scheme:dark){:root{--ink:#f2f2f2;--muted:#9a9a9a;--accent:#f2f2f2;--dot:#222;--glass:rgba(20,20,20,.82);--line:#242424}}
 *{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#fff;color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-#stage{position:fixed;inset:0;overflow:hidden;background-color:#fff;background-image:radial-gradient(var(--dot) 1.5px,transparent 1.5px);background-size:22px 22px;background-position:-11px -11px;cursor:grab;touch-action:none}
+@media(prefers-color-scheme:dark){html,body{background:#0a0a0a}}
+#stage{position:fixed;inset:0;overflow:hidden;background-color:var(--glass-bg,#fff);background-image:radial-gradient(var(--dot) 1.4px,transparent 1.4px);background-size:24px 24px;background-position:-12px -12px;cursor:grab;touch-action:none}
+@media(prefers-color-scheme:dark){#stage{background-color:#0a0a0a}}
 #stage.drag{cursor:grabbing}
 #wrap{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform}
 #wrap svg{display:block}#wrap svg rect{rx:12px;ry:12px}
 .title{position:fixed;left:14px;top:calc(12px + env(safe-area-inset-top));z-index:5;font-weight:600;font-size:13px;color:var(--muted);background:var(--glass);border:1px solid var(--line);padding:8px 13px;border-radius:999px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);max-width:70vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:2px;padding:6px;background:var(--glass);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:0 10px 30px -12px rgba(2,6,23,.35)}
 .bar button{display:grid;place-items:center;width:42px;height:42px;border:none;background:transparent;color:var(--ink);border-radius:11px;cursor:pointer;transition:background .12s,transform .08s}
-.bar button:hover{background:rgba(109,94,252,.10);color:var(--accent)}
+.bar button:hover{background:rgba(0,0,0,.06);color:var(--accent)}
+@media(prefers-color-scheme:dark){.bar button:hover{background:rgba(255,255,255,.10)}}
 .bar button:active{transform:scale(.90)}
 .bar .sep{width:1px;height:22px;background:var(--line);margin:0 4px}
 .bar svg{width:20px;height:20px;stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
@@ -1442,7 +1447,10 @@ function slug(s: string): string {
 // Paper-style HTML report: a clean reading document (centered column on a soft paper desk),
 // premium typography, print-friendly, with the diagrams embedded inline at their place.
 function reportHtml(title: string, md: string, diagrams: Diagram[]): string {
-  let body = mdDoc(md);
+  // The report renders `title` as the H1 already — drop a leading top-level heading from the
+  // body so it is not printed twice (the /chapter & /book replies open with "# <title>").
+  const bodyMd = md.replace(/^\s*#{1,2}\s+.*(?:\r?\n)+/, "");
+  let body = mdDoc(bodyMd);
   // swap each DIAGRAMi token (it lands inside a <p>) for the inline SVG figure
   diagrams.forEach((d, i) => {
     const fig = d.svg
@@ -1453,35 +1461,41 @@ function reportHtml(title: string, md: string, diagrams: Diagram[]): string {
   const t = esc(title);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>${t}</title>
 <style>
-:root{--ink:#1a2233;--soft:#5b6577;--line:#e7e9f0;--accent:#6d5efc;--paper:#ffffff;--desk:#eef1f7;--code:#f4f6fb}
-@media(prefers-color-scheme:dark){:root{--ink:#e7ebf3;--soft:#9aa4b8;--line:#232b3a;--accent:#8b7cff;--paper:#0f1420;--desk:#0a0e17;--code:#131a28}}
-*{box-sizing:border-box}html,body{margin:0}body{background:var(--desk);color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.68;-webkit-font-smoothing:antialiased}
-.wrap{max-width:760px;margin:0 auto;padding:28px 18px 80px}
-.sheet{background:var(--paper);border:1px solid var(--line);border-radius:20px;box-shadow:0 24px 60px -30px rgba(15,23,42,.35);padding:clamp(22px,5vw,52px)}
-.brand{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
-.brand .dot{width:8px;height:8px;border-radius:50%;background:var(--accent)}
-h1.doc{font-size:clamp(24px,5.4vw,34px);line-height:1.18;margin:.5rem 0 1.4rem;letter-spacing:-.02em}
-h1,h2,h3,h4{line-height:1.25;margin:1.6em 0 .5em;letter-spacing:-.01em}
-h2{font-size:1.4rem;padding-top:.4rem;border-top:1px solid var(--line)}h3{font-size:1.16rem}h4{font-size:1.02rem;color:var(--soft)}
-p{margin:.7em 0}a{color:var(--accent)}
-ul,ol{padding-left:1.3em;margin:.6em 0}li{margin:.28em 0}
-strong{font-weight:700}em{font-style:italic}
-code{background:var(--code);padding:.12em .4em;border-radius:6px;font:0.9em ui-monospace,SFMono-Regular,Menlo,monospace}
-pre{background:var(--code);border:1px solid var(--line);border-radius:12px;padding:14px 16px;overflow-x:auto}pre code{background:none;padding:0}
-blockquote{margin:1em 0;padding:.4em 1.1em;border-left:3px solid var(--accent);color:var(--soft);background:linear-gradient(90deg,rgba(109,94,252,.06),transparent)}
-table{width:100%;border-collapse:collapse;margin:1em 0;font-size:.95em;display:block;overflow-x:auto}
-th,td{border:1px solid var(--line);padding:8px 11px;text-align:left}th{background:var(--code);font-weight:700}
-hr{border:none;border-top:1px solid var(--line);margin:1.6em 0}
-figure.dg{margin:1.4em 0;padding:16px;background:#fff;border:1px solid var(--line);border-radius:16px;overflow-x:auto;text-align:center;background-image:radial-gradient(#eef1f7 1.3px,transparent 1.3px);background-size:18px 18px}
-figure.dg svg{max-width:100%;height:auto}figure.dg svg rect{rx:12px;ry:12px}
-figure.dg figcaption{margin-top:8px;font-size:12.5px;color:var(--soft)}
-.foot{margin-top:26px;text-align:center;color:var(--soft);font-size:12px}
-@media print{body{background:#fff}.sheet{box-shadow:none;border:none;border-radius:0}.wrap{padding:0;max-width:none}}
+/* Agentik whitepaper — high-contrast black & white, minimalist, generous negative space, no gradients. */
+:root{--ink:#0a0a0a;--soft:#6b7280;--line:#e6e6e6;--rule:#111;--paper:#ffffff;--code:#f6f6f6}
+@media(prefers-color-scheme:dark){:root{--ink:#f2f2f2;--soft:#9a9a9a;--line:#242424;--rule:#f2f2f2;--paper:#0a0a0a;--code:#141414}}
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.72;-webkit-font-smoothing:antialiased;font-feature-settings:"kern","liga"}
+.wrap{max-width:680px;margin:0 auto;padding:clamp(28px,7vw,72px) 22px 96px}
+.sheet{background:transparent}
+.brand{font-size:11px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;color:var(--soft)}
+.brand .dot{display:none}
+h1.doc{font-size:clamp(28px,6vw,42px);line-height:1.1;font-weight:800;letter-spacing:-.03em;margin:.35em 0 .1em}
+.rulebar{height:2px;background:var(--rule);width:44px;margin:18px 0 30px}
+h1,h2,h3,h4{line-height:1.22;letter-spacing:-.02em;font-weight:750}
+h2{font-size:1.34rem;margin:2.1em 0 .55em;padding-top:1.1em;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;margin:1.5em 0 .4em}h4{font-size:.95rem;margin:1.2em 0 .3em;text-transform:uppercase;letter-spacing:.06em;color:var(--soft)}
+p{margin:.85em 0}a{color:var(--ink);text-underline-offset:3px}
+ul,ol{padding-left:1.25em;margin:.7em 0}li{margin:.32em 0}li::marker{color:var(--soft)}
+strong{font-weight:750}em{font-style:italic}
+code{background:var(--code);padding:.1em .38em;border-radius:4px;font:.88em ui-monospace,SFMono-Regular,Menlo,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto}pre code{background:none;padding:0}
+blockquote{margin:1.2em 0;padding:.1em 0 .1em 1.2em;border-left:2px solid var(--rule);color:var(--soft);font-style:italic}
+table{width:100%;border-collapse:collapse;margin:1.3em 0;font-size:.93em;display:block;overflow-x:auto}
+th,td{border-bottom:1px solid var(--line);padding:9px 12px;text-align:left;vertical-align:top}
+th{font-weight:700;border-bottom:1.5px solid var(--rule);white-space:nowrap}
+hr{border:none;border-top:1px solid var(--line);margin:2em 0}
+figure.dg{margin:1.8em 0;padding:20px;background:var(--paper);border:1px solid var(--line);border-radius:6px;overflow-x:auto;text-align:center}
+figure.dg svg{max-width:100%;height:auto}
+figure.dg figcaption{margin-top:10px;font-size:12px;letter-spacing:.04em;text-transform:uppercase;color:var(--soft)}
+.foot{margin-top:56px;padding-top:18px;border-top:1px solid var(--line);color:var(--soft);font-size:11px;letter-spacing:.12em;text-transform:uppercase}
+@media print{.wrap{padding:0;max-width:none}h2{break-after:avoid}figure.dg{break-inside:avoid}}
 </style></head><body><div class="wrap"><article class="sheet">
-<div class="brand"><span class="dot"></span> Agentik Book {OS}</div>
+<div class="brand">Agentik Book {OS}</div>
 <h1 class="doc">${t}</h1>
+<div class="rulebar"></div>
 ${body}
-<div class="foot">Generated by Agentik Book {OS}</div>
+<div class="foot">Agentik Book {OS}</div>
 </article></div></body></html>`;
 }
 // A short chat teaser that points to the attached full answer (no truncated wall of text).
