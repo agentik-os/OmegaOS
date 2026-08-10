@@ -39,6 +39,9 @@ async fn stream_loop(mut socket: WebSocket, name: String, state: AppState) {
     let lines = state.cfg.stream_lines;
     let mut last: Option<String> = None;
     // R-STREAM: this loop never exits on error; errors are rendered as frames.
+    // KNOWN LIMIT (V1): the only exit is a failed send, which fires instantly
+    // on a clean client close but only after the kernel TCP timeout on a
+    // silent network death. Plan 2 hardening adds ping/pong liveness.
     loop {
         let session = name.clone();
         let captured =
