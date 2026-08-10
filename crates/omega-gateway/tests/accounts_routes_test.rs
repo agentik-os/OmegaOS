@@ -320,6 +320,95 @@ async fn chat_create_rejects_traversal_account_slug() {
 }
 
 #[tokio::test]
+async fn chat_create_rejects_nonexistent_account_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(dir.path()).issue("t");
+    let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
+    let app = build_router(state.clone());
+    let base = spawn(app).await;
+
+    // "does-not-exist" is shape-valid but was never created.
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/chats"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "does-not-exist" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "account not found");
+
+    assert!(state.chats.list().is_empty(), "no chat should be persisted when the account pin is invalid");
+}
+
+#[tokio::test]
+async fn chat_create_rejects_account_kind_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(dir.path()).issue("t");
+    let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
+    let app = build_router(state.clone());
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    // A Codex account slot.
+    let create_res = client
+        .post(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "slug": "codex-slot", "label": "Codex", "kind": "codex" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_res.status(), 201);
+
+    // A Claude chat pinned to a Codex slot must be rejected before the chat
+    // is created (no OMEGA_CHAT_BIN installed, so this test would also hang
+    // trying to spawn a real `claude` if the guard didn't short-circuit).
+    let res = client
+        .post(format!("{base}/v1/chats"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "codex-slot" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"], "account kind does not match agent");
+
+    assert!(state.chats.list().is_empty(), "no chat should be persisted on a kind mismatch");
+}
+
+#[tokio::test]
+async fn chat_create_accepts_a_valid_matching_account_slug() {
+    let dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(dir.path()).issue("t");
+    let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
+    let app = build_router(state.clone());
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    client
+        .post(format!("{base}/v1/accounts"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "slug": "claude-slot", "label": "Claude", "kind": "claude" }))
+        .send()
+        .await
+        .unwrap();
+
+    let res = client
+        .post(format!("{base}/v1/chats"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "claude-slot" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let meta: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(meta["account_slug"], "claude-slot");
+    assert_eq!(state.chats.list().len(), 1);
+}
+
+#[tokio::test]
 async fn apikey_route_pipes_key_to_fake_codex_without_leaking_it_in_response() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();

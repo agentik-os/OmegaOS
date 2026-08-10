@@ -49,16 +49,41 @@ impl AccountStore {
         self.accounts_dir.join(slug)
     }
 
+    /// Reads and parses the registry. A MISSING file is normal first-run and
+    /// silently returns empty. A file that exists but fails to PARSE is a
+    /// different case entirely: returning empty here without quarantining it
+    /// would let the next `write_registry` overwrite the bad file with an
+    /// empty list, silently orphaning every account slot on disk. So a parse
+    /// failure instead quarantines the bad bytes (see
+    /// `quarantine_corrupt_registry`) before returning empty.
     fn read_registry(&self) -> Vec<Account> {
-        let Ok(text) = std::fs::read_to_string(self.registry_path()) else {
+        let path = self.registry_path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
             return Vec::new();
         };
         match serde_json::from_str(&text) {
             Ok(list) => list,
             Err(e) => {
-                tracing::warn!("corrupted accounts.json: {e}");
+                tracing::error!("corrupted accounts.json ({e}); quarantining instead of overwriting");
+                self.quarantine_corrupt_registry(&path);
                 Vec::new()
             }
+        }
+    }
+
+    /// Renames an unparseable `accounts.json` out of the way so it is never
+    /// silently clobbered by the next write: to `accounts.json.corrupt`, or
+    /// `.corrupt.1`, `.corrupt.2`, ... if that name is already taken (e.g. a
+    /// prior quarantine from an earlier corruption).
+    fn quarantine_corrupt_registry(&self, path: &Path) {
+        let mut dest = self.accounts_dir.join("accounts.json.corrupt");
+        let mut n = 1u32;
+        while dest.exists() {
+            dest = self.accounts_dir.join(format!("accounts.json.corrupt.{n}"));
+            n += 1;
+        }
+        if let Err(e) = std::fs::rename(path, &dest) {
+            tracing::error!("failed to quarantine corrupt {}: {e}", path.display());
         }
     }
 
@@ -331,5 +356,58 @@ mod tests {
         let registry_path = dir.path().join("accounts").join("accounts.json");
         let registry_mode = std::fs::metadata(&registry_path).unwrap().permissions().mode() & 0o777;
         assert_eq!(registry_mode, 0o600, "accounts.json must be 0600");
+    }
+
+    #[test]
+    fn corrupt_registry_is_quarantined_not_silently_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AccountStore::open(dir.path());
+        let registry_path = dir.path().join("accounts").join("accounts.json");
+        let bad_bytes = b"{ this is not valid json at all";
+        std::fs::write(&registry_path, bad_bytes).unwrap();
+
+        // (a) reading a corrupt registry returns empty/usable rather than
+        // panicking or propagating the parse error.
+        let listed = store.list();
+        assert!(listed.is_empty(), "a corrupt registry must read back as an empty, usable list");
+
+        // (b) the original bad bytes now live at accounts.json.corrupt,
+        // untouched, instead of being clobbered by the next write.
+        let corrupt_path = dir.path().join("accounts").join("accounts.json.corrupt");
+        assert!(corrupt_path.exists(), "the corrupt file must be quarantined");
+        assert_eq!(std::fs::read(&corrupt_path).unwrap(), bad_bytes, "quarantined bytes must be untouched");
+        assert!(!registry_path.exists(), "the corrupt path is vacated by the rename");
+
+        // The store keeps working normally afterward (a fresh write does not
+        // collide with the quarantined file).
+        store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
+        assert_eq!(store.list().len(), 1);
+    }
+
+    #[test]
+    fn second_corrupt_registry_gets_a_numeric_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts_dir = dir.path().join("accounts");
+        std::fs::create_dir_all(&accounts_dir).unwrap();
+        // Pre-seed an existing quarantine file, as if an earlier corruption
+        // was already quarantined.
+        std::fs::write(accounts_dir.join("accounts.json.corrupt"), b"first corruption").unwrap();
+
+        let store = AccountStore::open(dir.path());
+        let registry_path = accounts_dir.join("accounts.json");
+        std::fs::write(&registry_path, b"{ second corruption").unwrap();
+
+        store.list();
+
+        assert_eq!(
+            std::fs::read(accounts_dir.join("accounts.json.corrupt")).unwrap(),
+            b"first corruption",
+            "the pre-existing quarantine file must not be clobbered"
+        );
+        assert_eq!(
+            std::fs::read(accounts_dir.join("accounts.json.corrupt.1")).unwrap(),
+            b"{ second corruption",
+            "the newer corruption gets a numeric suffix instead of overwriting"
+        );
     }
 }

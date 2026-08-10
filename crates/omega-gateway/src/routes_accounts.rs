@@ -129,7 +129,17 @@ pub async fn apikey(
         tokio::task::spawn_blocking(move || account_login::codex_login_with_api_key(&slot, &api_key)).await;
     match result {
         Ok(Ok(())) => StatusCode::OK,
-        _ => StatusCode::INTERNAL_SERVER_ERROR,
+        Ok(Err(e)) => {
+            // `e` is codex's stderr/exit status, never the key itself
+            // (codex_login_with_api_key pipes the key to stdin, it is never
+            // echoed into its output) — safe to log as a breadcrumb.
+            tracing::warn!("codex api-key login failed for {slug}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        Err(e) => {
+            tracing::warn!("codex api-key login task panicked for {slug}: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
 }
 

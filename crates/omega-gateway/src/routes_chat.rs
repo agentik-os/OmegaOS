@@ -51,13 +51,33 @@ pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "chats": state.chats.list() }))
 }
 
+/// Maps a chat's agent to the account kind its pinned slot must have (Claude
+/// chat -> Claude account, Codex -> Codex). The single mapping shared by
+/// `create`'s pin validation and `resolve_account_dir`'s default-account
+/// lookup, so the Claude<->Codex correspondence lives in exactly one place.
+fn account_kind_for(agent: ChatAgent) -> AccountKind {
+    match agent {
+        ChatAgent::Claude => AccountKind::Claude,
+        ChatAgent::Codex => AccountKind::Codex,
+    }
+}
+
 pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<ChatCreateRequest>,
-) -> Result<(StatusCode, Json<ChatMeta>), StatusCode> {
+) -> Result<(StatusCode, Json<ChatMeta>), (StatusCode, Json<serde_json::Value>)> {
     if let Some(slug) = &req.account_slug {
         if !accounts::valid_slug(slug) {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid account_slug" }))));
+        }
+        let Some(account) = state.accounts.get(slug) else {
+            return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "account not found" }))));
+        };
+        if account.kind != account_kind_for(req.agent) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "account kind does not match agent" })),
+            ));
         }
     }
     let meta = state.chats.create(req.agent, req.cwd, req.title, req.account_slug);
@@ -96,11 +116,7 @@ fn resolve_account_dir(accounts: &AccountStore, meta: &ChatMeta) -> Option<PathB
     if let Some(slug) = &meta.account_slug {
         return Some(accounts.slot_dir(slug));
     }
-    let kind = match meta.agent {
-        ChatAgent::Claude => AccountKind::Claude,
-        ChatAgent::Codex => AccountKind::Codex,
-    };
-    accounts.default_for(kind).map(|a| accounts.slot_dir(&a.slug))
+    accounts.default_for(account_kind_for(meta.agent)).map(|a| accounts.slot_dir(&a.slug))
 }
 
 /// Serializes and sends one server frame. `Err` means the socket is dead.
