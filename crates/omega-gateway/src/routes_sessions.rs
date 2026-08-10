@@ -96,7 +96,13 @@ const MAX_SEND_KEYS_BYTES: usize = 8192;
 /// in practice are `oracle-<Project>-<n>`-shaped or similar identifiers, so a
 /// conservative charset (letters/digits/`_`/`-`/`.`) with a generous length
 /// cap covers every real name without accepting `/`, `..`, or NUL.
-fn valid_session_name(name: &str) -> bool {
+///
+/// `pub(crate)` (rather than private) so `routes_session_org.rs` reuses this
+/// EXACT guard instead of duplicating it: the session-org overlay never
+/// touches a live session or a subprocess, but a session name still becomes
+/// a JSON map key persisted to disk, and the same path-traversal-shaped
+/// input is unsafe there too.
+pub(crate) fn valid_session_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 200 {
         return false;
     }

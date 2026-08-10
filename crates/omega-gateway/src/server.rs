@@ -4,6 +4,7 @@ use crate::chat_store::ChatStore;
 use crate::config::GatewayConfig;
 use crate::events::EventHub;
 use crate::protocol::WhoamiResponse;
+use crate::session_org::SessionOrgStore;
 use axum::{
     extract::{Query, Request, State},
     http::StatusCode,
@@ -44,6 +45,11 @@ pub struct AppState {
     /// in-process alert source) can hold its own clone and call
     /// `emit(...)` while the router forwards from the same bus.
     pub events: EventHub,
+    /// Session organization overlay (folder/label/pinned) -- `Arc`-wrapped
+    /// like `chats`, since it guards its own writes internally (see
+    /// `session_org.rs`'s `Mutex`) and is shared across every clone of
+    /// `AppState`.
+    pub session_org: Arc<SessionOrgStore>,
 }
 
 impl AppState {
@@ -57,7 +63,8 @@ impl AppState {
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let events = EventHub::new();
-        Self { dir, cfg, chats, accounts, chat_permits, dispatch_permits, events }
+        let session_org = Arc::new(SessionOrgStore::open(&dir));
+        Self { dir, cfg, chats, accounts, chat_permits, dispatch_permits, events, session_org }
     }
 }
 
@@ -156,6 +163,14 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/accounts/{slug}/apikey",
             axum::routing::post(crate::routes_accounts::apikey),
+        )
+        .route(
+            "/v1/session-org",
+            get(crate::routes_session_org::get_all),
+        )
+        .route(
+            "/v1/session-org/{name}",
+            axum::routing::put(crate::routes_session_org::set),
         )
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it

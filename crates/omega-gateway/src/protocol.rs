@@ -409,6 +409,45 @@ pub struct RenameSessionResponse {
     pub name: String,
 }
 
+/// One session's client-organizational overlay: a folder, a custom label,
+/// and a pinned flag. Purely metadata the gateway persists so it survives
+/// app restarts and syncs across the operator's devices — it is NEVER
+/// validated against a currently-live rmux session, the overlay can freely
+/// reference a session that has since closed (see `session_org.rs`'s doc
+/// comment). `pinned` is the only field that isn't optional: an entry with
+/// no label and no folder is still meaningful once pinned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionOrgEntry {
+    pub label: Option<String>,
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// `GET /v1/session-org` response body — the whole overlay map, session
+/// name -> [`SessionOrgEntry`]. Empty when no session has ever been tagged.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SessionOrgResponse {
+    pub entries: std::collections::HashMap<String, SessionOrgEntry>,
+}
+
+/// Body of `PUT /v1/session-org/{name}`. Standard HTTP PUT semantics: a
+/// FULL REPLACE of that session's overlay entry, never a partial merge with
+/// whatever was persisted before — an omitted `label`/`folder` becomes
+/// `None`, an omitted `pinned` becomes `false`, exactly as if the entry were
+/// newly created. `label`/`folder` are length-capped server-side (see
+/// `routes_session_org::MAX_LABEL_LEN` / `MAX_FOLDER_LEN`) before ever
+/// reaching the store.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SessionOrgUpdateRequest {
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub pinned: Option<bool>,
+}
+
 /// `POST /v1/deposit` response body — the HTTP twin of the Telegram DEPOSIT
 /// bot's reply. `file` is the final timestamped filename written to the
 /// inbox, `boxes` lists the named boxes the deposit actually reached (empty
@@ -464,6 +503,9 @@ pub struct Protocol {
     pub rename_session_request: RenameSessionRequest,
     pub rename_session_response: RenameSessionResponse,
     pub deposit_response: DepositResponse,
+    pub session_org_entry: SessionOrgEntry,
+    pub session_org_response: SessionOrgResponse,
+    pub session_org_update_request: SessionOrgUpdateRequest,
 }
 
 pub fn schema_json() -> String {
