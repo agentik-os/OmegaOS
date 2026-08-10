@@ -49,6 +49,25 @@ stops at `BLUEPRINT COMPLETE — STEPPER READY`: every gate green, 100% trace
 coverage on critical records, and a frozen handoff (version + checksum) that
 Stepper consumes - never a moving latest pointer.
 
+## v3 scope vs pack spec (honest divergences)
+
+The pack defines three deployment profiles (`references/omega-os-integration.md`
+§10). This integration runs the pack-sanctioned **minimal single-agent
+profile** — one master prompt, sequential passes, JSON state file,
+deterministic validation, markdown export — with every boundary, gate and ID
+rule preserved:
+
+- **Fan-out**: the 15 specialist roles (`assets/blueprint-role-prompts.json`)
+  run sequentially inside one agent by default; for the professional
+  orchestrated profile the agent uses the OmegaOS Workflow primitive as the
+  DAG runtime (fan-out -> chief-editor merge), not a bespoke daemon.
+- **Tools**: `assets/blueprint-tools.json` is honored as the CONTRACT the
+  agent keeps via the `omega-blueprint` CLI + canonical `state.json`; no
+  typed function-dispatch server is wired (nothing in OmegaOS speaks that
+  protocol today).
+- **Persistence**: JSON state + checkpoints per the portable contract;
+  PostgreSQL/graph projections of the enterprise profile are out of scope.
+
 ## v1 legacy (kept on purpose)
 
 The previous 14-phase AgentikOS designer is archived at
