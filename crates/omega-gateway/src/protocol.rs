@@ -188,6 +188,38 @@ pub enum GatewayEvent {
     Heartbeat { ts: String },
 }
 
+/// One entry of `GET /v1/rules`'s `laws` array — mirrors
+/// `omega_core::rules::Rule` for a Law (`RuleKind::Law`): id, title,
+/// category. Laws carry no scope/domain variance worth exposing beyond
+/// category (they are universal by invariant).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct LawEntry {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+}
+
+/// One entry of `GET /v1/rules`'s `rules` array — mirrors
+/// `omega_core::rules::Rule` for an operational Rule (`RuleKind::Rule`).
+/// `category` is the `RuleCategory` enum's Debug form (`Universal` /
+/// `QualityGate` / `Orchestration` / `Reporting` / `Safety`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RuleEntry {
+    pub id: String,
+    pub title: String,
+    pub category: String,
+    pub added_at: String,
+}
+
+/// `GET /v1/rules` response body — the OmegaOS doctrine split into the two
+/// SSOT tiers (`omega_core::rules::laws()` / `operational_rules()`), never
+/// re-derived by filtering `all_rules()` here.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RulesResponse {
+    pub laws: Vec<LawEntry>,
+    pub rules: Vec<RuleEntry>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -210,6 +242,9 @@ pub struct Protocol {
     pub account_create_request: AccountCreateRequest,
     pub api_key_request: ApiKeyRequest,
     pub account_login_server_msg: AccountLoginServerMsg,
+    pub law_entry: LawEntry,
+    pub rule_entry: RuleEntry,
+    pub rules_response: RulesResponse,
 }
 
 pub fn schema_json() -> String {

@@ -23,6 +23,9 @@ fn schema_contains_all_wire_types() {
         "AccountCreateRequest",
         "ApiKeyRequest",
         "AccountLoginServerMsg",
+        "LawEntry",
+        "RuleEntry",
+        "RulesResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }
