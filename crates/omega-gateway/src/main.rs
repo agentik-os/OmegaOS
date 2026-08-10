@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use omega_gateway::auth::{DeviceStore, PairingCode};
+use omega_gateway::chat_store::ChatStore;
 use omega_gateway::config::{gateway_dir, GatewayConfig};
 use omega_gateway::server::{build_router, AppState};
 
@@ -20,6 +21,8 @@ enum Command {
     Schema,
     /// List paired devices (id, name, created_at, revoked)
     Devices,
+    /// List chats (id, title, agent, updated_at)
+    Chats,
     /// Revoke a device by id (its token stops verifying immediately)
     Revoke {
         device_id: String,
@@ -50,6 +53,23 @@ async fn main() -> anyhow::Result<()> {
                 println!("{:<18} {:<20} {:<28} REVOKED", "ID", "NAME", "CREATED_AT");
                 for d in devices {
                     println!("{:<18} {:<20} {:<28} {}", d.id, d.name, d.created_at, d.revoked);
+                }
+            }
+        }
+        Command::Chats => {
+            let store = ChatStore::open(&dir);
+            let chats = store.list();
+            if chats.is_empty() {
+                println!("no chats");
+            } else {
+                println!("{:<18} {:<24} {:<8} UPDATED_AT", "ID", "TITLE", "AGENT");
+                for c in chats {
+                    let agent = match c.agent {
+                        omega_gateway::protocol::ChatAgent::Claude => "claude",
+                        omega_gateway::protocol::ChatAgent::Codex => "codex",
+                    };
+                    let title = c.title.as_deref().unwrap_or("-");
+                    println!("{:<18} {:<24} {:<8} {}", c.id, title, agent, c.updated_at);
                 }
             }
         }
