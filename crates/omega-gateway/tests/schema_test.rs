@@ -28,6 +28,8 @@ fn schema_contains_all_wire_types() {
         "RulesResponse",
         "AgentEntry",
         "AgentsResponse",
+        "AgentInstallCheckResponse",
+        "AgentInstallStreamMsg",
         "SkillEntry",
         "SkillsResponse",
         "ProjectEntry",

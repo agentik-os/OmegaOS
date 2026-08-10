@@ -127,6 +127,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/oracles", get(crate::routes_oracles::list))
         .route("/v1/rules", get(crate::routes_rules::list))
         .route("/v1/agents", get(crate::routes_agents::list))
+        .route(
+            "/v1/agents/{name}/install",
+            axum::routing::post(crate::routes_agents::install_check),
+        )
+        .route(
+            "/v1/agents/{name}/install/stream",
+            get(crate::routes_agents::install_stream),
+        )
         .route("/v1/skills", get(crate::routes_skills::list))
         .route("/v1/projects", get(crate::routes_projects::list))
         .route("/v1/dispatch", axum::routing::post(crate::routes_dispatch::create))

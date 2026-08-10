@@ -259,6 +259,38 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentEntry>,
 }
 
+/// `POST /v1/agents/{name}/install` response body — a pure pre-flight
+/// check, never a spawn: confirms `{name}` parses via
+/// `omega_core::agents::Agent::from_name` and is installable
+/// (`Agent::install_command().is_some()`), and reports whether it is
+/// already on PATH (`Agent::is_available()`) so the app can offer an
+/// "already installed — reinstall anyway?" prompt before opening the
+/// `install/stream` WebSocket (see [`AgentInstallStreamMsg`]).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentInstallCheckResponse {
+    pub agent: String,
+    pub display_name: String,
+    pub already_available: bool,
+}
+
+/// Server frames on `GET /v1/agents/{name}/install/stream`, which runs
+/// `omega install <name>` and streams its output. `Line` tags every line of
+/// child output by the pipe it came from (`"stdout"` | `"stderr"`) — the
+/// real `omega install` shells out to `curl|sh`/`npm install` and its most
+/// useful failure diagnostics often land on stderr, so stderr lines are
+/// forwarded exactly like stdout ones, never dropped. `Exit` is always the
+/// LAST frame the client receives; `code` is `None` only when the process
+/// was terminated by a signal rather than exiting normally. `Error` covers
+/// a spawn failure (binary missing) and is followed immediately by the
+/// socket closing (no `Exit` frame follows it, since the child never ran).
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentInstallStreamMsg {
+    Line { stream: String, text: String },
+    Exit { success: bool, code: Option<i32> },
+    Error { message: String },
+}
+
 /// One entry of `GET /v1/skills`'s `skills` array — mirrors
 /// `omega_core::skill_registry::Skill` for display: `category` is
 /// `skill.category.label()` (e.g. `"Audit"`/`"Design"`), not a raw Debug
@@ -489,6 +521,8 @@ pub struct Protocol {
     pub rules_response: RulesResponse,
     pub agent_entry: AgentEntry,
     pub agents_response: AgentsResponse,
+    pub agent_install_check_response: AgentInstallCheckResponse,
+    pub agent_install_stream_msg: AgentInstallStreamMsg,
     pub skill_entry: SkillEntry,
     pub skills_response: SkillsResponse,
     pub project_entry: ProjectEntry,
