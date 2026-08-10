@@ -34,6 +34,8 @@ pub async fn require_device(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string);
+    // Query tokens exist for WebSocket clients that cannot set headers.
+    // Request logging must therefore never log full request URIs.
     let token = header_token.or_else(|| query.get("token").cloned());
     let Some(token) = token else { return Err(StatusCode::UNAUTHORIZED) };
     let Some(device) = DeviceStore::open(&state.dir).verify(&token) else {
@@ -50,6 +52,9 @@ async fn whoami(Extension(device): Extension<Device>) -> Json<serde_json::Value>
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/whoami", get(whoami))
+        // IMPORTANT: route_layer only wraps routes registered BEFORE it is
+        // called. Add every new protected .route(...) ABOVE this line, or it
+        // ships unauthenticated.
         .route_layer(middleware::from_fn_with_state(state.clone(), require_device));
     Router::new()
         .route("/v1/health", get(health))

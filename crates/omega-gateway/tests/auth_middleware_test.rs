@@ -27,6 +27,7 @@ async fn whoami_requires_valid_token() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["name"], "iphone");
+    assert!(!body["device_id"].as_str().unwrap().is_empty());
     // good token via query param → 200
     assert_eq!(client.get(format!("{base}/v1/whoami?token={token}")).send().await.unwrap().status(), 200);
     // health stays public
