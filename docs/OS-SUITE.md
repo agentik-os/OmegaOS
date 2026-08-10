@@ -11,18 +11,25 @@ of truth for names, slugs, taglines and order).
 
 ## The suite
 
-The BUILD CHAIN comes first, in pipeline order — 1 Blueprint (define) ->
-2 Stepper (execute) -> 3 Builder (ship) — then the personal OSes.
+The BUILD CHAIN is its own group, in pipeline order:
+`01 Ideation -> 02 Researcher -> 03 Blueprint -> 04 Designer (UX/UI) -> 05 Stepper -> 06 Builder`.
 
 | # | OS | Slug | Focus | Status |
 |---|----|------|-------|--------|
-| 1 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen Stepper handoff | **integrated** |
-| 2 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
-| 3 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
-| 4 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
-| 5 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
-| 6 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
-| 7 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** (wraps the canonical librarian/alexandria system) |
+| 01 | Ideation OS | `ideation-os` | Idea generation and capture | awaiting drop |
+| 02 | Researcher OS | `researcher-os` | Market and user research: validate before blueprinting | awaiting drop |
+| 03 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen handoff | **integrated** |
+| 04 | Designer OS (UX/UI) | `designer-os` | Contracts turned into screens, flows and a design system | awaiting drop |
+| 05 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
+| 06 | Builder OS | `builder-os` | The implementation runtime: the Stepper roadmap executed into release-ready code | **integrated** |
+
+Personal OSes:
+
+| OS | Slug | Focus | Status |
+|----|------|-------|--------|
+| Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
+| Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
+| Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
 directory holding only its scaffold (placeholder README, `MASTER.md`,
@@ -125,14 +132,20 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   expect Convex/Next.js app payloads or prompt-pack payloads. If an OS ships
   as an APP, the `engine/` slot holds the app and `bin/omega-<name>` launches
   dev/deploy; the R-BLUEPRINT-STACK chain governs any new app build.
-- **Brainstorm OS** - pairs with the existing brainstorming skill; the OS
-  payload should absorb it as its Claude surface, not duplicate it.
+- **Ideation OS** (renamed from Brainstorm OS) - pairs with the existing
+  brainstorming skill; the payload should absorb it, not duplicate it.
+- **Researcher OS** - the live primitive today is the marketing suite's
+  market-research skill; the payload organizes evidence-backed validation.
+- **Designer OS (UX/UI)** - the design router (R-DESIGN, 130+ skills) and
+  Open Design are the live surfaces; the payload will organize them into the
+  chain, never duplicate them.
 - **Blueprint OS** - INTEGRATED (v3, the definition compiler). The v1
   14-phase designer is archived at `skills/blueprint-os/legacy/`; its scripts
   (blueprint-check.sh, stax_derive, runner) stay live for the `/stack` chain
   (R-BLUEPRINT-STACK). Extend the v3 pack, never fork the surface.
-- **Builder OS** - downstream of Stepper: expect it to consume Stepper's
-  release gate as its input contract.
+- **Builder OS** - INTEGRATED (v1, the implementation runtime): consumes the
+  frozen Blueprint handoff, executes the Stepper roadmap, gates BG01-BG20,
+  finalize = frozen engineering/operations handoff.
 - **Books OS** - already integrated as the wrapper around the canonical
   librarian system (`agents/librarian.md` + the alexandria skill); future
   payloads extend that canon, never fork it.

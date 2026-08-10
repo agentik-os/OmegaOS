@@ -9,6 +9,18 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Which group of the suite an OS belongs to — the TUI renders one section
+/// per group, build chain first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OsGroup {
+    /// The product pipeline, in chain order:
+    /// 01 Ideation → 02 Researcher → 03 Blueprint → 04 Designer (UX/UI) →
+    /// 05 Stepper → 06 Builder.
+    BuildChain,
+    /// The personal operative systems (Mindset, Habits, Books, …).
+    Personal,
+}
+
 /// One operative system of the suite — the static half (identity). The single
 /// source of truth: the TUI tab, `OS/README.md` and install parity all derive
 /// from `OsProduct::all()`; add or reorder an OS HERE.
@@ -20,50 +32,83 @@ pub struct OsProduct {
     pub name: &'static str,
     /// One-line focus shown in the detail pane.
     pub tagline: &'static str,
+    /// The suite group this OS renders under.
+    pub group: OsGroup,
 }
 
 impl OsProduct {
-    /// The suite. The BUILD CHAIN comes first, in pipeline order —
-    /// 1 Blueprint (define) → 2 Stepper (execute) → 3 Builder (ship) —
-    /// then the personal OSes.
+    /// The suite. The BUILD CHAIN first, in pipeline order (01→06), then the
+    /// personal OSes. Chain position = index within the BuildChain group + 1.
     pub fn all() -> &'static [OsProduct] {
         &[
+            OsProduct {
+                slug: "ideation-os",
+                name: "Ideation OS",
+                tagline: "Idea generation and capture: produce, rank and store the ideas the chain starts from.",
+                group: OsGroup::BuildChain,
+            },
+            OsProduct {
+                slug: "researcher-os",
+                name: "Researcher OS",
+                tagline: "Market and user research: validate the idea with evidence before it is blueprinted.",
+                group: OsGroup::BuildChain,
+            },
             OsProduct {
                 slug: "blueprint-os",
                 name: "Blueprint OS",
                 tagline: "The product-definition compiler: idea to a traceable, gated definition pack.",
+                group: OsGroup::BuildChain,
+            },
+            OsProduct {
+                slug: "designer-os",
+                name: "Designer OS (UX/UI)",
+                tagline: "UX and UI design: contracts turned into screens, flows and a design system.",
+                group: OsGroup::BuildChain,
             },
             OsProduct {
                 slug: "stepper-os",
                 name: "Stepper OS",
                 tagline: "Step-by-step execution: a blueprint walked one verified step at a time.",
+                group: OsGroup::BuildChain,
             },
             OsProduct {
                 slug: "builder-os",
                 name: "Builder OS",
-                tagline: "Building and shipping: assemble, test and deliver the product.",
+                tagline: "The implementation runtime: the Stepper roadmap executed into release-ready code.",
+                group: OsGroup::BuildChain,
             },
             OsProduct {
                 slug: "mindset-os",
                 name: "Mindset OS",
                 tagline: "Mental models and mindset engineering: how you think before you build.",
+                group: OsGroup::Personal,
             },
             OsProduct {
                 slug: "habits-os",
                 name: "Habits OS",
                 tagline: "Habit design, tracking and consistency: intent turned into daily execution.",
-            },
-            OsProduct {
-                slug: "brainstorm-os",
-                name: "Brainstorm OS",
-                tagline: "Idea generation and capture: produce, rank and store ideas.",
+                group: OsGroup::Personal,
             },
             OsProduct {
                 slug: "books-os",
                 name: "Books OS",
                 tagline: "Your library as an operating system: reading, retention and living knowledge.",
+                group: OsGroup::Personal,
             },
         ]
+    }
+
+    /// "01"…"06" for build-chain OSes (their pipeline position), None for
+    /// personal OSes. Derived from registry order — never hand-numbered.
+    pub fn chain_position(&self) -> Option<usize> {
+        if self.group != OsGroup::BuildChain {
+            return None;
+        }
+        Self::all()
+            .iter()
+            .filter(|p| p.group == OsGroup::BuildChain)
+            .position(|p| p.slug == self.slug)
+            .map(|i| i + 1)
     }
 }
 
@@ -245,15 +290,34 @@ mod tests {
         assert_eq!(
             slugs,
             vec![
+                "ideation-os",
+                "researcher-os",
                 "blueprint-os",
+                "designer-os",
                 "stepper-os",
                 "builder-os",
                 "mindset-os",
                 "habits-os",
-                "brainstorm-os",
                 "books-os"
             ]
         );
+    }
+
+    #[test]
+    fn chain_positions_are_derived_and_personal_oses_have_none() {
+        let by_slug = |slug: &str| {
+            OsProduct::all()
+                .iter()
+                .find(|p| p.slug == slug)
+                .unwrap()
+                .chain_position()
+        };
+        assert_eq!(by_slug("ideation-os"), Some(1));
+        assert_eq!(by_slug("blueprint-os"), Some(3));
+        assert_eq!(by_slug("stepper-os"), Some(5));
+        assert_eq!(by_slug("builder-os"), Some(6));
+        assert_eq!(by_slug("books-os"), None);
+        assert_eq!(by_slug("mindset-os"), None);
     }
 
     #[test]

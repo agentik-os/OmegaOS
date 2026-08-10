@@ -3471,12 +3471,12 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { th::accent() } else { th::dim() };
     let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
 
-    // ── Left: the suite, in product order ────────────────────────────────────
+    // ── Left: the suite, grouped — Build chain (01→06) then Personal ─────────
     let mut items: Vec<ListItem> = Vec::new();
     items.push(ListItem::new(Line::from("")));
-    items.push(group_header("AgentikOS suite"));
     let mut rendered_selected = 1usize;
     if app.os_entries.is_empty() {
+        items.push(group_header("AgentikOS suite"));
         items.push(section_row(
             "(loading — F5 to rescan)".to_string(),
             true,
@@ -3484,16 +3484,27 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
         ));
         rendered_selected = items.len() - 1;
     } else {
+        let mut last_group: Option<omega_core::os_products::OsGroup> = None;
         for (i, e) in app.os_entries.iter().enumerate() {
+            if last_group != Some(e.product.group) {
+                if last_group.is_some() {
+                    items.push(ListItem::new(Line::from("")));
+                }
+                items.push(group_header(match e.product.group {
+                    omega_core::os_products::OsGroup::BuildChain => "Build chain",
+                    omega_core::os_products::OsGroup::Personal => "Personal",
+                }));
+                last_group = Some(e.product.group);
+            }
             let current = i == app.os_selected;
             if current {
                 rendered_selected = items.len();
             }
-            items.push(section_row(
-                format!("{} {}", e.glyph(), e.product.name),
-                current,
-                current && list_focused,
-            ));
+            let label = match e.product.chain_position() {
+                Some(n) => format!("{} {:02} · {}", e.glyph(), n, e.product.name),
+                None => format!("{} {}", e.glyph(), e.product.name),
+            };
+            items.push(section_row(label, current, current && list_focused));
         }
     }
 

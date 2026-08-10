@@ -113,17 +113,19 @@ Three ways in: the `ratatui` TUI (7 tabs: Sessions, Projects, OS, Menu, System, 
 
 OmegaOS ships the AgentikOS product line of operative systems under [`OS/`](OS/), surfaced in the TUI's **OS** tab and installed to `~/.omega/os/`:
 
+The build chain is its own group — `01 Ideation -> 02 Researcher -> 03 Blueprint -> 04 Designer (UX/UI) -> 05 Stepper -> 06 Builder` — followed by the personal OSes:
+
 | # | OS | Focus | Status |
 |---|----|-------|--------|
-| 1 | **Blueprint OS** | The product-definition compiler (v3): idea -> traceable, gated definition pack | **integrated** |
-| 2 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
-| 3 | Builder OS | Building and shipping the product | awaiting drop |
-| 4 | Mindset OS | Mental models, mindset engineering | awaiting drop |
-| 5 | Habits OS | Habit design, tracking, consistency | awaiting drop |
-| 6 | Brainstorm OS | Idea generation and capture | awaiting drop |
-| 7 | **Books OS** | Your library as an OS: reading, retention, living knowledge | **integrated** |
+| 01 | Ideation OS | Idea generation and capture | awaiting drop |
+| 02 | Researcher OS | Market and user research | awaiting drop |
+| 03 | **Blueprint OS** | The product-definition compiler (v3) | **integrated** |
+| 04 | Designer OS (UX/UI) | Screens, flows, design system | awaiting drop |
+| 05 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
+| 06 | **Builder OS** | The implementation runtime: roadmap to release-ready code | **integrated** |
+| — | Mindset OS · Habits OS · **Books OS** | The personal OSes (Books OS is live: the librarian) | Books **integrated** |
 
-Every OS carries a **master agent** (`MASTER.md`): the TUI's Enter opens it as a session, and each OS can link its own **Telegram bot** (`T` in the OS tab, or `omega-os-bot <slug>`) whose brain is that same master agent — one brain, every surface. The build chain runs `Idea -> Blueprint -> Stepper -> Builder -> Ship`. **Blueprint OS v3** is live: a product-definition compiler over one canonical state — 38 sections, stable IDs, epistemic ledgers, 20 quality gates, and a frozen handoff Stepper consumes (`/blueprint <idea>` in Claude or Codex, `omega-blueprint` CLI for the state contract). **Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude or Codex) or the `omega-stepper` CLI. **Books OS** is live too: the librarian / knowledge system (X-ray a book, idea atlas, author combat, flashcards, spaced repetition, /best 50 books on any topic) as `/books-os` (= the alexandria skill), the `omega-books` CLI, or its own Telegram librarian bot. The convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
+Every OS carries a **master agent** (`MASTER.md`): the TUI's Enter opens it as a session, and each OS can link its own **Telegram bot** (`T` in the OS tab, or `omega-os-bot <slug>`) whose brain is that same master agent — one brain, every surface. The build chain runs `Idea -> Blueprint -> Stepper -> Builder -> Ship`. **Builder OS** is live: the autonomous implementation runtime (`/build`) that executes the frozen Blueprint handoff through the Stepper roadmap into tested, reviewed, release-ready code — evidence-gated (BG01-BG20, `omega-builder` state CLI). **Blueprint OS v3** is live: a product-definition compiler over one canonical state — 38 sections, stable IDs, epistemic ledgers, 20 quality gates, and a frozen handoff Stepper consumes (`/blueprint <idea>` in Claude or Codex, `omega-blueprint` CLI for the state contract). **Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude or Codex) or the `omega-stepper` CLI. **Books OS** is live too: the librarian / knowledge system (X-ray a book, idea atlas, author combat, flashcards, spaced repetition, /best 50 books on any topic) as `/books-os` (= the alexandria skill), the `omega-books` CLI, or its own Telegram librarian bot. The convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
 
 ## The doctrine
 

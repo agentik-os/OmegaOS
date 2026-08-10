@@ -1959,7 +1959,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os stack; do
+for BSK in blueprint-os builder-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -1993,6 +1993,23 @@ read and follow the complete instructions in:
 Modes: NEW / RECOVER / EXTEND / REVISE / AUDIT / DELTA · state CLI:
 \`omega-blueprint\` · boundary: stops at BLUEPRINT COMPLETE — STEPPER READY
 (then Stepper OS, \`omega-stepper\`).
+EOF
+        fi
+        # Builder OS also registers the short `/build` alias (the pack's
+        # command family: /build preflight/status/plan/run/step/test/verify/
+        # repair/audit/resume/pause/release-check/report).
+        if [[ "$BSK" == "builder-os" ]]; then
+            cat > "$BCMD/build.md" <<EOF
+# /build
+
+Builder OS — the autonomous implementation runtime. Alias of /builder-os:
+read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+It executes the FROZEN Blueprint handoff through the Stepper roadmap
+(\`omega-stepper\`) into release-ready code; state CLI: \`omega-builder\`
+(gates BG01-BG20, finalize). Never a competing TODO list.
 EOF
         fi
         ok "Blueprint skill installed: $BSK → ~/.omega/skills/$BSK/ (/$BSK + /omg-$BSK)"
