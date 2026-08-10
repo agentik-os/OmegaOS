@@ -7,11 +7,17 @@ pub struct GatewayConfig {
     pub bind: String,
     pub stream_interval_ms: u64,
     pub stream_lines: u32,
+    pub chat_turn_timeout_ms: u64,
 }
 
 impl Default for GatewayConfig {
     fn default() -> Self {
-        Self { bind: "127.0.0.1:4477".into(), stream_interval_ms: 1000, stream_lines: 200 }
+        Self {
+            bind: "127.0.0.1:4477".into(),
+            stream_interval_ms: 1000,
+            stream_lines: 200,
+            chat_turn_timeout_ms: 300_000,
+        }
     }
 }
 
@@ -46,6 +52,7 @@ mod tests {
         assert_eq!(cfg.bind, "127.0.0.1:4477");
         assert_eq!(cfg.stream_interval_ms, 1000);
         assert_eq!(cfg.stream_lines, 200);
+        assert_eq!(cfg.chat_turn_timeout_ms, 300_000);
     }
 
     #[test]

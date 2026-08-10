@@ -5,6 +5,7 @@ pub mod config;
 pub mod fsperm;
 pub mod protocol;
 pub mod rmux;
+pub mod routes_chat;
 pub mod routes_pair;
 pub mod routes_sessions;
 pub mod server;

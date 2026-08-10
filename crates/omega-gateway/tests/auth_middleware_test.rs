@@ -13,7 +13,7 @@ async fn spawn(app: axum::Router) -> String {
 async fn whoami_requires_valid_token() {
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("iphone");
-    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg: GatewayConfig::default() });
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
     let base = spawn(app).await;
     let client = reqwest::Client::new();
 

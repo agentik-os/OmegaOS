@@ -1,4 +1,5 @@
 use crate::auth::{Device, DeviceStore};
+use crate::chat_store::ChatStore;
 use crate::config::GatewayConfig;
 use crate::protocol::WhoamiResponse;
 use axum::{
@@ -12,11 +13,28 @@ use axum::{
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+
+/// Global cap on concurrently-running chat turns (across all devices/chats).
+const MAX_CONCURRENT_CHAT_TURNS: usize = 8;
 
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
     pub cfg: GatewayConfig,
+    pub chats: Arc<ChatStore>,
+    pub chat_permits: Arc<Semaphore>,
+}
+
+impl AppState {
+    /// Builds the full app state, opening the chat store rooted at `dir` and
+    /// sizing the global chat-turn semaphore to [`MAX_CONCURRENT_CHAT_TURNS`].
+    pub fn new(dir: PathBuf, cfg: GatewayConfig) -> Self {
+        let chats = Arc::new(ChatStore::open(&dir));
+        let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
+        Self { dir, cfg, chats, chat_permits }
+    }
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -55,6 +73,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/whoami", get(whoami))
         .route("/v1/sessions", get(crate::routes_sessions::list))
         .route("/v1/sessions/{name}/stream", get(crate::routes_sessions::stream))
+        .route(
+            "/v1/chats",
+            get(crate::routes_chat::list).post(crate::routes_chat::create),
+        )
+        .route("/v1/chats/{id}", get(crate::routes_chat::get))
+        .route("/v1/chats/{id}/stream", get(crate::routes_chat::stream))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.

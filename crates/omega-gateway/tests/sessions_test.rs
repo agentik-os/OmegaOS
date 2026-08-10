@@ -33,7 +33,7 @@ async fn lists_sessions_from_rmux() {
 if [ "$1" = "ls" ]; then printf 'oracle-Verba-1\nworker-a\n'; exit 0; fi
 exit 1"#);
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg: GatewayConfig::default() });
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
     let base = spawn(app).await;
     let body: serde_json::Value = reqwest::Client::new()
         .get(format!("{base}/v1/sessions")).bearer_auth(&token)
@@ -49,7 +49,7 @@ async fn rmux_failure_yields_empty_list_with_error_not_500() {
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), "echo 'no server running' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg: GatewayConfig::default() });
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
     let base = spawn(app).await;
     let res = reqwest::Client::new()
         .get(format!("{base}/v1/sessions")).bearer_auth(&token).send().await.unwrap();

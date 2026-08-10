@@ -29,7 +29,7 @@ if [ $n -lt 2 ]; then echo "SCREEN-A"; else echo "SCREEN-B"; fi"#,
         dir.path().display()));
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
-    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg });
+    let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -55,7 +55,7 @@ async fn capture_failure_becomes_error_frame_and_loop_survives() {
     install_fake_rmux(dir.path(), "echo 'session not found' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
-    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg });
+    let app = build_router(AppState::new(dir.path().to_path_buf(), cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
