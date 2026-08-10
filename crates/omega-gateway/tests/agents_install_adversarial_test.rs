@@ -134,6 +134,105 @@ exit 1
     std::env::remove_var("OMEGA_BIN");
 }
 
+/// (1.5) Silent-child mid-stream disconnect: the P1 gap found by the
+/// whole-branch live-binary review of `mid_stream_client_disconnect_...`
+/// above. That test's fake nested installer keeps printing output every
+/// second even AFTER the disconnect, which means `install_stream_loop`'s
+/// next `send_install_frame` attempt fails and its (pre-existing)
+/// send-driven disconnect handling fires — so that test proves the
+/// process-group kill works, but cannot catch a loop that would otherwise
+/// never even ATTEMPT a send once the client is gone.
+///
+/// Here the nested installer prints exactly ONE line, then goes SILENT
+/// (`sleep`s) for well past this test's disconnect+wait window before
+/// touching its marker — mirroring the realistic case of a real
+/// `curl|sh`/`npm install` that goes quiet between progress lines, exactly
+/// when a user is most likely to get impatient and cancel. A gateway loop
+/// that only detects disconnection via a failed send would sit parked on
+/// `rx.recv().await` for the whole silent window, never notice the client
+/// closed the socket, and never kill the process group — so the marker
+/// WOULD eventually appear. The fix under test (`install_stream_loop`
+/// concurrently watching `socket.recv()` via `tokio::select!`) must notice
+/// the client's disconnect immediately, independent of any child output.
+///
+/// Uses a CLEAN WebSocket close handshake (`ws.close(None)`) rather than a
+/// raw drop — the realistic and sufficient case per the review brief (a
+/// clean close is the harder case for a send-driven loop to ever notice at
+/// all, since a raw TCP-RST at least eventually surfaces as a socket read
+/// error on some platforms/timings, whereas a byte-perfect clean close
+/// frame sitting unread in the kernel buffer produces no error signal to a
+/// loop that never reads the socket).
+#[tokio::test]
+async fn silent_child_after_clean_disconnect_still_gets_killed() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("silent-orphan-still-ran.marker");
+    install_fake_omega(
+        dir.path(),
+        &format!(
+            r#"
+if [ "$1" = "install" ]; then
+    echo "starting"
+    # Mirrors cmd_install's `Command::new("bash").args(["-c", cmd]).status()`:
+    # a foreground child of THIS script, not of the gateway's own Command.
+    # Prints nothing further, then goes silent (no output at all — the case
+    # a send-driven-only disconnect check can never observe) well past this
+    # test's disconnect+wait window before touching the marker.
+    bash -c '
+        sleep 5
+        touch "{marker}"
+    '
+fi
+"#,
+            marker = marker.display()
+        ),
+    );
+    let (_, token) = DeviceStore::open(dir.path()).issue("t");
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
+    let (mut ws, _) = connect_async(url).await.unwrap();
+
+    // Read exactly the first frame ("starting"), then send a CLEAN close
+    // handshake — before the nested installer's silent sleep even starts
+    // counting down, and well before it would ever touch the marker.
+    let first = ws.next().await.unwrap().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&first.into_text().unwrap()).unwrap();
+    assert_eq!(v["text"], "starting");
+    ws.close(None).await.unwrap();
+    drop(ws);
+
+    assert!(!marker.exists(), "marker must not exist yet — installer hasn't reached it");
+
+    // Give the server up to 8s — comfortably past the nested installer's 5s
+    // silent sleep — to (a) notice the clean close via the socket-read
+    // branch (no send is ever attempted here, since the child produces no
+    // further output) and (b) group-kill the child. Poll rather than check
+    // once instantly, exactly like the chatty-disconnect test above, so a
+    // pass is never an accident of timing.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline {
+        assert!(
+            !marker.exists(),
+            "the marker WAS written: the SILENT nested installer kept running to \
+             completion after a clean client disconnect the gateway never noticed. \
+             A send-driven-only disconnect check never attempts a send when the child \
+             produces no further output, so it never fires — the loop must also read \
+             the socket itself (tokio::select! on socket.recv()) to catch this."
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(
+        !marker.exists(),
+        "the marker WAS written at the deadline: the silent nested installer survived \
+         the disconnect — the read-driven fix did not actually catch a client that \
+         disconnects while the child has gone quiet."
+    );
+
+    std::env::remove_var("OMEGA_BIN");
+}
+
 /// (2) Mid-stream client disconnect: proves (or falsifies) the claim that
 /// killing on client-disconnect actually stops the real work, including
 /// the nested process the direct child itself spawns.

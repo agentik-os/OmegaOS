@@ -185,6 +185,39 @@ async fn kill_process_group(pid: u32) {
     .await;
 }
 
+/// Shared disconnect-cleanup, called from BOTH places [`install_stream_loop`]
+/// can learn the client is gone: a failed send on the mpsc-forwarding branch
+/// (the pre-existing belt-and-suspenders path — still fires when the child
+/// is chatty enough to hit a dead socket) and the socket-read branch (the
+/// fix this function exists for — catches a disconnect even when the child
+/// has gone quiet and no send would ever be attempted). Drops `rx` FIRST so
+/// any forwarder currently blocked on a full channel gets an immediate send
+/// error and returns, instead of `stdout_task`/`stderr_task` below
+/// deadlocking on a channel nobody is draining anymore, then kills the WHOLE
+/// process group (see [`kill_process_group`]'s doc comment) rather than just
+/// the direct `omega` PID, falling back to the single-PID `child.kill()`
+/// only in the near-impossible case `child.id()` already returned `None`.
+async fn kill_and_drain(
+    rx: mpsc::Receiver<AgentInstallStreamMsg>,
+    mut child: tokio::process::Child,
+    child_pid: Option<u32>,
+    stdout_task: tokio::task::JoinHandle<()>,
+    stderr_task: tokio::task::JoinHandle<()>,
+) {
+    drop(rx);
+    match child_pid {
+        Some(pid) => {
+            kill_process_group(pid).await;
+            let _ = child.wait().await;
+        }
+        None => {
+            let _ = child.kill().await;
+        }
+    }
+    let _ = stdout_task.await;
+    let _ = stderr_task.await;
+}
+
 /// Runs `omega install <agent.name()>` and streams its output to `socket`:
 /// every stdout/stderr line as a `Line` frame (in the order EACH stream
 /// produced them; the interleaving ORDER BETWEEN the two streams is not
@@ -255,32 +288,57 @@ async fn install_stream_loop(mut socket: WebSocket, agent: Agent) {
     // have dropped their clones (i.e. both pipes hit EOF), not before.
     drop(tx);
 
-    while let Some(frame) = rx.recv().await {
-        if send_install_frame(&mut socket, &frame).await.is_err() {
-            // Client gone: stop forwarding and kill the child now rather
-            // than waiting for it to finish on its own. Drop `rx` FIRST so
-            // any forwarder currently blocked on a full channel gets an
-            // immediate send error and returns, instead of the awaits below
-            // deadlocking on a channel nobody is draining anymore.
-            drop(rx);
-            // Kill the WHOLE process group (see the doc comment above and
-            // `kill_process_group`), not just the direct `omega` PID — a
-            // plain `child.kill()` here would leave a nested `bash -c
-            // <install_command>` orphaned and still running. Fall back to
-            // the single-PID `child.kill()` only in the near-impossible
-            // case `child.id()` already returned `None`.
-            match child_pid {
-                Some(pid) => {
-                    kill_process_group(pid).await;
-                    let _ = child.wait().await;
-                }
-                None => {
-                    let _ = child.kill().await;
+    // Read-driven disconnect detection: watch BOTH the internal mpsc channel
+    // (frames to forward) AND the socket itself (the client's side of the
+    // connection) concurrently. Send-failure alone is NOT enough — it only
+    // fires as a side effect of attempting to forward a frame, so a child
+    // that goes quiet after the client disconnects (the common, realistic
+    // case for a real `curl|sh`/`npm install` between progress lines) would
+    // otherwise leave this loop parked on `rx.recv().await` forever, never
+    // noticing the client is gone and never killing the process group. The
+    // socket-read branch below fixes that: it drains inbound messages so a
+    // clean WS close frame, a socket error, or the stream simply ending
+    // (TCP-RST-style) are all noticed WITHOUT depending on any outbound send
+    // ever being attempted.
+    loop {
+        tokio::select! {
+            frame = rx.recv() => {
+                match frame {
+                    Some(frame) => {
+                        if send_install_frame(&mut socket, &frame).await.is_err() {
+                            // Belt-and-suspenders: still handle the
+                            // send-failure case exactly as before (a chatty
+                            // child that keeps producing output after the
+                            // client is gone will hit this before the
+                            // socket-read branch below even fires).
+                            kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                            return;
+                        }
+                    }
+                    // Both forwarders finished (their tx clones dropped ->
+                    // both pipes hit EOF): fall through to the post-loop
+                    // "wait on child, send Exit frame" tail below.
+                    None => break,
                 }
             }
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            return;
+            msg = socket.recv() => {
+                match msg {
+                    // Stream ended, a socket error, or the client's own
+                    // clean close frame: this IS the client disconnecting,
+                    // regardless of whether the child has produced (or will
+                    // ever produce) any more output for us to try sending.
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => {
+                        kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                        return;
+                    }
+                    // Any other inbound message (Ping/Pong/Text/Binary) —
+                    // this endpoint is server-push-only, the client isn't
+                    // expected to send app-level messages, but the socket
+                    // still needs draining to actually observe its
+                    // lifecycle. Not a disconnect: keep looping.
+                    Some(Ok(_)) => {}
+                }
+            }
         }
     }
 
