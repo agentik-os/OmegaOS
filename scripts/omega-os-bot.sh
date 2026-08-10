@@ -61,15 +61,35 @@ if [ "$SLUG" = "books-os" ] && [ -f "$OMEGA_DIR/agents/librarian.md" ]; then
 fi
 [ -f "$PERSONA" ] || die "no master persona at $PERSONA (re-run install.sh)"
 
+[ -f "$BOTS" ] || echo '{}' > "$BOTS"
+
+# ── legacy absorption (Books OS): the pre-suite 'librarian' bot IS the Books
+# OS master agent. Adopt its token when none is given, and remove the legacy
+# entry + unit after wiring, so ONE service polls the token (two pollers on
+# one token = the classic mute-bot getUpdates conflict).
+LEGACY_KEY=""
+LEGACY_TOKEN=""
+if [ "$SLUG" = "books-os" ]; then
+    LEGACY_TOKEN="$(python3 - "$BOTS" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(d.get("librarian", {}).get("token", ""))
+PY
+)"
+    [ -n "$LEGACY_TOKEN" ] && LEGACY_KEY="librarian"
+fi
+
 TOKEN="${2:-}"
+if [ -z "$TOKEN" ] && [ -n "$LEGACY_TOKEN" ]; then
+    TOKEN="$LEGACY_TOKEN"
+    echo "  → adopting the existing librarian bot (same brain) — no new token needed"
+fi
 if [ -z "$TOKEN" ]; then
     echo "  Create the bot first: Telegram -> @BotFather -> /newbot"
     printf "  Paste the bot token: "
     read -r TOKEN
 fi
 [ -n "$TOKEN" ] || die "no token given"
-
-[ -f "$BOTS" ] || echo '{}' > "$BOTS"
 
 # ── the operator's own id, from the master bridge config ──────────────────
 OPERATOR="$(grep -E '^[[:space:]]*chat_id' "$TG" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)"
@@ -104,6 +124,23 @@ json.dump(d, open(f, "w"), indent=1, ensure_ascii=False)
 os.chmod(f, 0o600)
 PY
 echo "  → agent-bots.json: '$KEY' → persona $(basename "$PERSONA") (mode 600)"
+
+# ── retire the absorbed legacy entry BEFORE starting the new unit: never two
+# pollers on one token, not even for a few seconds.
+if [ -n "$LEGACY_KEY" ]; then
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    systemctl --user disable --now "omega-tg-agent-${LEGACY_KEY}.service" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/omega-tg-agent-${LEGACY_KEY}.service"
+    python3 - "$BOTS" "$LEGACY_KEY" <<'PY'
+import json, os, sys
+f, key = sys.argv[1], sys.argv[2]
+d = json.load(open(f))
+d.pop(key, None)
+json.dump(d, open(f, "w"), indent=1, ensure_ascii=False)
+os.chmod(f, 0o600)
+PY
+    echo "  → legacy '$LEGACY_KEY' entry + unit retired (absorbed into $KEY — no duplicate poller)"
+fi
 
 # ── systemd unit: same shape as every other agent bot ──────────────────────
 mkdir -p "$UNIT_DIR"
