@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod auth;
 pub mod chat_driver;
 pub mod chat_store;

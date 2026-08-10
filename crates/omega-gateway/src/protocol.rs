@@ -71,6 +71,25 @@ pub struct ChatMessage {
     pub ts: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AccountKind {
+    Claude,
+    Codex,
+}
+
+/// Metadata for one isolated credential slot — METADATA ONLY, never
+/// credentials themselves (those live under the slot's hardened directory,
+/// out of band from this struct and never serialized here).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct Account {
+    pub slug: String,
+    pub label: String,
+    pub kind: AccountKind,
+    pub created_at: String,
+    pub is_default: bool,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ChatStreamServerMsg {
@@ -143,6 +162,8 @@ pub struct Protocol {
     pub mission: Mission,
     pub mission_task: MissionTask,
     pub gateway_event: GatewayEvent,
+    pub account: Account,
+    pub account_kind: AccountKind,
 }
 
 pub fn schema_json() -> String {
