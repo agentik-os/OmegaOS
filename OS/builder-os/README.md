@@ -1,6 +1,6 @@
 # Builder OS
 
-AgentikOS operative system #6 of the OS suite.
+AgentikOS operative system #3 of the OS suite.
 
 Building and shipping: the operating system that assembles, tests and delivers the product.
 

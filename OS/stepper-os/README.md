@@ -1,6 +1,6 @@
 # Stepper OS
 
-AgentikOS operative system #5 of the OS suite - **integrated**.
+AgentikOS operative system #2 of the build chain - **integrated**.
 
 Step-by-step execution: the operating system that walks a Blueprint one
 verified step at a time. Stepper is NOT the coding agent - it is the execution

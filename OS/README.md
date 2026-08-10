@@ -7,14 +7,16 @@ the TUI under the **OS** tab (`omega menu`) and installed to `~/.omega/os/` by
 
 ## The suite (in order)
 
+The BUILD CHAIN comes first, in pipeline order, then the personal OSes.
+
 | # | OS | Slug | Focus | Status |
 |---|----|------|-------|--------|
-| 1 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
-| 2 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
-| 3 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
-| 4 | Blueprint OS | `blueprint-os` | Product blueprints and design | awaiting drop |
-| 5 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
-| 6 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 1 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): idea -> traceable, gated definition pack | **integrated** |
+| 2 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
+| 3 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 4 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
+| 5 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
+| 6 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
 | 7 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Registry source of truth: `crates/omega-core/src/os_products.rs`

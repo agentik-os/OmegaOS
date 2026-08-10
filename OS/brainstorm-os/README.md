@@ -1,6 +1,6 @@
 # Brainstorm OS
 
-AgentikOS operative system #3 of the OS suite.
+AgentikOS operative system #6 of the OS suite.
 
 Idea generation and capture: the operating system for producing, ranking and storing ideas.
 

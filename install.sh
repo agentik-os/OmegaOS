@@ -1978,6 +1978,23 @@ Run the $BSK skill. Read and follow the complete instructions in:
 Use every reference, template, and script it provides.
 EOF
         done
+        # Blueprint OS v3 also registers the short `/blueprint` alias (the
+        # pack's canonical command: /blueprint <idea>, recover, extend, revise,
+        # audit, delta, continue, status, export).
+        if [[ "$BSK" == "blueprint-os" ]]; then
+            cat > "$BCMD/blueprint.md" <<EOF
+# /blueprint
+
+Blueprint OS v3 — the product-definition compiler. Alias of /blueprint-os:
+read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Modes: NEW / RECOVER / EXTEND / REVISE / AUDIT / DELTA · state CLI:
+\`omega-blueprint\` · boundary: stops at BLUEPRINT COMPLETE — STEPPER READY
+(then Stepper OS, \`omega-stepper\`).
+EOF
+        fi
         ok "Blueprint skill installed: $BSK → ~/.omega/skills/$BSK/ (/$BSK + /omg-$BSK)"
     else
         info "Blueprint skill $BSK not found — skipping"

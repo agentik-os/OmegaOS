@@ -23,9 +23,26 @@ pub struct OsProduct {
 }
 
 impl OsProduct {
-    /// The suite, in the operator's product order.
+    /// The suite. The BUILD CHAIN comes first, in pipeline order —
+    /// 1 Blueprint (define) → 2 Stepper (execute) → 3 Builder (ship) —
+    /// then the personal OSes.
     pub fn all() -> &'static [OsProduct] {
         &[
+            OsProduct {
+                slug: "blueprint-os",
+                name: "Blueprint OS",
+                tagline: "The product-definition compiler: idea to a traceable, gated definition pack.",
+            },
+            OsProduct {
+                slug: "stepper-os",
+                name: "Stepper OS",
+                tagline: "Step-by-step execution: a blueprint walked one verified step at a time.",
+            },
+            OsProduct {
+                slug: "builder-os",
+                name: "Builder OS",
+                tagline: "Building and shipping: assemble, test and deliver the product.",
+            },
             OsProduct {
                 slug: "mindset-os",
                 name: "Mindset OS",
@@ -40,21 +57,6 @@ impl OsProduct {
                 slug: "brainstorm-os",
                 name: "Brainstorm OS",
                 tagline: "Idea generation and capture: produce, rank and store ideas.",
-            },
-            OsProduct {
-                slug: "blueprint-os",
-                name: "Blueprint OS",
-                tagline: "Product blueprints and design: an idea turned into a complete build plan.",
-            },
-            OsProduct {
-                slug: "stepper-os",
-                name: "Stepper OS",
-                tagline: "Step-by-step execution: a blueprint walked one verified step at a time.",
-            },
-            OsProduct {
-                slug: "builder-os",
-                name: "Builder OS",
-                tagline: "Building and shipping: assemble, test and deliver the product.",
             },
             OsProduct {
                 slug: "books-os",
@@ -243,12 +245,12 @@ mod tests {
         assert_eq!(
             slugs,
             vec![
-                "mindset-os",
-                "habits-os",
-                "brainstorm-os",
                 "blueprint-os",
                 "stepper-os",
                 "builder-os",
+                "mindset-os",
+                "habits-os",
+                "brainstorm-os",
                 "books-os"
             ]
         );

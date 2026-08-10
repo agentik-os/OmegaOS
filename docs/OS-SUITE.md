@@ -11,14 +11,17 @@ of truth for names, slugs, taglines and order).
 
 ## The suite
 
+The BUILD CHAIN comes first, in pipeline order — 1 Blueprint (define) ->
+2 Stepper (execute) -> 3 Builder (ship) — then the personal OSes.
+
 | # | OS | Slug | Focus | Status |
 |---|----|------|-------|--------|
-| 1 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
-| 2 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
-| 3 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
-| 4 | Blueprint OS | `blueprint-os` | Product blueprints and design | awaiting drop (the `/blueprint-os` skill already covers the design flow) |
-| 5 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
-| 6 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 1 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen Stepper handoff | **integrated** |
+| 2 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
+| 3 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 4 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
+| 5 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
+| 6 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
 | 7 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** (wraps the canonical librarian/alexandria system) |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -124,9 +127,10 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   dev/deploy; the R-BLUEPRINT-STACK chain governs any new app build.
 - **Brainstorm OS** - pairs with the existing brainstorming skill; the OS
   payload should absorb it as its Claude surface, not duplicate it.
-- **Blueprint OS** - the `/blueprint-os` skill (14 phases, 3 gates) is already
-  the design flow; the OS payload will vendor its pack and the two must not
-  fork: the skill becomes the Claude command of the OS.
+- **Blueprint OS** - INTEGRATED (v3, the definition compiler). The v1
+  14-phase designer is archived at `skills/blueprint-os/legacy/`; its scripts
+  (blueprint-check.sh, stax_derive, runner) stay live for the `/stack` chain
+  (R-BLUEPRINT-STACK). Extend the v3 pack, never fork the surface.
 - **Builder OS** - downstream of Stepper: expect it to consume Stepper's
   release gate as its input contract.
 - **Books OS** - already integrated as the wrapper around the canonical

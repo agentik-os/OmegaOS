@@ -1,6 +1,6 @@
 # Habits OS
 
-AgentikOS operative system #2 of the OS suite.
+AgentikOS operative system #5 of the OS suite.
 
 Habit design, tracking and consistency: the operating system that turns intent into daily execution.
 
