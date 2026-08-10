@@ -42,10 +42,20 @@ impl ChatStore {
         let path = self.meta_path(&meta.id);
         match serde_json::to_string_pretty(meta) {
             Ok(text) => {
-                if let Err(e) = std::fs::write(&path, text) {
-                    tracing::error!("failed to write {}: {e}", path.display());
+                // Atomic write: write to a temp sibling then rename, so a crash
+                // mid-write or a concurrent turn never leaves a torn meta.json
+                // that get() would read as None (the chat would transiently
+                // vanish from list()). rename(2) is atomic on the same fs.
+                let tmp = path.with_extension("json.tmp");
+                if let Err(e) = std::fs::write(&tmp, text) {
+                    tracing::error!("failed to write {}: {e}", tmp.display());
                 } else {
-                    harden_file(&path);
+                    harden_file(&tmp);
+                    if let Err(e) = std::fs::rename(&tmp, &path) {
+                        tracing::error!("failed to rename {} -> {}: {e}", tmp.display(), path.display());
+                    } else {
+                        harden_file(&path);
+                    }
                 }
             }
             Err(e) => tracing::error!("failed to serialize chat meta {}: {e}", meta.id),
