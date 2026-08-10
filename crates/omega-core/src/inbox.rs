@@ -167,7 +167,7 @@ impl Inbox {
         }
         let file = std::fs::File::open(&self.path)?;
         let reader = std::io::BufReader::new(file);
-        Ok(reader.lines().filter_map(|l| l.ok()).filter(|l| !l.trim().is_empty()).count())
+        Ok(reader.lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).count())
     }
 }
 

@@ -379,7 +379,7 @@ impl SessionManager {
         // Resolve with the same slug used at creation so a caller that kept the
         // original (possibly dirty) name still finds the session. Idempotent on
         // clean names — every menu/list path already passes the real name.
-        let session_name = SessionName::new(&sanitize_session_name(name))?;
+        let session_name = SessionName::new(sanitize_session_name(name))?;
         self.rmux
             .session(session_name)
             .await
@@ -941,13 +941,16 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
         }
         // Trim trailing all-blank spans to keep lines tight.
-        while line.last().map_or(false, |s| s.text.trim().is_empty() && s.bg.is_none()) {
+        while line
+            .last()
+            .is_some_and(|s| s.text.trim().is_empty() && s.bg.is_none())
+        {
             line.pop();
         }
         out.push(line);
     }
     // Drop trailing blank rows.
-    while out.last().map_or(false, |l| l.is_empty()) {
+    while out.last().is_some_and(|l| l.is_empty()) {
         out.pop();
     }
     out

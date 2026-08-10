@@ -76,9 +76,9 @@ fn read_meminfo() -> Option<(u64, u64)> {
         let mut avail_kb = 0u64;
         for line in s.lines() {
             if let Some(rest) = line.strip_prefix("MemTotal:") {
-                total_kb = rest.trim().split_whitespace().next()?.parse().ok()?;
+                total_kb = rest.split_whitespace().next()?.parse().ok()?;
             } else if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                avail_kb = rest.trim().split_whitespace().next()?.parse().ok()?;
+                avail_kb = rest.split_whitespace().next()?.parse().ok()?;
             }
         }
         if total_kb == 0 {

@@ -200,7 +200,7 @@ impl PlanTracker {
     ///     the run deadlocks; `plan-status` advertises this validate() as the
     ///     pre-flight gate that "proves no cycle", so the check lives HERE,
     ///     not only in plan-run).
-    /// Returns every issue at once (don't make the operator fix one at a time).
+    ///     Returns every issue at once (don't make the operator fix one at a time).
     ///
     /// Two strictness levels:
     ///   - `validate()` — authoring-time gate (plan-status): everything above
@@ -648,10 +648,10 @@ impl PlanTracker {
         let mut in_stack = std::collections::HashSet::new();
 
         for step in &self.steps {
-            if !visited.contains(&step.step_id) {
-                if self.has_cycle(&step.step_id, &mut visited, &mut in_stack) {
-                    return false;
-                }
+            if !visited.contains(&step.step_id)
+                && self.has_cycle(&step.step_id, &mut visited, &mut in_stack)
+            {
+                return false;
             }
         }
         true

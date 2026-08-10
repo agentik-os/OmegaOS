@@ -301,7 +301,7 @@ impl ProvidersConfig {
 
     /// True if the provider exists in the catalog.
     pub fn is_known(provider: &str) -> bool {
-        Self::all_providers().iter().any(|p| *p == provider)
+        Self::all_providers().contains(&provider)
     }
 
     /// Static execution capabilities used by the router before a session is

@@ -999,6 +999,8 @@ impl Dispatcher {
     /// asking Atlas for "this mission on Codex"). `None` keeps the configured
     /// default, so the global `agent_command` stays the fallback rather than
     /// something every caller has to know about.
+    // Sequential assignments retain per-field documentation that a struct literal would destroy.
+    #[allow(clippy::field_reassign_with_default)]
     pub async fn dispatch_oracle_with_agent(
         &self,
         project: &str,
@@ -1489,6 +1491,8 @@ impl Dispatcher {
     /// Re-spawn a crashed oracle from its persisted OracleState — survives a
     /// daemon restart or an accidental kill. Returns whether it was actually
     /// resurrected, was already alive, or had no saved state.
+    // Sequential assignments retain per-field documentation that a struct literal would destroy.
+    #[allow(clippy::field_reassign_with_default)]
     pub async fn resurrect_oracle(&self, oracle_name: &str) -> Result<ResurrectOutcome> {
         let state = match OracleState::read(&self.config.state_dir, oracle_name)? {
             Some(s) => s,

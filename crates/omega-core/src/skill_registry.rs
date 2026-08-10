@@ -1141,8 +1141,8 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
     if description.is_empty() {
         for line in &lines {
             let trimmed = line.trim();
-            if trimmed.starts_with("# ") {
-                description = trimmed[2..].to_string();
+            if let Some(stripped) = trimmed.strip_prefix("# ") {
+                description = stripped.to_string();
                 break;
             }
         }

@@ -181,7 +181,7 @@ impl IntentParser {
                     } else {
                         base_conf * 0.9
                     };
-                    if best.map_or(true, |(_, c)| conf > c) {
+                    if best.is_none_or(|(_, c)| conf > c) {
                         best = Some((action, conf));
                     }
                     break;
@@ -294,7 +294,7 @@ fn extract_target(text: &str, action: IntentAction) -> Option<String> {
 
     // For slash commands, target is everything after the command
     if lower.starts_with('/') {
-        let rest = text.splitn(2, ' ').nth(1)?;
+        let rest = text.split_once(' ')?.1;
         let trimmed = rest.trim();
         if trimmed.is_empty() { return None; }
         return Some(trimmed.to_string());

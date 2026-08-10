@@ -180,7 +180,7 @@ pub(crate) fn provider(
                     && (matches!(*token, "openai" | "o1" | "o3" | "o4") || token.starts_with("gpt"))
         }) {
             Some(Provider::Codex)
-        } else if tokens.iter().any(|token| *token == "gemini") {
+        } else if tokens.contains(&"gemini") {
             Some(Provider::Gemini)
         } else {
             None

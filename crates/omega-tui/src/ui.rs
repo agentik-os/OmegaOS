@@ -549,12 +549,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         ),
         InputMode::NewNamedSession(ref agent) => {
             let title = format!("New {} session", agent);
-            let hint = format!("Session name (Enter to launch, Esc to cancel)");
+            let hint = "Session name (Enter to launch, Esc to cancel)".to_string();
             draw_simple_input_modal_owned(frame, app, &title, &hint, false);
         }
         InputMode::DispatchProject(..) => draw_dispatch_picker(frame, app),
         InputMode::DispatchMission(ref p) => {
-            let title = format!("Dispatch oracle — step 2/2");
+            let title = "Dispatch oracle — step 2/2".to_string();
             let hint = format!("Mission for project '{}' (Enter to dispatch, Esc to cancel)", p);
             draw_simple_input_modal_owned(frame, app, &title, &hint, false);
         }
@@ -1466,11 +1466,11 @@ pub(crate) fn draw_sessions_right(
         // cursor sits in that box — so require the cursor row to be an input
         // line whose content starts with a menu trigger (/ @ #).
         const ACCENT: PreviewColor = PreviewColor::Indexed(12); // Claude's bright-blue selection accent
-        let menu_open = app.preview_cursor.map_or(false, |(crow, _, _)| {
-            styled.get(crow as usize).map_or(false, |row| {
+        let menu_open = app.preview_cursor.is_some_and(|(crow, _, _)| {
+            styled.get(crow as usize).is_some_and(|row| {
                 let text: String = row.iter().map(|s| s.text.as_str()).collect();
                 let after_prompt = text.trim_start().strip_prefix('❯');
-                after_prompt.map_or(false, |rest| {
+                after_prompt.is_some_and(|rest| {
                     matches!(rest.trim_start().chars().next(), Some('/' | '@' | '#'))
                 })
             })
@@ -1483,7 +1483,7 @@ pub(crate) fn draw_sessions_right(
                     && row
                         .iter()
                         .find(|s| !s.text.trim().is_empty())
-                        .map_or(false, |s| s.fg == Some(ACCENT));
+                        .is_some_and(|s| s.fg == Some(ACCENT));
 
                 if is_selected {
                     // Selected line: the same highlight every other selection in
@@ -3196,7 +3196,7 @@ fn render_settings_detail(
         "  Config files: ~/.omega/config.toml  ~/.omega/providers.toml",
         Style::default().fg(th::dim()),
     )));
-    return (lines, selected_line);
+    (lines, selected_line)
 }
 
 /// Mask sensitive characters in an inline input (show prefix/suffix only).

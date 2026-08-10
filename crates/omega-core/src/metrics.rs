@@ -71,7 +71,7 @@ impl SessionMetrics {
 
         let shell_signals = ["$ ", "# ", "% ", "@"];
         for sig in &shell_signals {
-            if last_lines.first().map_or(false, |l| l.contains(sig)) {
+            if last_lines.first().is_some_and(|l| l.contains(sig)) {
                 return SessionStatus::Shell;
             }
         }
@@ -98,7 +98,6 @@ impl SessionMetrics {
             for line in content.lines() {
                 if let Some(rest) = line.strip_prefix("VmRSS:") {
                     let kb: u64 = rest
-                        .trim()
                         .split_whitespace()
                         .next()
                         .and_then(|s| s.parse().ok())

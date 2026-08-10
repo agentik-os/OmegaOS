@@ -103,7 +103,7 @@ fn last_active_days(path: &Path) -> Option<u64> {
         let p = if probe.is_empty() { path.to_path_buf() } else { path.join(probe) };
         if let Ok(meta) = std::fs::metadata(&p) {
             if let Ok(m) = meta.modified() {
-                if newest.map_or(true, |n| m > n) {
+                if newest.is_none_or(|n| m > n) {
                     newest = Some(m);
                 }
             }

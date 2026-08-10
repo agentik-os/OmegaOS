@@ -42,7 +42,7 @@ fn newest_jsonl(dir: &Path) -> Option<PathBuf> {
         }
         let Ok(meta) = entry.metadata() else { continue };
         let Ok(m) = meta.modified() else { continue };
-        if best.as_ref().map_or(true, |(bt, _)| m > *bt) {
+        if best.as_ref().is_none_or(|(bt, _)| m > *bt) {
             best = Some((m, p));
         }
     }

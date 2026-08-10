@@ -4,7 +4,7 @@
 //!
 //! Files we read (read-only):
 //! - `~/.omega/state/usage.json`       — live billing percentages (written by
-//!                                       the native `omega usage --check` cron)
+//!   the native `omega usage --check` cron)
 //! - `~/.claude/.credentials.json`     — current OAuth credentials
 //! - `~/.claude/accounts/*.json`       — saved account profiles
 //! - `~/.omega/telegram.toml`          — Omega's own Telegram bot config

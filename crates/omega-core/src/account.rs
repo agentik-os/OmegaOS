@@ -8,6 +8,7 @@
 //!     `/account` switch flow, keyed by `~/.claude/accounts/accounts-meta.json`.
 //!   - `credentials::CredentialStore`: the MULTI-PROVIDER store (claude / codex /
 //!     gemini / glm) under `~/.omega/credentials/`, used by the `/model` flow.
+//!
 //! They SHARE the active Claude credential file: `switch_account` here writes
 //! through `oauth::credentials_path()`, which resolves to the same
 //! `${OMEGA_DIR}/credentials/claude.json` the CredentialStore reads. So the
@@ -29,7 +30,7 @@
 //!   - `list_accounts` → all known profiles + active flag
 //!   - `current_account` → email/label/expiry of the live credentials.json
 //!   - `switch_account(name)` → swap credentials atomically; if refresh fails,
-//!      restore the previous credentials and signal a reauth-needed result.
+//!     restore the previous credentials and signal a reauth-needed result.
 //!   - `logout()` → backup + remove `.credentials.json`.
 //!   - `get_billing()` → re-export of `monitor::UsageSnapshot::read`.
 

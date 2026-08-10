@@ -33,9 +33,11 @@ const STRUCTURED_CHARS: usize = 400;
 /// LRU cap for the (project, hash) → brief cache.
 const CACHE_CAP: usize = 64;
 
-fn cache() -> &'static Mutex<(Vec<u64>, HashMap<u64, String>)> {
+type MissionCache = (Vec<u64>, HashMap<u64, String>);
+
+fn cache() -> &'static Mutex<MissionCache> {
     use std::sync::OnceLock;
-    static C: OnceLock<Mutex<(Vec<u64>, HashMap<u64, String>)>> = OnceLock::new();
+    static C: OnceLock<Mutex<MissionCache>> = OnceLock::new();
     C.get_or_init(|| Mutex::new((Vec::new(), HashMap::new())))
 }
 

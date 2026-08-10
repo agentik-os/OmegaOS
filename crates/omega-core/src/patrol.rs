@@ -646,24 +646,24 @@ impl Patrol {
                     {
                         if let Some(last_update) = progress.last_updated {
                             let idle_secs = (Utc::now() - last_update).num_seconds();
-                            if idle_secs > STALL_THRESHOLD_SECS {
-                                if !report.stalled_workers.contains(&session.name) {
-                                    report.stalled_workers.push(session.name.clone());
-                                    if let Some(oracle) =
-                                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
-                                    {
-                                        let inbox =
-                                            Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                                        let _ = inbox.push(&InboxEvent::worker_stalled(
-                                            &session.name,
-                                            idle_secs as u64,
-                                        ));
-                                    }
-                                    report.actions_taken.push(format!(
-                                        "Stall detected (progress): {} (idle {}s)",
-                                        session.name, idle_secs
+                            if idle_secs > STALL_THRESHOLD_SECS
+                                && !report.stalled_workers.contains(&session.name)
+                            {
+                                report.stalled_workers.push(session.name.clone());
+                                if let Some(oracle) =
+                                    self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
+                                {
+                                    let inbox =
+                                        Inbox::for_oracle(&self.config.state_dir, &oracle.name);
+                                    let _ = inbox.push(&InboxEvent::worker_stalled(
+                                        &session.name,
+                                        idle_secs as u64,
                                     ));
                                 }
+                                report.actions_taken.push(format!(
+                                    "Stall detected (progress): {} (idle {}s)",
+                                    session.name, idle_secs
+                                ));
                             }
                         }
                     }
@@ -1431,8 +1431,8 @@ impl Patrol {
     /// Self-improvement hook: when an oracle's done.json flips to a
     /// closeable status, spawn a curator worker that reads the trajectory
     /// + done.json and proposes NEW_SKILL / EDIT_SKILL / NEW_RULE /
-    /// NEW_MEMORY items. Output lands in
-    /// `~/.omega/state/curator/<oracle>-<timestamp>.md`.
+    ///   NEW_MEMORY items. Output lands in
+    ///   `~/.omega/state/curator/<oracle>-<timestamp>.md`.
     ///
     /// Idempotent: marker file `~/.omega/state/curator-triggered/<oracle>.flag`
     /// prevents re-trigger on subsequent patrol ticks.
@@ -1840,8 +1840,7 @@ fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
 /// worker is by definition a newer one that this mission never dispatched.
 fn should_reap_orphan(closeable: bool, finished_secs: i64) -> bool {
     closeable
-        && finished_secs >= ORPHAN_WORKER_GRACE_SECS
-        && finished_secs <= ORPHAN_SIGNAL_MAX_AGE_SECS
+        && (ORPHAN_WORKER_GRACE_SECS..=ORPHAN_SIGNAL_MAX_AGE_SECS).contains(&finished_secs)
 }
 
 /// Freshness guard predicate (pure + testable). A done signal whose

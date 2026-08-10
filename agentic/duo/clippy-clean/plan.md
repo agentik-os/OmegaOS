@@ -1,4 +1,4 @@
-# Plan — clippy-clean
+# Plan v2 — clippy-clean (post-critique Codex)
 
 ## Objective
 
@@ -37,14 +37,21 @@ Minimal mechanical fixes, one per lint class, matching what clippy suggests:
    functions (consistent with the existing codebase pattern — cmd_spawn_worker
    already carries it). NO signature refactor: these are internal call chains
    and a params-struct refactor is out of scope for a lint pass.
-3. OracleRow dead fields → if `project`/`phase` are truly never read anywhere,
-   REMOVE the fields and their construction sites; if they are kept for a
-   documented reason, `#[allow(dead_code)]` with a one-line comment. Prefer
-   removal.
-4. collapsible_if → collapse with `&&` (preserve exact conditions and
-   short-circuit order).
-5. derivable_impls → replace the manual `impl Default` with `#[derive(Default)]`
-   (only if strictly equivalent, including enum default variant).
+3. OracleRow dead fields → REMOVE `project` and `phase` (confirmed populated
+   at main.rs:9217-9231 but never read anywhere). Remove the fields, their
+   assignment sites, AND any variable that becomes unused as a result (the
+   `state` read feeding `phase` — otherwise a new unused-variable warning
+   replaces the old dead-code one). (Codex critique MAJOR 3.)
+4. collapsible_if → collapse with `&&`, PRESERVING evaluation order exactly.
+   Planner (planner.rs:650-655) is the critical one: `visited` check FIRST,
+   `self.has_cycle(...)` second — has_cycle mutates traversal sets, reordering
+   changes behavior (Codex critique MAJOR 4). Patrol: threshold check stays
+   before the duplicate check.
+5. derivable_impls → OracleLifecycle (done.rs:1051-1062): the manual impl
+   defaults to `Ephemeral`, which is NOT the first variant — derive(Default)
+   REQUIRES `#[default]` on the `Ephemeral` variant, then remove the impl.
+   (Codex critique BLOCKER 1 — a bare derive would not compile/would change
+   the default.)
 6. while_let_loop → rewrite `loop { match … { Some(x) => …, None => break } }`
    as `while let Some(x) = …`.
 7. map_or → `is_some_and` / `is_none_or` / `map_or_else` per clippy's exact
@@ -53,3 +60,11 @@ Minimal mechanical fixes, one per lint class, matching what clippy suggests:
 Hard constraints: no behavior change, no new dependencies, no refactor beyond
 the listed sites, respect existing style, do NOT touch OS/stepper-os (another
 session works there), do NOT commit.
+
+## Coverage note (Codex critique MAJOR 2, accepted with documented scope)
+
+`cargo test -p omega-core --lib` covers omega-core behavior. The omega (CLI)
+and omega-tui sites (needless-borrow, OracleRow removal, map_or in ui.rs) get
+compile-only + clippy coverage: they are display/plumbing sites with no unit
+tests today, and adding test scaffolding for them is out of scope for a lint
+pass. The cross-review (step 5) reads those diffs line by line instead.

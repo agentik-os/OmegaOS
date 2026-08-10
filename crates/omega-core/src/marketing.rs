@@ -7,8 +7,10 @@
 //!   1. which projects have marketing? (`list_marketing_projects`)
 //!   2. what's their at-a-glance status? (content ✓, calendar post count,
 //!      daily-engine on/off)
+//!
 //! Connected-account counts touch `omega-zernio` and are therefore ON-DEMAND
 //! only (`project_accounts`) — never fetched per-frame.
+//!
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -236,7 +238,7 @@ pub fn list_marketing_projects() -> Vec<MarketingProject> {
         }
     }
 
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|a| a.name.to_lowercase());
     out
 }
 

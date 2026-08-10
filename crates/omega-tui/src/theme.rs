@@ -146,10 +146,10 @@ const fn lighten(c: Color) -> Color {
 /// Visual hierarchy (mirrors what Omega's multicolor chrome conveys):
 /// - accent          → selection bars, focus, borders of the active panel
 /// - lighten(accent) → accent2: section separators (`─── x ───`), the
-///                     selected settings-field background, hints — clearly
-///                     NOT body gray, clearly NOT the full accent
+///   selected settings-field background, hints — clearly
+///   NOT body gray, clearly NOT the full accent
 /// - accent          → success/active states (`● on`, running markers):
-///                     the signature color marks everything alive
+///   the signature color marks everything alive
 ///
 /// `dim`/`dim2` are per-theme: the quietest grays that still clear the
 /// contrast contract on THIS theme's bg (dim ≥ 4.5:1, dim2 ≥ 3.0:1) —

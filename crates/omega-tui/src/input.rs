@@ -1395,11 +1395,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // selection-cycle that bare arrows do.
         KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
             scroll_active_panel(app, 3, false);
-            return Action::None;
+            Action::None
         }
         KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
             scroll_active_panel(app, 3, true);
-            return Action::None;
+            Action::None
         }
 
         // Sessions tab: navigate with ARROWS ONLY — j/k must NOT move the cursor

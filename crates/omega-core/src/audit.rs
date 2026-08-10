@@ -457,7 +457,7 @@ pub struct AuditScope {
 pub fn build_dispatch_prompts(mission_text: &str, scope: &AuditScope) -> Vec<(String, String)> {
     let selected_ids = select_audits(
         mission_text,
-        &scope.files.iter().map(|s| s.clone()).collect::<Vec<_>>(),
+        &scope.files.clone(),
     );
     selected_ids
         .into_iter()

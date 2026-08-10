@@ -382,8 +382,10 @@ impl WorkerRuntime for RmuxRuntime<'_> {
         // Claude-side session label (`--name`): mirror the rmux session name so the
         // step-worker's conversation is addressable/resumable by the same
         // deterministic identity (non-Claude providers ignore the field).
-        let mut opts = crate::agents::LaunchOptions::default();
-        opts.session_name = Some(session.clone());
+        let opts = crate::agents::LaunchOptions {
+            session_name: Some(session.clone()),
+            ..Default::default()
+        };
         if let Err(e) = self
             .mgr
             .create_agent_session_with_opts(&session, &cwd, self.agent, Some(&full_brief), opts)

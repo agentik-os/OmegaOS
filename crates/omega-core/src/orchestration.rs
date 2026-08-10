@@ -147,7 +147,7 @@ impl Orchestrator {
                     results.push(WorkerResult {
                         task_id: task.id.clone(),
                         session_name: session.clone(),
-                        status: done.status.clone(),
+                        status: done.status,
                         summary: done.summary.clone(),
                         commit: done.commit.clone(),
                         duration_secs,
@@ -305,7 +305,7 @@ impl Orchestrator {
                         // Must match the session name minted in dispatch_task
                         // (oracle-<project>-<mission_id>) so the oracle signals
                         // done against its OWN session, not a colliding name.
-                        format!("oracle-{}-{}", mission.project, mission.id.0)
+                        format_args!("oracle-{}-{}", mission.project, mission.id.0)
                     ),
                     files_owned: Vec::new(),
                     depends_on: Vec::new(),

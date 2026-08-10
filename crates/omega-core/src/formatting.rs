@@ -49,26 +49,22 @@ pub fn markdown_to_telegram_html(md: &str) -> String {
         }
 
         // Headings
-        if trimmed.starts_with("# ") {
-            let heading = &trimmed[2..];
-            let _ = write!(out, "\n<b>{}</b>\n", escape_html(heading));
+        if let Some(heading) = trimmed.strip_prefix("# ") {
+            let _ = writeln!(out, "\n<b>{}</b>", escape_html(heading));
             continue;
         }
-        if trimmed.starts_with("## ") {
-            let heading = &trimmed[3..];
-            let _ = write!(out, "\n<b>{}</b>\n", escape_html(heading));
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            let _ = writeln!(out, "\n<b>{}</b>", escape_html(heading));
             continue;
         }
-        if trimmed.starts_with("### ") {
-            let heading = &trimmed[4..];
-            let _ = write!(out, "<b>{}</b>\n", escape_html(heading));
+        if let Some(heading) = trimmed.strip_prefix("### ") {
+            let _ = writeln!(out, "<b>{}</b>", escape_html(heading));
             continue;
         }
 
         // Blockquotes
-        if trimmed.starts_with("> ") {
-            let content = &trimmed[2..];
-            let _ = write!(out, "<blockquote>{}</blockquote>\n", format_inline(&escape_html(content)));
+        if let Some(content) = trimmed.strip_prefix("> ") {
+            let _ = writeln!(out, "<blockquote>{}</blockquote>", format_inline(&escape_html(content)));
             continue;
         }
 
@@ -81,7 +77,7 @@ pub fn markdown_to_telegram_html(md: &str) -> String {
         // List items
         if trimmed.starts_with("- ") || trimmed.starts_with("* ") {
             let item = &trimmed[2..];
-            let _ = write!(out, "• {}\n", format_inline(&escape_html(item)));
+            let _ = writeln!(out, "• {}", format_inline(&escape_html(item)));
             continue;
         }
 
@@ -92,7 +88,7 @@ pub fn markdown_to_telegram_html(md: &str) -> String {
                 if pos <= 3 && trimmed[..pos].chars().all(|c| c.is_ascii_digit()) {
                     let item = &trimmed[pos + 2..];
                     let num = &trimmed[..pos];
-                    let _ = write!(out, "{}. {}\n", num, format_inline(&escape_html(item)));
+                    let _ = writeln!(out, "{}. {}", num, format_inline(&escape_html(item)));
                     continue;
                 }
             }
@@ -105,7 +101,7 @@ pub fn markdown_to_telegram_html(md: &str) -> String {
         }
 
         // Regular text with inline formatting
-        let _ = write!(out, "{}\n", format_inline(&escape_html(trimmed)));
+        let _ = writeln!(out, "{}", format_inline(&escape_html(trimmed)));
     }
 
     // Unclosed code block
@@ -135,8 +131,7 @@ fn format_inline(text: &str) -> String {
 
     // Italic: *text*  (bold already converted **..** to <b>..</b>, so only single * remain).
     // Byte-index splice on ASCII '*' — always lands on char boundaries, never panics on UTF-8.
-    loop {
-        let Some(start) = result.find('*') else { break };
+    while let Some(start) = result.find('*') {
         let Some(rel_end) = result[start + 1..].find('*') else { break };
         let end = start + 1 + rel_end;
         let inner = result[start + 1..end].to_string();
@@ -260,11 +255,10 @@ pub fn mask_secrets(html: &str) -> String {
     ];
 
     for prefix in prefixes {
-        loop {
-            let Some(start) = out.find(prefix) else { break };
+        while let Some(start) = out.find(prefix) {
             // Don't double-wrap if already inside a spoiler
             let before = &out[..start];
-            if before.rfind("<tg-spoiler>").map_or(false, |p| {
+            if before.rfind("<tg-spoiler>").is_some_and(|p| {
                 before[p..].find("</tg-spoiler>").is_none()
             }) {
                 break;
@@ -330,7 +324,7 @@ pub fn smart_markdown_to_html(md: &str) -> String {
                 j += 1;
             }
             // Strip trailing blank lines from body
-            while body.last().map_or(false, |l| l.trim().is_empty()) {
+            while body.last().is_some_and(|l| l.trim().is_empty()) {
                 body.pop();
             }
             let body_md = body.join("\n");
@@ -415,6 +409,7 @@ pub enum ResponseTier {
 /// `user_message` — when Some, the user's original question is shown as a
 /// <blockquote> at the top of the bot response (renders with a colored
 /// left bar in Telegram clients — the "yellow quote" effect).
+#[allow(clippy::too_many_arguments)]
 pub fn smart_wrap_response(
     agent: &str,
     body_md: &str,

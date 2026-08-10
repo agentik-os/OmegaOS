@@ -2056,7 +2056,7 @@ async fn run_tui_loop(
                 Action::KillAllSessions => {
                     let mgr = SessionManager::connect().await?;
                     let sessions = mgr.list_sessions().await.unwrap_or_default();
-                    let keep = tui_cleanup_keep(&app, &sessions);
+                    let keep = tui_cleanup_keep(app, &sessions);
                     match omega_core::cleanup::kill_all(&mgr, &keep).await {
                         Ok(killed) => {
                             app.status_message =
@@ -2070,7 +2070,7 @@ async fn run_tui_loop(
                     let mgr = SessionManager::connect().await?;
                     let cfg = OmegaConfig::load().unwrap_or_default();
                     let sessions = mgr.list_sessions().await.unwrap_or_default();
-                    let keep = tui_cleanup_keep(&app, &sessions);
+                    let keep = tui_cleanup_keep(app, &sessions);
                     match omega_core::cleanup::nuclear_cleanup(&mgr, &cfg, &keep).await {
                         Ok(report) => {
                             app.status_message =
@@ -6373,6 +6373,7 @@ fn declared_done_criteria(prompt: &str) -> Vec<String> {
     vec!["All Done Criteria frozen in the immutable worker prompt are satisfied".to_string()]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_v3_worker_attempt(
     config: &OmegaConfig,
     oracle_session: Option<&str>,
@@ -6849,14 +6850,16 @@ async fn cmd_spawn_worker(
         agent,
     )?;
     let spawn_result = if matches!(agent, omega_core::agents::Agent::Claude) {
-        let mut opts = omega_core::agents::LaunchOptions::default();
-        opts.permission_mode = Some("bypassPermissions".to_string());
-        opts.disallowed_tools = Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string());
+        let mut opts = omega_core::agents::LaunchOptions {
+            permission_mode: Some("bypassPermissions".to_string()),
+            disallowed_tools: Some("Bash(git push:*) Bash(rm:*) Bash(sudo:*)".to_string()),
+            session_name: Some(worker_name.clone()),
+            ..Default::default()
+        };
         // Claude-side session label (`--name`): mirror the rmux session name so the
         // conversation is addressable/resumable by the SAME deterministic identity
         // (`claude --resume <name>`, searchable in /resume) — oracles already get
         // this in dispatch_oracle; workers were anonymous on the Claude side.
-        opts.session_name = Some(worker_name.clone());
         // NOT bare: --bare skips OAuth credential loading in Claude Code >= 2.1.x
         // (runtime-verified 2026-06-05: `claude --bare --print` -> "Not logged in"
         // while plain `claude --print` succeeds on an OAuth-only host), so hermetic
@@ -7208,7 +7211,7 @@ fn provision_verify(group: &str) -> Result<()> {
         group,
         provisioning::group_env_path(group).display()
     );
-    println!("  {:<10} {}", "SERVICE", "RESULT");
+    println!("  {:<10} RESULT", "SERVICE");
 
     // GitHub.
     match tok("GITHUB_TOKEN") {
@@ -9158,9 +9161,7 @@ fn resolve_oracle_alias(name: &str, live: &[String], state_dir: &std::path::Path
 /// so the roster and the detail view can never disagree.
 struct OracleRow {
     name: String,
-    project: String,
     live: bool,
-    phase: String,
     done: usize,
     total: usize,
     running: usize,
@@ -9179,9 +9180,6 @@ fn oracle_row(
     live_sessions: &[omega_core::session::OmegaSession],
 ) -> OracleRow {
     let key = name.strip_prefix("oracle-").unwrap_or(name);
-    let state = omega_core::oracle_lifecycle::OracleState::read(state_dir, name)
-        .ok()
-        .flatten();
     let workers = omega_core::oracle_lifecycle::live_workers_of_oracle(state_dir, name, live_sessions);
     let doc: serde_json::Value =
         std::fs::read_to_string(state_dir.join(format!("oracle-{}.progress.json", key)))
@@ -9216,19 +9214,7 @@ fn oracle_row(
     );
     OracleRow {
         name: name.to_string(),
-        project: state
-            .as_ref()
-            .map(|s| s.project.clone())
-            .unwrap_or_else(|| {
-                omega_core::session::OmegaSession::classify(name)
-                    .project
-                    .unwrap_or_default()
-            }),
         live: live_sessions.iter().any(|s| s.name == name),
-        phase: state
-            .as_ref()
-            .map(|s| s.phase.label().to_string())
-            .unwrap_or_else(|| "?".to_string()),
         done,
         total,
         running: workers.running.len(),
@@ -9316,12 +9302,11 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         }
     }
     println!(
-        "{} {} {} {} {}",
+        "{} {} {} {} CLOSURE",
         fit("ORACLE", 34),
         fit("STATE", 5),
         fit("PLAN", 7),
-        fit("WORKERS", 8),
-        "CLOSURE"
+        fit("WORKERS", 8)
     );
     for r in &rows {
         let closure = if r.closeable {
@@ -10531,8 +10516,8 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
             let all = audit::all_audits();
             println!("Quality Arsenal — {} forensic audits\n", all.len());
             println!(
-                "  {:<18} {:<24} {:<8} {:<6} {:<6} {}",
-                "ID", "NAME", "DOMAIN", "PHASES", "MAX", "READ-ONLY"
+                "  {:<18} {:<24} {:<8} {:<6} {:<6} READ-ONLY",
+                "ID", "NAME", "DOMAIN", "PHASES", "MAX"
             );
             println!("  {}", "─".repeat(80));
             for a in &all {
@@ -10627,9 +10612,9 @@ fn cmd_audit(action: AuditAction) -> Result<()> {
 ///
 /// The update path already existed (`npx omega-os` re-runs `git pull --ff-only`
 /// + `install.sh`) but it was unnamed, undocumented, and it *died* on a dirty or
-/// diverged checkout with a raw git error. This is the same mechanism as a real
-/// command that REFUSES rather than breaks: local work is never touched, never
-/// stashed, never discarded — it is reported and the update stops.
+///   diverged checkout with a raw git error. This is the same mechanism as a real
+///   command that REFUSES rather than breaks: local work is never touched, never
+///   stashed, never discarded — it is reported and the update stops.
 ///
 /// `install.sh` is idempotent and guards every user file (`config.toml`,
 /// `telegram.toml`, secrets, `projects.json`), so re-running it is safe.
@@ -10823,14 +10808,14 @@ fn cmd_update(check: bool, dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// The daily cron path: check, then install what is available — unattended.
-///
-/// Everything here is written for a run nobody is watching. It is quiet when
-/// there is nothing to do (the normal day), it refuses rather than risks, and
-/// every refusal is logged with its reason and — when the operator has to act —
-/// pushed through the alert funnel. The decision itself lives in
-/// `omega_core::auto_update::decide`, which is pure and unit-tested; this
-/// function only gathers the facts and carries out the verdict.
+// The daily cron path: check, then install what is available — unattended.
+//
+// Everything here is written for a run nobody is watching. It is quiet when
+// there is nothing to do (the normal day), it refuses rather than risks, and
+// every refusal is logged with its reason and — when the operator has to act —
+// pushed through the alert funnel. The decision itself lives in
+// `omega_core::auto_update::decide`, which is pure and unit-tested; this
+// function only gathers the facts and carries out the verdict.
 // ---------------------------------------------------------------------------
 // graph run — the driver the decision core was written for
 // ---------------------------------------------------------------------------
@@ -11687,9 +11672,8 @@ fn spawn_reconcile_session() -> String {
             "Reconciling this install in session <code>{}</code> — read it with <code>omega stream {}</code>.",
             NAME, NAME
         ),
-        _ => format!(
-            "Could not launch the reconcile session — run <code>omega reconcile</code> by hand."
-        ),
+        _ => "Could not launch the reconcile session — run <code>omega reconcile</code> by hand."
+            .to_string(),
     }
 }
 

@@ -331,7 +331,7 @@ pub fn orchestration_block(mission: &str) -> String {
 
     for (i, p) in matched.iter().enumerate() {
         if i > 0 {
-            out.push_str("\n");
+            out.push('\n');
         }
         out.push_str(&format!("### [{}] {}\n", p.id(), p.title()));
         out.push_str(p.shape());

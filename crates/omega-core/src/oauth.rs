@@ -415,12 +415,10 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
 /// Scan a pane snapshot for known auth-failure markers.
 pub fn detect_auth_failure(pane_text: &str) -> Option<&'static str> {
     let lower = pane_text.to_lowercase();
-    for marker in AUTH_FAILURE_MARKERS {
-        if lower.contains(&marker.to_lowercase()) {
-            return Some(marker);
-        }
-    }
-    None
+    AUTH_FAILURE_MARKERS
+        .iter()
+        .find(|&&marker| lower.contains(&marker.to_lowercase()))
+        .copied()
 }
 
 /// Does this look like a COMPLETE authorize URL, not a half-painted one?
@@ -485,10 +483,8 @@ pub fn extract_auth_url(pane_text: &str) -> String {
     let mut out = String::with_capacity(candidate.len());
     let mut started = false;
     for c in candidate.chars() {
-        if !started {
-            if candidate.starts_with("https://claude.com/cai/oauth/authorize") {
-                started = true;
-            }
+        if !started && candidate.starts_with("https://claude.com/cai/oauth/authorize") {
+            started = true;
         }
         if !started {
             continue;

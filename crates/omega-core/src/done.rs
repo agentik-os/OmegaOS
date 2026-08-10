@@ -1048,17 +1048,12 @@ pub struct OracleShipResult {
     pub deploy_status: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OracleLifecycle {
     Persistent,
+    #[default]
     Ephemeral,
-}
-
-impl Default for OracleLifecycle {
-    fn default() -> Self {
-        Self::Ephemeral
-    }
 }
 
 impl OracleDoneSignal {

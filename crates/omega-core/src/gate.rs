@@ -142,6 +142,7 @@ impl Rubric {
 // ── GateResult impl ──
 
 impl GateResult {
+    #[allow(clippy::too_many_arguments)]
     pub fn evaluate(
         rubric: &Rubric,
         grades: Vec<GradeResult>,

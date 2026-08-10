@@ -186,10 +186,10 @@ pub struct TelegramConfig {
 ///
 /// Resolution order (first hit wins):
 ///   1. `$OMEGA_DIR`            — explicit override (install.sh already honors it;
-///                                this makes the binary agree, fixing a long-standing
-///                                install.sh-vs-binary split).
+///      this makes the binary agree, fixing a long-standing
+///      install.sh-vs-binary split).
 ///   2. `$HOME/OmegaOS/System`  — the consolidated 3-folder layout, IF it exists
-///                                (a fresh install or the migration creates it).
+///      (a fresh install or the migration creates it).
 ///   3. `$HOME/.omega`          — the legacy dotfolder, for machines not migrated.
 ///
 /// Every other path in the codebase derives from this, so relocating the whole
