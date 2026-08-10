@@ -6,13 +6,18 @@
 //! needs — no `?q=`/`?limit=` narrowing here, unlike `/v1/skills`, since a
 //! project list is small enough (this box discovers dozens, not hundreds)
 //! to ship whole.
+//!
+//! `home` is resolved via `config::home_dir()` (respects `$OMEGA_HOME`),
+//! not `dirs::home_dir()` directly, so a hermetic test can point discovery
+//! at a tempdir — the same override `routes_dispatch.rs`'s project
+//! validation step needs and shares (Task 8).
 
 use crate::protocol::{ProjectEntry, ProjectsResponse};
 use axum::Json;
 
 pub async fn list() -> Json<ProjectsResponse> {
     let response = tokio::task::spawn_blocking(|| {
-        let home = dirs::home_dir().expect("no home dir");
+        let home = crate::config::home_dir();
         let projects = omega_core::projects::discover(&home)
             .into_iter()
             .map(|p| ProjectEntry {

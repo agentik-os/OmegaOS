@@ -13,6 +13,7 @@ pub mod rmux;
 pub mod routes_accounts;
 pub mod routes_agents;
 pub mod routes_chat;
+pub mod routes_dispatch;
 pub mod routes_events;
 pub mod routes_missions;
 pub mod routes_oracles;

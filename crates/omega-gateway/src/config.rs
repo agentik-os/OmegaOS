@@ -41,6 +41,21 @@ pub fn gateway_dir() -> PathBuf {
     dirs::home_dir().expect("no home dir").join(".omega").join("gateway")
 }
 
+/// `$OMEGA_HOME` when set, else the real `$HOME` (`dirs::home_dir()`) — the
+/// directory `omega_core::projects::discover` walks to find projects.
+///
+/// Threaded through everywhere project discovery is done (`routes_projects.rs`,
+/// `routes_dispatch.rs`) so a hermetic test can point discovery at a tempdir
+/// instead of the operator's real home, the same override shape
+/// `gateway_dir()` already gives `OMEGA_GATEWAY_DIR` and `missions::ledger_dir()`
+/// gives `OMEGA_STATE_DIR` — this is that same pattern's `$HOME` sibling.
+pub fn home_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("OMEGA_HOME") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir().expect("no home dir")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,5 +84,12 @@ mod tests {
         std::env::set_var("OMEGA_GATEWAY_DIR", "/tmp/omega-gw-test");
         assert_eq!(gateway_dir(), PathBuf::from("/tmp/omega-gw-test"));
         std::env::remove_var("OMEGA_GATEWAY_DIR");
+    }
+
+    #[test]
+    fn env_overrides_home_dir() {
+        std::env::set_var("OMEGA_HOME", "/tmp/omega-home-test");
+        assert_eq!(home_dir(), PathBuf::from("/tmp/omega-home-test"));
+        std::env::remove_var("OMEGA_HOME");
     }
 }

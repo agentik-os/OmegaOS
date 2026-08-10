@@ -307,6 +307,33 @@ pub struct OraclesResponse {
     pub oracles: Vec<OracleEntry>,
 }
 
+/// Body of `POST /v1/dispatch` — mirrors `omega dispatch <PROJECT> <MISSION>
+/// [--agent ...] [--new]` 1:1. `agent` and `new` are the exact `Option`s the
+/// CLI's own clap flags model (`--agent` is `Option<String>`, `--new` is a
+/// bare flag whose ABSENCE means "let the followup-or-spawn router decide",
+/// not "force a spawn" — so this is `Option<bool>`, not `bool`, and
+/// `routes_dispatch::create` only appends `--new` when it is exactly
+/// `Some(true)`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct DispatchRequest {
+    pub project: String,
+    pub mission: String,
+    pub agent: Option<String>,
+    pub new: Option<bool>,
+}
+
+/// `POST /v1/dispatch` response body — `oracle` is the session name parsed
+/// off `omega dispatch`'s stdout line 0 (`"◆ Oracle dispatched: <name>"`,
+/// see `omega_core::dispatch::DispatchOutcome::report_lines`), `delivery` is
+/// the `DispatchDelivery::tag()` value from the `DISPATCH_DELIVERY=<tag>`
+/// line — passed through verbatim as a `String` rather than re-modeled as a
+/// gateway-side enum, since the CLI already owns that vocabulary.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DispatchResponse {
+    pub oracle: String,
+    pub delivery: String,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -340,6 +367,8 @@ pub struct Protocol {
     pub projects_response: ProjectsResponse,
     pub oracle_entry: OracleEntry,
     pub oracles_response: OraclesResponse,
+    pub dispatch_request: DispatchRequest,
+    pub dispatch_response: DispatchResponse,
 }
 
 pub fn schema_json() -> String {
