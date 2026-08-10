@@ -50,7 +50,16 @@ irreversible architecture, or major scope.
 
 ## Downstream
 
-When the Blueprint is COMPLETE with its frozen handoff, the next system is
+The OmegaOS build chain inserts **Design OS** between you and Stepper:
+`Blueprint -> Design {OS} (UX/UI handoff) -> Stepper`. (The pack's own manifest
+predates Design OS and names Stepper directly; the OmegaOS chain routes through
+Design first for any product with UX/UI.) So the next system after a COMPLETE
+Blueprint is normally Design OS (`/design-os`), which consumes your frozen
+handoff and emits a Design Handoff; Stepper then references BOTH. For a
+backend-only or no-UI change, hand off straight to Stepper.
+
+When the Blueprint is COMPLETE with its frozen handoff, if UX/UI is involved go
+to Design OS first, else straight to
 Stepper OS: `omega-stepper init` in the project, compile the handoff into
 modules/epics/slices/steps, then execution. On Telegram: lead with the
 answer, keep it phone-readable; `status` renders as a short card.
