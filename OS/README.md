@@ -7,18 +7,20 @@ the TUI under the **OS** tab (`omega menu`) and installed to `~/.omega/os/` by
 
 ## The suite (in order)
 
-| # | OS | Slug | Focus |
-|---|----|------|-------|
-| 1 | Mindset OS | `mindset-os` | Mental models, mindset engineering |
-| 2 | Habits OS | `habits-os` | Habit design, tracking, consistency |
-| 3 | Brainstorm OS | `brainstorm-os` | Idea generation and capture |
-| 4 | Blueprint OS | `blueprint-os` | Product blueprints and design |
-| 5 | Stepper OS | `stepper-os` | Step-by-step execution of a plan |
-| 6 | Builder OS | `builder-os` | Building and shipping the product |
+| # | OS | Slug | Focus | Status |
+|---|----|------|-------|--------|
+| 1 | Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
+| 2 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
+| 3 | Brainstorm OS | `brainstorm-os` | Idea generation and capture | awaiting drop |
+| 4 | Blueprint OS | `blueprint-os` | Product blueprints and design | awaiting drop |
+| 5 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
+| 6 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
 
 Registry source of truth: `crates/omega-core/src/os_products.rs`
 (`OsProduct::all()`). The TUI tab, statuses and paths all derive from it -
-add or reorder an OS THERE, never in the UI code.
+add or reorder an OS THERE, never in the UI code. The full integration
+playbook (anatomy of an OS, the three-commands convention, the add/complete
+processes) is `docs/OS-SUITE.md`.
 
 ## Integration pipeline (how an OS lands here)
 

@@ -109,6 +109,21 @@ OmegaOS doctor
 
 Three ways in: the `ratatui` TUI (5 tabs: Sessions, Menu, Agentic, Settings, Help), the `omega` CLI (60+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
 
+## The OS suite
+
+OmegaOS ships the AgentikOS product line of operative systems under [`OS/`](OS/), surfaced in the TUI's **OS** tab and installed to `~/.omega/os/`:
+
+| # | OS | Focus | Status |
+|---|----|-------|--------|
+| 1 | Mindset OS | Mental models, mindset engineering | awaiting drop |
+| 2 | Habits OS | Habit design, tracking, consistency | awaiting drop |
+| 3 | Brainstorm OS | Idea generation and capture | awaiting drop |
+| 4 | Blueprint OS | Product blueprints and design | awaiting drop |
+| 5 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
+| 6 | Builder OS | Building and shipping the product | awaiting drop |
+
+**Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude), `/stepper-os` (Codex prompt), or the `omega-stepper` CLI. Each OS exposes the same capability on those three surfaces — the convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
+
 ## The doctrine
 
 There's a typed registry of 7 Laws and 51 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.

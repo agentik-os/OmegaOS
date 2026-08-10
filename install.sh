@@ -990,9 +990,58 @@ OSS_DST="$OMEGA_DIR/os"
 if [[ -d "$OSS_SRC" ]]; then
     mkdir -p "$OSS_DST"
     cp -rf "$OSS_SRC/." "$OSS_DST/"
+    # Per-OS bin wrappers (e.g. omega-stepper) → ~/.local/bin. Symlink from the
+    # CHECKOUT when it persists (dev box: git pull updates them in place), from
+    # the installed copy when the source is the throwaway curl|bash clone —
+    # same dangling-symlink guard as the marketing-machine CLIs above. Their
+    # runtime deps (Python venvs) are a LAZY first-run opt-in: install.sh
+    # never pip-installs (R-ENV boundary, same as pixelrag / browser-use).
+    _os_link_root="$OSS_SRC"
+    [[ "$OMEGA_SRC" == /tmp/omega-build* ]] && _os_link_root="$OSS_DST"
+    mkdir -p "$HOME/.local/bin"
+    for _os_bin in "$OSS_SRC"/*/bin/*; do
+        [[ -f "$_os_bin" ]] || continue
+        _os_rel="${_os_bin#"$OSS_SRC/"}"
+        chmod +x "$_os_bin" "$OSS_DST/$_os_rel" 2>/dev/null || true
+        ln -sf "$_os_link_root/$_os_rel" "$HOME/.local/bin/$(basename "$_os_bin")"
+    done
+    unset _os_bin _os_rel _os_link_root
+    # Codex command: each OS may ship commands/codex-<slug>.md → ~/.codex/prompts/<slug>.md
+    # (Codex custom prompts are flat markdown slash commands).
+    if [[ -d "$HOME/.codex" || -n "$(command -v codex 2>/dev/null)" ]]; then
+        mkdir -p "$HOME/.codex/prompts"
+        for _os_cx in "$OSS_SRC"/*/commands/codex-*.md; do
+            [[ -f "$_os_cx" ]] || continue
+            cp -f "$_os_cx" "$HOME/.codex/prompts/$(basename "$_os_cx" | sed 's/^codex-//')"
+        done
+        unset _os_cx
+    fi
     ok "AgentikOS OS suite installed → $OSS_DST/ ($(find "$OSS_DST" -mindepth 1 -maxdepth 1 -type d | wc -l) operative systems)"
 else
     info "OS suite payload not found — skipping"
+fi
+
+# Stepper OS Claude command — the skill ships via the generic skills/ install
+# below; here we add the /stepper-os + /omg-stepper-os slash stubs.
+STEPPER_SKILL_DST="$OMEGA_DIR/skills/stepper-os"
+if [[ -d "$OMEGA_SRC/skills/stepper-os" ]]; then
+    mkdir -p "$STEPPER_SKILL_DST" "$HOME/.claude/commands"
+    cp -rf "$OMEGA_SRC/skills/stepper-os/." "$STEPPER_SKILL_DST/"
+    for cmd in stepper-os omg-stepper-os; do
+        cat > "$HOME/.claude/commands/$cmd.md" <<EOF
+# /$cmd
+
+Drive a project through Stepper OS (AgentikOS suite): plan → start → implement
+→ verify → done, DONE gated by the deterministic verifier. Read and follow the
+complete instructions in:
+
+\`$STEPPER_SKILL_DST/SKILL.md\`
+
+CLI: \`omega-stepper\` (venv auto-installed on first run). Operating protocol:
+\`$OMEGA_DIR/os/stepper-os/pack/12_AGENT_OPERATING_PROTOCOL.md\`.
+EOF
+    done
+    ok "Stepper OS command installed (/stepper-os + /omg-stepper-os → omega-stepper CLI)"
 fi
 
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
