@@ -64,3 +64,26 @@ No real oracle was ever dispatched during verification. Scratch dir + daemon
 process cleaned up after the pass.
 Step 1 found nothing to fix -> no empty Task 9 commit, per the plan's own
 Step 4 fallback.
+
+## Rebase + final whole-branch review — done
+Branch was 5 commits behind origin/main (feature-flag/OS-suite commits, no
+overlap with omega-gateway). `git fetch origin && git rebase origin/main`
+(120bbd2) succeeded with zero conflicts; full suite (172 tests) + clippy
+(--no-deps) re-verified green post-rebase.
+
+Final whole-branch review (opus, security focus on POST /v1/dispatch, fresh
+independent read of every file + its own live hostile-payload proof using
+DIFFERENT payloads than Task 8's reviewer, specifically fuzzing the `project`
+field which Task 8's review had not): VERDICT MERGE-READY. Zero Critical
+findings. 5 non-blocking follow-ups recorded (no dispatch concurrency permit
+unlike routes_chat.rs's 8-slot semaphore; `agent` field not pre-validated
+against the known roster before hitting the CLI, giving 502 instead of 400 on
+a bad agent name; no `--` argv separator before positionals, currently safe
+only because clap's arity makes flag-injection fail closed; NUL-byte input
+returns 502 not 400; mission length bounded only incidentally by axum's body
+cap + kernel ARG_MAX). None require a fix before merge; recommended as
+fast follow-ups, especially the dispatch concurrency permit.
+
+Final commit (SHAs after rebase): d34c627 (POST /v1/dispatch, last code
+commit) + 0cdb684 (this progress-ledger doc commit). Merge-base with
+origin/main: 120bbd2.
