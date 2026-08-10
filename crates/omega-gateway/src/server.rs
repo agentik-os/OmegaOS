@@ -88,6 +88,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/sessions", get(crate::routes_sessions::list))
         .route("/v1/sessions/{name}/stream", get(crate::routes_sessions::stream))
         .route(
+            "/v1/sessions/{name}/keys",
+            axum::routing::post(crate::routes_sessions::send_keys),
+        )
+        .route(
             "/v1/chats",
             get(crate::routes_chat::list).post(crate::routes_chat::create),
         )

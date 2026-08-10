@@ -334,6 +334,22 @@ pub struct DispatchResponse {
     pub delivery: String,
 }
 
+/// Body of `POST /v1/sessions/{name}/keys` — sends keystrokes to a live
+/// rmux session. `data` is sent literally (`rmux send-keys -l`); when
+/// `enter` is true a separate `rmux send-keys Enter` call follows.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SendKeysRequest {
+    pub data: String,
+    #[serde(default)]
+    pub enter: bool,
+}
+
+/// `POST /v1/sessions/{name}/keys` response body.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SendKeysResponse {
+    pub ok: bool,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -369,6 +385,8 @@ pub struct Protocol {
     pub oracles_response: OraclesResponse,
     pub dispatch_request: DispatchRequest,
     pub dispatch_response: DispatchResponse,
+    pub send_keys_request: SendKeysRequest,
+    pub send_keys_response: SendKeysResponse,
 }
 
 pub fn schema_json() -> String {
