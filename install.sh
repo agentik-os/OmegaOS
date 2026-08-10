@@ -978,6 +978,23 @@ else
     info "Marketing Machine payload not found — skipping"
 fi
 
+# ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
+# Six products (Mindset/Habits/Brainstorm/Blueprint/Stepper/Builder OS),
+# surfaced in the TUI's OS tab. The registry is compiled into omega-core
+# (os_products.rs); the payloads + READMEs are installed here so the tab
+# resolves a suite root even on a box with no checkout. Payloads arrive as
+# Deposit zips and are integrated under OS/<slug>/ in the repo — this copy
+# keeps a fresh install in parity (Law 0). Secrets never ship in a payload.
+OSS_SRC="$OMEGA_SRC/OS"
+OSS_DST="$OMEGA_DIR/os"
+if [[ -d "$OSS_SRC" ]]; then
+    mkdir -p "$OSS_DST"
+    cp -rf "$OSS_SRC/." "$OSS_DST/"
+    ok "AgentikOS OS suite installed → $OSS_DST/ ($(find "$OSS_DST" -mindepth 1 -maxdepth 1 -type d | wc -l) operative systems)"
+else
+    info "OS suite payload not found — skipping"
+fi
+
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
 step "Phase 5: Configuring OmegaOS"

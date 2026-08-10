@@ -528,6 +528,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::System => draw_system(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
         Tab::Marketing => draw_marketing(frame, app, chunks[1]),
+        Tab::Os => draw_os(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
     }
 
@@ -3615,6 +3616,190 @@ fn render_marketing_detail(app: &App) -> Vec<Line<'static>> {
         Line::from(vec![
             field("Calendar (90d)"),
             Span::raw(p.calendar_md().to_string_lossy().to_string()),
+        ]),
+    ];
+    lines.push(Line::from(""));
+    lines
+}
+
+/// OS tab — 25/75 split, same grammar as Marketing: left = the AgentikOS
+/// operative-systems suite (glyph + name), right = the selected OS's detail
+/// (tagline, status, path, integration pipeline + actions). Registry + fs stat
+/// only (see `omega_core::os_products`) — no network, safe per tab entry / F5.
+fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
+    let split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
+        .split(area);
+
+    let list_focused = !app.detail_focused;
+    let list_border = if list_focused { th::accent() } else { th::dim() };
+    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
+
+    // ── Left: the suite, in product order ────────────────────────────────────
+    let mut items: Vec<ListItem> = Vec::new();
+    items.push(ListItem::new(Line::from("")));
+    items.push(group_header("AgentikOS suite"));
+    let mut rendered_selected = 1usize;
+    if app.os_entries.is_empty() {
+        items.push(section_row(
+            "(loading — F5 to rescan)".to_string(),
+            true,
+            list_focused,
+        ));
+        rendered_selected = items.len() - 1;
+    } else {
+        for (i, e) in app.os_entries.iter().enumerate() {
+            let current = i == app.os_selected;
+            if current {
+                rendered_selected = items.len();
+            }
+            items.push(section_row(
+                format!("{} {}", e.glyph(), e.product.name),
+                current,
+                current && list_focused,
+            ));
+        }
+    }
+
+    let list_title = if list_focused {
+        " ▶ FOCUSED OS — ↑/↓ select, Tab → detail "
+    } else {
+        " OS — Tab to focus list "
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(list_title)
+                .border_style(Style::default().fg(list_border)),
+        )
+        .highlight_style(Style::default());
+    let mut state = ListState::default().with_selected(Some(rendered_selected));
+    frame.render_stateful_widget(list, split[0], &mut state);
+
+    // ── Right: detail of the selected OS ─────────────────────────────────────
+    let lines = render_os_detail(app);
+    let section_label = app
+        .selected_os_entry()
+        .map(|e| e.product.name.to_string())
+        .unwrap_or_else(|| "OS".to_string());
+
+    app.detail_max_scroll =
+        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
+
+    let detail_title = if app.detail_focused {
+        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list] ", section_label)
+    } else {
+        format!(" {} ", section_label)
+    };
+    let paragraph = Paragraph::new(lines)
+        .scroll((app.detail_scroll, 0))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(detail_title)
+                .border_style(Style::default().fg(detail_border)),
+        );
+    frame.render_widget(paragraph, split[1]);
+}
+
+/// Right-pane detail for the selected operative system (status + ACTIONS).
+fn render_os_detail(app: &App) -> Vec<Line<'static>> {
+    let Some(e) = app.selected_os_entry() else {
+        return vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  No operative system selected.",
+                Style::default().fg(th::dim()),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Press F5 to load the AgentikOS suite.",
+                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+            )),
+        ];
+    };
+
+    let field = |label: &str| {
+        Span::styled(
+            format!("  {:20}", label),
+            Style::default().fg(th::accent2()),
+        )
+    };
+    let integrated = e.status == omega_core::os_products::OsStatus::Integrated;
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!("  {} ", e.glyph())),
+            Span::styled(
+                e.product.name.to_string(),
+                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(e.product.tagline.to_string(), Style::default().fg(th::text())),
+        ]),
+        Line::from(""),
+        Line::from(vec![field("Slug"), Span::raw(e.product.slug.to_string())]),
+        Line::from(vec![
+            field("Status"),
+            if integrated {
+                Span::styled(
+                    "integrated",
+                    Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(e.status_label().to_string(), Style::default().fg(th::dim()))
+            },
+        ]),
+        Line::from(vec![
+            field("Path"),
+            match &e.path {
+                Some(p) => Span::raw(p.to_string_lossy().to_string()),
+                None => Span::styled(
+                    "— (no OS/ root found on this machine)".to_string(),
+                    Style::default().fg(th::dim()),
+                ),
+            },
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─── Integration pipeline ───",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::raw(
+            "  1. Drop the OS payload (zip) in the Deposit box (Telegram DEPOSIT bot).",
+        )),
+        Line::from(Span::raw(
+            "  2. Unpack it into the OS folder above, next to its README.",
+        )),
+        Line::from(Span::raw(
+            "  3. Document the runtime (entrypoint, deps, config) in the README.",
+        )),
+        Line::from(Span::raw(
+            "  4. Keep install.sh parity (Law 0) — a fresh install must get it.",
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  ─── Actions ───",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(vec![
+            Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw(if integrated {
+                "💬 Open a Claude session in this OS (run / extend it)"
+            } else {
+                "💬 Open a Claude session in this OS (integrate the drop)"
+            }),
+        ]),
+        Line::from(vec![
+            Span::styled("  F5     ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw("refresh statuses"),
         ]),
     ];
     lines.push(Line::from(""));

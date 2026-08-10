@@ -32,6 +32,9 @@ pub enum Tab {
     System,
     Settings,
     Marketing,
+    /// The AgentikOS operative-systems suite (Mindset OS, Habits OS, …) —
+    /// registry + integration status, backed by `omega_core::os_products`.
+    Os,
     Help,
 }
 
@@ -40,10 +43,11 @@ impl Tab {
     /// labels, the highlighted index and Left/Right cycling all derive from
     /// this array, so a reorder is a single edit here. (They used to be three
     /// hand-kept lists, which is how the bar and the enum drifted apart.)
-    pub const ORDER: [Tab; 7] = [
+    pub const ORDER: [Tab; 8] = [
         Tab::Sessions,
         Tab::Projects,
         Tab::Marketing,
+        Tab::Os,
         Tab::Menu,
         Tab::System,
         Tab::Help,
@@ -55,6 +59,7 @@ impl Tab {
             Tab::Sessions => "Sessions",
             Tab::Projects => "Projects",
             Tab::Marketing => "Marketing",
+            Tab::Os => "OS",
             Tab::Menu => "Menu",
             Tab::System => "System",
             Tab::Help => "Help",
@@ -1370,6 +1375,10 @@ pub struct App {
     pub marketing_selected: usize,
     /// Cached marketing-enabled projects (loaded on tab entry / F5).
     pub marketing_projects: Vec<omega_core::marketing::MarketingProject>,
+    /// OS tab — selected operative-system index.
+    pub os_selected: usize,
+    /// Cached OS-suite entries (loaded on tab entry / F5 — fs stat only).
+    pub os_entries: Vec<omega_core::os_products::OsEntry>,
     /// Two-press confirm for "Delete forever" (Projects tab 'D'): holds the
     /// project name armed by the first press; second 'D' on the same name fires
     /// the destructive HardDeleteProject. Cleared on cursor move, Esc, and tab
@@ -1507,6 +1516,9 @@ impl App {
             // Loaded lazily on first Marketing-tab entry / F5 (scans the fs +
             // crontab — heavier than the registry, so not eager at startup).
             marketing_projects: Vec::new(),
+            os_selected: 0,
+            // Same lazy contract as marketing: filled on first OS-tab entry.
+            os_entries: Vec::new(),
             project_delete_pending: None,
             monitor_disconnect_armed: false,
             providers_cache: None,
@@ -1605,6 +1617,37 @@ impl App {
             self.marketing_selected - 1
         };
         self.load_selected_marketing_accounts();
+    }
+
+    /// (Re)load the OS-suite entries (OS tab entry / F5). Registry is static;
+    /// the fs stat per OS is cheap, so a full rebuild is fine.
+    pub fn refresh_os(&mut self) {
+        self.os_entries = omega_core::os_products::list_os_entries();
+        if self.os_selected >= self.os_entries.len() {
+            self.os_selected = self.os_entries.len().saturating_sub(1);
+        }
+    }
+
+    pub fn selected_os_entry(&self) -> Option<&omega_core::os_products::OsEntry> {
+        self.os_entries.get(self.os_selected)
+    }
+
+    pub fn os_tab_next(&mut self) {
+        if self.os_entries.is_empty() {
+            return;
+        }
+        self.os_selected = (self.os_selected + 1) % self.os_entries.len();
+    }
+
+    pub fn os_tab_prev(&mut self) {
+        if self.os_entries.is_empty() {
+            return;
+        }
+        self.os_selected = if self.os_selected == 0 {
+            self.os_entries.len() - 1
+        } else {
+            self.os_selected - 1
+        };
     }
 
     /// Select a session by name (used after creating a session to auto-focus it).

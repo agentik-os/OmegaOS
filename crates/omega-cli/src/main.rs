@@ -2205,6 +2205,9 @@ async fn run_tui_loop(
                     if app.tab == omega_tui::app::Tab::Marketing {
                         app.refresh_marketing();
                     }
+                    if app.tab == omega_tui::app::Tab::Os {
+                        app.refresh_os();
+                    }
                     if app.status_message == before_refresh {
                         app.status_message = Some("Refreshed".to_string());
                         // fix7-T4: the ack is a deliberate user action — it
@@ -2752,6 +2755,40 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::OpenOsSession { name, cwd, prompt } => {
+                    let mgr = SessionManager::connect().await?;
+                    // Same idempotent contract as marketing: one integration
+                    // session per OS — re-attach instead of stacking duplicates.
+                    let existing = mgr
+                        .list_sessions()
+                        .await
+                        .map(|ss| ss.iter().any(|s| s.name == name))
+                        .unwrap_or(false);
+                    if existing {
+                        app.status_message = Some(format!("Attaching to {}", name));
+                        auto_focus_chat(app, &name).await;
+                    } else {
+                        match mgr
+                            .create_session_with_agent(
+                                &name,
+                                Some(&cwd),
+                                omega_core::agents::Agent::Claude,
+                                Some(&prompt),
+                            )
+                            .await
+                        {
+                            Ok(_) => {
+                                app.status_message =
+                                    Some(format!("💬 {} — OS session, opening chat…", name));
+                                auto_focus_chat(app, &name).await;
+                            }
+                            Err(e) => {
+                                app.status_message =
+                                    Some(format!("OS session failed: {}", e));
+                            }
+                        }
+                    }
+                }
                 Action::MarketingPublishDryRun { slug, cwd } => {
                     let mgr = SessionManager::connect().await?;
                     let session = format!("mkt-{}-publish", slug);
@@ -2939,6 +2976,15 @@ echo; echo '─── dry-run done ───'; exec bash",
                 app.refresh_marketing();
             }
 
+            // Same lazy contract for the OS suite (registry + fs stat — cheap,
+            // but keep startup untouched). F5 forces a full refresh.
+            if app.tab != tab_before
+                && app.tab == omega_tui::app::Tab::Os
+                && app.os_entries.is_empty()
+            {
+                app.refresh_os();
+            }
+
             if app.tab != tab_before
                 && app.status_message == status_before
                 // FIX-G (D-8): never overwrite an async sticky notice still
@@ -2956,6 +3002,7 @@ echo; echo '─── dry-run done ───'; exec bash",
                     Tab::Projects => "↑/↓ projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
                     Tab::System => "↑/↓ sections · Tab focus detail · [ ] jump section · Laws · Rules · Agents · Skills · Docs".to_string(),
                     Tab::Marketing => "↑/↓ projects · Enter parler marketing · p publier · F5 refresh".to_string(),
+                    Tab::Os => "↑/↓ operative systems · Tab focus detail · Enter open session · F5 refresh".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });
             }

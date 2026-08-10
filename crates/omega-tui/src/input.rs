@@ -86,6 +86,10 @@ pub enum Action {
     /// project. `cwd` is the project's `marketing/` dir so the agent starts
     /// there; `prompt` is the scoped "talk only marketing" system prompt.
     OpenMarketingSession { name: String, cwd: String, prompt: String },
+    /// OS tab: open a Claude session scoped to the selected operative system's
+    /// directory (`OS/<slug>/`) — the integration workspace where a Deposit
+    /// zip gets unpacked, wired and documented.
+    OpenOsSession { name: String, cwd: String, prompt: String },
     /// Marketing tab: run `omega-zernio publish <slug> --dry-run` for the
     /// selected project in a fresh session (the "p → publier (dry-run)" action).
     MarketingPublishDryRun { slug: String, cwd: String },
@@ -392,6 +396,16 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
             } else {
                 for _ in 0..lines {
                     if down { app.marketing_tab_next(); } else { app.marketing_tab_prev(); }
+                }
+            }
+        }
+        Tab::Os => {
+            if app.detail_focused {
+                if down { app.scroll_detail_down(lines); }
+                else { app.scroll_detail_up(lines); }
+            } else {
+                for _ in 0..lines {
+                    if down { app.os_tab_next(); } else { app.os_tab_prev(); }
                 }
             }
         }
@@ -1327,6 +1341,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Settings => app.settings_tab_next(),
                 Tab::Projects => app.projects_tab_next(),
                 Tab::Marketing => app.marketing_tab_next(),
+                Tab::Os => app.os_tab_next(),
                 Tab::System => app.select_info_next(),
                 Tab::Help => app.scroll_detail_down(1),
             }
@@ -1369,6 +1384,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Settings => app.settings_tab_prev(),
                 Tab::Projects => app.projects_tab_prev(),
                 Tab::Marketing => app.marketing_tab_prev(),
+                Tab::Os => app.os_tab_prev(),
                 Tab::System => app.select_info_prev(),
                 Tab::Help => app.scroll_detail_up(1),
             }
@@ -1628,6 +1644,45 @@ code produit.",
                     None => {
                         app.status_message =
                             Some("No marketing project selected (F5 to scan)".to_string());
+                        Action::None
+                    }
+                }
+            }
+            Tab::Os => {
+                // Enter opens a Claude session scoped to the selected OS's
+                // directory. Awaiting-drop OSes open too — that workspace is
+                // exactly where the Deposit zip gets unpacked and wired.
+                match app.selected_os_entry() {
+                    Some(e) => match e.path.clone() {
+                        Some(path) if path.is_dir() => {
+                            let prompt = format!(
+                                "Tu es l'intégrateur de {name} ({slug}), un operative \
+system de la suite AgentikOS. Travaille UNIQUEMENT dans {path} : lis son README.md, \
+intègre le payload (zip arrivé via la boîte Deposit) quand il est là, documente son \
+fonctionnement (entrypoint, deps, config) et garde la parité install.sh (Law 0). \
+Les secrets restent dans ~/.omega/secrets/, jamais dans le dossier. \
+Statut actuel: {status}.",
+                                name = e.product.name,
+                                slug = e.product.slug,
+                                path = path.to_string_lossy(),
+                                status = e.status_label(),
+                            );
+                            Action::OpenOsSession {
+                                name: format!("os-{}", e.product.slug),
+                                cwd: path.to_string_lossy().to_string(),
+                                prompt,
+                            }
+                        }
+                        _ => {
+                            app.status_message = Some(format!(
+                                "{} — OS/{} folder not found (F5 to rescan)",
+                                e.product.name, e.product.slug
+                            ));
+                            Action::None
+                        }
+                    },
+                    None => {
+                        app.status_message = Some("No OS selected (F5 to load)".to_string());
                         Action::None
                     }
                 }
@@ -2531,15 +2586,15 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
-    // The tab bar reads Sessions · Projects · Marketing · Menu · System · Help ·
-    // Settings, and Right/Left walk it in that visual order. Locked down because
-    // the order used to live in three hand-kept lists that drifted apart.
+    // The tab bar reads Sessions · Projects · Marketing · OS · Menu · System ·
+    // Help · Settings, and Right/Left walk it in that visual order. Locked down
+    // because the order used to live in three hand-kept lists that drifted apart.
     #[test]
     fn tab_order_matches_the_bar_and_cycles_both_ways() {
         let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
         assert_eq!(
             titles,
-            vec!["Sessions", "Projects", "Marketing", "Menu", "System", "Help", "Settings"]
+            vec!["Sessions", "Projects", "Marketing", "OS", "Menu", "System", "Help", "Settings"]
         );
         for (i, t) in Tab::ORDER.iter().enumerate() {
             assert_eq!(t.index(), i, "{} must sit at bar position {}", t.title(), i);

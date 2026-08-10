@@ -48,6 +48,7 @@ pub mod oauth;
 pub mod oracle_lifecycle;
 pub mod oracle_todo;
 pub mod orchestration;
+pub mod os_products;
 pub mod patrol;
 pub mod planner;
 pub mod progress;
