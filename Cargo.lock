@@ -1389,6 +1389,7 @@ dependencies = [
  "clap",
  "dirs",
  "futures-util",
+ "omega-core",
  "qr2term",
  "rand 0.8.7",
  "reqwest",
