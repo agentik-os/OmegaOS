@@ -1,0 +1,162 @@
+use omega_gateway::chat_driver;
+use omega_gateway::protocol::{ChatAgent, ChatMeta, ChatStreamServerMsg};
+use std::time::Duration;
+
+// Both tests mutate the process-global OMEGA_CHAT_BIN env var, so they must
+// never run concurrently with each other (same pattern as the rmux tests'
+// OMEGA_RMUX_BIN lock). tokio::sync::Mutex because the guard is held across
+// .await points below.
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Writes an executable fake agent script and points OMEGA_CHAT_BIN at it.
+fn install_fake_agent(dir: &std::path::Path, script_body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("fake-agent");
+    std::fs::write(&path, format!("#!/usr/bin/env bash\n{script_body}\n")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("OMEGA_CHAT_BIN", &path);
+}
+
+fn test_meta(cwd: &std::path::Path) -> ChatMeta {
+    ChatMeta {
+        id: "chat1".to_string(),
+        title: None,
+        agent: ChatAgent::Claude,
+        cwd: cwd.to_string_lossy().to_string(),
+        created_at: "t".to_string(),
+        updated_at: "t".to_string(),
+        provider_session_id: None,
+    }
+}
+
+#[tokio::test]
+async fn run_turn_forwards_frames_and_returns_session_id() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    install_fake_agent(
+        dir.path(),
+        r#"
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"fake-session-1","cwd":"/tmp","model":"m"}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"PONG"}]}}'
+printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","result":"PONG"}'
+"#,
+    );
+
+    let meta = test_meta(dir.path());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let driver = tokio::spawn(async move {
+        chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await
+    });
+
+    let mut frames = Vec::new();
+    while let Some(frame) = rx.recv().await {
+        frames.push(frame);
+    }
+    let session_id = driver.await.unwrap();
+
+    assert_eq!(session_id.as_deref(), Some("fake-session-1"));
+    assert_eq!(frames.len(), 2, "expected an AssistantMessage then a TurnDone");
+    assert!(matches!(
+        &frames[0],
+        ChatStreamServerMsg::AssistantMessage { text } if text == "PONG"
+    ));
+    assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
+}
+
+#[tokio::test]
+async fn run_turn_appends_turn_done_when_stream_lacks_a_result_line() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    // No "result" line at all — run_turn must still synthesize a TurnDone
+    // once the process exits (EOF), per the "always send a final TurnDone"
+    // contract.
+    install_fake_agent(
+        dir.path(),
+        r#"printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hi there"}]}}'"#,
+    );
+
+    let meta = test_meta(dir.path());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let driver = tokio::spawn(async move {
+        chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await
+    });
+
+    let mut frames = Vec::new();
+    while let Some(frame) = rx.recv().await {
+        frames.push(frame);
+    }
+    let session_id = driver.await.unwrap();
+
+    assert!(session_id.is_none(), "no init line was ever printed");
+    assert_eq!(frames.len(), 2);
+    assert!(matches!(
+        &frames[0],
+        ChatStreamServerMsg::AssistantMessage { text } if text == "hi there"
+    ));
+    assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
+}
+
+#[tokio::test]
+async fn run_turn_kills_child_and_reports_timeout() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    // `exec` replaces the bash script's own process image with `sleep`, so
+    // killing the spawned child kills the sleep directly instead of leaving
+    // an orphaned grandchild running for 999s.
+    install_fake_agent(dir.path(), "exec sleep 999");
+
+    let meta = test_meta(dir.path());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let started = std::time::Instant::now();
+    let driver = tokio::spawn(async move {
+        chat_driver::run_turn(&meta, "hi", None, None, Duration::from_millis(200), tx).await
+    });
+
+    let mut frames = Vec::new();
+    while let Some(frame) = rx.recv().await {
+        frames.push(frame);
+    }
+    let session_id = driver.await.unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "run_turn should have killed the sleeping child well before its own 999s sleep, took {elapsed:?}"
+    );
+    assert!(session_id.is_none(), "no init line was ever printed");
+    assert_eq!(frames.len(), 2);
+    assert!(matches!(
+        &frames[0],
+        ChatStreamServerMsg::Error { message } if message.contains("timed out")
+    ));
+    assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
+}
+
+#[tokio::test]
+async fn run_turn_intercepts_codex_without_spawning() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    // Point OMEGA_CHAT_BIN at a script that would fail loudly (nonzero exit)
+    // if it were ever actually spawned, proving Codex never reaches it.
+    install_fake_agent(dir.path(), "echo 'should never run' >&2; exit 1");
+
+    let mut meta = test_meta(dir.path());
+    meta.agent = ChatAgent::Codex;
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let driver =
+        tokio::spawn(async move { chat_driver::run_turn(&meta, "hi", None, None, Duration::from_secs(5), tx).await });
+
+    let mut frames = Vec::new();
+    while let Some(frame) = rx.recv().await {
+        frames.push(frame);
+    }
+    let session_id = driver.await.unwrap();
+
+    assert!(session_id.is_none());
+    assert_eq!(frames.len(), 2);
+    assert!(matches!(
+        &frames[0],
+        ChatStreamServerMsg::Error { message } if message == "codex chat not yet supported"
+    ));
+    assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
+}
