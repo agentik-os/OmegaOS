@@ -83,9 +83,15 @@ impl OsProduct {
             OsProduct {
                 slug: "designer-os",
                 name: "Designer OS (UX/UI)",
-                tagline: "UX and UI design: contracts turned into screens, flows and a design system.",
+                tagline: "Design {OS}: challenge the blueprint into flows, screens, states and a validated Design Handoff.",
                 group: OsGroup::BuildChain,
-                commands: &[],
+                commands: &[
+                    "/design-os · /designer-os   the UX/UI compiler + flow challenger",
+                    "  challenge flow · IA · screen contracts · states · visual system · a11y",
+                    "  maps to shadcn/ui + STAX (the OmegaOS stack)",
+                    "omega-designer   intake · handoff · self-test",
+                    "→ consumes the Blueprint handoff; emits the Design Handoff for Stepper",
+                ],
             },
             OsProduct {
                 slug: "stepper-os",

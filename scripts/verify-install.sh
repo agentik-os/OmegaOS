@@ -765,6 +765,7 @@ if [ -d OS ]; then
       researcher-os) case "$bsk_line" in *market-research-os*) : ;; *) bad "OS suite: researcher-os skill (market-research-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
       ideation-os)   case "$bsk_line" in *brainstorm-os*) : ;; *) bad "OS suite: ideation-os skill (brainstorm-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
       habits-os)     case "$bsk_line" in *habit-tracker-os*) : ;; *) bad "OS suite: habits-os skill (habit-tracker-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
+      designer-os)   case "$bsk_line" in *design-os*) : ;; *) bad "OS suite: designer-os skill (design-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
       *) case "$bsk_line" in *"$slug"*) : ;; *) bad "OS suite: $slug skill not in the BSK install loop"; os_parity_ok=0 ;; esac ;;
     esac
   done

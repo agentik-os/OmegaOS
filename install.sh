@@ -1960,7 +1960,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2027,6 +2027,21 @@ Alias of /habit-tracker-os: read and follow the complete instructions in:
 Chat is the interface; deterministic state via the \`omega-habits\` CLI
 (init/add/log/today/review/season/doctor). safety-and-boundaries.md routes
 clinical risk to a professional.
+MREOF
+        fi
+        # Designer OS (Design {OS}) also registers the `/designer-os` alias
+        # (the OS slot is designer-os #04; the skill is design-os).
+        if [[ "$BSK" == "design-os" ]]; then
+            cat > "$BCMD/designer-os.md" <<MREOF
+# /designer-os
+
+Design {OS} — the UX/UI compiler + flow challenger (Designer OS #04). Alias of
+/design-os: read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Consumes the Blueprint handoff, emits a validated Design Handoff for Stepper.
+Validators: \`omega-designer intake|handoff|self-test\`. Maps to shadcn/ui + STAX.
 MREOF
         fi
         # Researcher OS (Market Research {OS}) registers the short `/research`

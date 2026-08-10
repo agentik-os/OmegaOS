@@ -120,7 +120,7 @@ The build chain is its own group — `01 Ideation -> 02 Researcher -> 03 Bluepri
 | 01 | **Ideation OS** | Brainstorm {OS} v3: imagination + decision council | **integrated** |
 | 02 | **Researcher OS** | Market Research {OS}: evidence + validation compiler | **integrated** |
 | 03 | **Blueprint OS** | The product-definition compiler (v3) | **integrated** |
-| 04 | Designer OS (UX/UI) | Screens, flows, design system | awaiting drop |
+| 04 | **Designer OS (UX/UI)** | Design {OS}: challenge the blueprint into flows + a Stepper handoff | **integrated** |
 | 05 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
 | 06 | **Builder OS** | The implementation runtime: roadmap to release-ready code | **integrated** |
 | — | **Mindset OS** · **Habits OS** · **Books OS** | The personal OSes (Mindset: Jim Rohn coach · Habits: conversation-first tracker · Books: the librarian) | all three **integrated** |

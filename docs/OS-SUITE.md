@@ -19,7 +19,7 @@ The BUILD CHAIN is its own group, in pipeline order:
 | 01 | Ideation OS | `ideation-os` | Brainstorm {OS} v3: multi-agent imagination + decision council, lineage, Surface Lab, frozen concept handoff | **integrated** |
 | 02 | Researcher OS | `researcher-os` | Market Research {OS}: evidence + validation compiler, bounded GO/PIVOT decisions, frozen Blueprint input manifest | **integrated** |
 | 03 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen handoff | **integrated** |
-| 04 | Designer OS (UX/UI) | `designer-os` | Contracts turned into screens, flows and a design system | awaiting drop |
+| 04 | Designer OS (UX/UI) | `designer-os` | Design {OS}: challenge the blueprint into flows, screens, states + a validated Design Handoff | **integrated** |
 | 05 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
 | 06 | Builder OS | `builder-os` | The implementation runtime: the Stepper roadmap executed into release-ready code | **integrated** |
 
@@ -144,9 +144,11 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   compiler with depths SIGNAL/VALIDATION/INVESTMENT_GRADE and a frozen
   Blueprint input manifest; the marketing suite's market-research skill is a
   source lane inside it, never a replacement.
-- **Designer OS (UX/UI)** - the design router (R-DESIGN, 130+ skills) and
-  Open Design are the live surfaces; the payload will organize them into the
-  chain, never duplicate them.
+- **Designer OS (UX/UI)** - INTEGRATED (Design {OS} v1.0): a product-design
+  compiler + adversarial flow challenger that turns the Blueprint into a
+  validated Design Handoff for Stepper (flows, IA, screen contracts, states,
+  visual system, a11y; maps to shadcn/ui + STAX). It orchestrates the existing
+  R-DESIGN generators + Open Design, never forks them.
 - **Blueprint OS** - INTEGRATED (v3, the definition compiler). The v1
   14-phase designer is archived at `skills/blueprint-os/legacy/`; its scripts
   (blueprint-check.sh, stax_derive, runner) stay live for the `/stack` chain

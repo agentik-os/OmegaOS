@@ -15,7 +15,7 @@ personal OSes.
 | 01 | Ideation OS | `ideation-os` | Brainstorm {OS} v3: imagination + decision council | **integrated** |
 | 02 | Researcher OS | `researcher-os` | Market Research {OS}: evidence + validation compiler, bounded decisions | **integrated** |
 | 03 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen handoff | **integrated** |
-| 04 | Designer OS (UX/UI) | `designer-os` | Contracts turned into screens, flows and a design system | awaiting drop |
+| 04 | Designer OS (UX/UI) | `designer-os` | Design {OS}: challenge the blueprint into flows, screens, states | **integrated** |
 | 05 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
 | 06 | Builder OS | `builder-os` | The implementation runtime: the Stepper roadmap executed into release-ready code | **integrated** |
 
