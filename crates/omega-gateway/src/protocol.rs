@@ -281,6 +281,32 @@ pub struct ProjectsResponse {
     pub projects: Vec<ProjectEntry>,
 }
 
+/// One entry of `GET /v1/oracles`'s `oracles` array — a top-level mission
+/// ledger ([`Mission`]) composed with its live rmux session status.
+///
+/// NAMING NOTE: `key` and `session` carry the SAME string. `Mission.key` is
+/// populated verbatim from the ledger JSON's `"oracle"` field (see
+/// `missions.rs`), and that field already IS the full session name (e.g.
+/// `"oracle-dentistrygpt"`) — there is no separate bare identifier anywhere
+/// in the ledger-parsing code to derive a shorter `key` from. `key` names
+/// the entry's identity, `session` names its role as the exact string
+/// checked against `rmux::list_sessions()` for `live`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OracleEntry {
+    pub key: String,
+    pub session: String,
+    pub live: bool,
+    pub mission: Option<Mission>,
+}
+
+/// `GET /v1/oracles` response body — the live oracle roster: every
+/// top-level mission ledger from `missions::list()`, each annotated with
+/// whether its session currently appears in `rmux::list_sessions()`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OraclesResponse {
+    pub oracles: Vec<OracleEntry>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -312,6 +338,8 @@ pub struct Protocol {
     pub skills_response: SkillsResponse,
     pub project_entry: ProjectEntry,
     pub projects_response: ProjectsResponse,
+    pub oracle_entry: OracleEntry,
+    pub oracles_response: OraclesResponse,
 }
 
 pub fn schema_json() -> String {
