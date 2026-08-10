@@ -2202,9 +2202,6 @@ async fn run_tui_loop(
                     if app.tab == omega_tui::app::Tab::Projects {
                         app.refresh_projects();
                     }
-                    if app.tab == omega_tui::app::Tab::Marketing {
-                        app.refresh_marketing();
-                    }
                     if app.tab == omega_tui::app::Tab::Os {
                         app.refresh_os();
                     }
@@ -2721,8 +2718,12 @@ async fn run_tui_loop(
                         }
                     }
                 }
-                Action::OpenMarketingSession { name, cwd, prompt } => {
+                Action::OpenMarketingSession { name, cwd, prompt, agent } => {
                     let mgr = SessionManager::connect().await?;
+                    // The marketing/ dir may not exist yet on a project that
+                    // never did marketing — create it so the session lands in
+                    // its real workspace (the agent scaffolds the structure).
+                    let _ = std::fs::create_dir_all(&cwd);
                     // If a marketing session for this project already exists, just
                     // re-attach (idempotent — avoids stacking duplicates).
                     let existing = mgr
@@ -2735,17 +2736,15 @@ async fn run_tui_loop(
                         auto_focus_chat(app, &name).await;
                     } else {
                         match mgr
-                            .create_session_with_agent(
-                                &name,
-                                Some(&cwd),
-                                omega_core::agents::Agent::Claude,
-                                Some(&prompt),
-                            )
+                            .create_session_with_agent(&name, Some(&cwd), agent, Some(&prompt))
                             .await
                         {
                             Ok(_) => {
-                                app.status_message =
-                                    Some(format!("💬 {} — marketing session, opening chat…", name));
+                                app.status_message = Some(format!(
+                                    "📣 {} — marketing session ({}), opening chat…",
+                                    name,
+                                    agent.name()
+                                ));
                                 auto_focus_chat(app, &name).await;
                             }
                             Err(e) => {
@@ -2757,7 +2756,7 @@ async fn run_tui_loop(
                 }
                 Action::OpenOsSession { name, cwd, prompt } => {
                     let mgr = SessionManager::connect().await?;
-                    // Same idempotent contract as marketing: one integration
+                    // Same idempotent contract as marketing: one master-agent
                     // session per OS — re-attach instead of stacking duplicates.
                     let existing = mgr
                         .list_sessions()
@@ -2819,29 +2818,6 @@ async fn run_tui_loop(
                         Err(e) => {
                             app.status_message =
                                 Some(format!("Bot-link session failed for {}: {}", slug, e));
-                        }
-                    }
-                }
-                Action::MarketingPublishDryRun { slug, cwd } => {
-                    let mgr = SessionManager::connect().await?;
-                    let session = format!("mkt-{}-publish", slug);
-                    let cmd = format!(
-                        "bash -c {}",
-                        shell_escape_for_bash(&format!(
-                            "cd {} 2>/dev/null; omega-zernio publish {} --dry-run; \
-echo; echo '─── dry-run done ───'; exec bash",
-                            cwd, slug
-                        ))
-                    );
-                    match mgr.create_session(&session, Some(&cwd), Some(&cmd)).await {
-                        Ok(_) => {
-                            app.status_message =
-                                Some(format!("Publish dry-run for {} ({})", slug, session));
-                            auto_focus_chat(app, &session).await;
-                        }
-                        Err(e) => {
-                            app.status_message =
-                                Some(format!("Dry-run spawn failed for {}: {}", slug, e));
                         }
                     }
                 }
@@ -3002,13 +2978,6 @@ echo; echo '─── dry-run done ───'; exec bash",
             // Lazy-load marketing projects on first entry to the Marketing tab
             // (the fs + crontab scan is heavier than the registry, so we defer
             // it off startup). Reload only if empty — F5 forces a full refresh.
-            if app.tab != tab_before
-                && app.tab == omega_tui::app::Tab::Marketing
-                && app.marketing_projects.is_empty()
-            {
-                app.refresh_marketing();
-            }
-
             // Same lazy contract for the OS suite (registry + fs stat — cheap,
             // but keep startup untouched). F5 forces a full refresh.
             if app.tab != tab_before
@@ -3034,7 +3003,6 @@ echo; echo '─── dry-run done ───'; exec bash",
                     Tab::Settings => "↑/↓ Monitor + Settings sections · Enter/Tab edit · L login · T telegram · B billing".to_string(),
                     Tab::Projects => "↑/↓ projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
                     Tab::System => "↑/↓ sections · Tab focus detail · [ ] jump section · Laws · Rules · Agents · Skills · Docs".to_string(),
-                    Tab::Marketing => "↑/↓ projects · Enter parler marketing · p publier · F5 refresh".to_string(),
                     Tab::Os => "↑/↓ operative systems · Enter master agent · T link Telegram bot · F5 refresh".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });

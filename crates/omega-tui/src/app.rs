@@ -31,7 +31,6 @@ pub enum Tab {
     /// 5-row group buried above the project list. This tab gives it back.
     System,
     Settings,
-    Marketing,
     /// The AgentikOS operative-systems suite (Mindset OS, Habits OS, …) —
     /// registry + integration status, backed by `omega_core::os_products`.
     Os,
@@ -43,10 +42,9 @@ impl Tab {
     /// labels, the highlighted index and Left/Right cycling all derive from
     /// this array, so a reorder is a single edit here. (They used to be three
     /// hand-kept lists, which is how the bar and the enum drifted apart.)
-    pub const ORDER: [Tab; 8] = [
+    pub const ORDER: [Tab; 7] = [
         Tab::Sessions,
         Tab::Projects,
-        Tab::Marketing,
         Tab::Os,
         Tab::Menu,
         Tab::System,
@@ -58,7 +56,6 @@ impl Tab {
         match self {
             Tab::Sessions => "Sessions",
             Tab::Projects => "Projects",
-            Tab::Marketing => "Marketing",
             Tab::Os => "OS",
             Tab::Menu => "Menu",
             Tab::System => "System",
@@ -156,6 +153,14 @@ impl InfoSection {
     }
 }
 
+/// Which surface of a project a new session opens: the CODE or its MARKETING
+/// (the marketing machine + the project's dedicated marketing agent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectLane {
+    Coding,
+    Marketing,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputMode {
     Normal,
@@ -166,11 +171,22 @@ pub enum InputMode {
     /// the shared `ProjectRegistry` — the SAME source the Telegram dispatch
     /// picker uses — so the added-projects list stays in sync across surfaces.
     DispatchProject(Vec<String>, usize),
-    /// Open-project agent picker (Projects tab → Enter on a project). Holds
-    /// (project name, project path, selected index). Opening a project ALWAYS
-    /// starts a NEW blank session with the picked agent — re-entering an
-    /// existing session is the Sessions tab's job, not this one.
-    ProjectOpenAgent(String, String, usize),
+    /// Open-project step 1 (Projects tab → Enter on a project): pick the LANE —
+    /// Coding session, Marketing session (marketing machine + dedicated agent
+    /// in `<project>/marketing/`), or the project's Oracle. Holds
+    /// (project name, project path, selected index).
+    ProjectOpenLane(String, String, usize),
+    /// Open-project step 2: pick the LLM agent among those actually INSTALLED
+    /// on this machine (claude / codex / gemini / kimi / …). Same picker for
+    /// both lanes. Opening always starts a NEW blank session — re-entering an
+    /// existing one is the Sessions tab's job.
+    ProjectOpenAgentPick {
+        lane: ProjectLane,
+        name: String,
+        path: String,
+        agents: Vec<omega_core::agents::Agent>,
+        sel: usize,
+    },
     /// Project delete menu (Projects tab → Projects group 'x') — the SAME three escalating
     /// tiers as the Telegram bot's delete menu (omega → local → all), executed
     /// through the bot's one-shot CLI (one canonical deletion impl).
@@ -1371,10 +1387,6 @@ pub struct App {
     pub projects_selected: usize,
     /// Cached project registry for the Projects tab.
     pub project_registry: omega_core::project_manager::ProjectRegistry,
-    /// Marketing tab — selected project index.
-    pub marketing_selected: usize,
-    /// Cached marketing-enabled projects (loaded on tab entry / F5).
-    pub marketing_projects: Vec<omega_core::marketing::MarketingProject>,
     /// OS tab — selected operative-system index.
     pub os_selected: usize,
     /// Cached OS-suite entries (loaded on tab entry / F5 — fs stat only).
@@ -1512,10 +1524,6 @@ impl App {
             current_session,
             projects_selected: 0,
             project_registry: omega_core::project_manager::ProjectRegistry::load(),
-            marketing_selected: 0,
-            // Loaded lazily on first Marketing-tab entry / F5 (scans the fs +
-            // crontab — heavier than the registry, so not eager at startup).
-            marketing_projects: Vec::new(),
             os_selected: 0,
             // Same lazy contract as marketing: filled on first OS-tab entry.
             os_entries: Vec::new(),
@@ -1555,68 +1563,6 @@ impl App {
 
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
         self.project_registry.projects.get(self.projects_selected)
-    }
-
-    /// (Re)load the marketing-enabled projects (Marketing tab entry / F5).
-    /// Fetches the connected-account count for the currently-selected project
-    /// only (on-demand, brief blocking — never for the whole list).
-    pub fn refresh_marketing(&mut self) {
-        self.marketing_projects = omega_core::marketing::list_marketing_projects();
-        if self.marketing_selected >= self.marketing_projects.len() {
-            self.marketing_selected = self.marketing_projects.len().saturating_sub(1);
-        }
-        self.load_selected_marketing_accounts();
-    }
-
-    pub fn selected_marketing_project(
-        &self,
-    ) -> Option<&omega_core::marketing::MarketingProject> {
-        self.marketing_projects.get(self.marketing_selected)
-    }
-
-    /// Fetch + cache the connected-account count for the selected project (only
-    /// if not already cached). Called on nav-change / refresh — never per-frame.
-    pub fn load_selected_marketing_accounts(&mut self) {
-        let idx = self.marketing_selected;
-        let Some(p) = self.marketing_projects.get(idx) else {
-            return;
-        };
-        // Ask ONCE per project per refresh. Guarding on `accounts.is_some()`
-        // alone meant a failed lookup (zernio absent/paused/offline) stayed
-        // `None` and was re-shelled on EVERY cursor move — two subprocesses per
-        // arrow key, which is what made this tab crawl.
-        if p.accounts.is_some() || p.accounts_tried {
-            return;
-        }
-        let slug = p.slug.clone();
-        let count = omega_core::marketing::project_accounts(&slug);
-        if let Some(p) = self.marketing_projects.get_mut(idx) {
-            // `Some(count)` on success; `None` still shows "…" in the pane, and
-            // a refresh rebuilds the vec (clearing `accounts_tried`) to retry.
-            p.accounts = count;
-            p.accounts_tried = true;
-        }
-    }
-
-    pub fn marketing_tab_next(&mut self) {
-        if self.marketing_projects.is_empty() {
-            return;
-        }
-        self.marketing_selected =
-            (self.marketing_selected + 1) % self.marketing_projects.len();
-        self.load_selected_marketing_accounts();
-    }
-
-    pub fn marketing_tab_prev(&mut self) {
-        if self.marketing_projects.is_empty() {
-            return;
-        }
-        self.marketing_selected = if self.marketing_selected == 0 {
-            self.marketing_projects.len() - 1
-        } else {
-            self.marketing_selected - 1
-        };
-        self.load_selected_marketing_accounts();
     }
 
     /// (Re)load the OS-suite entries (OS tab entry / F5). Registry is static;

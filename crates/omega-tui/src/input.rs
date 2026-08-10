@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode, MenuAction, MonitorAction, SessionFocus, Tab};
+use crate::app::{App, InputMode, MenuAction, MonitorAction, ProjectLane, SessionFocus, Tab};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 pub enum Action {
@@ -82,10 +82,11 @@ pub enum Action {
     /// existing session — the Sessions tab already does that, and silently
     /// re-attaching is what made "open" feel broken.
     OpenProject { name: String, path: String, agent: omega_core::agents::Agent },
-    /// Marketing tab: open a marketing-scoped Claude session for the selected
-    /// project. `cwd` is the project's `marketing/` dir so the agent starts
-    /// there; `prompt` is the scoped "talk only marketing" system prompt.
-    OpenMarketingSession { name: String, cwd: String, prompt: String },
+    /// Projects tab → Marketing lane: open the project's DEDICATED marketing
+    /// session under the picked LLM agent. `cwd` is `<project>/marketing/`
+    /// (created if missing); `prompt` is the scoped marketing-agent brief
+    /// (marketing machine + R-MARKETING skills, product code off-limits).
+    OpenMarketingSession { name: String, cwd: String, prompt: String, agent: omega_core::agents::Agent },
     /// OS tab: open a Claude session scoped to the selected operative system's
     /// directory (`OS/<slug>/`) running its MASTER.md master agent — the same
     /// brain its Telegram bot gets.
@@ -95,9 +96,6 @@ pub enum Action {
     /// operator pastes the @BotFather token there; the bot's brain is the
     /// OS's master agent.
     LinkOsBot { slug: String },
-    /// Marketing tab: run `omega-zernio publish <slug> --dry-run` for the
-    /// selected project in a fresh session (the "p → publier (dry-run)" action).
-    MarketingPublishDryRun { slug: String, cwd: String },
     /// Projects tab: dispatch `omega planner` for the selected project.
     RunPlannerForProject { name: String, path: String },
     /// Projects tab: register an existing folder into the project registry
@@ -394,16 +392,6 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 }
             }
         }
-        Tab::Marketing => {
-            if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
-            } else {
-                for _ in 0..lines {
-                    if down { app.marketing_tab_next(); } else { app.marketing_tab_prev(); }
-                }
-            }
-        }
         Tab::Os => {
             if app.detail_focused {
                 if down { app.scroll_detail_down(lines); }
@@ -460,6 +448,54 @@ fn handle_paste(app: &mut App, text: String) -> Action {
 /// Open the dispatch step-1 project picker over the shared `ProjectRegistry`
 /// (the SAME source the Telegram dispatch picker uses, so the added-projects list
 /// stays in sync). No project added yet → a status hint instead of an empty picker.
+/// LLM agents actually installed on this machine, in roster order — what the
+/// open-project step-2 picker offers (claude / codex / gemini / kimi / …).
+/// Shell is not an LLM and never belongs in this picker.
+fn installed_agents() -> Vec<omega_core::agents::Agent> {
+    omega_core::agents::Agent::all()
+        .iter()
+        .copied()
+        .filter(|a| *a != omega_core::agents::Agent::Shell && a.is_available())
+        .collect()
+}
+
+/// The Marketing-lane open action: a session in `<project>/marketing/` running
+/// the project's DEDICATED marketing agent — marketing machine structure,
+/// R-MARKETING skill chain, zernio publishing, product code off-limits.
+fn marketing_open_action(
+    name: &str,
+    path: &str,
+    agent: omega_core::agents::Agent,
+) -> Action {
+    let slug = std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| name.to_lowercase());
+    let cwd = format!("{}/marketing", path);
+    let prompt = format!(
+        "Tu es l'agent MARKETING dédié du projet {name}. Tu travailles \
+UNIQUEMENT sur son marketing, dans {path}/marketing/ (structure marketing \
+machine 00-context…06-branding). Commence par `omega marketing status {slug}` \
+pour l'état + la next best action. Si la structure marketing/ manque, \
+scaffolde-la avec ~/.omega/marketing-machine/scaffold.sh (lis son usage). \
+Chaîne de skills (R-MARKETING, dans l'ordre): /omg-product-marketing-context \
+d'abord, puis /omg-content-strategy, /omg-social-content, /omg-ad-creative, \
+/omg-brand-identity. Publication UNIQUEMENT via `omega-zernio` (toujours \
+--dry-run d'abord, puis vérifier LIVE sur le profil), visuels via `higgsfield \
+generate create`. Jamais de tiret cadratin dans la copy (R-NODASH). Ne touche \
+pas au code produit.",
+        name = name,
+        path = path,
+        slug = slug,
+    );
+    Action::OpenMarketingSession {
+        name: format!("mkt-{}", slug),
+        cwd,
+        prompt,
+        agent,
+    }
+}
+
 fn open_dispatch_picker(app: &mut App) {
     let names = crate::app::dispatch_project_names();
     if names.is_empty() {
@@ -835,29 +871,32 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 }
             })
         }
-        InputMode::ProjectOpenAgent(name, path, sel) => {
-            // Codex (default) · Claude · Oracle · Cancel. Enter/1/2 spawn a NEW blank
-            // session; 3 hands the project to its dedicated oracle instead — it drops
-            // straight into the mission prompt for THIS project, reusing the whole
-            // dispatch path (no project-picking step, since we already know which one).
+        InputMode::ProjectOpenLane(name, path, sel) => {
+            // Step 1 — the LANE: Coding · Marketing (marketing machine + the
+            // project's dedicated marketing agent) · Oracle · Cancel. Both
+            // session lanes continue to step 2, the installed-agent picker.
             const COUNT: usize = 4;
-            const ORACLE: usize = 2;
-            // Index 0 is Codex, the shipped OmegaOS default. Explicit choices
-            // remain available and are never migrated behind the operator's back.
-            let open = |sel: usize| -> Action {
-                match sel {
-                    0 => Action::OpenProject {
-                        name: name.clone(),
-                        path: path.clone(),
-                        agent: omega_core::agents::Agent::Codex,
-                    },
-                    1 => Action::OpenProject {
-                        name: name.clone(),
-                        path: path.clone(),
-                        agent: omega_core::agents::Agent::Claude,
-                    },
-                    _ => Action::None,
+            let to_agents = |app: &mut App, lane: ProjectLane, name: String, path: String| {
+                let agents = installed_agents();
+                if agents.is_empty() {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message =
+                        Some("No coding agent installed (Settings → install one)".to_string());
+                    return;
                 }
+                app.input_mode = InputMode::ProjectOpenAgentPick {
+                    lane,
+                    name,
+                    path,
+                    agents,
+                    sel: 0,
+                };
+            };
+            let oracle = |app: &mut App, name: String| {
+                app.status_message =
+                    Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
+                app.input_buffer = String::new();
+                app.input_mode = InputMode::DispatchMission(name);
             };
             match key.code {
                 KeyCode::Esc => {
@@ -866,43 +905,106 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                     Action::None
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
-                    app.input_mode = InputMode::ProjectOpenAgent(name, path, (sel + 1) % COUNT);
+                    app.input_mode = InputMode::ProjectOpenLane(name, path, (sel + 1) % COUNT);
                     Action::None
                 }
                 KeyCode::Up | KeyCode::Char('k') => {
                     let next = if sel == 0 { COUNT - 1 } else { sel - 1 };
-                    app.input_mode = InputMode::ProjectOpenAgent(name, path, next);
+                    app.input_mode = InputMode::ProjectOpenLane(name, path, next);
                     Action::None
                 }
                 KeyCode::Char('1') => {
-                    app.input_mode = InputMode::Normal;
-                    open(0)
-                }
-                KeyCode::Char('2') => {
-                    app.input_mode = InputMode::Normal;
-                    open(1)
-                }
-                KeyCode::Char('3') => {
-                    app.status_message =
-                        Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
-                    app.input_buffer = String::new();
-                    app.input_mode = InputMode::DispatchMission(name);
+                    to_agents(app, ProjectLane::Coding, name, path);
                     Action::None
                 }
-                KeyCode::Enter if sel == ORACLE => {
-                    app.status_message =
-                        Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
-                    app.input_buffer = String::new();
-                    app.input_mode = InputMode::DispatchMission(name);
+                KeyCode::Char('2') => {
+                    to_agents(app, ProjectLane::Marketing, name, path);
+                    Action::None
+                }
+                KeyCode::Char('3') => {
+                    oracle(app, name);
                     Action::None
                 }
                 KeyCode::Enter => {
-                    app.input_mode = InputMode::Normal;
-                    if sel > ORACLE {
-                        app.status_message = Some("Cancelled".to_string());
+                    match sel {
+                        0 => to_agents(app, ProjectLane::Coding, name, path),
+                        1 => to_agents(app, ProjectLane::Marketing, name, path),
+                        2 => oracle(app, name),
+                        _ => {
+                            app.input_mode = InputMode::Normal;
+                            app.status_message = Some("Cancelled".to_string());
+                        }
                     }
-                    open(sel)
+                    Action::None
                 }
+                _ => Action::None,
+            }
+        }
+
+        InputMode::ProjectOpenAgentPick {
+            lane,
+            name,
+            path,
+            agents,
+            sel,
+        } => {
+            // Step 2 — the LLM: only agents actually installed on this machine
+            // (claude / codex / gemini / kimi / …). Last row = Cancel.
+            let count = agents.len() + 1;
+            let open = |app: &mut App, idx: usize| -> Action {
+                let Some(agent) = agents.get(idx).copied() else {
+                    app.input_mode = InputMode::Normal;
+                    app.status_message = Some("Cancelled".to_string());
+                    return Action::None;
+                };
+                app.input_mode = InputMode::Normal;
+                match lane {
+                    ProjectLane::Coding => Action::OpenProject {
+                        name: name.clone(),
+                        path: path.clone(),
+                        agent,
+                    },
+                    ProjectLane::Marketing => {
+                        marketing_open_action(&name, &path, agent)
+                    }
+                }
+            };
+            match key.code {
+                KeyCode::Esc => {
+                    // Back to step 1, not a hard cancel.
+                    app.input_mode = InputMode::ProjectOpenLane(name, path, 0);
+                    Action::None
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    app.input_mode = InputMode::ProjectOpenAgentPick {
+                        lane,
+                        name,
+                        path,
+                        agents,
+                        sel: (sel + 1) % count,
+                    };
+                    Action::None
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = if sel == 0 { count - 1 } else { sel - 1 };
+                    app.input_mode = InputMode::ProjectOpenAgentPick {
+                        lane,
+                        name,
+                        path,
+                        agents,
+                        sel: next,
+                    };
+                    Action::None
+                }
+                KeyCode::Char(c @ '1'..='9') => {
+                    let idx = (c as usize) - ('1' as usize);
+                    if idx < agents.len() {
+                        open(app, idx)
+                    } else {
+                        Action::None
+                    }
+                }
+                KeyCode::Enter => open(app, sel),
                 _ => Action::None,
             }
         }
@@ -1345,7 +1447,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_next(),
                 Tab::Settings => app.settings_tab_next(),
                 Tab::Projects => app.projects_tab_next(),
-                Tab::Marketing => app.marketing_tab_next(),
                 Tab::Os => app.os_tab_next(),
                 Tab::System => app.select_info_next(),
                 Tab::Help => app.scroll_detail_down(1),
@@ -1388,7 +1489,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Tab::Menu => app.select_menu_prev(),
                 Tab::Settings => app.settings_tab_prev(),
                 Tab::Projects => app.projects_tab_prev(),
-                Tab::Marketing => app.marketing_tab_prev(),
                 Tab::Os => app.os_tab_prev(),
                 Tab::System => app.select_info_prev(),
                 Tab::Help => app.scroll_detail_up(1),
@@ -1597,9 +1697,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                             Some(p) => {
                                 let name = p.name.clone();
                                 let path = p.path.to_string_lossy().to_string();
-                                app.input_mode = InputMode::ProjectOpenAgent(name, path, 0);
-                                app.status_message =
-                                    Some("Open project — pick an agent (↑/↓, Enter, Esc)".to_string());
+                                app.input_mode = InputMode::ProjectOpenLane(name, path, 0);
+                                app.status_message = Some(
+                                    "Open project — Coding / Marketing / Oracle (↑/↓, Enter, Esc)"
+                                        .to_string(),
+                                );
                                 Action::None
                             }
                             None => {
@@ -1622,36 +1724,6 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     );
                 }
                 Action::None
-            }
-            Tab::Marketing => {
-                // Enter opens a marketing-scoped Claude session for the selected
-                // project, cwd = its marketing/ dir. No focus dance — the list is
-                // the primary surface and "Enter → parler marketing" is the whole
-                // point of the tab.
-                match app.selected_marketing_project() {
-                    Some(p) => {
-                        let cwd = p.marketing_dir().to_string_lossy().to_string();
-                        let prompt = format!(
-                            "Tu es l'opérateur marketing de {name}. Tu travailles \
-UNIQUEMENT sur son marketing: lis {path}/marketing/ (00-context…05-calendar), \
-utilise `omega-zernio` pour publier et `higgsfield generate create` pour les \
-visuels. Montre l'agenda du jour, propose/exécute les posts. Ne touche pas au \
-code produit.",
-                            name = p.name,
-                            path = p.path.to_string_lossy(),
-                        );
-                        Action::OpenMarketingSession {
-                            name: format!("mkt-{}", p.slug),
-                            cwd,
-                            prompt,
-                        }
-                    }
-                    None => {
-                        app.status_message =
-                            Some("No marketing project selected (F5 to scan)".to_string());
-                        Action::None
-                    }
-                }
             }
             Tab::Os => {
                 // Enter opens a Claude session in the selected OS's directory
@@ -1700,21 +1772,6 @@ Statut actuel: {status}.",
             }
             Tab::Help => Action::None,
         },
-
-        // Marketing tab: 'p' → publish dry-run for the selected project.
-        KeyCode::Char('p') if app.tab == Tab::Marketing => {
-            match app.selected_marketing_project() {
-                Some(p) => Action::MarketingPublishDryRun {
-                    slug: p.slug.clone(),
-                    cwd: p.marketing_dir().to_string_lossy().to_string(),
-                },
-                None => {
-                    app.status_message =
-                        Some("No marketing project selected (F5 to scan)".to_string());
-                    Action::None
-                }
-            }
-        }
 
         // OS tab: 'T' → link a Telegram bot to the selected operative system.
         KeyCode::Char('T') if app.tab == Tab::Os => {
@@ -2610,15 +2667,15 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
-    // The tab bar reads Sessions · Projects · Marketing · OS · Menu · System ·
-    // Help · Settings, and Right/Left walk it in that visual order. Locked down
+    // The tab bar reads Sessions · Projects · OS · Menu · System · Help ·
+    // Settings, and Right/Left walk it in that visual order. Locked down
     // because the order used to live in three hand-kept lists that drifted apart.
     #[test]
     fn tab_order_matches_the_bar_and_cycles_both_ways() {
         let titles: Vec<&str> = Tab::ORDER.iter().map(|t| t.title()).collect();
         assert_eq!(
             titles,
-            vec!["Sessions", "Projects", "Marketing", "OS", "Menu", "System", "Help", "Settings"]
+            vec!["Sessions", "Projects", "OS", "Menu", "System", "Help", "Settings"]
         );
         for (i, t) in Tab::ORDER.iter().enumerate() {
             assert_eq!(t.index(), i, "{} must sit at bar position {}", t.title(), i);
@@ -2766,60 +2823,95 @@ mod tests {
         assert_eq!(app.projects_selected, 0);
     }
 
-    // Opening a project spawns a NEW session with the PICKED agent — it must
-    // never silently re-attach to an existing/oracle session (that regression
-    // made "open project" look like it did nothing).
+    // Opening a project goes lane -> installed-agent -> action: the coding
+    // lane emits OpenProject with the picked agent, the marketing lane emits
+    // OpenMarketingSession into <project>/marketing/ with the picked agent.
     #[test]
-    fn open_project_picker_emits_picked_agent() {
+    fn open_project_two_step_picker_emits_lane_and_agent() {
+        use omega_core::agents::Agent;
         let mut app = test_app();
         let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
 
-        // Default selection (0) → Codex.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        let action = handle_key(&mut app, enter);
-        match action {
+        // Coding lane, second agent picked via Down.
+        app.input_mode = InputMode::ProjectOpenAgentPick {
+            lane: ProjectLane::Coding,
+            name: "Verba".into(),
+            path: "/tmp/verba".into(),
+            agents: vec![Agent::Codex, Agent::Claude],
+            sel: 0,
+        };
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        match handle_key(&mut app, enter) {
             Action::OpenProject { name, path, agent } => {
                 assert_eq!(name, "Verba");
                 assert_eq!(path, "/tmp/verba");
-                assert_eq!(agent, omega_core::agents::Agent::Codex);
-            }
-            _ => panic!("expected OpenProject with Codex"),
-        }
-        assert!(matches!(app.input_mode, InputMode::Normal));
-
-        // Down → Claude.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        match handle_key(&mut app, enter) {
-            Action::OpenProject { agent, .. } => {
-                assert_eq!(agent, omega_core::agents::Agent::Claude);
+                assert_eq!(agent, Agent::Claude);
             }
             _ => panic!("expected OpenProject with Claude"),
         }
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // Marketing lane: session lands in <project>/marketing/ with the agent.
+        app.input_mode = InputMode::ProjectOpenAgentPick {
+            lane: ProjectLane::Marketing,
+            name: "Verba".into(),
+            path: "/tmp/verba".into(),
+            agents: vec![Agent::Codex, Agent::Claude],
+            sel: 0,
+        };
+        match handle_key(&mut app, enter) {
+            Action::OpenMarketingSession { name, cwd, prompt, agent } => {
+                assert_eq!(name, "mkt-verba");
+                assert_eq!(cwd, "/tmp/verba/marketing");
+                assert!(prompt.contains("MARKETING"));
+                assert_eq!(agent, Agent::Codex);
+            }
+            _ => panic!("expected OpenMarketingSession"),
+        }
     }
 
-    // '1' → Codex (default), '2' → Claude; Esc and Cancel open nothing.
+    // Step 1: '3' routes to the oracle mission prompt; Cancel/Esc open nothing.
+    // Step 2: Esc goes BACK to step 1, digits pick an agent directly.
     #[test]
-    fn open_project_picker_shortcuts_and_cancel() {
+    fn open_project_lane_picker_routes_and_cancels() {
+        use omega_core::agents::Agent;
         let mut app = test_app();
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        match handle_key(&mut app, press('1')) {
-            Action::OpenProject { agent, .. } => {
-                assert_eq!(agent, omega_core::agents::Agent::Codex)
-            }
-            _ => panic!("expected OpenProject with Codex via '1'"),
-        }
 
-        // Cancel row (index 3 — Oracle took index 2) → no session opened.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 3);
+        // '3' -> oracle mission input for THIS project.
+        app.input_mode = InputMode::ProjectOpenLane("Verba".into(), "/tmp/verba".into(), 0);
+        let action = handle_key(&mut app, press('3'));
+        assert!(matches!(action, Action::None));
+        assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Verba"));
+
+        // Cancel row -> nothing opened.
+        app.input_mode = InputMode::ProjectOpenLane("Verba".into(), "/tmp/verba".into(), 3);
         let action = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(action, Action::None), "Cancel must not open a session");
-
-        // Esc → no session opened.
-        app.input_mode = InputMode::ProjectOpenAgent("Verba".into(), "/tmp/verba".into(), 0);
-        let action = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(action, Action::None), "Esc must not open a session");
         assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // Step 2 Esc -> back to the lane picker (not a hard cancel).
+        app.input_mode = InputMode::ProjectOpenAgentPick {
+            lane: ProjectLane::Coding,
+            name: "Verba".into(),
+            path: "/tmp/verba".into(),
+            agents: vec![Agent::Codex],
+            sel: 0,
+        };
+        handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(app.input_mode, InputMode::ProjectOpenLane(..)));
+
+        // Digit '1' on step 2 picks the first installed agent.
+        app.input_mode = InputMode::ProjectOpenAgentPick {
+            lane: ProjectLane::Coding,
+            name: "Verba".into(),
+            path: "/tmp/verba".into(),
+            agents: vec![Agent::Codex, Agent::Claude],
+            sel: 0,
+        };
+        match handle_key(&mut app, press('1')) {
+            Action::OpenProject { agent, .. } => assert_eq!(agent, Agent::Codex),
+            _ => panic!("expected OpenProject via digit"),
+        }
     }
 
     // Up from the first item wraps to the last (matches the SelectModel picker).

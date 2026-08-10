@@ -107,7 +107,7 @@ OmegaOS doctor
 - **Resolve Linear tickets end to end.** `/omg-linear` fixes, captures evidence, audits to 100/100, comments, and moves the ticket to review — never to Done; a human does that. See [Linear integration](#linear-integration).
 - **Learn from any book — the Librarian.** ALEXANDRIA OS (`/alexandria`) is a personal librarian, learning coach and intellectual sparring partner: it X-rays a book chapter by chapter, distills an idea across many books, puts authors in combat, challenges your plan in a 10-round sparring, builds flashcards and spaced repetition, and finds the 50 best books worldwide on a topic with 50 actionable tips (`/best`). It runs as a Skill in any session AND as its own **Telegram persona bot** you connect in one tap — **Menu → 🤖 Agents → 📚 Link your librarian (Alexandria)**, paste a @BotFather token, done. It replies in **English by default** (`/language fr` to switch), transcribes voice notes and audio, reads PDF/EPUB files, and starts with `/setup` to adapt to how *you* learn. Same wiring links your companion (Nova) and security agent (Trinity).
 
-Three ways in: the `ratatui` TUI (5 tabs: Sessions, Menu, Agentic, Settings, Help), the `omega` CLI (60+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
+Three ways in: the `ratatui` TUI (7 tabs: Sessions, Projects, OS, Menu, System, Help, Settings — opening a project offers Coding, Marketing, or the Oracle, each under any installed LLM agent), the `omega` CLI (60+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
 
 ## The OS suite
 
@@ -162,7 +162,7 @@ Four levels, top to bottom:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (5 tabs) · CLI (60+ cmds) · Telegram hub                   │
+│  TUI (7 tabs) · CLI (60+ cmds) · Telegram hub                   │
 │                      ↓ intent                                   │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 2 — Master (persistent brain — the Atlas topic)          │

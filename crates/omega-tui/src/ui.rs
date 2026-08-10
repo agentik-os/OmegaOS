@@ -527,7 +527,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Projects => draw_projects(frame, app, chunks[1]),
         Tab::System => draw_system(frame, app, chunks[1]),
         Tab::Settings => draw_settings(frame, app, chunks[1]),
-        Tab::Marketing => draw_marketing(frame, app, chunks[1]),
         Tab::Os => draw_os(frame, app, chunks[1]),
         Tab::Help => draw_help(frame, app, chunks[1]),
     }
@@ -577,8 +576,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::SelectModel(..) => {
             draw_model_picker(frame, app);
         }
-        InputMode::ProjectOpenAgent(..) => {
-            draw_project_open_agent_picker(frame, app);
+        InputMode::ProjectOpenLane(..) | InputMode::ProjectOpenAgentPick { .. } => {
+            draw_project_open_picker(frame, app);
         }
         InputMode::ProjectDelete(..) => {
             draw_project_delete_picker(frame, app);
@@ -791,22 +790,44 @@ fn draw_model_picker(frame: &mut Frame, app: &App) {
     frame.render_stateful_widget(list, area, &mut state);
 }
 
-/// Open-project picker — how to open a project: a NEW blank session under the
-/// picked agent (1/2), or hand it to the project's own oracle (3), which asks
-/// for a mission and dispatches. ↑/↓ or 1/2/3, Enter, Esc. Non-destructive →
-/// accent border.
-fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
-    let (name, sel): (&str, usize) = match &app.input_mode {
-        InputMode::ProjectOpenAgent(name, _path, sel) => (name.as_str(), *sel),
+/// Open-project picker — two steps. Step 1: the LANE (Coding session /
+/// Marketing session / Oracle). Step 2: the LLM agent, listing only agents
+/// actually INSTALLED on this machine (claude / codex / gemini / kimi / …).
+/// ↑/↓ or digits, Enter, Esc (step 2 Esc goes back to step 1).
+fn draw_project_open_picker(frame: &mut Frame, app: &App) {
+    let (title, options, sel): (String, Vec<String>, usize) = match &app.input_mode {
+        InputMode::ProjectOpenLane(name, _path, sel) => (
+            format!(" ▶ Open {} — what do you want to work on? ", name),
+            vec![
+                "1. Coding — new session in the project".to_string(),
+                "2. Marketing — marketing machine + dedicated agent (project/marketing/)"
+                    .to_string(),
+                "3. Oracle — the project's own orchestrator (asks for a mission)".to_string(),
+                "   Cancel".to_string(),
+            ],
+            *sel,
+        ),
+        InputMode::ProjectOpenAgentPick { lane, name, agents, sel, .. } => {
+            let lane_label = match lane {
+                crate::app::ProjectLane::Coding => "coding",
+                crate::app::ProjectLane::Marketing => "marketing",
+            };
+            let mut rows: Vec<String> = agents
+                .iter()
+                .enumerate()
+                .map(|(i, a)| format!("{}. {}", i + 1, a.display_name()))
+                .collect();
+            rows.push("   Cancel".to_string());
+            (
+                format!(" ▶ Open {} ({}) — pick the LLM (installed only) ", name, lane_label),
+                rows,
+                *sel,
+            )
+        }
         _ => return,
     };
-    let options = [
-        "1. Codex — OpenAI (Sol) — default",
-        "2. Claude Code — explicit alternative",
-        "3. Oracle — the project's own orchestrator (asks for a mission)",
-        "   Cancel",
-    ];
-    let area = centered_rect(60, 22, frame.area());
+    let height = (options.len() as u16 + 4).max(8).min(frame.area().height);
+    let area = centered_rect_abs(74, height, frame.area());
     frame.render_widget(Clear, area);
     let inner_w = area.width.saturating_sub(2) as usize;
     let items: Vec<ListItem> = options
@@ -832,7 +853,7 @@ fn draw_project_open_agent_picker(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(format!(" ▶ Open {} — new session — ↑/↓ or 1/2, Enter, Esc ", name))
+            .title(title)
             .border_style(Style::default().fg(th::accent())),
     );
     frame.render_widget(list, area);
@@ -1070,6 +1091,19 @@ fn draw_simple_input_modal_owned(
         .border_style(Style::default().fg(th::accent2()));
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
+}
+
+/// Centered rect with ABSOLUTE width/height (clamped to the frame) — for
+/// pickers whose row count is dynamic (e.g. the installed-agent list).
+fn centered_rect_abs(width: u16, height: u16, r: Rect) -> Rect {
+    let w = width.min(r.width);
+    let h = height.min(r.height);
+    Rect {
+        x: r.x + (r.width.saturating_sub(w)) / 2,
+        y: r.y + (r.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
@@ -3423,206 +3457,7 @@ fn wrapped_row_count(lines: &[Line<'_>], width: u16) -> u16 {
     rows as u16
 }
 
-/// Marketing tab — 25/75 split: left = selectable list of marketing-enabled
-/// projects (status glyph + name + posts), right = the selected project's
-/// detail + an ACTIONS block. Symmetric to the Projects tab (`draw_info`), same
-/// theme grammar. Fast/local status only (see `omega_core::marketing`).
-fn draw_marketing(frame: &mut Frame, app: &mut App, area: Rect) {
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(area);
-
-    let list_focused = !app.detail_focused;
-    let list_border = if list_focused { th::accent() } else { th::dim() };
-    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
-
-    // ── Left: selectable project list ────────────────────────────────────────
-    let mut items: Vec<ListItem> = Vec::new();
-    items.push(ListItem::new(Line::from("")));
-    items.push(group_header("Marketing"));
-    let mut rendered_selected = 1usize;
-    if app.marketing_projects.is_empty() {
-        items.push(section_row(
-            "(no marketing projects — F5 to scan)".to_string(),
-            true,
-            list_focused,
-        ));
-        rendered_selected = items.len() - 1;
-    } else {
-        for (i, p) in app.marketing_projects.iter().enumerate() {
-            let current = i == app.marketing_selected;
-            if current {
-                rendered_selected = items.len();
-            }
-            let posts = if p.calendar_posts > 0 {
-                format!(" · {}p", p.calendar_posts)
-            } else {
-                String::new()
-            };
-            items.push(section_row(
-                format!("{} {}{}", p.glyph(), p.name, posts),
-                current,
-                current && list_focused,
-            ));
-        }
-    }
-
-    let list_title = if list_focused {
-        " ▶ FOCUSED Marketing — ↑/↓ select, Tab → detail "
-    } else {
-        " Marketing — Tab to focus list "
-    };
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(list_title)
-                .border_style(Style::default().fg(list_border)),
-        )
-        .highlight_style(Style::default());
-    let mut state = ListState::default().with_selected(Some(rendered_selected));
-    frame.render_stateful_widget(list, split[0], &mut state);
-
-    // ── Right: detail of the selected project ────────────────────────────────
-    let lines = render_marketing_detail(app);
-    let section_label = app
-        .selected_marketing_project()
-        .map(|p| p.name.clone())
-        .unwrap_or_else(|| "Marketing".to_string());
-
-    app.detail_max_scroll =
-        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
-    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
-
-    let detail_title = if app.detail_focused {
-        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list] ", section_label)
-    } else {
-        format!(" {} ", section_label)
-    };
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(detail_title)
-                .border_style(Style::default().fg(detail_border)),
-        );
-    frame.render_widget(paragraph, split[1]);
-}
-
-/// Right-pane detail for the selected marketing project (status + ACTIONS).
-fn render_marketing_detail(app: &App) -> Vec<Line<'static>> {
-    let Some(p) = app.selected_marketing_project() else {
-        return vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                "  No marketing project selected.",
-                Style::default().fg(th::dim()),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  A project is marketing-enabled once it has a marketing/ directory.",
-                Style::default().fg(th::dim()),
-            )),
-            Line::from(Span::styled(
-                "  Press F5 to scan for projects.",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
-            )),
-        ];
-    };
-
-    let field = |label: &str| {
-        Span::styled(
-            format!("  {:20}", label),
-            Style::default().fg(th::accent2()),
-        )
-    };
-
-    let mut lines = vec![
-        Line::from(""),
-        Line::from(vec![
-            Span::raw(format!("  {} ", p.glyph())),
-            Span::styled(
-                p.name.clone(),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![field("Path"), Span::raw(p.path.to_string_lossy().to_string())]),
-        Line::from(vec![field("Slug"), Span::raw(p.slug.clone())]),
-        Line::from(vec![
-            field("Calendar posts"),
-            Span::raw(if p.has_content {
-                p.calendar_posts.to_string()
-            } else {
-                "— (no calendar)".to_string()
-            }),
-        ]),
-        Line::from(vec![
-            field("Daily engine"),
-            if p.engine_on {
-                Span::styled("ON", Style::default().fg(th::success()).add_modifier(Modifier::BOLD))
-            } else {
-                Span::styled("off", Style::default().fg(th::dim()))
-            },
-        ]),
-        Line::from(vec![
-            field("Accounts"),
-            match p.accounts {
-                Some(n) => Span::raw(n.to_string()),
-                None => Span::styled("…", Style::default().fg(th::dim())),
-            },
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  ─── Marketing machine ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            field("Layers"),
-            Span::styled(format!("context {}   ", if p.has_context { "✓" } else { "·" }), Style::default().fg(if p.has_context { th::success() } else { th::dim() })),
-            Span::styled(format!("strategy {}   ", if p.has_strategy { "✓" } else { "·" }), Style::default().fg(if p.has_strategy { th::success() } else { th::dim() })),
-            Span::styled(format!("copy {}   ", if p.has_copy { "✓" } else { "·" }), Style::default().fg(if p.has_copy { th::success() } else { th::dim() })),
-            Span::styled(format!("visual {}   ", if p.has_visual { "✓" } else { "·" }), Style::default().fg(if p.has_visual { th::success() } else { th::dim() })),
-            Span::styled(format!("branding {}", if p.has_branding { "✓" } else { "·" }), Style::default().fg(if p.has_branding { th::success() } else { th::dim() })),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  ─── Actions ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::raw("💬 Parler marketing (session scopée)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  p      ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::raw("publier (dry-run)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  F5     ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::raw("refresh"),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  ─── Quick paths ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(vec![
-            field("Marketing dir"),
-            Span::raw(p.marketing_dir().to_string_lossy().to_string()),
-        ]),
-        Line::from(vec![
-            field("Calendar (90d)"),
-            Span::raw(p.calendar_md().to_string_lossy().to_string()),
-        ]),
-    ];
-    lines.push(Line::from(""));
-    lines
-}
-
-/// OS tab — 25/75 split, same grammar as Marketing: left = the AgentikOS
+/// OS tab — 25/75 split: left = the AgentikOS
 /// operative-systems suite (glyph + name), right = the selected OS's detail
 /// (tagline, status, path, integration pipeline + actions). Registry + fs stat
 /// only (see `omega_core::os_products`) — no network, safe per tab entry / F5.
@@ -4801,8 +4636,11 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             InputMode::ProjectDelete(..) => {
                 ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())
             }
-            InputMode::ProjectOpenAgent(..) => {
-                ("Open project — agent or oracle — ↑/↓ or 1/2/3, Enter, Esc", String::new())
+            InputMode::ProjectOpenLane(..) => {
+                ("Open project — Coding / Marketing / Oracle — ↑/↓ or 1/2/3, Enter, Esc", String::new())
+            }
+            InputMode::ProjectOpenAgentPick { .. } => {
+                ("Pick the LLM (installed only) — ↑/↓ or digit, Enter, Esc back", String::new())
             }
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);

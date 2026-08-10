@@ -97,6 +97,7 @@ pub enum Agent {
     Pi,
     Hermes,
     Glm,
+    Kimi,
     Shell,
 }
 
@@ -109,6 +110,7 @@ impl Agent {
             Agent::Pi,
             Agent::Hermes,
             Agent::Glm,
+            Agent::Kimi,
             Agent::Shell,
         ]
     }
@@ -121,6 +123,7 @@ impl Agent {
             Agent::Pi => "pi",
             Agent::Hermes => "hermes",
             Agent::Glm => "glm",
+            Agent::Kimi => "kimi",
             Agent::Shell => "shell",
         }
     }
@@ -133,6 +136,7 @@ impl Agent {
             Agent::Pi => "Pi (earendil-works)",
             Agent::Hermes => "Hermes (Nous Research)",
             Agent::Glm => "GLM (Z.AI / Zhipu)",
+            Agent::Kimi => "Kimi (Moonshot AI)",
             Agent::Shell => "Plain shell",
         }
     }
@@ -145,6 +149,7 @@ impl Agent {
             "pi" => Some(Agent::Pi),
             "hermes" => Some(Agent::Hermes),
             "glm" => Some(Agent::Glm),
+            "kimi" => Some(Agent::Kimi),
             "shell" | "bash" => Some(Agent::Shell),
             _ => None,
         }
@@ -187,6 +192,9 @@ impl Agent {
             Agent::Hermes => Some(
                 "T=$(mktemp) && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o \"$T\" && bash \"$T\" && hermes setup; rm -f \"$T\"",
             ),
+            // Kimi CLI (Moonshot AI) ships via uv; no curl|sh one-liner we vouch
+            // for. Install it yourself (see homepage), the roster detects it.
+            Agent::Kimi => None,
             Agent::Shell => None,
         }
     }
@@ -212,6 +220,7 @@ impl Agent {
             // GLM shares the Claude Code binary — there is nothing GLM-specific to
             // uninstall. Removing it would wrongly delete the user's Claude Code.
             Agent::Glm => None,
+            Agent::Kimi => Some("rm -f \"$(command -v kimi)\""),
             Agent::Shell => None,
         }
     }
@@ -225,6 +234,7 @@ impl Agent {
             Agent::Pi => Some("https://pi.dev/"),
             Agent::Hermes => Some("https://hermes-agent.nousresearch.com/"),
             Agent::Glm => Some("https://www.z.ai/"),
+            Agent::Kimi => Some("https://github.com/MoonshotAI/kimi-cli"),
             Agent::Shell => None,
         }
     }
@@ -302,6 +312,8 @@ impl Agent {
                 }
                 s
             }
+            // Kimi CLI reads its Moonshot key from the environment when set.
+            Agent::Kimi => pick(&["MOONSHOT_API_KEY", "KIMI_API_KEY"]),
             Agent::Shell => String::new(),
         }
     }
@@ -626,6 +638,18 @@ impl Agent {
                     ),
                 }
             }
+            // Kimi CLI: plain interactive launch; a prompt is passed as the
+            // first positional argument (kimi-cli accepts an initial message).
+            Agent::Kimi => match initial_prompt {
+                Some(p) => format!(
+                    "bash -c {}",
+                    shell_quote(&format!("{} kimi {}; exec bash", env_prefix, shell_quote(p)))
+                ),
+                None => format!(
+                    "bash -c {}",
+                    shell_quote(&format!("{} kimi; exec bash", env_prefix))
+                ),
+            },
             Agent::Shell => match initial_prompt {
                 Some(p) => format!(
                     "bash -c {}",
@@ -658,6 +682,10 @@ impl Agent {
                     || std::path::Path::new(&format!("{}/.npm-global/bin/pi", home)).exists()
             }
             Agent::Hermes => has_cmd("hermes"),
+            Agent::Kimi => {
+                has_cmd("kimi")
+                    || std::path::Path::new(&format!("{}/.local/bin/kimi", home)).exists()
+            }
             // GLM runs on the Claude Code binary (redirected at launch) — available
             // iff `claude` is present. Shares Claude's reduced-PATH fallback so it
             // resolves the canonical install locations too, not just $PATH.
