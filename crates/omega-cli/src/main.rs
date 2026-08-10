@@ -5191,6 +5191,21 @@ async fn cmd_kill(name: &str, force: bool) -> Result<()> {
     // dir recorded here is the only handle on a worker's worktree, and it is
     // gone the moment the session is.
     let live = mgr.list_sessions().await.unwrap_or_default();
+
+    // Resolve the mission-key spelling FIRST. `omega kill dentistrygpt-3` used to
+    // classify as a plain session, find nothing live, take the `AlreadyClosed`
+    // branch and print a success line while closing nothing — the worst shape a
+    // close command can have, because the operator walks away believing the
+    // mission is shut and it is still running.
+    let resolved = resolve_oracle_alias(
+        name,
+        &live.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+        &config.state_dir,
+    );
+    if resolved != name {
+        println!("[i] {name} resolved to the oracle session {resolved}");
+    }
+    let name: &str = &resolved;
     let target_live = live.iter().any(|s| s.name == name);
 
     let is_oracle = omega_core::session::OmegaSession::classify(name).role
@@ -9064,11 +9079,15 @@ fn closure_remedies(verdict: &ClosureVerdict, session: &str) -> Vec<String> {
     if has("still running") {
         out.push("account for the workers: omega workers   (then `omega kill <worker>`)".to_string());
     }
-    // Always last, and always present: the operator's "I have looked at it, close
-    // it" button. A mission closure, not a pane kill — it cascades the finished
-    // workers and releases every scope claim.
+    // The LAST resort, and it is named as one. `omega kill` on an oracle is not
+    // a neutral close: `clear_oracle_state` deletes `oracle-<key>.progress.json`,
+    // so the ledger of everything the mission verified goes with the pane, and
+    // the done signal is left exactly as it was. Recommending it as the easy way
+    // out would trade a stuck mission for a destroyed record (R-DESTRUCT), so the
+    // clean path above is offered first and this one says what it costs.
     out.push(format!(
-        "or close the mission outright (cascades workers, releases claims):  omega kill {session}"
+        "last resort, DISCARDS the mission ledger (oracle-*.progress.json) and leaves \
+         the done signal as-is:  omega kill {session}"
     ));
     out
 }
@@ -9124,6 +9143,10 @@ struct OracleRow {
     terminal: usize,
     closeable: bool,
     first_reason: Option<String>,
+    /// An unacknowledged operator escalation (`<key>.escalation.json`). It
+    /// outlives the mission's own lifecycle object, so it is often the ONLY
+    /// remaining trace that something went wrong here.
+    escalation: Option<String>,
 }
 
 fn oracle_row(
@@ -9188,6 +9211,15 @@ fn oracle_row(
         terminal: workers.terminal.len(),
         closeable: !verdict.refused,
         first_reason: verdict.reasons.first().cloned(),
+        escalation: std::fs::read_to_string(state_dir.join(format!("{key}.escalation.json")))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("detail")
+                    .or_else(|| v.get("reason"))
+                    .and_then(|d| d.as_str())
+                    .map(|s| s.to_string())
+            }),
     }
 }
 
@@ -9214,8 +9246,25 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         .collect();
     if all {
         for st in omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir) {
-            if !names.contains(&st.oracle_name) {
-                names.push(st.oracle_name);
+            names.push(st.oracle_name);
+        }
+        // The GHOST MISSIONS, and they are the whole reason `--all` exists: a
+        // pane-less oracle loses its `.state.json` to the 48h cleanup while its
+        // escalation alarm survives forever, so the mission that most needs
+        // looking at is precisely the one `read_all` can no longer see. The
+        // ledger and the alarm outlive the lifecycle object — read those too.
+        if let Ok(entries) = std::fs::read_dir(&config.state_dir) {
+            for e in entries.flatten() {
+                let Some(f) = e.file_name().to_str().map(|s| s.to_string()) else {
+                    continue;
+                };
+                if let Some(key) = f.strip_suffix(".escalation.json") {
+                    names.push(format!("oracle-{key}"));
+                } else if let Some(rest) = f.strip_suffix(".progress.json") {
+                    if rest.starts_with("oracle-") {
+                        names.push(rest.to_string());
+                    }
+                }
             }
         }
     }
@@ -9232,9 +9281,23 @@ async fn cmd_oracles(all: bool) -> Result<()> {
         .map(|n| oracle_row(&config.state_dir, n, &live_sessions))
         .collect();
 
+    // Fixed columns, hard-truncated: a session name can be 50 chars and one long
+    // row that wraps costs more than the characters it saves.
+    fn fit(s: &str, w: usize) -> String {
+        if s.chars().count() <= w {
+            format!("{s:<w$}")
+        } else {
+            let keep: String = s.chars().take(w.saturating_sub(1)).collect();
+            format!("{keep}…")
+        }
+    }
     println!(
-        "{:<28} {:<14} {:<6} {:<9} {:<9} {}",
-        "ORACLE", "PROJECT", "STATE", "PLAN", "WORKERS", "CLOSURE"
+        "{} {} {} {} {}",
+        fit("ORACLE", 34),
+        fit("STATE", 5),
+        fit("PLAN", 7),
+        fit("WORKERS", 8),
+        "CLOSURE"
     );
     for r in &rows {
         let closure = if r.closeable {
@@ -9246,22 +9309,32 @@ async fn cmd_oracles(all: bool) -> Result<()> {
             )
         };
         println!(
-            "{:<28} {:<14} {:<6} {:<9} {:<9} {}",
-            r.name,
-            r.project,
-            if r.live { "live" } else { "dead" },
-            format!("{}/{}", r.done, r.total),
-            format!("{}r/{}t", r.running, r.terminal),
+            "{} {} {} {} {}",
+            fit(&r.name, 34),
+            fit(if r.live { "live" } else { "dead" }, 5),
+            fit(&format!("{}/{}", r.done, r.total), 7),
+            fit(&format!("{}r/{}t", r.running, r.terminal), 8),
             closure
         );
+        if let Some(e) = &r.escalation {
+            println!("{}⚠ {}", " ".repeat(35), e);
+        }
     }
     let stuck = rows.iter().filter(|r| !r.closeable).count();
-    if stuck > 0 {
+    let escalated = rows.iter().filter(|r| r.escalation.is_some()).count();
+    if stuck > 0 || escalated > 0 {
         println!();
-        println!(
-            "{stuck} of {} cannot close. `omega status <oracle>` prints the exact command for each.",
-            rows.len()
-        );
+        if stuck > 0 {
+            println!(
+                "{stuck} of {} cannot close. `omega status <oracle>` prints the exact command for each.",
+                rows.len()
+            );
+        }
+        if escalated > 0 {
+            println!(
+                "{escalated} carry an unacknowledged escalation (the alarm outlives the mission)."
+            );
+        }
     }
     Ok(())
 }
