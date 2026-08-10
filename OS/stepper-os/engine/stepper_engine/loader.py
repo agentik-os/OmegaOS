@@ -45,6 +45,28 @@ class Project:
     def state_dir(self) -> Path:
         return self.root / ".stepper"
 
+    def source_root(self, kind: str) -> str:
+        """The doc root for an upstream source ('blueprint' | 'design'), for
+        resolving a step's references. Prefers `sources.<kind>.root`, falls
+        back to the legacy `blueprint.root` for blueprint, else a sane default
+        ('blueprint' / 'design')."""
+        src = getattr(self.manifest.sources, kind, None)
+        if src is not None and src.root:
+            return src.root
+        if kind == "blueprint":
+            legacy = self.manifest.blueprint.get("root")
+            if legacy:
+                return str(legacy)
+        return kind
+
+    def source_handoff(self, kind: str) -> Path | None:
+        """Absolute path to an upstream handoff JSON if configured + present."""
+        src = getattr(self.manifest.sources, kind, None)
+        if src is None or not src.handoff:
+            return None
+        p = (self.root / src.handoff).resolve()
+        return p if p.is_file() else None
+
 
 def _read_yaml(path: Path) -> dict:
     try:
@@ -112,3 +134,47 @@ def _check_integrity(project: Project) -> None:
             problems.append(f"{epic.epic_id}: unknown module '{epic.module_id}'")
     if problems:
         raise LoadError("integrity errors:\n  " + "\n  ".join(problems))
+
+
+def check_references(project: Project) -> list[str]:
+    """Non-fatal reference audit: does each step's Blueprint / Design reference
+    resolve to a real doc under its source root? And when the project declares
+    a Design source, do UI-touching steps actually cite a Design reference?
+    Returns warnings (the CLI surfaces them; they never fail the load), so a
+    step that governs code with the WRONG or MISSING upstream doc is caught."""
+    warnings: list[str] = []
+    has_design = bool(
+        project.manifest.sources.design.root
+        or project.manifest.sources.design.handoff
+    )
+
+    def audit(kind: str, refs) -> None:
+        root = project.root / project.source_root(kind)
+        for ref in refs:
+            if ref.doc and not ref.doc.startswith("/"):
+                target = (root / ref.doc)
+                if not target.exists():
+                    warnings.append(
+                        f"{step.step_id}: {kind} reference '{ref.doc}' not found "
+                        f"under {project.source_root(kind)}/"
+                    )
+
+    ui_markers = ("apps/", "components/", "app/", "ui/", "screen", "page", "convex/")
+    for step in project.steps.values():
+        audit("blueprint", step.blueprint_references)
+        audit("design", step.design_references)
+        # A step that creates/modifies UI files but cites no Design reference,
+        # while the project HAS a design stage, is very likely missing its
+        # design docs — surface it.
+        if has_design and not step.design_references:
+            touched = [
+                p
+                for group in step.expected_files.values()
+                for p in group
+            ]
+            if any(m in p.lower() for p in touched for m in ui_markers):
+                warnings.append(
+                    f"{step.step_id}: touches UI files but has no design_references "
+                    f"(the project declares a Design source)"
+                )
+    return warnings

@@ -77,12 +77,25 @@ def init(
 
 @app.command()
 def validate(project: Path = PROJECT_OPTION) -> None:
-    """Validate specs (schema, uniqueness, references) and the DAG."""
+    """Validate specs (schema, uniqueness, references) and the DAG, then audit
+    that each step's Blueprint / Design references resolve to real docs."""
     proj, graph, _ = _load(project)
     console.print(
         f"[green]✓[/green] {len(proj.modules)} modules, {len(proj.epics)} epics, "
         f"{len(proj.slices)} slices, {len(proj.steps)} steps - graph is a DAG"
     )
+    from .loader import check_references
+
+    warnings = check_references(proj)
+    bp = proj.source_root("blueprint")
+    dz = proj.source_root("design")
+    console.print(f"  sources: blueprint={bp}/  design={dz}/")
+    if warnings:
+        console.print(f"[yellow]! {len(warnings)} reference warning(s):[/yellow]")
+        for w in warnings:
+            console.print(f"    [yellow]- {w}[/yellow]")
+    else:
+        console.print("[green]✓[/green] every step reference resolves to a real doc")
 
 
 @app.command()

@@ -27,6 +27,15 @@ New project (no `stepper.yaml`): `omega-stepper init`, then compile the
 Blueprint into `stepper/{modules,epics,slices,steps}/*.yaml` per
 `pack/03_STEP_CONTRACT_SPEC.md`, then `omega-stepper validate`.
 
+TWO UPSTREAM SOURCES, both governing every step. Declare them in
+`stepper.yaml` under `sources:` — `blueprint` (from Blueprint OS: WHAT/WHY)
+and `design` (from Design OS: the UX/UI Design Handoff — flows, screens,
+states). Each step names the exact docs that bind it: `blueprint_references`
+AND `design_references` (typed: doc + sections + ids). `omega-stepper
+validate` audits that those references resolve to real files under their
+roots and warns when a UI-touching step cites no design reference; the agent
+brief loads BOTH so the coder reads the right source of truth, never guesses.
+
 Hard rules: DONE never by self-report; dependencies are authoritative;
 preserve existing user work; Blueprint changes are decision requests to the
 operator, never silent redesigns. On Telegram: lead with the answer, keep it

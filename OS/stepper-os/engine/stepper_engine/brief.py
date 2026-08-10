@@ -6,7 +6,29 @@ consume `stepper agent-brief <step>`."""
 from __future__ import annotations
 
 from .loader import Project
-from .models import StepSpec
+from .models import Reference, StepSpec
+
+
+def _as_ref(data: dict) -> Reference:
+    try:
+        return Reference(**data)
+    except Exception:
+        return Reference(doc=str(data))
+
+
+def _ref_line(ref: Reference, root: str) -> str:
+    """One reference line, with the doc resolved against its source root so the
+    agent knows the exact file to open, plus the sections/ids that govern."""
+    doc = ref.doc
+    shown = f"{root.rstrip('/')}/{doc}" if root and doc and not doc.startswith("/") else doc
+    parts = [shown or "(no doc)"]
+    if ref.sections:
+        parts.append("sections " + ", ".join(str(s) for s in ref.sections))
+    if ref.ids:
+        parts.append("ids " + ", ".join(ref.ids))
+    if ref.note:
+        parts.append(f"— {ref.note}")
+    return "  ".join(parts)
 
 
 def _section(title: str, lines: list[str]) -> list[str]:
@@ -41,16 +63,28 @@ def agent_brief(project: Project, step: StepSpec) -> str:
     if isinstance(why, list):
         out += _section("Why", _bullets(why))
 
-    refs = extras.get("blueprint_references")
-    if isinstance(refs, list):
+    # Blueprint references — product truth (WHAT/WHY). Typed field first, with
+    # the legacy `extras` list as a fallback so old steps still render.
+    bp_root = project.source_root("blueprint")
+    bp_refs = list(step.blueprint_references)
+    if not bp_refs and isinstance(extras.get("blueprint_references"), list):
+        bp_refs = [
+            r if isinstance(r, dict) else {"doc": str(r)}
+            for r in extras["blueprint_references"]
+        ]
+        bp_refs = [_as_ref(r) for r in bp_refs]
+    if bp_refs:
         out += _section(
-            "Blueprint references (read them - they govern this step)",
-            _bullets(
-                f"{r.get('doc', r)} sections {r.get('sections', '')}"
-                if isinstance(r, dict)
-                else str(r)
-                for r in refs
-            ),
+            "Blueprint references — product truth, read them (they govern this step)",
+            [_ref_line(r, bp_root) for r in bp_refs],
+        )
+
+    # Design references — UX/UI truth (flows, screens, states) from Design OS.
+    dz_root = project.source_root("design")
+    if step.design_references:
+        out += _section(
+            "Design references — UX/UI truth from Design OS, read them",
+            [_ref_line(r, dz_root) for r in step.design_references],
         )
 
     out += _section("Requirements", _bullets(step.requirements))

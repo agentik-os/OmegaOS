@@ -66,6 +66,20 @@ class AcceptanceCheck(SpecModel):
     role: str | None = None  # review_gate: which review role gates it
 
 
+class Reference(SpecModel):
+    """One upstream reference a step must read. Governs the step: the coding
+    agent opens `doc` (resolved against the matching source root) and reads the
+    named `sections` and/or `ids`. Used for BOTH Blueprint references (BPH
+    requirement/decision/capability ids + doc sections) and Design references
+    (flow / surface / screen / state / component ids from the Design Handoff).
+    Extra keys are preserved (extra=allow), so a richer ref survives."""
+
+    doc: str = ""  # doc path relative to the source root (blueprint/ or design/)
+    sections: list[Any] = Field(default_factory=list)  # section numbers/anchors
+    ids: list[str] = Field(default_factory=list)  # BPH/requirement/flow/surface ids
+    note: str = ""
+
+
 class StepSpec(SpecModel):
     step_id: str
     title: str
@@ -80,6 +94,12 @@ class StepSpec(SpecModel):
     requirements: list[str] = Field(default_factory=list)
     decisions: list[str] = Field(default_factory=list)
     invariants: list[str] = Field(default_factory=list)
+    # Upstream references that GOVERN this step — the coding agent must read
+    # them. Blueprint = product truth (WHAT/WHY, from Blueprint OS); Design =
+    # UX/UI truth (flows, screens, states, from Design OS). Both are typed so
+    # they can be resolved against the project's source roots and validated.
+    blueprint_references: list[Reference] = Field(default_factory=list)
+    design_references: list[Reference] = Field(default_factory=list)
     locks: list[Any] = Field(default_factory=list)
     context_files: dict[str, list[str]] = Field(default_factory=dict)
     expected_files: dict[str, list[str]] = Field(default_factory=dict)
@@ -141,9 +161,32 @@ class ReleaseConfig(SpecModel):
     allow_critical_blockers: bool = False
 
 
+class SourceRef(SpecModel):
+    """Where an upstream OS's artifacts live for this project, so a step's
+    `doc` references resolve to real files. `root` is the doc directory;
+    `handoff` is the frozen handoff JSON (Blueprint handoff / Design Handoff)."""
+
+    root: str = ""
+    handoff: str = ""
+    version: str = ""
+
+
+class Sources(SpecModel):
+    """The upstream truth Stepper steps reference. Blueprint = product truth
+    (Blueprint OS); design = UX/UI truth (Design OS). Both optional, so an
+    older project with no design stage still loads."""
+
+    blueprint: SourceRef = Field(default_factory=SourceRef)
+    design: SourceRef = Field(default_factory=SourceRef)
+
+
 class Manifest(SpecModel):
     project: dict[str, Any] = Field(default_factory=dict)
     blueprint: dict[str, Any] = Field(default_factory=dict)
+    # Typed upstream sources (Blueprint + Design handoffs + doc roots) so step
+    # references resolve and validate. Falls back to the legacy `blueprint`
+    # dict's `root` when `sources.blueprint.root` is unset.
+    sources: Sources = Field(default_factory=Sources)
     stepper: dict[str, Any] = Field(default_factory=dict)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     planner: dict[str, Any] = Field(default_factory=dict)

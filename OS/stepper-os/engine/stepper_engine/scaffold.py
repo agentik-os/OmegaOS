@@ -14,6 +14,18 @@ blueprint:
   root: ./blueprint
   version: "1.0"
 
+# Upstream truth each step references. Blueprint = product truth (from
+# Blueprint OS); design = UX/UI truth (from Design OS). A step's
+# blueprint_references / design_references resolve their `doc` against these
+# roots, and `stepper validate` checks they point at real files.
+sources:
+  blueprint:
+    root: ./blueprint
+    handoff: ./blueprint/handoff.json     # the frozen Blueprint handoff
+  design:
+    root: ./design
+    handoff: ./design/handoff.json         # the Design Handoff from Design OS
+
 stepper:
   schema_version: 1
   generated_root: ./stepper
@@ -56,6 +68,17 @@ risk:
 objective:
   concise: Create the project marker file so the verify loop is proven.
   outcome: The Stepper start -> implement -> verify -> done loop runs green once.
+# Each step names the exact upstream docs that GOVERN it. Blueprint = WHAT/WHY,
+# Design = the UX/UI (flows, screens, states). The coding agent reads these
+# before implementing. `doc` resolves against sources.<kind>.root above.
+blueprint_references:
+  - doc: handoff.json
+    ids: [REQ-001]
+    note: the product requirement this step realizes
+design_references:
+  - doc: handoff.json
+    ids: [FLOW-001, SCREEN-001]
+    note: the flow + screen contract this step must match
 dependencies:
   hard: []
   soft: []

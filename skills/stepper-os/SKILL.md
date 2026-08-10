@@ -58,17 +58,27 @@ as your operating rules for the whole session. The CLI is `omega-stepper`
 
 When the project has a Blueprint (e.g. from /blueprint-os) but no steps yet:
 
-1. Read the Blueprint documents (`blueprint/` or wherever they live).
+1. Read the Blueprint documents (`blueprint/`) AND, when the project went
+   through Design OS, the Design Handoff (`design/`). Declare both in
+   `stepper.yaml` under `sources:` (`blueprint.root`/`handoff` and
+   `design.root`/`handoff`) so every step's references resolve to real files.
 2. Derive modules -> epics -> vertical slices -> atomic steps per
    `pack/00_MASTER_SPEC.md` and the schemas in `pack/03_STEP_CONTRACT_SPEC.md`
    (full example: `pack/10_EXAMPLE_STEP.yaml`).
 3. Write one YAML file per spec under `stepper/modules/`, `stepper/epics/`,
-   `stepper/slices/`, `stepper/steps/`.
+   `stepper/slices/`, `stepper/steps/`. **Each step names the exact upstream
+   docs that govern it** — `blueprint_references` (product truth: WHAT/WHY,
+   requirement/decision/capability ids) AND `design_references` (UX/UI truth:
+   flow / screen / surface / state ids from the Design Handoff). A UI-touching
+   step with no `design_references` is almost certainly missing its design docs.
 4. Step granularity: one focused agent cycle (~15 min to ~2 h human-equivalent).
    Every step must be independently executable: contract, context files,
    acceptance checks, definition of done. A vague step is invalid - refine it.
-5. `omega-stepper validate` must pass (schema + references + acyclic graph)
-   before any execution starts.
+5. `omega-stepper validate` must pass — it checks schema + the acyclic graph AND
+   audits that every step's Blueprint/Design references resolve to real docs
+   under their source roots (and warns when a UI step cites no design ref).
+   The agent brief (`omega-stepper start <id>`) then loads BOTH the Blueprint
+   and Design references so the coding agent reads the right source of truth.
 
 ## Hard rules (from the pack, enforced by the engine)
 
