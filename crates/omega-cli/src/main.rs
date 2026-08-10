@@ -456,6 +456,12 @@ enum Commands {
         /// for any worker that edits files when others run concurrently.
         #[arg(long)]
         worktree: bool,
+        /// Agent for THIS worker: claude, codex, glm (default: the configured
+        /// agent_command). Restricted to the three finish-guard-covered agents —
+        /// a detached worker on any other backend would run without the stop
+        /// contract.
+        #[arg(long)]
+        agent: Option<String>,
     },
 
     /// Spawn a team of agents in split panes
@@ -1062,6 +1068,7 @@ async fn main() -> Result<()> {
             files,
             force,
             worktree,
+            agent,
         }) => {
             cmd_spawn_worker(
                 &task,
@@ -1071,6 +1078,7 @@ async fn main() -> Result<()> {
                 files,
                 force,
                 worktree,
+                agent.as_deref(),
             )
             .await
         }
@@ -6572,6 +6580,7 @@ fn transition_v3_worker_attempt(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_spawn_worker(
     task: &str,
     prompt: &str,
@@ -6580,6 +6589,7 @@ async fn cmd_spawn_worker(
     files: Option<Vec<String>>,
     force: bool,
     worktree: bool,
+    agent_override: Option<&str>,
 ) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
     config.ensure_dirs()?;
@@ -6797,8 +6807,27 @@ async fn cmd_spawn_worker(
     //     user/project .mcp.json (hermetic).
     //   * NO --bare — bare mode skips OAuth credential loading in Claude Code
     //     >= 2.1.x, so a bare worker dies at the login screen (see below).
-    let agent = omega_core::agents::Agent::from_name(&config.agent_command)
-        .unwrap_or(omega_core::agents::Agent::Codex);
+    let agent = match agent_override {
+        Some(name) => {
+            let resolved = omega_core::agents::Agent::from_name(name).ok_or_else(|| {
+                anyhow::anyhow!("unknown agent '{name}' — expected one of: claude, codex, glm")
+            })?;
+            if !matches!(
+                resolved,
+                omega_core::agents::Agent::Claude
+                    | omega_core::agents::Agent::Codex
+                    | omega_core::agents::Agent::Glm
+            ) {
+                anyhow::bail!(
+                    "worker agent '{name}' is not allowed: only claude, codex and glm carry \
+                     the finish-guard hooks a detached worker needs"
+                );
+            }
+            resolved
+        }
+        None => omega_core::agents::Agent::from_name(&config.agent_command)
+            .unwrap_or(omega_core::agents::Agent::Codex),
+    };
     omega_core::providers::ProvidersConfig::negotiate_provider(
         Some(agent.name()),
         &[
@@ -6854,13 +6883,8 @@ async fn cmd_spawn_worker(
         mgr.create_agent_session_with_opts(&worker_name, &work_dir, agent, Some(&full_prompt), opts)
             .await
     } else {
-        mgr.create_agent_session(
-            &worker_name,
-            &work_dir,
-            &config.agent_command,
-            Some(&full_prompt),
-        )
-        .await
+        mgr.create_session_with_agent(&worker_name, Some(&work_dir), agent, Some(&full_prompt))
+            .await
     };
     if let Err(e) = spawn_result {
         if let Some(attempt) = &v3_attempt {

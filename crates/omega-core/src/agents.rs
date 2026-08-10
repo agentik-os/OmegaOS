@@ -622,19 +622,35 @@ impl Agent {
                 } else {
                     format!(" --model {}", shell_quote(&providers.glm.model))
                 };
+                // GLM IS the claude binary, so a detached GLM session hits the
+                // exact same walls as Claude: the "trust this folder?" dialog
+                // and per-action permission prompts, with nobody attached to
+                // answer. Same cure as the Claude arm: pre-trust the cwd,
+                // render inline, and honor an explicit permission mode, else
+                // skip permissions.
+                let trust_prefix = "omega trust-dir \"$PWD\" >/dev/null 2>&1; ";
+                let perms = match opts.permission_mode {
+                    Some(ref mode) => format!(" --permission-mode {}", shell_quote(mode)),
+                    None => " --dangerously-skip-permissions".to_string(),
+                };
                 match initial_prompt {
                     Some(p) => format!(
                         "bash -c {}",
                         shell_quote(&format!(
-                            "{} claude{} {}; exec bash",
+                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{} {}; exec bash",
                             pre,
+                            trust_prefix,
+                            perms,
                             model_arg,
                             shell_quote(p)
                         ))
                     ),
                     None => format!(
                         "bash -c {}",
-                        shell_quote(&format!("{} claude{}; exec bash", pre, model_arg))
+                        shell_quote(&format!(
+                            "{} {}CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1 claude{}{}; exec bash",
+                            pre, trust_prefix, perms, model_arg
+                        ))
                     ),
                 }
             }
@@ -742,6 +758,34 @@ mod tests {
     fn launch_command_without_session_name_has_no_name_flag() {
         let cmd = Agent::Claude.launch_command(Some("do the thing"));
         assert!(!cmd.contains(" --name "), "unexpected --name in: {cmd}");
+    }
+
+    // A detached GLM worker runs the claude binary: without pre-trust and a
+    // permission stance it hangs on dialogs nobody answers (spawn-worker
+    // --agent glm depends on this).
+    #[test]
+    fn glm_launch_is_dispatch_safe() {
+        let cmd = Agent::Glm.launch_command(Some("do the thing"));
+        assert!(
+            cmd.contains("omega trust-dir")
+                && cmd.contains("--dangerously-skip-permissions")
+                && cmd.contains("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1")
+                && cmd.contains("ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic"),
+            "GLM launch must be dispatch-safe (trust + skip-perms + inline redirect): {cmd}"
+        );
+    }
+
+    #[test]
+    fn glm_launch_honors_permission_mode() {
+        let mut opts = LaunchOptions::default();
+        opts.permission_mode = Some("plan".to_string());
+        let cmd = Agent::Glm.launch_command_with(None, opts);
+        assert!(
+            cmd.contains("--permission-mode")
+                && cmd.contains("plan")
+                && !cmd.contains("--dangerously-skip-permissions"),
+            "GLM must honor an explicit permission mode: {cmd}"
+        );
     }
 
     #[test]
