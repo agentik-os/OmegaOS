@@ -77,6 +77,28 @@ pub struct ChatMessage {
     pub ts: String,
 }
 
+/// `GET /v1/chats/{id}/messages` response body — a bounded, newest-first
+/// page of a chat's transcript (see `ChatStore::tail_page`), plus the
+/// cursor for the next (older) page.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChatMessagesPage {
+    /// Newest first.
+    pub messages: Vec<ChatMessage>,
+    pub next_cursor: Option<u64>,
+}
+
+/// `GET /v1/chats/{id}` response body — chat metadata plus the most recent
+/// window of messages, chronological (oldest first, matching the pre-Task-B
+/// contract). `next_cursor` lets a client page further back into the
+/// transcript via `GET /v1/chats/{id}/messages`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChatDetailResponse {
+    pub meta: ChatMeta,
+    /// Chronological, oldest first.
+    pub messages: Vec<ChatMessage>,
+    pub next_cursor: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AccountKind {
@@ -361,6 +383,8 @@ pub struct Protocol {
     pub whoami_response: WhoamiResponse,
     pub chat_meta: ChatMeta,
     pub chat_message: ChatMessage,
+    pub chat_messages_page: ChatMessagesPage,
+    pub chat_detail_response: ChatDetailResponse,
     pub chat_stream_server_msg: ChatStreamServerMsg,
     pub chat_stream_client_msg: ChatStreamClientMsg,
     pub mission: Mission,

@@ -6,13 +6,14 @@
 use crate::accounts::{self, AccountStore};
 use crate::chat_driver::run_turn;
 use crate::protocol::{
-    AccountKind, ChatAgent, ChatMessage, ChatMeta, ChatStreamClientMsg, ChatStreamServerMsg,
+    AccountKind, ChatAgent, ChatDetailResponse, ChatMessage, ChatMessagesPage, ChatMeta,
+    ChatStreamClientMsg, ChatStreamServerMsg,
 };
 use crate::server::AppState;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::StatusCode,
     response::Response,
@@ -84,16 +85,51 @@ pub async fn create(
     Ok((StatusCode::CREATED, Json(meta)))
 }
 
+/// How many of the most recent messages `GET /v1/chats/{id}` inlines
+/// directly. Older history is reachable by paging through
+/// `GET /v1/chats/{id}/messages` with the returned `next_cursor`.
+const DETAIL_WINDOW: usize = 50;
+
+/// Default page size for `GET /v1/chats/{id}/messages` when `limit` is
+/// omitted from the query string.
+const DEFAULT_MESSAGES_LIMIT: usize = 50;
+
 pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, StatusCode> {
+) -> Result<Json<ChatDetailResponse>, StatusCode> {
     if !valid_chat_id(&id) {
         return Err(StatusCode::NOT_FOUND);
     }
     let meta = state.chats.get(&id).ok_or(StatusCode::NOT_FOUND)?;
-    let messages = state.chats.transcript(&id);
-    Ok(Json(json!({ "meta": meta, "messages": messages })))
+    // tail_page hands back newest-first; this endpoint's contract (and the
+    // existing HTTP tests) is chronological, oldest-first, so reverse it.
+    let (mut messages, next_cursor) = state.chats.tail_page(&id, None, DETAIL_WINDOW);
+    messages.reverse();
+    Ok(Json(ChatDetailResponse { meta, messages, next_cursor }))
+}
+
+#[derive(Deserialize)]
+pub struct MessagesQuery {
+    #[serde(default)]
+    pub before: Option<u64>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+pub async fn messages(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(query): Query<MessagesQuery>,
+) -> Result<Json<ChatMessagesPage>, StatusCode> {
+    if !valid_chat_id(&id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
+    // Chat must exist at all before paginating it (mirrors `get`'s guard).
+    state.chats.get(&id).ok_or(StatusCode::NOT_FOUND)?;
+    let limit = query.limit.unwrap_or(DEFAULT_MESSAGES_LIMIT);
+    let (messages, next_cursor) = state.chats.tail_page(&id, query.before, limit);
+    Ok(Json(ChatMessagesPage { messages, next_cursor }))
 }
 
 pub async fn stream(

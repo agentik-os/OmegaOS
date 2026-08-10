@@ -96,6 +96,7 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::routes_chat::list).post(crate::routes_chat::create),
         )
         .route("/v1/chats/{id}", get(crate::routes_chat::get))
+        .route("/v1/chats/{id}/messages", get(crate::routes_chat::messages))
         .route("/v1/chats/{id}/stream", get(crate::routes_chat::stream))
         .route("/v1/missions", get(crate::routes_missions::list))
         .route("/v1/oracles", get(crate::routes_oracles::list))
