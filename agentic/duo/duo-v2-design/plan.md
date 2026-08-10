@@ -90,6 +90,44 @@ echec glm sans fallback ni flag quota.
   ~/.omega/skills/duo/ et ~/.claude/skills/duo/, miroir Agentik-Skills (R-SKILLPUB).
 - Critere de succes global: `omega-duo selftest` vert de bout en bout + doctor live OK.
 
+## Annexe A — critique Codex integree (plan v2, 2026-08-10)
+
+Critique deep obtenue via le bridge lui-meme (mode plan, clone prive apres deux
+vetos legitimes du garde read-only sur le repo actif). Points integres :
+- `agent_ok` separe de `ok` (BLOCKER 2) : verify rouge = FIX input, jamais une
+  raison de re-implementer ou de basculer d'agent.
+- `verify.timed_out` + garantie anti-echo : la sortie verify n'entre jamais
+  dans la classification quota/auth (teste).
+- Checkpoint : champ `stash`, diffstat mesure contre le snapshot (delta de
+  l'agent, pas delta depuis le dernier commit), ref anti-collision
+  (ts+pid+random), retention 20 refs, semantique honnete documentee
+  (untracked non captures, listes dans diffstat).
+- Historique JSONL versionne (`history.jsonl`, schema 1) ecrit a l'emission ;
+  le parse des logs texte est retrograde en fallback legacy.
+- init : lstat (symlinks), slug anti-traversal (teste).
+- Protocole de restauration de la validation croisee apres fallback : defini
+  au niveau skill (status → profil REVIEW avant cloture, sinon mention
+  explicite « cross-review pending » dans le rapport).
+Ecarte avec justification (L2) : snapshot complet untracked/ignored (le
+checkpoint est des coordonnees de revert, pas un backup — cout/complexite
+disproportionnes pour le bridge), schema JSON versionne sur `run` (additif
+suffirait, aucun consommateur casse aujourd'hui).
+
+## Annexe B — spawn-worker --agent (evalue, reporte)
+
+Verdict d'exploration : PETIT (~60-90 lignes), la resolution existe deja
+(`dispatch.rs:1264-1272`, pattern a copier dans `main.rs:6763`). A faire :
+flag `agent: Option<String>` sur SpawnWorker (main.rs:436-462), threading
+(1037-1056), remplacement de la resolution globale (6763), fix du bug latent
+main.rs:6822 (`config.agent_command` au lieu de l'agent resolu — un override
+serait ignore sur la branche non-Claude), durcissement du bras GLM
+agents.rs:596-630 (`trust_prefix` + `--dangerously-skip-permissions`, sinon un
+worker GLM detache pend sur le dialogue trust), restreindre a
+`claude|codex|glm` (les trois couverts par le finish-guard). REPORTE : au
+moment du chantier, `main.rs` et `dispatch.rs` portaient le WIP non-committe
+d'une autre session (R-SCOPE, un writer par fichier). A executer sur arbre
+calme.
+
 ## Criteres de succes verifiables
 
 1. `bun ~/.omega/skills/duo/bin/omega-duo selftest` -> exit 0, toutes sections PASS.

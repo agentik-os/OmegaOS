@@ -1639,7 +1639,8 @@ reported explicitly. Read and follow:
 
 \`$DUO_SKILL_DST/SKILL.md\`
 
-Bridge: \`omega-duo run --task <file.md> --cwd <project> --mode <plan|code|review>\`
+Bridge: \`omega-duo run --task <file.md> --cwd <project> --mode <plan|code|review> [--agent codex|claude|glm] [--verify "<cmd>"]\`
+Health: \`omega-duo doctor\` · Scaffold: \`omega-duo init <slug> --cwd <project>\` · Runs: \`omega-duo history\`
 Status: \`omega-duo status\` · Re-enable Codex: \`omega-duo reset\`
 EOF
     done
