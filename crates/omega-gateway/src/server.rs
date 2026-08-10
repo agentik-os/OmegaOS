@@ -53,6 +53,7 @@ pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/whoami", get(whoami))
         .route("/v1/sessions", get(crate::routes_sessions::list))
+        .route("/v1/sessions/{name}/stream", get(crate::routes_sessions::stream))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.
