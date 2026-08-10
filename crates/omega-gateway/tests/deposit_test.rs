@@ -124,8 +124,52 @@ async fn unknown_box_field_rejects_with_400() {
     std::env::remove_var("OMEGA_DEPOSIT_DIR");
 }
 
+/// Bug B1 regression test: a body strictly BETWEEN axum's own 2 MiB
+/// multipart default and the crate's documented `MAX_DEPOSIT_BYTES` (50 MiB)
+/// must succeed. Before the `DefaultBodyLimit` layer was scoped onto this
+/// route, axum's own 2 MiB internal default silently rejected anything past
+/// 2 MiB with a generic "failed to read file field" error — `MAX_DEPOSIT_BYTES`
+/// was dead code above that point.
 #[tokio::test]
-async fn oversized_upload_rejects_with_400() {
+async fn upload_between_axum_default_and_max_deposit_bytes_succeeds() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let deposit_dir = tempfile::tempdir().unwrap();
+    std::env::set_var("OMEGA_DEPOSIT_DIR", deposit_dir.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    // 5 MiB: comfortably past axum's 2 MiB internal default, comfortably
+    // under MAX_DEPOSIT_BYTES (50 MiB).
+    let mid_sized = vec![7u8; 5 * 1024 * 1024];
+    let part = reqwest::multipart::Part::bytes(mid_sized.clone()).file_name("mid.bin");
+    let form = reqwest::multipart::Form::new().part("file", part);
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/deposit"))
+        .bearer_auth(&token)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["held"], false);
+    let file_name = body["file"].as_str().unwrap();
+    let written = std::fs::read(deposit_dir.path().join("inbox").join(file_name)).unwrap();
+    assert_eq!(written.len(), mid_sized.len());
+
+    std::env::remove_var("OMEGA_DEPOSIT_DIR");
+}
+
+/// A body genuinely over `MAX_DEPOSIT_BYTES` (but still under the layer's
+/// own +8192 margin, so it clears the `DefaultBodyLimit` layer) must still
+/// be rejected with 400 from the CRATE's own size check, proven here by
+/// asserting the error message shape (`"file too large"`, from
+/// `routes_deposit.rs`) rather than a generic axum multipart-read error.
+#[tokio::test]
+async fn oversized_upload_rejects_with_400_from_the_crates_own_check() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let deposit_dir = tempfile::tempdir().unwrap();
@@ -146,6 +190,11 @@ async fn oversized_upload_rejects_with_400() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("file too large"),
+        "expected the crate's own size-cap message, got: {body}"
+    );
 
     std::env::remove_var("OMEGA_DEPOSIT_DIR");
 }

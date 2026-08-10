@@ -37,6 +37,10 @@ fn schema_contains_all_wire_types() {
         "DispatchRequest",
         "DispatchResponse",
         "DepositResponse",
+        "SendKeysRequest",
+        "SendKeysResponse",
+        "ChatMessagesPage",
+        "ChatDetailResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

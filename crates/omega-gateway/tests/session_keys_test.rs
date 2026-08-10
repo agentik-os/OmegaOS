@@ -91,7 +91,7 @@ async fn happy_path_with_enter_sends_two_separate_calls() {
 
     let calls = parse_calls(&capture_file);
     assert_eq!(calls.len(), 2, "expected exactly two separate subprocess invocations");
-    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "ls -la"]);
+    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "ls -la"]);
     assert_eq!(calls[1], vec!["send-keys", "-t", "oracle-Foo-1", "Enter"]);
 
     std::env::remove_var("OMEGA_RMUX_BIN");
@@ -121,7 +121,41 @@ async fn enter_false_sends_only_one_call() {
 
     let calls = parse_calls(&capture_file);
     assert_eq!(calls.len(), 1, "enter omitted/false must send exactly one call");
-    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "echo hi"]);
+    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "echo hi"]);
+
+    std::env::remove_var("OMEGA_RMUX_BIN");
+}
+
+/// Direct regression test for bug B4 (mirrors
+/// `dispatch_test.rs::dash_prefixed_values_land_as_positionals_after_separator`,
+/// the sibling bug already fixed for `/v1/dispatch`): a keystroke value that
+/// starts with `-` (an entirely normal thing to type in a terminal) must not
+/// be misparsed as a flag by rmux's own clap-based argument parser. Proves
+/// the recorded argv carries a literal `--` immediately before the value.
+#[tokio::test]
+async fn dash_prefixed_values_land_as_literal_after_separator() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_rmux(bin_dir.path(), &capture_file);
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions/oracle-Foo-1/keys"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({"data": "-N", "enter": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let calls = parse_calls(&capture_file);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0], vec!["send-keys", "-t", "oracle-Foo-1", "-l", "--", "-N"]);
 
     std::env::remove_var("OMEGA_RMUX_BIN");
 }

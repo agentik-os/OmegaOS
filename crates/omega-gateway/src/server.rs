@@ -115,7 +115,22 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/skills", get(crate::routes_skills::list))
         .route("/v1/projects", get(crate::routes_projects::list))
         .route("/v1/dispatch", axum::routing::post(crate::routes_dispatch::create))
-        .route("/v1/deposit", axum::routing::post(crate::routes_deposit::create))
+        // B1 fix: axum 0.8's `Multipart` extractor falls back to its own
+        // internal 2 MiB default body limit when no `DefaultBodyLimit` layer
+        // is set, silently overriding `MAX_DEPOSIT_BYTES` (the crate's own
+        // 50 MiB cap in routes_deposit.rs) for any upload between 2 MiB and
+        // 50 MiB. Scoped to THIS route only (via `.layer()` on the
+        // `MethodRouter`, not the outer `Router`) so no other route's body
+        // limit changes. The +8192 margin covers multipart boundary/header
+        // overhead so a file at exactly MAX_DEPOSIT_BYTES still clears this
+        // layer and reaches the crate's own size check, which is the one
+        // that must make the final call.
+        .route(
+            "/v1/deposit",
+            axum::routing::post(crate::routes_deposit::create).layer(
+                axum::extract::DefaultBodyLimit::max(crate::routes_deposit::MAX_DEPOSIT_BYTES + 8192),
+            ),
+        )
         .route("/v1/events", get(crate::routes_events::events))
         .route(
             "/v1/accounts",

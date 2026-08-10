@@ -38,9 +38,18 @@ pub fn capture_pane_ansi(session: &str, lines: u32) -> Result<String> {
 
 /// Sends literal keystrokes to a live rmux session WITHOUT submitting them
 /// (no Enter). Mirrors the real CLI shape verified against working scripts
-/// elsewhere on this box: `rmux send-keys -t <session> -l <text>`.
+/// elsewhere on this box: `rmux send-keys -t <session> -l -- <text>`.
+///
+/// The `--` separator is load-bearing, not decorative: rmux's own clap-based
+/// argument parser reads a `text` that starts with `-` (e.g. a user literally
+/// typing `-N`) as an unrecognized flag rather than the literal keystroke
+/// value, silently failing the send. Reproduced against the real `rmux`
+/// binary: `[send-keys, -t, s, -l, -N]` -> `"a value is required for '-N'"`,
+/// while `[send-keys, -t, s, -l, --, -N]` parses correctly. This is the same
+/// class of bug `routes_dispatch.rs` already guards against for `omega`'s own
+/// argv — never drop this separator.
 pub fn send_keys_literal(session: &str, text: &str) -> Result<()> {
-    run(&["send-keys", "-t", session, "-l", text])?;
+    run(&["send-keys", "-t", session, "-l", "--", text])?;
     Ok(())
 }
 
