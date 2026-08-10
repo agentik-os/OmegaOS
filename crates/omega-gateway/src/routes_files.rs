@@ -96,8 +96,17 @@ fn path_error_to_api(err: PathError) -> ApiError {
 ///    textual traversal AND a symlink planted inside `root` that points
 ///    outside it, because canonicalize resolves the symlink's real target
 ///    before the `starts_with` check ever runs.
-/// 4. A `canonicalize` failure means nothing real exists at that location —
-///    `NotFound` (404), a status distinct from an `Escaped` (403) rejection.
+/// 4. A `canonicalize` failure on the full joined path means the LEAF isn't
+///    there. That alone is not enough to call it `NotFound` (404): if the
+///    leaf's PARENT already canonicalizes outside `root` (e.g. a symlink or
+///    `..` chain two levels up points outside `root`), a nonexistent leaf
+///    under it is STILL an escape attempt and must stay `Escaped` (403) —
+///    otherwise 403-vs-404 becomes a per-FILE existence oracle for anything
+///    outside `root` (request `../../../etc/shadow` vs
+///    `../../../etc/definitely-not-a-real-file`: an attacker who can only
+///    observe the status code, never the content, learns which one exists).
+///    Only when the parent ALSO fails to canonicalize (nothing real up that
+///    chain either) is the result a genuine, uninformative `NotFound` (404).
 ///
 /// A `..` component that stays WITHIN `root` after resolution is allowed
 /// implicitly (canonicalize handles that correctly): the guard is about the
@@ -114,11 +123,27 @@ pub fn resolve_scoped_path(root: &Path, rel: &str) -> Result<PathBuf, PathError>
     }
     let joined = root.join(rel_path);
     let canon_root = std::fs::canonicalize(root).map_err(|_| PathError::NotFound)?;
-    let canon_joined = std::fs::canonicalize(&joined).map_err(|_| PathError::NotFound)?;
-    if !canon_joined.starts_with(&canon_root) {
-        return Err(PathError::Escaped);
+    match std::fs::canonicalize(&joined) {
+        Ok(canon_joined) => {
+            if canon_joined.starts_with(&canon_root) {
+                Ok(canon_joined)
+            } else {
+                Err(PathError::Escaped)
+            }
+        }
+        Err(_) => {
+            // Leaf doesn't exist. Still check whether its PARENT escapes
+            // root, so a nonexistent leaf under an escaping parent reports
+            // Escaped rather than leaking leaf-level existence via NotFound
+            // (see point 4 above).
+            match joined.parent().map(std::fs::canonicalize) {
+                Some(Ok(canon_parent)) if !canon_parent.starts_with(&canon_root) => {
+                    Err(PathError::Escaped)
+                }
+                _ => Err(PathError::NotFound),
+            }
+        }
     }
-    Ok(canon_joined)
 }
 
 /// Reads `path`'s content with the same discipline as `routes_deposit.rs`'s
@@ -298,6 +323,26 @@ mod tests {
 
         let err = resolve_scoped_path(&root, "nope.txt").unwrap_err();
         assert!(matches!(err, PathError::NotFound));
+    }
+
+    #[test]
+    fn rejects_traversal_to_a_nonexistent_leaf_under_an_existing_outside_dir() {
+        // Existence-oracle regression: canonicalizing the FULL joined path
+        // before choosing Escaped-vs-NotFound means a leaf that doesn't
+        // exist returns NotFound (404) even when its PARENT directory
+        // plainly escapes root — so an attacker can distinguish "this file
+        // exists outside my project root" (403 Escaped) from "it doesn't"
+        // (404 NotFound) purely from the status code, without ever reading
+        // a byte of content. The parent chain must be checked even when the
+        // leaf itself fails to canonicalize.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("project");
+        let outside = base.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap(); // the outside DIR is real...
+        // ...but this specific leaf file does not exist.
+        let err = resolve_scoped_path(&root, "../outside/does-not-exist.txt").unwrap_err();
+        assert!(matches!(err, PathError::Escaped), "expected Escaped, got {err:?}");
     }
 
     #[test]
