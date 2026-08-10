@@ -237,6 +237,28 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentEntry>,
 }
 
+/// One entry of `GET /v1/skills`'s `skills` array — mirrors
+/// `omega_core::skill_registry::Skill` for display: `category` is
+/// `skill.category.label()` (e.g. `"Audit"`/`"Design"`), not a raw Debug
+/// form, since the label method exists precisely for this.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillEntry {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+}
+
+/// `GET /v1/skills` response body — the OmegaOS skill catalog from
+/// `omega_core::skill_registry::SkillRegistry::discover_default()`, optionally
+/// narrowed by `?q=`/`?limit=`. `total` is always the UNFILTERED catalog
+/// size, so the caller can show "showing N of total" even when `skills` is
+/// narrowed.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillsResponse {
+    pub skills: Vec<SkillEntry>,
+    pub total: usize,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -264,6 +286,8 @@ pub struct Protocol {
     pub rules_response: RulesResponse,
     pub agent_entry: AgentEntry,
     pub agents_response: AgentsResponse,
+    pub skill_entry: SkillEntry,
+    pub skills_response: SkillsResponse,
 }
 
 pub fn schema_json() -> String {
