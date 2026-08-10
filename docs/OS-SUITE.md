@@ -29,6 +29,7 @@ Personal OSes:
 |----|------|-------|--------|
 | Mindset OS | `mindset-os` | Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching + 90-day program | **integrated** |
 | Habits OS | `habits-os` | Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews | **integrated** |
+| Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop (commitments, focus, proof, recovery) | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -135,6 +136,11 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   habit system with deterministic SQLite state, seasons, experiments and
   adaptive reviews (`omega-habits`). Pairs with Mindset OS for the identity
   layer. safety-and-boundaries.md always honored.
+- **Execution OS** - INTEGRATED (Execution {OS} v2): an LLM-first personal
+  execution loop (`omega-execution`) — commitments, protected focus, proof
+  classification, weekly reset + monthly audit. The shipped profile is a
+  generic template; the operator's real profile stays user-local in the
+  ledger (privacy: no personal data in the public repo).
 - **Ideation OS** - INTEGRATED (Brainstorm {OS} v3 ULTIMATE): a multi-agent
   imagination + decision council with lineage, the Surface Lab, quality gates
   and a frozen concept handoff to Market Research / Blueprint. The skill is

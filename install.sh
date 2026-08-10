@@ -1960,7 +1960,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2042,6 +2042,21 @@ Design {OS} — the UX/UI compiler + flow challenger (Designer OS #04). Alias of
 
 Consumes the Blueprint handoff, emits a validated Design Handoff for Stepper.
 Validators: \`omega-designer intake|handoff|self-test\`. Maps to shadcn/ui + STAX.
+MREOF
+        fi
+        # Execution OS also registers the short `/execute` alias.
+        if [[ "$BSK" == "execution-os" ]]; then
+            cat > "$BCMD/execute.md" <<MREOF
+# /execute
+
+Execution {OS} — the personal delivery system (closed control loop). Alias of
+/execution-os: read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Loop: Capture->Clarify->Select->Commit->Focus->Prove->Review->Adapt. State CLI:
+\`omega-execution\` (init/boot/focus/complete/halt/reset/audit). Your private
+profile at ~/.omega/os/execution-os/ledger/profile.md overrides the template.
 MREOF
         fi
         # Researcher OS (Market Research {OS}) registers the short `/research`
