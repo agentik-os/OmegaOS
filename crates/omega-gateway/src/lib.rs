@@ -7,6 +7,7 @@ pub mod config;
 pub mod events;
 pub mod fsperm;
 pub mod missions;
+pub mod omega_cli;
 pub mod protocol;
 pub mod rmux;
 pub mod routes_accounts;
