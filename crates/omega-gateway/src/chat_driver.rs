@@ -22,9 +22,10 @@ use tokio::sync::mpsc::Sender;
 /// Builds the child-process command for a Claude chat turn.
 ///
 /// Only meaningful for `ChatAgent::Claude` — [`run_turn`] intercepts
-/// `ChatAgent::Codex` before ever calling this (debug builds assert the
-/// precondition so misuse is caught in tests rather than silently spawning
-/// `claude` for a Codex chat).
+/// `ChatAgent::Codex` before ever calling this. The precondition is
+/// enforced with a real (non-debug-only) `assert!` so misuse is caught in
+/// every build, not just debug ones, rather than silently spawning `claude`
+/// for a Codex chat.
 ///
 /// Program is `$OMEGA_CHAT_BIN` when set, else `claude`. Args:
 /// `-p <user_text> --output-format stream-json --verbose`, plus
@@ -37,10 +38,9 @@ pub fn agent_command(
     model: Option<&str>,
     account_dir: Option<&Path>,
 ) -> Command {
-    debug_assert_eq!(
-        meta.agent,
-        ChatAgent::Claude,
-        "agent_command only builds Claude commands; ChatAgent::Codex must be intercepted by run_turn"
+    assert!(
+        meta.agent == ChatAgent::Claude,
+        "agent_command is Claude-only; Codex is handled in run_turn"
     );
 
     let program = std::env::var("OMEGA_CHAT_BIN").unwrap_or_else(|_| "claude".to_string());
@@ -63,61 +63,94 @@ pub fn agent_command(
     cmd
 }
 
-/// The outcome of parsing one NDJSON stdout line from the agent process.
+/// One thing discovered while parsing an NDJSON stdout line from the agent
+/// process. A single line can yield zero, one, or several of these — an
+/// empty `Vec<ParsedLine>` from [`parse_line`] means the line carried
+/// nothing the client needs (thinking blocks, hook events, rate-limit
+/// events, unparseable text, ...).
 pub enum ParsedLine {
     /// A frame to forward to the client.
     Frame(ChatStreamServerMsg),
     /// The provider's session id, discovered from an `init` line.
     Session(String),
-    /// A line carrying nothing the client needs (thinking blocks, hook
-    /// events, rate-limit events, unparseable text, ...).
-    Ignore,
 }
 
 /// Parses one NDJSON stdout line from `claude -p --output-format stream-json`.
-/// Pure and I/O-free: unparseable or irrelevant lines are `Ignore`, never a panic.
+/// Pure and I/O-free: unparseable or irrelevant lines yield an empty `Vec`, never a panic.
+///
+/// An assistant line's `content[]` blocks are walked IN ORDER and each block
+/// contributes independently, so a single line can yield multiple entries
+/// (e.g. a `text` block followed by a `tool_use` block yields both an
+/// `AssistantMessage` and a `ToolEvent`).
 ///
 /// Real observed shapes (claude 2.1.226):
-/// - `{"type":"system","subtype":"init","session_id":"..."}` -> `Session(id)`
-/// - `{"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}` -> `Frame(AssistantMessage)`
-///   (text content blocks are concatenated; a message with only `"thinking"` blocks is `Ignore`)
-/// - `{"type":"result","is_error":false,...}` -> `Frame(TurnDone)`
-/// - `{"type":"result","is_error":true,"result":"msg"}` -> `Frame(Error{message: "msg"})`
-/// - `rate_limit_event`, `system`/`hook_started`, or anything else unparseable -> `Ignore`
-pub fn parse_line(line: &str) -> ParsedLine {
+/// - `{"type":"system","subtype":"init","session_id":"..."}` -> `[Session(id)]`
+/// - `{"type":"assistant","message":{"content":[{"type":"text","text":"..."}]}}` -> `[Frame(AssistantMessage)]`
+///   (consecutive text blocks are concatenated into one `AssistantMessage`; a
+///   `"thinking"` block is skipped; a `"tool_use"` block yields its own
+///   `Frame(ToolEvent)`)
+/// - `{"type":"result","is_error":false,...}` -> `[Frame(TurnDone)]`
+/// - `{"type":"result","is_error":true,"result":"msg"}` -> `[Frame(Error{message: "msg"})]`
+/// - `rate_limit_event`, `system`/`hook_started`, or anything else unparseable -> `[]`
+pub fn parse_line(line: &str) -> Vec<ParsedLine> {
     let line = line.trim();
     if line.is_empty() {
-        return ParsedLine::Ignore;
+        return Vec::new();
     }
     let Ok(v) = serde_json::from_str::<Value>(line) else {
-        return ParsedLine::Ignore;
+        return Vec::new();
     };
 
     match v.get("type").and_then(Value::as_str) {
         Some("system") if v.get("subtype").and_then(Value::as_str) == Some("init") => {
             match v.get("session_id").and_then(Value::as_str) {
-                Some(id) => ParsedLine::Session(id.to_string()),
-                None => ParsedLine::Ignore,
+                Some(id) => vec![ParsedLine::Session(id.to_string())],
+                None => Vec::new(),
             }
         }
         Some("assistant") => {
-            let text = v
+            let Some(blocks) = v
                 .get("message")
                 .and_then(|m| m.get("content"))
                 .and_then(Value::as_array)
-                .map(|blocks| {
-                    blocks
-                        .iter()
-                        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                        .filter_map(|b| b.get("text").and_then(Value::as_str))
-                        .collect::<String>()
-                })
-                .unwrap_or_default();
-            if text.is_empty() {
-                ParsedLine::Ignore
-            } else {
-                ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text })
+            else {
+                return Vec::new();
+            };
+
+            let mut out = Vec::new();
+            let mut text = String::new();
+            for block in blocks {
+                match block.get("type").and_then(Value::as_str) {
+                    Some("text") => {
+                        if let Some(t) = block.get("text").and_then(Value::as_str) {
+                            text.push_str(t);
+                        }
+                    }
+                    Some("tool_use") => {
+                        if !text.is_empty() {
+                            out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage {
+                                text: std::mem::take(&mut text),
+                            }));
+                        }
+                        let name = block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or("tool")
+                            .to_string();
+                        let detail = block.get("input").map(compact_json);
+                        out.push(ParsedLine::Frame(ChatStreamServerMsg::ToolEvent {
+                            name,
+                            detail,
+                        }));
+                    }
+                    // "thinking" and anything else: ignored.
+                    _ => {}
+                }
             }
+            if !text.is_empty() {
+                out.push(ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }));
+            }
+            out
         }
         Some("result") => {
             let is_error = v.get("is_error").and_then(Value::as_bool).unwrap_or(false);
@@ -127,13 +160,19 @@ pub fn parse_line(line: &str) -> ParsedLine {
                     .and_then(Value::as_str)
                     .unwrap_or("agent turn failed")
                     .to_string();
-                ParsedLine::Frame(ChatStreamServerMsg::Error { message })
+                vec![ParsedLine::Frame(ChatStreamServerMsg::Error { message })]
             } else {
-                ParsedLine::Frame(ChatStreamServerMsg::TurnDone)
+                vec![ParsedLine::Frame(ChatStreamServerMsg::TurnDone)]
             }
         }
-        _ => ParsedLine::Ignore,
+        _ => Vec::new(),
     }
+}
+
+/// Renders a `serde_json::Value` as a compact one-line string, for use as a
+/// `ToolEvent`'s `detail`.
+fn compact_json(v: &Value) -> String {
+    serde_json::to_string(v).unwrap_or_default()
 }
 
 /// Spawns the agent process for one chat turn, forwards parsed frames on
@@ -189,21 +228,25 @@ pub async fn run_turn(
     let read_loop = async {
         loop {
             match lines.next_line().await {
-                Ok(Some(line)) => match parse_line(&line) {
-                    ParsedLine::Session(id) => session_id = Some(id),
-                    ParsedLine::Frame(frame) => {
-                        if matches!(frame, ChatStreamServerMsg::TurnDone) {
-                            sent_turn_done = true;
-                        }
-                        if tx.send(frame).await.is_err() {
-                            // Receiver dropped: the caller no longer wants
-                            // frames, so stop reading and kill the child.
-                            let _ = child.kill().await;
-                            return;
+                Ok(Some(line)) => {
+                    for parsed in parse_line(&line) {
+                        match parsed {
+                            ParsedLine::Session(id) => session_id = Some(id),
+                            ParsedLine::Frame(frame) => {
+                                if matches!(frame, ChatStreamServerMsg::TurnDone) {
+                                    sent_turn_done = true;
+                                }
+                                if tx.send(frame).await.is_err() {
+                                    // Receiver dropped: the caller no longer
+                                    // wants frames, so stop reading and kill
+                                    // the child.
+                                    let _ = child.kill().await;
+                                    return;
+                                }
+                            }
                         }
                     }
-                    ParsedLine::Ignore => {}
-                },
+                }
                 // EOF or a stdout read error both mean the stream is over.
                 Ok(None) | Err(_) => return,
             }
@@ -302,6 +345,17 @@ mod tests {
         assert!(args.windows(2).any(|w| w == ["--model", "claude-fable-5"]));
     }
 
+    #[test]
+    #[should_panic(expected = "agent_command is Claude-only")]
+    fn agent_command_panics_for_codex_agent() {
+        // Real (non-debug-only) assert: this must fire in every build
+        // profile, not just debug, since run_turn's own short-circuit is
+        // the primary guard and this is the belt-and-suspenders backstop.
+        let mut meta = test_meta(None);
+        meta.agent = ChatAgent::Codex;
+        let _ = agent_command(&meta, "hi", None, None);
+    }
+
     #[tokio::test]
     async fn agent_command_sets_claude_config_dir_when_account_dir_given() {
         let _g = LOCK.lock().await;
@@ -337,7 +391,9 @@ mod tests {
     #[test]
     fn parse_line_init_captures_session_id() {
         let line = r#"{"type":"system","subtype":"init","session_id":"3d48bb5b-abc","cwd":"/tmp","model":"claude-fable-5"}"#;
-        match parse_line(line) {
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
             ParsedLine::Session(id) => assert_eq!(id, "3d48bb5b-abc"),
             _ => panic!("expected Session"),
         }
@@ -346,7 +402,9 @@ mod tests {
     #[test]
     fn parse_line_assistant_text_yields_assistant_message() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"PONG"}]},"session_id":"s1"}"#;
-        match parse_line(line) {
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
             ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }) => {
                 assert_eq!(text, "PONG");
             }
@@ -357,7 +415,9 @@ mod tests {
     #[test]
     fn parse_line_multiple_text_blocks_are_concatenated() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"foo"},{"type":"text","text":"bar"}]}}"#;
-        match parse_line(line) {
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
             ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }) => {
                 assert_eq!(text, "foobar");
             }
@@ -368,19 +428,69 @@ mod tests {
     #[test]
     fn parse_line_thinking_block_is_ignored() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"pondering"}]}}"#;
-        assert!(matches!(parse_line(line), ParsedLine::Ignore));
+        assert!(parse_line(line).is_empty());
+    }
+
+    #[test]
+    fn parse_line_tool_use_block_yields_tool_event() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/tmp/x"}}]}}"#;
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
+            ParsedLine::Frame(ChatStreamServerMsg::ToolEvent { name, detail }) => {
+                assert_eq!(name, "Read");
+                assert!(detail.unwrap().contains("file_path"));
+            }
+            _ => panic!("expected ToolEvent frame"),
+        }
+    }
+
+    #[test]
+    fn parse_line_tool_use_without_name_defaults_to_tool() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","input":{}}]}}"#;
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
+            ParsedLine::Frame(ChatStreamServerMsg::ToolEvent { name, .. }) => {
+                assert_eq!(name, "tool");
+            }
+            _ => panic!("expected ToolEvent frame"),
+        }
+    }
+
+    #[test]
+    fn parse_line_text_and_tool_use_yield_both_frames_in_order() {
+        let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"looking it up"},{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"foo"}}]}}"#;
+        let out = parse_line(line);
+        assert_eq!(out.len(), 2, "expected an AssistantMessage and a ToolEvent");
+        match &out[0] {
+            ParsedLine::Frame(ChatStreamServerMsg::AssistantMessage { text }) => {
+                assert_eq!(text, "looking it up");
+            }
+            _ => panic!("expected AssistantMessage frame first"),
+        }
+        match &out[1] {
+            ParsedLine::Frame(ChatStreamServerMsg::ToolEvent { name, .. }) => {
+                assert_eq!(name, "Grep");
+            }
+            _ => panic!("expected ToolEvent frame second"),
+        }
     }
 
     #[test]
     fn parse_line_result_success_yields_turn_done() {
         let line = r#"{"type":"result","is_error":false,"stop_reason":"end_turn","result":"PONG","session_id":"s1"}"#;
-        assert!(matches!(parse_line(line), ParsedLine::Frame(ChatStreamServerMsg::TurnDone)));
+        let out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        assert!(matches!(&out[0], ParsedLine::Frame(ChatStreamServerMsg::TurnDone)));
     }
 
     #[test]
     fn parse_line_result_error_yields_error_frame() {
         let line = r#"{"type":"result","is_error":true,"result":"boom"}"#;
-        match parse_line(line) {
+        let mut out = parse_line(line);
+        assert_eq!(out.len(), 1);
+        match out.remove(0) {
             ParsedLine::Frame(ChatStreamServerMsg::Error { message }) => {
                 assert_eq!(message, "boom");
             }
@@ -391,22 +501,22 @@ mod tests {
     #[test]
     fn parse_line_rate_limit_event_is_ignored() {
         let line = r#"{"type":"rate_limit_event","limit":100}"#;
-        assert!(matches!(parse_line(line), ParsedLine::Ignore));
+        assert!(parse_line(line).is_empty());
     }
 
     #[test]
     fn parse_line_hook_started_is_ignored() {
         let line = r#"{"type":"system","subtype":"hook_started"}"#;
-        assert!(matches!(parse_line(line), ParsedLine::Ignore));
+        assert!(parse_line(line).is_empty());
     }
 
     #[test]
     fn parse_line_unparseable_is_ignored() {
-        assert!(matches!(parse_line("not json at all"), ParsedLine::Ignore));
+        assert!(parse_line("not json at all").is_empty());
     }
 
     #[test]
     fn parse_line_empty_is_ignored() {
-        assert!(matches!(parse_line(""), ParsedLine::Ignore));
+        assert!(parse_line("").is_empty());
     }
 }

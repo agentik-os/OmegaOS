@@ -100,10 +100,17 @@ async fn run_turn_appends_turn_done_when_stream_lacks_a_result_line() {
 async fn run_turn_kills_child_and_reports_timeout() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
-    // `exec` replaces the bash script's own process image with `sleep`, so
-    // killing the spawned child kills the sleep directly instead of leaving
-    // an orphaned grandchild running for 999s.
-    install_fake_agent(dir.path(), "exec sleep 999");
+    let pidfile = dir.path().join("child.pid");
+    // `exec` replaces the bash script's own process image with `sleep`
+    // *in place* (same PID), so: (1) killing the spawned child kills the
+    // sleep directly instead of leaving an orphaned grandchild running for
+    // 999s, and (2) `$$` captured before the `exec` is still valid as the
+    // sleep's PID afterward, which is what lets this test prove the process
+    // is actually gone rather than just trusting that a signal was sent.
+    install_fake_agent(
+        dir.path(),
+        &format!("echo $$ > {}\nexec sleep 999", pidfile.display()),
+    );
 
     let meta = test_meta(dir.path());
     let (tx, mut rx) = tokio::sync::mpsc::channel(16);
@@ -111,6 +118,21 @@ async fn run_turn_kills_child_and_reports_timeout() {
     let driver = tokio::spawn(async move {
         chat_driver::run_turn(&meta, "hi", None, None, Duration::from_millis(200), tx).await
     });
+
+    // Wait for the fake agent to report its PID before the timeout fires,
+    // so the leak check below has a concrete PID to test against.
+    let child_pid: u32 = {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(s) = std::fs::read_to_string(&pidfile) {
+                if let Ok(pid) = s.trim().parse() {
+                    break pid;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "fake agent never wrote its pidfile");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
 
     let mut frames = Vec::new();
     while let Some(frame) = rx.recv().await {
@@ -130,6 +152,28 @@ async fn run_turn_kills_child_and_reports_timeout() {
         ChatStreamServerMsg::Error { message } if message.contains("timed out")
     ));
     assert!(matches!(&frames[1], ChatStreamServerMsg::TurnDone));
+
+    // The real leak check: after run_turn has returned (so the kill+wait it
+    // performs internally has already completed), the killed process must
+    // no longer exist in the process table.
+    #[cfg(target_os = "linux")]
+    {
+        // The kernel can take a moment to reap a killed process; poll
+        // briefly rather than asserting on the first sample.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let alive = std::path::Path::new(&format!("/proc/{child_pid}")).exists();
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child process {child_pid} is still present in /proc after run_turn returned \
+                 — the timeout path leaked it"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 #[tokio::test]
