@@ -10,9 +10,9 @@ Base: `origin/main` @ c8ea843
 - [x] Task C — Deposit files from the app (new routes_deposit.rs + deposit.rs, protocol.rs) — commit 5a08a99, adversarial security review CLEAN (3 nits recorded, non-blocking, inherited from the reference bot)
 - [x] Task D — Dispatch hardening (routes_dispatch.rs) — commit abf0f33, adversarial review CLEAN (3 nits recorded, non-blocking), concurrency test stress-tested 25x with 0 flakes
 - [x] Wiring — server.rs route table, protocol.rs schema_test, lib.rs module decl (done incrementally per task, each schema_test/route addition reviewed as part of its task)
-- [ ] Final opus whole-branch review
-- [ ] Runtime verify (L1): release build + live checks for all 4 features
-- [ ] Rebase on origin/main, leave clean, report
+- [x] Final opus whole-branch review — first pass: NOT READY, found 4 blocking bugs via live runtime testing (multipart 2MiB axum wall silently defeating the 50MiB cap; same-second filename collision destroying both payloads; secret-detection truncation-order bypass; send-keys dash-prefix argv bug recurring from task D). All 4 fixed in commit 4223d14, each fix TDD'd (regression test proven to fail pre-fix, pass post-fix) and independently re-verified live by the controller against the real release binary + real rmux CLI (not just unit tests).
+- [x] Runtime verify (L1): release build + live checks for all 4 features, twice — once per-task with fake rmux/omega, once after the bug-fix pass with a fresh scratch env, including a direct real-rmux comparison for B4 (old argv shape errors, new shape exits 0)
+- [x] Rebase on origin/main, leave clean, report
 
 Tasks are SERIALIZED (not parallel fan-out) because A/B/C/D all touch shared files
 (protocol.rs, server.rs, lib.rs) — R-SCOPE (one writer per file) forbids concurrent
