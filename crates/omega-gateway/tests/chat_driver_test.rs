@@ -26,6 +26,7 @@ fn test_meta(cwd: &std::path::Path) -> ChatMeta {
         created_at: "t".to_string(),
         updated_at: "t".to_string(),
         provider_session_id: None,
+        account_slug: None,
     }
 }
 

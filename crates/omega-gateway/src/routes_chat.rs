@@ -3,8 +3,11 @@
 //! agent error becomes an `Error` frame, never a closed socket; only a dead
 //! socket or an explicit client close ends the loop).
 
+use crate::accounts::{self, AccountStore};
 use crate::chat_driver::run_turn;
-use crate::protocol::{ChatAgent, ChatMessage, ChatMeta, ChatStreamClientMsg, ChatStreamServerMsg};
+use crate::protocol::{
+    AccountKind, ChatAgent, ChatMessage, ChatMeta, ChatStreamClientMsg, ChatStreamServerMsg,
+};
 use crate::server::AppState;
 use axum::{
     extract::{
@@ -17,7 +20,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::path::{Path as FsPath, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Deserialize)]
 pub struct ChatCreateRequest {
@@ -25,6 +28,14 @@ pub struct ChatCreateRequest {
     pub cwd: String,
     #[serde(default)]
     pub title: Option<String>,
+    /// The account slot to run this chat's turns under. `None` means
+    /// "resolve the agent kind's default account per turn" (see
+    /// `resolve_account_dir`). Validated (path-traversal guard) before the
+    /// chat is created — an unknown slot dir is created lazily by the
+    /// provider CLI, but the slug SHAPE must still be safe to join onto the
+    /// accounts dir.
+    #[serde(default)]
+    pub account_slug: Option<String>,
 }
 
 /// Chat ids are `random_hex(8)` (see `util::random_hex`): exactly 16
@@ -43,9 +54,14 @@ pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
 pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<ChatCreateRequest>,
-) -> (StatusCode, Json<ChatMeta>) {
-    let meta = state.chats.create(req.agent, req.cwd, req.title);
-    (StatusCode::CREATED, Json(meta))
+) -> Result<(StatusCode, Json<ChatMeta>), StatusCode> {
+    if let Some(slug) = &req.account_slug {
+        if !accounts::valid_slug(slug) {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+    }
+    let meta = state.chats.create(req.agent, req.cwd, req.title, req.account_slug);
+    Ok((StatusCode::CREATED, Json(meta)))
 }
 
 pub async fn get(
@@ -72,15 +88,19 @@ fn now() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// `<gateway_dir>/accounts/default` when present, else `None` (the box's
-/// ambient claude config is used). Kept intentionally simple for V2.
-fn resolve_account_dir(gateway_dir: &FsPath) -> Option<PathBuf> {
-    let dir = gateway_dir.join("accounts").join("default");
-    if dir.is_dir() {
-        Some(dir)
-    } else {
-        None
+/// Resolves which account credential slot (if any) this chat's turn should
+/// run under: the chat's own `account_slug` when it chose one at creation,
+/// else the agent kind's current default account, else `None` (the box's
+/// ambient provider config is used — today's pre-Task-3 behavior).
+fn resolve_account_dir(accounts: &AccountStore, meta: &ChatMeta) -> Option<PathBuf> {
+    if let Some(slug) = &meta.account_slug {
+        return Some(accounts.slot_dir(slug));
     }
+    let kind = match meta.agent {
+        ChatAgent::Claude => AccountKind::Claude,
+        ChatAgent::Codex => AccountKind::Codex,
+    };
+    accounts.default_for(kind).map(|a| accounts.slot_dir(&a.slug))
 }
 
 /// Serializes and sends one server frame. `Err` means the socket is dead.
@@ -148,7 +168,7 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatStreamServerMsg>(64);
         let timeout = std::time::Duration::from_millis(state.cfg.chat_turn_timeout_ms);
-        let account_dir = resolve_account_dir(&state.dir);
+        let account_dir = resolve_account_dir(&state.accounts, &meta);
         let turn_meta = meta.clone();
         let turn_handle = tokio::spawn(async move {
             let _permit = permit; // held for the whole turn, released on drop

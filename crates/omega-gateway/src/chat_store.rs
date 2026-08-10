@@ -63,7 +63,16 @@ impl ChatStore {
     }
 
     /// Creates a new chat, persists its metadata, and returns it.
-    pub fn create(&self, agent: ChatAgent, cwd: String, title: Option<String>) -> ChatMeta {
+    /// `account_slug` is the account slot this chat's turns should run
+    /// under, if the caller chose one at creation (`None` means "resolve
+    /// the kind's default account per turn", per routes_chat.rs).
+    pub fn create(
+        &self,
+        agent: ChatAgent,
+        cwd: String,
+        title: Option<String>,
+        account_slug: Option<String>,
+    ) -> ChatMeta {
         let now = chrono::Utc::now().to_rfc3339();
         let meta = ChatMeta {
             id: random_hex(8),
@@ -73,6 +82,7 @@ impl ChatStore {
             created_at: now.clone(),
             updated_at: now,
             provider_session_id: None,
+            account_slug,
         };
         self.write_meta(&meta);
         meta
@@ -172,7 +182,7 @@ mod tests {
     fn create_then_get_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Claude, "/tmp/proj".to_string(), Some("hi".to_string()));
+        let meta = store.create(ChatAgent::Claude, "/tmp/proj".to_string(), Some("hi".to_string()), None);
 
         let fetched = store.get(&meta.id).expect("chat should exist");
         assert_eq!(fetched.id, meta.id);
@@ -180,6 +190,47 @@ mod tests {
         assert_eq!(fetched.agent, ChatAgent::Claude);
         assert_eq!(fetched.cwd, "/tmp/proj");
         assert!(fetched.provider_session_id.is_none());
+    }
+
+    #[test]
+    fn create_persists_account_slug() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        let meta = store.create(
+            ChatAgent::Claude,
+            "/tmp".to_string(),
+            None,
+            Some("work-1".to_string()),
+        );
+        assert_eq!(meta.account_slug.as_deref(), Some("work-1"));
+
+        let fetched = store.get(&meta.id).expect("chat should exist");
+        assert_eq!(fetched.account_slug.as_deref(), Some("work-1"));
+    }
+
+    #[test]
+    fn create_without_account_slug_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+        assert!(meta.account_slug.is_none());
+    }
+
+    #[test]
+    fn old_meta_json_without_account_slug_still_deserializes() {
+        // Back-compat: a meta.json written before this field existed.
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        let chat_dir = dir.path().join("chats").join("legacy1");
+        std::fs::create_dir_all(&chat_dir).unwrap();
+        std::fs::write(
+            chat_dir.join("meta.json"),
+            r#"{"id":"legacy1","title":null,"agent":"claude","cwd":"/tmp","created_at":"t","updated_at":"t","provider_session_id":null}"#,
+        )
+        .unwrap();
+
+        let meta = store.get("legacy1").expect("legacy meta.json should still parse");
+        assert!(meta.account_slug.is_none());
     }
 
     #[test]
@@ -193,7 +244,7 @@ mod tests {
     fn append_two_messages_returns_both_in_order() {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Codex, "/tmp".to_string(), None);
+        let meta = store.create(ChatAgent::Codex, "/tmp".to_string(), None, None);
 
         store.append_message(
             &meta.id,
@@ -222,7 +273,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
         assert!(store.list().is_empty());
-        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         let listed = store.list();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, meta.id);
@@ -232,9 +283,9 @@ mod tests {
     fn list_sorted_updated_at_desc() {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let a = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let a = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         std::thread::sleep(std::time::Duration::from_millis(5));
-        let b = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let b = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         std::thread::sleep(std::time::Duration::from_millis(5));
         // bump a's updated_at past b's by appending to it
         store.append_message(
@@ -252,7 +303,7 @@ mod tests {
     fn set_provider_session_persists() {
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         assert!(meta.provider_session_id.is_none());
 
         store.set_provider_session(&meta.id, "claude-session-abc");
@@ -266,7 +317,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let meta = {
             let store = ChatStore::open(dir.path());
-            let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), Some("persisted".to_string()));
+            let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), Some("persisted".to_string()), None);
             store.append_message(
                 &meta.id,
                 &ChatMessage { role: "user".to_string(), text: "hello".to_string(), ts: "t1".to_string() },
@@ -290,7 +341,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
 
         let chat_dir = dir.path().join("chats").join(&meta.id);
         let dir_mode = std::fs::metadata(&chat_dir).unwrap().permissions().mode() & 0o777;
@@ -310,7 +361,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let store = ChatStore::open(dir.path());
-        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None);
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
         store.append_message(
             &meta.id,
             &ChatMessage { role: "user".to_string(), text: "hi".to_string(), ts: "t".to_string() },

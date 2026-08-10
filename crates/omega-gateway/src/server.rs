@@ -1,3 +1,4 @@
+use crate::accounts::AccountStore;
 use crate::auth::{Device, DeviceStore};
 use crate::chat_store::ChatStore;
 use crate::config::GatewayConfig;
@@ -25,6 +26,10 @@ pub struct AppState {
     pub dir: PathBuf,
     pub cfg: GatewayConfig,
     pub chats: Arc<ChatStore>,
+    /// Isolated per-account Claude/Codex credential slots. Stateless
+    /// (file-backed), so `AccountStore` is cheaply `Clone` itself rather
+    /// than `Arc`-wrapped.
+    pub accounts: AccountStore,
     pub chat_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
@@ -34,13 +39,15 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Builds the full app state, opening the chat store rooted at `dir` and
-    /// sizing the global chat-turn semaphore to [`MAX_CONCURRENT_CHAT_TURNS`].
+    /// Builds the full app state, opening the chat + account stores rooted
+    /// at `dir` and sizing the global chat-turn semaphore to
+    /// [`MAX_CONCURRENT_CHAT_TURNS`].
     pub fn new(dir: PathBuf, cfg: GatewayConfig) -> Self {
         let chats = Arc::new(ChatStore::open(&dir));
+        let accounts = AccountStore::open(&dir);
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
         let events = EventHub::new();
-        Self { dir, cfg, chats, chat_permits, events }
+        Self { dir, cfg, chats, accounts, chat_permits, events }
     }
 }
 
@@ -88,6 +95,23 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chats/{id}/stream", get(crate::routes_chat::stream))
         .route("/v1/missions", get(crate::routes_missions::list))
         .route("/v1/events", get(crate::routes_events::events))
+        .route(
+            "/v1/accounts",
+            get(crate::routes_accounts::list).post(crate::routes_accounts::create),
+        )
+        .route(
+            "/v1/accounts/{slug}",
+            axum::routing::delete(crate::routes_accounts::delete),
+        )
+        .route(
+            "/v1/accounts/{slug}/default",
+            axum::routing::post(crate::routes_accounts::set_default),
+        )
+        .route("/v1/accounts/{slug}/login", get(crate::routes_accounts::login))
+        .route(
+            "/v1/accounts/{slug}/apikey",
+            axum::routing::post(crate::routes_accounts::apikey),
+        )
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.

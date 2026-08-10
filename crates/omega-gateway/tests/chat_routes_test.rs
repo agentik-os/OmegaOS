@@ -250,7 +250,7 @@ async fn busy_semaphore_reports_error_and_turn_done_without_persisting_assistant
     let dir = tempfile::tempdir().unwrap();
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
-    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None);
+    let meta = state.chats.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
     let chat_id = meta.id.clone();
 
     // Exhaust every permit and hold it for the whole test: no OMEGA_CHAT_BIN

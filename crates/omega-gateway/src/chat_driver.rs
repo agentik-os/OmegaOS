@@ -290,6 +290,7 @@ mod tests {
             created_at: "t".to_string(),
             updated_at: "t".to_string(),
             provider_session_id: provider_session_id.map(str::to_string),
+            account_slug: None,
         }
     }
 

@@ -25,7 +25,8 @@ fn chats_command_reports_none_when_empty() {
 fn chats_command_lists_created_chat() {
     let dir = tempfile::tempdir().unwrap();
     let store = ChatStore::open(dir.path());
-    let meta = store.create(ChatAgent::Claude, "/tmp/proj".to_string(), Some("hello world".to_string()));
+    let meta =
+        store.create(ChatAgent::Claude, "/tmp/proj".to_string(), Some("hello world".to_string()), None);
 
     let stdout = run_chats(dir.path());
     assert!(stdout.contains(&meta.id), "expected chat id {} in output: {stdout}", meta.id);

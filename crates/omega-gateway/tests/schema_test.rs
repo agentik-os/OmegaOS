@@ -19,6 +19,10 @@ fn schema_contains_all_wire_types() {
         "GatewayEvent",
         "Account",
         "AccountKind",
+        "AccountWithStatus",
+        "AccountCreateRequest",
+        "ApiKeyRequest",
+        "AccountLoginServerMsg",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

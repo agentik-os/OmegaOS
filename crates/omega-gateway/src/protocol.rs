@@ -62,6 +62,12 @@ pub struct ChatMeta {
     pub created_at: String,
     pub updated_at: String,
     pub provider_session_id: Option<String>,
+    /// The account slot this chat's turns run under, if one was chosen at
+    /// creation (else the kind's default account is resolved per turn).
+    /// `#[serde(default)]` so a pre-Task-3 `meta.json` without this field
+    /// still deserializes.
+    #[serde(default)]
+    pub account_slug: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -88,6 +94,42 @@ pub struct Account {
     pub kind: AccountKind,
     pub created_at: String,
     pub is_default: bool,
+}
+
+/// One [`Account`]'s stored metadata plus its LIVE auth status
+/// (`"logged_in"` / `"logged_out"` / `"unknown"`), as returned by
+/// `GET /v1/accounts`. The status is read fresh from the provider CLI on
+/// every list call — never persisted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AccountWithStatus {
+    #[serde(flatten)]
+    pub account: Account,
+    pub status: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct AccountCreateRequest {
+    pub slug: String,
+    pub label: String,
+    pub kind: AccountKind,
+}
+
+/// Body of `POST /v1/accounts/{slug}/apikey` — the headless Codex API-key
+/// login. `api_key` is piped straight to `codex login --with-api-key` and is
+/// never stored, logged, or echoed back by the gateway.
+#[derive(Deserialize, JsonSchema)]
+pub struct ApiKeyRequest {
+    pub api_key: String,
+}
+
+/// Server frames on the `GET /v1/accounts/{slug}/login` WebSocket.
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AccountLoginServerMsg {
+    LoginUrl { url: String },
+    LoginDone,
+    LoginNeedsBox,
+    Error { message: String },
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -164,6 +206,10 @@ pub struct Protocol {
     pub gateway_event: GatewayEvent,
     pub account: Account,
     pub account_kind: AccountKind,
+    pub account_with_status: AccountWithStatus,
+    pub account_create_request: AccountCreateRequest,
+    pub api_key_request: ApiKeyRequest,
+    pub account_login_server_msg: AccountLoginServerMsg,
 }
 
 pub fn schema_json() -> String {

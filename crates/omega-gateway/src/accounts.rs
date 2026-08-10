@@ -20,6 +20,11 @@ pub fn valid_slug(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
+/// Stateless handle over `<gateway_dir>/accounts`: every read/write goes
+/// straight to disk, so cloning (cheap: one `PathBuf`) is safe to share
+/// across async tasks (e.g. `AppState`, `spawn_blocking` closures) with no
+/// shared mutable state to synchronize.
+#[derive(Clone)]
 pub struct AccountStore {
     accounts_dir: PathBuf,
 }
