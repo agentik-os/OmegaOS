@@ -11,7 +11,7 @@ path = "src/main.rs"
 path = "src/lib.rs"
 
 [dependencies]
-axum = { version = "0.8", features = ["ws"] }
+axum = { version = "0.8", features = ["ws", "multipart"] }
 omega-core = { workspace = true }
 tokio.workspace = true
 serde.workspace = true
@@ -27,9 +27,10 @@ rand = "0.8"
 schemars = "0.8"
 qr2term = "0.3"
 chrono.workspace = true
+regex = "1"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], default-features = false }
 tokio-tungstenite = "0.24"
 tempfile = "3"
 futures-util = "0.3"

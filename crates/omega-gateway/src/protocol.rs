@@ -372,6 +372,18 @@ pub struct SendKeysResponse {
     pub ok: bool,
 }
 
+/// `POST /v1/deposit` response body — the HTTP twin of the Telegram DEPOSIT
+/// bot's reply. `file` is the final timestamped filename written to the
+/// inbox, `boxes` lists the named boxes the deposit actually reached (empty
+/// when `held` is true), `held` is true when the upload looked like a
+/// credential (see `deposit::looks_secret`) and was kept in the inbox only.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DepositResponse {
+    pub file: String,
+    pub boxes: Vec<String>,
+    pub held: bool,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -411,6 +423,7 @@ pub struct Protocol {
     pub dispatch_response: DispatchResponse,
     pub send_keys_request: SendKeysRequest,
     pub send_keys_response: SendKeysResponse,
+    pub deposit_response: DepositResponse,
 }
 
 pub fn schema_json() -> String {

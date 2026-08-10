@@ -36,6 +36,7 @@ fn schema_contains_all_wire_types() {
         "OraclesResponse",
         "DispatchRequest",
         "DispatchResponse",
+        "DepositResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

@@ -56,6 +56,19 @@ pub fn home_dir() -> PathBuf {
     dirs::home_dir().expect("no home dir")
 }
 
+/// `$OMEGA_DEPOSIT_DIR` when set, else `~/.omega` — the root that contains
+/// the deposit inbox (`<root>/inbox/`), the shared boxes (`<root>/deposit/`),
+/// and the deposit config (`<root>/deposit.toml`). This mirrors the REAL
+/// on-box layout (`~/.omega/inbox` + `~/.omega/deposit` + `~/.omega/deposit.toml`)
+/// under a single override so a test never touches the operator's real
+/// deposit data.
+pub fn deposit_home_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("OMEGA_DEPOSIT_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::home_dir().expect("no home dir").join(".omega")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +104,12 @@ mod tests {
         std::env::set_var("OMEGA_HOME", "/tmp/omega-home-test");
         assert_eq!(home_dir(), PathBuf::from("/tmp/omega-home-test"));
         std::env::remove_var("OMEGA_HOME");
+    }
+
+    #[test]
+    fn env_overrides_deposit_home_dir() {
+        std::env::set_var("OMEGA_DEPOSIT_DIR", "/tmp/omega-deposit-test");
+        assert_eq!(deposit_home_dir(), PathBuf::from("/tmp/omega-deposit-test"));
+        std::env::remove_var("OMEGA_DEPOSIT_DIR");
     }
 }

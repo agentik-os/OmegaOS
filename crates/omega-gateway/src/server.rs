@@ -105,6 +105,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/skills", get(crate::routes_skills::list))
         .route("/v1/projects", get(crate::routes_projects::list))
         .route("/v1/dispatch", axum::routing::post(crate::routes_dispatch::create))
+        .route("/v1/deposit", axum::routing::post(crate::routes_deposit::create))
         .route("/v1/events", get(crate::routes_events::events))
         .route(
             "/v1/accounts",
