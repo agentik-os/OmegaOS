@@ -3628,22 +3628,44 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             },
         ]),
         Line::from(""),
-        Line::from(Span::styled(
+    ];
+
+    // Integrated OSes show what you can DO with them (their command surface);
+    // pre-integration OSes show the drop-and-integrate pipeline instead.
+    if integrated && !e.product.commands.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  ─── Commands ─── (what you can do with this OS)",
+            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        )));
+        for cmd in e.product.commands {
+            // Sub-lines (indented, starting with a space or an arrow) render
+            // dim; command lines render bright so the verbs stand out.
+            let dim = cmd.starts_with(' ') || cmd.starts_with('→');
+            lines.push(Line::from(Span::styled(
+                format!("  {}", cmd),
+                Style::default().fg(if dim { th::dim() } else { th::text() }),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
             "  ─── Integration pipeline ───",
             Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::raw(
+        )));
+        lines.push(Line::from(Span::raw(
             "  1. Drop the OS payload (zip) in the Deposit box (Telegram DEPOSIT bot).",
-        )),
-        Line::from(Span::raw(
+        )));
+        lines.push(Line::from(Span::raw(
             "  2. Unpack it into the OS folder above, next to its README.",
-        )),
-        Line::from(Span::raw(
+        )));
+        lines.push(Line::from(Span::raw(
             "  3. Document the runtime (entrypoint, deps, config) in the README.",
-        )),
-        Line::from(Span::raw(
+        )));
+        lines.push(Line::from(Span::raw(
             "  4. Keep install.sh parity (Law 0) — a fresh install must get it.",
-        )),
+        )));
+    }
+
+    lines.extend([
         Line::from(""),
         Line::from(Span::styled(
             "  ─── Actions ───",
@@ -3669,7 +3691,7 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             Span::styled("  F5     ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
             Span::raw("refresh statuses"),
         ]),
-    ];
+    ]);
     lines.push(Line::from(""));
     lines
 }

@@ -635,12 +635,46 @@ enum Commands {
     AisbChat,
 
     /// Check quality gate for an oracle
+    /// The workers of an oracle, split running vs finished. Named as THE
+    /// unblocking step by every close/kill refusal — and, until now, not a
+    /// command: `omega workers` exited 2 with "unrecognized subcommand" at
+    /// exactly the moment the operator had been told to run it.
+    Workers {
+        /// Oracle session name or bare mission key. Omit for every live oracle.
+        oracle: Option<String>,
+    },
+
+    /// Every oracle on this box with the one line that matters: phase, plan,
+    /// workers, and whether it can close. The roster the operator had to
+    /// reconstruct by hand from `omega list`, several `omega status` calls and
+    /// a directory listing of ~/.omega/state.
+    Oracles {
+        /// Include oracles that are no longer live (crashed, or closed and left
+        /// on disk). Off by default so the roster answers "what is running".
+        #[arg(long)]
+        all: bool,
+    },
+
     Gate {
         /// Oracle session name
         oracle: String,
         /// Mission description for rubric
         #[arg(short, long)]
         mission: Option<String>,
+        /// Record a HUMAN acceptance of this mission's quality gate. The close
+        /// gate demands an independent GateResult, but the only producer of one
+        /// is `omega orchestrate`, so a mission dispatched any other way could
+        /// never satisfy it and stayed un-closeable forever. This is the signed
+        /// alternative: it records WHO accepted and on WHAT evidence.
+        #[arg(long)]
+        accept: bool,
+        /// Who is accepting. Required with --accept, and never defaulted: an
+        /// agent must not write its own permission slip.
+        #[arg(long)]
+        approver: Option<String>,
+        /// What was actually verified. Required with --accept.
+        #[arg(long)]
+        evidence: Option<String>,
     },
 
     /// Check scope-claim conflicts
@@ -1135,7 +1169,24 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
-        Some(Commands::Gate { oracle, mission }) => cmd_gate(&oracle, mission.as_deref()).await,
+        Some(Commands::Workers { oracle }) => cmd_workers(oracle.as_deref()).await,
+        Some(Commands::Oracles { all }) => cmd_oracles(all).await,
+        Some(Commands::Gate {
+            oracle,
+            mission,
+            accept,
+            approver,
+            evidence,
+        }) => {
+            cmd_gate(
+                &oracle,
+                mission.as_deref(),
+                accept,
+                approver.as_deref(),
+                evidence.as_deref(),
+            )
+            .await
+        }
         Some(Commands::Scope { session, files }) => cmd_scope(&session, &files).await,
         Some(Commands::Status { name, json }) => cmd_status(&name, json).await,
         Some(Commands::Send { name, text }) => cmd_send(&name, &text).await,
@@ -5285,6 +5336,60 @@ enum ReapVerdict {
     AlreadyClosed,
 }
 
+/// How long a scope claim whose owning session is GONE is left alone before the
+/// sweep reclaims it.
+///
+/// The window exists for one race: `claim_or_reject` writes the claim before the
+/// worker's session is necessarily listed by the daemon, so a claim seconds old
+/// with no live owner may be a worker that is about to appear rather than one
+/// that died. Ten minutes is far longer than that gap and far shorter than the
+/// weeks these claims currently survive.
+const ORPHAN_CLAIM_GRACE_SECS: i64 = 600;
+
+/// A scope claim whose owning session no longer exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OrphanClaim {
+    session: String,
+    files: Vec<String>,
+    age_secs: i64,
+}
+
+/// Which scope claims the sweep may reclaim, as a pure function of the claims on
+/// disk, the live session set, and the clock.
+///
+/// THE LEAK THIS CLOSES, measured on this box: five claims aged 17 to 25 days,
+/// every one owned by a worker that died BEFORE writing a done signal. They are
+/// invisible to `reap_verdict` for two independent reasons — the sweep only
+/// enumerates LIVE worker sessions, and a signal-less worker is `StillWorking`,
+/// which is never touched. Both rules are right for a worker that still exists.
+/// Neither can ever fire for one that does not, so the claim stays on disk
+/// forever and `claim_or_reject` keeps rejecting the next `spawn-worker` on those
+/// files against an owner nobody can find (R-SCOPE).
+///
+/// THE NARROWING that keeps `StillWorking`'s safety property intact: this
+/// reclaims the CLAIM only. The worktree of a worker that died mid-task may hold
+/// the only copy of its work, so it is never removed here — `cmd_reap` prints its
+/// path instead and leaves the recovery an operator decision, exactly as before.
+fn plan_orphan_claims(
+    claims: &[omega_core::scope::ScopeClaim],
+    live: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<OrphanClaim> {
+    let live: std::collections::HashSet<&str> = live.iter().map(|s| s.as_str()).collect();
+    let mut out: Vec<OrphanClaim> = claims
+        .iter()
+        .filter(|c| !live.contains(c.session.as_str()))
+        .map(|c| OrphanClaim {
+            session: c.session.clone(),
+            files: c.files_owned.clone(),
+            age_secs: (now - c.claimed_at).num_seconds(),
+        })
+        .filter(|o| o.age_secs >= ORPHAN_CLAIM_GRACE_SECS)
+        .collect();
+    out.sort_by(|a, b| a.session.cmp(&b.session));
+    out
+}
+
 /// One session the reaper looked at, carrying everything the decision needs and
 /// nothing it does not.
 #[derive(Debug, Clone)]
@@ -5443,14 +5548,67 @@ async fn cmd_reap(target: Option<&str>, dry_run: bool) -> Result<()> {
         }
     }
 
+    // ── ORPHAN SCOPE CLAIMS ──
+    // Only on the SWEEP: a named target already gets its claim reclaimed above,
+    // live or dead, and widening a targeted run into a global claim sweep would
+    // make `omega reap <one-worker>` touch state the operator never named.
+    let mut released = 0usize;
+    let orphans = if target.is_none() {
+        plan_orphan_claims(
+            &omega_core::scope::ScopeClaim::read_all(&config.state_dir),
+            &live.iter().map(|s| s.name.clone()).collect::<Vec<_>>(),
+            chrono::Utc::now(),
+        )
+    } else {
+        Vec::new()
+    };
+    for o in &orphans {
+        let days = o.age_secs / 86_400;
+        if dry_run {
+            println!(
+                "  {}: WOULD release an orphan scope claim ({}d old, owner session gone) on {}",
+                o.session,
+                days,
+                o.files.join(", ")
+            );
+            continue;
+        }
+        let _ = omega_core::scope::ScopeClaim::release(&config.state_dir, &o.session);
+        released += 1;
+        println!(
+            "  {}: orphan scope claim released ({}d old, owner session gone) on {}",
+            o.session,
+            days,
+            o.files.join(", ")
+        );
+        // The worktree is NOT collected here — see `plan_orphan_claims`. A worker
+        // that died before signalling may have its only copy of the work in
+        // there, so its path is printed and the removal stays an operator call.
+        for dir in worker_worktrees(&omega_dir, &o.session) {
+            println!(
+                "      worktree left in place (may hold unrecovered work): {}",
+                dir.display()
+            );
+        }
+    }
+
     // Always a quiet exit 0, including when there was nothing to do: the reaper
     // runs unattended (`omega done` schedules it, and a sweep can be crontab'd),
     // and a command that exits non-zero on "nothing to reap" turns a healthy
     // idle tick into an alert.
-    if plan.is_empty() {
-        println!("Nothing to reap — no worker session to reconcile.");
+    if plan.is_empty() && orphans.is_empty() {
+        println!("Nothing to reap — no worker session or orphan claim to reconcile.");
     } else {
-        println!("Reaped {} of {} session(s) examined.", reaped, plan.len());
+        if !plan.is_empty() {
+            println!("Reaped {} of {} session(s) examined.", reaped, plan.len());
+        }
+        if !orphans.is_empty() {
+            println!(
+                "Released {} of {} orphan scope claim(s).",
+                if dry_run { 0 } else { released },
+                orphans.len()
+            );
+        }
     }
     Ok(())
 }
@@ -8662,8 +8820,49 @@ async fn cmd_patrol(interval: u64, once: bool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_gate(oracle: &str, mission: Option<&str>) -> Result<()> {
+async fn cmd_gate(
+    oracle: &str,
+    mission: Option<&str>,
+    accept: bool,
+    approver: Option<&str>,
+    evidence: Option<&str>,
+) -> Result<()> {
     let config = OmegaConfig::load().unwrap_or_default();
+
+    if accept {
+        // Same alias tolerance as `omega status`: the operator reads the mission
+        // key off an escalation and types that.
+        let live: Vec<String> = match SessionManager::connect().await {
+            Ok(m) => m
+                .list_sessions()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.name)
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        let oracle = resolve_oracle_alias(oracle, &live, &config.state_dir);
+        let result = omega_core::gate::GateResult::human_acceptance(
+            &oracle,
+            approver.unwrap_or_default(),
+            evidence.unwrap_or_default(),
+        )?;
+        result.write(&config.state_dir)?;
+        println!(
+            "Gate ACCEPTED for {} by {} — {}",
+            oracle,
+            result.accepted_by.as_deref().unwrap_or("?"),
+            result.accepted_evidence.as_deref().unwrap_or("")
+        );
+        println!("This is a human sign-off, not a graded pass: no rubric, consensus or");
+        println!("adversarial check was run, and the record says so.");
+        println!("Close the mission with:  omega done {oracle} done_clean \"<summary>\"");
+        return Ok(());
+    }
+    if approver.is_some() || evidence.is_some() {
+        anyhow::bail!("--approver / --evidence are only meaningful with --accept");
+    }
 
     if let Some(mission_text) = mission {
         let rubric = omega_core::gate::Rubric::new(
@@ -8821,6 +9020,312 @@ fn closure_verdict(
     }
 }
 
+/// The next command that actually clears each closure refusal.
+///
+/// `omega status` used to print the reasons and stop there, which reads as a
+/// verdict with no appeal: the operator learns the mission cannot close and is
+/// given nothing to type. Every refusal below HAS a remedy — the gate one is the
+/// remedy nobody could guess, because `omega gate` only ever read the result and
+/// the sole writer of one is `omega orchestrate`, a pipeline most missions never
+/// run (a mission dispatched with `omega dispatch`, which is what the Telegram
+/// bot does, could therefore never satisfy it).
+///
+/// Pure so the wording can be asserted against the reasons `closure_verdict`
+/// actually produces, rather than drifting from them.
+fn closure_remedies(verdict: &ClosureVerdict, session: &str) -> Vec<String> {
+    if !verdict.refused {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let has = |needle: &str| verdict.reasons.iter().any(|r| r.contains(needle));
+
+    if has("plan missionnel absent") || has("projection de plan") {
+        out.push(format!(
+            "persist the plan:      omega progress {session} --plan \"task a|task b|task c\""
+        ));
+    }
+    if has("non fait:") || has("pas 100%") {
+        out.push(format!(
+            "close a finished task: omega progress {session} --task \"<title>\" --status done"
+        ));
+    }
+    if has("échec:") {
+        out.push(format!(
+            "a failed task stays failed; correct it and re-run, or accept the mission as \
+             non-clean:  omega done {session} pending \"<what remains and why>\""
+        ));
+    }
+    if has("quality gate") {
+        out.push(format!(
+            "sign the gate off:     omega gate {session} --accept --approver \"<you>\" \
+             --evidence \"<what you verified>\""
+        ));
+    }
+    if has("still running") {
+        out.push("account for the workers: omega workers   (then `omega kill <worker>`)".to_string());
+    }
+    // Always last, and always present: the operator's "I have looked at it, close
+    // it" button. A mission closure, not a pane kill — it cascades the finished
+    // workers and releases every scope claim.
+    out.push(format!(
+        "or close the mission outright (cascades workers, releases claims):  omega kill {session}"
+    ));
+    out
+}
+
+/// Resolve an operator-typed name to the session that actually exists.
+///
+/// OmegaOS spells one mission two ways and the operator meets both: the state
+/// files are keyed on the MISSION KEY (`dentistrygpt-3.mission-log.jsonl`,
+/// `dentistrygpt-3.escalation.json`) while the pane, and therefore every CLI
+/// lookup, is `oracle-dentistrygpt-3`. So the name printed in an escalation is
+/// exactly the name the CLI rejects with a bare "Session not found", and the
+/// operator has to guess the prefix at the moment something is already wrong.
+///
+/// A live exact match always wins, so this can never re-point a real session
+/// that happens to share a suffix; the `oracle-` form is tried only when the
+/// name as typed is not live.
+fn resolve_oracle_alias(name: &str, live: &[String], state_dir: &std::path::Path) -> String {
+    if live.iter().any(|s| s == name) {
+        return name.to_string();
+    }
+    if name.starts_with("oracle-") {
+        return name.to_string();
+    }
+    let prefixed = format!("oracle-{name}");
+    if live.iter().any(|s| s == &prefixed) {
+        return prefixed;
+    }
+    // Not live either way — fall back to the prefixed form only when this
+    // mission left a record under it, so a genuinely unknown name still fails
+    // with the message it always did.
+    let known = state_dir
+        .join(format!("oracle-{name}.progress.json"))
+        .exists()
+        || state_dir.join(format!("{prefixed}.state.json")).exists()
+        || state_dir.join(format!("oracle-{name}.done.json")).exists();
+    if known {
+        prefixed
+    } else {
+        name.to_string()
+    }
+}
+
+/// One oracle's headline, computed exactly the way `omega status` computes it
+/// so the roster and the detail view can never disagree.
+struct OracleRow {
+    name: String,
+    project: String,
+    live: bool,
+    phase: String,
+    done: usize,
+    total: usize,
+    running: usize,
+    terminal: usize,
+    closeable: bool,
+    first_reason: Option<String>,
+}
+
+fn oracle_row(
+    state_dir: &std::path::Path,
+    name: &str,
+    live_sessions: &[omega_core::session::OmegaSession],
+) -> OracleRow {
+    let key = name.strip_prefix("oracle-").unwrap_or(name);
+    let state = omega_core::oracle_lifecycle::OracleState::read(state_dir, name)
+        .ok()
+        .flatten();
+    let workers = omega_core::oracle_lifecycle::live_workers_of_oracle(state_dir, name, live_sessions);
+    let doc: serde_json::Value =
+        std::fs::read_to_string(state_dir.join(format!("oracle-{}.progress.json", key)))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+    let tasks = parse_plan_tasks(&doc);
+    let total = tasks.len();
+    let done = tasks.iter().filter(|t| t.status == "done").count();
+    let failed: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.status == "fail")
+        .map(|t| t.title.clone())
+        .collect();
+    let unfinished: Vec<String> = tasks
+        .iter()
+        .filter(|t| t.status == "todo" || t.status == "doing")
+        .map(|t| t.title.clone())
+        .collect();
+    let gate_passed = omega_core::gate::GateResult::read(state_dir, name)
+        .ok()
+        .flatten()
+        .map(|g| g.overall_pass)
+        .unwrap_or(false);
+    let verdict = closure_verdict(
+        total,
+        done,
+        &failed,
+        &unfinished,
+        gate_passed,
+        &workers.running,
+    );
+    OracleRow {
+        name: name.to_string(),
+        project: state
+            .as_ref()
+            .map(|s| s.project.clone())
+            .unwrap_or_else(|| {
+                omega_core::session::OmegaSession::classify(name)
+                    .project
+                    .unwrap_or_default()
+            }),
+        live: live_sessions.iter().any(|s| s.name == name),
+        phase: state
+            .as_ref()
+            .map(|s| s.phase.label().to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        done,
+        total,
+        running: workers.running.len(),
+        terminal: workers.terminal.len(),
+        closeable: !verdict.refused,
+        first_reason: verdict.reasons.first().cloned(),
+    }
+}
+
+/// `omega oracles [--all]` — the roster.
+///
+/// WHY IT EXISTS: answering "what oracles are alive, and is any of them stuck"
+/// took `omega list` (which shows only oracles with a progress file, as a bare
+/// percentage), then one `omega status` per oracle, then a directory listing of
+/// ~/.omega/state to find the ones with no pane at all. Three of them were stuck
+/// on this box and none of it was visible in one place.
+async fn cmd_oracles(all: bool) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let live_sessions = match SessionManager::connect().await {
+        Ok(m) => m.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+
+    // The union of what is LIVE and what left a record: a crashed mission has no
+    // pane and is exactly the one worth seeing.
+    let mut names: Vec<String> = live_sessions
+        .iter()
+        .filter(|s| s.role == omega_core::session::SessionRole::Oracle)
+        .map(|s| s.name.clone())
+        .collect();
+    if all {
+        for st in omega_core::oracle_lifecycle::OracleState::read_all(&config.state_dir) {
+            if !names.contains(&st.oracle_name) {
+                names.push(st.oracle_name);
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+
+    if names.is_empty() {
+        println!("No oracle {}.", if all { "on record" } else { "live" });
+        return Ok(());
+    }
+
+    let rows: Vec<OracleRow> = names
+        .iter()
+        .map(|n| oracle_row(&config.state_dir, n, &live_sessions))
+        .collect();
+
+    println!(
+        "{:<28} {:<14} {:<6} {:<9} {:<9} {}",
+        "ORACLE", "PROJECT", "STATE", "PLAN", "WORKERS", "CLOSURE"
+    );
+    for r in &rows {
+        let closure = if r.closeable {
+            "closeable".to_string()
+        } else {
+            format!(
+                "REFUSED — {}",
+                r.first_reason.as_deref().unwrap_or("see omega status")
+            )
+        };
+        println!(
+            "{:<28} {:<14} {:<6} {:<9} {:<9} {}",
+            r.name,
+            r.project,
+            if r.live { "live" } else { "dead" },
+            format!("{}/{}", r.done, r.total),
+            format!("{}r/{}t", r.running, r.terminal),
+            closure
+        );
+    }
+    let stuck = rows.iter().filter(|r| !r.closeable).count();
+    if stuck > 0 {
+        println!();
+        println!(
+            "{stuck} of {} cannot close. `omega status <oracle>` prints the exact command for each.",
+            rows.len()
+        );
+    }
+    Ok(())
+}
+
+/// `omega workers [oracle]`.
+///
+/// Three separate refusal messages tell the operator to run this — the
+/// done_clean refusal, the kill refusal, and the status remedy list — and until
+/// now it did not exist, so the one instruction handed out at the moment a
+/// mission is stuck exited 2 with "unrecognized subcommand".
+async fn cmd_workers(oracle: Option<&str>) -> Result<()> {
+    let config = OmegaConfig::load().unwrap_or_default();
+    let live_sessions = match SessionManager::connect().await {
+        Ok(m) => m.list_sessions().await.unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    let live_names: Vec<String> = live_sessions.iter().map(|s| s.name.clone()).collect();
+
+    let targets: Vec<String> = match oracle {
+        Some(o) => vec![resolve_oracle_alias(o, &live_names, &config.state_dir)],
+        None => {
+            let mut v: Vec<String> = live_sessions
+                .iter()
+                .filter(|s| s.role == omega_core::session::SessionRole::Oracle)
+                .map(|s| s.name.clone())
+                .collect();
+            v.sort();
+            v
+        }
+    };
+    if targets.is_empty() {
+        println!("No live oracle, so no worker to account for.");
+        return Ok(());
+    }
+    for t in &targets {
+        let w = omega_core::oracle_lifecycle::live_workers_of_oracle(
+            &config.state_dir,
+            t,
+            &live_sessions,
+        );
+        println!(
+            "─── {} ─── {} running, {} finished",
+            t,
+            w.running.len(),
+            w.terminal.len()
+        );
+        for name in &w.running {
+            println!("  ▸ {name}   still working — blocks this oracle's done_clean");
+        }
+        for name in &w.terminal {
+            let status = omega_core::done::DoneSignal::read(&config.state_dir, name)
+                .ok()
+                .flatten()
+                .map(|s| format!("{:?}", s.status))
+                .unwrap_or_else(|| "terminal".to_string());
+            println!("  ✓ {name}   {status} — cascades when the oracle closes");
+        }
+        if w.running.is_empty() && w.terminal.is_empty() {
+            println!("  (none live)");
+        }
+    }
+    Ok(())
+}
+
 /// `omega status <session> [--json]`.
 ///
 /// A NON-oracle session keeps the original behaviour byte for byte (the last
@@ -8832,6 +9337,26 @@ fn closure_verdict(
 /// closeable", so the operator had to reconstruct the close-gate by hand from
 /// three state files, and usually reconstructed it wrong.
 async fn cmd_status(name: &str, json: bool) -> Result<()> {
+    // Resolve the mission-key spelling BEFORE classifying: `dentistrygpt-3`
+    // classifies as a plain session, so it took the pane-capture branch and died
+    // on "Session not found" while `oracle-dentistrygpt-3` printed a full report.
+    let early_live: Vec<String> = match SessionManager::connect().await {
+        Ok(m) => m
+            .list_sessions()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| s.name)
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    let resolved = resolve_oracle_alias(
+        name,
+        &early_live,
+        &OmegaConfig::load().unwrap_or_default().state_dir,
+    );
+    let name: &str = &resolved;
+
     let is_oracle = omega_core::session::OmegaSession::classify(name).role
         == omega_core::session::SessionRole::Oracle;
     if !is_oracle {
@@ -8965,6 +9490,13 @@ async fn cmd_status(name: &str, json: bool) -> Result<()> {
         println!("  closure   REFUSED");
         for r in &verdict.reasons {
             println!("            - {}", r);
+        }
+        let remedies = closure_remedies(&verdict, name);
+        if !remedies.is_empty() {
+            println!("  next      to clear it:");
+            for r in &remedies {
+                println!("            {}", r);
+            }
         }
     } else {
         println!("  closure   allowed (`omega done {} done_clean …`)", name);
@@ -11987,6 +12519,163 @@ mod lifecycle_tests {
             reap_verdict(false, Some(DoneStatus::Blocked)),
             ReapVerdict::AlreadyClosed
         );
+    }
+
+    // --- omega status: name resolution + actionable remedies ----------------
+
+    #[test]
+    fn the_mission_key_resolves_to_the_oracle_session() {
+        // The incident: `omega status dentistrygpt-3` died on "Session not found"
+        // while `omega status oracle-dentistrygpt-3` printed a full report — and
+        // the bare key is the spelling the escalation file hands the operator.
+        let tmp = std::env::temp_dir().join(format!("omega-alias-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let live = vec!["oracle-dentistrygpt-3".to_string()];
+        assert_eq!(
+            resolve_oracle_alias("dentistrygpt-3", &live, &tmp),
+            "oracle-dentistrygpt-3"
+        );
+        // Idempotent on the already-correct spelling.
+        assert_eq!(
+            resolve_oracle_alias("oracle-dentistrygpt-3", &live, &tmp),
+            "oracle-dentistrygpt-3"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_live_exact_match_always_beats_the_oracle_prefix() {
+        // The property that keeps this safe: a real session named `foo` must
+        // never be re-pointed at `oracle-foo` just because both exist.
+        let tmp = std::env::temp_dir().join(format!("omega-alias-exact-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let live = vec!["foo".to_string(), "oracle-foo".to_string()];
+        assert_eq!(resolve_oracle_alias("foo", &live, &tmp), "foo");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn an_unknown_name_is_left_alone_so_the_error_is_unchanged() {
+        let tmp = std::env::temp_dir().join(format!("omega-alias-unk-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::create_dir_all(&tmp);
+        assert_eq!(resolve_oracle_alias("nope", &[], &tmp), "nope");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_dead_mission_still_resolves_from_its_record_on_disk() {
+        // Reading a crashed mission is exactly when the operator needs this, and
+        // the daemon lists nothing for it.
+        let tmp = std::env::temp_dir().join(format!("omega-alias-dead-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("oracle-proj-9.progress.json"), "{}").unwrap();
+        assert_eq!(resolve_oracle_alias("proj-9", &[], &tmp), "oracle-proj-9");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn every_closure_refusal_carries_a_next_command() {
+        // The whole complaint in one assertion: a refusal that names no remedy
+        // reads as a verdict with no appeal.
+        let cases = [
+            closure_verdict(0, 0, &[], &[], false, &[]),
+            closure_verdict(2, 1, &[], &["b".into()], false, &[]),
+            closure_verdict(2, 1, &["a".into()], &[], false, &[]),
+            closure_verdict(1, 1, &[], &[], false, &[]),
+            closure_verdict(1, 1, &[], &[], true, &["w".into()]),
+        ];
+        for v in &cases {
+            assert!(v.refused, "case should be refused: {v:?}");
+            let r = closure_remedies(v, "oracle-p-1");
+            assert!(!r.is_empty(), "no remedy offered for {v:?}");
+            assert!(
+                r.iter().any(|s| s.contains("omega kill oracle-p-1")),
+                "the operator's close-it-anyway button must always be offered: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_gate_refusal_names_the_command_that_satisfies_it() {
+        // The unguessable one: `omega gate` only ever READ a result, and the sole
+        // writer was `omega orchestrate`.
+        let v = closure_verdict(1, 1, &[], &[], false, &[]);
+        let r = closure_remedies(&v, "oracle-p-1");
+        assert!(
+            r.iter().any(|s| s.contains("--accept") && s.contains("--approver")),
+            "expected a signed gate acceptance, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn a_closeable_mission_is_offered_no_remedies() {
+        let v = closure_verdict(2, 2, &[], &[], true, &[]);
+        assert!(!v.refused);
+        assert_eq!(closure_remedies(&v, "oracle-p-1"), Vec::<String>::new());
+    }
+
+    // --- omega reap: orphan scope claims ------------------------------------
+
+    fn claim(session: &str, files: &[&str], age_secs: i64) -> omega_core::scope::ScopeClaim {
+        omega_core::scope::ScopeClaim {
+            session: session.to_string(),
+            files_owned: files.iter().map(|f| f.to_string()).collect(),
+            claimed_at: chrono::Utc::now() - chrono::Duration::seconds(age_secs),
+        }
+    }
+
+    #[test]
+    fn a_claim_whose_owner_session_is_gone_is_reclaimed() {
+        // The measured leak: five claims aged 17-25 days on this box, every owner
+        // long dead, none of them reachable by `reap_verdict` (the sweep only
+        // enumerates LIVE sessions, and a signal-less worker is `StillWorking`).
+        let now = chrono::Utc::now();
+        let claims = vec![claim("proj-worker-dead", &["convex/rag.ts"], 25 * 86_400)];
+        let orphans = plan_orphan_claims(&claims, &[], now);
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].session, "proj-worker-dead");
+        assert_eq!(orphans[0].files, vec!["convex/rag.ts".to_string()]);
+    }
+
+    #[test]
+    fn a_claim_whose_owner_is_still_live_is_never_touched() {
+        // The property that must not regress: a live worker keeps its claim, or
+        // the sweep becomes the R-SCOPE violation it exists to prevent.
+        let now = chrono::Utc::now();
+        let claims = vec![claim("proj-worker-alive", &["a.ts"], 30 * 86_400)];
+        let live = vec!["proj-worker-alive".to_string()];
+        assert_eq!(plan_orphan_claims(&claims, &live, now), vec![]);
+    }
+
+    #[test]
+    fn a_fresh_claim_is_left_alone_even_with_no_live_owner() {
+        // `claim_or_reject` writes the claim before the session is necessarily
+        // listed, so a claim seconds old with no live owner may be a worker that
+        // is about to appear. The grace window is what keeps the sweep off it.
+        let now = chrono::Utc::now();
+        let claims = vec![claim("proj-worker-starting", &["a.ts"], 5)];
+        assert_eq!(plan_orphan_claims(&claims, &[], now), vec![]);
+
+        // …and one second past the window it is reclaimable.
+        let claims = vec![claim("proj-worker-starting", &["a.ts"], ORPHAN_CLAIM_GRACE_SECS + 1)];
+        assert_eq!(plan_orphan_claims(&claims, &[], now).len(), 1);
+    }
+
+    #[test]
+    fn an_oracles_own_claim_is_not_swept_while_the_oracle_lives() {
+        // Oracles hold claims too, and the live set is checked by NAME, not by
+        // role — an oracle mid-mission must not have its claim reclaimed under it.
+        let now = chrono::Utc::now();
+        let claims = vec![
+            claim("oracle-proj-1", &["docs/"], 3 * 86_400),
+            claim("proj-worker-dead", &["src/"], 3 * 86_400),
+        ];
+        let live = vec!["oracle-proj-1".to_string()];
+        let orphans = plan_orphan_claims(&claims, &live, now);
+        assert_eq!(orphans.len(), 1);
+        assert_eq!(orphans[0].session, "proj-worker-dead");
     }
 
     // --- omega kill: finding the worktree a worker ran in -------------------

@@ -34,6 +34,10 @@ pub struct OsProduct {
     pub tagline: &'static str,
     /// The suite group this OS renders under.
     pub group: OsGroup,
+    /// What you can do with this OS — the command surface shown in the OS-tab
+    /// detail pane (integrated OSes only). One line per entry; empty for a
+    /// pre-integration OS (its detail shows the integration pipeline instead).
+    pub commands: &'static [&'static str],
 }
 
 impl OsProduct {
@@ -46,54 +50,101 @@ impl OsProduct {
                 name: "Ideation OS",
                 tagline: "Brainstorm {OS} v3: multi-agent imagination + decision council, lineage and a frozen concept handoff.",
                 group: OsGroup::BuildChain,
+                commands: &[
+                    "/brainstorm · /ideation-os   the imagination + decision council",
+                    "  depths: spark · imagination · council · deep · red-team · converge · audit",
+                    "omega-ideation   init · add · evolve · surface · audit · freeze · handoff",
+                ],
             },
             OsProduct {
                 slug: "researcher-os",
                 name: "Researcher OS",
                 tagline: "Market Research {OS}: evidence, validation and a bounded decision before Blueprint.",
                 group: OsGroup::BuildChain,
+                commands: &[
+                    "/research · /researcher-os   Market Research {OS}, evidence + validation",
+                    "  scan · validate · diligence · deep · audit · delta · score · handoff",
+                    "  decisions: GO · PIVOT · HOLD · NO-GO · INSUFFICIENT (bounded)",
+                    "omega-research   init · validate · status · score · export · demo",
+                ],
             },
             OsProduct {
                 slug: "blueprint-os",
                 name: "Blueprint OS",
                 tagline: "The product-definition compiler: idea to a traceable, gated definition pack.",
                 group: OsGroup::BuildChain,
+                commands: &[
+                    "/blueprint · /blueprint-os   the product-definition compiler",
+                    "  modes: NEW · RECOVER · EXTEND · REVISE · AUDIT · DELTA · continue · status · export",
+                    "omega-blueprint   init · validate · status · checkpoint · demo",
+                    "→ stops at BLUEPRINT COMPLETE, frozen handoff to Stepper",
+                ],
             },
             OsProduct {
                 slug: "designer-os",
                 name: "Designer OS (UX/UI)",
                 tagline: "UX and UI design: contracts turned into screens, flows and a design system.",
                 group: OsGroup::BuildChain,
+                commands: &[],
             },
             OsProduct {
                 slug: "stepper-os",
                 name: "Stepper OS",
                 tagline: "Step-by-step execution: a blueprint walked one verified step at a time.",
                 group: OsGroup::BuildChain,
+                commands: &[
+                    "/stepper-os   execute a blueprint step by step (verifier-gated DONE)",
+                    "omega-stepper   init · plan · start · done · verify · resume · release-check · report",
+                    "→ DONE only through the verifier; consumes the frozen Blueprint handoff",
+                ],
             },
             OsProduct {
                 slug: "builder-os",
                 name: "Builder OS",
                 tagline: "The implementation runtime: the Stepper roadmap executed into release-ready code.",
                 group: OsGroup::BuildChain,
+                commands: &[
+                    "/build · /builder-os   the autonomous implementation runtime",
+                    "  preflight · status · plan · run · step · test · verify · repair · audit · resume · release-check · report",
+                    "omega-builder   init · sync-step · claim · gate (BG01-BG20) · finalize · release-check",
+                    "→ executes the Stepper roadmap; never a competing TODO list",
+                ],
             },
             OsProduct {
                 slug: "mindset-os",
                 name: "Mindset OS",
                 tagline: "Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching, philosophy compiler, 90-day program.",
                 group: OsGroup::Personal,
+                commands: &[
+                    "/mindset-os   Jim Rohn identity/wellbeing/wealth coach (labels E1/E2/S/P/C)",
+                    "omega-mindset new     the weekly workspace",
+                    "omega-mindset score   validate a weekly scorecard",
+                    "omega-mindset challenge   the 6-month identity challenge (daily/weekly/monthly)",
+                    "omega-mindset coach [--arm]   the AI growth loop (armed on demand)",
+                ],
             },
             OsProduct {
                 slug: "habits-os",
                 name: "Habits OS",
                 tagline: "Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews and seasons.",
                 group: OsGroup::Personal,
+                commands: &[
+                    "/habits · /habits-os   conversation-first habit tracker (chat is the interface)",
+                    "omega-habits   init · add · log · today · review · season · experiment · doctor · export",
+                    "  seasons: build · crisis · maintain · recover · travel",
+                ],
             },
             OsProduct {
                 slug: "books-os",
                 name: "Books OS",
                 tagline: "Your library as an operating system: reading, retention and living knowledge.",
                 group: OsGroup::Personal,
+                commands: &[
+                    "/books-os  (= /alexandria)   librarian, learning coach, sparring partner",
+                    "  /book · /espresso · /chapter · /idea · /compare · /challenge · /teach",
+                    "  /cards · /review · /map · /best · /bestsellers · /gem · /setup",
+                    "omega-books   open the librarian master agent in a session",
+                ],
             },
         ]
     }

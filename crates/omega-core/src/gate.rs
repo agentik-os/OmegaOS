@@ -70,6 +70,16 @@ pub struct GateResult {
     pub overall_pass: bool,
     pub score: f32,
     pub details: GateDetails,
+    /// Set only on a HUMAN acceptance (`omega gate <oracle> --accept`): who
+    /// signed it off. `None` on every machine-produced result, so a reader can
+    /// always tell a graded pass from an accepted one. Additive and defaulted,
+    /// so results written before this field still parse.
+    #[serde(default)]
+    pub accepted_by: Option<String>,
+    /// What the approver says they verified. Recorded verbatim beside the name:
+    /// an acceptance with no evidence is not an audit trail.
+    #[serde(default)]
+    pub accepted_evidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,7 +224,60 @@ impl GateResult {
                 consensus_votes,
                 adversarial_challenges,
             },
+            accepted_by: None,
+            accepted_evidence: None,
         }
+    }
+
+    /// A HUMAN acceptance of the quality gate, signed and evidenced.
+    ///
+    /// WHY THIS EXISTS. `closure_verdict` refuses a mission until an independent
+    /// `GateResult` says `overall_pass`, and the only code that ever produces one
+    /// is the `omega orchestrate` pipeline (`orchestration.rs`). A mission
+    /// dispatched with `omega dispatch` — which is what the Telegram bot and
+    /// every operator do — therefore had NO reachable way to satisfy the gate,
+    /// so its close was refused for as long as it existed. Three oracles were
+    /// stuck that way on this box, one of them for 59 hours.
+    ///
+    /// It stays honest in three ways: the approver is REQUIRED and never
+    /// defaulted (an agent must not sign its own work off), the evidence is
+    /// recorded verbatim, and `accepted_by` marks the result as a human
+    /// acceptance so nothing downstream can mistake it for a graded pass.
+    pub fn human_acceptance(oracle: &str, approver: &str, evidence: &str) -> Result<Self> {
+        let approver = approver.trim();
+        let evidence = evidence.trim();
+        if approver.is_empty() {
+            anyhow::bail!("an acceptance needs an approver: pass --approver \"<who>\"");
+        }
+        if evidence.is_empty() {
+            anyhow::bail!(
+                "an acceptance needs evidence: pass --evidence \"<what you verified>\""
+            );
+        }
+        Ok(Self {
+            oracle: oracle.to_string(),
+            timestamp: Utc::now(),
+            // Every machine sub-verdict stays FALSE: nothing was graded, and
+            // claiming otherwise would forge a rubric pass nobody ran. Only
+            // `overall_pass` is true, and `accepted_by` says exactly why.
+            rubric_pass: false,
+            consensus_pass: false,
+            adversarial_pass: false,
+            regression_pass: false,
+            audit_results: Vec::new(),
+            audit_pass: false,
+            token_budget_pass: false,
+            citation_pass: false,
+            overall_pass: true,
+            score: 0.0,
+            details: GateDetails {
+                grades: Vec::new(),
+                consensus_votes: Vec::new(),
+                adversarial_challenges: Vec::new(),
+            },
+            accepted_by: Some(approver.to_string()),
+            accepted_evidence: Some(evidence.to_string()),
+        })
     }
 
     pub fn write(&self, state_dir: &Path) -> Result<()> {
@@ -697,6 +760,8 @@ mod tests {
                 consensus_votes: vec![],
                 adversarial_challenges: vec![],
             },
+            accepted_by: None,
+            accepted_evidence: None,
         }
     }
 
@@ -1057,5 +1122,58 @@ mod tests {
         assert_eq!(GraderLens::Debugger.label(), "debugger");
         assert_eq!(GraderLens::GeneralPurpose.label(), "general-purpose");
         assert_eq!(GraderLens::all().len(), 3);
+    }
+
+    // ── Human acceptance of the gate ──
+
+    #[test]
+    fn a_human_acceptance_passes_the_gate_and_says_who_signed_it() {
+        let g = GateResult::human_acceptance("oracle-p-1", "gs", "prod 200 + 14/15 verified")
+            .expect("a signed acceptance is accepted");
+        assert!(g.overall_pass, "the close gate must now be satisfiable");
+        assert_eq!(g.accepted_by.as_deref(), Some("gs"));
+        assert_eq!(
+            g.accepted_evidence.as_deref(),
+            Some("prod 200 + 14/15 verified")
+        );
+    }
+
+    #[test]
+    fn a_human_acceptance_forges_no_machine_verdict() {
+        // The honesty property: nothing was graded, so every machine sub-verdict
+        // stays false and a reader can always tell an acceptance from a pass.
+        let g = GateResult::human_acceptance("oracle-p-1", "gs", "read the diff").unwrap();
+        assert!(!g.rubric_pass);
+        assert!(!g.consensus_pass);
+        assert!(!g.adversarial_pass);
+        assert!(!g.audit_pass);
+        assert!(g.details.grades.is_empty());
+        assert!(g.details.consensus_votes.is_empty());
+    }
+
+    #[test]
+    fn an_unsigned_or_unevidenced_acceptance_is_refused() {
+        // An agent must not write its own permission slip.
+        assert!(GateResult::human_acceptance("oracle-p-1", "", "evidence").is_err());
+        assert!(GateResult::human_acceptance("oracle-p-1", "   ", "evidence").is_err());
+        assert!(GateResult::human_acceptance("oracle-p-1", "gs", "").is_err());
+        assert!(GateResult::human_acceptance("oracle-p-1", "gs", "  ").is_err());
+    }
+
+    #[test]
+    fn a_gate_result_written_before_the_acceptance_fields_still_parses() {
+        // Additive + defaulted: the field landed on a struct that already had
+        // results on disk.
+        let legacy = r#"{
+            "oracle":"oracle-p-1","timestamp":"2026-01-01T00:00:00Z",
+            "rubric_pass":true,"consensus_pass":true,"adversarial_pass":true,
+            "regression_pass":true,"audit_results":[],"audit_pass":true,
+            "token_budget_pass":true,"citation_pass":true,"overall_pass":true,
+            "score":1.0,
+            "details":{"grades":[],"consensus_votes":[],"adversarial_challenges":[]}
+        }"#;
+        let g: GateResult = serde_json::from_str(legacy).expect("legacy result must still parse");
+        assert!(g.overall_pass);
+        assert!(g.accepted_by.is_none(), "a graded pass is not an acceptance");
     }
 }

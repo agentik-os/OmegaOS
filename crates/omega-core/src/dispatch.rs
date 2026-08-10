@@ -1536,7 +1536,7 @@ impl Dispatcher {
             &state.project,
         );
 
-        let mut prompt = build_resume_prompt(&state);
+        let mut prompt = build_resume_prompt(&state, &self.config.state_dir);
         // THE FUNNEL — a resurrected oracle gets its Oracle-scoped doctrine too.
         // Narrowed to THIS mission (rules::agent_context_block_for_mission):
         // universal rules + Laws in full, domain rules indexed unless the
@@ -1686,10 +1686,43 @@ pub enum ResurrectOutcome {
     Finished,
 }
 
+/// What a resurrected oracle should be TOLD a worker's status is.
+///
+/// `OracleState.workers[].status` is written at DISPATCH time and only advances
+/// when something still alive notices the worker finished. An oracle that dies
+/// while its workers are running therefore wakes up to a registry that still
+/// says `Running` for every one of them — permanently, because the process that
+/// would have updated it is the one that died.
+///
+/// The worker's own `done.json` is the record it writes ITSELF at the end of its
+/// run, so it is the truth here. This is deliberately the same predicate
+/// `oracle_lifecycle::live_workers_of_oracle` already applies at the close gate
+/// (a written signal ends the run, whatever its verdict); the resume prompt was
+/// simply the one reader that never asked.
+///
+/// Returns the label to print and whether the worker is finished.
+fn reconciled_worker_status(state_dir: &Path, w: &crate::oracle_lifecycle::WorkerEntry) -> (String, bool) {
+    match DoneSignal::read(state_dir, &w.session_name) {
+        Ok(Some(sig)) => (format!("{:?}", sig.status), true),
+        // No signal on disk: the registry entry is all we know. A terminal
+        // registry status is still terminal (something did notice), otherwise
+        // the worker really is unaccounted for.
+        _ => {
+            let finished = crate::oracle_lifecycle::worker_entry_terminal(w.status);
+            (format!("{:?}", w.status), finished)
+        }
+    }
+}
+
 /// Build the resume prompt for a resurrected oracle from its persisted state —
 /// mission + last phase + the workers it had already dispatched, with a strong
 /// "don't duplicate completed work" instruction.
-fn build_resume_prompt(state: &OracleState) -> String {
+///
+/// Worker statuses are RECONCILED against the done signals on disk rather than
+/// replayed from the registry: printing a stale `Running` for a worker that
+/// finished hours ago is what makes a resurrected oracle re-dispatch completed
+/// work, which is the exact duplication the closing note warns against.
+fn build_resume_prompt(state: &OracleState, state_dir: &Path) -> String {
     let mut p = String::new();
     p.push_str(
         "[RESURRECTED] Your oracle session crashed or was killed; your state was \
@@ -1705,17 +1738,40 @@ fn build_resume_prompt(state: &OracleState) -> String {
     if state.workers.is_empty() {
         p.push_str("## Workers\nNone dispatched yet.\n\n");
     } else {
-        p.push_str("## Workers already dispatched\n");
-        for w in &state.workers {
+        let reconciled: Vec<(&crate::oracle_lifecycle::WorkerEntry, String, bool)> = state
+            .workers
+            .iter()
+            .map(|w| {
+                let (label, finished) = reconciled_worker_status(state_dir, w);
+                (w, label, finished)
+            })
+            .collect();
+        let finished = reconciled.iter().filter(|(_, _, f)| *f).count();
+        let total = reconciled.len();
+        p.push_str(&format!(
+            "## Workers already dispatched ({finished} of {total} already finished)\n"
+        ));
+        for (w, label, is_finished) in &reconciled {
             p.push_str(&format!(
-                "- '{}' [{:?}] — session {}\n",
-                w.task_name, w.status, w.session_name
+                "- '{}' [{}]{} — session {}\n",
+                w.task_name,
+                label,
+                if *is_finished { " ✓ signal on disk" } else { "" },
+                w.session_name
             ));
         }
-        p.push_str(
-            "\nBefore re-dispatching: check each worker's session + done.json. \
-             Do NOT duplicate completed work.\n\n",
-        );
+        if finished == total {
+            p.push_str(
+                "\nEVERY worker above has already written its done signal. Do NOT re-dispatch \
+                 any of them. Read their done.json, verify their output yourself (R-VERIFY), \
+                 and move the mission forward from there.\n\n",
+            );
+        } else {
+            p.push_str(
+                "\nBefore re-dispatching: check each worker's session + done.json. \
+                 Do NOT duplicate completed work.\n\n",
+            );
+        }
     }
     p.push_str(
         "## Resume\nVerify what's already done (workers' done.json + git state), \
@@ -2763,24 +2819,78 @@ mod resurrect_tests {
     use chrono::Utc;
     use std::path::PathBuf;
 
-    #[test]
-    fn resume_prompt_carries_mission_workers_and_no_dupe_warning() {
-        let mission = Mission::new("Acme", "ship the feature", PathBuf::from("/tmp"));
-        let mut state = OracleState::new("oracle-Acme-1", &mission);
-        state.register_worker(WorkerEntry {
-            session_name: "Acme-worker-auth".into(),
+    fn worker(name: &str, task: &str, status: WorkerEntryStatus) -> WorkerEntry {
+        WorkerEntry {
+            session_name: name.into(),
             task_id: "t1".into(),
-            task_name: "auth".into(),
+            task_name: task.into(),
             attempt_id: None,
             plan_revision: None,
             files_owned: vec![],
             dispatched_at: Utc::now(),
-            status: WorkerEntryStatus::DoneClean,
-        });
-        let p = build_resume_prompt(&state);
+            status,
+        }
+    }
+
+    #[test]
+    fn resume_prompt_carries_mission_workers_and_no_dupe_warning() {
+        let tmp = std::env::temp_dir().join(format!("omega-resume-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&tmp);
+        let mission = Mission::new("Acme", "ship the feature", PathBuf::from("/tmp"));
+        let mut state = OracleState::new("oracle-Acme-1", &mission);
+        state.register_worker(worker(
+            "Acme-worker-auth",
+            "auth",
+            WorkerEntryStatus::DoneClean,
+        ));
+        let p = build_resume_prompt(&state, &tmp);
         assert!(p.contains("[RESURRECTED]"));
         assert!(p.contains("ship the feature"));
         assert!(p.contains("auth"));
+        assert!(p.contains("Do NOT re-dispatch"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// THE RESURRECTION INCIDENT (oracle-dentistrygpt-3, 2026-08-10): the oracle
+    /// died while 8 workers were mid-flight. Every one of them finished and wrote
+    /// `done_clean`, but nothing was alive to advance the registry, so the resume
+    /// prompt listed all 8 as `[Running]` and told the oracle to go check on them.
+    /// The done signals on disk are the truth and the prompt must say so.
+    #[test]
+    fn resume_prompt_reconciles_stale_running_against_done_signals_on_disk() {
+        use crate::done::{DoneSignal, DoneStatus};
+
+        let tmp = std::env::temp_dir().join(format!("omega-resume-recon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mission = Mission::new("Acme", "ship the feature", PathBuf::from("/tmp"));
+        let mut state = OracleState::new("oracle-Acme-1", &mission);
+        // Both are STALE `Running` in the registry — the dead oracle's last word.
+        state.register_worker(worker("Acme-worker-a", "task-a", WorkerEntryStatus::Running));
+        state.register_worker(worker("Acme-worker-b", "task-b", WorkerEntryStatus::Running));
+
+        // Only worker A actually finished and said so on disk.
+        let mut sig = DoneSignal::new("Acme-worker-a", DoneStatus::DoneClean, "done");
+        sig.finished_at = Utc::now();
+        sig.write(&tmp).unwrap();
+
+        let p = build_resume_prompt(&state, &tmp);
+        assert!(
+            p.contains("1 of 2 already finished"),
+            "the headline must count the signals on disk, got:\n{p}"
+        );
+        assert!(
+            p.contains("task-a") && p.contains("DoneClean"),
+            "the finished worker must be reported from its signal, got:\n{p}"
+        );
+        assert!(
+            !p.contains("2 of 2"),
+            "the unfinished worker must not be reported as finished, got:\n{p}"
+        );
+        // Not all finished, so the softer note stays.
         assert!(p.contains("Do NOT duplicate completed work"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
