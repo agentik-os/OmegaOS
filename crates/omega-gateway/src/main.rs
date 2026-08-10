@@ -25,7 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let dir = gateway_dir();
     match cli.command.unwrap_or(Command::Serve) {
         Command::Pair => {
-            let pc = PairingCode::create(&dir, 300);
+            let pc = PairingCode::create(&dir, 300)?;
             let host = hostname_or_default();
             let payload = format!("omega://pair?host={host}&code={}", pc.code);
             qr2term::print_qr(&payload).ok();

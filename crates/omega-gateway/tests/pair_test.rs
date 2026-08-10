@@ -12,7 +12,7 @@ async fn spawn(app: axum::Router) -> String {
 #[tokio::test]
 async fn pair_with_valid_code_once_then_reject() {
     let dir = tempfile::tempdir().unwrap();
-    let pairing = PairingCode::create(dir.path(), 300);
+    let pairing = PairingCode::create(dir.path(), 300).unwrap();
     let app = build_router(AppState {
         dir: dir.path().to_path_buf(),
         cfg: GatewayConfig::default(),
@@ -37,7 +37,7 @@ async fn pair_with_valid_code_once_then_reject() {
 #[tokio::test]
 async fn expired_code_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let pairing = PairingCode::create(dir.path(), -1); // already expired
+    let pairing = PairingCode::create(dir.path(), -1).unwrap(); // already expired
     let app = build_router(AppState {
         dir: dir.path().to_path_buf(),
         cfg: GatewayConfig::default(),

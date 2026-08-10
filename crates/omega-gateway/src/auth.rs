@@ -1,3 +1,4 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -94,7 +95,7 @@ pub struct PairingCode {
 }
 
 impl PairingCode {
-    pub fn create(dir: &Path, ttl_secs: i64) -> Self {
+    pub fn create(dir: &Path, ttl_secs: i64) -> anyhow::Result<Self> {
         std::fs::create_dir_all(dir).ok();
         let pc = Self {
             code: random_hex(4), // 8 hex chars, human-typable
@@ -102,12 +103,14 @@ impl PairingCode {
         };
         std::fs::write(
             dir.join("pairing.json"),
-            serde_json::to_string(&pc).expect("serialize pairing"),
-        ).expect("write pairing.json");
-        pc
+            serde_json::to_string(&pc)?,
+        ).context("write pairing.json")?;
+        Ok(pc)
     }
 
-    /// Returns true exactly once for a live matching code; deletes the file on success.
+    /// Returns true exactly once for a live matching code.
+    /// The file removal is the atomic claim: for concurrent calls with the
+    /// same valid code, remove_file succeeds for exactly one of them.
     pub fn consume(dir: &Path, code: &str) -> bool {
         let path = dir.join("pairing.json");
         let Ok(text) = std::fs::read_to_string(&path) else { return false };
@@ -116,8 +119,10 @@ impl PairingCode {
             && chrono::DateTime::parse_from_rfc3339(&pc.expires_at)
                 .map(|t| t > chrono::Utc::now())
                 .unwrap_or(false);
-        if live { std::fs::remove_file(&path).ok(); }
-        live
+        if !live {
+            return false;
+        }
+        std::fs::remove_file(&path).is_ok()
     }
 }
 
@@ -154,5 +159,14 @@ mod tests {
         std::fs::write(dir.path().join("devices.json"), "{not json").unwrap();
         let store = DeviceStore::open(dir.path());
         assert!(store.verify("anything").is_none());
+    }
+
+    #[test]
+    fn wrong_code_does_not_burn_pairing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let pc = PairingCode::create(dir.path(), 300).unwrap();
+        assert!(!PairingCode::consume(dir.path(), "deadbeef"));
+        assert!(PairingCode::consume(dir.path(), &pc.code));
+        assert!(!PairingCode::consume(dir.path(), &pc.code));
     }
 }
