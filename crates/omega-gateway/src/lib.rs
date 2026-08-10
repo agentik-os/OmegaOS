@@ -15,6 +15,7 @@ pub mod routes_chat;
 pub mod routes_events;
 pub mod routes_missions;
 pub mod routes_pair;
+pub mod routes_projects;
 pub mod routes_rules;
 pub mod routes_sessions;
 pub mod routes_skills;

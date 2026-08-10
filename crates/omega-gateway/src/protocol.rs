@@ -259,6 +259,28 @@ pub struct SkillsResponse {
     pub total: usize,
 }
 
+/// One entry of `GET /v1/projects`'s `projects` array — a field-for-field
+/// mirror of `omega_core::projects::DiscoveredProject`, minus `path` (a full
+/// filesystem path is server-internal, not something the wire protocol
+/// should leak to a mobile client — the same posture `Account` already
+/// takes by never serializing credentials) and minus `score` (an internal
+/// ranking heuristic, not product-facing; the response is already
+/// best-first sorted, which is all the app needs).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectEntry {
+    pub name: String,
+    pub container: String,
+    pub stack: Vec<String>,
+    pub last_active_days: Option<u64>,
+}
+
+/// `GET /v1/projects` response body — the auto-discovered project list from
+/// `omega_core::projects::discover`, best-first sorted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ProjectsResponse {
+    pub projects: Vec<ProjectEntry>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -288,6 +310,8 @@ pub struct Protocol {
     pub agents_response: AgentsResponse,
     pub skill_entry: SkillEntry,
     pub skills_response: SkillsResponse,
+    pub project_entry: ProjectEntry,
+    pub projects_response: ProjectsResponse,
 }
 
 pub fn schema_json() -> String {

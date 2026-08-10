@@ -30,6 +30,8 @@ fn schema_contains_all_wire_types() {
         "AgentsResponse",
         "SkillEntry",
         "SkillsResponse",
+        "ProjectEntry",
+        "ProjectsResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }
