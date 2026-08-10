@@ -30,10 +30,27 @@ Base: `origin/main` @ bbde842
       green, 291 tests total across the whole crate after Task C)
 - [x] Wiring — server.rs route table (ABOVE route_layer), protocol.rs schema_test,
       lib.rs module decl — done incrementally per task, each reviewed as part of it
-- [ ] Final opus whole-branch review — RUN THE BINARY against live requests
-- [ ] Runtime verify (L1): release build + live checks for all 3 features against
-      real rmux (throwaway scratch session) + fake omega (OMEGA_BIN)
-- [ ] Rebase on origin/main, leave clean, report
+- [x] Final opus whole-branch review — RUN THE BINARY against live requests — real
+      pairing flow, real network WS, real rmux. Found P1 (commit 76a9d2b):
+      install_stream_loop's disconnect detection was send-driven only (only noticed
+      a dead client as a side effect of a failed send), so a nested installer that
+      went quiet after the client left (the realistic case) was never killed on
+      either a hard TCP RST or a clean WS close — live-reproduced via `ss -tnp`
+      showing CLOSE-WAIT with the close frame unread while the orphaned installer
+      ran to completion. Fixed with tokio::select! watching both the frame channel
+      and the socket read side; A/B and C-happy-path were PASS on first live pass.
+- [x] Runtime verify (L1): release build + live checks for all 3 features, done
+      TWICE — once by the final reviewer (found the P1 above), once by the
+      controller after the fix, against a fresh scratch daemon (real pairing,
+      real rmux throwaway session, fake OMEGA_BIN for install): rename + close on a
+      real rmux session (is_oracle:false, cascaded_count:0, session genuinely gone
+      per `rmux ls`), session-org PUT+GET round-trip + on-disk 0600 file, install
+      happy path (3 stdout+stderr lines + exit frame over real WS), and the P1 fix
+      re-confirmed live — a silent nested installer (sleep 6 + touch marker) was
+      killed within the wait window after a hard client disconnect, marker never
+      created, no orphaned processes, unauth requests 401. Scratch cleaned up,
+      `rmux ls` matches pre-existing baseline, prod gateway (pid 408819) untouched.
+- [x] Rebase on origin/main, leave clean, report
 
 Tasks are SERIALIZED (not parallel fan-out) because A/B/C all touch shared files
 (protocol.rs, server.rs, lib.rs) — R-SCOPE (one writer per file) forbids concurrent
