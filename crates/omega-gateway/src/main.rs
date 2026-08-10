@@ -65,7 +65,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => {
             let cfg = GatewayConfig::load(&dir);
             let bind = cfg.bind.clone();
-            let app = build_router(AppState::new(dir, cfg));
+            let state = AppState::new(dir, cfg.clone());
+            omega_gateway::events::spawn_background_emitters(state.events.clone(), &cfg);
+            let app = build_router(state);
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             tracing::info!("omega-gateway listening on {bind}");
             axum::serve(listener, app).await?;

@@ -16,6 +16,7 @@ fn schema_contains_all_wire_types() {
         "ChatStreamClientMsg",
         "Mission",
         "MissionTask",
+        "GatewayEvent",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

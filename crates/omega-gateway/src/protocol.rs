@@ -111,6 +111,22 @@ pub struct Mission {
     pub updated_at: String,
 }
 
+/// Server-pushed events on the `/v1/events` WebSocket (mission updates,
+/// alerts, heartbeat). Emitted by [`crate::events::EventHub`].
+///
+/// KNOWN LIMIT (V2): `Alert` is only ever emitted by an IN-PROCESS caller
+/// (e.g. a test, or a future in-process alert source) — there is no
+/// external alert ingestion yet (the real alert path is
+/// `~/.omega/bin/omega-alert-send.sh`, which has no local success log to
+/// tail). Wiring a real external alert source into the hub is a later plan.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum GatewayEvent {
+    MissionUpdated { key: String, updated_at: String },
+    Alert { message: String, ts: String },
+    Heartbeat { ts: String },
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -126,6 +142,7 @@ pub struct Protocol {
     pub chat_stream_client_msg: ChatStreamClientMsg,
     pub mission: Mission,
     pub mission_task: MissionTask,
+    pub gateway_event: GatewayEvent,
 }
 
 pub fn schema_json() -> String {

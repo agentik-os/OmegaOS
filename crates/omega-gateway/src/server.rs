@@ -1,6 +1,7 @@
 use crate::auth::{Device, DeviceStore};
 use crate::chat_store::ChatStore;
 use crate::config::GatewayConfig;
+use crate::events::EventHub;
 use crate::protocol::WhoamiResponse;
 use axum::{
     extract::{Query, Request, State},
@@ -25,6 +26,11 @@ pub struct AppState {
     pub cfg: GatewayConfig,
     pub chats: Arc<ChatStore>,
     pub chat_permits: Arc<Semaphore>,
+    /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
+    /// Cloning `AppState` shares this hub, so a test (or a future
+    /// in-process alert source) can hold its own clone and call
+    /// `emit(...)` while the router forwards from the same bus.
+    pub events: EventHub,
 }
 
 impl AppState {
@@ -33,7 +39,8 @@ impl AppState {
     pub fn new(dir: PathBuf, cfg: GatewayConfig) -> Self {
         let chats = Arc::new(ChatStore::open(&dir));
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
-        Self { dir, cfg, chats, chat_permits }
+        let events = EventHub::new();
+        Self { dir, cfg, chats, chat_permits, events }
     }
 }
 
@@ -80,6 +87,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/chats/{id}", get(crate::routes_chat::get))
         .route("/v1/chats/{id}/stream", get(crate::routes_chat::stream))
         .route("/v1/missions", get(crate::routes_missions::list))
+        .route("/v1/events", get(crate::routes_events::events))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.
