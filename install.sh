@@ -831,8 +831,11 @@ if [[ -x target/release/omega-gatewayd ]]; then
     cp config/omega-gateway.service "$HOME/.config/systemd/user/omega-gateway.service"
     if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         systemctl --user daemon-reload 2>/dev/null || true
-        systemctl --user enable --now omega-gateway.service 2>/dev/null || true
-        ok "omega-gateway installed + running (http://127.0.0.1:4477)"
+        if systemctl --user enable --now omega-gateway.service 2>/dev/null; then
+            ok "omega-gateway installed + running (http://127.0.0.1:4477)"
+        else
+            warn "omega-gateway binary installed, but systemctl --user enable --now failed — try manually: systemctl --user enable --now omega-gateway.service"
+        fi
     else
         ok "omega-gateway binary installed to $INSTALL_DIR/omega-gatewayd (systemd unavailable — start manually: omega-gatewayd serve)"
     fi
