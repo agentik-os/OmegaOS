@@ -56,6 +56,11 @@ impl OsProduct {
                 name: "Builder OS",
                 tagline: "Building and shipping: assemble, test and deliver the product.",
             },
+            OsProduct {
+                slug: "books-os",
+                name: "Books OS",
+                tagline: "Your library as an operating system: reading, retention and living knowledge.",
+            },
         ]
     }
 }
@@ -78,6 +83,9 @@ pub struct OsEntry {
     /// `<os_root>/<slug>` when a root was found (the dir itself may not exist
     /// yet for an OS added to the registry before its folder).
     pub path: Option<PathBuf>,
+    /// A dedicated Telegram bot is wired for this OS (`os-<slug>` entry in
+    /// `~/.omega/agent-bots.json`, linked via `omega-os-bot`).
+    pub bot_linked: bool,
 }
 
 /// Locate the `OS/` suite root. Order: `OMEGA_OS_ROOT` env override, then the
@@ -147,8 +155,11 @@ pub fn os_root() -> Option<PathBuf> {
     None
 }
 
-/// Integrated = the OS dir contains anything beyond its placeholder
-/// (`README.md` / dotfiles). Fast + local — safe on tab entry / F5.
+/// Integrated = the OS dir contains a real payload beyond its scaffold.
+/// Scaffold files every OS carries from day one — the placeholder README,
+/// the MASTER.md master-agent prompt, the ledger/ working dir a linked
+/// Telegram bot accumulates, dotfiles — do NOT count as integration.
+/// Fast + local — safe on tab entry / F5.
 fn dir_status(dir: &Path) -> OsStatus {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return OsStatus::AwaitingDrop;
@@ -156,7 +167,7 @@ fn dir_status(dir: &Path) -> OsStatus {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == "README.md" || name.starts_with('.') {
+        if name == "README.md" || name == "MASTER.md" || name == "ledger" || name.starts_with('.') {
             continue;
         }
         return OsStatus::Integrated;
@@ -164,9 +175,28 @@ fn dir_status(dir: &Path) -> OsStatus {
     OsStatus::AwaitingDrop
 }
 
+/// Bot keys present in `~/.omega/agent-bots.json` (one read for the list).
+fn linked_bot_keys() -> std::collections::HashSet<String> {
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/home"));
+    let omega_dir = std::env::var("OMEGA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home.join(".omega"));
+    let Ok(raw) = std::fs::read_to_string(omega_dir.join("agent-bots.json")) else {
+        return Default::default();
+    };
+    serde_json::from_str::<serde_json::Value>(&raw)
+        .ok()
+        .and_then(|v| {
+            v.as_object()
+                .map(|map| map.keys().cloned().collect())
+        })
+        .unwrap_or_default()
+}
+
 /// The whole suite with per-machine status, in product order.
 pub fn list_os_entries() -> Vec<OsEntry> {
     let root = os_root();
+    let bots = linked_bot_keys();
     OsProduct::all()
         .iter()
         .map(|p| {
@@ -180,6 +210,7 @@ pub fn list_os_entries() -> Vec<OsEntry> {
                 product: *p,
                 status,
                 path,
+                bot_linked: bots.contains(&format!("os-{}", p.slug)),
             }
         })
         .collect()
@@ -217,7 +248,8 @@ mod tests {
                 "brainstorm-os",
                 "blueprint-os",
                 "stepper-os",
-                "builder-os"
+                "builder-os",
+                "books-os"
             ]
         );
     }
@@ -228,6 +260,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("README.md"), "# placeholder").unwrap();
+        std::fs::write(tmp.join("MASTER.md"), "# master agent").unwrap();
+        std::fs::create_dir_all(tmp.join("ledger")).unwrap();
         assert_eq!(dir_status(&tmp), OsStatus::AwaitingDrop);
         std::fs::write(tmp.join("app.py"), "payload").unwrap();
         assert_eq!(dir_status(&tmp), OsStatus::Integrated);

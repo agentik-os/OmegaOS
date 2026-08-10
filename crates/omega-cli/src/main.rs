@@ -2789,6 +2789,39 @@ async fn run_tui_loop(
                         }
                     }
                 }
+                Action::LinkOsBot { slug } => {
+                    let mgr = SessionManager::connect().await?;
+                    let session = format!("os-{}-bot-link", slug);
+                    // Interactive: the script prompts for the @BotFather token
+                    // in the terminal, validates it, wires agent-bots.json and
+                    // the systemd unit, then verifies the bot is live.
+                    let script = format!(
+                        "{}/.omega/bin/omega-os-bot.sh",
+                        dirs::home_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("~"))
+                            .to_string_lossy()
+                    );
+                    let cmd = format!(
+                        "bash -c {}",
+                        shell_escape_for_bash(&format!(
+                            "bash {} {}; echo; echo '─── done — F5 in the OS tab refreshes the bot status ───'; exec bash",
+                            script, slug
+                        ))
+                    );
+                    match mgr.create_session(&session, None, Some(&cmd)).await {
+                        Ok(_) => {
+                            app.status_message = Some(format!(
+                                "🤖 Linking a Telegram bot to {} — paste the token in the session",
+                                slug
+                            ));
+                            auto_focus_chat(app, &session).await;
+                        }
+                        Err(e) => {
+                            app.status_message =
+                                Some(format!("Bot-link session failed for {}: {}", slug, e));
+                        }
+                    }
+                }
                 Action::MarketingPublishDryRun { slug, cwd } => {
                     let mgr = SessionManager::connect().await?;
                     let session = format!("mkt-{}-publish", slug);
@@ -3002,7 +3035,7 @@ echo; echo '─── dry-run done ───'; exec bash",
                     Tab::Projects => "↑/↓ projects · Tab focus detail · n add · p plan · d dispatch · Enter open".to_string(),
                     Tab::System => "↑/↓ sections · Tab focus detail · [ ] jump section · Laws · Rules · Agents · Skills · Docs".to_string(),
                     Tab::Marketing => "↑/↓ projects · Enter parler marketing · p publier · F5 refresh".to_string(),
-                    Tab::Os => "↑/↓ operative systems · Tab focus detail · Enter open session · F5 refresh".to_string(),
+                    Tab::Os => "↑/↓ operative systems · Enter master agent · T link Telegram bot · F5 refresh".to_string(),
                     Tab::Help => "↑/↓ scroll · Esc back to Sessions".to_string(),
                 });
             }

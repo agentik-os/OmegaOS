@@ -1044,6 +1044,27 @@ EOF
     ok "Stepper OS command installed (/stepper-os + /omg-stepper-os → omega-stepper CLI)"
 fi
 
+# Books OS Claude command — stubs to the CANONICAL alexandria skill (one
+# persona, never forked): Books OS's Claude surface IS /alexandria.
+if [[ -d "$OMEGA_SRC/skills/alexandria" ]]; then
+    mkdir -p "$HOME/.claude/commands"
+    for cmd in books-os omg-books-os; do
+        cat > "$HOME/.claude/commands/$cmd.md" <<EOF
+# /$cmd
+
+Books OS (AgentikOS suite) — the librarian master agent. Its Claude surface
+is the canonical alexandria skill: read and follow the complete instructions in:
+
+\`$OMEGA_DIR/skills/alexandria/SKILL.md\`
+
+Full persona (master agent, also the Telegram bot brain):
+\`$OMEGA_DIR/agents/librarian.md\`. Work from \`$OMEGA_DIR/os/books-os/\`
+(personal ledger in \`ledger/\`). CLI: \`omega-books\`.
+EOF
+    done
+    ok "Books OS command installed (/books-os + /omg-books-os → alexandria skill + librarian persona)"
+fi
+
 # ─── Phase 5: Configuration ──────────────────────────────────────────────────
 
 step "Phase 5: Configuring OmegaOS"
@@ -1316,7 +1337,7 @@ done
 mkdir -p "$OMEGA_DIR/state/monitor"
 [[ -f "$OMEGA_DIR/bin/omega-monitor.sh" ]] && ok "Session monitor installed: $OMEGA_DIR/bin/omega-monitor.sh (omega monitor <session>)"
 
-for hs in omega-atlas-brief omega-clean-projects omega-open omega-agent-bot; do
+for hs in omega-atlas-brief omega-clean-projects omega-open omega-agent-bot omega-os-bot; do
     if [[ -f "$OMEGA_SRC/scripts/$hs.sh" ]]; then
         cp "$OMEGA_SRC/scripts/$hs.sh" "$OMEGA_DIR/bin/$hs.sh"; chmod +x "$OMEGA_DIR/bin/$hs.sh"
         ln -sf "$OMEGA_DIR/bin/$hs.sh" "$INSTALL_DIR/$hs" 2>/dev/null || true
@@ -1325,6 +1346,7 @@ done
 [[ -f "$OMEGA_DIR/bin/omega-atlas-brief.sh" ]] && ok "Atlas briefing + project cleaner installed"
 [[ -f "$OMEGA_DIR/bin/omega-open.sh" ]] && ok "Project launcher installed: omega-open (pick a project, then the agent: claude/codex/glm/...)"
 [[ -f "$OMEGA_DIR/bin/omega-agent-bot.sh" ]] && ok "Agent-bot wiring installed: omega-agent-bot <project> <token> (--list shows which projects lack one)"
+[[ -f "$OMEGA_DIR/bin/omega-os-bot.sh" ]] && ok "OS-suite bot wiring installed: omega-os-bot <os-slug> [token] (one master-agent bot per OS; TUI OS tab → T)"
 
 # Artifact rotation — the daily report skills (ecosystem-watch, changelog-adopt,
 # growth-engine, marketing board) each write one file per day into

@@ -19,10 +19,11 @@ of truth for names, slugs, taglines and order).
 | 4 | Blueprint OS | `blueprint-os` | Product blueprints and design | awaiting drop (the `/blueprint-os` skill already covers the design flow) |
 | 5 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
 | 6 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 7 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** (wraps the canonical librarian/alexandria system) |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
-directory holding only its placeholder README is `awaiting drop`; anything more
-is `integrated`.
+directory holding only its scaffold (placeholder README, `MASTER.md`,
+`ledger/`) is `awaiting drop`; a real payload makes it `integrated`.
 
 ## Anatomy of an integrated OS
 
@@ -30,21 +31,36 @@ is `integrated`.
 OS/<slug>/
 ├── README.md                    what it is, layout, how to run it, honest
 │                                divergences from the pack spec
+├── MASTER.md                    the OS's MASTER AGENT system prompt (every
+│                                OS has one, even pre-integration)
 ├── pack/                        the operator-provided spec documents, verbatim
 ├── engine/                      the runnable implementation (when the OS has one)
 ├── bin/omega-<name>             the OmegaOS command (thin launcher)
-└── commands/codex-<slug>.md     the OpenAI/Codex slash command
+├── commands/codex-<slug>.md     the OpenAI/Codex slash command
+└── ledger/                      runtime-only: the master agent / Telegram
+                                 bot's persistent memory (never committed)
 ```
 
 Plus, outside `OS/`:
 
 - `skills/<slug>/SKILL.md` - the Claude command (skill + `/<slug>` and
-  `/omg-<slug>` stubs).
+  `/omg-<slug>` stubs). When a canonical skill already covers the OS (Books
+  OS -> alexandria), the stubs point at the canon - never fork it.
 - An `install.sh` block keeping Law 0 parity (see below).
 
-## The three-commands convention
+## The master agent
 
-Every OS that gains a runtime exposes the SAME capability on three surfaces:
+`MASTER.md` is the OS's one brain: the system prompt of the agent that runs
+the OS. It is the SAME prompt on every surface - the TUI Enter session, the
+Telegram bot, and whatever the CLI launches. Pre-integration OSes ship a
+pre-integration master (explain the OS, collect operator intent in
+`ledger/INTENT.md`, guide the drop); integrated OSes ship the real operating
+brain (Stepper: drive the execution protocol; Books: the full librarian -
+whose canon lives in `agents/librarian.md`, MASTER.md bootstraps to it).
+
+## The four-surfaces convention
+
+Every OS exposes the SAME capability on four surfaces:
 
 1. **Claude** - a skill in `skills/<slug>/SKILL.md`. Installed to
    `~/.omega/skills/<slug>/` (then `omega sync` symlinks it into
@@ -57,9 +73,14 @@ Every OS that gains a runtime exposes the SAME capability on three surfaces:
 3. **OmegaOS** - a `bin/omega-<name>` wrapper symlinked into `~/.local/bin`.
    Heavy runtimes (Python venv, node_modules) are a LAZY first-run opt-in:
    install.sh never pip-installs (R-ENV boundary, like pixelrag/browser-use).
-   The TUI OS tab's Enter opens a Claude session scoped to the OS folder.
+   The TUI OS tab's Enter opens a Claude session running the MASTER AGENT.
+4. **Telegram** - `omega-os-bot <slug> [token]` (TUI: OS tab -> `T`) links a
+   dedicated bot per OS: an `agent-bots.json` entry of kind `persona` whose
+   system prompt is the OS's master agent and whose working dir is the
+   installed OS folder (`ledger/` persists). Operator-only (allow-list,
+   R-TGSEC); the token lives in agent-bots.json (mode 600) and nowhere else.
 
-All three surfaces drive ONE engine. Never fork the logic per surface.
+All four surfaces drive ONE brain. Never fork the logic per surface.
 
 ## Process - "add this OS" (a zip landed in Deposit)
 
@@ -73,7 +94,8 @@ All three surfaces drive ONE engine. Never fork the logic per surface.
 3. **Build the runtime** the pack describes (`engine/` or equivalent), with
    tests, honoring the pack's non-negotiables. Prove it end to end at runtime
    (L1): init -> loop -> terminal gate, captured output.
-4. **Wire the three commands** (convention above).
+4. **Write the real MASTER.md** (replacing the pre-integration one) and wire
+   the four surfaces (convention above).
 5. **Parity (Law 0).** install.sh: the generic `OS/` copy block already ships
    payloads + bin wrappers + codex commands; add a skill-stub block for the
    Claude command (see the Stepper OS block as the template). Run
@@ -107,6 +129,10 @@ All three surfaces drive ONE engine. Never fork the logic per surface.
   fork: the skill becomes the Claude command of the OS.
 - **Builder OS** - downstream of Stepper: expect it to consume Stepper's
   release gate as its input contract.
+- **Books OS** - already integrated as the wrapper around the canonical
+  librarian system (`agents/librarian.md` + the alexandria skill); future
+  payloads extend that canon, never fork it.
 
-An OS is DONE when: pack vendored, runtime tested + proven live, three
-commands wired, install parity green, TUI 🟢, docs updated, pushed.
+An OS is DONE when: pack vendored, runtime tested + proven live, MASTER.md
+real, four surfaces wired, install parity green, TUI 🟢, docs updated,
+pushed.

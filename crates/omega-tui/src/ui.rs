@@ -3767,6 +3767,20 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
                 ),
             },
         ]),
+        Line::from(vec![
+            field("Telegram bot"),
+            if e.bot_linked {
+                Span::styled(
+                    "🤖 linked — DM it, the master agent answers",
+                    Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::styled(
+                    "not linked — press T to connect one".to_string(),
+                    Style::default().fg(th::dim()),
+                )
+            },
+        ]),
         Line::from(""),
         Line::from(Span::styled(
             "  ─── Integration pipeline ───",
@@ -3792,9 +3806,17 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
         Line::from(vec![
             Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
             Span::raw(if integrated {
-                "💬 Open a Claude session in this OS (run / extend it)"
+                "💬 Open the MASTER AGENT of this OS (run / extend it)"
             } else {
-                "💬 Open a Claude session in this OS (integrate the drop)"
+                "💬 Open the MASTER AGENT of this OS (pre-integration mode)"
+            }),
+        ]),
+        Line::from(vec![
+            Span::styled("  T      ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::raw(if e.bot_linked {
+                "🤖 Telegram bot: relink / replace its token"
+            } else {
+                "🤖 Connect a Telegram bot (the OS master agent answers DMs)"
             }),
         ]),
         Line::from(vec![

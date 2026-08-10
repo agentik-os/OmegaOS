@@ -41,3 +41,6 @@ test-results/
 /docs/marketing-machine-upgrade-research.md
 /tools/marketing-machine/AUDIT.md
 telegram-bot/node_modules/
+
+# OS-suite runtime ledgers (personal memory of each OS master agent/bot)
+OS/*/ledger/

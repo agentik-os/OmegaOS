@@ -121,8 +121,9 @@ OmegaOS ships the AgentikOS product line of operative systems under [`OS/`](OS/)
 | 4 | Blueprint OS | Product blueprints and design | awaiting drop |
 | 5 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
 | 6 | Builder OS | Building and shipping the product | awaiting drop |
+| 7 | **Books OS** | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
-**Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude), `/stepper-os` (Codex prompt), or the `omega-stepper` CLI. Each OS exposes the same capability on those three surfaces — the convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
+Every OS carries a **master agent** (`MASTER.md`): the TUI's Enter opens it as a session, and each OS can link its own **Telegram bot** (`T` in the OS tab, or `omega-os-bot <slug>`) whose brain is that same master agent — one brain, every surface. **Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude or Codex) or the `omega-stepper` CLI. **Books OS** is live too: the librarian / knowledge system (X-ray a book, idea atlas, author combat, flashcards, spaced repetition, /best 50 books on any topic) as `/books-os` (= the alexandria skill), the `omega-books` CLI, or its own Telegram librarian bot. The convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
 
 ## The doctrine
 

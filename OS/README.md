@@ -15,12 +15,21 @@ the TUI under the **OS** tab (`omega menu`) and installed to `~/.omega/os/` by
 | 4 | Blueprint OS | `blueprint-os` | Product blueprints and design | awaiting drop |
 | 5 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
 | 6 | Builder OS | `builder-os` | Building and shipping the product | awaiting drop |
+| 7 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Registry source of truth: `crates/omega-core/src/os_products.rs`
 (`OsProduct::all()`). The TUI tab, statuses and paths all derive from it -
 add or reorder an OS THERE, never in the UI code. The full integration
-playbook (anatomy of an OS, the three-commands convention, the add/complete
+playbook (anatomy of an OS, the surfaces convention, the add/complete
 processes) is `docs/OS-SUITE.md`.
+
+## Master agent + Telegram bot
+
+Every OS carries a `MASTER.md` - its MASTER AGENT system prompt. The TUI's
+Enter opens a Claude session running that agent, and `T` (or
+`omega-os-bot <slug> [token]`) links a dedicated Telegram bot whose brain is
+the SAME master agent (agent-bots.json kind `persona`, ledger under the OS
+folder). One brain, every surface.
 
 ## Integration pipeline (how an OS lands here)
 

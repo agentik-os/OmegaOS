@@ -87,9 +87,14 @@ pub enum Action {
     /// there; `prompt` is the scoped "talk only marketing" system prompt.
     OpenMarketingSession { name: String, cwd: String, prompt: String },
     /// OS tab: open a Claude session scoped to the selected operative system's
-    /// directory (`OS/<slug>/`) — the integration workspace where a Deposit
-    /// zip gets unpacked, wired and documented.
+    /// directory (`OS/<slug>/`) running its MASTER.md master agent — the same
+    /// brain its Telegram bot gets.
     OpenOsSession { name: String, cwd: String, prompt: String },
+    /// OS tab: link a Telegram bot to the selected OS (T). Runs the
+    /// interactive `omega-os-bot.sh <slug>` in a terminal session — the
+    /// operator pastes the @BotFather token there; the bot's brain is the
+    /// OS's master agent.
+    LinkOsBot { slug: String },
     /// Marketing tab: run `omega-zernio publish <slug> --dry-run` for the
     /// selected project in a fresh session (the "p → publier (dry-run)" action).
     MarketingPublishDryRun { slug: String, cwd: String },
@@ -1649,24 +1654,30 @@ code produit.",
                 }
             }
             Tab::Os => {
-                // Enter opens a Claude session scoped to the selected OS's
-                // directory. Awaiting-drop OSes open too — that workspace is
-                // exactly where the Deposit zip gets unpacked and wired.
+                // Enter opens a Claude session in the selected OS's directory
+                // running that OS's MASTER AGENT: the MASTER.md prompt every
+                // OS carries (same brain the Telegram bot gets via
+                // omega-os-bot). Fallback: the generic integrator prompt.
                 match app.selected_os_entry() {
                     Some(e) => match e.path.clone() {
                         Some(path) if path.is_dir() => {
-                            let prompt = format!(
-                                "Tu es l'intégrateur de {name} ({slug}), un operative \
+                            let prompt = std::fs::read_to_string(path.join("MASTER.md"))
+                                .ok()
+                                .filter(|s| !s.trim().is_empty())
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "Tu es l'agent maître de {name} ({slug}), un operative \
 system de la suite AgentikOS. Travaille UNIQUEMENT dans {path} : lis son README.md, \
 intègre le payload (zip arrivé via la boîte Deposit) quand il est là, documente son \
 fonctionnement (entrypoint, deps, config) et garde la parité install.sh (Law 0). \
 Les secrets restent dans ~/.omega/secrets/, jamais dans le dossier. \
 Statut actuel: {status}.",
-                                name = e.product.name,
-                                slug = e.product.slug,
-                                path = path.to_string_lossy(),
-                                status = e.status_label(),
-                            );
+                                        name = e.product.name,
+                                        slug = e.product.slug,
+                                        path = path.to_string_lossy(),
+                                        status = e.status_label(),
+                                    )
+                                });
                             Action::OpenOsSession {
                                 name: format!("os-{}", e.product.slug),
                                 cwd: path.to_string_lossy().to_string(),
@@ -1700,6 +1711,19 @@ Statut actuel: {status}.",
                 None => {
                     app.status_message =
                         Some("No marketing project selected (F5 to scan)".to_string());
+                    Action::None
+                }
+            }
+        }
+
+        // OS tab: 'T' → link a Telegram bot to the selected operative system.
+        KeyCode::Char('T') if app.tab == Tab::Os => {
+            match app.selected_os_entry() {
+                Some(e) => Action::LinkOsBot {
+                    slug: e.product.slug.to_string(),
+                },
+                None => {
+                    app.status_message = Some("No OS selected (F5 to load)".to_string());
                     Action::None
                 }
             }
