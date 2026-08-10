@@ -855,7 +855,7 @@ EOF
         systemctl --user daemon-reload 2>/dev/null || true
         # Without linger, the user's systemd --user instance (and this daemon
         # with it) dies the moment the last login session ends.
-        loginctl enable-linger "$USER" 2>/dev/null || true
+        loginctl enable-linger "${USER:-$(id -un)}" 2>/dev/null || true
         if systemctl --user enable --now omega-gateway.service 2>/dev/null; then
             ok "omega-gateway installed + running (http://127.0.0.1:4477)"
         else
