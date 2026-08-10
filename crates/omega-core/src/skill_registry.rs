@@ -1774,9 +1774,9 @@ mod tests {
         }
         let catalog =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", repo_skills)]).unwrap();
-        // 236 = 232 + omniroute + alexandria's split-out + stepper-os +
-        // builder-os (the OS-suite build chain, 2026-08-10).
-        assert_eq!(catalog.skills.len(), 236);
+        // 237 = 232 + omniroute + alexandria's split-out + stepper-os +
+        // builder-os + market-research-os (the OS-suite build chain, 2026-08-10).
+        assert_eq!(catalog.skills.len(), 237);
         let names: BTreeSet<_> = catalog
             .skills
             .iter()
@@ -1792,6 +1792,7 @@ mod tests {
         assert!(names.contains("marketing-master"));
         assert!(names.contains("stepper-os"));
         assert!(names.contains("builder-os"));
+        assert!(names.contains("market-research-os"));
         assert!(catalog
             .skills
             .iter()

@@ -50,7 +50,7 @@ impl OsProduct {
             OsProduct {
                 slug: "researcher-os",
                 name: "Researcher OS",
-                tagline: "Market and user research: validate the idea with evidence before it is blueprinted.",
+                tagline: "Market Research {OS}: evidence, validation and a bounded decision before Blueprint.",
                 group: OsGroup::BuildChain,
             },
             OsProduct {

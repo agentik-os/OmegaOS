@@ -17,7 +17,7 @@ The BUILD CHAIN is its own group, in pipeline order:
 | # | OS | Slug | Focus | Status |
 |---|----|------|-------|--------|
 | 01 | Ideation OS | `ideation-os` | Idea generation and capture | awaiting drop |
-| 02 | Researcher OS | `researcher-os` | Market and user research: validate before blueprinting | awaiting drop |
+| 02 | Researcher OS | `researcher-os` | Market Research {OS}: evidence + validation compiler, bounded GO/PIVOT decisions, frozen Blueprint input manifest | **integrated** |
 | 03 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen handoff | **integrated** |
 | 04 | Designer OS (UX/UI) | `designer-os` | Contracts turned into screens, flows and a design system | awaiting drop |
 | 05 | Stepper OS | `stepper-os` | Step-by-step execution of a blueprint | **integrated** |
@@ -134,8 +134,10 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   dev/deploy; the R-BLUEPRINT-STACK chain governs any new app build.
 - **Ideation OS** (renamed from Brainstorm OS) - pairs with the existing
   brainstorming skill; the payload should absorb it, not duplicate it.
-- **Researcher OS** - the live primitive today is the marketing suite's
-  market-research skill; the payload organizes evidence-backed validation.
+- **Researcher OS** - INTEGRATED (Market Research {OS} v1.0.0): evidence
+  compiler with depths SIGNAL/VALIDATION/INVESTMENT_GRADE and a frozen
+  Blueprint input manifest; the marketing suite's market-research skill is a
+  source lane inside it, never a replacement.
 - **Designer OS (UX/UI)** - the design router (R-DESIGN, 130+ skills) and
   Open Design are the live surfaces; the payload will organize them into the
   chain, never duplicate them.

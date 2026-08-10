@@ -1959,7 +1959,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os stack; do
+for BSK in blueprint-os builder-os market-research-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -1994,6 +1994,26 @@ Modes: NEW / RECOVER / EXTEND / REVISE / AUDIT / DELTA · state CLI:
 \`omega-blueprint\` · boundary: stops at BLUEPRINT COMPLETE — STEPPER READY
 (then Stepper OS, \`omega-stepper\`).
 EOF
+        fi
+        # Researcher OS (Market Research {OS}) registers the short `/research`
+        # alias — NOT `/market-research`, which belongs to the gooseworks
+        # market-research skill (a SOURCE LANE inside Researcher OS), whose
+        # own install loop below would clobber a shared name.
+        if [[ "$BSK" == "market-research-os" ]]; then
+            cat > "$BCMD/research.md" <<MREOF
+# /research
+
+Market Research {OS} — the evidence + validation compiler (Researcher OS,
+build chain #02). Alias of /market-research-os: read and follow the complete
+instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Depths SIGNAL/VALIDATION/INVESTMENT_GRADE · decisions GO/PIVOT/HOLD/NO-GO/
+INSUFFICIENT EVIDENCE (bounded) · state CLI: \`omega-research\` · handoff:
+frozen Blueprint input manifest (then /blueprint). (The bare /market-research
+command is the gooseworks data-API skill — a source lane inside this OS.)
+MREOF
         fi
         # Builder OS also registers the short `/build` alias (the pack's
         # command family: /build preflight/status/plan/run/step/test/verify/

@@ -118,7 +118,7 @@ The build chain is its own group — `01 Ideation -> 02 Researcher -> 03 Bluepri
 | # | OS | Focus | Status |
 |---|----|-------|--------|
 | 01 | Ideation OS | Idea generation and capture | awaiting drop |
-| 02 | Researcher OS | Market and user research | awaiting drop |
+| 02 | **Researcher OS** | Market Research {OS}: evidence + validation compiler | **integrated** |
 | 03 | **Blueprint OS** | The product-definition compiler (v3) | **integrated** |
 | 04 | Designer OS (UX/UI) | Screens, flows, design system | awaiting drop |
 | 05 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
