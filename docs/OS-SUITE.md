@@ -28,7 +28,7 @@ Personal OSes:
 | OS | Slug | Focus | Status |
 |----|------|-------|--------|
 | Mindset OS | `mindset-os` | Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching + 90-day program | **integrated** |
-| Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
+| Habits OS | `habits-os` | Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -131,9 +131,10 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
 - **Mindset OS** - INTEGRATED (Jim Rohn Extended v2): an evidence-aware
   identity/wellbeing/wealth coaching OS (prompt-pack + two stdlib workspace
   scripts, `omega-mindset new`/`score`). safety.md is always honored.
-- **Habits OS** - likely a personal-OS runtime (LifeStyle lane); expect a
-  Convex/Next.js app or prompt-pack payload. If it ships as an APP, the
-  `engine/` slot holds it and `bin/omega-<name>` launches dev/deploy.
+- **Habits OS** - INTEGRATED (Habit Tracker {OS} Full): a conversation-first
+  habit system with deterministic SQLite state, seasons, experiments and
+  adaptive reviews (`omega-habits`). Pairs with Mindset OS for the identity
+  layer. safety-and-boundaries.md always honored.
 - **Ideation OS** - INTEGRATED (Brainstorm {OS} v3 ULTIMATE): a multi-agent
   imagination + decision council with lineage, the Surface Lab, quality gates
   and a frozen concept handoff to Market Research / Blueprint. The skill is

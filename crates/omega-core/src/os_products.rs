@@ -86,7 +86,7 @@ impl OsProduct {
             OsProduct {
                 slug: "habits-os",
                 name: "Habits OS",
-                tagline: "Habit design, tracking and consistency: intent turned into daily execution.",
+                tagline: "Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews and seasons.",
                 group: OsGroup::Personal,
             },
             OsProduct {

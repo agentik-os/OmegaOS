@@ -1959,7 +1959,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2010,6 +2010,22 @@ instructions in:
 Depths spark/imagination/council/deep/red-team/converge/audit · real dissent
 required · state CLI: \`omega-ideation\` · handoff: frozen concept -> Market
 Research or Blueprint.
+MREOF
+        fi
+        # Habits OS (Habit Tracker {OS}) also registers the short `/habits`
+        # alias (the OS slot is habits-os; the skill is habit-tracker-os).
+        if [[ "$BSK" == "habit-tracker-os" ]]; then
+            cat > "$BCMD/habits.md" <<MREOF
+# /habits
+
+Habit Tracker {OS} — the conversation-first habit system (Habits OS).
+Alias of /habit-tracker-os: read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Chat is the interface; deterministic state via the \`omega-habits\` CLI
+(init/add/log/today/review/season/doctor). safety-and-boundaries.md routes
+clinical risk to a professional.
 MREOF
         fi
         # Researcher OS (Market Research {OS}) registers the short `/research`
