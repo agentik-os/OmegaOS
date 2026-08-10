@@ -64,10 +64,23 @@ pub enum LoginOutcome {
 /// Parses one line/chunk of `claude auth status` / `codex login status`
 /// output into an [`AuthStatus`]. Pure, no I/O.
 ///
+/// VERIFIED LIVE (2026-08-10): the real `claude auth status` emits JSON —
+/// `{"loggedIn": false, ...}` / `{"loggedIn": true, ...}` — never the English
+/// prose this parser originally assumed, so the JSON `"loggedIn"` key is
+/// matched FIRST and wins outright; camelCase has no space between "logged"
+/// and "In" so the prose patterns below never accidentally match it either
+/// way. The prose patterns are kept as a fallback for `codex login status`
+/// (unverified live) and any provider CLI version that still prints text.
 /// "Not logged in" contains the substring "logged in", so the LoggedOut
 /// patterns are matched FIRST — order here is load-bearing.
 pub fn parse_auth_status(output: &str) -> AuthStatus {
     let lower = output.to_lowercase();
+    if lower.contains("\"loggedin\": false") || lower.contains("\"loggedin\":false") {
+        return AuthStatus::LoggedOut;
+    }
+    if lower.contains("\"loggedin\": true") || lower.contains("\"loggedin\":true") {
+        return AuthStatus::LoggedIn;
+    }
     if lower.contains("not logged in")
         || lower.contains("not authenticated")
         || lower.contains("please run")
@@ -293,6 +306,28 @@ mod tests {
     #[test]
     fn parse_auth_status_garbage_is_unknown() {
         assert_eq!(parse_auth_status("¯\\_(ツ)_/¯ 42"), AuthStatus::Unknown);
+    }
+
+    // Captured live 2026-08-10 from `CLAUDE_CONFIG_DIR=<fresh slot> claude
+    // auth status` / a real logged-in `claude auth status` — the actual CLI
+    // emits JSON, not the English prose the original parser assumed.
+
+    #[test]
+    fn parse_auth_status_real_claude_json_logged_out() {
+        let out = "{\n  \"loggedIn\": false,\n  \"authMethod\": \"none\",\n  \"apiProvider\": \"firstParty\"\n}\n";
+        assert_eq!(parse_auth_status(out), AuthStatus::LoggedOut);
+    }
+
+    #[test]
+    fn parse_auth_status_real_claude_json_logged_in() {
+        let out = "{\n  \"loggedIn\": true,\n  \"authMethod\": \"claude.ai\",\n  \"apiProvider\": \"firstParty\",\n  \"email\": \"x@example.com\"\n}\n";
+        assert_eq!(parse_auth_status(out), AuthStatus::LoggedIn);
+    }
+
+    #[test]
+    fn parse_auth_status_compact_json_form() {
+        assert_eq!(parse_auth_status("{\"loggedIn\":false}"), AuthStatus::LoggedOut);
+        assert_eq!(parse_auth_status("{\"loggedIn\":true}"), AuthStatus::LoggedIn);
     }
 
     // --- parse_login_url (pure) ---
