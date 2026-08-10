@@ -1,13 +1,14 @@
+use crate::protocol::{SessionEntry, SessionsResponse, StreamFrame};
 use axum::Json;
-use serde_json::json;
 
-pub async fn list() -> Json<serde_json::Value> {
+pub async fn list() -> Json<SessionsResponse> {
     match tokio::task::spawn_blocking(crate::rmux::list_sessions).await {
-        Ok(Ok(names)) => Json(json!({
-            "sessions": names.iter().map(|n| json!({ "name": n })).collect::<Vec<_>>()
-        })),
-        Ok(Err(e)) => Json(json!({ "sessions": [], "error": e.to_string() })),
-        Err(e) => Json(json!({ "sessions": [], "error": e.to_string() })),
+        Ok(Ok(names)) => Json(SessionsResponse {
+            sessions: names.into_iter().map(|name| SessionEntry { name }).collect(),
+            error: None,
+        }),
+        Ok(Err(e)) => Json(SessionsResponse { sessions: vec![], error: Some(e.to_string()) }),
+        Err(e) => Json(SessionsResponse { sessions: vec![], error: Some(e.to_string()) }),
     }
 }
 
@@ -17,14 +18,6 @@ use axum::extract::{
     Path, State,
 };
 use axum::response::Response;
-use serde::Serialize;
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum StreamFrame {
-    Frame { text: String },
-    Error { message: String },
-}
 
 pub async fn stream(
     ws: WebSocketUpgrade,

@@ -16,6 +16,8 @@ enum Command {
     Serve,
     /// Print a one-time pairing code + QR (valid 5 minutes)
     Pair,
+    /// Print the wire-protocol JSON Schema (for TS type generation)
+    Schema,
 }
 
 #[tokio::main]
@@ -32,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Pairing code: {}  (valid 5 minutes)", pc.code);
             println!("Payload: {payload}");
         }
+        Command::Schema => println!("{}", omega_gateway::protocol::schema_json()),
         Command::Serve => {
             let cfg = GatewayConfig::load(&dir);
             let bind = cfg.bind.clone();

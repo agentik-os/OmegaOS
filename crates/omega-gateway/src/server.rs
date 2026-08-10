@@ -1,5 +1,6 @@
 use crate::auth::{Device, DeviceStore};
 use crate::config::GatewayConfig;
+use crate::protocol::WhoamiResponse;
 use axum::{
     extract::{Query, Request, State},
     http::StatusCode,
@@ -45,8 +46,8 @@ pub async fn require_device(
     Ok(next.run(req).await)
 }
 
-async fn whoami(Extension(device): Extension<Device>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "device_id": device.id, "name": device.name }))
+async fn whoami(Extension(device): Extension<Device>) -> Json<WhoamiResponse> {
+    Json(WhoamiResponse { device_id: device.id, name: device.name })
 }
 
 pub fn build_router(state: AppState) -> Router {
