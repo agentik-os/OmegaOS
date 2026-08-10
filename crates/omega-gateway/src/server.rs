@@ -21,6 +21,11 @@ use tokio::sync::Semaphore;
 /// Global cap on concurrently-running chat turns (across all devices/chats).
 const MAX_CONCURRENT_CHAT_TURNS: usize = 8;
 
+/// Global cap on concurrently-running `POST /v1/dispatch` requests. A
+/// dispatch spawns a whole oracle session (much heavier than a single chat
+/// turn), so this stays well below [`MAX_CONCURRENT_CHAT_TURNS`].
+const MAX_CONCURRENT_DISPATCHES: usize = 4;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -31,6 +36,9 @@ pub struct AppState {
     /// than `Arc`-wrapped.
     pub accounts: AccountStore,
     pub chat_permits: Arc<Semaphore>,
+    /// Caps concurrently-running `POST /v1/dispatch` requests, mirroring
+    /// `chat_permits` — see [`MAX_CONCURRENT_DISPATCHES`].
+    pub dispatch_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -41,13 +49,15 @@ pub struct AppState {
 impl AppState {
     /// Builds the full app state, opening the chat + account stores rooted
     /// at `dir` and sizing the global chat-turn semaphore to
-    /// [`MAX_CONCURRENT_CHAT_TURNS`].
+    /// [`MAX_CONCURRENT_CHAT_TURNS`] and the dispatch semaphore to
+    /// [`MAX_CONCURRENT_DISPATCHES`].
     pub fn new(dir: PathBuf, cfg: GatewayConfig) -> Self {
         let chats = Arc::new(ChatStore::open(&dir));
         let accounts = AccountStore::open(&dir);
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
+        let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let events = EventHub::new();
-        Self { dir, cfg, chats, accounts, chat_permits, events }
+        Self { dir, cfg, chats, accounts, chat_permits, dispatch_permits, events }
     }
 }
 
