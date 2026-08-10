@@ -2,6 +2,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use crate::fsperm::{harden_dir, harden_file};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -34,23 +35,6 @@ fn random_hex(n_bytes: usize) -> String {
     hex_string(&buf)
 }
 
-#[cfg(unix)]
-fn harden_dir(dir: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-}
-
-#[cfg(unix)]
-fn harden_file(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
-}
-
-#[cfg(not(unix))]
-fn harden_dir(_dir: &Path) {}
-
-#[cfg(not(unix))]
-fn harden_file(_path: &Path) {}
 
 impl DeviceStore {
     pub fn open(dir: &Path) -> Self {

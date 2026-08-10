@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod config;
+pub mod fsperm;
 pub mod protocol;
 pub mod rmux;
 pub mod routes_pair;
