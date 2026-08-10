@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use omega_gateway::auth::PairingCode;
+use omega_gateway::auth::{DeviceStore, PairingCode};
 use omega_gateway::config::{gateway_dir, GatewayConfig};
 use omega_gateway::server::{build_router, AppState};
 
@@ -18,6 +18,12 @@ enum Command {
     Pair,
     /// Print the wire-protocol JSON Schema (for TS type generation)
     Schema,
+    /// List paired devices (id, name, created_at, revoked)
+    Devices,
+    /// Revoke a device by id (its token stops verifying immediately)
+    Revoke {
+        device_id: String,
+    },
 }
 
 #[tokio::main]
@@ -35,6 +41,27 @@ async fn main() -> anyhow::Result<()> {
             println!("Payload: {payload}");
         }
         Command::Schema => println!("{}", omega_gateway::protocol::schema_json()),
+        Command::Devices => {
+            let store = DeviceStore::open(&dir);
+            let devices = store.list();
+            if devices.is_empty() {
+                println!("no paired devices");
+            } else {
+                println!("{:<18} {:<20} {:<28} REVOKED", "ID", "NAME", "CREATED_AT");
+                for d in devices {
+                    println!("{:<18} {:<20} {:<28} {}", d.id, d.name, d.created_at, d.revoked);
+                }
+            }
+        }
+        Command::Revoke { device_id } => {
+            let mut store = DeviceStore::open(&dir);
+            if store.revoke(&device_id) {
+                println!("revoked device {device_id}");
+            } else {
+                eprintln!("no such device: {device_id}");
+                std::process::exit(1);
+            }
+        }
         Command::Serve => {
             let cfg = GatewayConfig::load(&dir);
             let bind = cfg.bind.clone();

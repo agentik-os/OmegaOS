@@ -5,7 +5,9 @@ use omega_gateway::server::{build_router, AppState};
 // Both tests mutate the process-global OMEGA_RMUX_BIN env var, so they must
 // never run concurrently with each other. Acquire this lock at the start of
 // each test to serialize them regardless of the test harness's thread count.
-static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// tokio::sync::Mutex (not std): the guard is held across .await points below,
+// and clippy::await_holding_lock correctly flags a std guard doing that.
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn spawn(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -25,7 +27,7 @@ fn install_fake_rmux(dir: &std::path::Path, script_body: &str) {
 
 #[tokio::test]
 async fn lists_sessions_from_rmux() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), r#"
 if [ "$1" = "ls" ]; then printf 'oracle-Verba-1\nworker-a\n'; exit 0; fi
@@ -43,7 +45,7 @@ exit 1"#);
 
 #[tokio::test]
 async fn rmux_failure_yields_empty_list_with_error_not_500() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), "echo 'no server running' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");

@@ -825,12 +825,37 @@ fi
 # source-build path; the PREBUILT_OK path installs only omega/rmux from GitHub
 # release assets and has no gateway artifact, so this degrades to a skip there
 # (release-pipeline follow-up, not attempted in this task).
+# Every line below degrades non-fatally: this block sits BEFORE the
+# deliberately-early Telegram bot install (next section) and set -euo
+# pipefail must never let a gateway hiccup abort the install and skip the
+# operator's phone interface.
 if [[ -x target/release/omega-gatewayd ]]; then
-    install_binary target/release/omega-gatewayd "$INSTALL_DIR/omega-gatewayd"
-    mkdir -p "$HOME/.config/systemd/user"
-    cp config/omega-gateway.service "$HOME/.config/systemd/user/omega-gateway.service"
+    install_binary target/release/omega-gatewayd "$INSTALL_DIR/omega-gatewayd" \
+        || warn "omega-gatewayd binary install failed (non-fatal)"
+    mkdir -p "$HOME/.config/systemd/user" || true
+    # Unit is GENERATED from $INSTALL_DIR, not copied from
+    # config/omega-gateway.service (which hardcodes %h/.local/bin) — a custom
+    # INSTALL_DIR would otherwise point systemd at a binary that isn't there.
+    # The repo file stays as the reference/default used by docs.
+    cat > "$HOME/.config/systemd/user/omega-gateway.service" <<EOF || warn "could not write omega-gateway.service (non-fatal)"
+[Unit]
+Description=OmegaOS gateway daemon (app API)
+After=network.target
+
+[Service]
+ExecStart=$INSTALL_DIR/omega-gatewayd serve
+Restart=on-failure
+RestartSec=5
+Environment=PATH=$INSTALL_DIR:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
+EOF
     if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
         systemctl --user daemon-reload 2>/dev/null || true
+        # Without linger, the user's systemd --user instance (and this daemon
+        # with it) dies the moment the last login session ends.
+        loginctl enable-linger "$USER" 2>/dev/null || true
         if systemctl --user enable --now omega-gateway.service 2>/dev/null; then
             ok "omega-gateway installed + running (http://127.0.0.1:4477)"
         else

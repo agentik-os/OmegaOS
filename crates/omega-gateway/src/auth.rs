@@ -34,9 +34,28 @@ fn random_hex(n_bytes: usize) -> String {
     hex_string(&buf)
 }
 
+#[cfg(unix)]
+fn harden_dir(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+}
+
+#[cfg(unix)]
+fn harden_file(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+#[cfg(not(unix))]
+fn harden_dir(_dir: &Path) {}
+
+#[cfg(not(unix))]
+fn harden_file(_path: &Path) {}
+
 impl DeviceStore {
     pub fn open(dir: &Path) -> Self {
         std::fs::create_dir_all(dir).ok();
+        harden_dir(dir);
         let path = dir.join("devices.json");
         let devices = match std::fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
@@ -62,6 +81,10 @@ impl DeviceStore {
         (device, token)
     }
 
+    pub fn list(&self) -> &[Device] {
+        &self.devices
+    }
+
     pub fn verify(&self, token: &str) -> Option<Device> {
         let hash = sha256_hex(token);
         self.devices.iter().find(|d| !d.revoked && d.token_sha256 == hash).cloned()
@@ -81,6 +104,8 @@ impl DeviceStore {
             Ok(text) => {
                 if let Err(e) = std::fs::write(&self.path, text) {
                     tracing::error!("failed to write {}: {e}", self.path.display());
+                } else {
+                    harden_file(&self.path);
                 }
             }
             Err(e) => tracing::error!("failed to serialize devices: {e}"),
@@ -97,14 +122,14 @@ pub struct PairingCode {
 impl PairingCode {
     pub fn create(dir: &Path, ttl_secs: i64) -> anyhow::Result<Self> {
         std::fs::create_dir_all(dir).ok();
+        harden_dir(dir);
         let pc = Self {
             code: random_hex(4), // 8 hex chars, human-typable
             expires_at: (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs)).to_rfc3339(),
         };
-        std::fs::write(
-            dir.join("pairing.json"),
-            serde_json::to_string(&pc)?,
-        ).context("write pairing.json")?;
+        let path = dir.join("pairing.json");
+        std::fs::write(&path, serde_json::to_string(&pc)?).context("write pairing.json")?;
+        harden_file(&path);
         Ok(pc)
     }
 
@@ -168,5 +193,24 @@ mod tests {
         assert!(!PairingCode::consume(dir.path(), "deadbeef"));
         assert!(PairingCode::consume(dir.path(), &pc.code));
         assert!(!PairingCode::consume(dir.path(), &pc.code));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_files_are_not_group_or_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = DeviceStore::open(dir.path());
+        store.issue("iphone");
+
+        let dir_mode = std::fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777;
+        assert_eq!(dir_mode, 0o700, "gateway dir must be 0700");
+
+        let file_mode = std::fs::metadata(dir.path().join("devices.json"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(file_mode, 0o600, "devices.json must be 0600");
     }
 }

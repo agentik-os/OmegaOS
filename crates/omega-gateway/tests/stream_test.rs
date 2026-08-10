@@ -4,7 +4,9 @@ use omega_gateway::config::GatewayConfig;
 use omega_gateway::server::{build_router, AppState};
 use tokio_tungstenite::connect_async;
 
-static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+// tokio::sync::Mutex (not std): the guard is held across .await points below,
+// and clippy::await_holding_lock correctly flags a std guard doing that.
+static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn install_fake_rmux(dir: &std::path::Path, script_body: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -16,7 +18,7 @@ fn install_fake_rmux(dir: &std::path::Path, script_body: &str) {
 
 #[tokio::test]
 async fn stream_sends_frame_then_only_on_change() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     // fake rmux: capture-pane output changes based on a counter file
     install_fake_rmux(dir.path(), &format!(r#"
@@ -26,8 +28,7 @@ echo $((n+1)) > "$counter"
 if [ $n -lt 2 ]; then echo "SCREEN-A"; else echo "SCREEN-B"; fi"#,
         dir.path().display()));
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let mut cfg = GatewayConfig::default();
-    cfg.stream_interval_ms = 50;
+    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
     let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -49,12 +50,11 @@ if [ $n -lt 2 ]; then echo "SCREEN-A"; else echo "SCREEN-B"; fi"#,
 
 #[tokio::test]
 async fn capture_failure_becomes_error_frame_and_loop_survives() {
-    let _g = LOCK.lock().unwrap();
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     install_fake_rmux(dir.path(), "echo 'session not found' >&2; exit 1");
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let mut cfg = GatewayConfig::default();
-    cfg.stream_interval_ms = 50;
+    let cfg = GatewayConfig { stream_interval_ms: 50, ..GatewayConfig::default() };
     let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

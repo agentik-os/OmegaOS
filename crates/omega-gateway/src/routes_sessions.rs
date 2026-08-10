@@ -35,6 +35,12 @@ async fn stream_loop(mut socket: WebSocket, name: String, state: AppState) {
     // KNOWN LIMIT (V1): the only exit is a failed send, which fires instantly
     // on a clean client close but only after the kernel TCP timeout on a
     // silent network death. Plan 2 hardening adds ping/pong liveness.
+    // KNOWN LIMIT (V1): revoking a device does not terminate an already-open
+    // stream — the socket keeps running on the token that was valid at
+    // upgrade time. Re-verification on a live connection lands with the
+    // Plan 2 ping/pong liveness pass above.
+    // KNOWN LIMIT (V1): no pairing or stream rate limiting yet; that is
+    // Plan 2 scope too.
     loop {
         let session = name.clone();
         let captured =
