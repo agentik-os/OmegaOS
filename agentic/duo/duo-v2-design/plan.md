@@ -128,6 +128,13 @@ moment du chantier, `main.rs` et `dispatch.rs` portaient le WIP non-committe
 d'une autre session (R-SCOPE, un writer par fichier). A executer sur arbre
 calme.
 
+FAIT (2026-08-10 soir, commit 3b60fa8) : arbre libere, recette executee
+integralement — flag --agent allow-liste, resolution par invocation, bug
+main.rs:6822 corrige (create_session_with_agent avec l'agent resolu), bras GLM
+durci (trust-dir + permission mode honore + rendu inline, 2 tests unitaires),
+7 tests agents verts, clippy sans nouvelle plainte, binaire 0.1.9 reinstalle
+via install.sh et flag verifie sur le binaire installe.
+
 ## Criteres de succes verifiables
 
 1. `bun ~/.omega/skills/duo/bin/omega-duo selftest` -> exit 0, toutes sections PASS.
