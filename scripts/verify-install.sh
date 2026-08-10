@@ -737,6 +737,38 @@ else
   bad "omega-gateway daemon not fully shipped/wired (unit file / workspace member / install.sh wiring)"
 fi
 
+# ── OS suite parity: every INTEGRATED OS (a payload beyond its scaffold) must
+# have EACH of its four surfaces wired into install.sh, else a fresh install
+# silently ships a half-installed OS. An integrated OS = OS/<slug>/ with a
+# pack/ or engine/ dir. Surfaces checked: the OS payload block, the bin-wrapper
+# loop, the codex-prompt loop (all generic), plus the per-OS Claude skill
+# (BSK loop, or a dedicated block for stepper-os/books-os). The skill name is
+# the slug, except researcher-os→market-research-os and books-os→alexandria.
+if [ -d OS ]; then
+  os_parity_ok=1
+  # generic surface blocks
+  grep -q 'OSS_SRC="\$OMEGA_SRC/OS"' install.sh && grep -q 'cp -rf "\$OSS_SRC/\." "\$OSS_DST/"' install.sh || { bad "OS suite: payload block (OS/. → ~/.omega/os) missing in install.sh"; os_parity_ok=0; }
+  grep -q 'for _os_bin in "\$OSS_SRC"/\*/bin/\*' install.sh || { bad "OS suite: bin-wrapper loop missing in install.sh"; os_parity_ok=0; }
+  grep -q 'for _os_cx in "\$OSS_SRC"/\*/commands/codex-\*.md' install.sh || { bad "OS suite: codex-prompt loop missing in install.sh"; os_parity_ok=0; }
+  bsk_line="$(grep -oE 'for BSK in [^;]+; do' install.sh | head -1)"
+  for _os in OS/*/; do
+    slug="$(basename "$_os")"
+    # integrated = carries a real payload beyond README/MASTER/ledger
+    { [ -d "$_os/pack" ] || [ -d "$_os/engine" ]; } || continue
+    # bin wrapper + codex prompt present in the repo (so the generic loops ship them)
+    ls "$_os"bin/* >/dev/null 2>&1 || { bad "OS suite: $slug has no bin/ wrapper"; os_parity_ok=0; }
+    ls "$_os"commands/codex-*.md >/dev/null 2>&1 || { bad "OS suite: $slug has no commands/codex-*.md"; os_parity_ok=0; }
+    # the Claude skill install path
+    case "$slug" in
+      stepper-os) grep -q 'STEPPER_SKILL_DST' install.sh || { bad "OS suite: stepper-os skill block missing in install.sh"; os_parity_ok=0; } ;;
+      books-os)   grep -q 'skills/alexandria' install.sh || { bad "OS suite: books-os (alexandria) skill block missing"; os_parity_ok=0; } ;;
+      researcher-os) case "$bsk_line" in *market-research-os*) : ;; *) bad "OS suite: researcher-os skill (market-research-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
+      *) case "$bsk_line" in *"$slug"*) : ;; *) bad "OS suite: $slug skill not in the BSK install loop"; os_parity_ok=0 ;; esac ;;
+    esac
+  done
+  [ "$os_parity_ok" -eq 1 ] && ok "OS suite parity: every integrated OS has payload + bin + codex + skill wired in install.sh"
+fi
+
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
   printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'
