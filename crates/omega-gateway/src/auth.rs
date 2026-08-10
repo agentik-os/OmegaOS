@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use crate::fsperm::{harden_dir, harden_file};
+use crate::util::random_hex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Device {
@@ -27,14 +28,6 @@ pub fn sha256_hex(s: &str) -> String {
 fn hex_string(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
-
-fn random_hex(n_bytes: usize) -> String {
-    use rand::RngCore;
-    let mut buf = vec![0u8; n_bytes];
-    rand::rngs::OsRng.fill_bytes(&mut buf);
-    hex_string(&buf)
-}
-
 
 impl DeviceStore {
     pub fn open(dir: &Path) -> Self {

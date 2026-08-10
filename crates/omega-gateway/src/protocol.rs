@@ -46,6 +46,50 @@ pub struct WhoamiResponse {
     pub name: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChatAgent {
+    Claude,
+    Codex,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChatMeta {
+    pub id: String,
+    pub title: Option<String>,
+    pub agent: ChatAgent,
+    pub cwd: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub provider_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ChatMessage {
+    pub role: String,
+    pub text: String,
+    pub ts: String,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatStreamServerMsg {
+    Delta { text: String },
+    AssistantMessage { text: String },
+    ToolEvent {
+        name: String,
+        detail: Option<String>,
+    },
+    TurnDone,
+    Error { message: String },
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChatStreamClientMsg {
+    UserMessage { text: String },
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -55,6 +99,10 @@ pub struct Protocol {
     pub sessions_response: SessionsResponse,
     pub stream_frame: StreamFrame,
     pub whoami_response: WhoamiResponse,
+    pub chat_meta: ChatMeta,
+    pub chat_message: ChatMessage,
+    pub chat_stream_server_msg: ChatStreamServerMsg,
+    pub chat_stream_client_msg: ChatStreamClientMsg,
 }
 
 pub fn schema_json() -> String {
