@@ -79,6 +79,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/chats/{id}", get(crate::routes_chat::get))
         .route("/v1/chats/{id}/stream", get(crate::routes_chat::stream))
+        .route("/v1/missions", get(crate::routes_missions::list))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.

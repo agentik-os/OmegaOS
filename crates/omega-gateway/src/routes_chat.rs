@@ -27,6 +27,15 @@ pub struct ChatCreateRequest {
     pub title: Option<String>,
 }
 
+/// Chat ids are `random_hex(8)` (see `util::random_hex`): exactly 16
+/// lowercase hex characters. The `{id}` path param is otherwise unvalidated
+/// before flowing into `ChatStore`'s filesystem joins, which is a
+/// path-traversal surface (`../../etc/passwd`-shaped ids). Reject anything
+/// that doesn't match the real id shape BEFORE the store is ever touched.
+fn valid_chat_id(id: &str) -> bool {
+    id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
 pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "chats": state.chats.list() }))
 }
@@ -43,6 +52,9 @@ pub async fn get(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
+    if !valid_chat_id(&id) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let meta = state.chats.get(&id).ok_or(StatusCode::NOT_FOUND)?;
     let messages = state.chats.transcript(&id);
     Ok(Json(json!({ "meta": meta, "messages": messages })))
@@ -88,6 +100,12 @@ async fn send_error_turn_done(socket: &mut WebSocket, message: impl Into<String>
 }
 
 async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
+    if !valid_chat_id(&id) {
+        let _ = send_frame(&mut socket, &ChatStreamServerMsg::Error { message: "invalid chat id".to_string() })
+            .await;
+        let _ = socket.send(Message::Close(None)).await;
+        return;
+    }
     // R-STREAM: this loop never exits on error; only a dead socket or an
     // explicit client close ends it. The socket supports multiple turns.
     loop {
@@ -175,5 +193,41 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
         if socket_dead {
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod valid_chat_id_tests {
+    use super::valid_chat_id;
+
+    #[test]
+    fn accepts_a_real_16_hex_id() {
+        assert!(valid_chat_id("0123456789abcdef"));
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        assert!(!valid_chat_id("../etc"));
+        assert!(!valid_chat_id("../../etc/passwd"));
+    }
+
+    #[test]
+    fn rejects_uppercase_hex() {
+        assert!(!valid_chat_id("ABCDEF0123456789"));
+    }
+
+    #[test]
+    fn rejects_short_id() {
+        assert!(!valid_chat_id("0123456789"));
+    }
+
+    #[test]
+    fn rejects_long_id() {
+        assert!(!valid_chat_id("0123456789abcdef00"));
+    }
+
+    #[test]
+    fn rejects_non_hex_same_length_id() {
+        assert!(!valid_chat_id("zzzzzzzzzzzzzzzz"));
     }
 }

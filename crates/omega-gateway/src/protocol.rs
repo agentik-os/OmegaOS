@@ -90,6 +90,27 @@ pub enum ChatStreamClientMsg {
     UserMessage { text: String },
 }
 
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MissionTask {
+    pub title: String,
+    pub status: String,
+}
+
+/// A mirror of one oracle progress ledger
+/// (`~/.omega/state/oracle-<key>.progress.json`) — read-only, never written
+/// by the gateway. `title` is the first line of the ledger's free-text
+/// `mission` field, truncated to 120 chars.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct Mission {
+    pub key: String,
+    pub project: Option<String>,
+    pub title: Option<String>,
+    pub done: u32,
+    pub total: u32,
+    pub tasks: Vec<MissionTask>,
+    pub updated_at: String,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -103,6 +124,8 @@ pub struct Protocol {
     pub chat_message: ChatMessage,
     pub chat_stream_server_msg: ChatStreamServerMsg,
     pub chat_stream_client_msg: ChatStreamClientMsg,
+    pub mission: Mission,
+    pub mission_task: MissionTask,
 }
 
 pub fn schema_json() -> String {
