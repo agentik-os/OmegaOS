@@ -129,7 +129,9 @@ impl AccountStore {
             return false;
         }
         self.write_registry(&accounts);
-        std::fs::remove_dir_all(self.slot_dir(slug)).ok();
+        if let Err(e) = std::fs::remove_dir_all(self.slot_dir(slug)) {
+            tracing::warn!("failed to remove slot dir for {slug}: {e}");
+        }
         true
     }
 
