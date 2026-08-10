@@ -1,89 +1,48 @@
-# SDD Progress — omega-gateway-surface
+# omega-gateway wave 4 — progress ledger
 
-Plan: docs/superpowers/plans/2026-08-10-omega-gateway-omega-surface.md
+Branch: `omega-gateway-wave4` (worktree `~/.omega/worktrees/omega-gateway-wave4`)
+Base: `origin/main` @ c8ea843
 
-## Status
-- [x] Task 1: Add omega-core dependency, prove clean link — commit dc39327
-- [x] Task 2: GET /v1/rules — commit 237e867, reviewed CLEAN
-- [x] Task 3: GET /v1/agents — commit e3772bd, reviewed CLEAN
-- [x] Task 4: GET /v1/skills — commit b0d2346, reviewed CLEAN (380 skills live-verified)
-- [x] Task 5: GET /v1/projects — commit 2000ccc, reviewed CLEAN (49 projects, path/score confirmed absent)
-- [x] Task 6: omega_cli.rs subprocess wrapper — commit 68a81ae, reviewed CLEAN (argv-only, non-zero exit != Err verified)
-- [x] Task 7: GET /v1/oracles — commit 233ad7a, reviewed CLEAN (key=session=ledger's "oracle" field verbatim, no double-prefix; live oracle-dentistrygpt-3 confirmed 14/15)
-- [x] Task 8: POST /v1/dispatch — commit bad9510, reviewed CLEAN (security: argv-only proven with live hostile-payload injection test, validate-before-spawn proven live with unreachable OMEGA_BIN, exact-string project match, auth-gated). Sanctioned cross-task touch: config.rs (new home_dir() override) + routes_projects.rs (call-site swap only, Task 5 behavior unchanged).
-- [x] Task 9: Final wiring + live-daemon verification pass — controller-run, no fix needed, no empty commit
+## Plan (enumerated, operator order)
 
-Execute task-by-task per subagent-driven-development, TDD (failing test first), runtime-verify each endpoint against the live daemon before marking a task done.
+- [x] Task A — Live color terminal stream + interactive key input (routes_sessions.rs, rmux.rs, protocol.rs) — commit e4be4be, adversarial review CLEAN
+- [x] Task B — Chat history pagination at scale (chat_store.rs, routes_chat.rs, protocol.rs) — commit ab9f28b, adversarial review CLEAN (2 nits recorded, non-blocking)
+- [x] Task C — Deposit files from the app (new routes_deposit.rs + deposit.rs, protocol.rs) — commit 5a08a99, adversarial security review CLEAN (3 nits recorded, non-blocking, inherited from the reference bot)
+- [x] Task D — Dispatch hardening (routes_dispatch.rs) — commit abf0f33, adversarial review CLEAN (3 nits recorded, non-blocking), concurrency test stress-tested 25x with 0 flakes
+- [x] Wiring — server.rs route table, protocol.rs schema_test, lib.rs module decl (done incrementally per task, each schema_test/route addition reviewed as part of its task)
+- [ ] Final opus whole-branch review
+- [ ] Runtime verify (L1): release build + live checks for all 4 features
+- [ ] Rebase on origin/main, leave clean, report
 
-## Task 1 — done
-Commit dc39327. Build-time delta: 10.81s (before) -> 17.48s clean gateway build with
-omega-core's own tree pre-built (~6.7s steady-state added cost); no-op incremental
-rebuild unaffected (0.14s). cargo test -p omega-gateway: 149 passed. Assessment:
-bounded/acceptable, no operator escalation needed on build cost.
+Tasks are SERIALIZED (not parallel fan-out) because A/B/C/D all touch shared files
+(protocol.rs, server.rs, lib.rs) — R-SCOPE (one writer per file) forbids concurrent
+delegates on those. Each task still gets a fresh implementer + fresh reviewer per
+the SDD contract; they just run one task at a time.
 
-**Clippy gate correction (controller-verified, L1):** `cargo clippy -p omega-gateway
---all-targets -- -D warnings` (the plan's literal command) now fails — NOT from any
-code this plan writes, but because clippy's `-D warnings` extra-rustc-args apply to
-the whole compiled unit graph in that invocation, and `omega-core` carries ~64
-pre-existing clippy findings (manual_strip, trim_split_whitespace, unnecessary_map_or,
-etc. in skill_registry.rs/sysinfo.rs/session.rs) that were never linted before because
-nothing in omega-gateway's dependency graph compiled omega-core under clippy. Fixing
-omega-core's own debt is out of this plan's file scope (R-KARPATHY surgical changes,
-R-SCOPE) and not something Task 1 should silently absorb.
-**Fix (verified clean, 7.54s):** every task from here on runs clippy as
-`cargo clippy -p omega-gateway --all-targets --no-deps -- -D warnings` — `--no-deps`
-scopes clippy's lints to the omega-gateway crate only (still compiles omega-core
-normally, just doesn't lint it), which is the standard, minimal, non-source-touching
-fix. This does not lower the quality bar for anything this plan writes; it only stops
-unrelated pre-existing dependency debt from blocking this plan's own gate. Recorded
-here transparently per L5 (narrow scope, don't silently lower the floor). Flagging
-omega-core's own clippy debt as a separate future cleanup item for the operator.
+## Ground truth gathered before implementing
 
-## Task 9 — done (controller-run)
-`server.rs` re-read top to bottom: all 6 new routes (`/v1/rules`, `/v1/agents`,
-`/v1/skills`, `/v1/projects`, `/v1/oracles`, `/v1/dispatch`) sit inside the
-`protected` block, strictly above `.route_layer(...require_device)`; none landed
-in the pre-guard `/v1/health`/`/v1/pair` block. `cargo test -p omega-gateway`:
-172 passed, 0 failed. `cargo clippy -p omega-gateway --all-targets --no-deps --
--D warnings`: clean. `cargo build --release -p omega-gateway`: succeeds, 1m36s.
+- rmux capture-pane: `run(&["capture-pane", "-p", "-t", session, "-S", &start])`.
+  ANSI mode adds `-e` per the mission brief. `rmux_bin()` env override `OMEGA_RMUX_BIN`.
+- routes_sessions stream: R-STREAM loop, never exits except dead socket; per-frame
+  diff dedupe against `last`.
+- Chat WS: `ChatStreamServerMsg`/`ClientMsg` tagged enums, `valid_chat_id` (16 lowercase
+  hex) guard reused from routes_chat.rs — same guard needed for the new REST routes.
+- Deposit ground truth: `~/.omega/telegram-bot/inbox-bot.ts` — SECRETISH regex
+  `(\.(p8|pem|key|env|p12|jks|keystore|ppk|crt|pfx)$)|(^|[._-])(id_rsa|id_ed25519)|credential|secret|token|passwd|private[._-]?key`,
+  boxes `["Home","AltReality","Omega","Box"]`, hardlink-then-copy-fallback `place()`,
+  original kept in `~/.omega/inbox/`, `fanout_secrets=true` or `--force`/`!share` override,
+  `~/.omega/deposit.toml` fanout config. Gateway equivalent: `OMEGA_DEPOSIT_DIR` env
+  override (mirrors `OMEGA_GATEWAY_DIR`/`OMEGA_HOME` pattern in config.rs) so tests never
+  touch the real `~/.omega/deposit`.
+- Dispatch hardening ground truth: `routes_dispatch.rs` already validates project via
+  `omega_core::projects::discover`; roster validation should use
+  `omega_core::agents::Agent::all()` (same source `routes_agents.rs` uses) BEFORE spawn.
+  Chat concurrency pattern to mirror: `AppState.chat_permits: Arc<Semaphore>` sized
+  `MAX_CONCURRENT_CHAT_TURNS`, `try_acquire_owned()` -> busy short-circuit.
+- Test idiom: `static LOCK: tokio::sync::Mutex<()>` (async tests touching env vars) or
+  `std::sync::Mutex<()>` (sync tests), fake-bin scripts with `#!/usr/bin/env bash`,
+  argv capture files, `install_fake_home`/`install_fake_omega`/`install_fake_rmux` helpers.
 
-Full live-daemon pass (scratch `omega-gatewayd` release binary, real `$HOME`,
-temp `OMEGA_GATEWAY_DIR`, paired a fresh device):
-- `/v1/rules` -> 7 laws, 52 rules, L0 and R-CLI present.
-- `/v1/agents` -> 8 agents, claude available:true.
-- `/v1/skills?q=audit&limit=3` -> 3 results, total:382, all match "audit".
-- `/v1/projects` -> 49 projects, first entry Kommu/Station/SideBusiness, no
-  path/score leaked.
-- `/v1/oracles` -> 1 live entry, oracle-dentistrygpt-3, 14/15 tasks, matches
-  the real on-disk ledger.
-- `/v1/dispatch` unknown-project POST (OMEGA_BIN pointed at an unreachable
-  path as a safety guard) -> real 400 `{"error":"unknown project: ..."}`,
-  never touched OMEGA_BIN (proves validate-before-spawn holds against a real
-  release binary, not just the test harness). No-auth POST -> 401.
-No real oracle was ever dispatched during verification. Scratch dir + daemon
-process cleaned up after the pass.
-Step 1 found nothing to fix -> no empty Task 9 commit, per the plan's own
-Step 4 fallback.
+## Log
 
-## Rebase + final whole-branch review — done
-Branch was 5 commits behind origin/main (feature-flag/OS-suite commits, no
-overlap with omega-gateway). `git fetch origin && git rebase origin/main`
-(120bbd2) succeeded with zero conflicts; full suite (172 tests) + clippy
-(--no-deps) re-verified green post-rebase.
-
-Final whole-branch review (opus, security focus on POST /v1/dispatch, fresh
-independent read of every file + its own live hostile-payload proof using
-DIFFERENT payloads than Task 8's reviewer, specifically fuzzing the `project`
-field which Task 8's review had not): VERDICT MERGE-READY. Zero Critical
-findings. 5 non-blocking follow-ups recorded (no dispatch concurrency permit
-unlike routes_chat.rs's 8-slot semaphore; `agent` field not pre-validated
-against the known roster before hitting the CLI, giving 502 instead of 400 on
-a bad agent name; no `--` argv separator before positionals, currently safe
-only because clap's arity makes flag-injection fail closed; NUL-byte input
-returns 502 not 400; mission length bounded only incidentally by axum's body
-cap + kernel ARG_MAX). None require a fix before merge; recommended as
-fast follow-ups, especially the dispatch concurrency permit.
-
-Final commit (SHAs after rebase): d34c627 (POST /v1/dispatch, last code
-commit) + 0cdb684 (this progress-ledger doc commit). Merge-base with
-origin/main: 120bbd2.
+(updated as each task closes)
