@@ -2033,6 +2033,15 @@ MREOF
         # market-research skill (a SOURCE LANE inside Researcher OS), whose
         # own install loop below would clobber a shared name.
         if [[ "$BSK" == "market-research-os" ]]; then
+            # /researcher-os matches the OS slug (the OS is Researcher OS #02),
+            # so an operator who thinks in OS names lands on the same skill.
+            cat > "$BCMD/researcher-os.md" <<MREOF
+# /researcher-os
+
+Researcher OS (#02) — Market Research {OS}. Read and follow:
+
+\`$BSK_DST/SKILL.md\`
+MREOF
             cat > "$BCMD/research.md" <<MREOF
 # /research
 
