@@ -37,10 +37,13 @@ impl DeviceStore {
     pub fn open(dir: &Path) -> Self {
         std::fs::create_dir_all(dir).ok();
         let path = dir.join("devices.json");
-        let devices = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let devices = match std::fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
+                tracing::warn!("corrupted {}: {e}; starting with empty device list", path.display());
+                Vec::new()
+            }),
+            Err(_) => Vec::new(),
+        };
         Self { path, devices }
     }
 
@@ -73,8 +76,14 @@ impl DeviceStore {
     }
 
     fn save(&self) {
-        let text = serde_json::to_string_pretty(&self.devices).expect("serialize devices");
-        std::fs::write(&self.path, text).expect("write devices.json");
+        match serde_json::to_string_pretty(&self.devices) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(&self.path, text) {
+                    tracing::error!("failed to write {}: {e}", self.path.display());
+                }
+            }
+            Err(e) => tracing::error!("failed to serialize devices: {e}"),
+        }
     }
 }
 
@@ -103,5 +112,13 @@ mod tests {
         assert!(store.revoke(&device.id));
         assert!(store.verify(&token).is_none());
         assert!(!store.revoke("no-such-id"));
+    }
+
+    #[test]
+    fn corrupted_devices_json_yields_empty_store_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("devices.json"), "{not json").unwrap();
+        let store = DeviceStore::open(dir.path());
+        assert!(store.verify("anything").is_none());
     }
 }
