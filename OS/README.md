@@ -23,7 +23,7 @@ Personal OSes:
 
 | OS | Slug | Focus | Status |
 |----|------|-------|--------|
-| Mindset OS | `mindset-os` | Mental models, mindset engineering | awaiting drop |
+| Mindset OS | `mindset-os` | Jim Rohn identity/wellbeing/wealth coaching OS | **integrated** |
 | Habits OS | `habits-os` | Habit design, tracking, consistency | awaiting drop |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 

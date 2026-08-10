@@ -80,7 +80,7 @@ impl OsProduct {
             OsProduct {
                 slug: "mindset-os",
                 name: "Mindset OS",
-                tagline: "Mental models and mindset engineering: how you think before you build.",
+                tagline: "Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching, philosophy compiler, 90-day program.",
                 group: OsGroup::Personal,
             },
             OsProduct {

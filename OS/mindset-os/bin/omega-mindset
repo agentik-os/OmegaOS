@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# omega-mindset — the OmegaOS command for Mindset OS (AgentikOS suite,
+# personal group). A thin dispatcher over the pack's two stdlib scripts:
+#
+#   omega-mindset new --name "You" --output ~/mindset      create the workspace
+#   omega-mindset score ~/mindset/04_WEEKLY_SCORECARD.json validate a week
+#
+# The COACHING half is the /mindset-os skill (Claude) or the Codex prompt;
+# these scripts own the deterministic workspace + weekly scorecard.
+set -euo pipefail
+
+OMEGA_DIR="${OMEGA_DIR:-$HOME/.omega}"
+
+find_dir() {
+    local candidates=(
+        "${MINDSET_ENGINE_DIR:-}"
+        "$HOME/Station/SideBusiness/OmegaOS/OS/mindset-os/pack/scripts"
+        "$HOME/OmegaOS/OS/mindset-os/pack/scripts"
+        "$OMEGA_DIR/os/mindset-os/pack/scripts"
+        "$OMEGA_DIR/skills/mindset-os/scripts"
+    )
+    for d in "${candidates[@]}"; do
+        [[ -n "$d" && -f "$d/create_workspace.py" ]] && { echo "$d"; return 0; }
+    done
+    return 1
+}
+
+DIR="$(find_dir)" || {
+    echo "omega-mindset: scripts not found (run OmegaOS install.sh, or set MINDSET_ENGINE_DIR)" >&2
+    exit 1
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+    new|workspace|create) exec python3 "$DIR/create_workspace.py" "$@" ;;
+    score|week)           exec python3 "$DIR/score_week.py" "$@" ;;
+    ""|-h|--help)
+        echo "omega-mindset — Mindset OS workspace tools"
+        echo "  omega-mindset new --name \"You\" --output <dir>   create the workspace"
+        echo "  omega-mindset score <scorecard.json>             validate a weekly scorecard"
+        echo "Coaching runs in the agent: /mindset-os (Claude), Codex prompt, or the OS bot." ;;
+    *) echo "omega-mindset: unknown command '$cmd' (new | score)" >&2; exit 2 ;;
+esac
