@@ -220,6 +220,23 @@ pub struct RulesResponse {
     pub rules: Vec<RuleEntry>,
 }
 
+/// One entry of `GET /v1/agents`'s `agents` array — mirrors
+/// `omega_core::agents::Agent` 1:1: `name`/`display_name`/`available` map
+/// directly to `Agent::name()`/`Agent::display_name()`/`Agent::is_available()`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentEntry {
+    pub name: String,
+    pub display_name: String,
+    pub available: bool,
+}
+
+/// `GET /v1/agents` response body — the fixed dispatch-target roster from
+/// `omega_core::agents::Agent::all()`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AgentsResponse {
+    pub agents: Vec<AgentEntry>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -245,6 +262,8 @@ pub struct Protocol {
     pub law_entry: LawEntry,
     pub rule_entry: RuleEntry,
     pub rules_response: RulesResponse,
+    pub agent_entry: AgentEntry,
+    pub agents_response: AgentsResponse,
 }
 
 pub fn schema_json() -> String {
