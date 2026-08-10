@@ -727,6 +727,16 @@ if [[ -f tools/agent-reach/install-agent-reach.sh ]] && grep -q "install-agent-r
 # unreviewed one on every future install.
 if grep -qE '^PIN="[0-9a-f]{40}"' tools/agent-reach/install-agent-reach.sh; then ok "Agent Reach pinned to a reviewed commit"; else bad "Agent Reach pin missing or not a full sha"; fi
 
+# omega-gateway (app API daemon): unit shipped, a workspace member (so the
+# source-build `cargo build --release` above produces omega-gatewayd for
+# free), and installer wiring (binary install + systemd unit + enable).
+if [ -f config/omega-gateway.service ] && grep -q "crates/omega-gateway" Cargo.toml \
+  && grep -q "omega-gatewayd" install.sh && grep -q "omega-gateway.service" install.sh; then
+  ok "omega-gateway daemon shipped + wired (unit + workspace build + install.sh)"
+else
+  bad "omega-gateway daemon not fully shipped/wired (unit file / workspace member / install.sh wiring)"
+fi
+
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
   printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'

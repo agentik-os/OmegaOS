@@ -819,6 +819,27 @@ else
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
 
+# --- omega-gateway (app API daemon; consumed by the omega-app mobile/desktop
+# clients — Plan 4). `cargo build --release` above builds the whole workspace
+# (crates/omega-gateway is a member), so the binary already exists here on the
+# source-build path; the PREBUILT_OK path installs only omega/rmux from GitHub
+# release assets and has no gateway artifact, so this degrades to a skip there
+# (release-pipeline follow-up, not attempted in this task).
+if [[ -x target/release/omega-gatewayd ]]; then
+    install_binary target/release/omega-gatewayd "$INSTALL_DIR/omega-gatewayd"
+    mkdir -p "$HOME/.config/systemd/user"
+    cp config/omega-gateway.service "$HOME/.config/systemd/user/omega-gateway.service"
+    if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
+        systemctl --user daemon-reload 2>/dev/null || true
+        systemctl --user enable --now omega-gateway.service 2>/dev/null || true
+        ok "omega-gateway installed + running (http://127.0.0.1:4477)"
+    else
+        ok "omega-gateway binary installed to $INSTALL_DIR/omega-gatewayd (systemd unavailable — start manually: omega-gatewayd serve)"
+    fi
+else
+    info "omega-gatewayd not built (target/release/omega-gatewayd missing) — skipping gateway install"
+fi
+
 # Install the Telegram command bot NOW (before the long, fragile Phase 5) so a
 # set -e abort later can never skip the operator's phone interface.
 install_command_bot || info "command bot setup had warnings (non-fatal)"
