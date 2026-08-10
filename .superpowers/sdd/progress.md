@@ -5,13 +5,21 @@ Base: `origin/main` @ e40a904
 
 ## Plan (enumerated, operator order)
 
-- [x] Task A — Files browse/read: `GET /v1/files` (scoped dir listing) +
-      `GET /v1/files/read` (scoped file read, text-only, size-capped) —
-      SECURITY-CRITICAL (arbitrary file read if the traversal guard is wrong).
-      Root scoped to ONE discovered project's path (query param `project`,
-      same discovered-project allowlist `routes_dispatch.rs` already uses),
-      never the whole `$HOME`. New routes_files.rs, protocol.rs, server.rs,
-      lib.rs, schema_test.rs.
+- [x] Task A — Files browse/read: `GET /v1/files` + `GET /v1/files/read`,
+      scoped to one discovered project's path via `project=` query param
+      (never `$HOME`), traversal guard = component-join + canonicalize +
+      `starts_with(root)`. Implementer commit `80df155` (22 tests, build/
+      test/clippy green). Adversarial review NOT CLEAN first pass: real
+      info-leak bug — `resolve_scoped_path` canonicalized the leaf itself
+      before classifying Escaped(403)/NotFound(404), so a traversal to an
+      EXISTING outside file returned 403 while the SAME traversal to a
+      nonexistent outside file returned 404 — an authenticated caller could
+      enumerate arbitrary-file existence on the box from the status code
+      alone, without reading any content. Fixed in `6a42db8` (falls back to
+      canonicalizing the leaf's PARENT when the leaf itself doesn't resolve,
+      so escape-via-existing-parent is still 403 regardless of leaf
+      existence): regression test proven fail-before/pass-after. Re-verified
+      clean: build/test/clippy green, 315 tests total in the crate.
 - [ ] Task B — Audit (Quality Arsenal): `GET /v1/audits` (catalog, in-process
       from `omega_core::audit::all_audits()`, never CLI-parsed) + `POST
       /v1/audit` (pre-flight validate project+kind, mirrors
