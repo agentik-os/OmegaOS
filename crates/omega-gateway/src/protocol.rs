@@ -372,6 +372,43 @@ pub struct SendKeysResponse {
     pub ok: bool,
 }
 
+/// `POST /v1/sessions/{name}/close` response body — the classification +
+/// outcome of running `omega kill <name>` (never `--force`: a REFUSED
+/// live-workers case must surface to the app so it can render a strong
+/// confirm, never be silently forced by the gateway). `killed` is `true`
+/// only on `omega kill`'s own 2xx-equivalent (zero) exit — a REFUSED kill
+/// (non-zero exit) is a NORMAL, expected outcome the app needs to render,
+/// so the endpoint still answers HTTP 200 with `killed: false` rather than
+/// a 502. `message` carries the raw operator-facing text `omega kill`
+/// produced (preferring stdout, falling back to stderr — see
+/// `routes_sessions::close`'s doc comment for why: the real CLI's REFUSED
+/// bail lands on stderr, not stdout, contrary to a naive first read of its
+/// call site).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CloseSessionResponse {
+    pub killed: bool,
+    pub already_closed: bool,
+    pub is_oracle: bool,
+    pub cascaded_count: u32,
+    pub message: String,
+}
+
+/// Body of `POST /v1/sessions/{name}/rename`. `new_name` is validated as a
+/// safe slug (see `routes_sessions::valid_new_session_name`) BEFORE it ever
+/// reaches rmux — rmux silently REWRITES `:`/`.` to `_` rather than
+/// rejecting them, and the caller expects `new_name` back verbatim.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct RenameSessionRequest {
+    pub new_name: String,
+}
+
+/// `POST /v1/sessions/{name}/rename` response body — `name` is the
+/// already-validated `new_name`, i.e. the session's new effective name.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RenameSessionResponse {
+    pub name: String,
+}
+
 /// `POST /v1/deposit` response body — the HTTP twin of the Telegram DEPOSIT
 /// bot's reply. `file` is the final timestamped filename written to the
 /// inbox, `boxes` lists the named boxes the deposit actually reached (empty
@@ -423,6 +460,9 @@ pub struct Protocol {
     pub dispatch_response: DispatchResponse,
     pub send_keys_request: SendKeysRequest,
     pub send_keys_response: SendKeysResponse,
+    pub close_session_response: CloseSessionResponse,
+    pub rename_session_request: RenameSessionRequest,
+    pub rename_session_response: RenameSessionResponse,
     pub deposit_response: DepositResponse,
 }
 

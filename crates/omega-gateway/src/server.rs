@@ -102,6 +102,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(crate::routes_sessions::send_keys),
         )
         .route(
+            "/v1/sessions/{name}/close",
+            axum::routing::post(crate::routes_sessions::close),
+        )
+        .route(
+            "/v1/sessions/{name}/rename",
+            axum::routing::post(crate::routes_sessions::rename),
+        )
+        .route(
             "/v1/chats",
             get(crate::routes_chat::list).post(crate::routes_chat::create),
         )

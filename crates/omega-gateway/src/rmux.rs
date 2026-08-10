@@ -60,3 +60,24 @@ pub fn send_enter(session: &str) -> Result<()> {
     run(&["send-keys", "-t", session, "Enter"])?;
     Ok(())
 }
+
+/// Renames a live rmux session: `rmux rename-session -t <old> <new>`.
+///
+/// Argv shape CONFIRMED against a real call site in this monorepo (not
+/// inferred/guessed): `omega_core::session::SessionManager::rename_session`
+/// (`crates/omega-core/src/session.rs:454-455`) already drives the same
+/// real `rmux` binary with exactly `.args(["rename-session", "-t",
+/// old_name, &safe])` — `-t <session>` selects the target, the new name is
+/// a bare positional, matching this module's other `-t`-first shapes
+/// (`capture_pane`, `send_keys_literal`, `send_enter`).
+///
+/// The caller (`routes_sessions::rename`) is responsible for validating
+/// `new` as a safe slug BEFORE calling this: unlike
+/// `SessionManager::rename_session`'s own `sanitize_session_name` chokepoint,
+/// this thin wrapper passes `new` straight through, so an unsafe value here
+/// would hit rmux's own silent `:`/`.` → `_` rewrite instead of being
+/// rejected, and the HTTP caller expects `new_name` back verbatim.
+pub fn rename_session(old: &str, new: &str) -> Result<()> {
+    run(&["rename-session", "-t", old, new])?;
+    Ok(())
+}

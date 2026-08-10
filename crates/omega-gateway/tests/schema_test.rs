@@ -39,6 +39,9 @@ fn schema_contains_all_wire_types() {
         "DepositResponse",
         "SendKeysRequest",
         "SendKeysResponse",
+        "CloseSessionResponse",
+        "RenameSessionRequest",
+        "RenameSessionResponse",
         "ChatMessagesPage",
         "ChatDetailResponse",
     ] {
