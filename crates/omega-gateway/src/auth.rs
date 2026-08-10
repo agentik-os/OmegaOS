@@ -87,6 +87,40 @@ impl DeviceStore {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingCode {
+    pub code: String,
+    pub expires_at: String,
+}
+
+impl PairingCode {
+    pub fn create(dir: &Path, ttl_secs: i64) -> Self {
+        std::fs::create_dir_all(dir).ok();
+        let pc = Self {
+            code: random_hex(4), // 8 hex chars, human-typable
+            expires_at: (chrono::Utc::now() + chrono::Duration::seconds(ttl_secs)).to_rfc3339(),
+        };
+        std::fs::write(
+            dir.join("pairing.json"),
+            serde_json::to_string(&pc).expect("serialize pairing"),
+        ).expect("write pairing.json");
+        pc
+    }
+
+    /// Returns true exactly once for a live matching code; deletes the file on success.
+    pub fn consume(dir: &Path, code: &str) -> bool {
+        let path = dir.join("pairing.json");
+        let Ok(text) = std::fs::read_to_string(&path) else { return false };
+        let Ok(pc) = serde_json::from_str::<PairingCode>(&text) else { return false };
+        let live = pc.code == code
+            && chrono::DateTime::parse_from_rfc3339(&pc.expires_at)
+                .map(|t| t > chrono::Utc::now())
+                .unwrap_or(false);
+        if live { std::fs::remove_file(&path).ok(); }
+        live
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,4 @@
+use omega_gateway::config::GatewayConfig;
 use omega_gateway::server::{build_router, AppState};
 
 async fn spawn(app: axum::Router) -> String {
@@ -10,7 +11,7 @@ async fn spawn(app: axum::Router) -> String {
 #[tokio::test]
 async fn health_returns_ok_and_version() {
     let dir = tempfile::tempdir().unwrap();
-    let app = build_router(AppState { dir: dir.path().to_path_buf() });
+    let app = build_router(AppState { dir: dir.path().to_path_buf(), cfg: GatewayConfig::default() });
     let base = spawn(app).await;
     let body: serde_json::Value = reqwest::get(format!("{base}/v1/health"))
         .await.unwrap().json().await.unwrap();
