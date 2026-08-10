@@ -137,6 +137,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/skills", get(crate::routes_skills::list))
         .route("/v1/projects", get(crate::routes_projects::list))
+        .route("/v1/files", get(crate::routes_files::list))
+        .route("/v1/files/read", get(crate::routes_files::read))
         .route("/v1/dispatch", axum::routing::post(crate::routes_dispatch::create))
         // B1 fix: axum 0.8's `Multipart` extractor falls back to its own
         // internal 2 MiB default body limit when no `DefaultBodyLimit` layer

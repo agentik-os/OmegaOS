@@ -492,6 +492,40 @@ pub struct DepositResponse {
     pub held: bool,
 }
 
+/// One entry of `GET /v1/files`'s `entries` array — a directory listing
+/// item. `name` is the entry's bare filename (never the full path: the
+/// client already knows the `path` it asked for and can join `name` onto
+/// it). `size` is the file's byte length, `None` for a directory (a
+/// directory's on-disk "size" is filesystem-metadata noise, never a
+/// meaningful byte count to a client).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FileEntry {
+    pub name: String,
+    pub is_dir: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
+/// `GET /v1/files` response body — a scoped directory listing under one
+/// discovered project's root (see `routes_files::resolve_scoped_path`).
+/// Sorted directories first, then alphabetically (byte order) within each
+/// group; this ordering is arbitrary and not the focus of the endpoint.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FilesResponse {
+    pub entries: Vec<FileEntry>,
+}
+
+/// `GET /v1/files/read` response body — one file's full text content,
+/// UTF-8 decoded. The handler rejects (before ever constructing this type)
+/// any file over `routes_files::MAX_FILE_READ_BYTES`, any content
+/// containing a NUL byte, and any content that fails UTF-8 decoding — this
+/// is a text-only, read-only file-content endpoint, never a binary/diff
+/// viewer.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct FileReadResponse {
+    pub content: String,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -540,6 +574,9 @@ pub struct Protocol {
     pub session_org_entry: SessionOrgEntry,
     pub session_org_response: SessionOrgResponse,
     pub session_org_update_request: SessionOrgUpdateRequest,
+    pub file_entry: FileEntry,
+    pub files_response: FilesResponse,
+    pub file_read_response: FileReadResponse,
 }
 
 pub fn schema_json() -> String {

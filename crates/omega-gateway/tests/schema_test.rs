@@ -49,6 +49,9 @@ fn schema_contains_all_wire_types() {
         "SessionOrgEntry",
         "SessionOrgResponse",
         "SessionOrgUpdateRequest",
+        "FileEntry",
+        "FilesResponse",
+        "FileReadResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }
