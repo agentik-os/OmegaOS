@@ -1959,7 +1959,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -1994,6 +1994,23 @@ Modes: NEW / RECOVER / EXTEND / REVISE / AUDIT / DELTA · state CLI:
 \`omega-blueprint\` · boundary: stops at BLUEPRINT COMPLETE — STEPPER READY
 (then Stepper OS, \`omega-stepper\`).
 EOF
+        fi
+        # Ideation OS (Brainstorm {OS}) also registers the short `/brainstorm`
+        # alias (the pack's canonical command; the OS slot is ideation-os #01).
+        if [[ "$BSK" == "brainstorm-os" ]]; then
+            cat > "$BCMD/brainstorm.md" <<MREOF
+# /brainstorm
+
+Brainstorm {OS} v3 — the imagination + decision council (Ideation OS, build
+chain #01). Alias of /brainstorm-os: read and follow the complete
+instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Depths spark/imagination/council/deep/red-team/converge/audit · real dissent
+required · state CLI: \`omega-ideation\` · handoff: frozen concept -> Market
+Research or Blueprint.
+MREOF
         fi
         # Researcher OS (Market Research {OS}) registers the short `/research`
         # alias — NOT `/market-research`, which belongs to the gooseworks

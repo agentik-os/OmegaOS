@@ -44,7 +44,7 @@ impl OsProduct {
             OsProduct {
                 slug: "ideation-os",
                 name: "Ideation OS",
-                tagline: "Idea generation and capture: produce, rank and store the ideas the chain starts from.",
+                tagline: "Brainstorm {OS} v3: multi-agent imagination + decision council, lineage and a frozen concept handoff.",
                 group: OsGroup::BuildChain,
             },
             OsProduct {

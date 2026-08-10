@@ -763,6 +763,7 @@ if [ -d OS ]; then
       stepper-os) grep -q 'STEPPER_SKILL_DST' install.sh || { bad "OS suite: stepper-os skill block missing in install.sh"; os_parity_ok=0; } ;;
       books-os)   grep -q 'skills/alexandria' install.sh || { bad "OS suite: books-os (alexandria) skill block missing"; os_parity_ok=0; } ;;
       researcher-os) case "$bsk_line" in *market-research-os*) : ;; *) bad "OS suite: researcher-os skill (market-research-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
+      ideation-os)   case "$bsk_line" in *brainstorm-os*) : ;; *) bad "OS suite: ideation-os skill (brainstorm-os) not in BSK loop"; os_parity_ok=0 ;; esac ;;
       *) case "$bsk_line" in *"$slug"*) : ;; *) bad "OS suite: $slug skill not in the BSK install loop"; os_parity_ok=0 ;; esac ;;
     esac
   done

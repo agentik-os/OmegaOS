@@ -12,7 +12,7 @@ personal OSes.
 
 | # | OS | Slug | Focus | Status |
 |---|----|------|-------|--------|
-| 01 | Ideation OS | `ideation-os` | Idea generation and capture | awaiting drop |
+| 01 | Ideation OS | `ideation-os` | Brainstorm {OS} v3: imagination + decision council | **integrated** |
 | 02 | Researcher OS | `researcher-os` | Market Research {OS}: evidence + validation compiler, bounded decisions | **integrated** |
 | 03 | Blueprint OS | `blueprint-os` | The product-definition compiler (v3): 38 sections, stable IDs, 20 gates, frozen handoff | **integrated** |
 | 04 | Designer OS (UX/UI) | `designer-os` | Contracts turned into screens, flows and a design system | awaiting drop |
