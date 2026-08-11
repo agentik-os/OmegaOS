@@ -370,6 +370,133 @@ async fn backup_requires_auth() {
     assert_eq!(res.status(), 401);
 }
 
+// ── GET /v1/box-id ───────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn box_id_requires_auth() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new().get(format!("{base}/v1/box-id")).send().await.unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn box_id_is_32_hex_chars_and_stable_across_repeated_calls() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res1 =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res1.status(), 200);
+    let body1: serde_json::Value = res1.json().await.unwrap();
+    let id1 = body1["box_id"].as_str().unwrap().to_string();
+    assert_eq!(id1.len(), 32, "box_id must be 32 hex chars");
+    assert!(id1.chars().all(|c| c.is_ascii_hexdigit()));
+
+    let res2 =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let body2: serde_json::Value = res2.json().await.unwrap();
+    assert_eq!(body2["box_id"].as_str().unwrap(), id1, "repeated calls must return the SAME id");
+}
+
+#[tokio::test]
+async fn box_id_persists_across_a_fresh_appstate_pointed_at_the_same_dir() {
+    // Simulates a gateway restart: a brand-new AppState (and thus a brand-new
+    // router) built against the SAME on-disk gateway_dir must serve the id
+    // the first process already generated, never a fresh one.
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+
+    let app1 = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base1 = spawn(app1).await;
+    let res1 =
+        reqwest::Client::new().get(format!("{base1}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let body1: serde_json::Value = res1.json().await.unwrap();
+    let id1 = body1["box_id"].as_str().unwrap().to_string();
+
+    let app2 = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base2 = spawn(app2).await;
+    let res2 =
+        reqwest::Client::new().get(format!("{base2}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    let body2: serde_json::Value = res2.json().await.unwrap();
+    assert_eq!(body2["box_id"].as_str().unwrap(), id1, "id must survive a restart against the same dir");
+}
+
+/// Adversarial: many requests fire at a gateway whose `box_id.txt` does not
+/// exist yet, all racing to be "the first" to create it. Every response must
+/// carry the SAME id -- proves the `create_new` race guard actually works,
+/// not just that it compiles.
+#[tokio::test]
+async fn box_id_concurrent_first_calls_converge_on_one_id() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let base = base.clone();
+        let token = token.clone();
+        handles.push(tokio::spawn(async move {
+            let res = reqwest::Client::new()
+                .get(format!("{base}/v1/box-id"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap();
+            let body: serde_json::Value = res.json().await.unwrap();
+            body["box_id"].as_str().unwrap().to_string()
+        }));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for h in handles {
+        ids.insert(h.await.unwrap());
+    }
+    assert_eq!(ids.len(), 1, "every concurrent first-call must converge on exactly one id, got {ids:?}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn box_id_file_is_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let mode = std::fs::metadata(gateway_dir.path().join("box_id.txt"))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "box_id.txt must be 0600");
+}
+
+/// Adversarial: a pre-existing but corrupted (empty) box_id.txt must not be
+/// served as-is -- the endpoint must treat it like "absent" and regenerate.
+#[tokio::test]
+async fn box_id_regenerates_when_file_is_empty() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    std::fs::write(gateway_dir.path().join("box_id.txt"), "").unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["box_id"].as_str().unwrap().len(), 32);
+}
+
 /// Adversarial: `omega doctor` stdout with a check line whose glyph slot
 /// holds a multi-byte UTF-8 character (`€`) instead of the expected
 /// single-byte ASCII glyph. Before the fix, `parse_doctor_output`

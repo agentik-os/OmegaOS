@@ -789,6 +789,21 @@ pub struct BoxInfoResponse {
     pub uptime_secs: u64,
 }
 
+/// `GET /v1/box-id` response body — this box's STABLE, non-secret identifier
+/// (32 lowercase hex chars, `crate::util::random_hex(16)`), generated once
+/// on first access and persisted at `<gateway_dir>/box_id.txt` (0600). This
+/// is the id the app registers into the Directory's `boxes` table as
+/// `boxId` (anywhere-access plan §5.2) — it identifies the BOX, unlike
+/// `Device.id` in `auth.rs`, which identifies one PAIRED APP INSTANCE. Not a
+/// credential: knowing it grants no access (the endpoint itself is still
+/// device-token-guarded like every other protected route), it just needs to
+/// be stable across restarts so the same box is recognized as the same box
+/// by every device that later pairs with it.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BoxIdResponse {
+    pub box_id: String,
+}
+
 /// `POST /v1/backup` response body — `path` is the archive's final on-disk
 /// path (parsed off `omega backup`'s own `"  archive : <path>"` stdout
 /// line, falling back to the server-chosen `--out` path this endpoint

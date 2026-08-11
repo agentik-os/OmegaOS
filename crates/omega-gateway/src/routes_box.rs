@@ -9,14 +9,16 @@
 //! `hostname` lookup, a shelled-out `omega --version`, and this crate's own
 //! `CARGO_PKG_VERSION` + process uptime.
 
+use crate::fsperm::{harden_dir, harden_file};
 use crate::protocol::{
-    BackupResponse, BoxInfoResponse, DoctorCheckEntry, DoctorResponse, UsageResponse,
+    BackupResponse, BoxIdResponse, BoxInfoResponse, DoctorCheckEntry, DoctorResponse,
+    UsageResponse,
 };
 use crate::server::AppState;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::Json;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn internal_err(msg: String) -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg })))
@@ -193,6 +195,86 @@ pub async fn box_info(State(state): State<AppState>) -> Json<BoxInfoResponse> {
         gateway_version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_secs: state.started_at.elapsed().as_secs(),
     })
+}
+
+// ── GET /v1/box-id ───────────────────────────────────────────────────────
+
+fn box_id_path(dir: &Path) -> PathBuf {
+    dir.join("box_id.txt")
+}
+
+/// Reads this box's stable id from `box_id.txt`, generating and persisting a
+/// fresh 32-hex-char id (`random_hex(16)`) on first access if the file
+/// doesn't exist yet or is empty/corrupted.
+///
+/// Concurrent-safe by construction rather than by locking: two requests
+/// racing to be "the first" both compute a candidate id, but only one wins
+/// the atomic `create_new` claim on the file; the loser reads back whatever
+/// the winner persisted instead of serving its own (different) candidate —
+/// otherwise two concurrent first-callers would each get a different id and
+/// the box would register into the Directory as two different boxes.
+fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    harden_dir(dir);
+    let path = box_id_path(dir);
+
+    match std::fs::read_to_string(&path) {
+        // Healthy existing id -- the common case on every call after the
+        // first.
+        Ok(existing) if !existing.trim().is_empty() => Ok(existing.trim().to_string()),
+        // The file EXISTS but is empty/corrupted: `create_new` below would
+        // always fail with AlreadyExists here (it only checks presence, not
+        // content) and silently re-serve the same empty string forever, so
+        // this case is handled with a direct overwrite instead -- no
+        // concurrent-first-call race to protect against, since the file is
+        // already there.
+        Ok(_empty) => {
+            let candidate = crate::util::random_hex(16); // 16 bytes -> 32 hex chars
+            std::fs::write(&path, &candidate)?;
+            harden_file(&path);
+            Ok(candidate)
+        }
+        // The file does not exist yet: this IS the race-prone path, since
+        // multiple concurrent "first" requests can all land here together.
+        Err(_not_found) => {
+            let candidate = crate::util::random_hex(16);
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut f) => {
+                    f.write_all(candidate.as_bytes())?;
+                    harden_file(&path);
+                    Ok(candidate)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Lost the create_new race to a concurrent first caller
+                    // -- serve what it actually persisted, never our own
+                    // discarded candidate.
+                    let existing = std::fs::read_to_string(&path)?;
+                    let trimmed = existing.trim();
+                    if trimmed.is_empty() {
+                        // Vanishingly unlikely (the winner is mid-write): one retry.
+                        std::fs::read_to_string(&path).map(|s| s.trim().to_string())
+                    } else {
+                        Ok(trimmed.to_string())
+                    }
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// `GET /v1/box-id` — this box's stable, non-secret identifier, generating
+/// and persisting it on first call if absent (anywhere-access plan §5.2).
+/// Device-token-guarded like every other route below (registered above
+/// `require_device`'s `route_layer` in `server.rs`).
+pub async fn box_id(State(state): State<AppState>) -> Result<Json<BoxIdResponse>, (StatusCode, Json<serde_json::Value>)> {
+    let dir = state.dir.clone();
+    let id = tokio::task::spawn_blocking(move || read_or_create_box_id(&dir))
+        .await
+        .map_err(|e| internal_err(format!("box-id task panicked: {e}")))?
+        .map_err(|e| internal_err(format!("failed to read/create box_id.txt: {e}")))?;
+    Ok(Json(BoxIdResponse { box_id: id }))
 }
 
 // ── POST /v1/backup ──────────────────────────────────────────────────────

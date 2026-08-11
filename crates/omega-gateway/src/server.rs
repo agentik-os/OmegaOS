@@ -342,6 +342,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/doctor", get(crate::routes_box::doctor))
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
+        .route("/v1/box-id", get(crate::routes_box::box_id))
         .route("/v1/backup", axum::routing::post(crate::routes_box::backup))
         .route(
             "/v1/config",
