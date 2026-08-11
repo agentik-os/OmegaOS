@@ -268,7 +268,23 @@ async function tg(method: string, body: any, _retry = 0): Promise<any> {
       return tg(method, body, _retry + 1);
     }
     return j;
-  } catch (e) { console.error(`tg ${method}:`, e); return { ok: false }; }
+  } catch (e: any) {
+    // A getUpdates long-poll routinely aborts on our own AbortSignal.timeout
+    // (no updates in the window, or a half-open socket) — that is NORMAL and
+    // self-heals via the {ok:false} → sleep 2s → retry path. Log it as ONE
+    // clean line, never dump the raw DOMException (which prints the whole DOM
+    // error-code table and looks like a crash/flag in the journal). Real
+    // errors still get their name + message.
+    const name = e?.name || "Error";
+    const msg = e?.message || String(e);
+    if (name === "TimeoutError" || name === "AbortError") {
+      // Silent for getUpdates (expected); one quiet line for anything else.
+      if (method !== "getUpdates") console.error(`tg ${method}: ${name} (${msg})`);
+    } else {
+      console.error(`tg ${method}: ${name}: ${msg}`);
+    }
+    return { ok: false };
+  }
 }
 const MAXLEN = 3500;
 type Btn = { text: string; callback_data?: string; url?: string };
