@@ -186,5 +186,45 @@ CLI itself when omitted here). New `NewProjectStreamMsg` (protocol.rs) +
 mirrors `orchestrate_permits`). Route wired above `route_layer`.
 **Test count after Task B: 501, 0 failed (480→501, 21 new: 9 integration +
 12 inline unit). Clippy clean. Release build OK.**
-## Task C — status: not started
+
+Commit `b9cb7e5`, then a fresh adversarial reviewer found 4 Important
+findings (no Critical — the `--` separator was proven correct, not a repeat
+of the wave7 bug class): `is_slug` allowed a leading `-` that leaked past
+clap into the downstream agent PROMPT string (`cmd_new_project`'s `flags`
+field), a `process_group(0)` doc comment copy-pasted from
+orchestrate/install claiming disconnect-kill safety that is FALSE for this
+subcommand (rmux daemon setsid()s its own children — no real cancellation
+exists), a concurrency-cap doc comment overclaiming what it bounds
+(in-flight spawn requests, not live bootstrap pipelines), and a
+session-name truncation/collision risk (`{name}-setup` not validated
+against `sanitize_session_name`, same defect class Task A's own review
+round already found in `routes_team.rs`). All 4 fixed — commit `ea014f7`.
+**Test count after Task B fix round: 510, 0 failed. Clippy clean.**
+
+## Task C — status: DONE (routes_marketing.rs::list, tests/marketing_test.rs).
+`GET /v1/marketing` calls `omega_core::marketing::list_marketing_projects()`
+in-process via `spawn_blocking` (no subprocess), mapping every
+`MarketingProject` field into a new `MarketingProjectEntry` EXCEPT `path`.
+Ground-truth correction found while implementing: the brief's premise that
+"`ProjectEntry.path` already carries" a plain-string path-exposure
+precedent is factually wrong — `protocol.rs`'s real `ProjectEntry` (commit
+`370ec43`) deliberately DROPS `path`, with an explicit doc comment ("a full
+filesystem path is server-internal, not something the wire protocol should
+leak to a mobile client"). `MarketingProjectEntry` follows that REAL,
+deliberate, documented convention instead (path omitted; `slug` already IS
+the id `omega-zernio`/higgsfield use, so nothing actionable is lost).
+`accounts: Option<usize>` (matches the existing `Option<usize>` precedent
+at `TelegramStatusResponse.allow_user_ids_count`), always `None`/`null`
+from this endpoint (never shells to `omega-zernio` — out of scope, listing
+stays read-only). Also found: `ProjectRegistry::load()` (one of
+`list_marketing_projects`'s two sources) hardcodes `dirs::home_dir()`
+directly and is NOT configurable via `OMEGA_STATION_DIR` — tests override
+both `$HOME` (neutralizes the real `~/.omega/projects.json`, which on this
+box has 11 real marketing-enabled projects) and `OMEGA_STATION_DIR` (scopes
+the filesystem-scan half), same dual-env pattern `telegram_test.rs` uses
+for its own `$HOME`-hardcoded lookup. Route wired above `route_layer`
+(`/v1/marketing`, between `/v1/projects` and `/v1/files`).
+**Test count after Task C: 514, 0 failed (510→514, 4 new integration
+tests: empty station, full status flags + accounts never populated,
+multi-project name-sort, 401). Clippy clean. Release build OK.**
 ## Task D — status: not started

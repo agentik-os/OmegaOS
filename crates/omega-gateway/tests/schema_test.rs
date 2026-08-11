@@ -34,6 +34,8 @@ fn schema_contains_all_wire_types() {
         "SkillsResponse",
         "ProjectEntry",
         "ProjectsResponse",
+        "MarketingProjectEntry",
+        "MarketingResponse",
         "OracleEntry",
         "OraclesResponse",
         "DispatchRequest",

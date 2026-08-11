@@ -253,6 +253,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/skills", get(crate::routes_skills::list))
         .route("/v1/projects", get(crate::routes_projects::list))
+        .route("/v1/marketing", get(crate::routes_marketing::list))
         .route("/v1/files", get(crate::routes_files::list))
         .route("/v1/files/read", get(crate::routes_files::read))
         .route("/v1/audits", get(crate::routes_audit::list))

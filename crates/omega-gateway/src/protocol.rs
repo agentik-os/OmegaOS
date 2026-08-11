@@ -335,6 +335,44 @@ pub struct ProjectsResponse {
     pub projects: Vec<ProjectEntry>,
 }
 
+/// One entry of `GET /v1/marketing`'s `projects` array — a field-for-field
+/// mirror of `omega_core::marketing::MarketingProject`, minus `path` (a full
+/// filesystem path is server-internal, not something the wire protocol
+/// should leak to a mobile client — the SAME posture `ProjectEntry` above
+/// already takes for `/v1/projects`, deliberately re-applied here rather
+/// than exposing it; `slug` is already the id `omega-zernio`/higgsfield use,
+/// so nothing is lost by dropping it). `accounts` is ALWAYS `null` from this
+/// endpoint: populating it needs `omega_core::marketing::project_accounts`,
+/// which shells out to `omega-zernio` per project — explicitly out of scope
+/// for this read-only listing endpoint (on-demand only, never per-frame, per
+/// the source struct's own doc comment); emitted as an explicit `null`
+/// rather than omitted, so a client sees the field exists and is simply
+/// unpopulated here.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MarketingProjectEntry {
+    pub name: String,
+    pub slug: String,
+    pub has_content: bool,
+    pub calendar_posts: usize,
+    pub engine_on: bool,
+    pub accounts: Option<usize>,
+    pub accounts_tried: bool,
+    pub has_context: bool,
+    pub has_strategy: bool,
+    pub has_copy: bool,
+    pub has_visual: bool,
+    pub has_branding: bool,
+}
+
+/// `GET /v1/marketing` response body — every marketing-enabled project (any
+/// discovered project with a `<path>/marketing/` directory) from
+/// `omega_core::marketing::list_marketing_projects`, name-sorted
+/// (case-insensitive) by that function itself.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct MarketingResponse {
+    pub projects: Vec<MarketingProjectEntry>,
+}
+
 /// One entry of `GET /v1/oracles`'s `oracles` array — a top-level mission
 /// ledger ([`Mission`]) composed with its live rmux session status.
 ///
@@ -1160,6 +1198,8 @@ pub struct Protocol {
     pub skills_response: SkillsResponse,
     pub project_entry: ProjectEntry,
     pub projects_response: ProjectsResponse,
+    pub marketing_project_entry: MarketingProjectEntry,
+    pub marketing_response: MarketingResponse,
     pub oracle_entry: OracleEntry,
     pub oracles_response: OraclesResponse,
     pub dispatch_request: DispatchRequest,

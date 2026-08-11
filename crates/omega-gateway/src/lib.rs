@@ -21,6 +21,7 @@ pub mod routes_deposit;
 pub mod routes_dispatch;
 pub mod routes_events;
 pub mod routes_files;
+pub mod routes_marketing;
 pub mod routes_master;
 pub mod routes_missions;
 pub mod routes_new_project;
