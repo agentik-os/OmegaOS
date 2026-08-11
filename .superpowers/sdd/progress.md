@@ -705,4 +705,4 @@ clippy -p omega-gateway --all-targets --no-deps -- -D warnings`: clean.
 - [x] Task D — Telegram bridge control
 - [x] Task E — PDF generation
 - [x] Final opus whole-branch live-binary review (1 Critical found + fixed)
-- [ ] Rebase on origin/main, leave clean, report
+- [x] Rebase on origin/main, leave clean, report
