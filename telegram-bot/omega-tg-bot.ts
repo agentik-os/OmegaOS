@@ -1161,9 +1161,13 @@ const VOICE_PREFS_FILE = `${OMEGA_DIR}/state/nova-voice.json`;
 // (tools/tts/casting.py numbers every sample; the resolved map lives in
 // ~/.omega/tts/casting-manifest.json). Empty = the engine's default voice.
 type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: string; voiceLabel?: string; voiceParams?: Record<string, number> };
+// Default: omnivoice (k2-fsa — best local French measured on the bench, faster than
+// real-time warm on CPU) in "both" mode, so a fresh install talks out of the box:
+// voice notes in are transcribed (omega-transcribe) and replies come back as text +
+// voice note. The operator can still switch mode/engine/voice from the 🔊 menu.
 function voicePrefs(): VoicePrefs {
-  try { return { mode: "text", engine: "pocket", ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
-  catch { return { mode: "text", engine: "pocket" }; }
+  try { return { mode: "both", engine: "omnivoice", ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
+  catch { return { mode: "both", engine: "omnivoice" }; }
 }
 function saveVoicePrefs(p: VoicePrefs) {
   Bun.spawnSync(["mkdir", "-p", `${OMEGA_DIR}/state`]);
@@ -1996,7 +2000,10 @@ async function react(chat: number, msgId: number, emoji: string) {
 }
 // One funnel for every brain call: 🤔 reaction (seen it) + a live placeholder, run
 // the Master, then edit the placeholder with HTML-formatted output + ✅ reaction.
-async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas", speak = false, voiceEngine?: string) {
+// speak defaults to TRUE so every Telegram brain reply (Atlas included) follows the
+// operator's 🔊 voice prefs — default mode "both": text lands first, voice note follows.
+// Personas that must stay silent pass an explicit false; mode "text" disables globally.
+async function brainReply(chat: number, userMsgId: number, thread: number | undefined, prompt: string, brain: (t: string) => Promise<string> = master, label = "Atlas", speak = true, voiceEngine?: string) {
   react(chat, userMsgId, "🤔");
   await tg("sendChatAction", { chat_id: chat, action: "typing", message_thread_id: thread });
   const ph = await tg("sendMessage", { chat_id: chat, parse_mode: "HTML", message_thread_id: thread, text: `🧠 <i>${label} thinking…</i>` });

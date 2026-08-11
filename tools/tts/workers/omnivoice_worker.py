@@ -30,18 +30,19 @@ emit({"ready": True})
 for line in sys.stdin:
     try:
         job = json.loads(line)
-        ref_audio = job.get("voice") or None
-        ref_text = job.get("ref_text") or None
+        p = job.get("params") or {}
+        ref_audio = job.get("voice") or p.get("ref_audio") or None
+        ref_text = job.get("ref_text") or p.get("ref_text") or None
         if ref_audio and not ref_text:
             txt = os.path.splitext(ref_audio)[0] + ".txt"
             if os.path.exists(txt):
                 ref_text = open(txt).read().strip()
         audios = model.generate(
             text=job["text"],
-            language=job.get("language", "fr"),
+            language=job.get("language") or p.get("language") or "fr",
             ref_audio=ref_audio,
             ref_text=ref_text,
-            num_step=int(job.get("num_step", 16)),
+            num_step=int(job.get("num_step") or p.get("num_step") or 16),
         )
         sf.write(job["out"], audios[0], model.sampling_rate)
         emit({"ok": True})
