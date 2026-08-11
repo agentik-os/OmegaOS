@@ -52,6 +52,13 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("cargo_build_live --locked", self.install)
         self.assertNotIn("cargo_build_live --locked || cargo_build_live", self.install)
 
+    def test_install_records_the_same_revision_that_doctor_reads(self):
+        self.assertIn("record_install_provenance()", self.install)
+        self.assertIn('local state_path="$OMEGA_DIR/state/auto-update.json"', self.install)
+        self.assertIn('.last_applied_commit = $commit', self.install)
+        self.assertIn('record_install_provenance\n', self.install)
+        self.assertIn('mktemp "$OMEGA_DIR/state/.auto-update.json.XXXXXX"', self.install)
+
     def test_every_external_action_is_pinned_to_an_immutable_commit(self):
         found = 0
         for workflow, text in self.workflows.items():

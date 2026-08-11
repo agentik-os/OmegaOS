@@ -915,6 +915,33 @@ EOF
 
 step "Phase 4: Building OmegaOS"
 
+# `omega doctor` reads auto-update.json as the durable answer to “which
+# revision is installed?”. BUILD-INFO alone cannot satisfy that runtime check.
+# Record every successful installer path (source or provenance-validated
+# prebuilt) atomically, while retaining doctrine history owned by the updater.
+record_install_provenance() {
+    local state_path="$OMEGA_DIR/state/auto-update.json"
+    local source_state tmp now
+    mkdir -p "$OMEGA_DIR/state"
+    chmod 700 "$OMEGA_DIR/state"
+    source_state='{}'
+    if [[ -f "$state_path" ]] && jq -e 'type == "object"' "$state_path" >/dev/null 2>&1; then
+        source_state="$(cat "$state_path")"
+    fi
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    tmp="$(mktemp "$OMEGA_DIR/state/.auto-update.json.XXXXXX")"
+    umask 077
+    jq --arg commit "$OMEGA_SOURCE_REV" --arg now "$now" --arg source "$OMEGA_SRC" \
+        '.last_applied = $now
+         | .last_applied_commit = $commit
+         | .failing_commit = null
+         | .consecutive_failures = 0
+         | .last_outcome = ("installed " + $commit[0:7] + " from " + $source)' \
+        <<<"$source_state" > "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$state_path"
+}
+
 cd "$OMEGA_SRC"
 # curl|bash path: the version parse at the top of the script ran before the
 # clone existed — re-derive from the cloned Cargo.toml (still the single source
@@ -947,6 +974,7 @@ else
         "$OMEGA_DIR/state/installed-build-info.json"
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
+record_install_provenance
 
 # --- omega-gateway (app API daemon; consumed by the omega-app mobile/desktop
 # clients — Plan 4). `cargo build --release` above builds the whole workspace
