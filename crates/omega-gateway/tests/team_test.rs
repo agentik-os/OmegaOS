@@ -115,7 +115,10 @@ async fn happy_path_with_dir_and_no_members_builds_exact_argv() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["team", "--dir", &dir_str, "--", "Acme"]);
+    // Finding 5 (adversarial review round): `--dir` is now a single
+    // `=`-joined argv element, never two separate elements.
+    let dir_flag = format!("--dir={dir_str}");
+    assert_eq!(argv, vec!["team", dir_flag.as_str(), "--", "Acme"]);
 
     clear_env();
 }
@@ -284,6 +287,108 @@ async fn oversized_member_rejects_with_400_no_spawn() {
     clear_env();
 }
 
+/// Finding 4 (adversarial review round): `cmd_team` builds the real
+/// spawned session name literally as `format!("Team-{project}")`, which
+/// then goes through `omega_core::session::sanitize_session_name`
+/// (truncates at 48 chars). A `project` long enough that `project` ALONE
+/// fits under `valid_new_session_name`'s 100-byte cap, but `"Team-" +
+/// project` exceeds the real 48-char session-name cap, must be a
+/// structural 400 -- otherwise the echoed `session` field would diverge
+/// from the real (truncated) rmux session name.
+#[tokio::test]
+async fn project_whose_team_prefixed_name_sanitize_would_truncate_rejects_with_400_no_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    // 50 chars: fits `valid_new_session_name`'s 100-byte cap on its own,
+    // but "Team-" (5) + 50 = 55 > MAX_SESSION_NAME_LEN (48).
+    let long_project = "a".repeat(50);
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/team"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": long_project }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(!capture_file.exists(), "omega subprocess was spawned for a project sanitize would truncate");
+
+    clear_env();
+}
+
+/// Finding 3 (adversarial review round): `members` had no length cap at
+/// all -- the reviewer reproduced 200,000 accepted members in one request
+/// (which would spawn 200,000 rmux panes end-to-end, since `cmd_team`
+/// ignores `count` whenever `members` is non-empty). Reuses `MAX_COUNT`
+/// (8): one team member per requested pane is the same underlying concept
+/// as `count`.
+#[tokio::test]
+async fn nine_members_rejects_with_400_no_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let members: Vec<String> = (0..9).map(|i| format!("member{i}:do the thing")).collect();
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/team"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "Acme", "members": members }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("too many members"));
+    assert!(!capture_file.exists(), "omega subprocess was spawned for 9 members");
+
+    clear_env();
+}
+
+/// Companion to [`nine_members_rejects_with_400_no_spawn`]: exactly 8
+/// (the same bound `count` already uses) is still accepted and reaches the
+/// real argv.
+#[tokio::test]
+async fn eight_members_is_accepted() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega(bin_dir.path(), &capture_file, "exit 0");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let members: Vec<String> = (0..8).map(|i| format!("member{i}:do the thing")).collect();
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/team"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "Acme", "members": members }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(capture_file.exists());
+
+    clear_env();
+}
+
 #[tokio::test]
 async fn member_with_nul_byte_rejects_with_400_no_spawn() {
     let _g = LOCK.lock().await;
@@ -339,6 +444,68 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
     assert!(body["stdout"].as_str().unwrap().contains("partial output"));
     assert!(body["stderr"].as_str().unwrap().contains("rmux daemon unreachable"));
     assert!(body.get("session").is_none(), "must never fabricate a session on failure");
+
+    clear_env();
+}
+
+/// Finding 2 (adversarial review round): `POST /v1/team` now shares
+/// `AppState::session_spawn_permits` with `POST /v1/sessions` (server.rs)
+/// -- exhausted permits get a 429, never an unbounded pile of concurrent
+/// `omega team` subprocesses (each of which can itself spawn up to
+/// `MAX_COUNT` sub-panes). Same idiom `pdf_test.rs`'s
+/// `concurrency_cap_returns_429_when_pdf_permits_exhausted` uses.
+#[tokio::test]
+async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega(bin_dir.path(), &capture_file, "sleep 0.15\nexit 0");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    // Must match server.rs's MAX_CONCURRENT_SESSION_SPAWNS.
+    const MAX_CONCURRENT_SESSION_SPAWNS: usize = 4;
+
+    let mut in_flight = Vec::new();
+    for i in 0..MAX_CONCURRENT_SESSION_SPAWNS {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        in_flight.push(tokio::spawn(async move {
+            client
+                .post(format!("{base}/v1/team"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "project": format!("Acme{i}") }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+    let busy_res = client
+        .post(format!("{base}/v1/team"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "AcmeBusy" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(busy_res.status(), 429);
+    let body: serde_json::Value = busy_res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+
+    for task in in_flight {
+        let status = task.await.unwrap();
+        assert_eq!(status, 200);
+    }
 
     clear_env();
 }

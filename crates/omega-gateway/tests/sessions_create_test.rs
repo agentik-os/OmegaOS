@@ -96,7 +96,9 @@ async fn happy_path_with_explicit_name_builds_exact_argv() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["new", "--agent", agent, "--prompt", "do the thing", "--", "my-session"]);
+    // Finding 5 (adversarial review round): `--prompt` is now a single
+    // `=`-joined argv element, never two separate elements.
+    assert_eq!(argv, vec!["new", "--agent", agent, "--prompt=do the thing", "--", "my-session"]);
 
     clear_env();
 }
@@ -134,9 +136,12 @@ async fn happy_path_with_dir_builds_exact_argv_in_order() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
+    // Finding 5 (adversarial review round): `--dir`/`--prompt` are now
+    // single `=`-joined argv elements, never two separate elements each.
+    let dir_flag = format!("--dir={dir_str}");
     assert_eq!(
         argv,
-        vec!["new", "--agent", agent, "--dir", &dir_str, "--prompt", "hello", "--", "my-session"]
+        vec!["new", "--agent", agent, dir_flag.as_str(), "--prompt=hello", "--", "my-session"]
     );
 
     clear_env();
@@ -323,6 +328,170 @@ async fn dir_outside_home_rejects_with_400_no_spawn() {
     clear_env();
 }
 
+/// Finding 5 (adversarial review round): a `--` separator protects
+/// POSITIONALS, not flag VALUES — `clap` parses `--prompt -x` as TWO
+/// flags, not one flag plus a hyphen-leading value, since
+/// `allow_hyphen_values` isn't set on `--prompt` in the real CLI. A prompt
+/// starting with `-` used to be a guaranteed clap parse error (502) even
+/// though it is perfectly legitimate input. Fixed by emitting the flag as a
+/// single argv element via the `=` form (`--prompt=-x`), which clap always
+/// accepts regardless of what the value starts with. (`dir` gets the same
+/// code-level fix for consistency, but is not separately regression-tested
+/// here with a leading-`-` value: `dir_under_home` only ever returns a
+/// value that resolves under `$HOME` via `std::fs::canonicalize`, so an
+/// ACCEPTED `dir` value is always an absolute path — it can never itself
+/// start with `-`. The existing `happy_path_with_dir_builds_exact_argv_in_
+/// order` test below already proves `dir`'s new single-element `=` argv
+/// shape on a normal path.)
+#[tokio::test]
+async fn prompt_starting_with_dash_reaches_argv_intact_as_a_single_element() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let agent = real_agent_name();
+
+    install_fake_omega(bin_dir.path(), &capture_file, "exit 0");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": agent, "name": "my-session", "prompt": "-x" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "a hyphen-leading prompt must not 502");
+
+    let recorded = std::fs::read_to_string(&capture_file).unwrap();
+    let argv: Vec<&str> = recorded.lines().collect();
+    assert_eq!(argv, vec!["new", "--agent", agent, "--prompt=-x", "--", "my-session"]);
+
+    clear_env();
+}
+
+/// Finding 4 (adversarial review round): `valid_new_session_name` allows up
+/// to 100 bytes, but the real session name `cmd_new` creates goes through
+/// `omega_core::session::sanitize_session_name`, which truncates at
+/// `MAX_SESSION_NAME_LEN` (48). A 60-char name survives the charset check
+/// but would be silently truncated downstream -- the response would then
+/// lie about the session the caller can actually address. Must now be a
+/// structural 400 BEFORE any spawn, not a silent truncate-and-create.
+#[tokio::test]
+async fn caller_name_that_sanitize_would_truncate_rejects_with_400_no_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let agent = real_agent_name();
+
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    // 60 chars: passes `valid_new_session_name`'s 100-byte cap, but
+    // `sanitize_session_name` truncates at 48.
+    let long_name = "a".repeat(60);
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": agent, "name": long_name }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(!capture_file.exists(), "omega subprocess was spawned for a name sanitize would truncate");
+
+    clear_env();
+}
+
+/// Finding 4 companion: a name with a legitimate trailing `-` is allowed by
+/// `valid_new_session_name`'s charset check (it only rejects a LEADING
+/// dash) but `sanitize_session_name` trims a trailing `-`/`.` -- must also
+/// be a structural 400, not a silent trim-and-create.
+#[tokio::test]
+async fn caller_name_with_trailing_dash_that_sanitize_would_trim_rejects_with_400_no_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let agent = real_agent_name();
+
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": agent, "name": "my-session-" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(!capture_file.exists(), "omega subprocess was spawned for a name sanitize would trim");
+
+    clear_env();
+}
+
+/// Finding 1 (adversarial review round, `dir_under_home` in
+/// `routes_sessions.rs`): a `dir` shaped like
+/// `<home>/does-not-exist-yet/../../../tmp/evil/PWNED` used to defeat the
+/// ancestor-walk canonicalization -- every ancestor containing
+/// `does-not-exist-yet` fails to canonicalize (it does not exist), so the
+/// walk kept popping until it reached `$HOME` itself (which DOES
+/// canonicalize and pass the prefix check), then returned the ORIGINAL
+/// uncanonicalized string -- still containing the escaping `..` sequences.
+/// Must now be a structural 400 (a `..` component is rejected before the
+/// ancestor walk ever runs), never a spawn.
+#[tokio::test]
+async fn dir_traversal_via_nonexistent_leading_component_rejects_with_400_no_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let fake_home = tempfile::tempdir().unwrap();
+    let agent = real_agent_name();
+
+    std::env::set_var("HOME", fake_home.path());
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let escaping = fake_home
+        .path()
+        .join("does-not-exist-yet")
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tmp")
+        .join("evil")
+        .join("PWNED");
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({
+            "agent": agent,
+            "dir": escaping.display().to_string(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert!(!capture_file.exists(), "omega subprocess was spawned for a traversal-shaped dir");
+
+    clear_env();
+}
+
 #[tokio::test]
 async fn prompt_over_length_cap_rejects_with_400_no_spawn() {
     let _g = LOCK.lock().await;
@@ -384,6 +553,70 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
     assert!(body["stdout"].as_str().unwrap().contains("partial output"));
     assert!(body["stderr"].as_str().unwrap().contains("session name already in use"));
     assert!(body.get("name").is_none(), "must never fabricate a session on failure");
+
+    clear_env();
+}
+
+/// Finding 2 (adversarial review round): `POST /v1/sessions` now shares
+/// `AppState::session_spawn_permits` with `POST /v1/team` (server.rs) --
+/// exhausted permits get a 429, never an unbounded pile of concurrent
+/// `omega new` subprocesses. Same idiom `pdf_test.rs`'s
+/// `concurrency_cap_returns_429_when_pdf_permits_exhausted` uses: a
+/// sleeping fake `omega`, N in-flight requests, assert the N+1th gets 429.
+#[tokio::test]
+async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let agent = real_agent_name();
+
+    install_fake_omega(bin_dir.path(), &capture_file, "sleep 0.15\nexit 0");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    // Must match server.rs's MAX_CONCURRENT_SESSION_SPAWNS.
+    const MAX_CONCURRENT_SESSION_SPAWNS: usize = 4;
+
+    let mut in_flight = Vec::new();
+    for _ in 0..MAX_CONCURRENT_SESSION_SPAWNS {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        let agent = agent.to_string();
+        in_flight.push(tokio::spawn(async move {
+            client
+                .post(format!("{base}/v1/sessions"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "agent": agent }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        }));
+    }
+
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+    let busy_res = client
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": agent }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(busy_res.status(), 429);
+    let body: serde_json::Value = busy_res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("too many concurrent"));
+
+    for task in in_flight {
+        let status = task.await.unwrap();
+        assert_eq!(status, 200);
+    }
 
     clear_env();
 }

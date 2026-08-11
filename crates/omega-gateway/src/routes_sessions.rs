@@ -171,6 +171,10 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() })))
 }
 
+fn too_many_requests(msg: impl Into<String>) -> ApiError {
+    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
+}
+
 /// Parses `cmd_kill`'s alias-resolution line (`"[i] {name} resolved to the
 /// oracle session {resolved}"`, printed to **stdout** before anything else
 /// when the caller-supplied name needed `resolve_oracle_alias` — see
@@ -382,6 +386,28 @@ pub(crate) fn dir_under_home(path: &str) -> Result<std::path::PathBuf, ApiError>
         return Err(bad_request("dir must not contain a NUL byte"));
     }
     let requested = std::path::PathBuf::from(path);
+
+    // Finding 1 (adversarial review round): reject any `..` component
+    // BEFORE the ancestor walk below ever runs. Without this, a path like
+    // `<home>/does-not-exist-yet/../../../tmp/evil/PWNED` defeats the walk:
+    // every ancestor containing `does-not-exist-yet` fails to canonicalize
+    // (that leading component does not exist), so the walk keeps popping
+    // until it reaches `$HOME` itself -- which DOES canonicalize and pass
+    // the prefix check below -- at which point the function would return
+    // the ORIGINAL, uncanonicalized `path` string, which still contains the
+    // escaping `..` sequences and resolves OUTSIDE home if ever lexically
+    // normalized or `create_dir_all`'d downstream. Checked structurally via
+    // `Path::components()` rather than a substring search for `".."`: a
+    // substring search has its own false-positive/false-negative traps
+    // (e.g. it would reject a legitimate directory literally named
+    // `my..project`, which has no `ParentDir` component at all).
+    use std::path::Component;
+    for component in requested.components() {
+        if matches!(component, Component::ParentDir) {
+            return Err(bad_request("dir must not contain a parent-directory (`..`) component"));
+        }
+    }
+
     let home = dirs::home_dir().ok_or_else(|| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -442,9 +468,18 @@ pub(crate) fn dir_under_home(path: &str) -> Result<std::path::PathBuf, ApiError>
 /// own `"Created session: {name}"` stdout line — see
 /// [`CreateSessionResponse`]'s doc comment.
 pub async fn create(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> Result<Json<CreateSessionResponse>, ApiError> {
+    // Step 0: acquire a concurrency permit as the FIRST thing this handler
+    // does — the cheapest possible short-circuit, before even the agent
+    // check. Shared with `POST /v1/team` (see
+    // `AppState::session_spawn_permits`'s doc comment). Mirrors
+    // `routes_dispatch.rs::create`'s own Step 0.
+    let Ok(_permit) = state.session_spawn_permits.clone().try_acquire_owned() else {
+        return Err(too_many_requests("too many concurrent session spawns, try again shortly"));
+    };
+
     // Step 1: `agent` must be a real, known agent — validated before
     // anything else touches the filesystem or a subprocess.
     let agent_check = req.agent.clone();
@@ -465,6 +500,24 @@ pub async fn create(
         Some(ref n) => {
             if !valid_new_session_name(n) {
                 return Err(bad_request("invalid session name"));
+            }
+            // Finding 4 (adversarial review round): `valid_new_session_name`
+            // allows up to 100 bytes and a trailing `-`, but the REAL
+            // session name `cmd_new` creates goes through
+            // `omega_core::session::sanitize_session_name` (truncates at
+            // `MAX_SESSION_NAME_LEN` and trims a trailing `-`/`.`). A name
+            // that survives the charset check but diverges after
+            // sanitation would make this endpoint echo back a name the
+            // caller can never actually address (`/v1/sessions/{name}/...`
+            // would 404 against it) — round-tripping through the REAL
+            // sanitizer makes "the name we're about to echo is byte-for-
+            // byte the name the CLI will actually create" a structural
+            // invariant instead of a hand-maintained charset mirror that
+            // can drift.
+            if omega_core::session::sanitize_session_name(n) != *n {
+                return Err(bad_request(
+                    "session name would be altered by rmux sanitation (too long, or a trailing `-`/`.`) — choose a shorter, plain name",
+                ));
             }
             n.clone()
         }
@@ -495,13 +548,23 @@ pub async fn create(
     let name_arg = name.clone();
     let output = tokio::task::spawn_blocking(move || {
         let mut args: Vec<&str> = vec!["new", "--agent", &agent_arg];
-        if let Some(d) = dir_arg.as_deref() {
-            args.push("--dir");
-            args.push(d);
+        // Finding 5 (adversarial review round): a bare `--` separator
+        // protects POSITIONALS, not flag VALUES — clap parses two argv
+        // elements `--dir -x` as TWO flags, not one flag plus a
+        // hyphen-leading value, since `allow_hyphen_values` isn't set on
+        // `--dir`/`--prompt` in the real CLI (`omega new`'s clap
+        // definition). A `dir`/`prompt` value starting with `-` is
+        // perfectly legitimate input (a real directory name, a real
+        // prompt), so it is emitted as a SINGLE argv element via the `=`
+        // form, which clap always accepts regardless of what the value
+        // starts with.
+        let dir_flag = dir_arg.as_deref().map(|d| format!("--dir={d}"));
+        if let Some(ref f) = dir_flag {
+            args.push(f);
         }
-        if let Some(p) = prompt_arg.as_deref() {
-            args.push("--prompt");
-            args.push(p);
+        let prompt_flag = prompt_arg.as_deref().map(|p| format!("--prompt={p}"));
+        if let Some(ref f) = prompt_flag {
+            args.push(f);
         }
         args.push("--");
         args.push(&name_arg);
@@ -731,6 +794,45 @@ mod dir_under_home_tests {
         let home = tempfile::tempdir().unwrap();
         std::env::set_var("HOME", home.path());
         let err = dir_under_home("/").unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        std::env::remove_var("HOME");
+    }
+
+    /// Finding 1 (adversarial review round): the ancestor-walk
+    /// canonicalization used to be defeatable by a `..` sequence hiding
+    /// behind a not-yet-existing leading component -- every ancestor fails
+    /// to canonicalize until the walk pops all the way up to `$HOME` itself
+    /// (which DOES canonicalize and pass the prefix check), at which point
+    /// the function returned the ORIGINAL uncanonicalized string, which
+    /// still contains the escaping `..` sequences. Structural
+    /// `Path::components()` rejection must catch this BEFORE the ancestor
+    /// walk ever runs.
+    #[test]
+    fn rejects_parent_dir_component_hidden_behind_a_nonexistent_leading_component() {
+        let _g = LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let escaping = home
+            .path()
+            .join("does-not-exist-yet")
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("tmp")
+            .join("evil")
+            .join("PWNED");
+        let err = dir_under_home(&escaping.display().to_string()).unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        std::env::remove_var("HOME");
+    }
+
+    #[test]
+    fn rejects_a_bare_parent_dir_component_even_under_an_existing_prefix() {
+        let _g = LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let escaping = home.path().join("Station").join("..").join("..").join("etc");
+        let err = dir_under_home(&escaping.display().to_string()).unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
         std::env::remove_var("HOME");
     }

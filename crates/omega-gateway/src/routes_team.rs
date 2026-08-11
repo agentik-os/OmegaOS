@@ -43,6 +43,10 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
 }
 
+fn too_many_requests(msg: impl Into<String>) -> ApiError {
+    (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": msg.into() })))
+}
+
 /// Per-member string cap — generous for a `"name:prompt"` spec (the CLI
 /// itself parses each permissively, no length bound of its own) while still
 /// keeping an unreasonable payload from ever reaching a subprocess argv.
@@ -67,14 +71,43 @@ fn count_in_bounds(count: u32) -> bool {
 }
 
 pub async fn create(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<TeamRequest>,
 ) -> Result<Json<TeamResponse>, ApiError> {
+    // Step 0: acquire a concurrency permit as the FIRST thing this handler
+    // does — shared with `POST /v1/sessions` (see
+    // `AppState::session_spawn_permits`'s doc comment): a team spawn is at
+    // least as heavy (up to `MAX_COUNT` sub-panes per call).
+    let Ok(_permit) = state.session_spawn_permits.clone().try_acquire_owned() else {
+        return Err(too_many_requests("too many concurrent session spawns, try again shortly"));
+    };
+
     // Step 1: `project` becomes a session-name COMPONENT (see this file's
     // doc comment) — validate it with the exact same strict slug check a
     // brand-new session name gets, BEFORE any subprocess spawn.
     if !valid_new_session_name(&req.project) {
         return Err(bad_request("invalid project name"));
+    }
+
+    // `session` is ALREADY known here — `cmd_team` spawns
+    // `format!("Team-{project}")` literally (see this file's doc comment).
+    // Computed early (rather than at the old Step 5) so the Finding 4
+    // sanitize round-trip check below can run BEFORE any subprocess spawn.
+    let session = format!("Team-{}", req.project);
+
+    // Finding 4 (adversarial review round): `valid_new_session_name` checks
+    // `project` alone, but the REAL spawned session name is `session`
+    // above, which then goes through
+    // `omega_core::session::sanitize_session_name` (truncates at
+    // `MAX_SESSION_NAME_LEN`). The `"Team-"` prefix eats 5 of that budget,
+    // so a `project` that individually passes the charset+length check can
+    // still make the FULL name diverge after sanitation — checked on the
+    // FULL `session` string, not the bare `project` (a bare-`project`
+    // check would miss exactly this prefix-budget case).
+    if omega_core::session::sanitize_session_name(&session) != session {
+        return Err(bad_request(
+            "project name would make the real team session name diverge after rmux sanitation (too long once prefixed with \"Team-\") — choose a shorter project name",
+        ));
     }
 
     // Step 2: `count`, when given, is bounded — defense-in-depth, the real
@@ -92,11 +125,20 @@ pub async fn create(
         None => None,
     };
 
-    // Step 4: `members`, when given, are safety-checked only (NUL byte +
-    // length cap) — the CLI itself parses each `"name:prompt"` spec
-    // permissively with no charset validation, so this endpoint does not
-    // re-derive one either.
+    // Step 4: `members`, when given, are safety-checked only (a count cap +
+    // NUL byte + per-string length cap) — the CLI itself parses each
+    // `"name:prompt"` spec permissively with no charset validation, so this
+    // endpoint does not re-derive one either. The count cap reuses
+    // `MAX_COUNT` (finding: an unbounded `members` vector was accepted with
+    // no cap at all — the reviewer reproduced 200,000 members in one
+    // request, which `cmd_team` would spawn one rmux pane per, since it
+    // ignores `count` whenever `members` is non-empty): one team member is
+    // the same underlying concept as one requested pane, so it shares
+    // `count`'s bound rather than inventing a second, separate one.
     if let Some(ref members) = req.members {
+        if members.len() > MAX_COUNT as usize {
+            return Err(bad_request(format!("too many members (max {MAX_COUNT})")));
+        }
         for m in members {
             if m.contains('\0') {
                 return Err(bad_request("member must not contain a NUL byte"));
@@ -107,11 +149,10 @@ pub async fn create(
         }
     }
 
-    // Step 5: `session` is ALREADY known — `cmd_team` spawns
-    // `format!("Team-{project}")` literally, so echo it back rather than
-    // parse it off stdout (the same "we already know it" posture
-    // `routes_sessions::rename` uses for `new_name`).
-    let session = format!("Team-{}", req.project);
+    // Step 5 (echoed back rather than parsed off stdout, the same "we
+    // already know it" posture `routes_sessions::rename` uses for
+    // `new_name`): `session` was already computed above, ahead of the
+    // Finding 4 sanitize check.
 
     // Step 6: build argv (never a shell string) and run `omega team`. Flags
     // first, then a bare `--` separator, then PROJECT then every MEMBER
@@ -123,12 +164,21 @@ pub async fn create(
     let output = tokio::task::spawn_blocking(move || {
         let mut args: Vec<&str> = vec!["team"];
         if let Some(c) = count_arg.as_deref() {
+            // `count` is a `u32` from a bounded range (1..=MAX_COUNT), so
+            // it can never start with `-` — the two-element form is safe
+            // here, unlike `dir` below (Finding 5, adversarial review
+            // round).
             args.push("--count");
             args.push(c);
         }
-        if let Some(d) = dir_arg.as_deref() {
-            args.push("--dir");
-            args.push(d);
+        // Finding 5 (adversarial review round): same `=`-form fix
+        // `routes_sessions.rs::create` applies to its own `--dir`/
+        // `--prompt` — a bare `--` separator protects POSITIONALS, not
+        // flag VALUES, so a `dir` value starting with `-` would otherwise
+        // be misparsed as a second flag by clap.
+        let dir_flag = dir_arg.as_deref().map(|d| format!("--dir={d}"));
+        if let Some(ref f) = dir_flag {
+            args.push(f);
         }
         args.push("--");
         args.push(&project_arg);

@@ -56,6 +56,22 @@ const MAX_CONCURRENT_ORCHESTRATIONS: usize = 2;
 /// [`MAX_CONCURRENT_DISPATCHES`]'s.
 const MAX_CONCURRENT_PDF_GENERATIONS: usize = 2;
 
+/// Global cap on concurrently-running `POST /v1/sessions` and `POST
+/// /v1/team` requests. Added in the Task A review-fix round (finding: an
+/// authenticated device could otherwise fire unboundedly many concurrent
+/// `omega new`/`omega team` spawns with no cap at all -- the exact shape of
+/// problem [`MAX_CONCURRENT_DISPATCHES`] exists for). ONE semaphore shared
+/// across BOTH endpoints rather than a second, separate pool: `omega team`
+/// spawning up to `MAX_COUNT` sub-panes under a single call
+/// (`routes_team.rs`) is exactly the kind of heavier operation the cap
+/// should also gate, and there is no reason a caller could pace
+/// `/v1/sessions` and `/v1/team` spawns independently of each other --
+/// both ultimately compete for the same underlying rmux/session-spawn
+/// capacity. Sized the same as [`MAX_CONCURRENT_DISPATCHES`]: a session or
+/// team spawn is a comparably heavy, subprocess-spawning operation to a
+/// dispatch.
+const MAX_CONCURRENT_SESSION_SPAWNS: usize = 4;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -80,6 +96,10 @@ pub struct AppState {
     /// Caps concurrently-running `POST /v1/pdf` generations — see
     /// [`MAX_CONCURRENT_PDF_GENERATIONS`].
     pub pdf_permits: Arc<Semaphore>,
+    /// Caps concurrently-running `POST /v1/sessions` AND `POST /v1/team`
+    /// requests, SHARED across both — see
+    /// [`MAX_CONCURRENT_SESSION_SPAWNS`].
+    pub session_spawn_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -110,6 +130,7 @@ impl AppState {
         let master_chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MASTER_CHATS));
         let orchestrate_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_ORCHESTRATIONS));
         let pdf_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_PDF_GENERATIONS));
+        let session_spawn_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_SESSION_SPAWNS));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
@@ -123,6 +144,7 @@ impl AppState {
             master_chat_permits,
             orchestrate_permits,
             pdf_permits,
+            session_spawn_permits,
             events,
             session_org,
             started_at,
