@@ -10,30 +10,12 @@
     "agents": 24,
     "skills": 40,
     "protocols": 10,
-    "schemas": 14,
-    "files": 126
+    "references": 0,
+    "scripts": 0,
+    "assets": 0,
+    "files": 128
   },
   "files": [
-    {
-      "path": "INSTALL.md",
-      "sha256": "c0b182aeb6c8dffc035413da7d58cddde2dcd451cb87d184ccc84d34c136fefc",
-      "bytes": 373
-    },
-    {
-      "path": "OMEGA_INTEGRATION.md",
-      "sha256": "273cea2b68193eeb14928abd00f68e4675e1424cda82f1119567650f5aee097f",
-      "bytes": 1420
-    },
-    {
-      "path": "README.md",
-      "sha256": "6d3d797e947e5f3097b042f83b95d7cfca9d4dfa214bb04b97c7d80563957a41",
-      "bytes": 2933
-    },
-    {
-      "path": "README_FR.md",
-      "sha256": "39ed70b2dd9ac9bfccf14425a0cf2fbcfbc51fffd190f7a3db631aa2ddaf3733",
-      "bytes": 1559
-    },
     {
       "path": "agents/accounting_copilot.md",
       "sha256": "2a15cf05784b0d770dd4f2e7d7502ce4071320436a2e9dc6f7ac5655b9d5f77a",
@@ -215,6 +197,11 @@
       "bytes": 1040
     },
     {
+      "path": "INSTALL.md",
+      "sha256": "c0b182aeb6c8dffc035413da7d58cddde2dcd451cb87d184ccc84d34c136fefc",
+      "bytes": 373
+    },
+    {
       "path": "knowledge/BOOK_CANON.md",
       "sha256": "f711009c6a4acb3bd20bd7e4c1330e8e2b1a1ef440d49b1ffe5505458732295b",
       "bytes": 1898
@@ -235,6 +222,11 @@
       "bytes": 1749
     },
     {
+      "path": "MASTER.md",
+      "sha256": "a93fdf8cd6c990c27c7eca706b8c5d76bf8f07e969b6da67d9f1cd77740a8775",
+      "bytes": 7265
+    },
+    {
       "path": "memory/MEMORY_MODEL.md",
       "sha256": "b7bb86e5515e2af476f29f0fc6e12d6dcec7bbc2aad15fe955d19d04033d9f4c",
       "bytes": 911
@@ -243,6 +235,11 @@
       "path": "memory/PRIVACY.md",
       "sha256": "18b01098f7a67c89386496370afea6543f32b42a288a96879479623884b03f35",
       "bytes": 637
+    },
+    {
+      "path": "OMEGA_INTEGRATION.md",
+      "sha256": "8fc3ec8593e7d9d8b8d6605c496705e7dcae658386e4419314a53785b59ee94f",
+      "bytes": 4687
     },
     {
       "path": "protocols/cash_reserve.md",
@@ -295,9 +292,14 @@
       "bytes": 350
     },
     {
-      "path": "runtime/README.md",
-      "sha256": "4da884b33c89ab3013e9f17bd20d64f15b9ac3aa15c78142592197ced44d352d",
-      "bytes": 376
+      "path": "README_FR.md",
+      "sha256": "4d85ee815a88ad88bc1c5179c1bea5c73fc90ad2153482059fb9c1eb2f5c47de",
+      "bytes": 1556
+    },
+    {
+      "path": "README.md",
+      "sha256": "cffdd4d06f63532d0889a8cfa2e836f2d41c192f3aa863a4f4b29dcd6cddde05",
+      "bytes": 2971
     },
     {
       "path": "runtime/bootstrap_revenue_db.py",
@@ -308,6 +310,11 @@
       "path": "runtime/os_runtime.py",
       "sha256": "926e255e98a7d8a8c9d0dcb51bbf2e22b30a4edfea47fbd4dc0a65bc46d9eef7",
       "bytes": 2506
+    },
+    {
+      "path": "runtime/README.md",
+      "sha256": "4da884b33c89ab3013e9f17bd20d64f15b9ac3aa15c78142592197ced44d352d",
+      "bytes": 376
     },
     {
       "path": "runtime/requirements.txt",
@@ -383,6 +390,11 @@
       "path": "schemas/revenue_metric.json",
       "sha256": "ac1262b7bc29b3be50a8951ddc197244e9bedd32ddff068d2e38bc6cec931ebc",
       "bytes": 1076
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "3f6590c650c3467862bafdf7b5df5973dff35ee9dd078008516f39f67a129555",
+      "bytes": 2758
     },
     {
       "path": "skills/accounting_question_pack.md",
@@ -751,5 +763,6 @@
         }
       }
     ]
-  }
+  },
+  "schema_version": 1
 }

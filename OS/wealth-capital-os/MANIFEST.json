@@ -10,30 +10,12 @@
     "agents": 12,
     "skills": 20,
     "protocols": 7,
-    "schemas": 7,
-    "files": 77
+    "references": 0,
+    "scripts": 0,
+    "assets": 0,
+    "files": 79
   },
   "files": [
-    {
-      "path": "INSTALL.md",
-      "sha256": "07eebd0ef52a07ed91400dabd60afcd14fc59ecb28d5c2b125bd0769cfb4eddc",
-      "bytes": 380
-    },
-    {
-      "path": "OMEGA_INTEGRATION.md",
-      "sha256": "8596511600315f9eda79f406c4a181a4285a8240acb6a8cd4386f5318b4d8771",
-      "bytes": 1144
-    },
-    {
-      "path": "README.md",
-      "sha256": "c0b9db8042dee46d33bbc726a68fcecaa3aa9f8f9bda6ccce6bd47f93538e709",
-      "bytes": 2278
-    },
-    {
-      "path": "README_FR.md",
-      "sha256": "399b9e181e7762fff698e06c002d1718bfdc650ef89e465349e6180b14a92850",
-      "bytes": 1304
-    },
     {
       "path": "agents/behavioral_finance_coach.md",
       "sha256": "e73296c0b72c5c2b4bce91970dbdf1732f007e140b8a3807125c69ef7f9a845c",
@@ -135,6 +117,11 @@
       "bytes": 779
     },
     {
+      "path": "INSTALL.md",
+      "sha256": "07eebd0ef52a07ed91400dabd60afcd14fc59ecb28d5c2b125bd0769cfb4eddc",
+      "bytes": 380
+    },
+    {
       "path": "knowledge/BOOK_CANON.md",
       "sha256": "24dcf7a9893031ccd992cd3b3bd4f6a60c960e376ff28be1ea6f7c7719f1ce88",
       "bytes": 1454
@@ -155,6 +142,11 @@
       "bytes": 1280
     },
     {
+      "path": "MASTER.md",
+      "sha256": "ef1b9342fb2f4e935ddb9e5ab9de026fa03eef2f16eef4f8e6feab51a3c65b8a",
+      "bytes": 7334
+    },
+    {
       "path": "memory/MEMORY_MODEL.md",
       "sha256": "b279750381ed5c1373b7997785ce669c4d9f52dcd55c02b4835383f7cbcd254a",
       "bytes": 736
@@ -163,6 +155,11 @@
       "path": "memory/PRIVACY.md",
       "sha256": "7380888ef321f1d2e50aa13d9d5d64f0c515a129e41d7c82da0475c5c8548172",
       "bytes": 571
+    },
+    {
+      "path": "OMEGA_INTEGRATION.md",
+      "sha256": "b43eb61eea2ca3f663d91144550e321fd0611124d2af772ba41d3d2d0298d52a",
+      "bytes": 2995
     },
     {
       "path": "protocols/debt_review.md",
@@ -200,14 +197,24 @@
       "bytes": 319
     },
     {
-      "path": "runtime/README.md",
-      "sha256": "0c7b29dc869e73db95b0132af43c472a06325a0696ef6f0346c4ae4acd4be320",
-      "bytes": 375
+      "path": "README_FR.md",
+      "sha256": "46f86c3af048b9784491ae1b268bc20588416fd4f674f091f7e289d192f9b242",
+      "bytes": 1301
+    },
+    {
+      "path": "README.md",
+      "sha256": "dc332b82f8d941b89a8b9274979e2b931bfed63f266ef9e379f9d6339f982acc",
+      "bytes": 2360
     },
     {
       "path": "runtime/os_runtime.py",
       "sha256": "926e255e98a7d8a8c9d0dcb51bbf2e22b30a4edfea47fbd4dc0a65bc46d9eef7",
       "bytes": 2506
+    },
+    {
+      "path": "runtime/README.md",
+      "sha256": "0c7b29dc869e73db95b0132af43c472a06325a0696ef6f0346c4ae4acd4be320",
+      "bytes": 375
     },
     {
       "path": "runtime/requirements.txt",
@@ -248,6 +255,11 @@
       "path": "schemas/transaction.json",
       "sha256": "3d079d34b66dad0907f26137736d487bcaebae8b089ff5570076887631b21351",
       "bytes": 1150
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "8091a01597adb14da0213ef3d1505d8cf32eb19b1833add4f3673b413d8115ac",
+      "bytes": 2563
     },
     {
       "path": "skills/account_inventory.md",
@@ -459,5 +471,6 @@
         }
       }
     ]
-  }
+  },
+  "schema_version": 1
 }

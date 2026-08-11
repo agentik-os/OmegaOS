@@ -10,30 +10,12 @@
     "agents": 12,
     "skills": 18,
     "protocols": 8,
-    "schemas": 6,
-    "files": 75
+    "references": 0,
+    "scripts": 0,
+    "assets": 0,
+    "files": 77
   },
   "files": [
-    {
-      "path": "INSTALL.md",
-      "sha256": "02c9534a1d339c0615ae6647e8d95a416b92e020f2aa4a5d2fd39b235195a9fa",
-      "bytes": 379
-    },
-    {
-      "path": "OMEGA_INTEGRATION.md",
-      "sha256": "4a6c4070ad43792ee6cd4ca7898e926a330ba4231a51564dea982c9f83802268",
-      "bytes": 1105
-    },
-    {
-      "path": "README.md",
-      "sha256": "ba7387b5d619b8c6ff8073c386a3117c8df7b23a4b4b061587556740e2398d5a",
-      "bytes": 2276
-    },
-    {
-      "path": "README_FR.md",
-      "sha256": "b15b2b10c82a698e849fadb322cd97b50742db011c79d3ad5fbcf71d30528fc4",
-      "bytes": 1365
-    },
     {
       "path": "agents/behavior_designer.md",
       "sha256": "c0f9903679d16ea6678dae14f1c5a33cf1736a5b43e6f41401023339ad6d6287",
@@ -135,6 +117,11 @@
       "bytes": 793
     },
     {
+      "path": "INSTALL.md",
+      "sha256": "02c9534a1d339c0615ae6647e8d95a416b92e020f2aa4a5d2fd39b235195a9fa",
+      "bytes": 379
+    },
+    {
       "path": "knowledge/BOOK_CANON.md",
       "sha256": "8aff27605b80beb4b6dcaeab9dc5d0f1bf0eca3dbccf66ac2746819c4e62b8d6",
       "bytes": 1240
@@ -155,6 +142,11 @@
       "bytes": 1172
     },
     {
+      "path": "MASTER.md",
+      "sha256": "9545cfc688f6a88bdfce9f1c0396b960b6cb326e4a43f6cc886d01d2f95f1002",
+      "bytes": 8507
+    },
+    {
       "path": "memory/MEMORY_MODEL.md",
       "sha256": "b9e4a7bb4c815cbcc13ba58d50c2c5508d1e403ad02d5e6ca0df98297b05c069",
       "bytes": 744
@@ -163,6 +155,11 @@
       "path": "memory/PRIVACY.md",
       "sha256": "b8504c91e7623f2d98a8fd40fd5cc20a495094553bd98d3bd58176618accf6d2",
       "bytes": 597
+    },
+    {
+      "path": "OMEGA_INTEGRATION.md",
+      "sha256": "ae03a2fb07f6696c7a18cca46d2037888773ff9643cd81f42e47a4feb11e2c0f",
+      "bytes": 2032
     },
     {
       "path": "protocols/daily_readiness.md",
@@ -205,14 +202,24 @@
       "bytes": 368
     },
     {
-      "path": "runtime/README.md",
-      "sha256": "bdc9846b10fd4a212fef2401a276350683d41e8d96de026df0acea9556112f63",
-      "bytes": 375
+      "path": "README_FR.md",
+      "sha256": "d5ddb4b33ea39259f70ce2aed4a98c2f25c160b0a37c2ae9cef661c3db357594",
+      "bytes": 1362
+    },
+    {
+      "path": "README.md",
+      "sha256": "1ea33676bd40f1c600e9d1a40ecd218e672a01841b24410ce76873d4522dc0b2",
+      "bytes": 2284
     },
     {
       "path": "runtime/os_runtime.py",
       "sha256": "926e255e98a7d8a8c9d0dcb51bbf2e22b30a4edfea47fbd4dc0a65bc46d9eef7",
       "bytes": 2506
+    },
+    {
+      "path": "runtime/README.md",
+      "sha256": "bdc9846b10fd4a212fef2401a276350683d41e8d96de026df0acea9556112f63",
+      "bytes": 375
     },
     {
       "path": "runtime/requirements.txt",
@@ -248,6 +255,11 @@
       "path": "schemas/intervention.json",
       "sha256": "d5ff8eadcc3d24ba07cb0e28a70e205ecd410910064f1224be84c666228374ed",
       "bytes": 934
+    },
+    {
+      "path": "SKILL.md",
+      "sha256": "e8616757723a7bfaaf0e8f3544c17cb8943598b142bf2dad576a8fa8823b50a0",
+      "bytes": 2575
     },
     {
       "path": "skills/baseline_health_inventory.md",
@@ -425,5 +437,6 @@
       }
     ],
     "consumes": []
-  }
+  },
+  "schema_version": 1
 }

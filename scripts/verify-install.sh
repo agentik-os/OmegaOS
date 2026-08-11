@@ -821,6 +821,13 @@ else
   bad "OS root command installer missing or not invoked by install.sh"
 fi
 
+if command -v bun >/dev/null 2>&1 \
+  && bun scripts/verify-os-suite.ts >/dev/null; then
+  ok "OS documentation parity: 24 complete manifests and checksum inventories"
+else
+  bad "OS documentation parity failed (README/README_FR/MANIFEST/integration/skill/checksums)"
+fi
+
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
   printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'
