@@ -13,6 +13,7 @@ Nova's Telegram menu (`/menu` → 🔊 Voix) and can A/B them with 🧪 test not
 | `chatterbox` | [Resemble Chatterbox](https://github.com/resemble-ai/chatterbox) multilingual | Beats ElevenLabs in blind tests; slow on CPU → async notes |
 | `kokoro` | [Kokoro 82M](https://github.com/hexgrad/kokoro), voice `ff_siwis` | Light/fast baseline |
 | `piper` | [Piper](https://github.com/OHF-Voice/piper1-gpl), `fr_FR-siwis-medium` | Fastest; fillers + fallback |
+| `omnivoice` | [k2-fsa OmniVoice](https://github.com/k2-fsa/OmniVoice), 1B diffusion-LM | 600+ languages, zero-shot voice cloning; best local French measured (0% WER at 16 steps) and faster than real-time warm (bf16 worker) |
 | `elevenlabs` | [ElevenLabs API](https://elevenlabs.io), `eleven_multilingual_v2` | Hosted reference; needs `ELEVENLABS_API_KEY` in `provisioning/services.env` |
 
 GPU-bound or non-commercial engines (Voxtral, XTTS, Fish, F5…) are deliberately

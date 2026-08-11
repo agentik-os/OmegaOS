@@ -14,6 +14,10 @@ FAILED=""
 # "disabled due to widespread misuse"), so an unpinned clone is not reproducible.
 VIBEVOICE_REPO="https://github.com/microsoft/VibeVoice.git"
 VIBEVOICE_PIN="94da20d98b2fa7688e9cbfaf7692ddb4954f7600"
+# OmniVoice (k2-fsa) — 1B diffusion-LM TTS, 600+ languages, zero-shot cloning.
+# Pinned for reproducibility; weights (~2.3 GB) download lazily on first synthesis.
+OMNIVOICE_REPO="https://github.com/k2-fsa/OmniVoice.git"
+OMNIVOICE_PIN="38e992bc60f85548faeb77e8fa70158ba71deb30"
 
 info() { printf '\033[36m[tts]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[tts]\033[0m %s\n' "$*"; }
@@ -104,6 +108,35 @@ if is_disabled vibevoice; then info "vibevoice disabled by config — skipped"; 
         fi
     else
         warn "vibevoice clone failed (network?) — will retry on the next run"; FAILED="$FAILED vibevoice"
+    fi
+fi
+
+# OmniVoice (k2-fsa) — best local French measured on this bench (0-6% Whisper WER,
+# homophone-level) AND faster than real-time warm on CPU (~2.5 s for 6 s of audio,
+# bf16 worker on avx512_bf16; the fp16 CLI default is ~10x slower — keep bf16).
+# Venv ~2 GB (CPU torch) + 2.3 GB weights lazily on first synthesis; worker holds
+# ~5 GB RSS once loaded. numba>=0.60 is preinstalled: the resolver otherwise picks
+# an ancient numba (0.53) whose llvmlite cannot build on python>=3.10.
+if is_disabled omnivoice; then info "omnivoice disabled by config — skipped"; else
+    info "omnivoice (k2-fsa OmniVoice 1B — 600+ languages, voice cloning; ~2 GB)…"
+    if [[ -d "$TTS_DIR/omnivoice/.git" ]]; then
+        git -C "$TTS_DIR/omnivoice" fetch --depth 1 origin "$OMNIVOICE_PIN" >/dev/null 2>&1 \
+            && git -C "$TTS_DIR/omnivoice" checkout -q "$OMNIVOICE_PIN" 2>/dev/null || true
+    else
+        git clone -q "$OMNIVOICE_REPO" "$TTS_DIR/omnivoice" >/dev/null 2>&1 \
+            && git -C "$TTS_DIR/omnivoice" checkout -q "$OMNIVOICE_PIN" 2>/dev/null || true
+    fi
+    if [[ -f "$TTS_DIR/omnivoice/pyproject.toml" ]]; then
+        # torch CPU wheels first so the default CUDA build (multi-GB, useless here) is never pulled.
+        if mkvenv omnivoice torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
+           && mkvenv omnivoice 'numba>=0.60' \
+           && mkvenv omnivoice --editable "$TTS_DIR/omnivoice"; then
+            info "omnivoice installed — weights download lazily on first synthesis"
+        else
+            warn "omnivoice install failed"; FAILED="$FAILED omnivoice"
+        fi
+    else
+        warn "omnivoice clone failed (network?) — will retry on the next run"; FAILED="$FAILED omnivoice"
     fi
 fi
 

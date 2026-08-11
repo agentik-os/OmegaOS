@@ -63,6 +63,11 @@ ENGINES = {
         "venv": f"{VENVS}/vibevoice", "worker": "vibevoice_worker.py",
         "note": "ANGLAIS uniquement — long-form/podcast, ~2 s de calcul par s",
     },
+    "omnivoice": {
+        "label": "OmniVoice 1B (k2-fsa)", "kind": "local",
+        "venv": f"{VENVS}/omnivoice", "worker": "omnivoice_worker.py",
+        "note": "600+ langues, clonage de voix, top qualité — ~2 s de calcul par s (async ok)",
+    },
     "elevenlabs": {
         "label": "ElevenLabs (API)", "kind": "api",
         "note": "qualité référence — nécessite ELEVENLABS_API_KEY",
