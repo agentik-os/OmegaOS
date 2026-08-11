@@ -408,6 +408,27 @@ pub(crate) fn dir_under_home(path: &str) -> Result<std::path::PathBuf, ApiError>
         }
     }
 
+    // Cross-task consistency fix (final whole-branch review, wave8): a
+    // RELATIVE `dir` used to be validated by canonicalizing it against THIS
+    // PROCESS's own current working directory, then returned as the
+    // original (still-relative) string -- but the caller of this function
+    // (`omega new -d <dir>` / `omega team -d <dir>`) hands that relative
+    // string to the rmux DAEMON, which resolves it against ITS OWN cwd, not
+    // gatewayd's. So a relative `dir` could pass this "under home" check
+    // against one cwd while actually landing somewhere else entirely once
+    // the daemon resolves it -- the validated path and the effective path
+    // diverge, silently. `routes_duo.rs` independently discovered and
+    // guarded against exactly this shape (its own `is_absolute()` check,
+    // Finding 3 of that task's adversarial review round) while
+    // `routes_sessions.rs`/`routes_team.rs` did not, leaving three callers
+    // of one shared helper with different safety guarantees. Requiring an
+    // absolute path here closes the gap for every caller at once and makes
+    // `routes_duo.rs`'s own local check redundant (left in place there as
+    // harmless defense-in-depth, not removed).
+    if !requested.is_absolute() {
+        return Err(bad_request("dir must be an absolute path"));
+    }
+
     let home = dirs::home_dir().ok_or_else(|| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -795,6 +816,29 @@ mod dir_under_home_tests {
         std::env::set_var("HOME", home.path());
         let err = dir_under_home("/").unwrap_err();
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        std::env::remove_var("HOME");
+    }
+
+    /// Cross-task consistency fix (final whole-branch review, wave8): a
+    /// relative `dir` used to be validated by canonicalizing it against
+    /// THIS PROCESS's own cwd, then returned as the still-relative string —
+    /// but the rmux daemon that actually consumes it resolves the relative
+    /// string against ITS OWN cwd, which can differ. Even a relative value
+    /// that WOULD canonicalize under the current process's home must now be
+    /// rejected outright: only an absolute `dir` carries a safety guarantee
+    /// that survives being handed to a different process.
+    #[test]
+    fn rejects_relative_dir_even_when_it_would_resolve_under_home() {
+        let _g = LOCK.lock().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", home.path());
+        let prev_cwd = std::env::current_dir().unwrap();
+        std::env::set_current_dir(home.path()).unwrap();
+        std::fs::create_dir_all(home.path().join("Station")).unwrap();
+        let err = dir_under_home("Station").unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(err.1 .0["error"], "dir must be an absolute path");
+        std::env::set_current_dir(prev_cwd).unwrap();
         std::env::remove_var("HOME");
     }
 
