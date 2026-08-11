@@ -4,9 +4,16 @@ zero-shot voice cloning). Model loaded once and kept in RAM; CPU inference.
 
 Protocol: {"text","out"} per line on stdin → {"ok"} per line on stdout;
 prints {"ready": true} once the model is loaded.
-Optional job keys: "voice" (path to a reference wav to clone; needs
-"ref_text" or a sibling .txt with the transcription), "language" (default fr),
-"num_step" (default 16 — quality/speed knob, 32 = paper default).
+Optional job keys (top-level or inside "params"): "voice" (path to a reference
+wav to clone; needs "ref_text" or a sibling .txt with the transcription),
+"language" (default fr), "num_step" (default 16 — quality/speed knob, 32 =
+paper default), "instruct" (voice design), "speed" (float, default model-picked).
+
+Two measured constraints: the cloning reference should be 3-10 s and its
+ref_text transcribed in the REFERENCE's language (an EN ref with a FR-forced
+transcript yields gibberish); "instruct" only accepts the model's closed tag
+vocabulary (male/female, age bands, pitch levels, whisper, accents) as
+comma-separated items — free prose is rejected with "Unsupported instruct items".
 """
 import json
 import os
