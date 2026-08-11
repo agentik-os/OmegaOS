@@ -868,6 +868,21 @@ pub struct BoxIdResponse {
     pub box_id: String,
 }
 
+/// `POST /v1/cloud/register` request. The Clerk session JWT is accepted only
+/// on the existing device-authenticated channel and is never persisted.
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CloudRegisterRequest {
+    pub clerk_jwt: String,
+}
+
+/// `POST /v1/cloud/register` deliberately returns no relay credential. The
+/// credential belongs exclusively to the gateway's outbound relay client.
+#[derive(Serialize, JsonSchema)]
+pub struct CloudRegisterResponse {
+    pub ok: bool,
+}
+
 /// `POST /v1/backup` response body — `path` is the archive's final on-disk
 /// path (parsed off `omega backup`'s own `"  archive : <path>"` stdout
 /// line, falling back to the server-chosen `--out` path this endpoint
@@ -1408,6 +1423,9 @@ pub struct Protocol {
     pub doctor_response: DoctorResponse,
     pub usage_response: UsageResponse,
     pub box_info_response: BoxInfoResponse,
+    pub box_id_response: BoxIdResponse,
+    pub cloud_register_request: CloudRegisterRequest,
+    pub cloud_register_response: CloudRegisterResponse,
     pub backup_response: BackupResponse,
     pub timeline_event_entry: TimelineEventEntry,
     pub timeline_response: TimelineResponse,
