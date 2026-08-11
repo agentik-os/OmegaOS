@@ -1079,7 +1079,13 @@ function securityBrain(chatId: number, thread: number | undefined, model?: strin
 // agent-bots.json entry: `persona` (system-prompt file), `dir` (working dir, given
 // as --add-dir so the persona keeps its own ledger + sends files), `model`. Zero
 // code per persona — the Librarian and any future persona bot are pure config.
-const PERSONA_MODEL_DEFAULT = "claude-sonnet-4-6";
+// Current, robust default for persona bots (librarian, OS master agents). The
+// older "claude-sonnet-4-6" default was stale and prone to false-positive
+// refusals on benign personal work (a librarian declining a legitimate book);
+// claude-sonnet-5 is the live balanced tier (R-MODEL) and handles nuanced,
+// controversial-but-academic content without over-refusing. Per-bot `model`
+// in agent-bots.json still overrides this.
+const PERSONA_MODEL_DEFAULT = "claude-sonnet-5";
 const PERSONA_TIMEOUT_MS = 900_000;
 function personaPromptFor(agentId: string, path?: string): string {
   for (const p of [path, `${OMEGA_DIR}/agents/${agentId}.md`].filter(Boolean) as string[]) {
