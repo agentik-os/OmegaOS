@@ -261,6 +261,24 @@ async function handle(msg: any) {
     return;
   }
 
+  // Voice notes / audio / video notes — a deposit box takes SPEECH too (the
+  // photo+document-only guard silently dropped the operator's voice-cloning
+  // samples, exactly the .p8 failure mode below, one media type over).
+  const spoken = msg.voice || msg.audio || msg.video_note;
+  if (spoken) {
+    const ext = msg.voice ? "oga" : msg.video_note ? "mp4" : ((msg.audio?.file_name || "").split(".").pop() || "mp3").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp3";
+    const p = await download(spoken.file_id, ext);
+    if (p) {
+      if (caption) writeFileSync(`${p}.txt`, caption);
+      const kind = msg.voice ? "voice" : msg.video_note ? "video_note" : "audio";
+      note({ ts: stamp(), kind, path: p, caption });
+      const r = fanout(p, caption, force);
+      console.log(`[deposit] ${kind} ${p}${caption ? ` — "${caption}"` : ""}${r.shared.length ? ` → ${r.shared.join(", ")}` : ""}`);
+      await tg("sendMessage", { chat_id: chat, text: `📥 reçu (${kind}) : ${p.split("/").pop()}${caption ? `\n📝 ${caption}` : ""}${reach(r)}` });
+    } else await tg("sendMessage", { chat_id: chat, text: "⚠️ échec du téléchargement, réessaie." });
+    return;
+  }
+
   if (msg.document) {
     // EVERY document type — this is a deposit box. The old image-only mime
     // filter SILENTLY dropped anything else (the operator's App Store .p8
