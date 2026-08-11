@@ -40,10 +40,16 @@ Content owns editorial strategy, packaging, channel adaptation, publishing and c
 - content.rights.blocked
 - content.intent.qualified
 - content.performance.feedback
+- content.release_candidate.created
+- content.change.requested
+- content.automation_candidate.created
 
 ## Produces (pipeline wiring)
 - `content.intent.qualified` -> consumed by Revenue OS (commercial pipeline: Content -> qualified intent -> Revenue). Payload: source asset, audience segment, intent signal, consent status, attribution window, offer/campaign objective, confidence.
 - `content.performance.feedback` -> consumed by Storyteller OS, for story-object learning only (never for publishing decisions - see ownership boundary).
+- `content.release_candidate.created` -> consumed by Quality, Evaluation & Release OS for claims, rights and release checks.
+- `content.change.requested` -> consumed by Review & Governance OS for sensitive policy or boundary changes.
+- `content.automation_candidate.created` -> consumed by Operations & Automation OS only after workflow stability evidence exists.
 
 ## Consumes
 - `revenue.offer_objective.updated` from Revenue OS (offer/campaign objectives).

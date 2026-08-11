@@ -218,8 +218,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "24447779ed1693f37e267db0452ef3309d75b20f7b140856227a03c34e29d96a",
-      "bytes": 3299
+      "sha256": "b1b07ef120d3eca15dd7b1a6c827058fcc71853b64c15114a780690471026e17",
+      "bytes": 3479
     },
     {
       "path": "protocols/ai_agent_suitability.md",
@@ -268,8 +268,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "5fae202dde7d212e30808c0ae8d660ad81aae4759f7294eb6ce0601c72c31d12",
-      "bytes": 1663
+      "sha256": "7e0938af202021c8e586dc5ec5978df755e3cacc42e5a9ae0a94451c5aebe559",
+      "bytes": 2468
     },
     {
       "path": "README.md",
@@ -608,7 +608,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "operations.production_observed",
@@ -622,7 +622,10 @@
       },
       {
         "name": "automation.candidate.scored",
-        "consumed_by": "delivery-customer-success",
+        "consumed_by": [
+          "delivery-customer-success",
+          "ai-logic"
+        ],
         "payload": {
           "id": "string (record id)",
           "candidate": "object (the candidate payload)",
@@ -632,7 +635,10 @@
       },
       {
         "name": "operations.capacity_margin.verified",
-        "consumed_by": "wealth-capital",
+        "consumed_by": [
+          "wealth-capital",
+          "strategy-portfolio"
+        ],
         "payload": {
           "id": "string (record id)",
           "capacity_margin": "object (the capacity margin payload)",
@@ -699,6 +705,19 @@
           "id": "string (record id)",
           "arbitration": "object (the arbitration payload)",
           "status": "string (decided)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.automation_candidate.created",
+        "produced_by": [
+          "content"
+        ],
+        "payload": {
+          "id": "string",
+          "workflow": "object",
+          "stability_evidence": "array<object>",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

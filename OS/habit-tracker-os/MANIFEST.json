@@ -199,18 +199,83 @@
     "ARCHIVED"
   ],
   "events": {
-    "produces": {
-      "habit.review.completed": "A completed weekly or monthly review; consumed by Mindset OS to close the Mindset intent -> Habit contract -> Daily evidence -> Pattern/review -> Mindset reflection loop.",
-      "habit.observation.recorded": "A confirmed check-in observation; a local domain event, each confirmed observation is staged canonically via memory.record.staged and is not consumed by name outside this OS."
-    },
-    "consumes": [
-      "mindset.behavior_contract.created",
-      "handoff.habits.created",
-      "memory.context.compiled",
-      "memory.record.verified"
+    "schema_status": "defined",
+    "produces": [
+      {
+        "name": "habit.review.completed",
+        "consumed_by": [
+          "mindset"
+        ],
+        "payload": {
+          "id": "string",
+          "review": "object",
+          "window": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "habit.observation.recorded",
+        "consumed_by": null,
+        "payload": {
+          "id": "string",
+          "observation": "object",
+          "provenance": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      }
     ],
-    "writes": [
-      "memory.record.staged"
+    "consumes": [
+      {
+        "name": "mindset.behavior_contract.created",
+        "produced_by": [
+          "mindset"
+        ],
+        "payload": {
+          "id": "string",
+          "behavior_contract": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "handoff.habits.created",
+        "produced_by": [
+          "health-energy"
+        ],
+        "payload": {
+          "id": "string",
+          "habits": "object",
+          "constraints": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "memory.context.compiled",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "context": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "memory.record.verified",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "record": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      }
     ]
   },
   "safety": {
@@ -224,5 +289,6 @@
     "llm_provider": "provider-agnostic"
   },
   "change_control": "Changes to boundaries, schemas, or quality gates require Review & Governance OS approval in production.",
-  "schema_version": 1
+  "schema_version": 1,
+  "slug": "habit-tracker"
 }

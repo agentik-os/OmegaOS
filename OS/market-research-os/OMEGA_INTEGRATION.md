@@ -19,14 +19,14 @@ Never inject the entire knowledge library by default.
 ## Handoffs
 - Brainstorm OS supplies selected concepts to validate.
 - Blueprint OS receives a validated concept as a Blueprint input manifest.
-- Strategy & Portfolio OS receives willingness-to-pay and segment evidence (via `market.validation.completed`; Revenue OS has no direct Market Research event today, it receives strategic/pricing implications only indirectly through Strategy & Portfolio OS).
+- Strategy & Portfolio OS and Revenue OS receive willingness-to-pay and segment evidence through `market.validation.completed`.
 
 ## Event types
 - market.validation.completed
 - market.study.audited
 
 ## Produces (pipeline wiring)
-- `market.validation.completed` -> consumed by Blueprint OS and Strategy & Portfolio OS.
+- `market.validation.completed` -> consumed by Blueprint OS, Strategy & Portfolio OS and Revenue OS.
 
 ## Consumes
 - `brainstorm.concept.selected` from Brainstorm OS.

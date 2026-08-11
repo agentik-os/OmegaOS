@@ -24,6 +24,7 @@ This OS owns PERSONAL EXECUTE: capture -> clarify -> select -> commit -> focus -
 - Health & Energy OS provides capacity status and workload constraints.
 - Review & Governance OS receives execution evidence for cross-domain learning.
 - Relationship & Network OS provides follow-up tasks to schedule.
+- Wealth & Capital OS provides agreed money tasks without raw account or transaction data.
 
 ## Event types
 - execution.outcome.proven
@@ -36,6 +37,7 @@ This OS owns PERSONAL EXECUTE: capture -> clarify -> select -> commit -> focus -
 - `strategy.execution_packet.created` from Strategy & Portfolio OS (personal-execute branch entry point).
 - `handoff.execution.capacity` from Health & Energy OS.
 - `relationship.followup.drafted` from Relationship & Network OS.
+- `wealth.execution_task.created` from Wealth & Capital OS.
 
 ## State classification
 - Canonical (routes through Context & Memory OS): closed commitments with proof, weekly/quarterly reviews.

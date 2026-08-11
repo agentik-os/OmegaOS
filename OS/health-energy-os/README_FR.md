@@ -23,3 +23,19 @@ Cet OS produit des décisions, des preuves, des plans, des contrôles et des han
 
 ## Utilisation
 Le mode conversationnel reste l'entrée principale. Les données structurées servent à conserver les décisions et preuves, pas à remplacer la discussion.
+
+## Ce que contient cet OS
+
+Le pack livre 12 agents spécialistes, 18 skills, 8 protocoles, 6 schémas, un runtime local, des modèles, une base de connaissances et des tests de sécurité.
+
+## Commandes
+
+`/health`, `/readiness`, `/health-audit`, `/sleep`, `/training`, `/nutrition`, `/recovery`, `/travel-health`, `/health-experiment` et `/wearable`.
+
+## Handoffs principaux
+
+Habit Tracker reçoit uniquement des routines convenues. Execution reçoit une capacité et des contraintes de charge. Strategy reçoit des hypothèses de capacité durable. Les données médicales brutes ne traversent pas ces frontières.
+
+## Installation
+
+Le dossier complet est installé dans `~/.omega/os/health-energy-os` et comme skill `~/.omega/skills/health-energy-os`. `MANIFEST.json` et `checksums.sha256` vérifient le contenu livré.

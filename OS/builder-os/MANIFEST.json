@@ -1,6 +1,6 @@
 {
   "name": "Builder {OS}",
-  "slug": "builder-os",
+  "slug": "builder",
   "id": "builder",
   "version": "1.0.0",
   "generated_at": "2026-08-11",
@@ -163,8 +163,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "aa45b0b191aec6f550dde2c919a1f8024436ee9fa73dd5445253c9a3fea15f21",
-      "bytes": 1872
+      "sha256": "5ca35ec8e1699466e7a694009a6988629911cbdc6a7dc84113c5c6c15b9cf8d7",
+      "bytes": 2056
     },
     {
       "path": "pack/agents/openai.yaml",
@@ -358,32 +358,79 @@
     }
   ],
   "events": {
-    "schema_status": "declared",
+    "schema_status": "defined",
     "source": "OMEGA_INTEGRATION.md",
     "produces": [
       {
         "name": "builder.artifact.shipped",
         "consumed_by": "quality-evaluation-release",
-        "payload": "The Builder to Quality edge: a verified, integrated build artifact ready for the release gate (integrated revision fingerprint, evidence refs, trace links); staged canonically via memory.record.staged."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "The Builder to Quality edge: a verified, integrated build artifact ready for the release gate (integrated revision fingerprint, evidence refs, trace links); staged canonically via memory.record.staged."
+        }
       },
       {
         "name": "builder.build.verified",
         "consumed_by": null,
-        "payload": "Local closure event raised once Quality's release.gate.decided is consumed; records the frozen release candidate as verified release evidence via memory.record.staged; not consumed by name outside this OS."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "Local closure event raised once Quality's release.gate.decided is consumed; records the frozen release candidate as verified release evidence via memory.record.staged; not consumed by name outside this OS."
+        }
       }
     ],
     "consumes": [
       {
         "name": "stepper.graph.frozen",
-        "produced_by": "stepper"
+        "produced_by": "stepper",
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": ""
+        }
       },
       {
         "name": "defect.opened",
-        "produced_by": "quality-evaluation-release"
+        "produced_by": "quality-evaluation-release",
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": ""
+        }
       },
       {
         "name": "release.gate.decided",
-        "produced_by": "quality-evaluation-release"
+        "produced_by": "quality-evaluation-release",
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": ""
+        }
+      },
+      {
+        "name": "delivery.change_scope.approved",
+        "produced_by": [
+          "delivery-customer-success"
+        ],
+        "payload": {
+          "id": "string",
+          "scope": "object",
+          "acceptance_criteria": "array<object>",
+          "customer_ref": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       }
     ],
     "memory_bus": {

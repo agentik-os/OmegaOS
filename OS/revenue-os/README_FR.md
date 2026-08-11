@@ -23,3 +23,19 @@ Cet OS produit des décisions, des preuves, des plans, des contrôles et des han
 
 ## Utilisation
 Le mode conversationnel reste l'entrée principale. Les données structurées servent à conserver les décisions et preuves, pas à remplacer la discussion.
+
+## Ce que contient cet OS
+
+Le pack livre 24 agents, 40 skills, 10 protocoles, 16 schémas, un runtime, des modèles commerciaux et financiers, et des tests.
+
+## Commandes
+
+`/revenue`, `/offer`, `/positioning`, `/pricing`, `/pipeline`, `/lead`, `/sales-call`, `/proposal`, `/invoice`, `/collections`, `/business-cashflow`, `/contract`, `/revenue-close`, `/revenue-scenario` et `/renewal`.
+
+## Handoffs principaux
+
+Market Research et Strategy fournissent preuves et pari approuvé. Content échange objectifs et intent qualifié. Delivery reçoit contrat, paiement réconcilié et scope. Wealth reçoit uniquement une distribution propriétaire vérifiée.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/revenue-os` et `~/.omega/skills/revenue-os`. Les inventaires machine permettent de reproduire et vérifier chaque installation.

@@ -23,3 +23,19 @@ Cet OS produit des décisions, des preuves, des plans, des contrôles et des han
 
 ## Utilisation
 Le mode conversationnel reste l'entrée principale. Les données structurées servent à conserver les décisions et preuves, pas à remplacer la discussion.
+
+## Ce que contient cet OS
+
+Le pack livre 12 agents, 18 skills, 7 protocoles, 7 schémas, un runtime, des modèles de relation et des tests de confidentialité.
+
+## Commandes
+
+`/network`, `/person`, `/meeting-prep`, `/interaction`, `/follow-up`, `/intro`, `/nurture`, `/difficult-conversation`, `/boundary` et `/gathering`.
+
+## Handoffs principaux
+
+Execution reçoit des suivis bornés. Revenue reçoit uniquement des introductions commerciales consenties. Delivery reçoit uniquement les engagements nécessaires au service. Content reçoit du matériel explicitement autorisé.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/relationship-network-os` et `~/.omega/skills/relationship-network-os`. Les données personnelles restent dans le ledger local, jamais dans le dépôt.

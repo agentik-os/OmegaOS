@@ -29,7 +29,7 @@ Never inject the entire knowledge library by default.
 Revenue owns the BUSINESS ledger, receivables, payables, business reserves, business forecast. It never owns personal money. The only event that crosses the boundary is `revenue.owner_distribution.verified`; raw business transaction history is never shared with Wealth & Capital OS.
 
 ## Internal state machine (SELL -> COLLECT)
-`offer.approved -> proposal.approved -> contract.signed -> invoice.sent -> payment.reconciled -> revenue.close.completed`. `revenue.payment.reconciled` is the COLLECT-completion event exposed to the suite.
+`offer.approved -> proposal.approved -> contract.signed -> invoice.sent -> payment.reconciled -> revenue.close.completed`. `payment.reconciled` is the single COLLECT-completion event exposed to the suite.
 
 ## Event types
 - revenue.document.staged
@@ -59,7 +59,7 @@ Revenue owns the BUSINESS ledger, receivables, payables, business reserves, busi
 - `payment.reconciled` -> consumed by Delivery & Customer Success OS (post-payment authorization gate: delivery never starts on the contract alone).
 - `revenue.delivery_handoff.created` -> consumed by Delivery & Customer Success OS. Payload: contract version, scope baseline, promised outcomes, acceptance criteria, price, billing schedule, client permissions, exclusions.
 - `revenue.owner_distribution.verified` -> consumed by Wealth & Capital OS (the ONLY event that crosses the business/personal boundary; supersedes the ambiguous `handoff.wealth.created`/`handoff.revenue.received` pair Codex flagged).
-- `revenue.renewal.decisioned` -> consumed by Delivery & Customer Success OS.
+- `revenue.renewal.decisioned` -> consumed by Delivery & Customer Success OS and Strategy & Portfolio OS.
 - `revenue.change.requested` -> consumed by Review & Governance OS (governance handshake, see below).
 
 ## Consumes
@@ -67,6 +67,9 @@ Revenue owns the BUSINESS ledger, receivables, payables, business reserves, busi
 - `delivery.handoff.accepted` from Delivery & Customer Success OS (closes the Revenue -> Delivery edge).
 - `delivery.renewal_signal.created` from Delivery & Customer Success OS (Revenue owns the renewal DECISION; Delivery owns the renewal SIGNAL - resolves the duplicate-ownership `renewal.opened` name Codex flagged).
 - `change.approved` from Review & Governance OS (governance gate, see below).
+- `market.validation.completed` from Market Research OS (willingness-to-pay and segment evidence).
+- `strategy.product_bet.approved` from Strategy & Portfolio OS (approved bet and commercial constraints).
+- `relationship.revenue_introduction.ready` from Relationship & Network OS (consented business introduction, never private notes).
 
 ## Governance
 Pricing, schema, or billing-policy changes are POLICY changes, not operational events. Sequence: `revenue.change.requested -> Review consumes -> Review emits change.approved -> Revenue consumes -> Revenue emits offer.version.approved` for the consequential change. Ordinary invoicing and payment reconciliation remain operational events and do not require this gate.

@@ -238,8 +238,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "8fc3ec8593e7d9d8b8d6605c496705e7dcae658386e4419314a53785b59ee94f",
-      "bytes": 4687
+      "sha256": "aeab942fa344124c4fe5edbc6698dc5ea100d3e50f72832165e74894ecb1d1ad",
+      "bytes": 5050
     },
     {
       "path": "protocols/cash_reserve.md",
@@ -293,8 +293,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "4d85ee815a88ad88bc1c5179c1bea5c73fc90ad2153482059fb9c1eb2f5c47de",
-      "bytes": 1556
+      "sha256": "22200acc8a31d0cb9173cc273916ec1ecf61fe3a9f2c12d5c5e283b1fd4a33ff",
+      "bytes": 2398
     },
     {
       "path": "README.md",
@@ -658,7 +658,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "revenue.offer_objective.updated",
@@ -702,7 +702,10 @@
       },
       {
         "name": "revenue.renewal.decisioned",
-        "consumed_by": "delivery-customer-success",
+        "consumed_by": [
+          "delivery-customer-success",
+          "strategy-portfolio"
+        ],
         "payload": {
           "id": "string (record id)",
           "renewal": "object (the renewal payload)",
@@ -717,6 +720,22 @@
           "id": "string (record id)",
           "change": "object (the change payload)",
           "status": "string (requested)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "payment.reconciled",
+        "consumed_by": [
+          "delivery-customer-success"
+        ],
+        "payload": {
+          "id": "string",
+          "payment_id": "string",
+          "invoice_id": "string",
+          "amount": "number",
+          "currency": "string",
+          "reconciliation": "object",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }
@@ -759,6 +778,46 @@
           "id": "string (record id)",
           "change": "object (the change payload)",
           "status": "string (approved)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "market.validation.completed",
+        "produced_by": [
+          "market-research"
+        ],
+        "payload": {
+          "id": "string",
+          "validation": "object",
+          "willingness_to_pay": "object",
+          "segment": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "strategy.product_bet.approved",
+        "produced_by": [
+          "strategy-portfolio"
+        ],
+        "payload": {
+          "id": "string",
+          "product_bet": "object",
+          "commercial_constraints": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "relationship.revenue_introduction.ready",
+        "produced_by": [
+          "relationship-network"
+        ],
+        "payload": {
+          "id": "string",
+          "introduction": "object",
+          "consent_status": "string",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

@@ -23,3 +23,19 @@ Cet OS produit des décisions, des preuves, des plans, des contrôles et des han
 
 ## Utilisation
 Le mode conversationnel reste l'entrée principale. Les données structurées servent à conserver les décisions et preuves, pas à remplacer la discussion.
+
+## Ce que contient cet OS
+
+Le pack livre 38 agents, 44 skills, 12 protocoles, 10 schémas, des playbooks de plateforme, un runtime, des modèles de production et des tests.
+
+## Commandes
+
+`/content`, `/content-gps`, `/capture-day`, `/story-mine`, `/pillar`, `/cascade`, `/instagram`, `/tiktok`, `/youtube`, `/linkedin`, `/x`, `/newsletter`, `/article`, `/visual-brief`, `/video-brief`, `/sound-brief`, `/content-calendar` et `/content-review`.
+
+## Handoffs principaux
+
+Storyteller transmet les objets narratifs vérifiés. Revenue échange objectifs et intent. Quality contrôle les candidats de release, Review les changements sensibles, et Operations seulement les workflows dont la stabilité est prouvée.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/content-os` et `~/.omega/skills/content-os`. Les droits, consentements, claims et preuves restent inclus dans les contrats de sortie.

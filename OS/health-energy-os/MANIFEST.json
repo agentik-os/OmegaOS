@@ -203,8 +203,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "d5ddb4b33ea39259f70ce2aed4a98c2f25c160b0a37c2ae9cef661c3db357594",
-      "bytes": 1362
+      "sha256": "9bb20f2e2da9a783a16821f517d41cca5ace77417f73cdc6dd13a743acddf94e",
+      "bytes": 2185
     },
     {
       "path": "README.md",
@@ -403,7 +403,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "health.capacity.assessed",

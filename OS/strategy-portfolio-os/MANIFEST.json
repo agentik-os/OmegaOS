@@ -158,8 +158,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "0e121796038ecf40c7d8bd37716734e03641de5393f5ddb840dd00ec62db6bf1",
-      "bytes": 3947
+      "sha256": "8cd0f63a2662d9605171c973677df0321a478eda066140fecf1e5a95a7c5ebd7",
+      "bytes": 4455
     },
     {
       "path": "protocols/kill_review.md",
@@ -193,8 +193,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "f2b28b8b023263f345df02aa55551e32c0ba43bd12caf2357fba6605c1b3b6da",
-      "bytes": 1330
+      "sha256": "76e5230d2b05a39bfbffa8f546f0d93629159cd86222c0cb584b295ae72d8028",
+      "bytes": 2137
     },
     {
       "path": "README.md",
@@ -408,11 +408,14 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "strategy.product_bet.approved",
-        "consumed_by": "blueprint",
+        "consumed_by": [
+          "blueprint",
+          "revenue"
+        ],
         "payload": {
           "id": "string (record id)",
           "product_bet": "object (the product bet payload)",
@@ -509,6 +512,68 @@
           "id": "string (record id)",
           "reallocation": "object (the reallocation payload)",
           "status": "string (proposed)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "alignment.strategy_implication.created",
+        "produced_by": [
+          "alignment"
+        ],
+        "payload": {
+          "id": "string",
+          "implication": "object",
+          "privacy_class": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "market.validation.completed",
+        "produced_by": [
+          "market-research"
+        ],
+        "payload": {
+          "id": "string",
+          "validation": "object",
+          "decision": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "revenue.renewal.decisioned",
+        "produced_by": [
+          "revenue"
+        ],
+        "payload": {
+          "id": "string",
+          "renewal": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "delivery.renewal_signal.created",
+        "produced_by": [
+          "delivery-customer-success"
+        ],
+        "payload": {
+          "id": "string",
+          "renewal_signal": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "operations.capacity_margin.verified",
+        "produced_by": [
+          "operations-automation"
+        ],
+        "payload": {
+          "id": "string",
+          "capacity_margin": "object",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

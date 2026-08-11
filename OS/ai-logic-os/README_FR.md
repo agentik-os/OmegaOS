@@ -45,3 +45,7 @@ C'est un pack mince : deux fichiers de reference de doctrine et rien d'autre. Il
 ## Pour aller plus loin
 
 Voir `OMEGA_INTEGRATION.md` pour l'enregistrement complet, le schema d'evenements, l'ordre d'injection du contexte et la classification d'etat.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/ai-logic-os` et `~/.omega/skills/ai-logic-os`. Le manifeste et les checksums vérifient les fichiers distribués.

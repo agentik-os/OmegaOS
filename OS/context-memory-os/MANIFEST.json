@@ -178,8 +178,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "e69e7a6aa2022d8908967510706b35924c1bbfc7d839545310f83cc3298b5106",
-      "bytes": 2508
+      "sha256": "7bd054a60233288006c6d2002202bec5835f5ae144910f955da9b946cb993cc2",
+      "bytes": 2625
     },
     {
       "path": "protocols/context_compilation.md",
@@ -218,8 +218,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "b9686e6dbdef1667991ad29796711c2b1cc273a5bb7b1471d952b1cecec752fe",
-      "bytes": 1293
+      "sha256": "e3d04d7a83d323f2dd99b34d30336e7827ff2de8c4a65204c0a449f06fc515e6",
+      "bytes": 2031
     },
     {
       "path": "README.md",
@@ -433,11 +433,35 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "memory.context.compiled",
-        "consumed_by": "*",
+        "consumed_by": [
+          "mindset",
+          "health-energy",
+          "habit-tracker",
+          "alignment",
+          "strategy-portfolio",
+          "brainstorm",
+          "market-research",
+          "blueprint",
+          "design",
+          "stepper",
+          "builder",
+          "quality-evaluation-release",
+          "storyteller",
+          "revenue",
+          "delivery-customer-success",
+          "relationship-network",
+          "wealth-capital",
+          "execution",
+          "operations-automation",
+          "review-governance",
+          "ai-logic",
+          "content",
+          "books"
+        ],
         "payload": {
           "id": "string (record id)",
           "context": "object (the context payload)",
@@ -447,7 +471,31 @@
       },
       {
         "name": "memory.record.verified",
-        "consumed_by": "*",
+        "consumed_by": [
+          "mindset",
+          "health-energy",
+          "habit-tracker",
+          "alignment",
+          "strategy-portfolio",
+          "brainstorm",
+          "market-research",
+          "blueprint",
+          "design",
+          "stepper",
+          "builder",
+          "quality-evaluation-release",
+          "storyteller",
+          "revenue",
+          "delivery-customer-success",
+          "relationship-network",
+          "wealth-capital",
+          "execution",
+          "operations-automation",
+          "review-governance",
+          "ai-logic",
+          "content",
+          "books"
+        ],
         "payload": {
           "id": "string (record id)",
           "record": "object (the record payload)",
@@ -469,7 +517,31 @@
     "consumes": [
       {
         "name": "memory.record.staged",
-        "produced_by": "*",
+        "produced_by": [
+          "mindset",
+          "health-energy",
+          "habit-tracker",
+          "alignment",
+          "strategy-portfolio",
+          "brainstorm",
+          "market-research",
+          "blueprint",
+          "design",
+          "stepper",
+          "builder",
+          "quality-evaluation-release",
+          "storyteller",
+          "revenue",
+          "delivery-customer-success",
+          "relationship-network",
+          "wealth-capital",
+          "execution",
+          "operations-automation",
+          "review-governance",
+          "ai-logic",
+          "content",
+          "books"
+        ],
         "payload": {
           "id": "string (record id)",
           "record": "object (the record payload)",
@@ -484,6 +556,19 @@
           "id": "string (record id)",
           "pack": "object (the pack payload)",
           "status": "string (created)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "books.insight.confirmed",
+        "produced_by": [
+          "books"
+        ],
+        "payload": {
+          "id": "string",
+          "insight": "object",
+          "source": "object",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

@@ -193,8 +193,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "d19d2881677795ab9420d2e17b363326731daaf05af86cead299838e7305ebd5",
-      "bytes": 3012
+      "sha256": "1da847c16f794cc6a1863530f37faeab7530e082e0f90f6bea2539de9cb44182",
+      "bytes": 3213
     },
     {
       "path": "protocols/customer_risk_recovery.md",
@@ -243,8 +243,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "453bd47440423c736c3380811bde3a2b8f69b0b88568f6f4c34b2c98ca13ef0c",
-      "bytes": 1409
+      "sha256": "2b46e76c3b781f34c5518ef946bec5c0d605883b379b9ab932a0a0486ce4c99b",
+      "bytes": 2252
     },
     {
       "path": "README.md",
@@ -528,7 +528,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "delivery.handoff.accepted",
@@ -552,11 +552,28 @@
       },
       {
         "name": "delivery.renewal_signal.created",
-        "consumed_by": "revenue",
+        "consumed_by": [
+          "revenue",
+          "strategy-portfolio"
+        ],
         "payload": {
           "id": "string (record id)",
           "renewal_signal": "object (the renewal signal payload)",
           "status": "string (created)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "delivery.change_scope.approved",
+        "consumed_by": [
+          "builder"
+        ],
+        "payload": {
+          "id": "string",
+          "scope": "object",
+          "acceptance_criteria": "array<object>",
+          "customer_ref": "string",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }
@@ -599,6 +616,35 @@
           "id": "string (record id)",
           "renewal": "object (the renewal payload)",
           "status": "string (decisioned)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "payment.reconciled",
+        "produced_by": [
+          "revenue"
+        ],
+        "payload": {
+          "id": "string",
+          "payment_id": "string",
+          "invoice_id": "string",
+          "amount": "number",
+          "currency": "string",
+          "reconciliation": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "relationship.delivery_commitment.ready",
+        "produced_by": [
+          "relationship-network"
+        ],
+        "payload": {
+          "id": "string",
+          "commitment": "object",
+          "consent_status": "string",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

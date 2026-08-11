@@ -351,29 +351,53 @@
     ]
   },
   "events": {
-    "schema_status": "declared-in-integration-contract",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "mindset.behavior_contract.created",
         "consumed_by": "habit-tracker",
-        "payload": "A behavior contract for Habit Tracker OS to track: the committed behavior(s), cadence/floor-standard-deep, cues and evidence signal."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "A behavior contract for Habit Tracker OS to track: the committed behavior(s), cadence/floor-standard-deep, cues and evidence signal."
+        }
       },
       {
         "name": "mindset.identity_compilation.updated",
         "consumed_by": "strategy-portfolio",
-        "payload": "A confirmed identity/belief compilation update; only strategic implications (not raw identity work) are forwarded to Strategy & Portfolio OS."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "A confirmed identity/belief compilation update; only strategic implications (not raw identity work) are forwarded to Strategy & Portfolio OS."
+        }
       }
     ],
     "consumes": [
       {
         "name": "alignment.intent.updated",
         "produced_by": "alignment",
-        "payload": "Updated intent and values from Alignment OS used as the compilation input."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "Updated intent and values from Alignment OS used as the compilation input."
+        }
       },
       {
         "name": "habit.review.completed",
         "produced_by": "habit-tracker",
-        "payload": "A completed habit review that closes the intent -> contract -> daily evidence -> pattern/review -> mindset reflection loop."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "A completed habit review that closes the intent -> contract -> daily evidence -> pattern/review -> mindset reflection loop."
+        }
       }
     ]
   },

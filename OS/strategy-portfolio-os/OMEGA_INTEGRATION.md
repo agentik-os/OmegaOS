@@ -47,7 +47,7 @@ The value-chain note places EXECUTE right after CHOOSE. This suite has two disti
 - strategy.refresh.requested
 
 ## Produces (pipeline wiring)
-- `strategy.product_bet.approved` -> consumed by Blueprint OS (product IMPLEMENT branch entry point).
+- `strategy.product_bet.approved` -> consumed by Blueprint OS (product IMPLEMENT branch entry point) and Revenue OS (commercial constraints and approved bet).
 - `strategy.execution_packet.created` -> consumed by Execution OS (personal-execute branch entry point; quarterly outcomes + exclusions payload).
 - `strategy.change.requested` -> consumed by Review & Governance OS (governance handshake, see below).
 - `strategy.refresh.requested` -> consumed by Review & Governance OS, closing the Review -> Context -> Strategy learning loop.
@@ -59,6 +59,9 @@ The value-chain note places EXECUTE right after CHOOSE. This suite has two disti
 - `change.approved` from Review & Governance OS (governance gate, see below).
 - `mindset.identity_compilation.updated` from Mindset OS (strategic implications only, never raw identity work).
 - `capital.reallocation.proposed` from Wealth & Capital OS (Operations -> Capitalize edge feeding allocation decisions).
+- `alignment.strategy_implication.created` from Alignment OS (strategic implication only, no raw reflection).
+- `market.validation.completed` from Market Research OS (validated segment, demand, pricing evidence and decision).
+- `revenue.renewal.decisioned` from Revenue OS, `delivery.renewal_signal.created` from Delivery & Customer Success OS, and `operations.capacity_margin.verified` from Operations & Automation OS as concrete portfolio feedback.
 
 ## Governance
 Strategy may emit `portfolio.item.funded`, `portfolio.item.paused`, `portfolio.item.killed`, or `allocation.changed` for a CONSEQUENTIAL change only after the matching `change.approved` (or `policy.exception.granted`) event is present for the `strategy.change.requested` that preceded it. Sequence: `strategy.change.requested -> Review consumes -> Review emits change.approved | policy.exception.granted -> Strategy consumes -> Strategy emits the portfolio/allocation event`.

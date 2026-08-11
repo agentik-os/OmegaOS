@@ -23,3 +23,19 @@ Cet OS produit des décisions, des preuves, des plans, des contrôles et des han
 
 ## Utilisation
 Le mode conversationnel reste l'entrée principale. Les données structurées servent à conserver les décisions et preuves, pas à remplacer la discussion.
+
+## Ce que contient cet OS
+
+Le pack livre 12 agents, 20 skills, 6 protocoles, 7 schémas, un runtime local, des modèles de décision et des tests.
+
+## Commandes
+
+`/strategy`, `/diagnosis`, `/portfolio`, `/prioritize`, `/scenario`, `/strategic-decision`, `/quarter-plan`, `/kill-review`, `/one-page-strategy` et `/not-doing`.
+
+## Handoffs principaux
+
+Market Research et Alignment fournissent des implications validées. Blueprint reçoit un pari produit approuvé. Execution reçoit les résultats trimestriels. Revenue, Delivery, Operations et Wealth renvoient des signaux concrets pour l'allocation.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/strategy-portfolio-os` et `~/.omega/skills/strategy-portfolio-os`. Les inventaires signés par hash sont vérifiés à chaque gate d'installation.

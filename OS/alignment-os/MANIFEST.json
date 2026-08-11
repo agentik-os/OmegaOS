@@ -171,8 +171,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "a4cff9282ace966a437d8d08d28b4acb36f08c8e86829912c5d6bf1ce4ada83b",
-      "bytes": 2034
+      "sha256": "47df1eb2ef2d605cf86be2ad1a8b905bc9959c080611e9a0410da643210eb43e",
+      "bytes": 2261
     },
     {
       "path": "pack/agents/action.md",
@@ -476,8 +476,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "60385b9f92873f42361737f8bb46ab5e4bc57982502ff0bf74a0d074426dd816",
-      "bytes": 2293
+      "sha256": "51cf1f8bb71548a8749f9d6fd9f58895377d2b822b4263fbbc383a744fa4919e",
+      "bytes": 2717
     },
     {
       "path": "README.md",
@@ -600,5 +600,53 @@
       "bytes": 7889
     }
   ],
-  "schema_version": 1
+  "schema_version": 1,
+  "events": {
+    "schema_status": "defined",
+    "produces": [
+      {
+        "name": "alignment.intent.updated",
+        "consumed_by": [
+          "mindset"
+        ],
+        "payload": {
+          "id": "string",
+          "intent": "object",
+          "values": "array<string>",
+          "boundaries": "array<string>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "alignment.strategy_implication.created",
+        "consumed_by": [
+          "strategy-portfolio"
+        ],
+        "payload": {
+          "id": "string",
+          "implication": "object",
+          "decision_ref": "string",
+          "privacy_class": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      }
+    ],
+    "consumes": [
+      {
+        "name": "memory.context.compiled",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "context": "object",
+          "authorized_scope": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      }
+    ]
+  }
 }

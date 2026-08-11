@@ -53,8 +53,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "2b957a9bd78b641afe8b5ac6bf72c489d209bdb95b97598ba7067c064338ee2b",
-      "bytes": 2912
+      "sha256": "bfc1c8cb87ba0d0d1b9beed9621aaddecb176ad33893be155be7a246e3edc0a2",
+      "bytes": 3084
     },
     {
       "path": "README.md",
@@ -84,7 +84,7 @@
     ]
   },
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "ailogic.arbitration.decided",

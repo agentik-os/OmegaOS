@@ -49,7 +49,7 @@ OBSERVE → COMPARE → EXPLAIN → LEARN → DECIDE → AUTHORIZE → CHANGE �
 | `/ai-governance` | ai-risk | Apply AI risk governance |
 
 ## Main handoffs
-- All OSs send evidence and change requests; owners receive approved actions.
+- Explicitly wired OSs send named evidence or change events; owners receive approved actions.
 - Strategy & Portfolio OS receives decision-quality and portfolio review findings.
 - Quality & Release OS receives release policy and risk tolerance.
 - Context & Memory OS stores versioned policies, decisions and audit history.

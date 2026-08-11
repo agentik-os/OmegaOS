@@ -41,8 +41,8 @@ Never inject the entire knowledge library by default.
 
 ## Produces (pipeline wiring)
 - `operations.production_observed` -> consumed by Quality, Evaluation & Release OS (production feedback loop).
-- `automation.candidate.scored` -> consumed by Delivery & Customer Success OS (automation changes affecting client delivery).
-- `operations.capacity_margin.verified` -> consumed by Wealth & Capital OS (productivity/margin gains feeding capital allocation).
+- `automation.candidate.scored` -> consumed by Delivery & Customer Success OS (automation changes affecting client delivery) and AI Logic OS (deterministic-code-vs-AI arbitration).
+- `operations.capacity_margin.verified` -> consumed by Wealth & Capital OS and Strategy & Portfolio OS (productivity/margin gains feeding capital allocation).
 - `automation.change.requested` -> consumed by Review & Governance OS (governance handshake, see below).
 - `automation.review.requested` -> consumed by Review & Governance OS.
 
@@ -51,6 +51,7 @@ Never inject the entire knowledge library by default.
 - `delivery.workflow.stable` from Delivery & Customer Success OS (a workflow becomes an automation candidate only once stable).
 - `change.approved` from Review & Governance OS (governance gate, see below).
 - `ailogic.arbitration.decided` from AI Logic OS (deterministic-code-vs-AI-judgment arbitration before scoring a candidate).
+- `content.automation_candidate.created` from Content OS, only with workflow stability evidence.
 
 ## Governance
 Internal `automation.blueprint.approved` is an OPERATIONS-level review, not a Governance approval. A consequential automation change (touching risk, policy, client-facing scope) requires: `automation.change.requested -> Review consumes -> Review emits change.approved -> Operations consumes -> Operations emits automation.blueprint.approved -> automation.run.started`.

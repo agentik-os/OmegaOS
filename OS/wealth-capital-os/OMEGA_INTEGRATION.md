@@ -36,10 +36,12 @@ Wealth owns the PERSONAL ledger, personal reserves, personal goals, investments.
 - handoff.revenue.received (legacy orchestration event, superseded below - do not treat as the financial fact)
 - capital.reallocation.proposed
 - wealth.change.requested
+- wealth.execution_task.created
 
 ## Produces (pipeline wiring)
 - `capital.reallocation.proposed` -> consumed by Strategy & Portfolio OS and Review & Governance OS (Operations -> Capitalize edge: productivity/margin gains reaching capital allocation).
 - `wealth.change.requested` -> consumed by Review & Governance OS (governance handshake, see below).
+- `wealth.execution_task.created` -> consumed by Execution OS. The payload contains an agreed action, due date and privacy class, never raw financial records.
 
 ## Consumes
 - `revenue.owner_distribution.verified` from Revenue OS (the ONLY event crossing the business/personal boundary; supersedes the ambiguous `handoff.wealth.created`/`handoff.revenue.received` pair Codex flagged).

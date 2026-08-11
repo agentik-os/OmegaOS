@@ -23,6 +23,10 @@ Stoicisme, taoisme (wu wei), Jim Rohn, sciences du sens et du comportement, mani
 ## Regle d'independance
 Cet OS produit des decisions, des audits de croyances, des protocoles quotidiens et des handoffs. Il ne doit jamais dupliquer les responsabilites operationnelles des autres OS. Position dans la suite : socle personnel BE, en amont de Mindset OS.
 
+## Ce que contient cet OS
+
+Le pack contient 12 voix de conseil, 17 skills, 5 protocoles, des schémas de mémoire, une base de connaissances, des exemples, des évaluations et le système principal `TRUE NORTH`.
+
 ## Handoffs principaux
 - Mindset OS recoit l'intention/les valeurs mises a jour.
 - Strategy & Portfolio OS recoit uniquement les implications strategiques, jamais les reflexions personnelles brutes.
@@ -33,3 +37,7 @@ Cet OS produit des decisions, des audits de croyances, des protocoles quotidiens
 
 ## Utilisation
 Le mode conversationnel reste l'entree principale. Voir `README.md` (anglais) et `OMEGA_INTEGRATION.md` pour le contrat d'integration complet.
+
+## Installation
+
+Le pack est installé sous `~/.omega/os/alignment-os` et `~/.omega/skills/alignment-os`. Le manifeste, les checksums et le contrat d'intégration vérifient la surface réellement distribuée.

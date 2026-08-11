@@ -158,8 +158,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "1723c747c837cea3674bc59b5c1ce3e1ee653154ed3532cdb49b41290462216c",
-      "bytes": 1961
+      "sha256": "448542ac80c96f0173e917a414945f88ff2bf3649a0ade917f08d75773d4123e",
+      "bytes": 2312
     },
     {
       "path": "protocols/difficult_conversation.md",
@@ -198,8 +198,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "fa6aef7e0f37341cc9d67da5fd378b082077c6eba5fb2655b3990445418b1bd1",
-      "bytes": 1272
+      "sha256": "73c593b003c81009c2f62cd8481c337fccd5d08acc137d39de0c0bf26fb69010",
+      "bytes": 2061
     },
     {
       "path": "README.md",
@@ -403,7 +403,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "relationship.followup.drafted",
@@ -422,6 +422,32 @@
           "id": "string (record id)",
           "gathering": "object (the gathering payload)",
           "status": "string (created)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "relationship.revenue_introduction.ready",
+        "consumed_by": [
+          "revenue"
+        ],
+        "payload": {
+          "id": "string",
+          "introduction": "object",
+          "consent_status": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "relationship.delivery_commitment.ready",
+        "consumed_by": [
+          "delivery-customer-success"
+        ],
+        "payload": {
+          "id": "string",
+          "commitment": "object",
+          "consent_status": "string",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

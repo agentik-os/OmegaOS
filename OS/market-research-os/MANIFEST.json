@@ -120,8 +120,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "27e7b6608dbfc2276956b82ed9796f90465c1255a30306c52fdd1dceec5db95c",
-      "bytes": 1679
+      "sha256": "54ca12840b83dd3896d78c478dd0913eae8a292211fef56e6320154fe30a256d",
+      "bytes": 1561
     },
     {
       "path": "README_FR.md",
@@ -296,7 +296,7 @@
   "status_values": [
     "MARKET RESEARCH IN PROGRESS",
     "MARKET RESEARCH BLOCKED",
-    "MARKET RESEARCH COMPLETE — DECISION READY"
+    "MARKET RESEARCH COMPLETE , DECISION READY"
   ],
   "decision_values": [
     "GO",
@@ -348,42 +348,90 @@
     "research_status"
   ],
   "events": {
-    "produced": [
+    "schema_status": "defined",
+    "produces": [
       {
-        "type": "market.validation.completed",
-        "payload_note": "The frozen validated concept plus its decision (GO/PIVOT/HOLD/NO-GO/INSUFFICIENT EVIDENCE), willingness-to-pay and segment evidence, and a reference to the Blueprint Input Manifest. Consumed by Blueprint OS and Strategy & Portfolio OS.",
-        "consumers": [
-          "blueprint-os",
-          "strategy-portfolio-os"
-        ]
+        "name": "market.validation.completed",
+        "consumed_by": [
+          "blueprint",
+          "strategy-portfolio",
+          "revenue"
+        ],
+        "payload": {
+          "id": "string",
+          "validation": "object",
+          "decision": "string",
+          "evidence_refs": "array<string>",
+          "blueprint_input_manifest": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "type": "market.study.audited",
-        "payload_note": "The audit verdict on an existing market study, naming evidence, methodology, bias, traceability, and decision defects. Emitted by the AUDIT mode; no downstream consumer is wired in OMEGA_INTEGRATION.md today.",
-        "consumers": []
+        "name": "market.study.audited",
+        "consumed_by": null,
+        "payload": {
+          "id": "string",
+          "audit": "object",
+          "verdict": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "type": "memory.record.staged",
-        "payload_note": "A validated evidence record staged for Context & Memory OS to verify. Context & Memory OS returns memory.record.verified.",
-        "consumers": [
-          "context-memory-os"
-        ]
+        "name": "memory.record.staged",
+        "consumed_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "record": "object",
+          "provenance": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       }
     ],
-    "consumed": [
+    "consumes": [
       {
-        "type": "brainstorm.concept.selected",
-        "source": "brainstorm-os"
+        "name": "brainstorm.concept.selected",
+        "produced_by": [
+          "brainstorm"
+        ],
+        "payload": {
+          "id": "string",
+          "concept": "object",
+          "lineage": "array<string>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "type": "memory.context.compiled",
-        "source": "context-memory-os"
+        "name": "memory.context.compiled",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "context": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "type": "memory.record.verified",
-        "source": "context-memory-os"
+        "name": "memory.record.verified",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "record": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       }
     ]
   },
-  "schema_version": 1
+  "schema_version": 1,
+  "slug": "market-research"
 }

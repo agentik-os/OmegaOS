@@ -31,7 +31,7 @@ Never inject the entire knowledge library by default.
 - milestone.completed
 - deliverable.accepted
 - client.risk.escalated
-- scope.change.approved
+- delivery.change_scope.approved
 - adoption.reviewed
 - value.evidence.verified
 - renewal.opened (deprecated, superseded by `delivery.renewal_signal.created`)
@@ -45,7 +45,8 @@ Delivery never starts on `revenue.delivery_handoff.created` alone. Sequence: `re
 ## Produces (pipeline wiring)
 - `delivery.handoff.accepted` -> consumed by Revenue OS (closes the commercial pipeline's Revenue -> Delivery edge with an acceptance confirmation).
 - `delivery.workflow.stable` -> consumed by Operations & Automation OS (a workflow becomes an automation candidate only once stable).
-- `delivery.renewal_signal.created` -> consumed by Revenue OS (Delivery owns the SIGNAL, Revenue owns the renewal DECISION - resolves the duplicate `renewal.opened` ownership Codex flagged).
+- `delivery.renewal_signal.created` -> consumed by Revenue OS and Strategy & Portfolio OS (Delivery owns the SIGNAL, Revenue owns the renewal DECISION).
+- `delivery.change_scope.approved` -> consumed by Builder OS with bounded scope and acceptance criteria.
 
 ## Consumes
 - `revenue.contract.signed` from Revenue OS.
@@ -53,6 +54,7 @@ Delivery never starts on `revenue.delivery_handoff.created` alone. Sequence: `re
 - `revenue.delivery_handoff.created` from Revenue OS.
 - `automation.candidate.scored` from Operations & Automation OS (automation changes affecting client delivery).
 - `revenue.renewal.decisioned` from Revenue OS.
+- `relationship.delivery_commitment.ready` from Relationship & Network OS (consented client commitment relevant to service).
 
 ## State classification
 - Canonical (routes through Context & Memory OS): accepted deliverables, milestone completions, value-evidence verification.

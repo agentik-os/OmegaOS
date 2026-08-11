@@ -178,8 +178,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "0b173153659e7816a967386233884507d45638b6e0bbc71c9d5b9122ce2f6b67",
-      "bytes": 2756
+      "sha256": "faffda6647a87be3320057b4cbda91c30bee72129f32c57761720fbfc917def0",
+      "bytes": 2951
     },
     {
       "path": "protocols/ai_evaluation.md",
@@ -218,8 +218,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "ee0be18178be7bab69ce33ff5c11698508dd15832ee2b34741517fc9ae45fe8f",
-      "bytes": 1404
+      "sha256": "7f8d0f50d76e4000c4c53dfaa594fef861675a4a13fe6e9df141e45a30333e6a",
+      "bytes": 2187
     },
     {
       "path": "README.md",
@@ -503,7 +503,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "defect.opened",
@@ -547,7 +547,7 @@
       },
       {
         "name": "release.candidate.created",
-        "consumed_by": "none (internal state-machine event, not a cross-OS handoff)",
+        "consumed_by": null,
         "payload": {
           "id": "string (record id)",
           "candidate": "object (the candidate payload)",
@@ -584,6 +584,32 @@
           "id": "string (record id)",
           "exception": "object (the exception payload)",
           "status": "string (granted)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "change.approved",
+        "produced_by": [
+          "review-governance"
+        ],
+        "payload": {
+          "id": "string",
+          "change": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.release_candidate.created",
+        "produced_by": [
+          "content"
+        ],
+        "payload": {
+          "id": "string",
+          "candidate": "object",
+          "claims": "array<object>",
+          "rights": "object",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

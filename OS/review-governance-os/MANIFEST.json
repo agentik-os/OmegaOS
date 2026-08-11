@@ -163,8 +163,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "af62ed6c41632b2f3e5d2e1541498504744068fcc4db68ccedae7b974209d9f1",
-      "bytes": 3382
+      "sha256": "aafb303e56084d2a5d03946e4aed1c1e8d4e1641d9f8558e2be8864002afdff3",
+      "bytes": 3136
     },
     {
       "path": "protocols/ai_risk_governance.md",
@@ -203,13 +203,13 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "031032ac2075124edcfcc4cb61beeb0e496e325bdc332d5d605430e333924f49",
-      "bytes": 1263
+      "sha256": "21a84e681e17aa0c76ab7c57d70d0c7c18f233f52ebc2b100e8cf5970f440ff0",
+      "bytes": 2035
     },
     {
       "path": "README.md",
-      "sha256": "da44fcd9d5ba301347e9503fc5e7fa6aea19bc093ae76f19d12ff50e0e1b6a09",
-      "bytes": 2229
+      "sha256": "f7a1ba551a0fca48cba4c2d34ee86f7ba80008861579f41a2fde3ba61bbb22d8",
+      "bytes": 2245
     },
     {
       "path": "runtime/os_runtime.py",
@@ -423,7 +423,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "change.approved",
@@ -544,12 +544,40 @@
         }
       },
       {
-        "name": "*.evidence.pack.created",
-        "produced_by": "*",
+        "name": "design.flow.challenged",
+        "produced_by": [
+          "design"
+        ],
         "payload": {
-          "id": "string (record id)",
-          "pack": "object (the pack payload)",
-          "status": "string (created)",
+          "id": "string",
+          "flow_challenge": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "execution.outcome.proven",
+        "produced_by": [
+          "execution"
+        ],
+        "payload": {
+          "id": "string",
+          "outcome": "object",
+          "evidence": "array<object>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.change.requested",
+        "produced_by": [
+          "content"
+        ],
+        "payload": {
+          "id": "string",
+          "change": "object",
+          "policy_refs": "array<string>",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

@@ -158,8 +158,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "b43eb61eea2ca3f663d91144550e321fd0611124d2af772ba41d3d2d0298d52a",
-      "bytes": 2995
+      "sha256": "9808ac2046a5afff7a431bcd36ef0815c39d46ce6e0f84bd80afd6aebb8277a5",
+      "bytes": 3186
     },
     {
       "path": "protocols/debt_review.md",
@@ -198,8 +198,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "46f86c3af048b9784491ae1b268bc20588416fd4f674f091f7e289d192f9b242",
-      "bytes": 1301
+      "sha256": "680efa80ec6c743d67883cbc1a79f279b253bc06999ce092a88018ca78e4bb68",
+      "bytes": 2036
     },
     {
       "path": "README.md",
@@ -413,7 +413,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "capital.reallocation.proposed",
@@ -435,6 +435,20 @@
           "id": "string (record id)",
           "change": "object (the change payload)",
           "status": "string (requested)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "wealth.execution_task.created",
+        "consumed_by": [
+          "execution"
+        ],
+        "payload": {
+          "id": "string",
+          "task": "object",
+          "privacy_class": "string",
+          "due_at": "string",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

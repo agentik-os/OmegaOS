@@ -42,6 +42,7 @@ Never inject the entire knowledge library by default.
 ## Consumes
 - `memory.record.staged` from every OS in the suite (universal write path; this is the canonical persistence layer).
 - `review.learning.pack.created` from Review & Governance OS.
+- `books.insight.confirmed` from Books OS with source, location, claim, interpretation and confidence kept distinct.
 
 ## Canonical-state contract (suite-wide)
 Every OS in the suite classifies its local state as one of: canonical (must route through Context & Memory via `memory.record.staged` / `memory.record.verified`), projection/cache (a local indexed view of canonical data, never a competing source of truth), or temporary (session-only, never persisted). See each OS's own "State classification" section for its specific split. No OS writes directly to an independent canonical store.

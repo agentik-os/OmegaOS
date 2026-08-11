@@ -18,6 +18,7 @@ Never inject the entire knowledge library by default.
 ## Handoffs
 - Stepper OS supplies the frozen implementation graph this OS executes.
 - Quality, Evaluation & Release OS receives shipped build artifacts and returns defects/gate decisions.
+- Delivery & Customer Success OS may provide an approved, bounded client-change scope with acceptance criteria.
 
 ## Event types
 - builder.artifact.shipped
@@ -31,6 +32,7 @@ Never inject the entire knowledge library by default.
 - `stepper.graph.frozen` from Stepper OS.
 - `defect.opened` from Quality, Evaluation & Release OS (repair loop).
 - `release.gate.decided` from Quality, Evaluation & Release OS (gate decision closes the build with `builder.build.verified`).
+- `delivery.change_scope.approved` from Delivery & Customer Success OS.
 
 ## State classification
 - Canonical (routes through Context & Memory OS): shipped artifacts, verification evidence.

@@ -25,14 +25,16 @@ Never inject the entire knowledge library by default.
 
 ## Event types
 - alignment.intent.updated
+- alignment.strategy_implication.created
 - alignment.decision.recorded
 
 ## Produces (pipeline wiring)
 - `alignment.intent.updated` -> consumed by Mindset OS (identity/belief compilation input).
+- `alignment.strategy_implication.created` -> consumed by Strategy & Portfolio OS. The payload contains only the strategic implication and privacy classification, never raw personal reflections.
 - `alignment.decision.recorded` is a local domain event; each confirmed decision is staged canonically via `memory.record.staged` (see State classification), it is not itself consumed by name outside this OS.
 
 ## Consumes
-- None upstream; Alignment OS is the suite's BE/ETRE authority and the root of the personal stack.
+- `memory.context.compiled` from Context & Memory OS, restricted to the authorized scope.
 
 ## State classification
 - Canonical (routes through Context & Memory OS): confirmed decisions, belief-audit outcomes, true-north statements.

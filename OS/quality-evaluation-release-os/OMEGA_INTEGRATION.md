@@ -49,6 +49,8 @@ Never inject the entire knowledge library by default.
 - `builder.artifact.shipped` from Builder OS (build artifact ready for certification).
 - `operations.production_observed` from Operations & Automation OS (production feedback loop).
 - `policy.exception.granted` from Review & Governance OS, required before `deployment.started` whenever a gate is bypassed or risk is accepted.
+- `change.approved` from Review & Governance OS for consequential quality-policy changes.
+- `content.release_candidate.created` from Content OS for claims, rights and publication release checks.
 
 ## Governance
 Quality never runs `deployment.started` on a bypassed or risk-accepted gate without governance sign-off. Sequence: `quality.release_exception.requested -> Review consumes -> Review emits policy.exception.granted -> Quality consumes -> Quality emits deployment.started`.

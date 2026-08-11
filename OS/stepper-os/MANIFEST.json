@@ -293,27 +293,53 @@
     ]
   },
   "events": {
-    "schema_status": "declared",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "stepper.graph.frozen",
         "consumed_by": "builder",
-        "payload": "The frozen, dependency-aware step graph (modules, epics, slices, atomic steps) handed to Builder OS for execution."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "The frozen, dependency-aware step graph (modules, epics, slices, atomic steps) handed to Builder OS for execution."
+        }
       },
       {
         "name": "stepper.step.verified",
         "consumed_by": null,
-        "payload": "A single step closed through the deterministic verifier with a PASS verdict and its per-step verification evidence."
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": "A single step closed through the deterministic verifier with a PASS verdict and its per-step verification evidence."
+        }
       }
     ],
     "consumes": [
       {
         "name": "blueprint.completed",
-        "produced_by": "blueprint"
+        "produced_by": "blueprint",
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": ""
+        }
       },
       {
         "name": "design.handoff.completed",
-        "produced_by": "design"
+        "produced_by": "design",
+        "payload": {
+          "id": "string",
+          "data": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)",
+          "description": ""
+        }
       }
     ]
   },

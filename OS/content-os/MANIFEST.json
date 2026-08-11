@@ -288,8 +288,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "b4de908f1862dec1304a426aa9f00596700f629036e996d3e234ba982f0d876f",
-      "bytes": 2853
+      "sha256": "95f1307053139573a98035fce1e5d5a74b2f649b3dcc9c6fb9e742fd1b562174",
+      "bytes": 3319
     },
     {
       "path": "platforms/BLOG_SEO.md",
@@ -408,8 +408,8 @@
     },
     {
       "path": "README_FR.md",
-      "sha256": "b004c2b5786f6f6357233b44c0d0bfa686ea98ff1b51fec851ba0a4c68fdf936",
-      "bytes": 1484
+      "sha256": "8a820ee36448aa0d0f91c86615d62b9d6929a60ce8db438abe33ca61fe4856bb",
+      "bytes": 2387
     },
     {
       "path": "README.md",
@@ -788,7 +788,7 @@
     }
   ],
   "events": {
-    "schema_status": "stub",
+    "schema_status": "defined",
     "produces": [
       {
         "name": "content.intent.qualified",
@@ -807,6 +807,46 @@
           "id": "string (record id)",
           "performance": "object (the performance payload)",
           "status": "string (feedback)",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.release_candidate.created",
+        "consumed_by": [
+          "quality-evaluation-release"
+        ],
+        "payload": {
+          "id": "string",
+          "candidate": "object",
+          "claims": "array<object>",
+          "rights": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.change.requested",
+        "consumed_by": [
+          "review-governance"
+        ],
+        "payload": {
+          "id": "string",
+          "change": "object",
+          "policy_refs": "array<string>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "content.automation_candidate.created",
+        "consumed_by": [
+          "operations-automation"
+        ],
+        "payload": {
+          "id": "string",
+          "workflow": "object",
+          "stability_evidence": "array<object>",
+          "status": "string",
           "recorded_at": "string (ISO-8601 timestamp)"
         }
       }

@@ -18,13 +18,13 @@
 Never inject the entire knowledge library by default.
 
 ## Handoffs
-- All OSs send evidence and change requests; owners receive approved actions.
+- Explicitly wired OSs send named evidence or change events; owners receive approved actions.
 - Strategy & Portfolio OS receives decision-quality and portfolio review findings.
 - Quality & Release OS receives release policy and risk tolerance.
 - Context & Memory OS stores versioned policies, decisions and audit history.
 
 ## Ownership boundary: cross-OS governance vs each OS's own domain retrospective
-Review & Governance owns cross-domain learning and any boundary or policy change. Domain OSes (Content, Delivery, Strategy, and others) keep their own OPERATIONAL retrospectives and act on them locally, producing `*.evidence.pack.created`; none of them may approve its own boundary or policy change - that always routes here via `*.change.requested`.
+Review & Governance owns cross-domain learning and any boundary or policy change. Domain OSes keep their own operational retrospectives and act on them locally. Only concrete named events in the manifests cross this boundary; wildcard producers and wildcard event names are forbidden.
 
 ## Event types
 - review.completed
@@ -54,7 +54,9 @@ Review & Governance owns cross-domain learning and any boundary or policy change
 - `wealth.change.requested` from Wealth & Capital OS.
 - `strategy.refresh.requested` from Strategy & Portfolio OS (learning-loop closure).
 - `capital.reallocation.proposed` from Wealth & Capital OS.
-- `*.evidence.pack.created` (naming CONVENTION for every domain OS's own operational retrospective output, not yet a concretely wired producer edge on any single domain OS's own Produces list; a domain OS adopting this convention names its own event, e.g. `content.evidence.pack.created`, and Review consumes it under this pattern).
+- `design.flow.challenged` from Design OS.
+- `execution.outcome.proven` from Execution OS.
+- `content.change.requested` from Content OS.
 
 ## State classification
 - Canonical (routes through Context & Memory OS): approved policies, approved/denied changes, closed incidents, audited decisions.

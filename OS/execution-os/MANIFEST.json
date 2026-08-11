@@ -1,7 +1,7 @@
 {
   "id": "execution",
   "name": "Execution OS",
-  "slug": "execution-os",
+  "slug": "execution",
   "version": "1.0.0",
   "category": "Personal Stack / Delivery and Output Control",
   "omega_position": "Personal Stack: time-bound PERSONAL commitments and proof of output. Not the Blueprint/Design/Stepper/Builder software-implementation pipeline.",
@@ -50,8 +50,8 @@
     },
     {
       "path": "OMEGA_INTEGRATION.md",
-      "sha256": "f1298c81334f1e5309fc0aaf4f8097637d23bce91a2702b48b31d91640a3b87b",
-      "bytes": 2384
+      "sha256": "a4c56d25ee438600baa265faf1cc863c7fddd568b0c3db2c30b824b9600efeb1",
+      "bytes": 2535
     },
     {
       "path": "pack/agents/openai.yaml",
@@ -333,35 +333,115 @@
     }
   },
   "events": {
+    "schema_status": "defined",
     "produces": [
       {
-        "event": "execution.outcome.proven",
-        "payload_note": "A closed outcome record proven against its finish line: outcome id, domain, definition of done, and the observable evidence/acceptance that satisfied it. Consumed by Strategy & Portfolio OS and Review & Governance OS.",
-        "consumers": [
-          "Strategy & Portfolio OS",
-          "Review & Governance OS"
-        ]
+        "name": "execution.outcome.proven",
+        "consumed_by": [
+          "strategy-portfolio",
+          "review-governance"
+        ],
+        "payload": {
+          "id": "string",
+          "outcome_id": "string",
+          "domain": "string",
+          "definition_of_done": "string",
+          "evidence": "array<object>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "event": "execution.commitment.closed",
-        "payload_note": "A closed commitment: commitment id, linked outcome, completion classification (SHIPPED, VERIFIED, PROGRESSED, TOUCHED, ABANDONED), and the evidence captured at close."
+        "name": "execution.commitment.closed",
+        "consumed_by": null,
+        "payload": {
+          "id": "string",
+          "commitment_id": "string",
+          "outcome_id": "string",
+          "classification": "string",
+          "evidence": "array<object>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       }
     ],
     "consumes": [
       {
-        "event": "strategy.execution_packet.created",
-        "source": "Strategy & Portfolio OS",
-        "note": "Personal-execute branch entry point: quarterly outcomes and exclusions packet."
+        "name": "strategy.execution_packet.created",
+        "produced_by": [
+          "strategy-portfolio"
+        ],
+        "payload": {
+          "id": "string",
+          "execution_packet": "object",
+          "exclusions": "array<string>",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "event": "handoff.execution.capacity",
-        "source": "Health & Energy OS",
-        "note": "Capacity status and workload constraints used to plan from real time and energy."
+        "name": "handoff.execution.capacity",
+        "produced_by": [
+          "health-energy"
+        ],
+        "payload": {
+          "id": "string",
+          "capacity": "object",
+          "workload_constraints": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       },
       {
-        "event": "relationship.followup.drafted",
-        "source": "Relationship & Network OS",
-        "note": "Follow-up tasks to schedule as commitments."
+        "name": "relationship.followup.drafted",
+        "produced_by": [
+          "relationship-network"
+        ],
+        "payload": {
+          "id": "string",
+          "followup": "object",
+          "due_at": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "memory.context.compiled",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "context": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "memory.record.verified",
+        "produced_by": [
+          "context-memory"
+        ],
+        "payload": {
+          "id": "string",
+          "record": "object",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
+      },
+      {
+        "name": "wealth.execution_task.created",
+        "produced_by": [
+          "wealth-capital"
+        ],
+        "payload": {
+          "id": "string",
+          "task": "object",
+          "privacy_class": "string",
+          "due_at": "string",
+          "status": "string",
+          "recorded_at": "string (ISO-8601 timestamp)"
+        }
       }
     ]
   },
