@@ -931,7 +931,9 @@ record_install_provenance() {
     now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     tmp="$(mktemp "$OMEGA_DIR/state/.auto-update.json.XXXXXX")"
     umask 077
-    jq --arg commit "$OMEGA_SOURCE_REV" --arg now "$now" --arg source "$OMEGA_SRC" \
+    # AutoUpdateState uses the same short SHA produced by its `git rev-parse
+    # --short HEAD` doctor probe. BUILD-INFO retains the full immutable SHA.
+    jq --arg commit "${OMEGA_SOURCE_REV:0:7}" --arg now "$now" --arg source "$OMEGA_SRC" \
         '.last_applied = $now
          | .last_applied_commit = $commit
          | .failing_commit = null

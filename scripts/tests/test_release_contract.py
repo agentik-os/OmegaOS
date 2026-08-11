@@ -56,6 +56,7 @@ class ReleaseContractTests(unittest.TestCase):
         self.assertIn("record_install_provenance()", self.install)
         self.assertIn('local state_path="$OMEGA_DIR/state/auto-update.json"', self.install)
         self.assertIn('.last_applied_commit = $commit', self.install)
+        self.assertIn('--arg commit "${OMEGA_SOURCE_REV:0:7}"', self.install)
         self.assertIn('record_install_provenance\n', self.install)
         self.assertIn('mktemp "$OMEGA_DIR/state/.auto-update.json.XXXXXX"', self.install)
 
