@@ -40,16 +40,32 @@ Base: `origin/main` @ e40a904
       returns 328 (315 carried from Task A + 13 new), confirmed by two
       independent counting methods; 233 came from a scoped/partial run, not
       the real total. Crate total after Task B: 328 tests.
-- [ ] Task C — Box health + usage + backup: `GET /v1/doctor` (no `--json`
-      flag exists on the real CLI — confirmed by reading `omega doctor
-      --help`; parses `omega doctor`'s fixed two-space-indented check-line
-      format), `GET /v1/usage` (in-process `omega_core::monitor::
-      UsageSnapshot::read()`, zero subprocess), `GET /v1/box-info` (hostname
-      + `omega --version` + gateway `CARGO_PKG_VERSION` + process uptime),
-      `POST /v1/backup` (real side effect — writes a tgz; capped/validated,
-      auth-gated, tested against a scratch `--out` path, never the operator's
-      real `~/.omega`). New routes_box.rs, protocol.rs, server.rs, lib.rs,
-      schema_test.rs.
+- [x] Task C — Box health + usage + backup: `GET /v1/doctor` (shells to bare
+      `omega doctor`, no `--fix`/`--deep`; parses the two-space-indented
+      check-line format WITHOUT a fixed-width name/detail split — proven
+      against a real >16-char check name), `GET /v1/usage` (in-process
+      `omega_core::monitor::UsageSnapshot::read()`, zero subprocess, `$HOME`
+      env-override tested), `GET /v1/box-info` (hostname + `omega --version`
+      + gateway `CARGO_PKG_VERSION` + process uptime via `AppState.started_at:
+      Instant`), `POST /v1/backup` (the one mutating endpoint — takes ZERO
+      client input, server picks `<OMEGA_BACKUP_DIR|tmpdir>/omega-gateway-
+      backup-<ns-precision-ts>.tgz` itself). Implementer commit `40db4fb`
+      (16 tests). Adversarial review NOT CLEAN first pass: `parse_doctor_
+      output` panicked on a check line whose glyph slot held a multi-byte
+      UTF-8 char (raw `&s[0..3]` byte-slice on a non-char-boundary — reachable
+      from adversarial/malformed `omega doctor` stdout, would have dropped
+      the client connection rather than degrading to 502). Fixed in `c707a6b`
+      (`.get(0..3)` instead of a raw index range, skips the line instead of
+      panicking): regression proven fail-before/pass-after at both the unit
+      and HTTP-integration layer (second request on the same server still
+      succeeds post-fix, proving the process itself survives either way).
+      Reviewer also independently judged the backup-path symlink-race
+      question theoretical-not-realistic for this single-tenant local
+      gateway (would need an attacker to predict a nanosecond-precision,
+      request-time filename before an authenticated POST fires) and confirmed
+      cross-test-binary env isolation is a non-issue (`cargo test` runs each
+      `tests/*.rs` file as its own OS process). Crate total after Task C:
+      347 tests.
 - [ ] Wiring — server.rs route table (every new route ABOVE route_layer),
       protocol.rs schema_test, lib.rs module decls — done incrementally per
       task, each reviewed as part of it.
