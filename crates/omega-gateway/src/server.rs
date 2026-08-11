@@ -4,6 +4,7 @@ use crate::chat_store::ChatStore;
 use crate::config::GatewayConfig;
 use crate::events::EventHub;
 use crate::protocol::WhoamiResponse;
+use crate::relay::RelayManager;
 use crate::session_org::SessionOrgStore;
 use axum::{
     extract::{Query, Request, State},
@@ -164,6 +165,9 @@ pub struct AppState {
     /// against. `Instant` is `Copy`, so cloning `AppState` carries the SAME
     /// start point rather than resetting it.
     pub started_at: std::time::Instant,
+    /// Owns the optional outbound relay supervisor. It is dormant until a
+    /// Clerk-authenticated cloud registration has been persisted.
+    pub relay: RelayManager,
 }
 
 impl AppState {
@@ -186,6 +190,7 @@ impl AppState {
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
+        let relay = RelayManager::production(dir.clone());
         Self {
             dir,
             cfg,
@@ -203,7 +208,17 @@ impl AppState {
             events,
             session_org,
             started_at,
+            relay,
         }
+    }
+
+    /// Test/integration constructor for a local JWKS and relay endpoint.
+    /// Existing tests continue using [`Self::new`] unchanged.
+    #[cfg(test)]
+    pub(crate) fn with_relay(dir: PathBuf, cfg: GatewayConfig, relay: RelayManager) -> Self {
+        let mut state = Self::new(dir, cfg);
+        state.relay = relay;
+        state
     }
 }
 
@@ -353,6 +368,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
         .route("/v1/box-id", get(crate::routes_box::box_id))
+        .route(
+            "/v1/cloud/register",
+            axum::routing::post(crate::routes_cloud::register)
+                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024)),
+        )
         .route("/v1/backup", axum::routing::post(crate::routes_box::backup))
         .route(
             "/v1/config",
