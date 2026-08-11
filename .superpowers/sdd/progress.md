@@ -66,12 +66,111 @@ Base: `origin/main` @ e40a904
       cross-test-binary env isolation is a non-issue (`cargo test` runs each
       `tests/*.rs` file as its own OS process). Crate total after Task C:
       347 tests.
-- [ ] Wiring — server.rs route table (every new route ABOVE route_layer),
+- [x] Wiring — server.rs route table (every new route ABOVE route_layer),
       protocol.rs schema_test, lib.rs module decls — done incrementally per
-      task, each reviewed as part of it.
-- [ ] Final opus whole-branch review — RUN THE BINARY against live requests.
-- [ ] Runtime verify (L1): rebuild release, live-check every endpoint against
+      task, each reviewed as part of it. Final review re-verified independently:
+      all 39 route paths extracted from `server.rs:118-215` (including the
+      multi-line `.route(` forms) are UNIQUE — zero duplicates, zero collisions
+      with pre-existing routes; all 7 wave6 routes sit at lines 156-160 and
+      204-207, i.e. ABOVE the `route_layer` at `server.rs:211`; only
+      `/v1/health` + `/v1/pair` are outside `protected`. Proven live, not just
+      read: every wave6 route returns 401 with no token AND with a garbage
+      token. `AppState` is constructed ONLY via `AppState::new` (zero struct
+      literals anywhere in src/ or tests/), so Task C's `started_at` field
+      could not break any existing construction; `Instant` being `Copy`, the
+      live `uptime_secs` tracked the real process (240s after 4 min, and reset
+      to 17s after a deliberate restart).
+- [x] Final opus whole-branch review — RUN THE BINARY against live requests.
+      NOT CLEAN: found one real security bug the per-task reviews missed, in
+      Task A's traversal guard — see below.
+- [x] Runtime verify (L1): rebuild release, live-check every endpoint against
       a real paired token; capture real evidence.
+
+## Final whole-branch review (opus) — live run against the real binary
+
+Method: clean `cargo build --release -p omega-gateway`, then the real
+`target/release/omega-gatewayd serve` started as a background process on a
+free port under a fully isolated scratch env (`HOME`, `OMEGA_HOME`,
+`OMEGA_GATEWAY_DIR`, `OMEGA_BACKUP_DIR` all tempdirs; `OMEGA_BIN` pointed at
+the REAL `~/.local/bin/omega` so every subprocess call was real integration,
+never a fake script). Real device paired the documented way
+(`omega-gatewayd pair` -> 8-char code -> `POST /v1/pair` -> 64-char bearer).
+`HOME` had to be overridden as well as `OMEGA_HOME`: `omega_cli::omega_bin()`,
+`UsageSnapshot::read()` and `omega backup` all resolve `dirs::home_dir()`
+(the real `$HOME`), NOT `OMEGA_HOME` — and `omega backup` both WRITES
+`crontab.bak` into the state dir and tars it, so left on the real `$HOME` a
+single `POST /v1/backup` would have written into the operator's real
+`~/.omega` and archived ~16 GB of it. All three real subcommands were
+dry-run under the scratch `HOME` first and proven bounded (doctor 0.21s,
+audit run 0.016s, backup 0.020s / 1.6 KB) before being driven over HTTP.
+
+### BUG FOUND + FIXED — `6725751`
+
+`resolve_scoped_path` (`routes_files.rs:116`) still leaked an existence
+oracle through 403-vs-404, one directory level ABOVE the one `6a42db8`
+closed. That earlier fix classified a non-resolving leaf by canonicalizing
+the leaf's immediate PARENT and nothing further, so `../<dir>/leaf` answered
+403 when `<dir>` existed outside the project root and 404 when it did not.
+An authenticated caller could therefore enumerate arbitrary DIRECTORY paths
+anywhere on the box from the status code alone. Proven LIVE against the
+running binary with a real token (this is exactly what a code re-read had
+already missed twice):
+
+    ../../../../../../../../home/vibe/.ssh/probe             -> 403
+    ../../../../../../../../home/vibe/.no-such-dir-xyz/probe -> 404
+    ../../../../../../../../home/vibe/.omega/secrets/probe   -> 403
+    ../../../../../../../../etc/ssl/probe                    -> 403
+    ../../../../../../../../etc/no-such-dir-xyz/probe        -> 404
+
+Fix: the status may depend ONLY on whether the NEAREST EXISTING ancestor is
+inside the root, never on what exists outside it — so on a leaf that does not
+resolve, walk UP the ancestor chain to the first entry that DOES resolve and
+classify on that (inside -> 404, outside -> 403). The walk terminates because
+`joined` is absolute, so the chain ends at `/`, which always canonicalizes.
+Regression tests proven fail-before/pass-after at BOTH layers (2 unit tests
+failed before the fix; a third pins that the walk does not over-broaden a
+legitimate in-root miss into 403, plus an HTTP-level test). Re-confirmed
+LIVE on the rebuilt binary: all six probes above now return 403 uniformly,
+while in-root misses (`nope.txt`, `src/nope.txt`, `no-such-subdir/nope.txt`)
+still return 404.
+
+### Live evidence, per endpoint (real bearer token, real server)
+
+- `GET /v1/files` root -> 200, real entries incl. `.git`/`src` dirs before
+  files, alphabetical within group; `path=src` -> 200 `main.rs` size 30.
+- `GET /v1/files/read` -> 200 `{"content":"hello from demo-proj\nline two\n"}`.
+- Traversal battery, all blocked, ZERO `/etc/passwd` content ever returned:
+  `../../../etc` -> 403; absolute `/etc/passwd` -> 400 "path must not be
+  absolute"; symlink `escape-link -> /etc/passwd` -> 403; URL-encoded
+  `%2e%2e%2f` -> 403; `project=../../etc` -> 400 unknown project.
+- `GET /v1/audits` -> 200, real 23-audit catalog over the wire, domains
+  rendered as LABELS (`SEO`, `DX`, not Debug `Seo`/`Dx`).
+- `POST /v1/audit` -> 200 for `codeaudit` (23 phases / 420); 400 unknown
+  kind; 400 unknown project.
+- `GET /v1/audit/stream` WS -> real 101 upgrade, 7 real `Line` frames from
+  the real `omega audit run` subprocess + a real `Exit{success:true,code:0}`
+  frame, clean close 1000. Pre-upgrade rejection verified: bad kind -> plain
+  400, bad project -> plain 400, no/bad token -> 401 (never 101-then-error).
+- `GET /v1/doctor` -> 200, 18 real checks, `overall:"warn"`, matching the
+  real `omega doctor` run directly on this box. Exercised the real
+  exit-code path and the >16-char name case live ("binary provenance",
+  18 chars, parsed as one `text` with no fixed-width split).
+- `GET /v1/usage` -> 200 `{"available":false}` with no cache in the scratch
+  `$HOME`; after seeding a cache file, 200 `available:true` with real
+  parsed fields. BOTH branches proven live.
+- `GET /v1/box-info` -> 200, real `hostname` "Agentik-os", real
+  `omega 0.1.9`, gateway `0.1.0`, `uptime_secs` tracking the real process.
+- `POST /v1/backup` -> 200, a REAL 1688-byte tgz written under the scratch
+  `OMEGA_BACKUP_DIR`; `tar tzf` confirms it archived the SCRATCH `.omega`
+  only. Operator's real `~/.omega` mtime byte-identical before and after, no
+  `crontab.bak` written there, no stray archive in the operator's home.
+- Every route above with NO token -> 401; with a garbage token -> 401. The
+  unauthenticated `POST /v1/backup` wrote no file (401 before the handler).
+
+Gates at final HEAD, fresh: `cargo test -p omega-gateway` = **351 passed, 0
+failed, 0 ignored** across 34 test binaries (347 carried in + 4 new
+regression tests); `cargo clippy -p omega-gateway --all-targets --no-deps --
+-D warnings` = clean, exit 0; release build clean.
 - [ ] Rebase on origin/main, leave clean (no merge/push), report.
 
 Tasks are SERIALIZED (not parallel fan-out) because A/B/C all touch shared
