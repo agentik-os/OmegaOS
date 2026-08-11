@@ -97,16 +97,22 @@ fn path_error_to_api(err: PathError) -> ApiError {
 ///    outside it, because canonicalize resolves the symlink's real target
 ///    before the `starts_with` check ever runs.
 /// 4. A `canonicalize` failure on the full joined path means the LEAF isn't
-///    there. That alone is not enough to call it `NotFound` (404): if the
-///    leaf's PARENT already canonicalizes outside `root` (e.g. a symlink or
-///    `..` chain two levels up points outside `root`), a nonexistent leaf
-///    under it is STILL an escape attempt and must stay `Escaped` (403) —
-///    otherwise 403-vs-404 becomes a per-FILE existence oracle for anything
-///    outside `root` (request `../../../etc/shadow` vs
-///    `../../../etc/definitely-not-a-real-file`: an attacker who can only
-///    observe the status code, never the content, learns which one exists).
-///    Only when the parent ALSO fails to canonicalize (nothing real up that
-///    chain either) is the result a genuine, uninformative `NotFound` (404).
+///    there. That alone is not enough to call it `NotFound` (404). THE
+///    INVARIANT: 403-vs-404 may depend ONLY on whether the NEAREST EXISTING
+///    ancestor of the requested location lies inside `root` — never on what
+///    does or does not exist OUTSIDE it. Anything weaker turns the status
+///    code into an existence oracle for the whole filesystem, since an
+///    attacker who can observe only the status, never the content, still
+///    learns which paths are real (`../../../etc/shadow` vs
+///    `../../../etc/definitely-not-a-real-file`).
+///    So when the leaf fails to resolve, walk UP the ancestor chain to the
+///    first entry that DOES resolve: inside `root` → `NotFound` (404, a
+///    genuine in-scope miss, and the client can already enumerate in-scope
+///    structure via `list` anyway); outside `root` → `Escaped` (403).
+///    Checking only ONE level (the leaf's immediate parent) is NOT enough:
+///    it merely relocates the same oracle one directory up, where
+///    `../<dir>/leaf` still answers 403-vs-404 according to whether `<dir>`
+///    exists outside `root`.
 ///
 /// A `..` component that stays WITHIN `root` after resolution is allowed
 /// implicitly (canonicalize handles that correctly): the guard is about the
@@ -132,16 +138,29 @@ pub fn resolve_scoped_path(root: &Path, rel: &str) -> Result<PathBuf, PathError>
             }
         }
         Err(_) => {
-            // Leaf doesn't exist. Still check whether its PARENT escapes
-            // root, so a nonexistent leaf under an escaping parent reports
-            // Escaped rather than leaking leaf-level existence via NotFound
-            // (see point 4 above).
-            match joined.parent().map(std::fs::canonicalize) {
-                Some(Ok(canon_parent)) if !canon_parent.starts_with(&canon_root) => {
+            // Nothing resolves at the leaf. Climb to the NEAREST ancestor
+            // that DOES resolve and classify on that, so the answer depends
+            // only on where the request landed, never on what happens to
+            // exist outside `root` (see point 4 above).
+            //
+            // `ancestors()` is textual, which is exactly right here: each
+            // candidate is still handed to `canonicalize`, so a `..` chain is
+            // resolved for real before the `starts_with` test. The walk
+            // always terminates: `joined` is absolute (`root` is, and `rel`
+            // was proven relative above), so the chain ends at `/`, which
+            // always canonicalizes -- and, not being under `root`, correctly
+            // yields `Escaped`. An ancestor that fails to canonicalize for a
+            // reason OTHER than absence (e.g. EACCES on a search bit) is
+            // skipped too, which keeps the fallthrough on the safe side.
+            for ancestor in joined.ancestors().skip(1) {
+                let Ok(canon_ancestor) = std::fs::canonicalize(ancestor) else { continue };
+                return if canon_ancestor.starts_with(&canon_root) {
+                    Err(PathError::NotFound)
+                } else {
                     Err(PathError::Escaped)
-                }
-                _ => Err(PathError::NotFound),
+                };
             }
+            Err(PathError::NotFound)
         }
     }
 }
@@ -343,6 +362,70 @@ mod tests {
         // ...but this specific leaf file does not exist.
         let err = resolve_scoped_path(&root, "../outside/does-not-exist.txt").unwrap_err();
         assert!(matches!(err, PathError::Escaped), "expected Escaped, got {err:?}");
+    }
+
+    #[test]
+    fn escape_status_never_depends_on_what_exists_outside_the_root() {
+        // Existence-oracle regression, SECOND level. The first fix closed the
+        // LEAF case by falling back to canonicalizing the leaf's PARENT --
+        // but only ONE level up, so the very same status-code oracle survived
+        // one directory higher: `../<dir>/leaf` answered 403 when `<dir>`
+        // existed outside root and 404 when it did not, letting an
+        // authenticated caller enumerate arbitrary DIRECTORY paths anywhere on
+        // the box (proven live against the running binary: probing
+        // `/home/vibe/.ssh/x` returned 403 while `/home/vibe/.no-such-dir/x`
+        // returned 404).
+        //
+        // The invariant that actually closes it: the status may depend ONLY
+        // on whether the NEAREST EXISTING ancestor is inside `root` -- never
+        // on what does or does not exist outside it. So both of these must be
+        // Escaped, indistinguishably.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(base.path().join("real-dir")).unwrap();
+
+        let outside_dir_exists = resolve_scoped_path(&root, "../real-dir/leaf.txt").unwrap_err();
+        let outside_dir_missing = resolve_scoped_path(&root, "../no-such-dir/leaf.txt").unwrap_err();
+        assert!(
+            matches!(outside_dir_exists, PathError::Escaped),
+            "expected Escaped, got {outside_dir_exists:?}"
+        );
+        assert!(
+            matches!(outside_dir_missing, PathError::Escaped),
+            "expected Escaped (else the status leaks that the outside dir is absent), \
+             got {outside_dir_missing:?}"
+        );
+    }
+
+    #[test]
+    fn escape_status_is_uniform_however_deep_the_outside_chain_goes() {
+        // Same oracle, several levels down -- the ancestor walk must keep
+        // climbing until something actually resolves, not stop at the leaf's
+        // immediate parent.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(base.path().join("real-dir")).unwrap();
+
+        let deep_exists = resolve_scoped_path(&root, "../real-dir/a/b/c.txt").unwrap_err();
+        let deep_missing = resolve_scoped_path(&root, "../no-such-dir/a/b/c.txt").unwrap_err();
+        assert!(matches!(deep_exists, PathError::Escaped), "got {deep_exists:?}");
+        assert!(matches!(deep_missing, PathError::Escaped), "got {deep_missing:?}");
+    }
+
+    #[test]
+    fn a_miss_under_a_nonexistent_subdir_inside_the_root_is_still_not_found() {
+        // The other side of the invariant: climbing the ancestor chain must
+        // NOT over-broaden into 403 for a path that is legitimately scoped
+        // inside `root` and simply is not there. Its nearest existing
+        // ancestor is `root` itself, which does not escape.
+        let base = tempfile::tempdir().unwrap();
+        let root = base.path().join("project");
+        std::fs::create_dir_all(&root).unwrap();
+
+        let err = resolve_scoped_path(&root, "no-such-subdir/nope.txt").unwrap_err();
+        assert!(matches!(err, PathError::NotFound), "expected NotFound, got {err:?}");
     }
 
     #[test]

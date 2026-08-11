@@ -167,6 +167,53 @@ async fn read_rejects_symlink_escape_via_http() {
     std::env::remove_var("OMEGA_HOME");
 }
 
+/// Existence-oracle regression at the HTTP layer: two requests that both
+/// escape the project root must be INDISTINGUISHABLE by status code,
+/// whether or not the outside directory they name actually exists. Before
+/// the fix the guard only checked the leaf's immediate parent, so the first
+/// of these returned 403 and the second 404 — enough for an authenticated
+/// caller to enumerate arbitrary directories on the box (proven live:
+/// `/home/vibe/.ssh` answered 403, `/home/vibe/.no-such-dir` answered 404).
+#[tokio::test]
+async fn escape_status_is_identical_whether_the_outside_dir_exists_via_http() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let home_dir = tempfile::tempdir().unwrap();
+    install_fake_home(home_dir.path(), "TestProj");
+    // A real directory OUTSIDE the project root, and (implicitly) a sibling
+    // name that does not exist at all.
+    std::fs::create_dir_all(home_dir.path().join("real-outside-dir")).unwrap();
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    let status_of = |path: &'static str| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        async move {
+            client
+                .get(format!("{base}/v1/files/read?project=TestProj&path={path}"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap()
+                .status()
+        }
+    };
+
+    let exists = status_of("..%2Freal-outside-dir%2Fleaf.txt").await;
+    let missing = status_of("..%2Fno-such-outside-dir%2Fleaf.txt").await;
+    assert_eq!(exists, 403);
+    assert_eq!(
+        missing, exists,
+        "status must not reveal whether the outside directory exists"
+    );
+
+    std::env::remove_var("OMEGA_HOME");
+}
+
 #[tokio::test]
 async fn read_returns_content_for_a_real_text_file() {
     let _g = LOCK.lock().await;
