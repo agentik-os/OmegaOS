@@ -42,6 +42,8 @@ for line in sys.stdin:
             language=job.get("language") or p.get("language") or "fr",
             ref_audio=ref_audio,
             ref_text=ref_text,
+            instruct=job.get("instruct") or p.get("instruct") or None,
+            speed=(lambda s: float(s) if s else None)(job.get("speed") or p.get("speed")),
             num_step=int(job.get("num_step") or p.get("num_step") or 16),
         )
         sf.write(job["out"], audios[0], model.sampling_rate)
