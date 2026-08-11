@@ -83,6 +83,132 @@ async fn stream_rejects_bad_name_charset_before_any_spawn() {
     clear_env();
 }
 
+/// Finding 1 (adversarial review round): `name=--build` must never reach
+/// the prompt string `cmd_new_project` builds — even though the `--` argv
+/// separator itself protects clap's own flag parsing (confirmed correct by
+/// the reviewer), the SAME literal text ends up in the `/omega-new-project
+/// ...` prompt in a position indistinguishable from a real opt-in
+/// `--build` flag. `is_slug` must reject any leading `-` outright, before
+/// any spawn.
+#[tokio::test]
+async fn stream_rejects_name_starting_with_dash_build_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega_that_must_not_run(bin_dir.path());
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=--build&category=works";
+    let err = connect_async(url).await.unwrap_err();
+    assert!(err.to_string().contains("400"), "unexpected error: {err}");
+
+    clear_env();
+}
+
+/// Finding 1 continued: `name=--dry-run` is the same class of leak — the
+/// literal text `--dry-run` in the prompt string is indistinguishable from
+/// this endpoint's own (never-forwarded) real `--dry-run` flag.
+#[tokio::test]
+async fn stream_rejects_name_starting_with_dash_dry_run_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega_that_must_not_run(bin_dir.path());
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=--dry-run&category=works";
+    let err = connect_async(url).await.unwrap_err();
+    assert!(err.to_string().contains("400"), "unexpected error: {err}");
+
+    clear_env();
+}
+
+/// Finding 1 continued: `group` reuses `name`'s slug check, so a leading
+/// `-` must be rejected there too — `group` flows into the SAME prompt
+/// string via `flags`/positional forwarding downstream.
+#[tokio::test]
+async fn stream_rejects_group_starting_with_dash_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega_that_must_not_run(bin_dir.path());
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let url = ws_url(&base, "/v1/new-project/stream", &token) + "&name=cool-app&category=works&group=-x";
+    let err = connect_async(url).await.unwrap_err();
+    assert!(err.to_string().contains("400"), "unexpected error: {err}");
+
+    clear_env();
+}
+
+/// Finding 4 (adversarial review round): the real spawned session name is
+/// `format!("{name}-setup")`, which then passes through
+/// `omega_core::session::sanitize_session_name` (truncates at
+/// `MAX_SESSION_NAME_LEN` = 48). A `name` of 49 lowercase `a`s individually
+/// passes `is_slug`/`MAX_SLUG_LEN`, but `"{name}-setup"` is 55 bytes and
+/// sanitizes down to 48 `a`s — a silent truncation this endpoint must
+/// reject before any spawn, mirroring `routes_team.rs`'s own
+/// `"Team-{project}"` round-trip check.
+#[tokio::test]
+async fn stream_rejects_name_that_would_truncate_session_name_after_setup_suffix_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega_that_must_not_run(bin_dir.path());
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let name = "a".repeat(49);
+    let url = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name}&category=works");
+    let err = connect_async(url).await.unwrap_err();
+    assert!(err.to_string().contains("400"), "unexpected error: {err}");
+
+    clear_env();
+}
+
+/// Finding 4 continued: proves the COLLISION the round-trip check exists to
+/// prevent would genuinely have happened — `"a".repeat(49) + "-setup"` and
+/// `"a".repeat(50) + "-setup"` both sanitize down to the IDENTICAL 48-byte
+/// session name (`"a".repeat(48)`), so both distinct `name`s must be
+/// independently rejected before any spawn, never silently merged onto one
+/// real session.
+#[tokio::test]
+async fn stream_rejects_both_of_two_names_that_would_collide_onto_the_same_session_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega_that_must_not_run(bin_dir.path());
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    // Sanity-check the collision premise itself before asserting on the
+    // endpoint: both names, once suffixed and sanitized, land on the exact
+    // same real session name.
+    let name_a = "a".repeat(49);
+    let name_b = "a".repeat(50);
+    let session_a = omega_core::session::sanitize_session_name(&format!("{name_a}-setup"));
+    let session_b = omega_core::session::sanitize_session_name(&format!("{name_b}-setup"));
+    assert_eq!(session_a, session_b, "test premise broken: these two names no longer collide");
+
+    let url_a = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_a}&category=works");
+    let err_a = connect_async(url_a).await.unwrap_err();
+    assert!(err_a.to_string().contains("400"), "unexpected error for name_a: {err_a}");
+
+    let url_b = ws_url(&base, "/v1/new-project/stream", &token) + &format!("&name={name_b}&category=works");
+    let err_b = connect_async(url_b).await.unwrap_err();
+    assert!(err_b.to_string().contains("400"), "unexpected error for name_b: {err_b}");
+
+    clear_env();
+}
+
 #[tokio::test]
 async fn stream_rejects_unknown_category_before_any_spawn() {
     let _g = LOCK.lock().await;
@@ -237,10 +363,20 @@ async fn stream_nonzero_exit_reports_failure() {
     clear_env();
 }
 
-/// Disconnect-mid-stream: proves the spawned `omega new-project` child's
-/// PROCESS GROUP is actually killed when the client disconnects while the
-/// fake command has gone SILENT — mirrors `orchestrate_test.rs::
+/// Disconnect-mid-stream: proves the process-group-kill MECHANISM itself
+/// works generically for any nested-child-forking subprocess — the fake
+/// `omega` script here deliberately forks a nested `bash -c 'sleep 5 &&
+/// touch ...'` child to exercise that mechanism, mirroring
+/// `orchestrate_test.rs::
 /// disconnect_mid_stream_kills_the_process_group_even_when_child_is_silent`.
+///
+/// NOTE (Finding 2, Task B round): this is a SYNTHETIC fake, not
+/// representative of the real `omega new-project` process tree — the real
+/// subprocess forks nothing (see `new_project_stream_loop`'s doc comment
+/// in `routes_new_project.rs`), so this test proves the kill mechanism is
+/// harmless defense-in-depth, not that closing the WebSocket cancels a
+/// real project bootstrap (it does not; there is no cancellation for
+/// this endpoint).
 #[tokio::test]
 async fn disconnect_mid_stream_kills_the_process_group_even_when_child_is_silent() {
     let _g = LOCK.lock().await;

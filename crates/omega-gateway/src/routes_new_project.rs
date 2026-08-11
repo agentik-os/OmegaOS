@@ -95,14 +95,29 @@ const STACK: &str = "nextstack";
 const MAX_SLUG_LEN: usize = 64;
 
 /// `true` iff `s` matches `^[a-z0-9-]+$` (non-empty, only lowercase ASCII
-/// letters, digits, and hyphens) — the CLI's own documented charset for
-/// `NAME` (`omega new-project --help`: "Project name (lowercase
-/// [a-z0-9-])"), confirmed live. Also reused for `group`: it has no
-/// separately documented charset, but the same conservative check is the
-/// safe default for a value that flows straight into `--group` and
+/// letters, digits, and hyphens) AND does not start with `-` — the CLI's
+/// own documented charset for `NAME` (`omega new-project --help`: "Project
+/// name (lowercase [a-z0-9-])"), confirmed live. Also reused for `group`:
+/// it has no separately documented charset, but the same conservative check
+/// is the safe default for a value that flows straight into `--group` and
 /// downstream provisioning credential lookup.
+///
+/// REVIEW-FIX (Finding 1, Task B round): the bare charset check alone
+/// allowed a leading `-` (e.g. `name=--build`, `name=--dry-run`,
+/// `group=-x`). The `--` argv separator this endpoint already uses
+/// correctly protects clap's own flag parsing — that part was NOT the bug
+/// — but `cmd_new_project` (`crates/omega-cli/src/main.rs`) also folds
+/// `name`/`group` into the `/omega-new-project ...` PROMPT string it hands
+/// to the spawned Codex session, in the same position it appends its own
+/// real `--build`/`--resume`/`--dry-run` tokens. A `name` that is literally
+/// the text `"--build"` therefore lands in that prompt looking exactly like
+/// an opt-in flag this endpoint deliberately never sets. Same posture as
+/// `routes_oracles.rs::validate_session_name` and
+/// `routes_sessions.rs`'s own leading-dash guard.
 fn is_slug(s: &str) -> bool {
-    !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+    !s.is_empty()
+        && !s.starts_with('-')
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 /// Validates `name`/`category`/`group` BEFORE any upgrade or spawn, and
@@ -148,6 +163,27 @@ fn resolve_new_project_request(
         }
         Some(group.to_string())
     };
+
+    // Finding 4 (adversarial review round): the REAL spawned session name
+    // is `format!("{name}-setup")` (`cmd_new_project`,
+    // `crates/omega-cli/src/main.rs`), which then passes through
+    // `omega_core::session::sanitize_session_name` (truncates at
+    // `MAX_SESSION_NAME_LEN`). `name` alone passing `is_slug`/`MAX_SLUG_LEN`
+    // does not guarantee `"{name}-setup"` round-trips through that
+    // truncation unchanged — a `name` in roughly the 43-64 byte range can
+    // silently produce a DIFFERENT real session name than
+    // `"{name}-setup"`, and two sufficiently long, different `name` values
+    // can truncate onto the IDENTICAL real session. Same technique
+    // `routes_team.rs` already applies to its own `"Team-{project}"`
+    // prefix: check the FULL string that will actually reach rmux, not the
+    // bare user-supplied component.
+    let session = format!("{name}-setup");
+    if omega_core::session::sanitize_session_name(&session) != session {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "name would make the real setup-session name diverge after rmux sanitation (too long once suffixed with \"-setup\") — choose a shorter name".to_string(),
+        ));
+    }
 
     Ok((name.to_string(), category, group))
 }
@@ -213,12 +249,16 @@ async fn forward_lines<R: AsyncRead + Unpin>(
     }
 }
 
-/// Sends `SIGKILL` to the WHOLE process group rooted at `pid` — identical to
-/// `routes_orchestrate::kill_process_group` (same negative-PID `kill --
-/// -<pid>` idiom, same `spawn_blocking`, same rationale: `pid` must be the
-/// PID of a process spawned with `process_group(0)`, so this reaches both it
-/// and every nested child it forked, in particular `omega`'s own nested
-/// subprocess work).
+/// Sends `SIGKILL` to the WHOLE process group rooted at `pid` — the same
+/// negative-PID `kill -- -<pid>` idiom and `spawn_blocking` shape as
+/// `routes_orchestrate::kill_process_group`, kept here as harmless
+/// defense-in-depth for whatever direct child this endpoint itself spawned
+/// (`pid` is the PID of a process spawned with `process_group(0)`). NOTE
+/// (Finding 2, Task B round): for `omega new-project` specifically this
+/// reaches only the fast, short-lived CLI process itself — there is no
+/// nested subprocess of `omega`'s to reach, because the real bootstrap
+/// work lives inside a session the rmux daemon `setsid()`s independently;
+/// see [`new_project_stream_loop`]'s doc comment.
 async fn kill_process_group(pid: u32) {
     let _ = tokio::task::spawn_blocking(move || {
         std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
@@ -255,18 +295,39 @@ async fn kill_and_drain(
 /// `routes_orchestrate::orchestrate_stream_loop` — see this module's doc
 /// comment.
 ///
-/// The spawned `omega` process is placed into its OWN process group
-/// (`process_group(0)`) for the same reason `orchestrate_stream_loop`
-/// documents at length: `omega new-project`'s real work spawns a nested
-/// rmux session, and a plain single-PID `kill()` would not reach it.
-/// `kill_on_drop(true)` guarantees the DIRECT child is reaped even if this
-/// future is ever dropped without reaching the explicit disconnect-kill
-/// path.
+/// REVIEW-FIX (Finding 2, Task B round) — corrects a claim copy-pasted from
+/// `routes_orchestrate.rs`/`routes_agents.rs` that does NOT hold here.
+/// `omega new-project`'s only real side effect is
+/// `mgr.create_session_with_agent(...)` (`cmd_new_project`,
+/// `crates/omega-cli/src/main.rs`) — an ASYNC IN-PROCESS call over a unix
+/// socket to the ALREADY-RUNNING rmux daemon. The daemon `setsid()`s its
+/// OWN children when it creates the session
+/// (`omega_core::session::SessionManager::connect`/`create_session`), so
+/// that nested session is never in THIS spawned `omega` CLI process's
+/// process group to begin with — confirmed live: the daemon's PGID and SID
+/// both equal its own PID, PPID 1. The spawned `omega new-project` CLI
+/// process itself prints ~3 lines and exits in well under a second; there
+/// is essentially nothing left to kill by the time a real client could
+/// disconnect, and even if there were, killing THIS process group would
+/// not reach the bootstrap anyway (it lives inside the daemon-owned rmux
+/// session, structurally unreachable from here).
+///
+/// **THIS ENDPOINT HAS NO CANCELLATION SEMANTICS.** Closing the WebSocket
+/// stops the STREAM — it does NOT stop or abort the project bootstrap
+/// running inside the spawned `<name>-setup` session. A real cancellation
+/// would require `omega kill <name>-setup` as a separate, deliberate
+/// operator action; this endpoint does not do that and was never asked to.
+///
+/// The `process_group(0)`/`kill_on_drop(true)` mechanism below is KEPT as
+/// harmless defense-in-depth (it still reaps whatever direct child this
+/// endpoint itself spawned) — it is simply not the safety net the old
+/// comment claimed it was for the real `omega new-project` process tree.
 ///
 /// The `tokio::select!` loop watches BOTH the internal mpsc frame channel
 /// AND the socket's own read side, so a disconnect is noticed even when the
 /// child has gone quiet — the same read-driven fix `orchestrate_stream_loop`
-/// carries.
+/// carries; it stops the STREAM promptly, which is all this endpoint
+/// promises.
 ///
 /// `_permit` is held for the WHOLE lifetime of this function and released
 /// automatically when it completes, whatever the reason.
@@ -442,5 +503,50 @@ mod resolve_new_project_request_tests {
         let err = resolve_new_project_request("proj", "", "Acme_Client").unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("group"));
+    }
+
+    /// Finding 1 unit-level coverage (integration-level proof lives in
+    /// `tests/new_project_test.rs`): a `name` starting with `-` must be
+    /// rejected even though it is otherwise a legal charset match — this is
+    /// what stops `--build`/`--dry-run`-shaped text from ever reaching the
+    /// `/omega-new-project` prompt string.
+    #[test]
+    fn rejects_name_starting_with_dash() {
+        for bad in ["--build", "--dry-run", "-x"] {
+            let err = resolve_new_project_request(bad, "", "").unwrap_err();
+            assert_eq!(err.0, StatusCode::BAD_REQUEST, "expected rejection for {bad:?}");
+        }
+    }
+
+    /// Finding 1 unit-level coverage: `group` reuses the same slug check.
+    #[test]
+    fn rejects_group_starting_with_dash() {
+        let err = resolve_new_project_request("proj", "", "-x").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("group"));
+    }
+
+    /// Finding 4 unit-level coverage (integration-level proof lives in
+    /// `tests/new_project_test.rs`): a `name` that individually passes
+    /// `is_slug`/`MAX_SLUG_LEN` but makes `"{name}-setup"` diverge after
+    /// `sanitize_session_name`'s truncation must be rejected.
+    #[test]
+    fn rejects_name_that_would_truncate_session_name_after_setup_suffix() {
+        let name = "a".repeat(49);
+        let err = resolve_new_project_request(&name, "", "").unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("setup"));
+    }
+
+    /// Finding 4 unit-level coverage: a `name` short enough that
+    /// `"{name}-setup"` still round-trips through sanitation unchanged is
+    /// still accepted — the new check must not reject legitimate names.
+    #[test]
+    fn accepts_name_at_the_boundary_that_still_round_trips() {
+        // 42 'a's + "-setup" (6 bytes) == 48 bytes == MAX_SESSION_NAME_LEN,
+        // exactly at the boundary with no truncation.
+        let name = "a".repeat(42);
+        let (resolved_name, _, _) = resolve_new_project_request(&name, "", "").unwrap();
+        assert_eq!(resolved_name, name);
     }
 }

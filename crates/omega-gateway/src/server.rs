@@ -46,13 +46,25 @@ const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
 const MAX_CONCURRENT_ORCHESTRATIONS: usize = 2;
 
 /// Global cap on concurrently-open `GET /v1/new-project/stream` WebSockets.
-/// The `omega new-project` subprocess this endpoint spawns returns fast
-/// (see `routes_new_project.rs`'s doc comment), but what it SPAWNS does not:
-/// a real Codex session running the whole vision -> PRD -> brand -> planner
-/// -> build bootstrap pipeline asynchronously, invisible to this endpoint.
-/// Capped the same as [`MAX_CONCURRENT_ORCHESTRATIONS`], for the same
-/// reason: both endpoints spawn a real Codex session plus a real
-/// downstream pipeline, not a bounded, self-contained subprocess.
+///
+/// REVIEW-FIX (Finding 3, Task B round): the comment used to claim this
+/// bounds concurrent BOOTSTRAP PIPELINES, mirroring
+/// [`MAX_CONCURRENT_ORCHESTRATIONS`]'s reasoning — that comparison does not
+/// hold. `orchestrate_permits` is held for `orchestrate`'s ENTIRE
+/// multi-minute/hour run, so it genuinely bounds concurrently-running
+/// orchestrations. THIS permit is only held for
+/// `new_project_stream_loop`'s lifetime, which ends when the fast `omega
+/// new-project` CLI process exits — well under a second, since its only
+/// real work is `mgr.create_session_with_agent(...)` returning (see
+/// `routes_new_project.rs`'s doc comment). So the real effect of this cap
+/// is "at most `MAX_CONCURRENT_NEW_PROJECT_SPAWNS` SPAWN REQUESTS in flight
+/// at any instant" — a basic DoS/resource-exhaustion throughput limiter on
+/// this endpoint's own subprocess-spawn rate, measured in spawns/second,
+/// NOT "at most N live project bootstraps". An authenticated caller that
+/// loops this endpoint quickly can still start an effectively unbounded
+/// number of live `*-setup` bootstrap sessions over TIME — nothing in this
+/// wave bounds the total count of concurrently-LIVE `*-setup` sessions.
+/// This is an explicitly recorded gap, not a silently missing one.
 const MAX_CONCURRENT_NEW_PROJECT_SPAWNS: usize = 2;
 
 /// Global cap on concurrently-running `POST /v1/pdf` generations. `omega
