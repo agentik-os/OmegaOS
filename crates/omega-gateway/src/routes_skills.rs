@@ -283,7 +283,7 @@ pub async fn ask_agent(
         "Review this skill and improve it where runtime evidence supports a change.".to_string()
     });
     let prompt = format!(
-        "Modify the OmegaOS skill in ./SKILL.md. Preserve its identity, follow the repository AGENTS.md, verify the final file, and report exact evidence. Operator request: {operator_request}"
+        "Work on the OmegaOS skill in ./SKILL.md. Preserve its identity, follow the repository AGENTS.md, verify any change, and report exact evidence. Do not edit files unless the operator request requires it. Operator request: {operator_request}"
     );
     let created = crate::routes_sessions::create(
         State(state),
