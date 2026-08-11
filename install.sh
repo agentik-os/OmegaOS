@@ -49,6 +49,29 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 step()  { echo -e "\n${BOLD}==> $*${NC}"; }
 
+# Long Rust builds used to pipe through `tail -3`, which buffers EVERYTHING
+# until cargo exits: on a laptop where the workspace takes 15-40 min, the
+# installer printed nothing for the whole build and looked frozen ("stuck at
+# 40%", reported on a real install). Stream a progress line every 10 crates
+# instead, keep the full log in a temp file, and dump its tail on failure so
+# a real compile error is never hidden by the progress filter. Exit status is
+# cargo's own (pipefail; tee/awk always exit 0), so `|| fallback` chains and
+# set -e behave exactly as before.
+cargo_build_live() { # cargo_build_live [extra cargo args…]
+    local log; log="$(mktemp /tmp/omega-cargo-build-XXXXXX.log)"
+    if cargo build --release "$@" 2>&1 | tee "$log" | awk '
+            /^ *(Compiling|Checking) / { n++; if (n % 10 == 0) { printf "    … %d crates (now: %s)\n", n, $2; fflush() } next }
+            /^ *Finished/ { printf "    %s\n", $0; fflush() }'; then
+        rm -f "$log"; return 0
+    else
+        local rc=$?
+        err "cargo build failed — last 40 lines:"
+        tail -40 "$log" >&2
+        rm -f "$log"
+        return "$rc"
+    fi
+}
+
 # Install an executable OVER a possibly-RUNNING one.
 #
 # `cp`/`install` open the destination for writing, which the kernel refuses with
@@ -500,7 +523,7 @@ else
     git clone --depth 1 "$RMUX_REPO" "$RMUX_BUILD_DIR"
     info "Building rmux (this may take a few minutes)..."
     cd "$RMUX_BUILD_DIR"
-    cargo build --release 2>&1 | tail -3
+    cargo_build_live
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/rmux "$INSTALL_DIR/rmux"
     cd -
@@ -812,7 +835,7 @@ else
     # --locked: build against the committed Cargo.lock so a fresh clone resolves the
     # exact same transitive deps (reproducible builds). Falls back to an unlocked
     # build only if the lockfile is somehow absent/out of sync.
-    cargo build --release --locked 2>&1 | tail -3 || cargo build --release 2>&1 | tail -3
+    cargo_build_live --locked || cargo_build_live
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/omega "$INSTALL_DIR/omega"
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
