@@ -54,7 +54,9 @@ impl GitSyncOutcome {
                 "{n} commit(s) behind origin and ff-only pull FAILED (diverged?) — \
                  reconcile manually before editing"
             ),
-            Self::FetchFailed => "git fetch failed — origin drift UNKNOWN; verify before pushing".into(),
+            Self::FetchFailed => {
+                "git fetch failed — origin drift UNKNOWN; verify before pushing".into()
+            }
         }
     }
 
@@ -69,7 +71,11 @@ impl GitSyncOutcome {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

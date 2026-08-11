@@ -330,7 +330,11 @@ mod tests {
             let def = a.definition();
             assert!(!def.prompt.is_empty(), "{} has empty prompt", def.name);
             assert!(!def.tools.is_empty(), "{} has no tools", def.name);
-            assert!(!def.responsibilities.is_empty(), "{} has no responsibilities", def.name);
+            assert!(
+                !def.responsibilities.is_empty(),
+                "{} has no responsibilities",
+                def.name
+            );
         }
     }
 }

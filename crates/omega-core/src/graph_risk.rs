@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
 
-use crate::graph::{Graph, GraphState, Node, NodeId};
+use crate::graph::{Graph, GraphExecutionAuthority, GraphState, Node, NodeId};
 
 // ---------------------------------------------------------------------------
 // Where a classification lives on a node
@@ -71,6 +71,8 @@ pub const RISK_REASON_KEY: &str = "risk_reason";
 
 /// Key under which a node declares what an operator loses if it runs.
 pub const RISK_WHAT_IS_LOST_KEY: &str = "risk_what_is_lost";
+
+const SUBJECT_MARKER_PREFIX: &str = " [approval subject: ";
 
 // ---------------------------------------------------------------------------
 // RiskLevel
@@ -156,6 +158,18 @@ impl RiskLevel {
     }
 }
 
+/// Minimum graph gate classification that may implement an authoritative plan
+/// task risk. This is the single translation boundary between the four-level
+/// Oracle contract and the three-level runtime gate. Callers may classify more
+/// strictly, never less strictly.
+pub(crate) fn minimum_for_plan_risk(plan_risk: crate::routing::RiskLevel) -> RiskLevel {
+    match plan_risk {
+        crate::routing::RiskLevel::Low => RiskLevel::Safe,
+        crate::routing::RiskLevel::Medium | crate::routing::RiskLevel::High => RiskLevel::Elevated,
+        crate::routing::RiskLevel::Critical => RiskLevel::Irreversible,
+    }
+}
+
 impl fmt::Display for RiskLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -223,6 +237,12 @@ pub enum RiskError {
     /// approval is not consent, it is an unsigned note, and it is exactly what a
     /// runaway agent would produce for itself.
     UnattributedApproval { node: String },
+    /// A time-bounded decision that would already be expired when created.
+    InvalidExpiration { node: String },
+    /// Consent without the fingerprint of what was shown cannot authorize work.
+    UnboundApprovalSubject { node: String },
+    /// The state/reservation/authority no longer matches the approval subject.
+    InvalidApprovalAuthority { node: String, reason: String },
 }
 
 impl fmt::Display for RiskError {
@@ -234,6 +254,18 @@ impl fmt::Display for RiskError {
             Self::UnknownNode(id) => write!(f, "risk gate asked about unknown node {id}"),
             Self::UnattributedApproval { node } => {
                 write!(f, "approval for node {node} names no approver")
+            }
+            Self::InvalidExpiration { node } => {
+                write!(f, "approval for node {node} expires before it was recorded")
+            }
+            Self::UnboundApprovalSubject { node } => {
+                write!(f, "approval for node {node} has no valid subject digest")
+            }
+            Self::InvalidApprovalAuthority { node, reason } => {
+                write!(
+                    f,
+                    "approval for node {node} has invalid authority: {reason}"
+                )
             }
         }
     }
@@ -314,6 +346,40 @@ fn declared(node: &Node, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// A shell effect outside an immutable V3 mission plan has no authoritative
+/// risk classifier. Its self-declared `risk` remains useful context, but it is
+/// never permission to execute: an attributable, reservation-bound human
+/// decision is required in both attended and unattended modes.
+fn standalone_effect_requires_approval(node: &Node, state: &GraphState) -> bool {
+    state.mission_binding.is_none() && node.extra.contains_key("command")
+}
+
+fn approval_reason_for(
+    node: &Node,
+    state: &GraphState,
+    risk: RiskLevel,
+    mode: ExecutionMode,
+) -> String {
+    if standalone_effect_requires_approval(node, state) {
+        return "standalone shell effect has no immutable V3 mission-plan risk authority; explicit attributed approval is required"
+            .to_string();
+    }
+    approval_reason(node, risk, mode)
+}
+
+fn what_is_lost_for(node: &Node, state: &GraphState, risk: RiskLevel) -> String {
+    if standalone_effect_requires_approval(node, state) {
+        if let Some(declared) = declared(node, RISK_WHAT_IS_LOST_KEY) {
+            return declared;
+        }
+        return format!(
+            "not authoritatively classified for standalone node {}: assume the shell command may mutate or destroy external state",
+            node.id
+        );
+    }
+    what_is_lost(node, risk)
+}
+
 // ---------------------------------------------------------------------------
 // GateDecision
 // ---------------------------------------------------------------------------
@@ -365,17 +431,62 @@ impl GateDecision {
                 risk,
                 reason,
                 what_is_lost,
-            } => Some(EscalationRecord {
-                node,
-                risk,
-                reason,
-                what_is_lost,
-                recorded_at,
-                extra: Map::new(),
-            }),
+            } => {
+                let (reason, subject_digest) = split_subject_marker(reason);
+                Some(EscalationRecord {
+                    node,
+                    risk,
+                    reason,
+                    what_is_lost,
+                    subject_digest,
+                    recorded_at,
+                    extra: Map::new(),
+                })
+            }
             _ => None,
         }
     }
+}
+
+fn split_subject_marker(reason: String) -> (String, String) {
+    let Some((human_reason, marker)) = reason.rsplit_once(SUBJECT_MARKER_PREFIX) else {
+        return (reason, String::new());
+    };
+    let Some(digest) = marker.strip_suffix(']') else {
+        return (reason, String::new());
+    };
+    if digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        (human_reason.to_string(), digest.to_ascii_lowercase())
+    } else {
+        (reason, String::new())
+    }
+}
+
+/// Fingerprint of the exact action and attempt a human is being asked about.
+pub fn approval_subject_digest(graph: &Graph, state: &GraphState, node: &NodeId) -> String {
+    let graph_digest = graph.content_digest().unwrap_or_default();
+    let run = state.nodes.get(node);
+    let generation = run.map(|run| run.generation).unwrap_or(0);
+    let reservation = run.and_then(|run| run.reservation.as_ref());
+    let state_version = reservation
+        .map(|reservation| reservation.state_version)
+        .unwrap_or(0);
+    let reservation_id = reservation
+        .map(|reservation| reservation.reservation_id.as_str())
+        .unwrap_or("");
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        graph_digest.as_str(),
+        state.run_id.as_str(),
+        node.as_str(),
+        reservation_id,
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&generation.to_le_bytes());
+    hasher.update(&state_version.to_le_bytes());
+    hasher.finalize().to_hex().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -404,7 +515,38 @@ pub fn evaluate_gate(
     state: &GraphState,
     node: &NodeId,
     mode: ExecutionMode,
+    authority: &GraphExecutionAuthority,
 ) -> GateDecision {
+    evaluate_gate_inner(graph, state, node, mode, None, authority)
+}
+
+/// Clock-explicit gate evaluation. Time-bounded resolutions are honored only by
+/// this API; the clockless compatibility API fails closed on expiring consent.
+pub fn evaluate_gate_at(
+    graph: &Graph,
+    state: &GraphState,
+    node: &NodeId,
+    mode: ExecutionMode,
+    now: DateTime<Utc>,
+    authority: &GraphExecutionAuthority,
+) -> GateDecision {
+    evaluate_gate_inner(graph, state, node, mode, Some(now), authority)
+}
+
+fn evaluate_gate_inner(
+    graph: &Graph,
+    state: &GraphState,
+    node: &NodeId,
+    mode: ExecutionMode,
+    now: Option<DateTime<Utc>>,
+    authority: &GraphExecutionAuthority,
+) -> GateDecision {
+    if let Err(error) = state.validate_for_graph_with_authority(graph, authority) {
+        return GateDecision::Refuse {
+            node: node.clone(),
+            reason: format!("invalid graph execution state: {error}"),
+        };
+    }
     let Some(declared_node) = graph.node(node) else {
         return GateDecision::Refuse {
             node: node.clone(),
@@ -422,7 +564,8 @@ pub fn evaluate_gate(
         }
     };
 
-    match resolution_of(state, node) {
+    let subject_digest = approval_subject_digest(graph, state, node);
+    match resolution_for_subject(graph, state, node, &subject_digest, now, authority) {
         Some(resolution) if resolution.verdict == ResolutionVerdict::Approved => {
             return GateDecision::Proceed
         }
@@ -438,15 +581,22 @@ pub fn evaluate_gate(
         None => {}
     }
 
-    if risk.runs_unattended() || (risk == RiskLevel::Elevated && mode == ExecutionMode::Attended) {
+    let standalone_effect = standalone_effect_requires_approval(declared_node, state);
+    if !standalone_effect
+        && (risk.runs_unattended()
+            || (risk == RiskLevel::Elevated && mode == ExecutionMode::Attended))
+    {
         return GateDecision::Proceed;
     }
 
     GateDecision::RequireApproval {
         node: node.clone(),
         risk,
-        reason: approval_reason(declared_node, risk, mode),
-        what_is_lost: what_is_lost(declared_node, risk),
+        reason: format!(
+            "{}{SUBJECT_MARKER_PREFIX}{subject_digest}]",
+            approval_reason_for(declared_node, state, risk, mode)
+        ),
+        what_is_lost: what_is_lost_for(declared_node, state, risk),
     }
 }
 
@@ -518,6 +668,10 @@ pub struct EscalationRecord {
     pub reason: String,
     #[serde(default)]
     pub what_is_lost: String,
+    /// Digest of the graph, run and reserved generation shown to the operator.
+    /// Empty legacy records are deliberately never sufficient to authorize work.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub subject_digest: String,
     #[serde(default = "epoch")]
     pub recorded_at: DateTime<Utc>,
     #[serde(flatten)]
@@ -555,6 +709,7 @@ impl EscalationRecord {
             risk,
             reason: reason.into(),
             what_is_lost: what_is_lost.into(),
+            subject_digest: String::new(),
             recorded_at,
             extra: Map::new(),
         }
@@ -596,8 +751,78 @@ pub struct GateResolution {
     pub verdict: ResolutionVerdict,
     #[serde(default)]
     pub approver: String,
+    /// Optional hard expiry. Clockless evaluation never treats a time-bounded
+    /// approval as valid because it cannot prove that it is still live.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub graph_digest: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reservation_id: String,
+    #[serde(default)]
+    pub generation: u64,
+    #[serde(default)]
+    pub reservation_state_version: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub resolution_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_mac: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct GateConsumptionReceipt {
+    node: NodeId,
+    resolution_id: String,
+    reservation_id: String,
+    consumed_at: DateTime<Utc>,
+    consumption_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    authority_mac: String,
+}
+
+impl GateConsumptionReceipt {
+    fn new(
+        resolution: &GateResolution,
+        consumed_at: DateTime<Utc>,
+        authority: &GraphExecutionAuthority,
+    ) -> Self {
+        let mut receipt = Self {
+            node: resolution.record.node.clone(),
+            resolution_id: resolution.resolution_id.clone(),
+            reservation_id: resolution.reservation_id.clone(),
+            consumed_at,
+            consumption_id: String::new(),
+            authority_mac: String::new(),
+        };
+        receipt.consumption_id = consumption_id(&receipt);
+        receipt.authority_mac = consumption_mac(&receipt, authority);
+        receipt
+    }
+
+    fn authenticate(
+        &self,
+        node: &NodeId,
+        resolution: &GateResolution,
+        authority: &GraphExecutionAuthority,
+    ) -> bool {
+        self.node == *node
+            && self.resolution_id == resolution.resolution_id
+            && self.reservation_id == resolution.reservation_id
+            && self.consumption_id == consumption_id(self)
+            && self.authority_mac == consumption_mac(self, authority)
+    }
+
+    fn authenticate_standalone(&self, node: &NodeId, authority: &GraphExecutionAuthority) -> bool {
+        self.node == *node
+            && self.consumption_id == consumption_id(self)
+            && self.authority_mac == consumption_mac(self, authority)
+    }
 }
 
 fn empty_record() -> EscalationRecord {
@@ -610,9 +835,134 @@ fn denied_verdict() -> ResolutionVerdict {
     ResolutionVerdict::Denied
 }
 
+fn canonicalize_json(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: std::collections::BTreeMap<String, Value> = map
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_json(value)))
+                .collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_json).collect()),
+        other => other,
+    }
+}
+
+fn record_digest(record: &EscalationRecord) -> String {
+    let value = serde_json::to_value(record)
+        .map(canonicalize_json)
+        .unwrap_or(Value::Null);
+    let bytes = serde_json::to_vec(&value).unwrap_or_default();
+    blake3::hash(&bytes).to_hex().to_string()
+}
+
+fn verdict_name(verdict: ResolutionVerdict) -> &'static str {
+    match verdict {
+        ResolutionVerdict::Approved => "approved",
+        ResolutionVerdict::Denied => "denied",
+    }
+}
+
+fn resolution_id(resolution: &GateResolution) -> String {
+    let record_digest = record_digest(&resolution.record);
+    let expires_at = resolution
+        .expires_at
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_default();
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        record_digest.as_str(),
+        verdict_name(resolution.verdict),
+        resolution.approver.as_str(),
+        expires_at.as_str(),
+        resolution.authority_id.as_str(),
+        resolution.graph_digest.as_str(),
+        resolution.run_id.as_str(),
+        resolution.record.node.as_str(),
+        resolution.reservation_id.as_str(),
+        resolution.record.subject_digest.as_str(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&resolution.generation.to_le_bytes());
+    hasher.update(&resolution.reservation_state_version.to_le_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn resolution_mac(resolution: &GateResolution, authority: &GraphExecutionAuthority) -> String {
+    authority.mac(
+        "omega.graph.gate-resolution.v1",
+        &[
+            resolution.resolution_id.as_bytes(),
+            resolution.authority_id.as_bytes(),
+            resolution.graph_digest.as_bytes(),
+            resolution.run_id.as_bytes(),
+            resolution.record.node.as_str().as_bytes(),
+            resolution.reservation_id.as_bytes(),
+            resolution.record.subject_digest.as_bytes(),
+            verdict_name(resolution.verdict).as_bytes(),
+            resolution.approver.as_bytes(),
+        ],
+    )
+}
+
+fn consumption_id(receipt: &GateConsumptionReceipt) -> String {
+    let consumed_at = receipt.consumed_at.to_rfc3339();
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        receipt.node.as_str(),
+        receipt.resolution_id.as_str(),
+        receipt.reservation_id.as_str(),
+        consumed_at.as_str(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn consumption_mac(
+    receipt: &GateConsumptionReceipt,
+    authority: &GraphExecutionAuthority,
+) -> String {
+    authority.mac(
+        "omega.graph.gate-consumption.v1",
+        &[
+            receipt.consumption_id.as_bytes(),
+            receipt.node.as_str().as_bytes(),
+            receipt.resolution_id.as_bytes(),
+            receipt.reservation_id.as_bytes(),
+        ],
+    )
+}
+
 impl GateResolution {
     pub fn is_approved(&self) -> bool {
         self.verdict == ResolutionVerdict::Approved
+    }
+
+    fn authenticate(
+        &self,
+        graph: &Graph,
+        state: &GraphState,
+        node: &NodeId,
+        authority: &GraphExecutionAuthority,
+    ) -> bool {
+        let Some(reservation) = state.reservation_of(node) else {
+            return false;
+        };
+        self.record.node == *node
+            && self.record.subject_digest == approval_subject_digest(graph, state, node)
+            && self.authority_id == authority.authority_id()
+            && self.graph_digest == state.graph_digest
+            && self.run_id == state.run_id
+            && self.reservation_id == reservation.reservation_id
+            && self.generation == reservation.generation
+            && self.reservation_state_version == reservation.state_version
+            && self.resolution_id == resolution_id(self)
+            && self.authority_mac == resolution_mac(self, authority)
     }
 }
 
@@ -623,26 +973,90 @@ impl GateResolution {
 /// own permission slip: an approval nobody signed is indistinguishable from one
 /// the process invented for itself, and the record is worthless as evidence.
 pub fn approve(
+    graph: &Graph,
+    state: &GraphState,
     record: EscalationRecord,
     approver: impl Into<String>,
+    authority: &GraphExecutionAuthority,
 ) -> Result<GateResolution, RiskError> {
-    resolve(record, approver.into(), ResolutionVerdict::Approved)
+    resolve(
+        graph,
+        state,
+        record,
+        approver.into(),
+        ResolutionVerdict::Approved,
+        None,
+        authority,
+    )
+}
+
+pub fn approve_until(
+    graph: &Graph,
+    state: &GraphState,
+    record: EscalationRecord,
+    approver: impl Into<String>,
+    expires_at: DateTime<Utc>,
+    authority: &GraphExecutionAuthority,
+) -> Result<GateResolution, RiskError> {
+    resolve(
+        graph,
+        state,
+        record,
+        approver.into(),
+        ResolutionVerdict::Approved,
+        Some(expires_at),
+        authority,
+    )
 }
 
 /// Deny an escalated node, attributably. A denial is held to the same standard:
 /// an operator reading the run later needs to know who blocked it, and an
 /// unsigned denial is as unauditable as an unsigned approval.
 pub fn deny(
+    graph: &Graph,
+    state: &GraphState,
     record: EscalationRecord,
     approver: impl Into<String>,
+    authority: &GraphExecutionAuthority,
 ) -> Result<GateResolution, RiskError> {
-    resolve(record, approver.into(), ResolutionVerdict::Denied)
+    resolve(
+        graph,
+        state,
+        record,
+        approver.into(),
+        ResolutionVerdict::Denied,
+        None,
+        authority,
+    )
+}
+
+pub fn deny_until(
+    graph: &Graph,
+    state: &GraphState,
+    record: EscalationRecord,
+    approver: impl Into<String>,
+    expires_at: DateTime<Utc>,
+    authority: &GraphExecutionAuthority,
+) -> Result<GateResolution, RiskError> {
+    resolve(
+        graph,
+        state,
+        record,
+        approver.into(),
+        ResolutionVerdict::Denied,
+        Some(expires_at),
+        authority,
+    )
 }
 
 fn resolve(
+    graph: &Graph,
+    state: &GraphState,
     record: EscalationRecord,
     approver: String,
     verdict: ResolutionVerdict,
+    expires_at: Option<DateTime<Utc>>,
+    authority: &GraphExecutionAuthority,
 ) -> Result<GateResolution, RiskError> {
     let approver = approver.trim().to_string();
     if approver.is_empty() {
@@ -650,12 +1064,78 @@ fn resolve(
             node: record.node.0.clone(),
         });
     }
-    Ok(GateResolution {
+    if record.subject_digest.len() != 64
+        || !record
+            .subject_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(RiskError::UnboundApprovalSubject {
+            node: record.node.0.clone(),
+        });
+    }
+    state
+        .validate_for_graph_with_authority(graph, authority)
+        .map_err(|error| RiskError::InvalidApprovalAuthority {
+            node: record.node.0.clone(),
+            reason: error.to_string(),
+        })?;
+    let reservation =
+        state
+            .reservation_of(&record.node)
+            .ok_or_else(|| RiskError::InvalidApprovalAuthority {
+                node: record.node.0.clone(),
+                reason: "node has no active authenticated reservation".to_string(),
+            })?;
+    if record.subject_digest != approval_subject_digest(graph, state, &record.node) {
+        return Err(RiskError::InvalidApprovalAuthority {
+            node: record.node.0.clone(),
+            reason: "escalation subject does not match the active graph/run/generation".to_string(),
+        });
+    }
+    let declared_node = graph
+        .node(&record.node)
+        .ok_or_else(|| RiskError::UnknownNode(record.node.0.clone()))?;
+    let risk = risk_of(declared_node)?;
+    let requires_unattended_approval =
+        standalone_effect_requires_approval(declared_node, state) || !risk.runs_unattended();
+    if !requires_unattended_approval
+        || record.risk != risk
+        || record.reason
+            != approval_reason_for(declared_node, state, risk, ExecutionMode::Unattended)
+        || record.what_is_lost != what_is_lost_for(declared_node, state, risk)
+    {
+        return Err(RiskError::InvalidApprovalAuthority {
+            node: record.node.0.clone(),
+            reason: "escalation record is not the exact currently held decision".to_string(),
+        });
+    }
+    if expires_at
+        .as_ref()
+        .is_some_and(|expires_at| *expires_at <= record.recorded_at)
+    {
+        return Err(RiskError::InvalidExpiration {
+            node: record.node.0.clone(),
+        });
+    }
+    let mut resolution = GateResolution {
         record,
         verdict,
         approver,
+        expires_at,
+        authority_id: authority.authority_id(),
+        graph_digest: state.graph_digest.clone(),
+        run_id: state.run_id.clone(),
+        reservation_id: reservation.reservation_id.clone(),
+        generation: reservation.generation,
+        reservation_state_version: reservation.state_version,
+        resolution_id: String::new(),
+        authority_mac: String::new(),
         extra: Map::new(),
-    })
+    };
+    resolution.resolution_id = resolution_id(&resolution);
+    resolution.authority_mac = resolution_mac(&resolution, authority);
+    Ok(resolution)
 }
 
 // ---------------------------------------------------------------------------
@@ -666,14 +1146,43 @@ fn resolve(
 /// collide with [`crate::graph_executor`]'s bag or any other writer's entries.
 const RISK_BAG: &str = "graph_risk";
 const RESOLUTIONS_KEY: &str = "resolutions";
+const CONSUMED_KEY: &str = "consumed_resolutions";
 
 /// Record a human decision into the run state, where [`evaluate_gate`] will find
 /// it on the next pass. In-memory only: persisting the state is the caller's job,
 /// and a decision core that wrote a file could not be replayed.
-pub fn record_resolution(state: &mut GraphState, resolution: &GateResolution) {
-    let Ok(value) = serde_json::to_value(resolution) else {
-        return;
-    };
+pub fn record_resolution(
+    graph: &Graph,
+    state: &mut GraphState,
+    resolution: &GateResolution,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), RiskError> {
+    if !resolution.authenticate(graph, state, &resolution.record.node, authority) {
+        return Err(RiskError::InvalidApprovalAuthority {
+            node: resolution.record.node.0.clone(),
+            reason: "resolution signature or active subject binding is invalid".to_string(),
+        });
+    }
+    match consumptions_for_node(state, &resolution.record.node, authority) {
+        Ok(consumed) if consumed.contains_key(&resolution.resolution_id) => {
+            return Err(RiskError::InvalidApprovalAuthority {
+                node: resolution.record.node.0.clone(),
+                reason: "this exact one-shot resolution was already consumed".to_string(),
+            });
+        }
+        Ok(_) => {}
+        Err(reason) => {
+            return Err(RiskError::InvalidApprovalAuthority {
+                node: resolution.record.node.0.clone(),
+                reason,
+            });
+        }
+    }
+    let value =
+        serde_json::to_value(resolution).map_err(|error| RiskError::InvalidApprovalAuthority {
+            node: resolution.record.node.0.clone(),
+            reason: format!("resolution cannot be persisted: {error}"),
+        })?;
     let bag = state
         .extra
         .entry(RISK_BAG.to_string())
@@ -682,7 +1191,10 @@ pub fn record_resolution(state: &mut GraphState, resolution: &GateResolution) {
         *bag = Value::Object(Map::new());
     }
     let Some(bag) = bag.as_object_mut() else {
-        return;
+        return Err(RiskError::InvalidApprovalAuthority {
+            node: resolution.record.node.0.clone(),
+            reason: "risk state namespace could not be initialized".to_string(),
+        });
     };
     let slot = bag
         .entry(RESOLUTIONS_KEY.to_string())
@@ -693,6 +1205,8 @@ pub fn record_resolution(state: &mut GraphState, resolution: &GateResolution) {
     if let Some(map) = slot.as_object_mut() {
         map.insert(resolution.record.node.0.clone(), value);
     }
+    state.mark_updated();
+    Ok(())
 }
 
 /// The decision recorded for `node`, if any.
@@ -719,6 +1233,137 @@ pub fn resolution_of(state: &GraphState, node: &NodeId) -> Option<GateResolution
     (resolution.record.node == *node).then_some(resolution)
 }
 
+fn resolution_for_subject(
+    graph: &Graph,
+    state: &GraphState,
+    node: &NodeId,
+    subject_digest: &str,
+    now: Option<DateTime<Utc>>,
+    authority: &GraphExecutionAuthority,
+) -> Option<GateResolution> {
+    let resolution = resolution_of(state, node)?;
+    if resolution.record.subject_digest.is_empty()
+        || resolution.record.subject_digest != subject_digest
+        || !resolution.authenticate(graph, state, node, authority)
+    {
+        return None;
+    }
+    match consumptions_for_node(state, node, authority) {
+        Ok(consumed) => {
+            if consumed
+                .get(&resolution.resolution_id)
+                .is_some_and(|receipt| receipt.authenticate(node, &resolution, authority))
+            {
+                return None;
+            }
+        }
+        Err(_) => return None,
+    }
+    match (resolution.expires_at, now) {
+        (None, _) => Some(resolution),
+        (Some(expires_at), Some(now)) if expires_at > now => Some(resolution),
+        // With no clock, validity cannot be established. At or after expiry,
+        // consent has ended. Both cases fail closed by asking again.
+        _ => None,
+    }
+}
+
+/// Consume and return a recorded decision. Callers that authorize an external
+/// effect can use this to make consent one-shot in addition to generation-bound.
+fn consumptions_for_node(
+    state: &GraphState,
+    node: &NodeId,
+    authority: &GraphExecutionAuthority,
+) -> Result<std::collections::BTreeMap<String, GateConsumptionReceipt>, String> {
+    let Some(risk) = state.extra.get(RISK_BAG) else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let risk = risk
+        .as_object()
+        .ok_or_else(|| "risk state namespace is not an object".to_string())?;
+    let Some(consumed) = risk.get(CONSUMED_KEY) else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let consumed = consumed
+        .as_object()
+        .ok_or_else(|| "consumption collection is not an object".to_string())?;
+    let Some(entries) = consumed.get(node.as_str()) else {
+        return Ok(std::collections::BTreeMap::new());
+    };
+    let entries = entries
+        .as_object()
+        .ok_or_else(|| "node consumption history is not an object".to_string())?;
+    let mut parsed = std::collections::BTreeMap::new();
+    for (resolution_id, value) in entries {
+        let receipt: GateConsumptionReceipt = serde_json::from_value(value.clone())
+            .map_err(|error| format!("consumption receipt cannot be decoded: {error}"))?;
+        if receipt.resolution_id != *resolution_id
+            || !receipt.authenticate_standalone(node, authority)
+        {
+            return Err("consumption receipt identity or authority MAC is invalid".to_string());
+        }
+        parsed.insert(resolution_id.clone(), receipt);
+    }
+    Ok(parsed)
+}
+
+fn consume_resolution(
+    state: &mut GraphState,
+    node: &NodeId,
+    consumed_at: DateTime<Utc>,
+    authority: &GraphExecutionAuthority,
+) -> Option<GateResolution> {
+    let resolution = resolution_of(state, node)?;
+    if resolution.record.node != *node {
+        return None;
+    }
+    let consumed = GateConsumptionReceipt::new(&resolution, consumed_at, authority);
+    let value = serde_json::to_value(consumed).ok()?;
+    let bag = state.extra.get_mut(RISK_BAG)?.as_object_mut()?;
+    bag.get_mut(RESOLUTIONS_KEY)?
+        .as_object_mut()?
+        .remove(node.as_str())?;
+    let slot = bag
+        .entry(CONSUMED_KEY.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !slot.is_object() {
+        *slot = Value::Object(Map::new());
+    }
+    let history = slot
+        .as_object_mut()?
+        .entry(node.0.clone())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !history.is_object() {
+        return None;
+    }
+    history
+        .as_object_mut()?
+        .insert(resolution.resolution_id.clone(), value);
+    state.mark_updated();
+    Some(resolution)
+}
+
+/// Evaluate with an explicit clock and consume a matching approval before
+/// returning `Proceed`. Safe nodes proceed without touching the resolution bag.
+pub fn authorize_gate_at(
+    graph: &Graph,
+    state: &mut GraphState,
+    node: &NodeId,
+    mode: ExecutionMode,
+    now: DateTime<Utc>,
+    authority: &GraphExecutionAuthority,
+) -> GateDecision {
+    let subject_digest = approval_subject_digest(graph, state, node);
+    let consumes_approval =
+        resolution_for_subject(graph, state, node, &subject_digest, Some(now), authority)
+            .is_some_and(|resolution| resolution.is_approved());
+    let decision = evaluate_gate_at(graph, state, node, mode, now, authority);
+    if decision.proceeds() && consumes_approval {
+        let _ = consume_resolution(state, node, now, authority);
+    }
+    decision
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -726,12 +1371,45 @@ pub fn resolution_of(state: &GraphState, node: &NodeId) -> Option<GateResolution
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::NodeKind;
+    use crate::graph::{GraphExecutionAuthority, NodeKind};
 
     const BOTH_MODES: [ExecutionMode; 2] = [ExecutionMode::Attended, ExecutionMode::Unattended];
 
     fn stamp() -> DateTime<Utc> {
         DateTime::<Utc>::from_timestamp(1_800_000_000, 0).expect("valid instant")
+    }
+
+    fn authority() -> GraphExecutionAuthority {
+        GraphExecutionAuthority::from_key([0x52; 32])
+    }
+
+    fn evaluate_gate(
+        graph: &Graph,
+        state: &GraphState,
+        node: &NodeId,
+        mode: ExecutionMode,
+    ) -> GateDecision {
+        let authority = authority();
+        let mut bound = state.clone();
+        if bound.authority_id.is_empty() {
+            bound.bind_authority_if_pristine(&authority).unwrap();
+        }
+        super::evaluate_gate(graph, &bound, node, mode, &authority)
+    }
+
+    fn evaluate_gate_at(
+        graph: &Graph,
+        state: &GraphState,
+        node: &NodeId,
+        mode: ExecutionMode,
+        now: DateTime<Utc>,
+    ) -> GateDecision {
+        let authority = authority();
+        let mut bound = state.clone();
+        if bound.authority_id.is_empty() {
+            bound.bind_authority_if_pristine(&authority).unwrap();
+        }
+        super::evaluate_gate_at(graph, &bound, node, mode, now, &authority)
     }
 
     /// A migration graph: a safe read, an elevated write, and the drop nobody
@@ -758,6 +1436,16 @@ mod tests {
             .with_edge("rewrite_config", "drop_table")
     }
 
+    fn standalone_effect(risk: Option<RiskLevel>) -> Graph {
+        let mut node = Node::new("effect", NodeKind::Agent);
+        node.extra
+            .insert("command".to_string(), Value::from("printf ok"));
+        if let Some(risk) = risk {
+            node = with_risk(node, risk);
+        }
+        Graph::new().with_node(node)
+    }
+
     #[test]
     fn safe_node_proceeds_in_both_modes() {
         let graph = graph();
@@ -767,6 +1455,131 @@ mod tests {
                 evaluate_gate(&graph, &state, &NodeId::new("read_schema"), mode),
                 GateDecision::Proceed,
                 "a safe node must not need a human in {mode} mode"
+            );
+        }
+    }
+
+    #[test]
+    fn standalone_shell_effect_requires_exact_one_shot_approval_in_both_modes() {
+        let graph = standalone_effect(Some(RiskLevel::Safe));
+        let node = NodeId::new("effect");
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "standalone-effect", &authority);
+        state.reserve(&node, &authority).unwrap();
+
+        for mode in BOTH_MODES {
+            let decision = super::evaluate_gate(&graph, &state, &node, mode, &authority);
+            assert!(
+                decision.requires_approval(),
+                "standalone safe effect must be held in {mode} mode, got {decision:?}"
+            );
+        }
+        let escalation =
+            super::evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended, &authority)
+                .into_escalation(stamp())
+                .expect("unattended standalone effect must escalate");
+        assert!(escalation.reason.contains("no immutable V3 mission-plan"));
+        let resolution = approve(&graph, &state, escalation, "operator", &authority).unwrap();
+        record_resolution(&graph, &mut state, &resolution, &authority).unwrap();
+
+        assert_eq!(
+            authorize_gate_at(
+                &graph,
+                &mut state,
+                &node,
+                ExecutionMode::Attended,
+                stamp(),
+                &authority,
+            ),
+            GateDecision::Proceed
+        );
+        assert!(
+            super::evaluate_gate(&graph, &state, &node, ExecutionMode::Attended, &authority)
+                .requires_approval(),
+            "the exact standalone-effect approval must be consumed once"
+        );
+    }
+
+    #[test]
+    fn unclassified_standalone_shell_effect_is_held_attended() {
+        let graph = standalone_effect(None);
+        let node = NodeId::new("effect");
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "unclassified-effect", &authority);
+        state.reserve(&node, &authority).unwrap();
+        assert!(
+            super::evaluate_gate(&graph, &state, &node, ExecutionMode::Attended, &authority)
+                .requires_approval()
+        );
+    }
+
+    #[test]
+    fn plan_bound_low_risk_shell_effect_uses_v3_authority_and_proceeds() {
+        use crate::mission::{
+            MissionId, PlanContract, RetryPolicy, TaskContract, TaskId, VerifierCheck,
+            VerifierCheckKind, CONTRACT_SCHEMA_VERSION,
+        };
+
+        let check = VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "effect-check".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["true".to_string()],
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 5,
+        };
+        let task = TaskContract {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            task_id: TaskId::new("effect-task"),
+            name: "effect task".to_string(),
+            prompt: "run the effect".to_string(),
+            acceptance_criteria: vec!["effect verified".to_string()],
+            verifier_checks: vec![check.clone()],
+            required_capabilities: Vec::new(),
+            scope: Vec::new(),
+            risk: crate::routing::RiskLevel::Low,
+            retry_policy: RetryPolicy::default(),
+            depends_on: Vec::new(),
+        };
+        let plan = PlanContract::new(
+            MissionId("plan-bound-effect".to_string()),
+            1,
+            1,
+            vec![task.clone()],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let mut node = with_risk(
+            Node::new("effect", NodeKind::Agent)
+                .with_task(task.task_id.clone())
+                .with_retry(task.retry_policy.clone())
+                .with_checks(vec![check]),
+            RiskLevel::Safe,
+        );
+        node.extra
+            .insert("command".to_string(), Value::from("printf ok"));
+        let graph = Graph::new().with_node(node);
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_plan_and_authority(
+            &graph,
+            "plan-bound-effect",
+            &plan,
+            &authority,
+        )
+        .unwrap();
+        let node = NodeId::new("effect");
+        state.reserve(&node, &authority).unwrap();
+
+        for mode in BOTH_MODES {
+            assert_eq!(
+                super::evaluate_gate(&graph, &state, &node, mode, &authority),
+                GateDecision::Proceed,
+                "the exact V3 Low-risk plan is the classification authority in {mode} mode"
             );
         }
     }
@@ -807,13 +1620,12 @@ mod tests {
             Node::new("undeclared", NodeKind::Agent),
             RiskLevel::Irreversible,
         ));
-        let state = GraphState::for_graph(&bare);
-
         for (graph, id) in [
             (graph(), "drop_table"),
             (bare.clone(), "undeclared"),
             (bare, "undeclared"),
         ] {
+            let state = GraphState::for_graph(&graph);
             for mode in BOTH_MODES {
                 match evaluate_gate(&graph, &state, &NodeId::new(id), mode) {
                     GateDecision::RequireApproval {
@@ -846,6 +1658,7 @@ mod tests {
             .expect("an unattended irreversible node must leave an artifact");
         assert_eq!(record.node, NodeId::new("drop_table"));
         assert_eq!(record.risk, RiskLevel::Irreversible);
+        assert_eq!(record.subject_digest.len(), 64);
         assert!(record.what_is_lost.contains("every row in orders"));
         assert!(record.headline().contains("needs a human"));
 
@@ -860,32 +1673,36 @@ mod tests {
 
     #[test]
     fn unattributed_approval_is_rejected() {
-        let record = EscalationRecord::new(
-            "drop_table",
-            RiskLevel::Irreversible,
-            "drops a production table",
-            "every row in orders",
-            stamp(),
-        );
+        let graph = graph();
+        let authority = authority();
+        let node = NodeId::new("drop_table");
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-attribution", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .unwrap();
 
         for blank in ["", "   ", "\t\n"] {
             assert_eq!(
-                approve(record.clone(), blank),
+                approve(&graph, &state, record.clone(), blank, &authority),
                 Err(RiskError::UnattributedApproval {
                     node: "drop_table".to_string(),
                 })
             );
             assert_eq!(
-                deny(record.clone(), blank),
+                deny(&graph, &state, record.clone(), blank, &authority),
                 Err(RiskError::UnattributedApproval {
                     node: "drop_table".to_string(),
                 })
             );
         }
 
-        let approved = approve(record, " operator ").expect("attributed approval is accepted");
+        let approved = approve(&graph, &state, record, " operator ", &authority)
+            .expect("attributed approval is accepted");
         assert!(approved.is_approved());
         assert_eq!(approved.approver, "operator", "approver is trimmed");
+        assert_eq!(approved.authority_id, authority.authority_id());
+        assert!(!approved.authority_mac.is_empty());
     }
 
     #[test]
@@ -895,21 +1712,27 @@ mod tests {
         // room again.
         let graph = graph();
         let node = NodeId::new("drop_table");
+        let authority = authority();
 
-        let mut approved_state = GraphState::for_graph(&graph);
+        let mut approved_state =
+            GraphState::for_graph_with_authority(&graph, "run-approved", &authority);
+        approved_state.reserve(&node, &authority).unwrap();
         let record = evaluate_gate(&graph, &approved_state, &node, ExecutionMode::Unattended)
             .into_escalation(stamp())
             .expect("held");
-        record_resolution(
-            &mut approved_state,
-            &approve(record.clone(), "operator").expect("attributed"),
-        );
+        let approved =
+            approve(&graph, &approved_state, record, "operator", &authority).expect("attributed");
+        record_resolution(&graph, &mut approved_state, &approved, &authority).unwrap();
 
-        let mut denied_state = GraphState::for_graph(&graph);
-        record_resolution(
-            &mut denied_state,
-            &deny(record, "operator").expect("attributed"),
-        );
+        let mut denied_state =
+            GraphState::for_graph_with_authority(&graph, "run-denied", &authority);
+        denied_state.reserve(&node, &authority).unwrap();
+        let denied_record = evaluate_gate(&graph, &denied_state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .expect("held");
+        let denied =
+            deny(&graph, &denied_state, denied_record, "operator", &authority).expect("attributed");
+        record_resolution(&graph, &mut denied_state, &denied, &authority).unwrap();
 
         for mode in BOTH_MODES {
             assert_eq!(
@@ -933,28 +1756,11 @@ mod tests {
 
         // An approval for the cheap node, filed under the expensive one, does
         // not unlock it: the key is not trusted to identify the subject.
-        let mut swapped = GraphState::for_graph(&graph);
-        let elsewhere = EscalationRecord::new(
-            "read_schema",
-            RiskLevel::Safe,
-            "a cheap step",
-            "nothing",
-            stamp(),
-        );
-        let mut forged = approve(elsewhere, "operator").expect("attributed");
+        let mut swapped = approved_state.clone();
+        let mut forged = approved.clone();
         forged.record.node = NodeId::new("read_schema");
-        record_resolution(&mut swapped, &forged);
-        if let Some(bag) = swapped
-            .extra
-            .get_mut(RISK_BAG)
-            .and_then(Value::as_object_mut)
-            .and_then(|bag| bag.get_mut(RESOLUTIONS_KEY))
-            .and_then(Value::as_object_mut)
-        {
-            let value = bag.remove("read_schema").expect("just recorded");
-            bag.insert(node.0.clone(), value);
-        }
-        assert_eq!(resolution_of(&swapped, &node), None);
+        swapped.extra[RISK_BAG][RESOLUTIONS_KEY][node.as_str()] =
+            serde_json::to_value(forged).unwrap();
         assert!(
             evaluate_gate(&graph, &swapped, &node, ExecutionMode::Attended).requires_approval(),
             "consent given for one node must never unlock another"
@@ -1064,5 +1870,256 @@ mod tests {
         }
         assert_eq!(RiskLevel::parse("  safe  "), Some(RiskLevel::Safe));
         assert_eq!(RiskLevel::parse("Irreversible"), None);
+    }
+
+    #[test]
+    fn approval_is_bound_to_graph_run_and_reserved_generation() {
+        let graph = graph();
+        let node = NodeId::new("drop_table");
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-subject-a", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .expect("held");
+        let resolution = approve(&graph, &state, record, "operator", &authority).unwrap();
+        record_resolution(&graph, &mut state, &resolution, &authority).unwrap();
+        assert_eq!(
+            evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended),
+            GateDecision::Proceed
+        );
+
+        let mut other_run =
+            GraphState::for_graph_with_authority(&graph, "run-subject-b", &authority);
+        other_run.reserve(&node, &authority).unwrap();
+        assert!(matches!(
+            record_resolution(&graph, &mut other_run, &resolution, &authority),
+            Err(RiskError::InvalidApprovalAuthority { .. })
+        ));
+        assert!(
+            evaluate_gate(&graph, &other_run, &node, ExecutionMode::Unattended).requires_approval()
+        );
+
+        state.reseed(&node);
+        state.reserve(&node, &authority).unwrap();
+        assert!(
+            evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended).requires_approval()
+        );
+    }
+
+    #[test]
+    fn graph_change_invalidates_prior_consent_even_when_node_id_is_unchanged() {
+        let mut graph = graph();
+        let node = NodeId::new("drop_table");
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "run-graph-change", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .expect("held");
+        let resolution = approve(&graph, &state, record, "operator", &authority).unwrap();
+        record_resolution(&graph, &mut state, &resolution, &authority).unwrap();
+        assert_eq!(
+            evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended),
+            GateDecision::Proceed
+        );
+
+        graph
+            .nodes
+            .iter_mut()
+            .find(|candidate| candidate.id == node)
+            .unwrap()
+            .extra
+            .insert("command".to_string(), Value::from("drop table changed"));
+        assert!(matches!(
+            evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended),
+            GateDecision::Refuse { reason, .. } if reason.contains("digest mismatch")
+        ));
+    }
+
+    #[test]
+    fn expiring_approval_needs_an_explicit_clock_and_can_be_consumed_once() {
+        let graph = graph();
+        let node = NodeId::new("drop_table");
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-expiry", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .expect("held");
+        let expires_at = stamp() + chrono::Duration::seconds(30);
+        let resolution =
+            approve_until(&graph, &state, record, "operator", expires_at, &authority).unwrap();
+        record_resolution(&graph, &mut state, &resolution, &authority).unwrap();
+
+        assert!(
+            evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended).requires_approval()
+        );
+        assert_eq!(
+            evaluate_gate_at(
+                &graph,
+                &state,
+                &node,
+                ExecutionMode::Unattended,
+                stamp() + chrono::Duration::seconds(10),
+            ),
+            GateDecision::Proceed
+        );
+        assert!(
+            evaluate_gate_at(&graph, &state, &node, ExecutionMode::Unattended, expires_at,)
+                .requires_approval()
+        );
+
+        let decision = authorize_gate_at(
+            &graph,
+            &mut state,
+            &node,
+            ExecutionMode::Unattended,
+            stamp() + chrono::Duration::seconds(10),
+            &authority,
+        );
+        assert_eq!(decision, GateDecision::Proceed);
+        assert_eq!(resolution_of(&state, &node), None);
+        assert!(evaluate_gate_at(
+            &graph,
+            &state,
+            &node,
+            ExecutionMode::Unattended,
+            stamp() + chrono::Duration::seconds(10),
+        )
+        .requires_approval());
+    }
+
+    fn inject_resolution(state: &mut GraphState, node: &NodeId, resolution: &GateResolution) {
+        let bag = state
+            .extra
+            .entry(RISK_BAG.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        let bag = bag.as_object_mut().unwrap();
+        let resolutions = bag
+            .entry(RESOLUTIONS_KEY.to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        resolutions
+            .as_object_mut()
+            .unwrap()
+            .insert(node.0.clone(), serde_json::to_value(resolution).unwrap());
+    }
+
+    #[test]
+    fn forged_and_legacy_unsigned_resolutions_never_authorize() {
+        let graph = graph();
+        let node = NodeId::new("drop_table");
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "run-forged-resolution", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .unwrap();
+        let signed = approve(&graph, &state, record, "operator", &authority).unwrap();
+
+        let mut variants = Vec::new();
+        let mut changed_approver = signed.clone();
+        changed_approver.approver = "attacker".to_string();
+        variants.push(changed_approver);
+        let mut changed_verdict = signed.clone();
+        changed_verdict.verdict = ResolutionVerdict::Denied;
+        variants.push(changed_verdict);
+        let mut changed_subject = signed.clone();
+        changed_subject.record.what_is_lost = "nothing".to_string();
+        variants.push(changed_subject);
+        let mut changed_reservation = signed.clone();
+        changed_reservation.reservation_id = "f".repeat(64);
+        variants.push(changed_reservation);
+        let mut changed_expiry = signed.clone();
+        changed_expiry.expires_at = Some(stamp() + chrono::Duration::hours(1));
+        variants.push(changed_expiry);
+        let mut changed_mac = signed.clone();
+        changed_mac.authority_mac = "0".repeat(64);
+        variants.push(changed_mac);
+
+        for forged in variants {
+            let mut candidate = state.clone();
+            inject_resolution(&mut candidate, &node, &forged);
+            assert!(
+                evaluate_gate(&graph, &candidate, &node, ExecutionMode::Unattended)
+                    .requires_approval(),
+                "editing any signed field must fail closed"
+            );
+            assert!(matches!(
+                record_resolution(&graph, &mut state.clone(), &forged, &authority),
+                Err(RiskError::InvalidApprovalAuthority { .. })
+            ));
+        }
+
+        let legacy: GateResolution = serde_json::from_value(serde_json::json!({
+            "record": signed.record,
+            "verdict": "approved",
+            "approver": "operator"
+        }))
+        .unwrap();
+        let mut legacy_state = state.clone();
+        inject_resolution(&mut legacy_state, &node, &legacy);
+        assert!(
+            evaluate_gate(&graph, &legacy_state, &node, ExecutionMode::Unattended)
+                .requires_approval(),
+            "legacy unsigned approvals deserialize but never authorize"
+        );
+    }
+
+    #[test]
+    fn consumed_resolution_cannot_be_replayed_for_the_same_reservation() {
+        let graph = graph();
+        let node = NodeId::new("drop_table");
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "run-resolution-replay", &authority);
+        state.reserve(&node, &authority).unwrap();
+        let record = evaluate_gate(&graph, &state, &node, ExecutionMode::Unattended)
+            .into_escalation(stamp())
+            .unwrap();
+        let resolution = approve(&graph, &state, record, "operator", &authority).unwrap();
+        record_resolution(&graph, &mut state, &resolution, &authority).unwrap();
+        assert_eq!(
+            authorize_gate_at(
+                &graph,
+                &mut state,
+                &node,
+                ExecutionMode::Unattended,
+                stamp() + chrono::Duration::seconds(1),
+                &authority,
+            ),
+            GateDecision::Proceed
+        );
+
+        inject_resolution(&mut state, &node, &resolution);
+        assert!(
+            evaluate_gate_at(
+                &graph,
+                &state,
+                &node,
+                ExecutionMode::Unattended,
+                stamp() + chrono::Duration::seconds(2),
+            )
+            .requires_approval(),
+            "a signed one-shot approval is still invalid after raw reinsertion"
+        );
+        state.extra[RISK_BAG][CONSUMED_KEY][node.as_str()] = Value::from("tampered");
+        assert!(
+            evaluate_gate_at(
+                &graph,
+                &state,
+                &node,
+                ExecutionMode::Unattended,
+                stamp() + chrono::Duration::seconds(2),
+            )
+            .requires_approval(),
+            "corrupting the consumption history must fail closed"
+        );
+        assert!(matches!(
+            record_resolution(&graph, &mut state, &resolution, &authority),
+            Err(RiskError::InvalidApprovalAuthority { .. })
+        ));
     }
 }

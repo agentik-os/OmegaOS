@@ -205,7 +205,7 @@ pub enum InputMode {
     /// indexes `NEW_PROJECT_CATEGORIES`. Selection lives in the variant so the
     /// wizard needs no extra App state.
     NewProjectCategory(String, usize),
-    /// New-project wizard — step 2b (client only): pick/create a credential
+    /// New-project wizard — step 2b (customer projects only): pick/create a credential
     /// group (separate client accounts). (name, category)
     NewProjectCredGroup(String, String),
     /// New-project wizard — step 3: stack picker. (name, category, sel) where
@@ -258,35 +258,37 @@ pub enum InputMode {
     ReauthCode,
 }
 
-/// Added-project names from the shared `ProjectRegistry` — the SAME source the
-/// Telegram dispatch picker reads, so the dispatch project list is synced across
-/// the TUI menu, the Telegram bot, and the project menu. Empty when no project
-/// has been added/registered yet.
-pub fn dispatch_project_names() -> Vec<String> {
-    omega_core::project_manager::ProjectRegistry::load()
-        .projects
-        .iter()
-        .map(|p| p.name.clone())
-        .collect()
-}
-
 /// New-project wizard option lists. `(id, label)` — `id` is the token passed to
 /// the `/omega-new-project` skill; `label` is what the picker shows. Single
 /// source of truth for both the menu UI and the spawned command.
 pub const NEW_PROJECT_CATEGORIES: &[(&str, &str)] = &[
-    ("customer", "Customer — client work  (customers/ under your projects dir)"),
-    ("side-business", "Side business — your own products  (side-business/ under your projects dir)"),
-    ("tools", "Tools — internal tooling / libraries  (tools/ under your projects dir)"),
+    (
+        "customer",
+        "Customer — client work  (customers/ under your projects dir)",
+    ),
+    (
+        "side-business",
+        "Side business — your own products  (side-business/ under your projects dir)",
+    ),
+    (
+        "tools",
+        "Tools — internal tooling / libraries  (tools/ under your projects dir)",
+    ),
 ];
-/// Stacks by project type. `id` is passed to /omega-new-project (which branches
-/// per id); `label` carries the type hint. Aligned with R-STACK doctrine.
+/// Strategies implemented by the installed `/omega-new-project` skill.
+///
+/// Keep this list deliberately small: an option is only public when the skill
+/// has a real branch for it. `custom` enters the skill's discovery flow rather
+/// than pretending that an unimplemented framework recipe exists.
 pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[
-    ("nextstack", "SaaS — Next.js 16 + Convex + Clerk + Stripe + shadcn"),
-    ("nextstack-content", "Content / multi-user — Next.js 16 + Convex"),
-    ("nextstack-static", "Marketing / landing — Next.js 16 static (no backend)"),
-    ("rust-cli", "CLI / daemon / internal tool — Rust"),
-    ("bun-script", "Script / tooling / DOM — Bun + TypeScript"),
-    ("expo-mobile", "Mobile iOS/Android — Expo + React Native"),
+    (
+        "nextstack",
+        "SaaS — Next.js 16 + Convex + Clerk + Stripe + shadcn",
+    ),
+    (
+        "custom",
+        "Custom — let the project skill discover and specify the stack",
+    ),
 ];
 
 /// Provisioning-keys wizard fields (Monitor tab). `(env_key, prompt, masked)` in
@@ -294,11 +296,31 @@ pub const NEW_PROJECT_STACKS: &[(&str, &str)] = &[
 /// `~/.omega/provisioning/services.env` by `omega_core::provisioning`. Each step
 /// is skippable (Esc = leave blank → keeps any existing value).
 pub const PROVISIONING_FIELDS: &[(&str, &str, bool)] = &[
-    ("VERCEL_TOKEN", "Vercel token — vercel.com/account/tokens (Full Account). Esc to skip.", true),
-    ("CONVEX_TEAM_TOKEN", "Convex team token — dashboard → Team Settings → access token. Esc to skip.", true),
-    ("CONVEX_TEAM_SLUG", "Convex team slug — your team's URL slug (not secret). Esc to skip.", false),
-    ("GITHUB_TOKEN", "GitHub token (repo+workflow) — or Esc to skip & use `gh auth`.", true),
-    ("STRIPE_SECRET_KEY", "Stripe secret key — dashboard → Developers → API keys. Esc to skip.", true),
+    (
+        "VERCEL_TOKEN",
+        "Vercel token — vercel.com/account/tokens (Full Account). Esc to skip.",
+        true,
+    ),
+    (
+        "CONVEX_TEAM_TOKEN",
+        "Convex team token — dashboard → Team Settings → access token. Esc to skip.",
+        true,
+    ),
+    (
+        "CONVEX_TEAM_SLUG",
+        "Convex team slug — your team's URL slug (not secret). Esc to skip.",
+        false,
+    ),
+    (
+        "GITHUB_TOKEN",
+        "GitHub token (repo+workflow) — or Esc to skip & use `gh auth`.",
+        true,
+    ),
+    (
+        "STRIPE_SECRET_KEY",
+        "Stripe secret key — dashboard → Developers → API keys. Esc to skip.",
+        true,
+    ),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -713,12 +735,11 @@ pub fn fields_for_section(
             out.push(SettingsField::Info(String::new())); // spacer
 
             out.push(SettingsField::Info(format!(
-                "Default AISB agent: {}",
-                config.aisb_agent
+                "Default model: {}",
+                config.default_model
             )));
-            out.push(SettingsField::Info(format!("Default model: {}", config.default_model)));
             out.push(SettingsField::Toggle {
-                label: "Auto-spawn Master on launch".to_string(),
+                label: "Auto-open legacy Telegram log viewer".to_string(),
                 config_key: "general.auto_spawn_master".to_string(),
                 current: config.auto_spawn_master,
             });
@@ -741,10 +762,7 @@ pub fn fields_for_section(
                 .iter()
                 .map(|t| t.slug().to_string())
                 .collect();
-            let current_index = options
-                .iter()
-                .position(|s| *s == config.theme)
-                .unwrap_or(0);
+            let current_index = options.iter().position(|s| *s == config.theme).unwrap_or(0);
             out.push(SettingsField::Select {
                 label: "Active theme".to_string(),
                 config_key: "general.theme".to_string(),
@@ -752,8 +770,7 @@ pub fn fields_for_section(
                 current_index,
             });
             out.push(SettingsField::Toggle {
-                label: "Theme background (OFF = keep the terminal's own background)"
-                    .to_string(),
+                label: "Theme background (OFF = keep the terminal's own background)".to_string(),
                 config_key: "general.theme_background".to_string(),
                 current: config.theme_background,
             });
@@ -884,53 +901,62 @@ pub fn fields_for_section(
         }
         SettingsSection::Aisb => {
             out.push(SettingsField::Info(format!(
-                "Master session name: {}",
+                "Viewer session name: {}",
                 omega_core::aisb::MASTER_SESSION_NAME
             )));
-            out.push(SettingsField::Info(format!(
-                "Current AISB agent: {}",
-                config.aisb_agent
-            )));
+            out.push(SettingsField::Info(
+                "Read-only mirror of the Telegram conversation log; it is not an agent."
+                    .to_string(),
+            ));
             out.push(SettingsField::Action {
-                label: "[Re-spawn Master AISB now]".to_string(),
-                command: "omega master".to_string(),
-                confirm_first: true,
+                label: "[Open AISB conversation viewer]".to_string(),
+                command: "omega aisb-view".to_string(),
+                confirm_first: false,
             });
             out.push(SettingsField::Action {
-                label: "[Kill Master AISB]".to_string(),
+                label: "[Stop AISB conversation viewer]".to_string(),
                 command: format!("omega kill {}", omega_core::aisb::MASTER_SESSION_NAME),
                 confirm_first: true,
             });
         }
-        SettingsSection::Telegram => {
-            match omega_core::monitor::OmegaTelegramConfig::read() {
-                Some(cfg) => {
-                    out.push(SettingsField::Info(format!("Enabled: {}", cfg.enabled)));
-                    out.push(SettingsField::Info(format!("Chat ID: {}", cfg.chat_id)));
-                    out.push(SettingsField::Info(format!("Relay: {}", cfg.relay_session)));
-                    out.push(SettingsField::Action {
-                        label: "[Disconnect Telegram bot]".to_string(),
-                        command: "omega telegram disconnect".to_string(),
-                        confirm_first: true,
-                    });
-                    out.push(SettingsField::Action {
-                        label: "[Run Telegram bot (foreground)]".to_string(),
-                        command: "omega telegram run".to_string(),
-                        confirm_first: true,
-                    });
-                }
-                None => {
-                    out.push(SettingsField::Info(
-                        "Not configured. Use the Setup action below or the Monitor tab [T].".to_string(),
-                    ));
-                    out.push(SettingsField::Action {
-                        label: "[Set up Telegram bot] (opens wizard)".to_string(),
-                        command: "__INTERNAL_TELEGRAM_SETUP__".to_string(),
-                        confirm_first: false,
-                    });
-                }
+        SettingsSection::Telegram => match omega_core::monitor::OmegaTelegramConfig::try_read() {
+            Ok(Some(cfg)) => {
+                out.push(SettingsField::Info(format!("Enabled: {}", cfg.enabled)));
+                out.push(SettingsField::Info(format!("Chat ID: {}", cfg.chat_id)));
+                out.push(SettingsField::Info(format!("Relay: {}", cfg.relay_session)));
+                out.push(SettingsField::Action {
+                    label: "[Disconnect Telegram bot]".to_string(),
+                    command: "omega telegram disconnect".to_string(),
+                    confirm_first: true,
+                });
+                out.push(SettingsField::Action {
+                    label: "[Run Telegram bot (foreground)]".to_string(),
+                    command: "omega telegram run".to_string(),
+                    confirm_first: true,
+                });
             }
-        }
+            Ok(None) => {
+                out.push(SettingsField::Info(
+                    "Not configured. Use the Setup action below or the Monitor tab [T]."
+                        .to_string(),
+                ));
+                out.push(SettingsField::Action {
+                    label: "[Set up Telegram bot] (opens wizard)".to_string(),
+                    command: "__INTERNAL_TELEGRAM_SETUP__".to_string(),
+                    confirm_first: false,
+                });
+            }
+            Err(error) => {
+                out.push(SettingsField::Info(format!(
+                    "INVALID Telegram configuration: {error}"
+                )));
+                out.push(SettingsField::Action {
+                    label: "[Inspect with omega telegram status]".to_string(),
+                    command: "omega telegram status".to_string(),
+                    confirm_first: false,
+                });
+            }
+        },
     }
 
     // Common: every provider section gets an "Open homepage" info line
@@ -946,7 +972,11 @@ pub fn fields_for_section(
 fn install_actions_for(agent: omega_core::agents::Agent) -> Vec<SettingsField> {
     let mut out = Vec::new();
     let installed = agent_available_cached(agent);
-    let badge = if installed { "[+] installed" } else { "[x] not installed" };
+    let badge = if installed {
+        "[+] installed"
+    } else {
+        "[x] not installed"
+    };
     out.push(SettingsField::Info(String::new()));
     out.push(SettingsField::Info(format!("Status: {}", badge)));
     if let Some(cmd) = agent.install_command() {
@@ -1017,7 +1047,7 @@ impl SettingsSection {
             SettingsSection::Pi => "Pi (earendil-works)",
             SettingsSection::Hermes => "Hermes (Nous Research)",
             SettingsSection::Glm => "GLM (Z.AI)",
-            SettingsSection::Aisb => "AISB Master",
+            SettingsSection::Aisb => "AISB viewer (legacy)",
             SettingsSection::Telegram => "Telegram",
         }
     }
@@ -1114,7 +1144,9 @@ impl MonitorAction {
     /// missing .env/images. It's idempotent, so it's also the right re-launch
     /// path. Absent → return the honest install instructions.
     pub fn resolve_open_dashboard() -> DashboardLaunch {
-        let dir = omega_core::config::omega_dir().join("repos").join("omega-mc");
+        let dir = omega_core::config::omega_dir()
+            .join("repos")
+            .join("omega-mc");
         let dir_str = dir.to_string_lossy().to_string();
         // The directory alone isn't proof of a usable clone; require the .git
         // marker install.sh checks (a failed clone is `rm -rf`'d, but a partial
@@ -1122,7 +1154,9 @@ impl MonitorAction {
         if dir.join(".git").is_dir() {
             // install.sh symlinks omega-mc-up onto PATH; fall back to the
             // installed copy in $OMEGA_DIR/bin for shells that miss the link.
-            let fallback = omega_core::config::omega_dir().join("bin").join("omega-mc-up.sh");
+            let fallback = omega_core::config::omega_dir()
+                .join("bin")
+                .join("omega-mc-up.sh");
             DashboardLaunch::Launch {
                 command: format!(
                     "echo '── Starting OmegaMC dashboard (omega-mc-up) ──' && {{ command -v omega-mc-up >/dev/null 2>&1 && omega-mc-up || {fb}; }} && echo && echo 'Dashboard up. Local URL: http://localhost:8080 (see {dir}/docker-compose.yml for the published port; AISB agents in config/omega-aisb.yaml).'",
@@ -1239,6 +1273,9 @@ pub struct App {
     pub doc_body: Option<(String, String)>,
     /// The installed skills, discovered once at startup alongside `docs`.
     pub skills: Vec<omega_core::skill_registry::Skill>,
+    /// Strict discovery failure, kept distinct from a genuinely empty catalog
+    /// so the System tab never presents malformed authority as zero skills.
+    pub skills_error: Option<String>,
     /// Set when a sub-cursor moves, so the renderer scrolls the detail panel to
     /// keep that row visible — for ONE frame. Any explicit scroll clears it.
     /// Without the flag the renderer re-snapped every frame, which pinned the
@@ -1433,13 +1470,7 @@ impl App {
             |name| std::env::var(name).ok(),
             |pane| {
                 let output = std::process::Command::new("rmux")
-                    .args([
-                        "display-message",
-                        "-p",
-                        "-t",
-                        pane,
-                        "#{session_name}",
-                    ])
+                    .args(["display-message", "-p", "-t", pane, "#{session_name}"])
                     .output()
                     .ok()?;
                 if !output.status.success() {
@@ -1448,6 +1479,11 @@ impl App {
                 String::from_utf8(output.stdout).ok()
             },
         );
+        let (skills, skills_error) =
+            match omega_core::skill_registry::SkillRegistry::discover_default() {
+                Ok(registry) => (registry.list().into_iter().cloned().collect(), None),
+                Err(error) => (Vec::new(), Some(error.to_string())),
+            };
 
         Self {
             tab: Tab::Sessions,
@@ -1480,9 +1516,8 @@ impl App {
             // the skill arsenal only change on install/update.
             docs: omega_core::docs::discover(),
             doc_body: None,
-            skills: omega_core::skill_registry::SkillRegistry::discover_default()
-                .map(|r| r.list().into_iter().cloned().collect())
-                .unwrap_or_default(),
+            skills,
+            skills_error,
             detail_follow_cursor: false,
             auto_update_state: omega_core::auto_update::AutoUpdateState::load(&config.state_dir),
             should_quit: false,
@@ -1599,6 +1634,7 @@ impl App {
             return;
         }
         self.os_selected = (self.os_selected + 1) % self.os_entries.len();
+        self.on_os_nav_change();
     }
 
     pub fn os_tab_prev(&mut self) {
@@ -1610,6 +1646,12 @@ impl App {
         } else {
             self.os_selected - 1
         };
+        self.on_os_nav_change();
+    }
+
+    fn on_os_nav_change(&mut self) {
+        self.detail_scroll = 0;
+        self.detail_follow_cursor = false;
     }
 
     /// Select a session by name (used after creating a session to auto-focus it).
@@ -1777,10 +1819,9 @@ impl App {
             match fields.get(idx) {
                 Some(f) if f.label() == pinned => {
                     return Some(match f {
-                        SettingsField::EditText { label, .. } => format!(
-                            "Press x again to clear: {} (Esc to cancel)",
-                            label.trim()
-                        ),
+                        SettingsField::EditText { label, .. } => {
+                            format!("Press x again to clear: {} (Esc to cancel)", label.trim())
+                        }
                         f => format!(
                             "Press Enter again to confirm: {} (Esc to cancel)",
                             f.label().trim()
@@ -1791,9 +1832,8 @@ impl App {
                     // The armed field moved or vanished — disarm with a
                     // notice instead of re-labeling onto a different field.
                     self.settings_confirm_pending = None;
-                    self.status_message = Some(
-                        "Confirm cancelled — the settings list changed".to_string(),
-                    );
+                    self.status_message =
+                        Some("Confirm cancelled — the settings list changed".to_string());
                 }
             }
         }
@@ -1922,8 +1962,9 @@ impl App {
             (
                 (c.max(area.x + 1).min(area.x + area.width.saturating_sub(2)) - (area.x + 1))
                     as usize,
-                (r.max(area.y + 1).min(area.y + area.height.saturating_sub(2)) - (area.y + 1))
-                    as usize,
+                (r.max(area.y + 1)
+                    .min(area.y + area.height.saturating_sub(2))
+                    - (area.y + 1)) as usize,
             )
         };
         let a = to_vp(ac, ar);
@@ -1947,7 +1988,9 @@ impl App {
         let ((sc, sr), (ec, er)) = sel?;
         let mut out: Vec<String> = Vec::new();
         for r in sr..=er {
-            let Some(row) = self.preview_screen_rows.get(r) else { break };
+            let Some(row) = self.preview_screen_rows.get(r) else {
+                break;
+            };
             let from = if r == sr { sc } else { 0 };
             let to = if r == er { ec + 1 } else { usize::MAX };
             out.push(slice_display_cols(row, from, to).trim_end().to_string());
@@ -2113,12 +2156,20 @@ impl App {
     }
 
     pub fn select_settings_field_next(&mut self, max: usize) {
-        if max == 0 { return; }
+        if max == 0 {
+            return;
+        }
         self.settings_field_selected = (self.settings_field_selected + 1) % max;
     }
     pub fn select_settings_field_prev(&mut self, max: usize) {
-        if max == 0 { return; }
-        self.settings_field_selected = if self.settings_field_selected == 0 { max - 1 } else { self.settings_field_selected - 1 };
+        if max == 0 {
+            return;
+        }
+        self.settings_field_selected = if self.settings_field_selected == 0 {
+            max - 1
+        } else {
+            self.settings_field_selected - 1
+        };
     }
 
     fn prepare_preview_session_switch(&mut self, name: &str) {
@@ -2174,25 +2225,6 @@ impl App {
             }
         }
 
-        // Master + Telegram unconfigured → replace the bare log-tail mirror
-        // with a guided call-to-action. Pressing Enter here opens the existing
-        // Telegram setup wizard (see the Sessions Enter hook in input.rs).
-        if omega_core::aisb::is_master(&name)
-            && !omega_core::monitor::OmegaTelegramConfig::exists()
-        {
-            self.preview_content = "\n  ★ AISB Master — your Telegram brain\n\n  \
-                Not yet connected. Once you link a Telegram bot, every message you\n  \
-                send it is classified and routed to the right oracle/agent, and the\n  \
-                replies stream here.\n\n  \
-                ▶ Press Enter to run the setup wizard (guided, no command needed).\n"
-                .to_string();
-            self.preview_styled = None;
-            self.preview_cursor = None;
-            self.preview_history_for = None;
-            self.preview_history_styled = None;
-            return Ok(());
-        }
-
         // Cached connection — avoid a fresh rmux daemon socket per refresh.
         let mgr = omega_core::session::SessionManager::connect_cached().await?;
         // Hot tail path stays on the cheap visible-only snapshot. Only when the
@@ -2214,7 +2246,11 @@ impl App {
             // switch so the new pane's content always loads.
             let cache_valid = self.preview_styled.is_some()
                 && self.preview_session.as_deref() == Some(name.as_str());
-            let since = if cache_valid { self.preview_revision } else { 0 };
+            let since = if cache_valid {
+                self.preview_revision
+            } else {
+                0
+            };
             match mgr.capture_pane_styled(&name, since).await {
                 // Pane unchanged since last render — keep the cached preview,
                 // skip the ~10k-cell restyle + the text flatten entirely.
@@ -2231,9 +2267,7 @@ impl App {
                     // Flatten styled rows to plain text for scroll/cursor math.
                     self.preview_content = rows
                         .iter()
-                        .map(|line| {
-                            line.iter().map(|s| s.text.as_str()).collect::<String>()
-                        })
+                        .map(|line| line.iter().map(|s| s.text.as_str()).collect::<String>())
                         .collect::<Vec<_>>()
                         .join("\n");
                     self.preview_styled = Some(rows);
@@ -2418,19 +2452,29 @@ impl App {
         let mut group: Vec<&OmegaSession> = Vec::new();
 
         for session in sessions.iter() {
-            if omega_core::aisb::is_master(&session.name) {
+            if omega_core::aisb::is_viewer(&session.name) {
                 continue;
             }
             let section_label = section_for(session);
             if last_section.as_ref() != Some(&section_label) && !group.is_empty() {
-                self.flush_group_rows(&group, &all_progress, &worker_oracle, last_section.as_deref());
+                self.flush_group_rows(
+                    &group,
+                    &all_progress,
+                    &worker_oracle,
+                    last_section.as_deref(),
+                );
                 group.clear();
             }
             group.push(session);
             last_section = Some(section_label);
         }
         if !group.is_empty() {
-            self.flush_group_rows(&group, &all_progress, &worker_oracle, last_section.as_deref());
+            self.flush_group_rows(
+                &group,
+                &all_progress,
+                &worker_oracle,
+                last_section.as_deref(),
+            );
         }
 
         // Restore the user's manual protection toggles
@@ -2528,8 +2572,7 @@ impl App {
         section_label: Option<&str>,
     ) {
         if let Some(label) = section_label {
-            self.rows
-                .push(SessionRow::Header(format!("─ {} ─", label)));
+            self.rows.push(SessionRow::Header(format!("─ {} ─", label)));
         }
 
         let oracles: Vec<&OmegaSession> = group
@@ -2615,8 +2658,9 @@ impl App {
             tree_prefix,
         };
         self.sessions.push(entry);
-        self.rows
-            .push(SessionRow::Entry(self.sessions.last().unwrap().clone_for_row()));
+        self.rows.push(SessionRow::Entry(
+            self.sessions.last().unwrap().clone_for_row(),
+        ));
     }
 
     pub fn selected_session(&self) -> Option<&SessionEntry> {
@@ -2729,7 +2773,10 @@ impl App {
 
     /// The document under the cursor, if any is installed.
     pub fn selected_doc(&self) -> Option<&omega_core::docs::DocEntry> {
-        self.docs.get(self.info_doc_selected.min(self.docs.len().saturating_sub(1)))
+        self.docs.get(
+            self.info_doc_selected
+                .min(self.docs.len().saturating_sub(1)),
+        )
     }
 
     /// Body of the selected document, read from disk on first request and
@@ -2828,9 +2875,7 @@ mod nesting_tests {
         app.rows
             .iter()
             .filter_map(|r| match r {
-                SessionRow::Entry(e) => {
-                    Some((e.tree_prefix.clone(), e.session.name.clone()))
-                }
+                SessionRow::Entry(e) => Some((e.tree_prefix.clone(), e.session.name.clone())),
                 _ => None,
             })
             .collect()
@@ -2842,7 +2887,7 @@ mod nesting_tests {
         // with no recorded link (single-oracle fallback). This is the live
         // DentistryGPT case once only one oracle remains.
         let mut app = App::new(OmegaConfig::default());
-        let sessions = vec![
+        let sessions = [
             OmegaSession::classify("oracle-DentistryGPT-2"),
             OmegaSession::classify("DentistryGPT-worker-agent-actions"),
             OmegaSession::classify("DentistryGPT-worker-e2e-agents"),
@@ -2863,7 +2908,7 @@ mod nesting_tests {
         // Two oracles in one project: the recorded worker→oracle map decides
         // which worker nests under which oracle (no guessing).
         let mut app = App::new(OmegaConfig::default());
-        let sessions = vec![
+        let sessions = [
             OmegaSession::classify("oracle-Causio-1"),
             OmegaSession::classify("oracle-Causio-2"),
             OmegaSession::classify("Causio-worker-a"),
@@ -2943,10 +2988,16 @@ mod reanchor_tests {
         app.tab_seq_start = Some(SessionFocus::List);
         app.reanchor_selection(Some("gone"));
         assert_eq!(app.session_focus, SessionFocus::List);
-        assert!(app.last_tab_press.is_none(), "chord timestamp must be cleared");
+        assert!(
+            app.last_tab_press.is_none(),
+            "chord timestamp must be cleared"
+        );
         assert!(app.tab_seq_start.is_none(), "chord start must be cleared");
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("gone ended"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("gone ended"),
             "vanish notice must be set, got {:?}",
             app.status_message
         );
@@ -2960,11 +3011,17 @@ mod reanchor_tests {
         app.selected = 0;
         app.session_focus = SessionFocus::Chat;
         app.reanchor_selection(Some("gone"));
-        assert!(app.in_post_drop_grace(), "vanish drop must start the grace window");
+        assert!(
+            app.in_post_drop_grace(),
+            "vanish drop must start the grace window"
+        );
         // The in-flight keystroke's TTL must NOT consume the vanish notice.
         app.consume_status_ttl();
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("gone ended"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("gone ended"),
             "sticky vanish notice must survive the keypress TTL, got {:?}",
             app.status_message
         );
@@ -2977,7 +3034,10 @@ mod reanchor_tests {
         // Plain message → cleared by the TTL.
         app.status_message = Some("hint".into());
         app.consume_status_ttl();
-        assert!(app.status_message.is_none(), "plain hints keep the keypress TTL");
+        assert!(
+            app.status_message.is_none(),
+            "plain hints keep the keypress TTL"
+        );
         // Armed destructive-menu confirm: the TTL clears the MESSAGE (fix6-T9c
         // removed the FIX-1 exemption — FIX-A made it redundant) but never the
         // STATE — the warning stays on screen via armed_confirm_warning().
@@ -2988,16 +3048,22 @@ mod reanchor_tests {
             app.status_message.is_none(),
             "T9c: no keypress-TTL exemption for armed menu confirms"
         );
-        assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll), "TTL must never disarm");
+        assert_eq!(
+            app.menu_confirm_pending,
+            Some(MenuAction::KillAll),
+            "TTL must never disarm"
+        );
         assert!(
-            app.armed_confirm_warning().unwrap_or_default().contains("KILL ALL"),
+            app.armed_confirm_warning()
+                .unwrap_or_default()
+                .contains("KILL ALL"),
             "the state-driven warning must still render"
         );
         app.menu_confirm_pending = None;
         // Expired sticky → cleared like a plain message.
         app.set_status_sticky("async notice".into());
-        app.status_sticky_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
+        app.status_sticky_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.consume_status_ttl();
         assert!(app.status_message.is_none(), "expired sticky must clear");
     }
@@ -3015,7 +3081,9 @@ mod reanchor_tests {
         app.status_message = None; // simulate a wiped/overwritten status line
         app.consume_status_ttl();
         assert!(
-            app.armed_confirm_warning().unwrap_or_default().contains("KILL ALL"),
+            app.armed_confirm_warning()
+                .unwrap_or_default()
+                .contains("KILL ALL"),
             "menu warning must be state-derived"
         );
         app.menu_confirm_pending = None;
@@ -3051,12 +3119,17 @@ mod reanchor_tests {
         app.monitor_disconnect_armed = true;
         app.consume_status_ttl();
         assert!(
-            app.armed_confirm_warning().unwrap_or_default().contains("DISCONNECT"),
+            app.armed_confirm_warning()
+                .unwrap_or_default()
+                .contains("DISCONNECT"),
             "monitor disconnect warning must be state-derived"
         );
         app.monitor_disconnect_armed = false;
 
-        assert!(app.armed_confirm_warning().is_none(), "no armed state → no warning");
+        assert!(
+            app.armed_confirm_warning().is_none(),
+            "no armed state → no warning"
+        );
     }
 
     // fix6-T1: when the field list shifts under an armed settings confirm
@@ -3068,13 +3141,19 @@ mod reanchor_tests {
         let mut app = app_with_sessions(&["a"]);
         app.settings_confirm_pending = Some((0, "[Uninstall] ghost-agent".into()));
         let warn = app.armed_confirm_warning();
-        assert!(warn.is_none(), "a shifted field must not render a re-labeled warning");
+        assert!(
+            warn.is_none(),
+            "a shifted field must not render a re-labeled warning"
+        );
         assert_eq!(
             app.settings_confirm_pending, None,
             "identity mismatch must disarm the confirm"
         );
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("cancelled"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("cancelled"),
             "the disarm must be announced, got {:?}",
             app.status_message
         );
@@ -3090,16 +3169,19 @@ mod reanchor_tests {
         app.expire_sticky_status();
         assert_eq!(app.status_message.as_deref(), Some("async notice"));
         // Expired + message still the protected one → the pair clears.
-        app.status_sticky_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
+        app.status_sticky_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.expire_sticky_status();
-        assert!(app.status_message.is_none(), "expired sticky must clear without input");
+        assert!(
+            app.status_message.is_none(),
+            "expired sticky must clear without input"
+        );
         assert!(app.status_sticky_at.is_none() && app.status_sticky_msg.is_none());
         // Expired but OVERWRITTEN by a plain key-triggered hint → the hint
         // keeps the normal keypress TTL (the user is at the keyboard).
         app.set_status_sticky("stale".into());
-        app.status_sticky_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
+        app.status_sticky_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
         app.status_message = Some("fresh hint".into());
         app.expire_sticky_status();
         assert_eq!(app.status_message.as_deref(), Some("fresh hint"));
@@ -3126,9 +3208,12 @@ mod reanchor_tests {
         );
         // Identity restored but window expired → no shield either.
         app.status_message = Some("async notice".into());
-        app.status_sticky_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
-        assert!(!app.status_sticky_unexpired(), "an expired window must not shield");
+        app.status_sticky_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(STICKY_MS + 1));
+        assert!(
+            !app.status_sticky_unexpired(),
+            "an expired window must not shield"
+        );
     }
 }
 
@@ -3140,10 +3225,7 @@ mod preview_cache_tests {
     use omega_core::session::{OmegaSession, PreviewSpan};
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn render_sessions_preview_on(
-        terminal: &mut Terminal<TestBackend>,
-        app: &mut App,
-    ) -> String {
+    fn render_sessions_preview_on(terminal: &mut Terminal<TestBackend>, app: &mut App) -> String {
         terminal
             .draw(|frame| {
                 let area = frame.area();
@@ -3377,8 +3459,7 @@ mod preview_cache_tests {
     }
 
     #[tokio::test]
-    async fn paused_history_switch_to_missing_session_clears_stale_frame_and_reaches_placeholder()
-    {
+    async fn paused_history_switch_to_missing_session_clears_stale_frame_and_reaches_placeholder() {
         const SESSION_A: &str = "preview-history-session-a";
         const MISSING_SESSION_B: &str = "preview-history-missing-session-b-0ff3aa1";
         const STALE_PLAIN_A: &str = "stale plain frame owned by session a";
@@ -3402,17 +3483,21 @@ mod preview_cache_tests {
         app.preview_session = Some(SESSION_A.to_string());
         app.preview_history_for = Some(SESSION_A.to_string());
         app.preview_history_styled = Some(
-            omega_core::session::styled_rows_from_ansi(&format!(
-                "\x1b[35m{STALE_STYLED_A}\x1b[0m"
-            ))
-            .0,
+            omega_core::session::styled_rows_from_ansi(&format!("\x1b[35m{STALE_STYLED_A}\x1b[0m"))
+                .0,
         );
 
-        app.refresh_preview().await.expect("first failed history refresh");
+        app.refresh_preview()
+            .await
+            .expect("first failed history refresh");
         let tick_one = render_sessions_preview(&mut app);
 
-        app.refresh_preview().await.expect("second failed history refresh");
-        app.refresh_preview().await.expect("third failed history refresh");
+        app.refresh_preview()
+            .await
+            .expect("second failed history refresh");
+        app.refresh_preview()
+            .await
+            .expect("third failed history refresh");
         let sustained_failure = render_sessions_preview(&mut app);
 
         assert!(
@@ -3505,10 +3590,8 @@ mod preview_cache_tests {
         app.preview_session = Some(SESSION_A.to_string());
         app.preview_history_for = Some(SESSION_A.to_string());
         app.preview_history_styled = Some(
-            omega_core::session::styled_rows_from_ansi(&format!(
-                "\x1b[36m{CACHED_STYLED}\x1b[0m"
-            ))
-            .0,
+            omega_core::session::styled_rows_from_ansi(&format!("\x1b[36m{CACHED_STYLED}\x1b[0m"))
+                .0,
         );
 
         app.refresh_preview().await.expect("cached history refresh");
@@ -3553,10 +3636,8 @@ mod preview_cache_tests {
         app.preview_session = Some(MISSING_SESSION_A.to_string());
         app.preview_history_for = Some(MISSING_SESSION_A.to_string());
         app.preview_history_styled = Some(
-            omega_core::session::styled_rows_from_ansi(&format!(
-                "\x1b[35m{STALE_STYLED_A}\x1b[0m"
-            ))
-            .0,
+            omega_core::session::styled_rows_from_ansi(&format!("\x1b[35m{STALE_STYLED_A}\x1b[0m"))
+                .0,
         );
 
         app.sessions.clear();
@@ -3658,7 +3739,11 @@ mod preview_cache_tests {
             .as_ref()
             .expect("paused-history rows must remain cached")
             .iter()
-            .map(|line| line.iter().map(|span| span.text.as_str()).collect::<String>())
+            .map(|line| {
+                line.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(paused_history_after, "paused history row");
@@ -3728,8 +3813,10 @@ mod settings_update_tests {
             (AutoUpdatePolicy::Check, "check"),
             (AutoUpdatePolicy::Off, "off"),
         ] {
-            let mut config = OmegaConfig::default();
-            config.auto_update = policy;
+            let config = OmegaConfig {
+                auto_update: policy,
+                ..OmegaConfig::default()
+            };
             let fields = general_fields(&config);
             let (options, idx) = fields
                 .iter()
@@ -3754,21 +3841,28 @@ mod settings_update_tests {
 
     #[test]
     fn status_line_reports_never_checked_without_inventing_a_date() {
-        let mut config = OmegaConfig::default();
         // A path that cannot exist → the same state as a box whose update cron
         // has never run. It must say so, not render a blank or a fake time.
-        config.state_dir = std::path::PathBuf::from("/nonexistent/omega-settings-test");
+        let config = OmegaConfig {
+            state_dir: std::path::PathBuf::from("/nonexistent/omega-settings-test"),
+            ..OmegaConfig::default()
+        };
         let line = update_status_line(&config);
-        assert!(line.contains("OmegaOS v"), "must name the running version: {}", line);
-        assert!(line.contains("last check never"), "must admit it never checked: {}", line);
+        assert!(
+            line.contains("OmegaOS v"),
+            "must name the running version: {}",
+            line
+        );
+        assert!(
+            line.contains("last check never"),
+            "must admit it never checked: {}",
+            line
+        );
     }
 
     #[test]
     fn status_line_reads_the_cron_state_when_there_is_one() {
-        let dir = std::env::temp_dir().join(format!(
-            "omega-settings-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("omega-settings-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let state = omega_core::auto_update::AutoUpdateState {
             last_check: Some(chrono::Utc::now()),
@@ -3777,8 +3871,10 @@ mod settings_update_tests {
         };
         state.save(&dir).unwrap();
 
-        let mut config = OmegaConfig::default();
-        config.state_dir = dir.clone();
+        let config = OmegaConfig {
+            state_dir: dir.clone(),
+            ..OmegaConfig::default()
+        };
         let line = update_status_line(&config);
         assert!(
             line.contains("already up to date"),
@@ -3791,5 +3887,27 @@ mod settings_update_tests {
             line
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn aisb_settings_describe_a_read_only_viewer_without_a_provider_selector() {
+        let config = OmegaConfig::default();
+        let providers = omega_core::providers::ProvidersConfig::default();
+        let general = fields_for_section(SettingsSection::General, &providers, &config);
+        let viewer = fields_for_section(SettingsSection::Aisb, &providers, &config);
+        let rendered = general
+            .iter()
+            .chain(viewer.iter())
+            .map(|field| field.label())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!rendered.contains("Default AISB agent"));
+        assert!(!rendered.contains("Current AISB agent"));
+        assert!(rendered.contains("read-only") || rendered.contains("Read-only"));
+        assert!(viewer.iter().any(|field| matches!(
+            field,
+            SettingsField::Action { command, .. } if command == "omega aisb-view"
+        )));
     }
 }

@@ -109,8 +109,9 @@ impl OwnedSkillRoot {
 /// Progressive metadata parsed from a SKILL.md frontmatter.
 ///
 /// Name and description are the only V1 hard requirements. The remaining
-/// fields are emitted into the canonical catalog now and reported as warnings
-/// when absent so the repository can migrate without a flag day.
+/// fields are emitted into the canonical catalog now and counted in structured
+/// coverage when absent so the repository can migrate without a flag day or a
+/// permanently noisy warning stream.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SkillFrontmatter {
     pub name: String,
@@ -132,7 +133,7 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub provenance: Option<ProvenanceInput>,
     #[serde(default)]
-    pub compatibility: BTreeMap<String, ProviderCompatibilityInput>,
+    pub compatibility: Option<CompatibilityInput>,
     #[serde(default)]
     pub risk: Option<String>,
     #[serde(default)]
@@ -140,7 +141,19 @@ pub struct SkillFrontmatter {
     #[serde(default)]
     pub verify: Option<VerifyInput>,
     #[serde(default)]
-    pub metadata: BTreeMap<String, String>,
+    pub metadata: BTreeMap<String, serde_json::Value>,
+}
+
+/// Compatibility has two intentionally separate dialects.
+///
+/// The Agent Skills schema uses a descriptive scalar for runtime requirements,
+/// while OmegaOS also supports an explicit provider-state map. Free-form prose
+/// is never interpreted as provider evidence.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum CompatibilityInput {
+    Providers(BTreeMap<String, ProviderCompatibilityInput>),
+    Requirements(String),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -283,7 +296,33 @@ pub struct SkillCatalogEntry {
     pub dependencies: SkillDependencies,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verification: Option<VerificationMetadata>,
+    /// Descriptive Agent Skills compatibility requirements. These are retained
+    /// as requirements, not projected into provider support claims.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility_requirements: Option<String>,
     pub provider_states: BTreeMap<String, ProviderState>,
+    /// Explicit migration debt without turning every legacy skill into a
+    /// warning. Consumers can report coverage or select migration batches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_progressive_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetadataCoverage {
+    pub total_skills: usize,
+    pub complete_skills: usize,
+    pub missing_by_field: BTreeMap<String, usize>,
+}
+
+/// One owned source tree used to compile the catalog.
+///
+/// `path` is a local refresh hint and is deliberately excluded from every
+/// deterministic digest. It lets installed readers prove that the shadow
+/// catalog still describes a checkout that remains available on the machine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CatalogSourceRoot {
+    pub id: String,
+    pub path: PathBuf,
 }
 
 /// Canonical, deterministic shadow catalog.
@@ -294,6 +333,15 @@ pub struct SkillCatalogEntry {
 pub struct SkillCatalogV1 {
     pub schema_version: u32,
     pub content_digest: String,
+    /// Digest of `(root_id, relative_path, normalized SKILL.md digest)` only.
+    /// Unlike `content_digest`, this can be recomputed without parsing YAML.
+    #[serde(default)]
+    pub source_tree_digest: String,
+    /// Local source hints, not part of either deterministic digest.
+    #[serde(default)]
+    pub source_roots: Vec<CatalogSourceRoot>,
+    #[serde(default)]
+    pub metadata_coverage: MetadataCoverage,
     pub skills: Vec<SkillCatalogEntry>,
     pub warnings: Vec<CatalogWarning>,
 }
@@ -314,12 +362,21 @@ impl SkillCatalogV1 {
         let mut entries = Vec::new();
         let mut warnings = Vec::new();
         let mut root_ids = BTreeSet::new();
+        let mut source_roots = Vec::new();
         for root in roots {
             if root.id.trim().is_empty() {
                 anyhow::bail!("owned skill root id cannot be empty");
             }
             if !root_ids.insert(root.id.clone()) {
                 anyhow::bail!("duplicate owned skill root id: {}", root.id);
+            }
+            let root_metadata = fs::symlink_metadata(&root.path)
+                .with_context(|| format!("inspecting owned skill root {}", root.path.display()))?;
+            if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "owned skill root must be a real directory, not a symlink: {}",
+                    root.path.display()
+                );
             }
             let root_path = root.path.canonicalize().with_context(|| {
                 format!("canonicalizing owned skill root {}", root.path.display())
@@ -330,6 +387,10 @@ impl SkillCatalogV1 {
                     root.path.display()
                 );
             }
+            source_roots.push(CatalogSourceRoot {
+                id: root.id.clone(),
+                path: root_path.clone(),
+            });
             let mut skill_files = Vec::new();
             collect_skill_files(&root_path, &root_path, 0, &mut skill_files)?;
             skill_files.sort();
@@ -364,12 +425,32 @@ impl SkillCatalogV1 {
                 .then_with(|| a.message.cmp(&b.message))
         });
 
+        let metadata_coverage = metadata_coverage(&entries);
         let hash_input = serde_json::to_vec(&(CATALOG_SCHEMA_VERSION, &entries))
             .context("serializing canonical skill catalog")?;
         let content_digest = sha256_hex(&hash_input);
+        let mut source_tree_input = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.root_id.clone(),
+                    entry.relative_path.clone(),
+                    entry.content_digest.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        source_tree_input.sort();
+        let source_tree_digest = sha256_hex(
+            &serde_json::to_vec(&source_tree_input)
+                .context("serializing skill source-tree digest input")?,
+        );
+        source_roots.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(Self {
             schema_version: CATALOG_SCHEMA_VERSION,
             content_digest,
+            source_tree_digest,
+            source_roots,
+            metadata_coverage,
             skills: entries,
             warnings,
         })
@@ -383,11 +464,8 @@ impl SkillCatalogV1 {
             .context("skill catalog output has no parent directory")?;
         fs::create_dir_all(parent)
             .with_context(|| format!("creating catalog output dir {}", parent.display()))?;
-        let temp = output.with_extension("json.tmp");
         let data = serde_json::to_vec_pretty(self).context("serializing SkillCatalogV1")?;
-        fs::write(&temp, data)
-            .with_context(|| format!("writing temporary catalog {}", temp.display()))?;
-        fs::rename(&temp, output)
+        crate::config::atomic_write_private(output, &data)
             .with_context(|| format!("publishing catalog {}", output.display()))
     }
 }
@@ -449,8 +527,9 @@ fn compile_skill(
     parser: &dyn SkillFrontmatterParser,
     warnings: &mut Vec<CatalogWarning>,
 ) -> Result<SkillCatalogEntry> {
-    let metadata = fs::metadata(skill_file)
+    let metadata = fs::symlink_metadata(skill_file)
         .with_context(|| format!("reading metadata for {}", skill_file.display()))?;
+    validate_owned_regular_file(skill_file, &metadata, "skill source")?;
     if metadata.len() > MAX_SKILL_FILE_BYTES {
         anyhow::bail!(
             "{} is {} bytes; maximum skill size is {}",
@@ -481,10 +560,13 @@ fn compile_skill(
         .with_context(|| format!("{} is outside its owned root", skill_file.display()))?;
     let relative_path = path_to_slash(relative_path)?;
 
-    let version = frontmatter
-        .version
-        .clone()
-        .or_else(|| frontmatter.metadata.get("version").cloned());
+    let version = frontmatter.version.clone().or_else(|| {
+        frontmatter
+            .metadata
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
     if let Some(ref version_value) = version {
         if semver::Version::parse(version_value).is_err() {
             warnings.push(CatalogWarning {
@@ -509,7 +591,13 @@ fn compile_skill(
         None => frontmatter
             .source
             .clone()
-            .or_else(|| frontmatter.metadata.get("source").cloned())
+            .or_else(|| {
+                frontmatter
+                    .metadata
+                    .get("source")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
             .map(|source| SkillProvenance {
                 source,
                 ..SkillProvenance::default()
@@ -534,7 +622,22 @@ fn compile_skill(
     if let Some(ref verify) = verification {
         validate_verification_reference(&name, skill_file, verify)?;
     }
-    let provider_states = compile_provider_states(&name, &frontmatter.compatibility)?;
+    let (compatibility_requirements, provider_states) = match &frontmatter.compatibility {
+        Some(CompatibilityInput::Providers(declared)) => {
+            (None, compile_provider_states(&name, declared)?)
+        }
+        Some(CompatibilityInput::Requirements(requirements)) => {
+            let requirements = requirements.trim();
+            if requirements.is_empty() {
+                anyhow::bail!("{name}: compatibility requirements cannot be empty");
+            }
+            // A descriptive requirement can name tools, runtimes, or a host
+            // product, but it is not a provider-state declaration. An empty
+            // projection is safer than claiming support the source did not.
+            (Some(requirements.to_string()), BTreeMap::new())
+        }
+        None => (None, compile_provider_states(&name, &BTreeMap::new())?),
+    };
 
     let mut missing = Vec::new();
     if version.is_none() {
@@ -543,7 +646,10 @@ fn compile_skill(
     if provenance.is_none() {
         missing.push("provenance");
     }
-    if frontmatter.compatibility.is_empty() {
+    if !matches!(
+        frontmatter.compatibility,
+        Some(CompatibilityInput::Providers(ref declared)) if !declared.is_empty()
+    ) {
         missing.push("compatibility");
     }
     if frontmatter.risk.is_none() {
@@ -555,14 +661,6 @@ fn compile_skill(
     if frontmatter.verify.is_none() {
         missing.push("verify");
     }
-    if !missing.is_empty() {
-        warnings.push(CatalogWarning {
-            code: "progressive_metadata_missing".to_string(),
-            skill: name.clone(),
-            message: format!("progressive fields missing: {}", missing.join(", ")),
-        });
-    }
-
     let mut aliases = frontmatter.aliases;
     aliases.sort_by_key(|value| normalized_collision_key(value));
     aliases.dedup_by(|a, b| normalized_collision_key(a) == normalized_collision_key(b));
@@ -590,8 +688,27 @@ fn compile_skill(
         risk: frontmatter.risk,
         dependencies,
         verification,
+        compatibility_requirements,
         provider_states,
+        missing_progressive_fields: missing.into_iter().map(str::to_string).collect(),
     })
+}
+
+fn metadata_coverage(entries: &[SkillCatalogEntry]) -> MetadataCoverage {
+    let mut missing_by_field = BTreeMap::new();
+    for entry in entries {
+        for field in &entry.missing_progressive_fields {
+            *missing_by_field.entry(field.clone()).or_insert(0) += 1;
+        }
+    }
+    MetadataCoverage {
+        total_skills: entries.len(),
+        complete_skills: entries
+            .iter()
+            .filter(|entry| entry.missing_progressive_fields.is_empty())
+            .count(),
+        missing_by_field,
+    }
 }
 
 fn extract_frontmatter(content: &str) -> Result<&str> {
@@ -647,10 +764,10 @@ fn compile_provider_states(
                 reason.as_deref(),
                 missing_capabilities,
             )?,
-            // Compatibility is a progressive field during the V1 migration.
-            // Missing metadata therefore inherits portable/enabled behavior and
-            // emits `progressive_metadata_missing` above. Only an explicit
-            // excluded/unsupported declaration may disable a provider.
+            // Compatibility is progressive metadata. Missing declarations
+            // inherit portable/enabled behavior and are recorded in the
+            // catalog's coverage data. Only an explicit excluded/unsupported
+            // declaration may disable a provider.
             None => ProviderState::Enabled,
         };
         states.insert(provider, state);
@@ -713,8 +830,25 @@ fn validate_verification_reference(
     let resolved = skill_dir.join(script_path);
     let metadata = fs::symlink_metadata(&resolved)
         .with_context(|| format!("{skill_name}: missing verify script {}", resolved.display()))?;
+    validate_owned_regular_file(&resolved, &metadata, "verify script")
+        .with_context(|| format!("{skill_name}: invalid verification authority"))?;
+    Ok(())
+}
+
+fn validate_owned_regular_file(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    kind: &str,
+) -> Result<()> {
     if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
-        anyhow::bail!("{skill_name}: verify script must be a regular owned file");
+        anyhow::bail!("{kind} must be a regular owned file: {}", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 {
+            anyhow::bail!("{kind} must not be hard-linked: {}", path.display());
+        }
     }
     Ok(())
 }
@@ -881,14 +1015,24 @@ impl SkillRegistry {
     pub fn discover(skills_dir: &Path) -> Result<Self> {
         let mut skills = HashMap::new();
 
-        if !skills_dir.exists() {
-            // A missing skills dir is a config/install gap, not a normal state:
-            // callers would run with zero skills and no other signal. Surface it.
-            tracing::warn!(path = %skills_dir.display(), "skills directory does not exist; registry is empty");
-            return Ok(Self {
-                skills,
-                skills_dir: skills_dir.to_path_buf(),
-            });
+        let root_metadata = match std::fs::symlink_metadata(skills_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!("skills directory does not exist: {}", skills_dir.display())
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspecting skills root {}", skills_dir.display()))
+            }
+        };
+        if !root_metadata.file_type().is_dir() || root_metadata.file_type().is_symlink() {
+            // A missing skills dir is a config/install gap, not a valid empty
+            // registry. Returning Ok here made callers claim zero installed
+            // skills while hiding a broken installation.
+            anyhow::bail!(
+                "skills root must be a real directory, not a symlink: {}",
+                skills_dir.display()
+            );
         }
 
         let entries = std::fs::read_dir(skills_dir)
@@ -902,24 +1046,25 @@ impl SkillRegistry {
             // ../../sensitive/path and pull skills from outside the intended tree
             // (path traversal). file_type() does NOT follow the link, unlike
             // path.is_dir(). Skip non-directories and symlinks alike.
-            if !is_plain_dir(&entry) {
+            if !is_plain_dir(&entry)? {
                 continue;
             }
 
             // Top-level skill dir (~/.omega/skills/<name>/SKILL.md).
-            if try_register_skill(&path, &mut skills) {
+            if try_register_skill(&path, &mut skills)? {
                 continue;
             }
 
             // Otherwise recurse one level: treat this dir as a grouping
             // (e.g. ~/.omega/skills/audits/) whose children are skill dirs.
-            let Ok(sub_entries) = std::fs::read_dir(&path) else {
-                continue;
-            };
-            for sub_entry in sub_entries.flatten() {
+            let sub_entries = std::fs::read_dir(&path)
+                .with_context(|| format!("reading skill group {}", path.display()))?;
+            for sub_entry in sub_entries {
+                let sub_entry = sub_entry
+                    .with_context(|| format!("reading entry in skill group {}", path.display()))?;
                 // Same symlink denial at the nested level.
-                if is_plain_dir(&sub_entry) {
-                    try_register_skill(&sub_entry.path(), &mut skills);
+                if is_plain_dir(&sub_entry)? {
+                    try_register_skill(&sub_entry.path(), &mut skills)?;
                 }
             }
         }
@@ -1024,37 +1169,55 @@ impl SkillRegistry {
 /// symlinked skill dirs that could traverse outside `skills_dir`. Unlike
 /// `Path::is_dir()`, `DirEntry::file_type()` does not follow symlinks; on the
 /// rare metadata-read error we err on the side of skipping the entry.
-fn is_plain_dir(entry: &std::fs::DirEntry) -> bool {
-    match entry.file_type() {
-        Ok(ft) => ft.is_dir() && !ft.is_symlink(),
-        Err(_) => false,
-    }
+fn is_plain_dir(entry: &std::fs::DirEntry) -> Result<bool> {
+    let file_type = entry
+        .file_type()
+        .with_context(|| format!("reading file type for {}", entry.path().display()))?;
+    Ok(file_type.is_dir() && !file_type.is_symlink())
 }
 
 /// Try to register a skill from `dir/SKILL.md`. Returns true if `dir` was a
 /// skill directory (had a SKILL.md), regardless of parse success.
-fn try_register_skill(dir: &Path, skills: &mut HashMap<String, Skill>) -> bool {
+fn try_register_skill(dir: &Path, skills: &mut HashMap<String, Skill>) -> Result<bool> {
     let skill_file = dir.join("SKILL.md");
-    if !skill_file.exists() {
-        return false;
+    match std::fs::symlink_metadata(&skill_file) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting skill file {}", skill_file.display()))
+        }
+        Ok(metadata) => validate_owned_regular_file(&skill_file, &metadata, "skill source")?,
     }
 
-    match parse_skill_file(&skill_file) {
-        Ok(skill) => {
-            tracing::debug!(name = %skill.name, "discovered skill");
-            skills.insert(skill.name.clone(), skill);
-        }
-        Err(e) => {
-            // A SKILL.md that exists but won't parse is a misconfiguration: the
-            // operator expects this skill to be present, so flag it loudly.
-            tracing::error!(path = %skill_file.display(), error = %e, "failed to parse skill; skill skipped");
-        }
+    let skill = parse_skill_file(&skill_file)
+        .with_context(|| format!("registering skill at {}", skill_file.display()))?;
+    let collision = skills.keys().find(|existing| {
+        normalized_collision_key(existing) == normalized_collision_key(&skill.name)
+    });
+    if let Some(existing) = collision {
+        anyhow::bail!(
+            "duplicate discovered skill name after normalization: {existing:?} and {:?}",
+            skill.name
+        );
     }
-    true
+    tracing::debug!(name = %skill.name, "discovered skill");
+    skills.insert(skill.name.clone(), skill);
+    Ok(true)
 }
 
 /// Parse a SKILL.md file to extract skill metadata from YAML-style frontmatter.
 fn parse_skill_file(path: &Path) -> Result<Skill> {
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    validate_owned_regular_file(path, &metadata, "skill source")?;
+    if metadata.len() > MAX_SKILL_FILE_BYTES {
+        anyhow::bail!(
+            "{} is {} bytes; maximum skill size is {}",
+            path.display(),
+            metadata.len(),
+            MAX_SKILL_FILE_BYTES
+        );
+    }
     let content =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
 
@@ -1164,6 +1327,10 @@ fn parse_skill_file(path: &Path) -> Result<Skill> {
 
     let category = SkillCategory::from_path(path);
 
+    if name.trim().is_empty() {
+        anyhow::bail!("{} has an empty skill name", path.display());
+    }
+
     Ok(Skill {
         name,
         description,
@@ -1272,15 +1439,16 @@ impl AuditTracker {
 
     /// Load tracker state from disk.
     pub fn load(path: &Path) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .with_context(|| format!("reading tracker at {}", path.display()))?;
+        let content = crate::config::read_private_optional_string(path)?
+            .with_context(|| format!("audit tracker does not exist at {}", path.display()))?;
         serde_json::from_str(&content).context("parsing audit tracker")
     }
 
     /// Save tracker state to disk.
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json).with_context(|| format!("writing tracker to {}", path.display()))
+        crate::config::atomic_write_private(path, json.as_bytes())
+            .with_context(|| format!("writing tracker to {}", path.display()))
     }
 
     /// Record a new audit result.
@@ -1438,6 +1606,31 @@ mod tests {
     }
 
     #[test]
+    fn registry_rejects_missing_root_instead_of_claiming_empty_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-skills");
+        let error = SkillRegistry::discover(&missing).unwrap_err().to_string();
+        assert!(error.contains("skills directory does not exist"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_and_catalog_reject_symlinked_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+
+        let discover_error = SkillRegistry::discover(&linked).unwrap_err().to_string();
+        assert!(discover_error.contains("not a symlink"), "{discover_error}");
+        let catalog_error = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", &linked)])
+            .unwrap_err()
+            .to_string();
+        assert!(catalog_error.contains("not a symlink"), "{catalog_error}");
+    }
+
+    #[test]
     fn registry_discover_with_skills() {
         let dir = tempfile::tempdir().unwrap();
         let skill_dir = dir.path().join("alpha");
@@ -1471,6 +1664,40 @@ mod tests {
         assert_eq!(registry.count(), 2);
         assert!(registry.get("alpha").is_some());
         assert!(registry.get("codeaudit").is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_and_catalog_reject_hardlinked_skill_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.md");
+        fs::write(&source, "---\nname: aliased\ndescription: Alias\n---\n").unwrap();
+        let skill_dir = dir.path().join("aliased");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::hard_link(&source, skill_dir.join("SKILL.md")).unwrap();
+
+        let discover_error = SkillRegistry::discover(dir.path()).unwrap_err().to_string();
+        assert!(discover_error.contains("hard-linked"), "{discover_error}");
+        let catalog_error = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", dir.path())])
+            .unwrap_err()
+            .to_string();
+        assert!(catalog_error.contains("hard-linked"), "{catalog_error}");
+    }
+
+    #[test]
+    fn registry_rejects_normalized_duplicate_names() {
+        let dir = tempfile::tempdir().unwrap();
+        for (folder, name) in [("one", "Alpha"), ("two", "alpha")] {
+            let skill_dir = dir.path().join(folder);
+            fs::create_dir(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: test\n---\n"),
+            )
+            .unwrap();
+        }
+        let error = SkillRegistry::discover(dir.path()).unwrap_err().to_string();
+        assert!(error.contains("duplicate discovered skill name"), "{error}");
     }
 
     #[test]
@@ -1542,6 +1769,21 @@ mod tests {
 
         let loaded = AuditTracker::load(&path).unwrap();
         assert_eq!(loaded.entries.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn audit_tracker_load_rejects_symlink_and_hardlink_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.json");
+        fs::write(&target, r#"{"entries":{}}"#).unwrap();
+        let symlink = dir.path().join("symlink.json");
+        std::os::unix::fs::symlink(&target, &symlink).unwrap();
+        assert!(AuditTracker::load(&symlink).is_err());
+
+        let hardlink = dir.path().join("hardlink.json");
+        fs::hard_link(&target, &hardlink).unwrap();
+        assert!(AuditTracker::load(&hardlink).is_err());
     }
 
     #[test]
@@ -1643,7 +1885,9 @@ mod tests {
         let a = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", first.path())]).unwrap();
         let b = SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", second.path())]).unwrap();
         assert_eq!(a.content_digest, b.content_digest);
+        assert_eq!(a.source_tree_digest, b.source_tree_digest);
         assert_eq!(a.skills, b.skills);
+        assert_ne!(a.source_roots[0].path, b.source_roots[0].path);
 
         fs::write(
             second.path().join("alpha/SKILL.md"),
@@ -1653,6 +1897,7 @@ mod tests {
         let changed =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", second.path())]).unwrap();
         assert_ne!(a.content_digest, changed.content_digest);
+        assert_ne!(a.source_tree_digest, changed.source_tree_digest);
     }
 
     #[test]
@@ -1719,7 +1964,7 @@ mod tests {
     }
 
     #[test]
-    fn catalog_emits_explicit_provider_states_and_progressive_warning() {
+    fn catalog_emits_explicit_provider_states_and_progressive_coverage() {
         let dir = tempfile::tempdir().unwrap();
         write_catalog_skill(
             dir.path(),
@@ -1729,6 +1974,7 @@ mod tests {
         let catalog =
             SkillCatalogV1::compile(&[OwnedSkillRoot::new("omegaos", dir.path())]).unwrap();
         let skill = &catalog.skills[0];
+        assert_eq!(skill.compatibility_requirements, None);
         assert_eq!(skill.provider_states["codex"], ProviderState::Enabled);
         assert_eq!(
             skill.provider_states["gemini"],
@@ -1736,10 +1982,95 @@ mod tests {
                 reason: "no adapter".to_string()
             }
         );
-        assert!(catalog
-            .warnings
-            .iter()
-            .any(|warning| warning.code == "progressive_metadata_missing"));
+        assert!(skill
+            .missing_progressive_fields
+            .contains(&"version".to_string()));
+        assert_eq!(catalog.metadata_coverage.total_skills, 1);
+        assert_eq!(catalog.metadata_coverage.complete_skills, 0);
+        assert_eq!(catalog.metadata_coverage.missing_by_field["version"], 1);
+    }
+
+    #[test]
+    fn catalog_accepts_descriptive_compatibility_without_claiming_provider_support() {
+        let dir = tempfile::tempdir().unwrap();
+        write_catalog_skill(
+            dir.path(),
+            "agent-skill",
+            "name: agent-skill\ndescription: Common Agent Skills shape\ncompatibility: Requires Claude Code and Python 3.11+ for quality scoring",
+        );
+
+        let catalog =
+            SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", dir.path())]).unwrap();
+        let skill = &catalog.skills[0];
+        assert_eq!(
+            skill.compatibility_requirements.as_deref(),
+            Some("Requires Claude Code and Python 3.11+ for quality scoring")
+        );
+        assert!(
+            skill.provider_states.is_empty(),
+            "descriptive requirements are not evidence that any provider is enabled"
+        );
+        assert!(skill
+            .missing_progressive_fields
+            .contains(&"compatibility".to_string()));
+    }
+
+    #[test]
+    fn catalog_accepts_bounded_nested_agent_skill_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        write_catalog_skill(
+            dir.path(),
+            "nested-metadata",
+            "name: nested-metadata\ndescription: Nested metadata\nmetadata:\n  version: '1.2.3'\n  source: agent-skills\n  openclaw:\n    emoji: telescope\n    requires:\n      bins: [agent-reach]\n      config:\n        network:\n          enabled: true",
+        );
+
+        let catalog =
+            SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", dir.path())]).unwrap();
+        let skill = &catalog.skills[0];
+        assert_eq!(skill.version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            skill.provenance.as_ref().map(|value| value.source.as_str()),
+            Some("agent-skills")
+        );
+    }
+
+    #[test]
+    fn catalog_keeps_nested_metadata_within_yaml_depth_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut yaml = "name: too-deep\ndescription: Too deep\nmetadata:\n".to_string();
+        for depth in 0..40 {
+            yaml.push_str(&"  ".repeat(depth + 1));
+            yaml.push_str(&format!("level-{depth}:\n"));
+        }
+        yaml.push_str(&"  ".repeat(41));
+        yaml.push_str("value: bounded");
+        write_catalog_skill(dir.path(), "too-deep", &yaml);
+
+        let error =
+            SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", dir.path())]).unwrap_err();
+        let error = format!("{error:#}");
+        assert!(
+            error.contains("depth") || error.contains("budget"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_empty_descriptive_compatibility() {
+        let dir = tempfile::tempdir().unwrap();
+        write_catalog_skill(
+            dir.path(),
+            "empty-compatibility",
+            "name: empty-compatibility\ndescription: Empty compatibility\ncompatibility: ''",
+        );
+
+        let error = SkillCatalogV1::compile(&[OwnedSkillRoot::new("installed", dir.path())])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("compatibility requirements cannot be empty"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -1760,10 +2091,13 @@ mod tests {
                 "{provider} must remain enabled during progressive migration"
             );
         }
-        assert!(catalog.warnings.iter().any(|warning| {
-            warning.code == "progressive_metadata_missing"
-                && warning.message.contains("compatibility")
-        }));
+        assert!(skill
+            .missing_progressive_fields
+            .contains(&"compatibility".to_string()));
+        assert_eq!(
+            catalog.metadata_coverage.missing_by_field["compatibility"],
+            1
+        );
     }
 
     #[test]

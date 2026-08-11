@@ -13,8 +13,8 @@
 ├─────────────────────────────────────────────────────────────────┤
 │ 2. INSTALLED BINARY                                             │
 │    ~/.local/bin/omega                                           │
-│    → The compiled Rust executable (8.9 MB)                      │
-│    → Created by `cargo build --release` + `cp target/release/`  │
+│    → The installed Rust executable                              │
+│    → Installed by `./install.sh` or `omega update`              │
 ├─────────────────────────────────────────────────────────────────┤
 │ 3. RUNTIME DATA (the master config)                             │
 │    ~/.omega/                                                    │
@@ -29,11 +29,11 @@
 ```
 OmegaOS/
 ├── crates/                            ALL RUST CODE
-│   ├── omega-core/src/                Core library (32 modules)
+│   ├── omega-core/src/                Core library
 │   │   ├── account.rs                 Account management
 │   │   ├── agents.rs                  LLM agent registry
-│   │   ├── aisb.rs                    AISB Master spawning
-│   │   ├── aisb_agents.rs             14 Matrix agents
+│   │   ├── aisb.rs                    Legacy AISB viewer compatibility
+│   │   ├── aisb_agents.rs             15 typed Matrix templates
 │   │   ├── audit.rs                   23 Quality Arsenal audits
 │   │   ├── bootstrap.rs               Project bootstrap pipeline
 │   │   ├── credentials.rs             Multi-provider credential store
@@ -54,7 +54,7 @@ OmegaOS/
 │   │   ├── providers.rs               Provider catalog
 │   │   ├── router.rs                  Smart routing
 │   │   ├── rubric.rs                  Success criteria
-│   │   ├── rules.rs                   The typed doctrine (6 Laws + named Rules)
+│   │   ├── rules.rs                   The typed doctrine (7 Laws + named Rules)
 │   │   ├── scope.rs                   File-lock scope claims
 │   │   ├── session.rs                 rmux SDK integration
 │   │   ├── ship.rs                    12-step ship pipeline
@@ -69,16 +69,15 @@ OmegaOS/
 │   │   ├── theme.rs                   Theme engine (palette gallery, Settings → Theme — see docs/THEMES.md)
 │   │   └── ui.rs                      Tab rendering
 │   │
-│   └── omega-cli/src/                 CLI binary
-│       ├── main.rs                    40+ commands
-│       └── telegram_bridge.rs         Telegram bot (Rust, was Python)
+│   ├── omega-cli/src/                 CLI binary (`omega --help` is the inventory)
+│   └── omega-gateway/src/             Optional HTTP gateway
 │
 ├── agents/                            Agent system prompts (markdown)
 │   ├── aisb-master.md
 │   ├── oracle.md / worker.md / team-lead.md
-│   └── aisb/                          14 Matrix agents
+│   └── aisb/                          15 Matrix agent templates
 │
-├── rules/                             The typed doctrine (.md) — 6 Laws + named R-* Rules
+├── rules/                             The typed doctrine (.md) — 7 Laws + named R-* Rules
 │   ├── L1-runtime-is-the-only-truth.md
 │   ├── R-VERIFY-adversarial-verification.md
 │   └── ... (`omega rules list` prints the current set)
@@ -108,7 +107,7 @@ OmegaOS/
 ├── OMEGA.md                           Universal agent prompt (deployed to ~/.omega/)
 ├── README.md                          Project intro
 ├── Cargo.toml                         Rust workspace
-└── install.sh                         Install script (6 phases)
+└── install.sh                         Reproducible installer
 ```
 
 ## Runtime Data Layout (`~/.omega/`)
@@ -119,41 +118,42 @@ OmegaOS/
 ├── config.toml                        User config (editable)
 ├── providers.toml                     Per-provider settings
 ├── telegram.toml                      Telegram bot config (gitignored, secret)
-├── projects.json                      Project registry
+├── projects.json                      Compatibility project-registry projection
 │
-├── credentials/                       ALL provider credentials
+├── credentials/                       OmegaOS-owned credential copies
 │   ├── claude.json                    ← ~/.claude/.credentials.json points here
-│   ├── codex.json                     ← ~/.codex/auth.json points here
+│   ├── codex.json                     ↔ CODEX_HOME/auth.json (reconciled)
 │   ├── gemini.json                    ← ~/.gemini/oauth_creds.json points here
 │   └── accounts/                      Saved account profiles
 │
 ├── rules/                             The typed doctrine (.md, synced from repo on install)
-├── agents/                            19 agent prompts
+├── agents/                            Shared and role-specific agent prompts
 ├── skills/
 │   ├── pdfgen/                        PDF generator
 │   └── audits/                        23 audits
 │
-├── state/                             Runtime state (sessions, locks, done.json)
+├── state/                             Runtime state and projections
+│   └── mission-engine-v3.sqlite3      authoritative mission ledger
 ├── logs/                              Session logs
 └── audit/                             Audit results
 ```
 
-## Languages — 99% Rust, Justified Exceptions
+## Languages
 
 | Component | Language | Why |
 |-----------|----------|-----|
 | **Core library** (omega-core) | **Rust** | 100% — type safety, performance |
 | **TUI** (omega-tui) | **Rust** | 100% — ratatui native |
 | **CLI binary** (omega-cli) | **Rust** | 100% — clap + tokio |
-| **Telegram bot** (telegram_bridge.rs) | **Rust** | 100% — reqwest + long-poll (was Python) |
-| **Install script** (install.sh) | Bash | Bootstrap before Rust is compiled |
+| **Telegram bots** (`telegram-bot/`) | Bun + TypeScript | Bot API, topic routing, and file handling |
+| **Install and operational scripts** | Shell | Bootstrap and host integration |
 | **PDF generator** (tools/pdfgen/) | TypeScript + Next.js | Playwright requires Node.js; rendering needs full DOM/CSS |
 | **OAuth helper** | Bash | One-line wrapper around `claude /login` for fallback |
 | Reference docs | Python (read-only) | Just documentation of the VPS Python implementation we ported |
 
-**No Python is executed by OmegaOS.** The Python files in `docs/reference/oauth/`
-exist only as reference material — they document how the VPS Python system worked
-so the Rust port (`oauth.rs`, `account.rs`) could match the behavior.
+Python is used by selected tests, tools, and some OS payloads. Files under
+`docs/reference/oauth/` are read-only reference material for the Rust OAuth
+implementation; they are not the live credential service.
 
 ## Install Flow
 
@@ -161,16 +161,14 @@ so the Rust port (`oauth.rs`, `account.rs`) could match the behavior.
 $ ./install.sh
   Phase 1: Detect OS + arch
   Phase 2: Install Rust (rustup) if missing
-  Phase 3: Build rmux from github.com/agentik-os/rmux
-           → ~/.local/bin/rmux
-  Phase 4: Build omega CLI
-           cargo build --release
-           → ~/.local/bin/omega
+  Phase 3: Select verified release binaries when current, or build pinned rmux
+  Phase 4: Verify/install omega, falling back to a locked source build
   Phase 5: Setup ~/.omega/
            - Create credentials/, state/, logs/, accounts/
            - migrate_creds claude → moves ~/.claude/.credentials.json
              into ~/.omega/credentials/claude.json + symlink back
-           - Same for codex, gemini
+           - migrate Claude and Gemini compatibility credentials
+           - reconcile Codex through omega-core (CODEX_HOME-aware)
            - Copy OMEGA.md, agents/, rules/, skills/pdfgen/, skills/audits/
            - Run `omega rules export` and `omega sync`
   Phase 6: Shell integration
@@ -184,13 +182,13 @@ $ ./install.sh
 | Action | Command |
 |--------|---------|
 | Launch TUI | `omega` or `om` |
-| Talk to AISB Master from Telegram | Just send a message (plain text) |
+| Send work from Telegram | Send it in the Atlas or project topic; Atlas resolves and dispatches |
 | List sessions | `/sessions` on Telegram or `omega list` |
 | Switch model | `/model claude opus` |
 | Manage accounts | `/account` (button menu) |
 | New project | `/projects` → [+ New project] |
 | Generate PDF | `omega pdf --template=audit --send` |
-| Update code | edit, `cargo build --release`, `cp target/release/omega ~/.local/bin/` |
+| Update OmegaOS | `omega update` (or run `./install.sh` from an exact source checkout) |
 
 ## Verification
 
@@ -207,6 +205,6 @@ ls ~/.omega/credentials/
 # Symlinks are correct
 ls -la ~/.claude/.credentials.json   # → ~/.omega/credentials/claude.json
 
-# Build still works
-cd ~/Station/SideBusiness/OmegaOS && cargo build --release
+# Build still works against the lockfile
+cd ~/Station/SideBusiness/OmegaOS && cargo build --release --locked
 ```

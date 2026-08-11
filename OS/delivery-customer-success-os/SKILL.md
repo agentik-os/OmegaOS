@@ -1,6 +1,7 @@
 ---
 name: delivery-customer-success-os
-description: Manage the complete customer journey after commercial commitment: handoff, onboarding, discovery, success planning, delivery, scope, communication, acceptance, adoption, value proof, renewal, expansion, referral and offboarding. Contains 19 specialist agents, 30 skills, 9 protocols and 9 schemas. Use for client onboarding, delivery tracking, scope management, customer success planning, adoption/value-proof reporting, or renewal and expansion handoffs. Trigger words: delivery, customer success, onboarding, scope, adoption, renewal, expansion, offboarding; FR: livraison, succes client, integration client, perimetre, adoption, renouvellement, expansion.
+description: >
+  Manage the complete customer journey after commercial commitment: handoff, onboarding, discovery, success planning, delivery, scope, communication, acceptance, adoption, value proof, renewal, expansion, referral and offboarding. Contains 19 specialist agents, 30 skills, 9 protocols and 9 schemas. Use for client onboarding, delivery tracking, scope management, customer success planning, adoption/value-proof reporting, or renewal and expansion handoffs. Trigger words: delivery, customer success, onboarding, scope, adoption, renewal, expansion, offboarding; FR: livraison, succes client, integration client, perimetre, adoption, renouvellement, expansion.
 ---
 
 # Delivery & Customer Success {OS}

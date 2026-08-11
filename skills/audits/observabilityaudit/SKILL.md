@@ -219,13 +219,13 @@ do the census via the SPECIFIC greps in Phase 1.1 (this is one of the allowed
 Output is written to:
 
 ```
-$PROJECT_PATH/.observability/
+$PROJECT_PATH/audits/.observabilityaudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), the artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.observability/` so multiple audits on the same
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.observabilityaudit/` so multiple audits on the same
 ticket can cross-reference each other (see 0.5).
 
 ### 0.2 evidence-summary.json schema
@@ -281,7 +281,7 @@ You MAY still:
 
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
-Sibling summaries live at `$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`. Read them. Use them.
+Sibling summaries live at `$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`. Read them. Use them.
 
 High-value confluences for observability:
 - **observability + codeaudit** flag the same silent `catch {}` → it both swallows the error AND has no log: a guaranteed invisible failure.
@@ -1082,7 +1082,7 @@ once (log + re-raise/handle) and close both.
     "time_to_root_cause_estimate_min": 4,
     "silent_failure_modes_on_hinge": 0
   },
-  "evidence_summary_path": "$PROJECT_PATH/.observability/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.observabilityaudit/evidence-summary.json",
   "confidence_basis": "Why I'm confident (or not). Cite Popper test counts, reconstruction-drill result, hinge scrutiny depth, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no occurrences of `looks correct`, `should be fine`, `appears to work`, `good coverage`, `reasonable logging`, `streamlined`, `to save time`)"
 }
@@ -1332,7 +1332,7 @@ THE QUALITY ARSENAL:
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial framing
-- ✅ **Concurrency lock** — `audits/.observabilityaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.observabilityaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations (rule 43 step 8b alignment). On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (logs|traces|metrics|alerts|slo|runbooks)
 - ✅ **Non-UI context gate** — runs on any target (web, API, daemon, CLI, library). Phase scoping adjusts: a stateless CLI may exclude health-probes/SLO; document exclusions and renormalize.

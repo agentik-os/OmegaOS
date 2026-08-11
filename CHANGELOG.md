@@ -7,6 +7,18 @@ for [semantic versioning](https://semver.org) once it reaches 1.0. Until then,
 
 ## [Unreleased]
 
+### Documentation and release operations
+
+- Aligned current operator docs with the runtime registries: 7 Laws, 52
+  operational Rules, 23 forensic audits, 15 typed Matrix agents, and 24
+  canonical OS products plus five compatibility aliases.
+- Corrected the pending reauthentication marker to
+  `~/.omega/state/pending-reauth.json` and documented its five-minute lifetime
+  separately from the 30-second trigger cooldown.
+- Added a release and rollback runbook with CI, artifact, provenance, and
+  known-good-tag verification. The runbook explicitly treats main-branch
+  protection as an external setting that must be checked, not assumed.
+
 ### Changed
 - **Orchestration V3 release candidate.** Mission and task-attempt state now
   live in a SQLite WAL event ledger with expected-version CAS, idempotency,

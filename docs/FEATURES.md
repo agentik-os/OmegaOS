@@ -11,9 +11,11 @@ The live truth is always `omega --help`, `omega rules list`, and `omega-skills`.
 
 ## 1. Orchestration — Oracles & Workers
 
-The 4-level model: **Human (Telegram/CLI) → Master → Oracle (1 per project, strategic) → Workers
-(ephemeral, parallel, file-scoped)**. An oracle decomposes a mission and dispatches workers; it
-never edits code itself. Workers run isolated (worktrees) and report through quality gates.
+The 4-level model: **Human (Telegram/CLI) → Atlas Telegram service → Oracle
+(1 per project, strategic) → Workers (ephemeral, parallel, file-scoped)**. An
+oracle decomposes a mission and dispatches workers; it never edits code itself.
+Workers can run in isolated worktrees and submit completion candidates to the
+mission gate.
 
 | Do this | Command |
 |---|---|
@@ -25,7 +27,7 @@ never edits code itself. Workers run isolated (worktrees) and report through qua
 | See a mission timeline | `omega timeline <oracle>` |
 | Team / parallel fan-out | `omega team`, or the Workflow primitive (`/dynamic`) |
 
-Doctrine: R-ORCH (workflow-first), R-MASTER (master dispatches only), R-LOOP (bounded retries),
+Doctrine: R-ORCH (workflow-first), R-MASTER (dispatch-only orchestration), R-LOOP (bounded retries),
 R-VERIFY (adversarial verification). Reference: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 2. Telegram
@@ -45,9 +47,9 @@ Doctrine: R-TGSEC (allow-list), R-TGDELIVER (push every deliverable link/file), 
 
 ## 3. Rules & Laws (the doctrine engine)
 
-**7 Laws (L0–L6)** inviolable + **~47 Rules (R-*)** operational, compiled in
+**7 Laws (L0–L6)** inviolable + **52 Rules (R-*)** operational, compiled in
 `crates/omega-core/src/rules.rs` (the SSOT) and injected into every dispatched agent via
-`agent_context_block(scope)`. 54 total.
+`agent_context_block(scope)`. `omega rules list` is the live inventory.
 
 | Do this | Command |
 |---|---|
@@ -62,7 +64,9 @@ audit skill). A rule's first sentence is what survives injection — front-load 
 
 ## 4. Skills — Atlas, RAG, Power-Ups
 
-~350 native skills + a large discoverable library. Nothing is hidden: there is one atlas.
+The shipped skill catalog plus user-installed libraries is discoverable through
+one atlas. Catalog size changes as skills are added, so validate the live tree
+instead of relying on a copied count.
 
 | Do this | Command |
 |---|---|
@@ -71,6 +75,7 @@ audit skill). A rule's first sentence is what survives injection — front-load 
 | Search the Power-Up library | `omega-skills --powerups <term>` |
 | The served, searchable catalog | `omega-skills --html` → the tailnet atlas page |
 | Invoke a skill | type its `/command`, or ask by name (the Skill tool) |
+| Validate the repository catalog | `omega skills validate --root skills` |
 
 Doctrine: R-SKILL-ATLAS. Reference: [skill-atlas.md](skill-atlas.md),
 [third-party-skills.md](third-party-skills.md). The Power-Up library (907 purchased skills) is

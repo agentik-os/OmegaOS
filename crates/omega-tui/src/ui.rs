@@ -1,4 +1,7 @@
-use crate::app::{App, InfoSection, InputMode, MenuAction, MonitorAction, MonitorSection, SessionEntry, SessionFocus, SessionRow, SettingsSection, Tab};
+use crate::app::{
+    App, InfoSection, InputMode, MenuAction, MonitorAction, MonitorSection, SessionEntry,
+    SessionFocus, SessionRow, SettingsSection, Tab,
+};
 use crate::preview::{
     provider as preview_provider, reflow_cursor as reflowed_cursor,
     reflow_lines as reflow_preview_lines,
@@ -203,8 +206,10 @@ fn preview_span_style(sp: &PreviewSpan) -> Style {
     // from disappearing on light Termius palettes or bright basic terminals.
     let dim_safe = match (sp.fg, sp.bg) {
         (Some(fg), Some(bg)) => preview_contrast_ratio(fg, bg) >= 7.0,
-        (None, Some(bg)) => preview_contrast_ratio(PreviewColor::Indexed(15), bg) >= 7.0
-            || preview_contrast_ratio(PreviewColor::Indexed(0), bg) >= 7.0,
+        (None, Some(bg)) => {
+            preview_contrast_ratio(PreviewColor::Indexed(15), bg) >= 7.0
+                || preview_contrast_ratio(PreviewColor::Indexed(0), bg) >= 7.0
+        }
         _ => true,
     };
     if sp.dim && dim_safe {
@@ -287,7 +292,10 @@ mod preview_style_tests {
         let light = preview_span_style(&span(None, Some(PreviewColor::Indexed(15)), false));
 
         assert_eq!((dark.fg, dark.bg), (Some(Color::White), Some(Color::Black)));
-        assert_eq!((light.fg, light.bg), (Some(Color::Black), Some(Color::White)));
+        assert_eq!(
+            (light.fg, light.bg),
+            (Some(Color::Black), Some(Color::White))
+        );
     }
 
     #[test]
@@ -423,6 +431,9 @@ use crate::theme as th;
 // surfaces tolerate a couple seconds of staleness invisibly. Same medicine as
 // `App::providers_cache`, generalized for the renderers that take no `App`.
 const RENDER_TTL: std::time::Duration = std::time::Duration::from_secs(2);
+type UsageSnapshotRead = Result<Option<omega_core::monitor::UsageSnapshot>, String>;
+type TelegramConfigRead = Result<Option<omega_core::monitor::OmegaTelegramConfig>, String>;
+type TelegramGroupRead = Result<Option<omega_core::telegram_group::TelegramGroupConfig>, String>;
 
 /// True when an ancestor of this process is mosh-server — the transport that
 /// silently eats the mouse handshake (mobile-shell/mosh#101). Walked once and
@@ -437,7 +448,9 @@ fn under_mosh() -> bool {
             };
             // /proc/<pid>/stat: "pid (comm) state ppid …" — comm may contain
             // spaces/parens, so split on the LAST ')'.
-            let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else { return false };
+            let Some(rest) = stat.rsplit_once(')').map(|(_, r)| r) else {
+                return false;
+            };
             let comm = stat
                 .split_once('(')
                 .and_then(|(_, r)| r.rsplit_once(')').map(|(c, _)| c))
@@ -445,7 +458,10 @@ fn under_mosh() -> bool {
             if comm.contains("mosh-server") {
                 return true;
             }
-            let Some(ppid) = rest.split_whitespace().nth(1).and_then(|p| p.parse::<u32>().ok())
+            let Some(ppid) = rest
+                .split_whitespace()
+                .nth(1)
+                .and_then(|p| p.parse::<u32>().ok())
             else {
                 return false;
             };
@@ -459,9 +475,7 @@ fn under_mosh() -> bool {
 }
 
 fn render_memo<T: Clone + 'static>(
-    slot: &'static std::thread::LocalKey<
-        std::cell::RefCell<Option<(std::time::Instant, T)>>,
-    >,
+    slot: &'static std::thread::LocalKey<std::cell::RefCell<Option<(std::time::Instant, T)>>>,
     load: impl FnOnce() -> T,
 ) -> T {
     slot.with(|cell| {
@@ -555,10 +569,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         InputMode::DispatchProject(..) => draw_dispatch_picker(frame, app),
         InputMode::DispatchMission(ref p) => {
             let title = "Dispatch oracle — step 2/2".to_string();
-            let hint = format!("Mission for project '{}' (Enter to dispatch, Esc to cancel)", p);
+            let hint = format!(
+                "Mission for project '{}' (Enter to dispatch, Esc to cancel)",
+                p
+            );
             draw_simple_input_modal_owned(frame, app, &title, &hint, false);
         }
-        InputMode::EditSettingsField { ref config_key, masked } => {
+        InputMode::EditSettingsField {
+            ref config_key,
+            masked,
+        } => {
             let title = format!("Edit setting: {}", config_key);
             let hint = "Type new value, Enter to save, Esc to cancel".to_string();
             draw_simple_input_modal_owned(frame, app, &title, &hint, masked);
@@ -615,8 +635,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .get(step)
                 .map(|f| (f.0, f.1, f.2))
                 .unwrap_or(("", "", true));
-            let title =
-                format!("Provisioning keys — {}/{}: {}", step + 1, fields.len(), key);
+            let title = format!("Provisioning keys — {}/{}: {}", step + 1, fields.len(), key);
             draw_simple_input_modal_owned(frame, app, &title, hint, masked);
         }
         InputMode::GroupSetupId => draw_simple_input_modal(
@@ -649,12 +668,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_new_project_picker(frame: &mut Frame, app: &App) {
     let (title, options, sel): (String, &[(&str, &str)], usize) = match &app.input_mode {
         InputMode::NewProjectCategory(name, sel) => (
-            format!(" New project [{}] — step 2/3: category — ↑/↓, Enter, Esc ", name),
+            format!(
+                " New project [{}] — step 2/3: category — ↑/↓, Enter, Esc ",
+                name
+            ),
             crate::app::NEW_PROJECT_CATEGORIES,
             *sel,
         ),
         InputMode::NewProjectStack(name, _category, sel) => (
-            format!(" New project [{}] — step 3/3: stack — ↑/↓, Enter, Esc ", name),
+            format!(
+                " New project [{}] — step 3/3: stack — ↑/↓, Enter, Esc ",
+                name
+            ),
             crate::app::NEW_PROJECT_STACKS,
             *sel,
         ),
@@ -686,7 +711,9 @@ fn draw_new_project_picker(frame: &mut Frame, app: &App) {
                     Span::raw("   "),
                     Span::styled(
                         format!(" {:10} ", id),
-                        Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(th::accent2())
+                            .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(*label, Style::default().fg(th::text())),
                 ]))
@@ -807,7 +834,13 @@ fn draw_project_open_picker(frame: &mut Frame, app: &App) {
             ],
             *sel,
         ),
-        InputMode::ProjectOpenAgentPick { lane, name, agents, sel, .. } => {
+        InputMode::ProjectOpenAgentPick {
+            lane,
+            name,
+            agents,
+            sel,
+            ..
+        } => {
             let lane_label = match lane {
                 crate::app::ProjectLane::Coding => "coding",
                 crate::app::ProjectLane::Marketing => "marketing",
@@ -819,7 +852,10 @@ fn draw_project_open_picker(frame: &mut Frame, app: &App) {
                 .collect();
             rows.push("   Cancel".to_string());
             (
-                format!(" ▶ Open {} ({}) — pick the LLM (installed only) ", name, lane_label),
+                format!(
+                    " ▶ Open {} ({}) — pick the LLM (installed only) ",
+                    name, lane_label
+                ),
                 rows,
                 *sel,
             )
@@ -843,7 +879,11 @@ fn draw_project_open_picker(frame: &mut Frame, app: &App) {
                 Style::default().fg(th::bright())
             };
             let row = format!("{} {}", if i == sel { "▶" } else { " " }, opt);
-            let pad = if i == sel { inner_w.saturating_sub(row.chars().count()) } else { 0 };
+            let pad = if i == sel {
+                inner_w.saturating_sub(row.chars().count())
+            } else {
+                0
+            };
             ListItem::new(Line::from(Span::styled(
                 format!("{}{}", row, " ".repeat(pad)),
                 style,
@@ -893,7 +933,11 @@ fn draw_project_delete_picker(frame: &mut Frame, app: &App) {
             };
             // Full-width bar when selected — consistent with the other pickers.
             let row = format!("{} {}", if i == sel { "▶" } else { " " }, opt);
-            let pad = if i == sel { inner_w.saturating_sub(row.chars().count()) } else { 0 };
+            let pad = if i == sel {
+                inner_w.saturating_sub(row.chars().count())
+            } else {
+                0
+            };
             ListItem::new(Line::from(Span::styled(
                 format!("{}{}", row, " ".repeat(pad)),
                 style,
@@ -991,11 +1035,15 @@ fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled(
                 "  Telegram Setup ",
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("· Step {}/3", step_num),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -1008,13 +1056,18 @@ fn draw_telegram_setup_modal(frame: &mut Frame, app: &App) {
             Span::raw("    "),
             Span::styled(
                 format!("{}: ", step_label),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(th::accent2())),
-            Span::styled(display, Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                display,
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("█", Style::default().fg(th::accent2())),
         ]),
         Line::from(""),
@@ -1075,7 +1128,10 @@ fn draw_simple_input_modal_owned(
         Line::from(""),
         Line::from(vec![
             Span::styled("    ▶ ", Style::default().fg(th::accent2())),
-            Span::styled(display, Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                display,
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("█", Style::default().fg(th::accent2())),
         ]),
         Line::from(""),
@@ -1168,11 +1224,7 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
     let selected = app.tab.index();
 
     let tabs = Tabs::new(titles)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" OmegaOS "),
-        )
+        .block(Block::default().borders(Borders::ALL).title(" OmegaOS "))
         .select(selected)
         // All tabs use the same color when inactive; active tab is
         // accent+bold+underline — the underline is the non-color cue so
@@ -1194,7 +1246,9 @@ fn draw_tabs(frame: &mut Frame, app: &mut App, area: Rect) {
 fn group_header(label: &str) -> ListItem<'static> {
     ListItem::new(Line::from(Span::styled(
         format!("  ─── {} ───", label),
-        Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent2())
+            .add_modifier(Modifier::BOLD),
     )))
 }
 
@@ -1289,14 +1343,10 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|row| match row {
             SessionRow::Header(label) => {
                 rendered_rows.push(None);
-                ListItem::new(Line::from(vec![
-                Span::styled(
+                ListItem::new(Line::from(vec![Span::styled(
                     format!("  {} ", label),
-                    Style::default()
-                        .fg(th::dim())
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]))
+                    Style::default().fg(th::dim()).add_modifier(Modifier::BOLD),
+                )]))
             }
             SessionRow::Entry(entry) => {
                 rendered_rows.push(Some(entry_idx));
@@ -1331,25 +1381,17 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         let mut result: Option<usize> = None;
         for (row_idx, row) in app.rows.iter().enumerate() {
             if let SessionRow::Entry(_) = row {
-                if eidx == app.selected { result = Some(row_idx); break; }
+                if eidx == app.selected {
+                    result = Some(row_idx);
+                    break;
+                }
                 eidx += 1;
             }
         }
         result
     };
 
-    // Context hint: when the highlighted row is the AISB Master and Telegram
-    // isn't connected yet, advertise the in-TUI Enter→setup path so a non-dev
-    // discovers it.
-    let master_cta = app
-        .selected_session()
-        .map(|e| {
-            omega_core::aisb::is_master(&e.session.name)
-                && !omega_core::monitor::OmegaTelegramConfig::exists()
-        })
-        .unwrap_or(false);
     let list_hint = match app.session_focus {
-        crate::app::SessionFocus::List if master_cta => "LIST  ★ Enter: connect Telegram  x:kill",
         crate::app::SessionFocus::List => "LIST  x:kill  .:lock  r:rename",
         _ => "CHAT (Tab → list to manage)",
     };
@@ -1357,7 +1399,11 @@ fn draw_sessions(frame: &mut Frame, app: &mut App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" Sessions ({}) — {} ", app.sessions.len(), list_hint))
+                .title(format!(
+                    " Sessions ({}) — {} ",
+                    app.sessions.len(),
+                    list_hint
+                ))
                 .border_style(list_border_style),
         )
         .highlight_style(Style::default());
@@ -1410,7 +1456,11 @@ pub(crate) fn draw_sessions_right(
     );
     let preview_title = match selected_name.as_deref() {
         Some(name) => {
-            let suffix = if fullscreen { "  [FULLSCREEN — Tab-Tab to exit]" } else { "" };
+            let suffix = if fullscreen {
+                "  [FULLSCREEN — Tab-Tab to exit]"
+            } else {
+                ""
+            };
             format!(" {} · {}{} ", provider.label(), name, suffix)
         }
         None => " Preview ".to_string(),
@@ -1554,8 +1604,8 @@ pub(crate) fn draw_sessions_right(
                     let is_user_input = (trimmed.starts_with("❯ ") && trimmed.len() > 2)
                         || trimmed.starts_with("▶ You: ");
                     // 2b. AISB-master agent reply echo: "You ▶ <text>".
-                    let is_agent_reply = trimmed.starts_with("You ▶ ")
-                        || trimmed.starts_with("You ▶");
+                    let is_agent_reply =
+                        trimmed.starts_with("You ▶ ") || trimmed.starts_with("You ▶");
                     // 3. TodoWrite items: anchored on the status glyph at
                     //    line start (after trim) so a glyph inside a table
                     //    cell or sentence doesn't match.
@@ -1714,7 +1764,12 @@ pub(crate) fn draw_sessions_right(
         .map(|r| {
             preview_lines
                 .get(scroll as usize + r)
-                .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>())
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
                 .unwrap_or_default()
         })
         .collect();
@@ -1751,21 +1806,23 @@ pub(crate) fn draw_sessions_right(
         .selected_session()
         .and_then(|e| app.session_meta.get(&e.session.name))
         .map(|(model, tokens)| {
-            format!("  ⟨ {} · {} tok ⟩", model, omega_core::claude_meta::fmt_tokens(*tokens))
+            format!(
+                "  ⟨ {} · {} tok ⟩",
+                model,
+                omega_core::claude_meta::fmt_tokens(*tokens)
+            )
         });
     let title = match meta_suffix {
         Some(meta) => format!("{}{}{}", preview_title, scroll_indicator, meta),
         None if chat_focused => format!("{}{}  [keys → session]", preview_title, scroll_indicator),
         None => format!("{}{}", preview_title, scroll_indicator),
     };
-    let preview = Paragraph::new(preview_lines)
-        .scroll((scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .border_style(preview_border_style),
-        );
+    let preview = Paragraph::new(preview_lines).scroll((scroll, 0)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .border_style(preview_border_style),
+    );
     frame.render_widget(preview, area);
 
     // Visible cursor when chat is focused. Two layers (belt + suspenders):
@@ -1821,28 +1878,18 @@ fn render_session_item(
     active: bool,
     badge: Option<DoneStatus>,
 ) -> ListItem<'static> {
-    let is_master = omega_core::aisb::is_master(&entry.session.name);
-
-    let icon = if is_master {
-        "★"
-    } else {
-        match entry.session.role {
-            SessionRole::Oracle => "◆",
-            SessionRole::Worker => "●",
-            SessionRole::Home => "⌂",
-            SessionRole::System => "⚙",
-        }
+    let icon = match entry.session.role {
+        SessionRole::Oracle => "◆",
+        SessionRole::Worker => "●",
+        SessionRole::Home => "⌂",
+        SessionRole::System => "⚙",
     };
 
-    let icon_color = if is_master {
-        th::special()
-    } else {
-        match entry.session.role {
-            SessionRole::Oracle => th::accent2(),
-            SessionRole::Worker => th::success(),
-            SessionRole::Home => th::info(),
-            SessionRole::System => th::dim(),
-        }
+    let icon_color = match entry.session.role {
+        SessionRole::Oracle => th::accent2(),
+        SessionRole::Worker => th::success(),
+        SessionRole::Home => th::info(),
+        SessionRole::System => th::dim(),
     };
 
     let progress_str = match &entry.progress {
@@ -1869,10 +1916,6 @@ fn render_session_item(
         Style::default()
             .fg(th::accent())
             .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else if is_master {
-        Style::default()
-            .fg(th::special())
-            .add_modifier(Modifier::BOLD)
     } else {
         // Passive: plain body text, NO bold — bold on every row carries zero
         // hierarchy. Bold stays reserved for the active session and the
@@ -1894,14 +1937,13 @@ fn render_session_item(
     let line = Line::from(vec![
         Span::styled(prefix, Style::default().fg(th::accent())),
         Span::raw(entry.tree_prefix.clone()),
-        Span::styled(
-            format!("{} ", icon),
-            Style::default().fg(icon_color),
-        ),
+        Span::styled(format!("{} ", icon), Style::default().fg(icon_color)),
         Span::styled(protect_marker, Style::default().fg(th::special())),
         Span::styled(
             badge_glyph,
-            Style::default().fg(badge_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(badge_color)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(entry.session.name.clone(), name_style),
         Span::styled(progress_str, Style::default().fg(th::accent())),
@@ -1920,7 +1962,9 @@ fn menu_group(action: &MenuAction) -> &'static str {
         | MenuAction::NewGlm => "New agent sessions",
         MenuAction::NewTerminal => "Terminal",
         MenuAction::NewProject | MenuAction::DispatchOracle => "Orchestration",
-        MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => "Session actions",
+        MenuAction::Refresh | MenuAction::ToggleProtection | MenuAction::KillSelected => {
+            "Session actions"
+        }
         MenuAction::KillAll | MenuAction::NuclearCleanup => "Danger zone",
         MenuAction::Restart | MenuAction::Quit => "OmegaOS",
     }
@@ -1942,7 +1986,9 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             items.push(ListItem::new(Line::from(Span::styled(
                 format!("  ─── {} ───", group),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             ))));
             rendered_actions.push(None);
             last_group = Some(group);
@@ -1978,7 +2024,9 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(state_glyph, state_style),
             Span::styled(
                 format!("[{}] ", action.shortcut()),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(action.label(), label_style),
             // Say it in words too: a glyph alone is not a state anyone can read
@@ -2013,11 +2061,15 @@ fn draw_menu(frame: &mut Frame, app: &mut App, area: Rect) {
         for (i, action) in MenuAction::all().iter().enumerate() {
             let g = menu_group(action);
             if last != Some(g) {
-                if last.is_some() { idx += 1; } // blank line
+                if last.is_some() {
+                    idx += 1;
+                } // blank line
                 idx += 1; // header line
                 last = Some(g);
             }
-            if i == app.menu_selected { break; }
+            if i == app.menu_selected {
+                break;
+            }
             idx += 1;
         }
         idx
@@ -2055,7 +2107,11 @@ fn build_settings_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
         if current {
             flat_selected = items.len();
         }
-        items.push(section_row(sec.label().to_string(), current, current && list_focused));
+        items.push(section_row(
+            sec.label().to_string(),
+            current,
+            current && list_focused,
+        ));
     }
 
     // Gap between groups.
@@ -2068,7 +2124,11 @@ fn build_settings_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
         if current {
             flat_selected = items.len();
         }
-        items.push(section_row(sec.label().to_string(), current, current && list_focused));
+        items.push(section_row(
+            sec.label().to_string(),
+            current,
+            current && list_focused,
+        ));
     }
 
     (items, flat_selected)
@@ -2082,7 +2142,9 @@ fn render_monitor_detail(app: &App) -> (Vec<Line<'static>>, usize) {
     let sub = |label: &str| {
         Line::from(Span::styled(
             format!("  ─── {} ───", label),
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         ))
     };
     match app.selected_monitor_section() {
@@ -2130,13 +2192,20 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
     if let Some(acc) = monitor::connected_account() {
         lines.push(Line::from(vec![
             Span::raw("    Email:          "),
-            Span::styled(acc.email.clone(), Style::default().fg(th::success()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                acc.email.clone(),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]));
         lines.push(Line::from(vec![
             Span::raw("    Plan:           "),
             Span::styled(
                 format!("Claude {}", acc.plan.to_uppercase()),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!("   ({})", acc.auth_method)),
         ]));
@@ -2153,19 +2222,25 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
         ReauthStatus::Idle => {
             lines.push(Line::from(Span::styled(
                 "    ▶ Press Enter to re-auth Claude (guided OAuth — captures the login URL)",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         ReauthStatus::Generating => {
             lines.push(Line::from(Span::styled(
                 "    ⏳ Starting login session and capturing the authorize URL… (~15s)",
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         ReauthStatus::ShowUrl(url) => {
             lines.push(Line::from(Span::styled(
                 "    1) Open this URL in your browser and authorize:",
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
             // The detail Paragraph deliberately does not wrap (it scrolls), so a
@@ -2177,25 +2252,33 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
             for chunk in fold_for_panel(url, 56) {
                 lines.push(Line::from(Span::styled(
                     format!("    {}", chunk),
-                    Style::default().fg(th::info()).add_modifier(Modifier::UNDERLINED),
+                    Style::default()
+                        .fg(th::info())
+                        .add_modifier(Modifier::UNDERLINED),
                 )));
             }
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "    2) Press Enter to paste the code you get back.",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         ReauthStatus::Validating => {
             lines.push(Line::from(Span::styled(
                 "    ⏳ Submitting code and waiting for credentials to refresh… (~20s)",
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         ReauthStatus::Done(msg) => {
             lines.push(Line::from(Span::styled(
                 format!("    ✓ {}", msg),
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -2206,7 +2289,9 @@ fn render_monitor_account(app: &App) -> Vec<Line<'static>> {
         ReauthStatus::Error(msg) => {
             lines.push(Line::from(Span::styled(
                 format!("    ✗ {}", msg),
-                Style::default().fg(th::error()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::error())
+                    .add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
@@ -2228,7 +2313,7 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
             Option<(
                 std::time::Instant,
                 (
-                    Option<omega_core::monitor::UsageSnapshot>,
+                    UsageSnapshotRead,
                     Option<u64>,
                     omega_core::monitor::AisbBotStatus,
                 ),
@@ -2237,14 +2322,14 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
     }
     let (snap, cache_age, bot_status) = render_memo(&BILLING_MEMO, || {
         (
-            monitor::UsageSnapshot::read().ok().flatten(),
+            monitor::UsageSnapshot::read().map_err(|error| error.to_string()),
             monitor::UsageSnapshot::cache_age_secs(),
             monitor::aisb_bot_status(),
         )
     });
     let mut lines: Vec<Line> = vec![Line::from("")];
 
-    if let Some(snap) = &snap {
+    if let Ok(Some(snap)) = &snap {
         let cache_label = match cache_age {
             Some(s) if s < 60 => format!("{}s ago", s),
             Some(s) if s < 3600 => format!("{}m ago", s / 60),
@@ -2258,7 +2343,11 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
             } else {
                 "—"
             },
-            if !snap.email.is_empty() { snap.email.as_str() } else { "—" }
+            if !snap.email.is_empty() {
+                snap.email.as_str()
+            } else {
+                "—"
+            }
         )));
         lines.push(Line::from(format!(
             "    Source:         {}    Cache: {}",
@@ -2267,15 +2356,22 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
         lines.push(Line::from(""));
 
         for (label, pct, tokens, budget) in [
-            ("5h session", snap.precise_5h(), snap.tokens_5h, snap.budget_5h),
-            ("Week",       snap.precise_week(), snap.tokens_7d, snap.budget_week),
+            (
+                "5h session",
+                snap.precise_5h(),
+                snap.tokens_5h,
+                snap.budget_5h,
+            ),
+            (
+                "Week",
+                snap.precise_week(),
+                snap.tokens_7d,
+                snap.budget_week,
+            ),
         ] {
             lines.push(Line::from(vec![
                 Span::raw(format!("    {:11} ", label)),
-                Span::styled(
-                    render_bar(pct, 30),
-                    Style::default().fg(pct_color(pct)),
-                ),
+                Span::styled(render_bar(pct, 30), Style::default().fg(pct_color(pct))),
                 Span::raw(format!(" {:5.1}%  ", pct)),
                 Span::styled(
                     format!("{} / {} tok", short_num(tokens), short_num(budget)),
@@ -2288,6 +2384,13 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
             "    Sonnet:         {}%        Extra: {}%",
             snap.sonnet_pct, snap.extra_pct
         )));
+    } else if let Err(error) = &snap {
+        lines.push(Line::from(Span::styled(
+            format!("    INVALID usage snapshot: {error}"),
+            Style::default()
+                .fg(th::error())
+                .add_modifier(Modifier::BOLD),
+        )));
     } else {
         lines.push(Line::from(Span::styled(
             "    (no usage snapshot yet)",
@@ -2298,7 +2401,9 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "    ▶ Press Enter to refresh billing now (live OAuth usage check)",
-        Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::success())
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -2306,7 +2411,12 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
         Style::default().fg(th::accent2()),
     )));
     lines.push(Line::from(Span::styled(
-        "    Billing reads ~/.omega/state/usage.json (omega usage --check, native OAuth).",
+        format!(
+            "    Billing reads {} (omega usage --check, native OAuth).",
+            omega_core::config::omega_dir()
+                .join("state/usage.json")
+                .display()
+        ),
         Style::default().fg(th::dim()),
     )));
     let (bot_icon, bot_color, bot_text) = if bot_status.bot_alive {
@@ -2316,7 +2426,10 @@ fn render_monitor_billing() -> Vec<Line<'static>> {
     };
     lines.push(Line::from(vec![
         Span::raw("    Process status: "),
-        Span::styled(format!("{} {}", bot_icon, bot_text), Style::default().fg(bot_color)),
+        Span::styled(
+            format!("{} {}", bot_icon, bot_text),
+            Style::default().fg(bot_color),
+        ),
     ]));
     let cache_text = match bot_status.cache_status {
         monitor::CacheStatus::Fresh(s) => format!("fresh ({}s ago)", s),
@@ -2332,15 +2445,23 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
     // Per-frame TOML read → RENDER_TTL memo (see above).
     thread_local! {
         static TG_MEMO: std::cell::RefCell<
-            Option<(std::time::Instant, Option<omega_core::monitor::OmegaTelegramConfig>)>,
+            Option<(std::time::Instant, TelegramConfigRead)>,
         > = const { std::cell::RefCell::new(None) };
     }
-    let tg_config = render_memo(&TG_MEMO, monitor::OmegaTelegramConfig::read);
+    let tg_config = render_memo(&TG_MEMO, || {
+        monitor::OmegaTelegramConfig::try_read().map_err(|error| error.to_string())
+    });
+    render_monitor_telegram_from(tg_config)
+}
+
+fn render_monitor_telegram_from(tg_config: TelegramConfigRead) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = vec![Line::from("")];
 
     lines.push(Line::from(Span::styled(
         "    Omega Telegram Bot (Rust — this system)",
-        Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent())
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         "      Omega's OWN Telegram bot (no Python, no AISB-Python dependency).",
@@ -2355,9 +2476,17 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
         Style::default().fg(th::text()),
     )));
     lines.push(Line::from(""));
-    if let Some(cfg) = tg_config {
-        let state = if cfg.enabled { "enabled" } else { "configured (disabled)" };
-        let color = if cfg.enabled { th::success() } else { th::accent2() };
+    if let Ok(Some(cfg)) = tg_config {
+        let state = if cfg.enabled {
+            "enabled"
+        } else {
+            "configured (disabled)"
+        };
+        let color = if cfg.enabled {
+            th::success()
+        } else {
+            th::accent2()
+        };
         lines.push(Line::from(vec![
             Span::raw("    Status:         "),
             Span::styled(state.to_string(), Style::default().fg(color)),
@@ -2366,16 +2495,26 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
             lines.push(Line::from(format!("    Label:          {}", cfg.label)));
         }
         lines.push(Line::from(format!("    Chat ID:        {}", cfg.chat_id)));
-        let sender = if cfg.allow_user_ids.is_empty() {
-            "chat_id only (any user in this chat)".to_string()
-        } else {
-            format!("user_ids {:?}", cfg.allow_user_ids)
-        };
+        let sender = format!("user_ids {:?}", cfg.allow_user_ids);
         lines.push(Line::from(format!("    Sender filter:  {}", sender)));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "    ▶ Press Enter to DISCONNECT the bot (two-press confirm)",
-            Style::default().fg(th::error()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::error())
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Err(error) = tg_config {
+        lines.push(Line::from(Span::styled(
+            format!("    Status:         INVALID configuration ({error})"),
+            Style::default()
+                .fg(th::error())
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "    Refusing to replace malformed authority. Repair the file or disconnect explicitly.",
+            Style::default().fg(th::error()),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -2394,39 +2533,98 @@ fn render_monitor_telegram() -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "    ▶ Press Enter to set up the bot (guided, no command needed)",
-            Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::success())
+                .add_modifier(Modifier::BOLD),
         )));
     }
     lines
 }
 
+#[cfg(test)]
+mod monitor_render_tests {
+    use super::*;
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn malformed_telegram_authority_is_never_rendered_as_absent() {
+        let invalid = text(&render_monitor_telegram_from(Err(
+            "strict schema rejected".to_string()
+        )));
+        assert!(invalid.contains("INVALID configuration"));
+        assert!(invalid.contains("strict schema rejected"));
+        assert!(!invalid.contains("(not configured)"));
+
+        let absent = text(&render_monitor_telegram_from(Ok(None)));
+        assert!(absent.contains("(not configured)"));
+        assert!(!absent.contains("INVALID configuration"));
+    }
+
+    #[test]
+    fn malformed_telegram_group_authority_is_never_rendered_as_absent() {
+        let invalid = text(&render_monitor_projects_from(Err(
+            "duplicate topic id".to_string()
+        )));
+        assert!(invalid.contains("INVALID group state"));
+        assert!(invalid.contains("duplicate topic id"));
+        assert!(!invalid.contains("Not configured"));
+
+        let absent = text(&render_monitor_projects_from(Ok(None)));
+        assert!(absent.contains("Not configured"));
+        assert!(!absent.contains("INVALID group state"));
+    }
+}
+
 fn render_monitor_projects() -> Vec<Line<'static>> {
+    // Per-frame JSON read → RENDER_TTL memo (see above).
+    thread_local! {
+        static GROUP_MEMO: std::cell::RefCell<
+            Option<(std::time::Instant, TelegramGroupRead)>,
+        > = const { std::cell::RefCell::new(None) };
+    }
+    let group = render_memo(&GROUP_MEMO, || {
+        omega_core::telegram_group::TelegramGroupConfig::try_load()
+            .map_err(|error| error.to_string())
+    });
+    render_monitor_projects_from(group)
+}
+
+fn render_monitor_projects_from(group: TelegramGroupRead) -> Vec<Line<'static>> {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(Span::styled(
             "    Project group (auto-detected)",
-            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
-    // Per-frame TOML read → RENDER_TTL memo (see above).
-    thread_local! {
-        static GROUP_MEMO: std::cell::RefCell<
-            Option<(
-                std::time::Instant,
-                Option<omega_core::telegram_group::TelegramGroupConfig>,
-            )>,
-        > = const { std::cell::RefCell::new(None) };
-    }
-    match render_memo(&GROUP_MEMO, omega_core::telegram_group::TelegramGroupConfig::load) {
-        Some(gcfg) => {
+    match group {
+        Ok(Some(gcfg)) => {
             lines.push(Line::from(vec![
                 Span::raw("    Status:         "),
-                Span::styled("● Connected", Style::default().fg(th::success()).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "● Connected",
+                    Style::default()
+                        .fg(th::success())
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
             lines.push(Line::from(format!(
                 "    Group:          {}  ({})",
-                if gcfg.group_name.is_empty() { "—".to_string() } else { gcfg.group_name.clone() },
+                if gcfg.group_name.is_empty() {
+                    "—".to_string()
+                } else {
+                    gcfg.group_name.clone()
+                },
                 gcfg.group_id
             )));
             lines.push(Line::from(format!(
@@ -2447,10 +2645,25 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "    ▶ Press Enter to change the group id",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
-        None => {
+        Err(error) => {
+            lines.push(Line::from(Span::styled(
+                format!("    Status:         INVALID group state ({error})"),
+                Style::default()
+                    .fg(th::error())
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "    Automatic topic reconciliation is blocked until the state is repaired.",
+                Style::default().fg(th::error()),
+            )));
+        }
+        Ok(None) => {
             lines.push(Line::from(Span::styled(
                 "    Status:         ○ Not configured",
                 Style::default().fg(th::dim()),
@@ -2479,7 +2692,9 @@ fn render_monitor_projects() -> Vec<Line<'static>> {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
                 "    ▶ Press Enter to set the group id manually (guided, no command needed)",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
     }
@@ -2494,7 +2709,9 @@ fn render_monitor_actions(app: &App) -> (Vec<Line<'static>>, usize) {
     if detail_active {
         lines.push(Line::from(Span::styled(
             "  ↑/↓ navigate · Enter runs · Tab → back to list",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -2506,7 +2723,9 @@ fn render_monitor_actions(app: &App) -> (Vec<Line<'static>>, usize) {
 
     for (i, action) in MonitorAction::all().iter().enumerate() {
         let selected = detail_active && i == app.monitor_action_selected;
-        if selected { selected_line = lines.len(); }
+        if selected {
+            selected_line = lines.len();
+        }
         let prefix = if selected { "  ▶ " } else { "    " };
         let label_style = if selected {
             Style::default()
@@ -2520,7 +2739,9 @@ fn render_monitor_actions(app: &App) -> (Vec<Line<'static>>, usize) {
             Span::styled(prefix, Style::default().fg(th::accent())),
             Span::styled(
                 format!("[{}] ", action.shortcut()),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(action.label(), label_style),
         ]));
@@ -2542,9 +2763,13 @@ fn render_bar(pct: f32, width: usize) -> String {
 }
 
 fn pct_color(pct: f32) -> Color {
-    if pct < 50.0 { th::success() }
-    else if pct < 80.0 { th::accent2() }
-    else { th::error() }
+    if pct < 50.0 {
+        th::success()
+    } else if pct < 80.0 {
+        th::accent2()
+    } else {
+        th::error()
+    }
 }
 
 fn short_num(n: u64) -> String {
@@ -2619,7 +2844,13 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // so the registry is kept sorted in this same category order (see
     // ManagedProject::category_rank) and arrow-nav flows top-to-bottom.
     items.push(group_header("Projects"));
-    if app.project_registry.projects.is_empty() {
+    if app.project_registry.poisoned {
+        items.push(section_row(
+            "INVALID registry — repair projects.json".to_string(),
+            false,
+            false,
+        ));
+    } else if app.project_registry.projects.is_empty() {
         // The pinned OS row above owns the selection on an empty registry, so
         // this placeholder is informational only (never marked current).
         items.push(section_row(
@@ -2657,7 +2888,11 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
                     flat_selected = items.len();
                 }
                 // 🔕 marks a project whose Telegram toggle is OFF.
-                let tg_mark = if project.telegram_enabled() { "" } else { " 🔕" };
+                let tg_mark = if project.telegram_enabled() {
+                    ""
+                } else {
+                    " 🔕"
+                };
                 items.push(section_row(
                     format!("{}{}", project.name, tg_mark),
                     current,
@@ -2671,6 +2906,25 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
 }
 
 fn render_project_detail(app: &App) -> Vec<Line<'static>> {
+    if app.project_registry.poisoned {
+        return vec![
+            Line::from(""),
+            Line::from(Span::styled(
+                "  INVALID project registry",
+                Style::default()
+                    .fg(th::error())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(
+                    "  Repair {} before registering, deleting, or dispatching projects.",
+                    omega_core::project_manager::ProjectRegistry::registry_path().display()
+                ),
+                Style::default().fg(th::error()),
+            )),
+        ];
+    }
     let Some(project) = app.selected_project() else {
         return vec![
             Line::from(""),
@@ -2681,7 +2935,9 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
             Line::from(""),
             Line::from(Span::styled(
                 "  ▶ Press n to add a project (register an existing folder).",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(Span::styled(
                 "    Or press Enter on this empty list to do the same.",
@@ -2701,7 +2957,9 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
             Span::raw("  ".to_string()),
             Span::styled(
                 project.name.clone(),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
@@ -2760,7 +3018,6 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
 
-
     // Planner + bootstrap status (if .planner/tracker.json etc. exist).
     // Per-frame JSON read + parse → RENDER_TTL memo, keyed by the project
     // path so switching the selection refreshes immediately.
@@ -2795,7 +3052,9 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         let status = tracker.status();
         lines.push(Line::from(Span::styled(
             "  ── Planner ──",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(format!(
             "    Phase {}/{} — {:.0}% complete ({}/{} steps)",
@@ -2833,7 +3092,13 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
                     .map(|s| s.status == omega_core::planner::StepStatus::Done)
                     .unwrap_or(false)
             });
-            let phase_icon = if phase_done { "[+]" } else if phase.id == status.active_phase { "[~]" } else { "[ ]" };
+            let phase_icon = if phase_done {
+                "[+]"
+            } else if phase.id == status.active_phase {
+                "[~]"
+            } else {
+                "[ ]"
+            };
             lines.push(Line::from(format!(
                 "    {} Phase {}: {}",
                 phase_icon, phase.id, phase.name
@@ -2841,7 +3106,7 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         }
     } else {
         lines.push(Line::from(Span::styled(
-            "  No planner active — run /planner to create a plan.",
+            "  No planner active — press p or run /omg-planner to create a plan.",
             Style::default().fg(th::dim()),
         )));
     }
@@ -2851,7 +3116,9 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "  ── Bootstrap Pipeline ──",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         for phase in omega_core::bootstrap::BootstrapPhase::all() {
             let done = state.is_done(*phase);
@@ -2877,17 +3144,24 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
     let tg_on = project.telegram_enabled();
     lines.push(Line::from(Span::styled(
         "  ── Actions ──",
-        Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent2())
+            .add_modifier(Modifier::BOLD),
     )));
     let action = |key: &str, label: String| -> Line<'static> {
         Line::from(Span::styled(
-            format!("    [{}]{}{}", key, " ".repeat(7usize.saturating_sub(key.len())), label),
+            format!(
+                "    [{}]{}{}",
+                key,
+                " ".repeat(7usize.saturating_sub(key.len())),
+                label
+            ),
             Style::default().fg(th::accent()),
         ))
     };
     lines.push(action("Enter", "Open in terminal".to_string()));
     lines.push(action("d", "Dispatch oracle".to_string()));
-    lines.push(action("p", "Run planner".to_string()));
+    lines.push(action("p", "Create plan with /omg-planner".to_string()));
     lines.push(action(
         "T",
         format!(
@@ -2896,8 +3170,14 @@ fn render_project_detail(app: &App) -> Vec<Line<'static>> {
             if tg_on { "OFF" } else { "ON" },
         ),
     ));
-    lines.push(action("x", "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)".to_string()));
-    lines.push(action("D", "Quick delete local machine (press twice)".to_string()));
+    lines.push(action(
+        "x",
+        "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)".to_string(),
+    ));
+    lines.push(action(
+        "D",
+        "Quick delete local machine (press twice)".to_string(),
+    ));
     lines.push(action("n", "Add another project".to_string()));
 
     lines
@@ -2912,7 +3192,7 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     // Inner text width of the detail panel — gallery rows ellipsize their
     // blurbs against it instead of hard-clipping mid-word at the border.
     // (-2 borders, -1 margin for percentage-split rounding.)
-    let detail_inner_w = if app.detail_fullscreen {
+    let detail_inner_w = if app.detail_fullscreen || area.width < TWO_COLUMN_MIN_WIDTH {
         area.width.saturating_sub(2)
     } else {
         (area.width.saturating_mul(75) / 100).saturating_sub(3)
@@ -2944,22 +3224,47 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
     // instead of scrolling the Paragraph into blank space. The horizontal
     // split below keeps the full height, so area.height is the panel height
     // in both the split and fullscreen paths.
-    app.detail_max_scroll =
-        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+    app.detail_max_scroll = (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
     app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
 
     // Fullscreen detail mode: skip the left list, detail takes 100% width
     if app.detail_fullscreen {
         let title = format!(" {}  [FULLSCREEN — Tab/Tab-Tab to exit] ", section_label);
-        let paragraph = Paragraph::new(lines)
-            .scroll((app.detail_scroll, 0))
-            .block(
+        let paragraph = Paragraph::new(lines).scroll((app.detail_scroll, 0)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .border_style(Style::default().fg(th::accent2())),
+        );
+        frame.render_widget(paragraph, area);
+        return;
+    }
+
+    let list_focused = !app.detail_focused;
+    let (items, rendered_selected) = build_settings_list(app);
+
+    // At phone widths the split leaves an unusable 15-column settings list.
+    // Match the other list/detail tabs: render only the focused half and use
+    // Tab to move between them.
+    if area.width < TWO_COLUMN_MIN_WIDTH {
+        if list_focused {
+            let list = List::new(items).block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title(title)
+                    .title(format!(" {} — Tab → read ", section_label))
+                    .border_style(Style::default().fg(th::accent())),
+            );
+            let mut state = ListState::default().with_selected(Some(rendered_selected));
+            frame.render_stateful_widget(list, area, &mut state);
+        } else {
+            let paragraph = Paragraph::new(lines).scroll((app.detail_scroll, 0)).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" {} — Tab → list ", section_label))
                     .border_style(Style::default().fg(th::accent2())),
             );
-        frame.render_widget(paragraph, area);
+            frame.render_widget(paragraph, area);
+        }
         return;
     }
 
@@ -2968,13 +3273,18 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
         .split(area);
 
-    let list_focused = !app.detail_focused;
-    let list_border = if list_focused { th::accent() } else { th::dim() };
-    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
+    let list_border = if list_focused {
+        th::accent()
+    } else {
+        th::dim()
+    };
+    let detail_border = if app.detail_focused {
+        th::accent2()
+    } else {
+        th::dim()
+    };
 
     // ── Left: grouped section list (Monitor group + Settings group) ──────────
-    let (items, rendered_selected) = build_settings_list(app);
-
     let list_title = if list_focused {
         " ▶ FOCUSED Settings — ↑/↓ select, Tab → focus detail "
     } else {
@@ -3003,14 +3313,12 @@ fn draw_settings(frame: &mut Frame, app: &mut App, area: Rect) {
         format!(" {} ", section_label)
     };
 
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(detail_title)
-                .border_style(Style::default().fg(detail_border)),
-        );
+    let paragraph = Paragraph::new(lines).scroll((app.detail_scroll, 0)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(detail_title)
+            .border_style(Style::default().fg(detail_border)),
+    );
     frame.render_widget(paragraph, split[1]);
 }
 
@@ -3032,7 +3340,9 @@ fn render_settings_detail(
     if detail_active {
         lines.push(Line::from(Span::styled(
             "  ↑/↓ navigate · Enter activates · x clear field (2×) · Tab → back to list",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -3044,7 +3354,9 @@ fn render_settings_detail(
 
     for (i, field) in fields.iter().enumerate() {
         let is_selected = detail_active && i == app.settings_field_selected;
-        if is_selected { selected_line = lines.len(); }
+        if is_selected {
+            selected_line = lines.len();
+        }
         let prefix = if is_selected { "  ▶ " } else { "    " };
         match field {
             SettingsField::Action { label, command, .. } => {
@@ -3123,7 +3435,12 @@ fn render_settings_detail(
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
                     Span::styled(format!("{:38}", label), label_style),
-                    Span::styled(badge.to_string(), Style::default().fg(badge_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        badge.to_string(),
+                        Style::default()
+                            .fg(badge_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
                 if is_selected {
                     lines.push(Line::from(Span::styled(
@@ -3132,7 +3449,12 @@ fn render_settings_detail(
                     )));
                 }
             }
-            SettingsField::Select { label, options, current_index, .. } => {
+            SettingsField::Select {
+                label,
+                options,
+                current_index,
+                ..
+            } => {
                 let display = options
                     .get(*current_index)
                     .cloned()
@@ -3148,7 +3470,12 @@ fn render_settings_detail(
                 lines.push(Line::from(vec![
                     Span::raw(prefix.to_string()),
                     Span::styled(format!("{:38}", label), label_style),
-                    Span::styled(display, Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        display,
+                        Style::default()
+                            .fg(th::accent())
+                            .add_modifier(Modifier::BOLD),
+                    ),
                 ]));
                 if is_selected {
                     lines.push(Line::from(Span::styled(
@@ -3189,7 +3516,10 @@ fn render_settings_detail(
             let on = |c: Color| Style::default().fg(c).bg(row_bg);
             let marker = if *id == active { "  \u{25b6} " } else { "    " };
             let mut spans: Vec<Span> = vec![
-                Span::styled(marker.to_string(), on(p.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    marker.to_string(),
+                    on(p.accent).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("{:28}", id.label()),
                     if *id == active {
@@ -3201,14 +3531,22 @@ fn render_settings_detail(
             ];
             // warn replaces success in the strip: on mono themes success IS
             // the accent (duplicate swatch), while warn is a real distinct role.
-            for c in [p.accent, p.accent2, p.warn, p.error, p.info, p.special, p.dim] {
+            for c in [
+                p.accent, p.accent2, p.warn, p.error, p.info, p.special, p.dim,
+            ] {
                 spans.push(Span::styled("\u{2588}\u{2588}", on(c)));
             }
             // Char-safe ellipsis on the blurb: 4 marker + 28 label +
             // 14 swatches + 2 gap = 48 fixed columns before it.
             let blurb_budget = inner_w.saturating_sub(48);
             let blurb = if id.blurb().chars().count() > blurb_budget && blurb_budget > 1 {
-                format!("{}…", id.blurb().chars().take(blurb_budget - 1).collect::<String>())
+                format!(
+                    "{}…",
+                    id.blurb()
+                        .chars()
+                        .take(blurb_budget - 1)
+                        .collect::<String>()
+                )
             } else {
                 id.blurb().to_string()
             };
@@ -3219,7 +3557,15 @@ fn render_settings_detail(
 
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "  Config files: ~/.omega/config.toml  ~/.omega/providers.toml",
+        format!(
+            "  Config files: {}  {}",
+            omega_core::config::omega_dir()
+                .join("config.toml")
+                .display(),
+            omega_core::config::omega_dir()
+                .join("providers.toml")
+                .display()
+        ),
         Style::default().fg(th::dim()),
     )));
     (lines, selected_line)
@@ -3325,8 +3671,9 @@ struct TwoColumn<'a> {
     list_title: &'a str,
 }
 
-/// The 25/75 list+detail shell shared by the Projects and System tabs, with
-/// the fullscreen mode, the scroll-bound contract and the focus borders.
+/// The 25/75 list+detail shell shared by the Projects, System, and OS tabs,
+/// with the fullscreen mode, responsive collapse, scroll-bound contract, and
+/// focus borders.
 fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn) {
     let TwoColumn {
         items,
@@ -3356,14 +3703,16 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
     // The panel wraps (below), so the scroll bound must count the rows actually
     // painted, not the logical lines. Counting logical lines let End stop short
     // of the end of a wrapped document — the tail was unreachable.
-    let detail_width = if app.detail_fullscreen || area.width < TWO_COLUMN_MIN_WIDTH {
-        area.width.saturating_sub(2)
+    let detail_outer_width = if app.detail_fullscreen || area.width < TWO_COLUMN_MIN_WIDTH {
+        area.width
     } else {
         // Mirrors the 25/75 split below.
         (area.width as u32 * 75 / 100) as u16
-    }
-    .saturating_sub(2)
-    .max(1);
+    };
+    // The paragraph's border consumes exactly two columns. The narrow and
+    // fullscreen branches used to subtract those columns both above and here,
+    // overestimating wrapped rows and allowing scroll into blank space.
+    let detail_width = detail_outer_width.saturating_sub(2).max(1);
     let painted_rows = wrapped_row_count(&lines, detail_width);
 
     // Publish + pin the scroll bound (same contract as draw_settings): End
@@ -3424,10 +3773,22 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
         .split(area);
 
     let list_focused = !app.detail_focused;
-    let list_border = if list_focused { th::accent() } else { th::dim() };
-    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
+    let list_border = if list_focused {
+        th::accent()
+    } else {
+        th::dim()
+    };
+    let detail_border = if app.detail_focused {
+        th::accent2()
+    } else {
+        th::dim()
+    };
 
-    let list_title = if list_focused { list_focused_title } else { list_title };
+    let list_title = if list_focused {
+        list_focused_title
+    } else {
+        list_title
+    };
     let list = List::new(items)
         .block(
             Block::default()
@@ -3467,20 +3828,96 @@ fn draw_two_column(frame: &mut Frame, app: &mut App, area: Rect, col: TwoColumn)
 /// the scroll bound has to use, since a wrapped panel paints more rows than it
 /// has logical lines.
 fn wrapped_row_count(lines: &[Line<'_>], width: u16) -> u16 {
-    let w = width.max(1) as usize;
-    let mut rows: usize = 0;
+    use std::collections::VecDeque;
+    use unicode_width::UnicodeWidthChar;
+
+    let max_width = usize::from(width.max(1));
+    let mut total_rows = 0usize;
+
     for line in lines {
-        let len: usize = line
-            .spans
-            .iter()
-            .map(|s| s.content.chars().count())
-            .sum();
-        rows += len.div_ceil(w).max(1);
-        if rows > u16::MAX as usize {
+        // Count the same word-boundary wrapping used by `Wrap { trim: false }`.
+        // Ratatui's exact `Paragraph::line_count` is feature-gated/private in
+        // this build, so keep the small width-only state machine here instead
+        // of guessing with `display_width.div_ceil(panel_width)`.
+        let mut rows = 0usize;
+        let mut line_width = 0usize;
+        let mut word_width = 0usize;
+        let mut whitespace_width = 0usize;
+        let mut pending_line_has_symbols = false;
+        let mut pending_word_has_symbols = false;
+        let mut pending_whitespace = VecDeque::new();
+        let mut previous_was_non_whitespace = false;
+
+        for ch in line.spans.iter().flat_map(|span| span.content.chars()) {
+            let symbol_width = ch.width().unwrap_or(0);
+            if symbol_width > max_width {
+                continue;
+            }
+            let is_whitespace = ch.is_whitespace();
+            let word_found = previous_was_non_whitespace && is_whitespace;
+            let untrimmed_overflow = !pending_line_has_symbols
+                && word_width + whitespace_width + symbol_width > max_width;
+
+            if word_found || untrimmed_overflow {
+                pending_line_has_symbols |= !pending_whitespace.is_empty();
+                line_width += whitespace_width;
+                pending_line_has_symbols |= pending_word_has_symbols;
+                line_width += word_width;
+                pending_whitespace.clear();
+                whitespace_width = 0;
+                word_width = 0;
+                pending_word_has_symbols = false;
+            }
+
+            let line_full = line_width >= max_width;
+            let pending_word_overflow =
+                symbol_width > 0 && line_width + whitespace_width + word_width >= max_width;
+            if line_full || pending_word_overflow {
+                let mut remaining_width = max_width.saturating_sub(line_width);
+                rows += 1;
+                line_width = 0;
+                pending_line_has_symbols = false;
+
+                while let Some(front_width) = pending_whitespace.front().copied() {
+                    if front_width > remaining_width {
+                        break;
+                    }
+                    whitespace_width = whitespace_width.saturating_sub(front_width);
+                    remaining_width -= front_width;
+                    pending_whitespace.pop_front();
+                }
+                if is_whitespace && pending_whitespace.is_empty() {
+                    previous_was_non_whitespace = false;
+                    continue;
+                }
+            }
+
+            if is_whitespace {
+                whitespace_width += symbol_width;
+                pending_whitespace.push_back(symbol_width);
+            } else {
+                word_width += symbol_width;
+                pending_word_has_symbols = true;
+            }
+            previous_was_non_whitespace = !is_whitespace;
+        }
+
+        if !pending_line_has_symbols && !pending_word_has_symbols && !pending_whitespace.is_empty()
+        {
+            rows += 1;
+        }
+        pending_line_has_symbols |= !pending_whitespace.is_empty();
+        pending_line_has_symbols |= pending_word_has_symbols;
+        if pending_line_has_symbols {
+            rows += 1;
+        }
+        total_rows = total_rows.saturating_add(rows.max(1));
+        if total_rows >= usize::from(u16::MAX) {
             return u16::MAX;
         }
     }
-    rows as u16
+
+    total_rows as u16
 }
 
 /// OS tab — 25/75 split: left = the AgentikOS
@@ -3488,14 +3925,7 @@ fn wrapped_row_count(lines: &[Line<'_>], width: u16) -> u16 {
 /// (tagline, status, path, integration pipeline + actions). Registry + fs stat
 /// only (see `omega_core::os_products`) — no network, safe per tab entry / F5.
 fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
-    let split = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(area);
-
     let list_focused = !app.detail_focused;
-    let list_border = if list_focused { th::accent() } else { th::dim() };
-    let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
 
     // ── Left: the suite, grouped — Personal, Build chain (01..08), Growth, Systems ─
     let mut items: Vec<ListItem> = Vec::new();
@@ -3536,47 +3966,25 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    let list_title = if list_focused {
-        " ▶ FOCUSED OS — ↑/↓ select, Tab → detail "
-    } else {
-        " OS — Tab to focus list "
-    };
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(list_title)
-                .border_style(Style::default().fg(list_border)),
-        )
-        .highlight_style(Style::default());
-    let mut state = ListState::default().with_selected(Some(rendered_selected));
-    frame.render_stateful_widget(list, split[0], &mut state);
-
-    // ── Right: detail of the selected OS ─────────────────────────────────────
     let lines = render_os_detail(app);
     let section_label = app
         .selected_os_entry()
         .map(|e| e.product.name.to_string())
         .unwrap_or_else(|| "OS".to_string());
-
-    app.detail_max_scroll =
-        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
-    app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
-
-    let detail_title = if app.detail_focused {
-        format!(" {}  [FOCUSED — ↑/↓ scroll, Tab → list] ", section_label)
-    } else {
-        format!(" {} ", section_label)
-    };
-    let paragraph = Paragraph::new(lines)
-        .scroll((app.detail_scroll, 0))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(detail_title)
-                .border_style(Style::default().fg(detail_border)),
-        );
-    frame.render_widget(paragraph, split[1]);
+    draw_two_column(
+        frame,
+        app,
+        area,
+        TwoColumn {
+            items,
+            rendered_selected,
+            lines,
+            scroll_target: 0,
+            section_label,
+            list_focused_title: " ▶ FOCUSED OS — ↑/↓ select, Tab → focus detail ",
+            list_title: " OS — Tab to focus list ",
+        },
+    );
 }
 
 /// Right-pane detail for the selected operative system (status + ACTIONS).
@@ -3591,7 +3999,9 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             Line::from(""),
             Line::from(Span::styled(
                 "  Press F5 to load the AgentikOS suite.",
-                Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::success())
+                    .add_modifier(Modifier::BOLD),
             )),
         ];
     };
@@ -3602,7 +4012,13 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(th::accent2()),
         )
     };
-    let integrated = e.status == omega_core::os_products::OsStatus::Integrated;
+    use omega_core::os_products::OsReadinessLevel;
+    let readiness_color = match e.readiness.level {
+        OsReadinessLevel::Scaffold => th::dim(),
+        OsReadinessLevel::Reference => th::accent(),
+        OsReadinessLevel::Runnable => th::accent2(),
+        OsReadinessLevel::Testable => th::special(),
+    };
 
     let mut lines = vec![
         Line::from(""),
@@ -3610,26 +4026,66 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             Span::raw(format!("  {} ", e.glyph())),
             Span::styled(
                 e.product.name.to_string(),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::raw("  "),
-            Span::styled(e.product.tagline.to_string(), Style::default().fg(th::text())),
+            Span::styled(
+                e.product.tagline.to_string(),
+                Style::default().fg(th::text()),
+            ),
         ]),
         Line::from(""),
         Line::from(vec![field("Slug"), Span::raw(e.product.slug.to_string())]),
         Line::from(vec![
-            field("Status"),
-            if integrated {
-                Span::styled(
-                    "integrated",
-                    Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
-                )
+            field("Readiness"),
+            Span::styled(
+                e.status_label().to_string(),
+                Style::default()
+                    .fg(readiness_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            field("Manifest"),
+            Span::raw(e.readiness.manifest_label().to_string()),
+        ]),
+        Line::from(vec![
+            field("Master prompt"),
+            Span::raw(if e.readiness.master_present {
+                "present"
             } else {
-                Span::styled(e.status_label().to_string(), Style::default().fg(th::dim()))
-            },
+                "missing"
+            }),
+        ]),
+        Line::from(vec![
+            field("Runtime surface"),
+            Span::raw(if e.readiness.runtime_present {
+                "present"
+            } else {
+                "not found"
+            }),
+        ]),
+        Line::from(vec![
+            field("Test surface"),
+            Span::raw(if e.readiness.tests_present {
+                "present (not executed)"
+            } else {
+                "not found"
+            }),
+        ]),
+        Line::from(vec![
+            field("Event schema"),
+            Span::raw(
+                e.readiness
+                    .event_schema_status
+                    .clone()
+                    .unwrap_or_else(|| "not declared".to_string()),
+            ),
         ]),
         Line::from(vec![
             field("Path"),
@@ -3646,7 +4102,9 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             if e.bot_linked {
                 Span::styled(
                     "🤖 linked — DM it, the master agent answers",
-                    Style::default().fg(th::success()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(th::success())
+                        .add_modifier(Modifier::BOLD),
                 )
             } else {
                 Span::styled(
@@ -3658,12 +4116,18 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
         Line::from(""),
     ];
 
-    // Integrated OSes show what you can DO with them (their command surface);
-    // pre-integration OSes show the drop-and-integrate pipeline instead.
-    if integrated && !e.product.commands.is_empty() {
+    // Commands are registry declarations. Presence of a runtime surface makes
+    // them plausible to execute, but this static scan never calls them.
+    if !e.product.commands.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  ─── Commands ─── (what you can do with this OS)",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            if e.readiness.runtime_present {
+                "  ─── Declared commands ─── (runtime present; not executed here)"
+            } else {
+                "  ─── Declared commands ─── (reference only; runtime not found)"
+            },
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         for cmd in e.product.commands {
             // Sub-lines (indented, starting with a space or an arrow) render
@@ -3674,41 +4138,83 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
                 Style::default().fg(if dim { th::dim() } else { th::text() }),
             )));
         }
-    } else {
-        lines.push(Line::from(Span::styled(
-            "  ─── Integration pipeline ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
-        )));
-        lines.push(Line::from(Span::raw(
-            "  1. Drop the OS payload (zip) in the Deposit box (Telegram DEPOSIT bot).",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  2. Unpack it into the OS folder above, next to its README.",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  3. Document the runtime (entrypoint, deps, config) in the README.",
-        )));
-        lines.push(Line::from(Span::raw(
-            "  4. Keep install.sh parity (Law 0) — a fresh install must get it.",
-        )));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  ─── Readiness gaps ───",
+        Style::default()
+            .fg(th::accent2())
+            .add_modifier(Modifier::BOLD),
+    )));
+    if !e.readiness.directory_present {
+        lines.push(Line::from("  - OS directory is missing on this machine."));
+    }
+    if !e.readiness.master_present {
+        lines.push(Line::from("  - MASTER.md prompt is missing."));
+    }
+    match e.readiness.manifest {
+        omega_core::os_products::OsManifestStatus::Missing => {
+            lines.push(Line::from("  - MANIFEST.json is missing."));
+        }
+        omega_core::os_products::OsManifestStatus::Invalid => {
+            lines.push(Line::from(
+                "  - MANIFEST.json is invalid or does not match the product contract.",
+            ));
+        }
+        omega_core::os_products::OsManifestStatus::Valid => {}
+    }
+    if !e.readiness.runtime_present {
+        lines.push(Line::from("  - No runtime entrypoint/directory was found."));
+    }
+    if !e.readiness.tests_present {
+        lines.push(Line::from("  - No test surface was found."));
+    }
+    if e.readiness.event_schema_status.as_deref() == Some("stub") {
+        lines.push(Line::from("  - Event schema is explicitly marked stub."));
+    }
+    if e.readiness.master_present
+        && e.readiness.runtime_present
+        && e.readiness.tests_present
+        && matches!(
+            e.readiness.manifest,
+            omega_core::os_products::OsManifestStatus::Valid
+        )
+        && e.readiness.event_schema_status.as_deref() != Some("stub")
+    {
+        lines.push(Line::from(
+            "  No static surface gaps found. Runtime verification is still required.",
+        ));
     }
 
     lines.extend([
         Line::from(""),
         Line::from(Span::styled(
             "  ─── Actions ───",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(vec![
-            Span::styled("  Enter  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::raw(if integrated {
-                "💬 Open the MASTER AGENT of this OS (run / extend it)"
+            Span::styled(
+                "  Enter  ",
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(if e.readiness.master_present {
+                "Open this OS's MASTER.md prompt in an agent session"
             } else {
-                "💬 Open the MASTER AGENT of this OS (pre-integration mode)"
+                "Open the generic OS integration prompt (MASTER.md missing)"
             }),
         ]),
         Line::from(vec![
-            Span::styled("  T      ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  T      ",
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(if e.bot_linked {
                 "🤖 Telegram bot: relink / replace its token"
             } else {
@@ -3716,7 +4222,12 @@ fn render_os_detail(app: &App) -> Vec<Line<'static>> {
             }),
         ]),
         Line::from(vec![
-            Span::styled("  F5     ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  F5     ",
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw("refresh statuses"),
         ]),
     ]);
@@ -3736,10 +4247,12 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
             // Count derived from the roster (see InfoSection::label) so the
             // blurb can't drift when an agent joins.
             format!(
-                "  AISB = AI Super Brain — {} Matrix agents the Master delegates to.",
+                "  AISB = AI Super Brain — {} Matrix roles available to the Atlas service.",
                 agents.len()
             ),
-            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             "  ↑/↓ navigate the agent list below.",
@@ -3753,7 +4266,9 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     for (i, agent) in agents.iter().enumerate() {
         let def = agent.definition();
         let selected = i == app.info_agent_selected;
-        if selected { selected_agent_line = lines.len(); }
+        if selected {
+            selected_agent_line = lines.len();
+        }
         let prefix = if selected { "▶ " } else { "  " };
         let name_style = if selected {
             Style::default()
@@ -3761,7 +4276,9 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
                 .bg(th::accent2())
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD)
         };
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(th::accent())),
@@ -3778,7 +4295,9 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("  ── {} ──", selected_def.name),
-        Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent())
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(
         format!("  \"{}\"", selected_def.tagline),
@@ -3786,7 +4305,10 @@ fn render_info_aisb_agents(app: &App) -> (Vec<Line<'static>>, usize) {
     )));
     lines.push(Line::from(""));
     lines.push(Line::from(format!("  Role:    {}", selected_def.role)));
-    lines.push(Line::from(format!("  Model:   {}", selected_def.model.name())));
+    lines.push(Line::from(format!(
+        "  Model:   {}",
+        selected_def.model.name()
+    )));
     lines.push(Line::from(format!(
         "  Tools:   {}",
         selected_def.tools.join(", ")
@@ -3808,7 +4330,9 @@ fn render_info_atlas() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  Ω  ATLAS — the Director brain (omega-tg-bot.ts)",
-            Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::special())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from("  Atlas is the single brain reached over Telegram: you message it,"),
@@ -3816,17 +4340,29 @@ fn render_info_atlas() -> Vec<Line<'static>> {
         Line::from("  skill. The 15 Matrix agents (see 'AISB Agents') are its faculties."),
         Line::from("  One conversation, many agents, shared evolution."),
         Line::from(""),
-        Line::from(Span::styled("  Live session", Style::default().fg(th::accent()))),
-        Line::from(format!("    {}  — live viewer of the Atlas Telegram conversation", master)),
+        Line::from(Span::styled(
+            "  Live session",
+            Style::default().fg(th::accent()),
+        )),
+        Line::from(format!(
+            "    {}  — live viewer of the Atlas Telegram conversation",
+            master
+        )),
         Line::from("    Select it in the Sessions tab + Tab to watch the live conversation."),
         Line::from(""),
-        Line::from(Span::styled("  Telegram bridge", Style::default().fg(th::accent()))),
+        Line::from(Span::styled(
+            "  Telegram bridge",
+            Style::default().fg(th::accent()),
+        )),
         Line::from("    Set up:  Settings tab → Telegram & projects → Enter (or press 'T')"),
         Line::from("             to connect Telegram (guided wizard — no command needed)."),
         Line::from("    Once set, Atlas streams its replies + accepts voice / documents /"),
         Line::from("    photos (transcribed + analysed). Per-project topics on sync."),
         Line::from(""),
-        Line::from(Span::styled("  OmegaMC dashboard & gateway", Style::default().fg(th::accent()))),
+        Line::from(Span::styled(
+            "  OmegaMC dashboard & gateway",
+            Style::default().fg(th::accent()),
+        )),
         Line::from("    The phone-side web control surface (agents, conversations, tasks,"),
         Line::from("    swarms) backed by the on-demand gateway. Repo: agentik-os/"),
         Line::from("    agentik-telegram (MIT); runs as a Docker container on :8080."),
@@ -3847,7 +4383,9 @@ fn render_info_oracle() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  ORACLE — the brain of every dispatched mission",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from("  An Oracle is spawned by `omega dispatch <Project> \"<mission>\"`."),
@@ -3859,10 +4397,7 @@ fn render_info_oracle() -> Vec<Line<'static>> {
         Line::from("    5. VERIFY — run the quality gate (rubric + multi-grader + adversarial)"),
         Line::from("    6. REPORT — write its own done.json with the outcome summary"),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Naming",
-            Style::default().fg(th::accent()),
-        )),
+        Line::from(Span::styled("  Naming", Style::default().fg(th::accent()))),
         Line::from("    Sessions: oracle-<Project>     (1st)"),
         Line::from("              oracle-<Project>-2   (parallel oracle)"),
         Line::from(""),
@@ -3887,17 +4422,16 @@ fn render_info_workers() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  WORKERS — ephemeral execution sessions",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from("  A worker is one rmux session running an agent (usually Claude) with"),
         Line::from("  a specific task prompt. Workers are short-lived: spawned by an Oracle,"),
         Line::from("  they execute one task, signal done, and the patrol cleans up."),
         Line::from(""),
-        Line::from(Span::styled(
-            "  Naming",
-            Style::default().fg(th::accent()),
-        )),
+        Line::from(Span::styled("  Naming", Style::default().fg(th::accent()))),
         Line::from("    <Project>-worker-<task>    e.g. Causio-worker-auth"),
         Line::from(""),
         Line::from(Span::styled(
@@ -3933,7 +4467,9 @@ fn render_info_laws() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from(Span::styled(
             "  THE LAWS — inviolable, bind every agent, override every rule and every task.",
-            Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::special())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             format!(
@@ -3949,7 +4485,9 @@ fn render_info_laws() -> Vec<Line<'static>> {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("  {:14}", r.id),
-                Style::default().fg(th::special()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::special())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 r.title.to_string(),
@@ -3963,7 +4501,11 @@ fn render_info_laws() -> Vec<Line<'static>> {
         let applies = if r.applies_to.is_empty() {
             "all agents".to_string()
         } else {
-            r.applies_to.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+            r.applies_to
+                .iter()
+                .map(|a| a.name())
+                .collect::<Vec<_>>()
+                .join(", ")
         };
         lines.push(Line::from(Span::styled(
             format!("    Applies to: {}  ·  Added: {}", applies, r.added_at),
@@ -3980,7 +4522,8 @@ fn render_info_laws() -> Vec<Line<'static>> {
 
 fn render_info_rules() -> Vec<Line<'static>> {
     use omega_core::rules::{all_rules, RuleCategory, RuleKind};
-    let mut lines = vec![
+    let mut lines =
+        vec![
         Line::from(""),
         Line::from(Span::styled(
             "  System invariants — every rule has a reason, a date, and who it binds.",
@@ -4011,13 +4554,17 @@ fn render_info_rules() -> Vec<Line<'static>> {
         }
         lines.push(Line::from(Span::styled(
             format!("  ── {} ──", cat.label()),
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         for r in rules {
             lines.push(Line::from(vec![
                 Span::styled(
                     format!("  {:14}", r.id),
-                    Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(th::accent())
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw(r.title.to_string()),
             ]));
@@ -4053,11 +4600,18 @@ fn render_info_rules() -> Vec<Line<'static>> {
 fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     use omega_core::rules::{all_rules, laws, RuleKind};
 
-    let head = Style::default().fg(th::accent()).add_modifier(Modifier::BOLD);
-    let sub = Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD);
+    let head = Style::default()
+        .fg(th::accent())
+        .add_modifier(Modifier::BOLD);
+    let sub = Style::default()
+        .fg(th::accent2())
+        .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(th::dim());
 
-    let rule_count = all_rules().iter().filter(|r| r.kind == RuleKind::Rule).count();
+    let rule_count = all_rules()
+        .iter()
+        .filter(|r| r.kind == RuleKind::Rule)
+        .count();
     let agent_count = omega_core::aisb_agents::AisbAgent::all().len();
     let omega_dir = omega_core::config::omega_dir();
 
@@ -4081,10 +4635,26 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     ];
 
     for (level, title, detail) in [
-        ("Level 1", "Human interface", "Telegram · CLI · this TUI — you state intent"),
-        ("Level 2", "Atlas / AISB", "the Director brain classifies and dispatches"),
-        ("Level 3", "Oracle", "one per project, strategic — decomposes and delegates"),
-        ("Level 4", "Workers", "ephemeral, parallel, file-scoped — execute, verify, report"),
+        (
+            "Level 1",
+            "Human interface",
+            "Telegram · CLI · this TUI — you state intent",
+        ),
+        (
+            "Level 2",
+            "Atlas / AISB",
+            "the Director brain classifies and dispatches",
+        ),
+        (
+            "Level 3",
+            "Oracle",
+            "one per project, strategic — decomposes and delegates",
+        ),
+        (
+            "Level 4",
+            "Workers",
+            "ephemeral, parallel, file-scoped — execute, verify, report",
+        ),
     ] {
         lines.push(Line::from(vec![
             Span::styled(format!("  {:9}", level), Style::default().fg(th::special())),
@@ -4097,25 +4667,53 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("  ── What is loaded right now ──", sub)));
+    lines.push(Line::from(Span::styled(
+        "  ── What is loaded right now ──",
+        sub,
+    )));
     lines.push(Line::from(""));
 
     // Counts come from the live registries — a hardcoded number here is a
     // number that goes stale the next time a law or a skill is added.
+    let skills_value = app
+        .skills_error
+        .as_ref()
+        .map(|_| "INVALID".to_string())
+        .unwrap_or_else(|| app.skills.len().to_string());
+    let projects_value = if app.project_registry.poisoned {
+        "INVALID".to_string()
+    } else {
+        app.project_registry.projects.len().to_string()
+    };
     for (label, value, hint) in [
-        ("Laws", laws().len().to_string(), "inviolable, injected into every agent"),
-        ("Rules", rule_count.to_string(), "operational, scoped per agent level"),
-        ("AI agents", agent_count.to_string(), "the AISB Matrix roster"),
-        ("Skills", app.skills.len().to_string(), "installed under ~/.omega/skills"),
-        ("Documents", app.docs.len().to_string(), "the manual, under ~/.omega/docs"),
         (
-            "Projects",
-            app.project_registry.projects.len().to_string(),
-            "registered in the Projects tab",
+            "Laws",
+            laws().len().to_string(),
+            "inviolable, injected into every agent",
         ),
+        (
+            "Rules",
+            rule_count.to_string(),
+            "operational, scoped per agent level",
+        ),
+        (
+            "AI agents",
+            agent_count.to_string(),
+            "the AISB Matrix roster",
+        ),
+        ("Skills", skills_value, "installed under ~/.omega/skills"),
+        (
+            "Documents",
+            app.docs.len().to_string(),
+            "the manual, under ~/.omega/docs",
+        ),
+        ("Projects", projects_value, "registered in the Projects tab"),
     ] {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:12}", label), Style::default().fg(th::accent2())),
+            Span::styled(
+                format!("  {:12}", label),
+                Style::default().fg(th::accent2()),
+            ),
             Span::styled(
                 format!("{:>5}  ", value),
                 Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
@@ -4129,12 +4727,24 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     for (label, path) in [
         ("State + secrets", omega_dir.to_string_lossy().to_string()),
-        ("Skills", omega_dir.join("skills").to_string_lossy().to_string()),
-        ("Manual", omega_core::docs::docs_dir().to_string_lossy().to_string()),
-        ("Projects root", app.config.projects_dir.to_string_lossy().to_string()),
+        (
+            "Skills",
+            omega_dir.join("skills").to_string_lossy().to_string(),
+        ),
+        (
+            "Manual",
+            omega_core::docs::docs_dir().to_string_lossy().to_string(),
+        ),
+        (
+            "Projects root",
+            app.config.projects_dir.to_string_lossy().to_string(),
+        ),
     ] {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:16}", label), Style::default().fg(th::accent2())),
+            Span::styled(
+                format!("  {:16}", label),
+                Style::default().fg(th::accent2()),
+            ),
             Span::styled(path, dim),
         ]));
     }
@@ -4155,10 +4765,15 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
         AutoUpdatePolicy::Off => ("off — no automatic check", th::dim()),
     };
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:16}", "Auto-update"), Style::default().fg(th::accent2())),
+        Span::styled(
+            format!("  {:16}", "Auto-update"),
+            Style::default().fg(th::accent2()),
+        ),
         Span::styled(
             policy_text.to_string(),
-            Style::default().fg(policy_color).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(policy_color)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -4174,7 +4789,10 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     };
 
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:16}", "Last check"), Style::default().fg(th::accent2())),
+        Span::styled(
+            format!("  {:16}", "Last check"),
+            Style::default().fg(th::accent2()),
+        ),
         Span::styled(
             match st.last_check {
                 Some(t) => ago(t),
@@ -4187,7 +4805,10 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
     ]));
 
     lines.push(Line::from(vec![
-        Span::styled(format!("  {:16}", "Last installed"), Style::default().fg(th::accent2())),
+        Span::styled(
+            format!("  {:16}", "Last installed"),
+            Style::default().fg(th::accent2()),
+        ),
         Span::styled(
             match (&st.last_applied_commit, st.last_applied) {
                 (Some(c), Some(t)) => format!("{}  ({})", c, ago(t)),
@@ -4199,7 +4820,10 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
 
     if let Some(outcome) = &st.last_outcome {
         lines.push(Line::from(vec![
-            Span::styled(format!("  {:16}", "Last outcome"), Style::default().fg(th::accent2())),
+            Span::styled(
+                format!("  {:16}", "Last outcome"),
+                Style::default().fg(th::accent2()),
+            ),
             Span::styled(truncate_chars(outcome, 92), dim),
         ]));
     }
@@ -4214,7 +4838,11 @@ fn render_info_overview(app: &App) -> Vec<Line<'static>> {
                 "",
                 st.consecutive_failures,
                 st.failing_commit.as_deref().unwrap_or("?"),
-                if stuck { " — STOPPED, needs you: run `omega update`" } else { "" }
+                if stuck {
+                    " — STOPPED, needs you: run `omega update`"
+                } else {
+                    ""
+                }
             ),
             Style::default()
                 .fg(if stuck { th::error() } else { th::accent2() })
@@ -4252,14 +4880,33 @@ fn render_info_skills(app: &App) -> Vec<Line<'static>> {
                 "  {} skills installed — invoked by name from any agent session.",
                 app.skills.len()
             ),
-            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            format!("  {}", omega_core::config::omega_dir().join("skills").display()),
+            format!(
+                "  {}",
+                omega_core::config::omega_dir().join("skills").display()
+            ),
             dim,
         )),
         Line::from(""),
     ];
+
+    if let Some(error) = &app.skills_error {
+        lines.push(Line::from(Span::styled(
+            format!("  INVALID skill catalog: {error}"),
+            Style::default()
+                .fg(th::error())
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "  Repair the catalog or rerun the installer; no partial catalog is shown.",
+            Style::default().fg(th::error()),
+        )));
+        return lines;
+    }
 
     if app.skills.is_empty() {
         lines.push(Line::from(Span::styled(
@@ -4286,7 +4933,9 @@ fn render_info_skills(app: &App) -> Vec<Line<'static>> {
         in_cat.sort_by(|a, b| a.name.cmp(&b.name));
         lines.push(Line::from(Span::styled(
             format!("  ── {} ({}) ──", cat.label(), in_cat.len()),
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         for skill in in_cat {
             lines.push(Line::from(vec![
@@ -4294,7 +4943,10 @@ fn render_info_skills(app: &App) -> Vec<Line<'static>> {
                     format!("  /{:28}", skill.name),
                     Style::default().fg(th::accent()),
                 ),
-                Span::styled(truncate_chars(&skill.description, 90), Style::default().fg(th::text())),
+                Span::styled(
+                    truncate_chars(&skill.description, 90),
+                    Style::default().fg(th::text()),
+                ),
             ]));
         }
         lines.push(Line::from(""));
@@ -4309,8 +4961,13 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
     let mut lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            format!("  {} documents — ↑/↓ to pick one, it opens below.", app.docs.len()),
-            Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+            format!(
+                "  {} documents — ↑/↓ to pick one, it opens below.",
+                app.docs.len()
+            ),
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             format!("  {}", omega_core::docs::docs_dir().display()),
@@ -4322,7 +4979,9 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
     if app.docs.is_empty() {
         lines.push(Line::from(Span::styled(
             "  No documentation installed yet.",
-            Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(th::accent2())
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -4330,7 +4989,10 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
             Style::default().fg(th::text()),
         )));
         lines.push(Line::from(Span::styled(
-            format!("  {} so it reads offline, with no checkout.", omega_core::docs::docs_dir().display()),
+            format!(
+                "  {} so it reads offline, with no checkout.",
+                omega_core::docs::docs_dir().display()
+            ),
             Style::default().fg(th::text()),
         )));
         return (lines, 0);
@@ -4344,7 +5006,9 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
             current_group = doc.group.clone();
             lines.push(Line::from(Span::styled(
                 format!("  ── {} ──", current_group),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             )));
         }
         let is_selected = i == selected;
@@ -4360,8 +5024,14 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
             Style::default().fg(th::text())
         };
         lines.push(Line::from(vec![
-            Span::styled(if is_selected { "▶ " } else { "  " }, Style::default().fg(th::accent())),
-            Span::styled(format!("{:34}", truncate_chars(&doc.title, 34)), title_style),
+            Span::styled(
+                if is_selected { "▶ " } else { "  " },
+                Style::default().fg(th::accent()),
+            ),
+            Span::styled(
+                format!("{:34}", truncate_chars(&doc.title, 34)),
+                title_style,
+            ),
             Span::styled(format!(" {:>5}  ", human_size(doc.bytes)), dim),
             Span::styled(truncate_chars(&doc.summary, 70), dim),
         ]));
@@ -4374,7 +5044,9 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         format!("  ═══ {} ═══", title),
-        Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent())
+            .add_modifier(Modifier::BOLD),
     )));
     lines.push(Line::from(Span::styled(format!("  {}", rel_path), dim)));
     lines.push(Line::from(""));
@@ -4393,7 +5065,9 @@ fn render_info_docs(app: &mut App) -> (Vec<Line<'static>>, usize) {
         } else if line.starts_with("## ") || line.starts_with("# ") {
             lines.push(Line::from(Span::styled(
                 format!("  {}", line),
-                Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
             )));
         } else {
             lines.push(Line::from(Span::styled(
@@ -4426,8 +5100,12 @@ fn human_size(bytes: u64) -> String {
 }
 
 fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
-    let cy = Style::default().fg(th::accent()).add_modifier(Modifier::BOLD);
-    let yl = Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD);
+    let cy = Style::default()
+        .fg(th::accent())
+        .add_modifier(Modifier::BOLD);
+    let yl = Style::default()
+        .fg(th::accent2())
+        .add_modifier(Modifier::BOLD);
     let wh = Style::default().fg(th::text());
     let gr = Style::default().fg(th::dim());
     let mg = Style::default().fg(th::special());
@@ -4445,24 +5123,36 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<Line> = vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Ω  ", Style::default().fg(th::accent()).add_modifier(Modifier::BOLD)),
-            Span::styled("OmegaOS", Style::default().fg(th::text()).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  Ω  ",
+                Style::default()
+                    .fg(th::accent())
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "OmegaOS",
+                Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
+            ),
             Span::styled("  —  Agentic Terminal Operating System", gr),
             Span::styled(concat!("   v", env!("CARGO_PKG_VERSION")), cy),
         ]),
         Line::from(""),
-
         section("Navigation"),
         key("← / →", "Switch tabs"),
         key("Shift+Tab", "Previous tab"),
         key("F1", "Open this Help tab"),
-        key("Drag", "Select text in the session view → copies to clipboard (OSC 52)"),
-        key("Ctrl+T", "Toggle mouse capture (off = native text selection)"),
+        key(
+            "Drag",
+            "Select text in the session view → copies to clipboard (OSC 52)",
+        ),
+        key(
+            "Ctrl+T",
+            "Toggle mouse capture (off = native text selection)",
+        ),
         key("Ctrl+L", "Redraw screen (fix corrupted view)"),
         key("Esc", "Back (detail → list → Sessions → quit)"),
         key("q", "Quit OmegaOS"),
         Line::from(""),
-
         section("Tab Behavior (Enter & Tab)"),
         Line::from(vec![
             Span::styled("    Tab", cy),
@@ -4472,9 +5162,11 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("Esc", cy),
             Span::styled("  = back", wh),
         ]),
-        Line::from(Span::styled("    Same pattern on Sessions, Settings, Projects.", gr)),
+        Line::from(Span::styled(
+            "    Same pattern on Sessions, Settings, Projects, System, and OS.",
+            gr,
+        )),
         Line::from(""),
-
         section("Sessions"),
         // DESIGN-016: j/k are deliberately swallowed on Sessions (operator
         // preference) — only the arrows navigate; don't document dead keys.
@@ -4489,13 +5181,17 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("PgUp / PgDn", "Scroll preview"),
         key("Home / End", "Top / bottom (tail-follow)"),
         Line::from(""),
-
         section("Menu — Agent Launchers"),
     ];
 
     let launchers = [
-        ("c", "Claude"), ("o", "Codex"), ("g", "Gemini"),
-        ("p", "Pi"), ("h", "Hermes"), ("G", "GLM"), ("t", "Terminal"),
+        ("c", "Claude"),
+        ("o", "Codex"),
+        ("g", "Gemini"),
+        ("p", "Pi"),
+        ("h", "Hermes"),
+        ("G", "GLM"),
+        ("t", "Terminal"),
     ];
     let mut row = vec![Span::raw("    ")];
     for (i, (k, name)) in launchers.iter().enumerate() {
@@ -4506,13 +5202,14 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             row.push(Span::raw("    "));
         }
     }
-    if row.len() > 1 { lines.push(Line::from(row)); }
+    if row.len() > 1 {
+        lines.push(Line::from(row));
+    }
 
     lines.extend([
         key("d", "Dispatch oracle → project + mission"),
         key("F5", "Refresh sessions (r/R = Rename, everywhere)"),
         Line::from(""),
-
         section("Settings → Monitor group"),
         key("↑ / ↓ + Enter", "Run highlighted action"),
         key("L", "Login Claude (OAuth)"),
@@ -4520,39 +5217,63 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("P", "Set up provisioning keys"),
         key("B", "Refresh billing"),
         key("O", "Open OmegaMC dashboard"),
+        key("U", "Update OmegaOS"),
         Line::from(""),
-
         section("Settings"),
         key("↑ / ↓", "Browse sections"),
         key("Enter / Tab", "Focus detail panel → edit fields"),
         key("Enter (on field)", "Activate (install/edit/toggle)"),
         key("x", "Clear selected text field (press twice)"),
         Line::from(""),
-
         section("Projects"),
         key("↑ / ↓", "Browse projects"),
         key("Enter", "Focus detail; Enter again → open in terminal"),
         key("d", "Dispatch oracle to selected project"),
-        key("p", "Run planner for selected project"),
+        key(
+            "p",
+            "Create a plan with /omg-planner for the selected project",
+        ),
         key("n", "Register an existing folder as a project"),
         key("T", "Toggle the project's Telegram topic"),
         key("x", "Delete… (1 OmegaOS · 2 + local folder · 3 + GitHub)"),
         key("D", "Quick delete local (press twice)"),
         Line::from(""),
-
+        section("OS"),
+        key("↑ / ↓", "Browse operative systems"),
+        key(
+            "Enter",
+            "Focus detail; Enter again → open its master or integration prompt",
+        ),
+        key("T", "Link a Telegram bot to the selected OS"),
+        key("F5", "Rescan OS readiness from local runtime surfaces"),
+        Line::from(""),
         section("System — the doctrine, the agents, the manual"),
-        key("↑ / ↓", "Pick a section (Overview · Laws · Rules · Agents · Skills · Docs)"),
+        key(
+            "↑ / ↓",
+            "Pick a section (Overview · Laws · Rules · Agents · Skills · Docs)",
+        ),
         key("Tab", "Focus the right panel to read it"),
-        key("↑ / ↓ (focused)", "Scroll — or move the agent / document cursor"),
-        key("[  /  ]", "Previous / next section while the detail is focused"),
+        key(
+            "↑ / ↓ (focused)",
+            "Scroll — or move the agent / document cursor",
+        ),
+        key(
+            "[  /  ]",
+            "Previous / next section while the detail is focused",
+        ),
         key("PgUp/PgDn Home/End", "Page and jump through long documents"),
         key("Tab-Tab", "Fullscreen the panel (a whole doc, full width)"),
         Line::from(""),
-
         section("Chat (Sessions, when chat-focused)"),
         key("Tab", "Return to session list"),
-        key("Shift+Tab", "Forward to Claude (cycle modes)"),
-        key("Esc", "Sent to the agent (escape vim/less/prompts) — Tab goes back"),
+        key(
+            "Shift+Tab",
+            "Forward Shift+Tab to the focused agent session",
+        ),
+        key(
+            "Esc",
+            "Sent to the agent (escape vim/less/prompts) — Tab goes back",
+        ),
         key("Ctrl+X", "Close (kill) the focused session"),
         key("Ctrl+R", "Reload the TUI (re-exec the binary)"),
         key("Alt+↑ / Alt+↓", "Scroll preview"),
@@ -4561,7 +5282,6 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         key("Opt+< / Opt+>", "Jump to start / end of input (M-< / M->)"),
         key("Mouse scroll", "Scroll the panel under the cursor"),
         Line::from(""),
-
         section("Integrated Tools"),
         Line::from(vec![
             Span::raw("    "),
@@ -4578,16 +5298,26 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled("PDF Gen ", cy),
             Span::styled("Whitepaper/audit/marketing reports → Telegram", gr),
         ]),
-        Line::from(Span::styled("    Install: omega install hermes | omega install pi", mg)),
-        Line::from(Span::styled("    Generate: omega pdf --template=whitepaper --demo --send", mg)),
+        Line::from(Span::styled(
+            "    Install: omega install hermes | omega install pi",
+            mg,
+        )),
+        Line::from(Span::styled(
+            "    Generate: omega pdf --template=whitepaper --demo --send",
+            mg,
+        )),
         Line::from(""),
-
         section("CLI Commands"),
     ]);
 
     let cmds = [
         ("omega", "Launch TUI"),
-        ("omega master", "Attach AISB Master"),
+        ("omega aisb-view", "Open read-only AISB conversation viewer"),
+        ("omega aisb-chat", "Open interactive Telegram chat REPL"),
+        (
+            "omega plan-create [dir]",
+            "Create a project plan with /omg-planner",
+        ),
         ("omega list", "List sessions"),
         ("omega pdf --demo --send", "Generate + send PDF to Telegram"),
         ("omega orchestrate <P> <M>", "Full mission pipeline"),
@@ -4609,23 +5339,29 @@ fn draw_help(frame: &mut Frame, app: &mut App, area: Rect) {
         section("Status Icons"),
         Line::from(vec![
             Span::raw("    "),
-            Span::styled("★ ", cy), Span::styled("Master   ", gr),
-            Span::styled("◆ ", cy), Span::styled("Oracle   ", gr),
-            Span::styled("● ", cy), Span::styled("Worker   ", gr),
-            Span::styled("⌂ ", cy), Span::styled("Home   ", gr),
-            Span::styled("⚙ ", cy), Span::styled("System   ", gr),
-            Span::styled("§ ", yl), Span::styled("Locked", gr),
+            Span::styled("◆ ", cy),
+            Span::styled("Oracle   ", gr),
+            Span::styled("● ", cy),
+            Span::styled("Worker   ", gr),
+            Span::styled("⌂ ", cy),
+            Span::styled("Home   ", gr),
+            Span::styled("⚙ ", cy),
+            Span::styled("System   ", gr),
+            Span::styled("§ ", yl),
+            Span::styled("Locked", gr),
         ]),
         Line::from(""),
     ]);
 
     // Publish + pin the scroll bound (same contract as draw_settings/draw_info)
     // so wheel-overscroll stops at the last line instead of a blank panel.
+    let detail_width = area.width.saturating_sub(2).max(1);
     app.detail_max_scroll =
-        (lines.len() as u16).saturating_sub(area.height.saturating_sub(2));
+        wrapped_row_count(&lines, detail_width).saturating_sub(area.height.saturating_sub(2));
     app.detail_scroll = app.detail_scroll.min(app.detail_max_scroll);
 
     let paragraph = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
         .scroll((app.detail_scroll, 0))
         .block(
             Block::default()
@@ -4646,10 +5382,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     if !matches!(app.input_mode, InputMode::Normal) {
         let (prompt, value) = match &app.input_mode {
             InputMode::Normal => unreachable!(),
-            InputMode::NewNamedSession(agent) => (
-                "Session name",
-                format!("[{}] {}", agent, app.input_buffer),
-            ),
+            InputMode::NewNamedSession(agent) => {
+                ("Session name", format!("[{}] {}", agent, app.input_buffer))
+            }
             InputMode::NewSessionPromptDirect(name, agent) => (
                 "Initial prompt (optional, Esc to skip)",
                 format!("[{}/{}] {}", name, agent, app.input_buffer),
@@ -4689,7 +5424,10 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
                 // The same overlay also drives the theme picker — don't tell
                 // the user they're selecting a "model" there.
                 if config_key == "general.theme" {
-                    ("Select theme — ↑/↓ live preview, Enter saves, Esc reverts", String::new())
+                    (
+                        "Select theme — ↑/↓ live preview, Enter saves, Esc reverts",
+                        String::new(),
+                    )
                 } else {
                     ("Select model — ↑/↓, Enter, Esc", String::new())
                 }
@@ -4697,12 +5435,14 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             InputMode::ProjectDelete(..) => {
                 ("Delete project — ↑/↓ or 1/2/3, Enter, Esc", String::new())
             }
-            InputMode::ProjectOpenLane(..) => {
-                ("Open project — Coding / Marketing / Oracle — ↑/↓ or 1/2/3, Enter, Esc", String::new())
-            }
-            InputMode::ProjectOpenAgentPick { .. } => {
-                ("Pick the LLM (installed only) — ↑/↓ or digit, Enter, Esc back", String::new())
-            }
+            InputMode::ProjectOpenLane(..) => (
+                "Open project — Coding / Marketing / Oracle — ↑/↓ or 1/2/3, Enter, Esc",
+                String::new(),
+            ),
+            InputMode::ProjectOpenAgentPick { .. } => (
+                "Pick the LLM (installed only) — ↑/↓ or digit, Enter, Esc back",
+                String::new(),
+            ),
             InputMode::ProvisioningSetup { step, .. } => {
                 let f = crate::app::PROVISIONING_FIELDS.get(*step);
                 let key = f.map(|x| x.0).unwrap_or("");
@@ -4743,7 +5483,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(" ▶ ", Style::default().fg(th::sel_fg()).bg(th::accent2())),
             Span::styled(
                 format!(" {}: ", prompt),
-                Style::default().fg(th::accent2()).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(th::accent2())
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(value),
             Span::styled("█", Style::default().fg(th::accent2())),
@@ -4760,7 +5502,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             Option<(std::time::Instant, omega_core::sysinfo::SystemStats)>,
         > = const { std::cell::RefCell::new(None) };
         static USAGE_MEMO: std::cell::RefCell<
-            Option<(std::time::Instant, Option<omega_core::monitor::UsageSnapshot>)>,
+            Option<(std::time::Instant, UsageSnapshotRead)>,
         > = const { std::cell::RefCell::new(None) };
     }
     let stats = render_memo(&STATS_MEMO, omega_core::sysinfo::SystemStats::read);
@@ -4772,7 +5514,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     // 5h token-budget snapshot (written by the `omega usage --check` cron) —
     // the real "before the hard stop" signal. None until the first check.
     let usage = render_memo(&USAGE_MEMO, || {
-        omega_core::monitor::UsageSnapshot::read().ok().flatten()
+        omega_core::monitor::UsageSnapshot::read().map_err(|error| error.to_string())
     });
 
     // Localized to `config.timezone` (IANA) so the headless-VPS UTC clock shows
@@ -4843,9 +5585,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     let left = Paragraph::new(Line::from(vec![
         Span::styled(
             " Ω ",
-            Style::default()
-                .fg(th::text())
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             env_warn.map(|w| format!(" {} ", w)).unwrap_or_default(),
@@ -4854,9 +5594,7 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Span::raw(" "),
         Span::styled(
             session_info,
-            Style::default()
-                .fg(th::text())
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(th::text()).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         // FIX-A (fix5): an armed two-press confirm renders STATE-DRIVEN with
@@ -4883,7 +5621,9 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
             let (text, style) = match (armed, app.status_message.as_deref(), git_text) {
                 (Some(warn), _, _) => (
                     warn,
-                    Style::default().fg(th::error()).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(th::error())
+                        .add_modifier(Modifier::BOLD),
                 ),
                 (None, Some(msg), _) => (msg.to_string(), Style::default().fg(th::dim())),
                 (None, None, Some(g)) => (g, Style::default().fg(th::success())),
@@ -4912,11 +5652,19 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     };
     let mut right_spans: Vec<Span> = Vec::new();
-    if let Some(ref u) = usage {
+    if let Ok(Some(ref u)) = usage {
         right_spans.push(Span::styled(
             format!("TKN {}%", u.session_pct),
             Style::default()
                 .fg(usage_color(u.session_pct))
+                .add_modifier(Modifier::BOLD),
+        ));
+        right_spans.push(Span::raw("  "));
+    } else if usage.is_err() {
+        right_spans.push(Span::styled(
+            "TKN ERR",
+            Style::default()
+                .fg(th::error())
                 .add_modifier(Modifier::BOLD),
         ));
         right_spans.push(Span::raw("  "));
@@ -4926,9 +5674,15 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
         Style::default().fg(stat_color(((stats.cpu_load * 25.0) as u8).min(99))),
     ));
     right_spans.push(Span::raw("  "));
-    right_spans.push(Span::styled(ram, Style::default().fg(stat_color(stats.ram_pct))));
+    right_spans.push(Span::styled(
+        ram,
+        Style::default().fg(stat_color(stats.ram_pct)),
+    ));
     right_spans.push(Span::raw("  "));
-    right_spans.push(Span::styled(disk, Style::default().fg(stat_color(stats.disk_used_pct))));
+    right_spans.push(Span::styled(
+        disk,
+        Style::default().fg(stat_color(stats.disk_used_pct)),
+    ));
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(
         n_sessions,
@@ -4937,11 +5691,13 @@ fn draw_status_bar(frame: &mut Frame, app: &mut App, area: Rect) {
     right_spans.push(Span::raw("  "));
     right_spans.push(Span::styled(
         time_str,
-        Style::default().fg(th::accent()).add_modifier(Modifier::BOLD),
+        Style::default()
+            .fg(th::accent())
+            .add_modifier(Modifier::BOLD),
     ));
     right_spans.push(Span::raw(" "));
-    let right = Paragraph::new(Line::from(right_spans))
-        .alignment(ratatui::layout::Alignment::Right);
+    let right =
+        Paragraph::new(Line::from(right_spans)).alignment(ratatui::layout::Alignment::Right);
     frame.render_widget(right, split[1]);
 }
 
@@ -4958,7 +5714,11 @@ mod url_fold_tests {
         let folded = fold_for_panel(url, 56);
         assert!(folded.len() > 1, "a 150-char URL must fold");
         assert!(folded.iter().all(|c| c.chars().count() <= 56));
-        assert_eq!(folded.concat(), url, "rejoining the chunks must give the URL back");
+        assert_eq!(
+            folded.concat(),
+            url,
+            "rejoining the chunks must give the URL back"
+        );
     }
 
     #[test]
@@ -5001,9 +5761,15 @@ mod system_overview_tests {
         assert!(out.contains("Auto-update"), "the policy must be named");
         assert!(out.contains("03:30"), "the schedule must be visible");
         assert!(out.contains("Last check"));
-        assert!(out.contains("omega config set auto_update"), "the opt-out must be discoverable");
+        assert!(
+            out.contains("omega config set auto_update"),
+            "the opt-out must be discoverable"
+        );
         // Never-run is a real state, not a blank.
-        assert!(out.contains("never"), "a box that never checked must say so");
+        assert!(
+            out.contains("never"),
+            "a box that never checked must say so"
+        );
     }
 
     #[test]
@@ -5050,6 +5816,35 @@ mod system_overview_tests {
         assert!(out.contains("deadbee"));
         assert!(!out.contains("STOPPED"), "one failure is not a stop");
     }
+
+    #[test]
+    fn invalid_skill_catalog_is_distinct_from_an_empty_catalog() {
+        let mut app = App::new(OmegaConfig::default());
+        app.skills.clear();
+        app.skills_error = Some("catalog digest mismatch".to_string());
+
+        let skills = text(&render_info_skills(&app));
+        assert!(skills.contains("INVALID skill catalog"));
+        assert!(skills.contains("catalog digest mismatch"));
+        assert!(!skills.contains("No skills found"));
+
+        let overview = text(&render_info_overview(&app));
+        assert!(overview.contains("INVALID"));
+    }
+
+    #[test]
+    fn invalid_project_registry_is_never_rendered_as_empty() {
+        let mut app = App::new(OmegaConfig::default());
+        app.project_registry.projects.clear();
+        app.project_registry.poisoned = true;
+
+        let detail = text(&render_project_detail(&app));
+        assert!(detail.contains("INVALID project registry"));
+        assert!(!detail.contains("No project selected"));
+
+        let overview = text(&render_info_overview(&app));
+        assert!(overview.contains("INVALID"));
+    }
 }
 
 #[cfg(test)]
@@ -5091,6 +5886,18 @@ mod menu_state_tests {
 #[cfg(test)]
 mod responsive_tests {
     use super::*;
+    use omega_core::config::OmegaConfig;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn rendered(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
 
     /// A phone in portrait is ~60 columns. The full tab bar needs far more, and
     /// ratatui clips it mid-word rather than adapting — at 70 columns the last
@@ -5099,13 +5906,19 @@ mod responsive_tests {
     #[test]
     fn the_tab_bar_knows_when_it_does_not_fit() {
         let needed = tab_bar_width();
-        assert!(needed > 60, "the full bar cannot fit a phone; it must collapse");
+        assert!(
+            needed > 60,
+            "the full bar cannot fit a phone; it must collapse"
+        );
         // And the threshold must be honest about the real labels, not a guess.
         let longest_possible: usize = Tab::ORDER
             .iter()
             .map(|t| t.title().chars().count())
             .sum::<usize>();
-        assert!(needed > longest_possible, "separators and borders count too");
+        assert!(
+            needed > longest_possible,
+            "separators and borders count too"
+        );
     }
 
     /// The scroll bound is computed from painted rows. Counting logical lines
@@ -5147,5 +5960,241 @@ mod responsive_tests {
             Span::raw("abcde"),
         ]);
         assert_eq!(wrapped_row_count(std::slice::from_ref(&line), 5), 3);
+    }
+
+    #[test]
+    fn wrapped_rows_measure_terminal_columns_for_wide_glyphs() {
+        assert_eq!(wrapped_row_count(&[Line::from("界界")], 2), 2);
+    }
+
+    #[test]
+    fn wrapped_rows_match_word_boundary_wrapping() {
+        assert_eq!(wrapped_row_count(&[Line::from("aaa aaa aaa aaa")], 5), 4);
+        assert_eq!(
+            wrapped_row_count(&[Line::from("AAAAAAAAAAAAAAAAAAAA    AAA")], 20),
+            2
+        );
+        assert_eq!(
+            wrapped_row_count(&[Line::from("AAA AAA AAAAA AA AAAAAA")], 10),
+            3
+        );
+        assert_eq!(
+            wrapped_row_count(&[Line::from("               4 Indent")], 10),
+            3
+        );
+    }
+
+    #[test]
+    fn settings_collapses_to_the_focused_column_on_phone_widths() {
+        let mut app = App::new(OmegaConfig::default());
+        app.tab = Tab::Settings;
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
+
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_settings(frame, &mut app, area);
+            })
+            .unwrap();
+        assert!(rendered(&terminal).contains("Tab → read"));
+
+        app.detail_focused = true;
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_settings(frame, &mut app, area);
+            })
+            .unwrap();
+        assert!(rendered(&terminal).contains("Tab → list"));
+    }
+
+    #[test]
+    fn every_tab_survives_degenerate_terminal_sizes() {
+        for (width, height) in [(1, 1), (20, 5), (60, 16)] {
+            for tab in Tab::ORDER {
+                let mut app = App::new(OmegaConfig::default());
+                app.tab = tab;
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal
+                    .draw(|frame| draw(frame, &mut app))
+                    .unwrap_or_else(|error| panic!("{tab:?} failed at {width}x{height}: {error}"));
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod help_contract_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn help_exposes_update_and_provider_neutral_chat_without_hidden_master_role() {
+        let mut app = App::new(OmegaConfig::default());
+        let mut terminal = Terminal::new(TestBackend::new(180, 140)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_help(frame, &mut app, area);
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(
+            rendered.contains("Update OmegaOS"),
+            "Monitor U action is missing"
+        );
+        assert!(rendered.contains("focused agent session"));
+        assert!(rendered.contains("AISB conversation viewer"));
+        assert!(rendered.contains("Link a Telegram bot to the selected OS"));
+        assert!(!rendered.contains("AISB Master"));
+        assert!(!rendered.contains("Forward to Claude"));
+    }
+
+    #[test]
+    fn help_wraps_long_rows_instead_of_clipping_their_tail() {
+        let mut app = App::new(OmegaConfig::default());
+        let mut terminal = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_help(frame, &mut app, area);
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+
+        assert!(
+            rendered.contains("(OSC 52)"),
+            "the tail of a long help row must wrap onto a visible line"
+        );
+    }
+}
+
+#[cfg(test)]
+mod os_readiness_render_tests {
+    use super::*;
+    use omega_core::config::OmegaConfig;
+    use omega_core::os_products::{
+        OsEntry, OsManifestStatus, OsProduct, OsReadiness, OsReadinessLevel,
+    };
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn os_detail_reports_static_evidence_without_claiming_tests_passed() {
+        let mut app = App::new(OmegaConfig::default());
+        app.os_entries = vec![OsEntry {
+            product: OsProduct::all()[0],
+            readiness: OsReadiness {
+                level: OsReadinessLevel::Testable,
+                directory_present: true,
+                master_present: true,
+                payload_present: true,
+                manifest: OsManifestStatus::Valid,
+                runtime_present: true,
+                tests_present: true,
+                event_schema_status: Some("stub".to_string()),
+            },
+            path: Some(std::path::PathBuf::from("/tmp/os")),
+            bot_linked: false,
+        }];
+
+        let rendered = text(&render_os_detail(&app));
+        assert!(rendered.contains("runtime + tests present (not executed)"));
+        assert!(rendered.contains("present (not executed)"));
+        assert!(rendered.contains("Event schema"));
+        assert!(rendered.contains("stub"));
+        assert!(!rendered.contains("integrated"));
+        assert!(!rendered.contains("tests passed"));
+    }
+
+    #[test]
+    fn os_tab_uses_the_responsive_wrapped_detail_contract() {
+        let mut app = App::new(OmegaConfig::default());
+        app.os_entries = vec![OsEntry {
+            product: OsProduct::all()[0],
+            readiness: OsReadiness {
+                level: OsReadinessLevel::Reference,
+                directory_present: true,
+                master_present: false,
+                payload_present: true,
+                manifest: OsManifestStatus::Missing,
+                runtime_present: false,
+                tests_present: false,
+                event_schema_status: None,
+            },
+            path: Some(std::path::PathBuf::from(
+                "/tmp/a-deliberately-long-operative-system-path-for-wrapping",
+            )),
+            bot_linked: false,
+        }];
+
+        let mut list_terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        list_terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_os(frame, &mut app, area);
+            })
+            .unwrap();
+        let list_rendered = list_terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            list_rendered.contains("Tab → read"),
+            "narrow OS view must show one focused column"
+        );
+
+        app.detail_focused = true;
+        let detail_lines = render_os_detail(&app);
+        let mut detail_terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        detail_terminal
+            .draw(|frame| {
+                let area = frame.area();
+                draw_os(frame, &mut app, area);
+            })
+            .unwrap();
+        let detail_rendered = detail_terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(detail_rendered.contains("Tab → list"));
+        assert!(detail_rendered.contains("Readiness"));
+        assert_eq!(
+            app.detail_max_scroll,
+            wrapped_row_count(&detail_lines, 58).saturating_sub(8),
+            "scroll bound must count the rows actually painted after wrapping"
+        );
     }
 }

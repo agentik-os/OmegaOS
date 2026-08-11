@@ -89,51 +89,163 @@ impl MissionPattern {
     fn triggers(&self) -> &'static [&'static str] {
         match self {
             Self::ParallelOrchestration => &[
-                "in parallel", "parallel", "at once", "several angles", "different angles",
-                "fan out", "spawn", "subagents", "sub-agents", "orchestrate", "orchestrator",
-                "en parallele", "en parallèle", "plusieurs angles", "simultanement",
+                "in parallel",
+                "parallel",
+                "at once",
+                "several angles",
+                "different angles",
+                "fan out",
+                "spawn",
+                "subagents",
+                "sub-agents",
+                "orchestrate",
+                "orchestrator",
+                "en parallele",
+                "en parallèle",
+                "plusieurs angles",
+                "simultanement",
             ],
             Self::GatedTeam => &[
-                "team", "planner", "specialist", "reviewer", "review gate", "hand off",
-                "handoff", "pipeline of agents", "equipe", "équipe", "relecteur", "valideur",
+                "team",
+                "planner",
+                "specialist",
+                "reviewer",
+                "review gate",
+                "hand off",
+                "handoff",
+                "pipeline of agents",
+                "equipe",
+                "équipe",
+                "relecteur",
+                "valideur",
             ],
             Self::SelfRunningAutomation => &[
-                "automation", "automate", "unattended", "no hand-holding", "schedule",
-                "scheduled", "cron", "daily", "weekly", "pipeline", "self-healing",
-                "watches", "trigger", "automatis", "automatiser", "sans moi", "planifi",
-                "quotidien", "recurrent", "récurrent",
+                "automation",
+                "automate",
+                "unattended",
+                "no hand-holding",
+                "schedule",
+                "scheduled",
+                "cron",
+                "daily",
+                "weekly",
+                "pipeline",
+                "self-healing",
+                "watches",
+                "trigger",
+                "automatis",
+                "automatiser",
+                "sans moi",
+                "planifi",
+                "quotidien",
+                "recurrent",
+                "récurrent",
             ],
             Self::Audit => &[
-                "audit", "review", "find every", "what's broken", "whats broken", "ranked by",
-                "security hole", "dead path", "shortcut", "pre-flight", "go / no-go",
-                "go/no-go", "inconsistenc", "brutal", "verifie", "vérifie", "relis",
-                "passe en revue", "controle", "contrôle",
+                "audit",
+                "review",
+                "find every",
+                "what's broken",
+                "whats broken",
+                "ranked by",
+                "security hole",
+                "dead path",
+                "shortcut",
+                "pre-flight",
+                "go / no-go",
+                "go/no-go",
+                "inconsistenc",
+                "brutal",
+                "verifie",
+                "vérifie",
+                "relis",
+                "passe en revue",
+                "controle",
+                "contrôle",
             ],
             Self::LongHorizonBuild => &[
-                "build me", "build a complete", "build the whole", "in one go", "all the way", "end to end",
-                "end-to-end", "from the ground up", "migrate", "migration", "rebuild",
-                "finish", "take it to done", "shipped", "construis", "refais", "termine",
-                "de bout en bout", "jusqu'au bout",
+                "build me",
+                "build a complete",
+                "build the whole",
+                "in one go",
+                "all the way",
+                "end to end",
+                "end-to-end",
+                "from the ground up",
+                "migrate",
+                "migration",
+                "rebuild",
+                "finish",
+                "take it to done",
+                "shipped",
+                "construis",
+                "refais",
+                "termine",
+                "de bout en bout",
+                "jusqu'au bout",
             ],
             Self::SelfCorrectingLoop => &[
-                "until every test passes", "until it passes", "loop until", "keep going until",
-                "re-run", "rerun", "grade", "eval", "until the score", "fix what fails",
-                "boucle", "jusqu'a ce que", "jusqu'à ce que", "tant que",
+                "until every test passes",
+                "until it passes",
+                "loop until",
+                "keep going until",
+                "re-run",
+                "rerun",
+                "grade",
+                "eval",
+                "until the score",
+                "fix what fails",
+                "boucle",
+                "jusqu'a ce que",
+                "jusqu'à ce que",
+                "tant que",
             ],
             Self::CodebaseMastery => &[
-                "codebase i don't know", "map it", "understand my", "refactor", "add tests",
-                "explain in plain english", "bring my", "up to date", "matching its style",
-                "comprendre", "cartographie", "refactor", "mettre a jour", "mettre à jour",
+                "codebase i don't know",
+                "map it",
+                "understand my",
+                "refactor",
+                "add tests",
+                "explain in plain english",
+                "bring my",
+                "up to date",
+                "matching its style",
+                "comprendre",
+                "cartographie",
+                "refactor",
+                "mettre a jour",
+                "mettre à jour",
             ],
             Self::VerifiedResearch => &[
-                "research", "fact-check", "fact check", "verify it", "compare", "sources",
-                "what's true", "whats true", "debate", "landscape", "map the whole",
-                "recherche", "compare", "verifie que c'est vrai", "sources",
+                "research",
+                "fact-check",
+                "fact check",
+                "verify it",
+                "compare",
+                "sources",
+                "what's true",
+                "whats true",
+                "debate",
+                "landscape",
+                "map the whole",
+                "recherche",
+                "compare",
+                "verifie que c'est vrai",
+                "sources",
             ],
             Self::ReusableSystem => &[
-                "reusable", "turn it into a skill", "make it a skill", "parametrise",
-                "parameterize", "over and over", "rerun on new inputs", "template",
-                "reutilisable", "réutilisable", "en faire un skill", "systematiser",
+                "reusable",
+                "turn it into a skill",
+                "make it a skill",
+                "parametrise",
+                "parameterize",
+                "over and over",
+                "rerun on new inputs",
+                "template",
+                "reutilisable",
+                "réutilisable",
+                "en faire un skill",
+                "systematiser",
             ],
         }
     }
@@ -238,7 +350,9 @@ impl MissionPattern {
             Self::ParallelOrchestration => {
                 "every axis reported AND you have merged them yourself into one verdict"
             }
-            Self::GatedTeam => "the reviewer passed it — not when the specialists said they were done",
+            Self::GatedTeam => {
+                "the reviewer passed it — not when the specialists said they were done"
+            }
             Self::SelfRunningAutomation => {
                 "it has run unattended at least once, end to end, on real input"
             }
@@ -248,8 +362,12 @@ impl MissionPattern {
                 "a full round found nothing worth fixing, or the retry cap was hit and escalated"
             }
             Self::CodebaseMastery => "the change is in and the system still works at runtime",
-            Self::VerifiedResearch => "every surviving claim is one you would defend with its source",
-            Self::ReusableSystem => "a fresh run from the documented entry point reproduces the result",
+            Self::VerifiedResearch => {
+                "every surviving claim is one you would defend with its source"
+            }
+            Self::ReusableSystem => {
+                "a fresh run from the documented entry point reproduces the result"
+            }
         }
     }
 
@@ -295,7 +413,11 @@ pub fn classify(mission: &str, limit: usize) -> Vec<MissionPattern> {
         .iter()
         .filter_map(|p| {
             let hits = p.triggers().iter().filter(|t| m.contains(**t)).count();
-            if hits > 0 { Some((hits, *p)) } else { None }
+            if hits > 0 {
+                Some((hits, *p))
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -303,8 +425,14 @@ pub fn classify(mission: &str, limit: usize) -> Vec<MissionPattern> {
     // is deterministic (a prompt that changes between runs is unreviewable).
     scored.sort_by(|a, b| {
         b.0.cmp(&a.0).then_with(|| {
-            let ia = MissionPattern::all().iter().position(|p| *p == a.1).unwrap_or(0);
-            let ib = MissionPattern::all().iter().position(|p| *p == b.1).unwrap_or(0);
+            let ia = MissionPattern::all()
+                .iter()
+                .position(|p| *p == a.1)
+                .unwrap_or(0);
+            let ib = MissionPattern::all()
+                .iter()
+                .position(|p| *p == b.1)
+                .unwrap_or(0);
             ia.cmp(&ib)
         })
     });
@@ -375,14 +503,38 @@ mod tests {
     fn a_simple_request_picks_the_right_shape() {
         // The operator types short things. These are the shapes they must hit.
         let cases = [
-            ("audit my code and find what's broken", MissionPattern::Audit),
-            ("research the agent framework landscape", MissionPattern::VerifiedResearch),
-            ("build me a complete app in one go", MissionPattern::LongHorizonBuild),
-            ("automate my weekly report, unattended", MissionPattern::SelfRunningAutomation),
-            ("turn this into a reusable skill", MissionPattern::ReusableSystem),
-            ("spawn subagents in parallel on this", MissionPattern::ParallelOrchestration),
-            ("loop until every test passes", MissionPattern::SelfCorrectingLoop),
-            ("refactor this and add tests", MissionPattern::CodebaseMastery),
+            (
+                "audit my code and find what's broken",
+                MissionPattern::Audit,
+            ),
+            (
+                "research the agent framework landscape",
+                MissionPattern::VerifiedResearch,
+            ),
+            (
+                "build me a complete app in one go",
+                MissionPattern::LongHorizonBuild,
+            ),
+            (
+                "automate my weekly report, unattended",
+                MissionPattern::SelfRunningAutomation,
+            ),
+            (
+                "turn this into a reusable skill",
+                MissionPattern::ReusableSystem,
+            ),
+            (
+                "spawn subagents in parallel on this",
+                MissionPattern::ParallelOrchestration,
+            ),
+            (
+                "loop until every test passes",
+                MissionPattern::SelfCorrectingLoop,
+            ),
+            (
+                "refactor this and add tests",
+                MissionPattern::CodebaseMastery,
+            ),
         ];
         for (mission, expected) in cases {
             let got = classify(mission, 2);
@@ -401,11 +553,8 @@ mod tests {
         // The operator writes in French half the time; an English-only matcher
         // would silently drop every one of those missions to the default.
         assert!(classify("verifie et audite mon code", 2).contains(&MissionPattern::Audit));
-        assert!(classify(
-            "lance des workers en parallele sur ca",
-            2
-        )
-        .contains(&MissionPattern::ParallelOrchestration));
+        assert!(classify("lance des workers en parallele sur ca", 2)
+            .contains(&MissionPattern::ParallelOrchestration));
         assert!(classify("automatiser ce rapport quotidien", 2)
             .contains(&MissionPattern::SelfRunningAutomation));
     }
@@ -428,8 +577,14 @@ mod tests {
     #[test]
     fn an_unclassifiable_mission_still_gets_the_orchestration_floor() {
         let block = orchestration_block("do the thing");
-        assert!(!block.is_empty(), "never leave an oracle with no shape at all");
-        assert!(block.contains("spawn-worker"), "the floor is still: dispatch");
+        assert!(
+            !block.is_empty(),
+            "never leave an oracle with no shape at all"
+        );
+        assert!(
+            block.contains("spawn-worker"),
+            "the floor is still: dispatch"
+        );
         assert!(block.contains("R-DESTRUCT"));
     }
 
@@ -466,7 +621,11 @@ mod tests {
             assert!(!p.title().is_empty());
             assert!(!p.triggers().is_empty(), "{:?} has no triggers", p);
             assert!(p.shape().len() > 80, "{:?} shape is too thin to act on", p);
-            assert!(!p.stop_condition().is_empty(), "{:?} has no stop condition", p);
+            assert!(
+                !p.stop_condition().is_empty(),
+                "{:?} has no stop condition",
+                p
+            );
             assert!(!p.guardrails().is_empty(), "{:?} has no guardrail", p);
         }
     }

@@ -1,6 +1,7 @@
 ---
 name: quality-evaluation-release-os
-description: Prove that a product conforms to its contracts, manages risk, can be observed and recovered, and is ready for controlled release and operation. Independent certification authority positioned between Builder OS and production. Contains 16 specialist agents, 26 skills, 7 protocols and 8 schemas. Use for release readiness review, quality gates, contract conformance checks, observability and recovery validation, or go/no-go release decisions. Trigger words: quality, evaluation, release, release readiness, conformance, observability, go no-go; FR: qualite, evaluation, mise en production, conformite, observabilite, decision de lancement.
+description: >
+  Prove that a product conforms to its contracts, manages risk, can be observed and recovered, and is ready for controlled release and operation. Independent certification authority positioned between Builder OS and production. Contains 16 specialist agents, 26 skills, 7 protocols and 8 schemas. Use for release readiness review, quality gates, contract conformance checks, observability and recovery validation, or go/no-go release decisions. Trigger words: quality, evaluation, release, release readiness, conformance, observability, go no-go; FR: qualite, evaluation, mise en production, conformite, observabilite, decision de lancement.
 ---
 
 # Quality, Evaluation & Release {OS}

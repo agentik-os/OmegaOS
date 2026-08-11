@@ -96,6 +96,10 @@ EXAMPLES:
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh dx "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>"` (plus `--ticket` and `--url` together when ticket-scoped). A non-zero exit is an audit failure. Read the emitted `audits/.dxaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`.
+
 ## OUTPUT CONTRACT
 
 ```
@@ -711,7 +715,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.dxaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -831,7 +835,7 @@ THE QUALITY ARSENAL:
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial thinking
-- ✅ **Concurrency lock** — `audits/.dxaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.dxaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations (rule 43 step 8b alignment). On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /dxaudit is PRIMARY audit for CLI tools and libraries. Full phases run.
@@ -1010,11 +1014,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 

@@ -403,6 +403,58 @@ fi
 # arch, checksum/extract failure, binary won't run here) falls through to the
 # source build in Phases 3-4 — so a fresh clone always reproduces the system
 # (Law 0), just faster when a release exists. Force source with OMEGA_FROM_SOURCE=1.
+
+# Resolve the exact source authority BEFORE selecting a prebuilt. The old
+# curl|bash order cloned only after maybe_install_prebuilt, so the freshness
+# gate below could not inspect main and silently accepted an older release.
+# This clone is needed by every later asset-copy phase anyway.
+if [[ -z "$OMEGA_SRC" ]]; then
+    OMEGA_SRC="/tmp/omega-build-$(id -u)"
+    if [[ -d "$OMEGA_SRC" ]]; then
+        rm -rf "$OMEGA_SRC" 2>/dev/null \
+            || OMEGA_SRC="$(mktemp -d /tmp/omega-build-XXXXXX)"
+    fi
+    info "Cloning OmegaOS..."
+    git clone --depth 1 "$REPO_URL" "$OMEGA_SRC"
+fi
+
+OMEGA_SOURCE_REV="$(git -C "$OMEGA_SRC" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "$OMEGA_SOURCE_REV" =~ ^[0-9a-f]{40}$ ]]; then
+    err "Could not resolve the exact OmegaOS source revision from $OMEGA_SRC"
+    exit 1
+fi
+RMUX_REV="$(sed -nE 's/.*rmux-sdk.*rev *= *"([0-9a-f]+)".*/\1/p' "$OMEGA_SRC/Cargo.toml" | head -1)"
+if [[ ! "$RMUX_REV" =~ ^[0-9a-f]{7,40}$ ]]; then
+    err "Could not resolve the pinned rmux revision from $OMEGA_SRC/Cargo.toml"
+    exit 1
+fi
+SOURCE_CARGO_LOCK_SHA="$( { sha256sum "$OMEGA_SRC/Cargo.lock" 2>/dev/null || shasum -a 256 "$OMEGA_SRC/Cargo.lock" 2>/dev/null; } | awk 'NF {print $1; exit}')"
+if [[ ! "$SOURCE_CARGO_LOCK_SHA" =~ ^[0-9a-fA-F]{64}$ ]]; then
+    err "Could not hash the committed Cargo.lock in $OMEGA_SRC"
+    exit 1
+fi
+ACTUAL_RMUX_REV="$RMUX_REV"
+
+prebuilt_build_info_matches_source() {
+    local build_info="$1" triple="$2"
+    command -v jq >/dev/null 2>&1 || return 1
+    jq -e \
+        --arg omega_commit "$OMEGA_SOURCE_REV" \
+        --arg rmux_rev "$RMUX_REV" \
+        --arg cargo_lock_sha256 "$SOURCE_CARGO_LOCK_SHA" \
+        --arg target "$triple" '
+        type == "object"
+        and .schema_version == 1
+        and (.omega_commit == $omega_commit)
+        and (.omega_commit | type == "string" and test("^[0-9a-f]{40}$"))
+        and (.rmux_commit | type == "string" and test("^[0-9a-f]{40}$") and startswith($rmux_rev))
+        and (.cargo_lock_sha256 == $cargo_lock_sha256)
+        and (.cargo_lock_sha256 | type == "string" and test("^[0-9a-fA-F]{64}$"))
+        and (.target == $target)
+        and ((has("dirty") | not) or .dirty == false)
+        ' "$build_info" >/dev/null 2>&1
+}
+
 PREBUILT_OK=""
 maybe_install_prebuilt() {
     [[ -n "${OMEGA_FROM_SOURCE:-}" ]] && { info "OMEGA_FROM_SOURCE set — building from source"; return 0; }
@@ -447,7 +499,7 @@ maybe_install_prebuilt() {
     # 0.1.8 `omega --version` reported the same number for both). Compare the
     # release date against the HEAD commit date of the checkout: source newer
     # → build from source. Works on the shallow `--depth 1` clone npx makes.
-    if [[ -n "$published" && -n "$OMEGA_SRC" && -d "$OMEGA_SRC/.git" ]] && command -v git >/dev/null 2>&1; then
+    if [[ -n "$published" ]] && command -v git >/dev/null 2>&1; then
         local head_date
         # Force UTC on BOTH sides (GitHub publishes Zulu; a commit carries its
         # author's offset), then compare only YYYY-MM-DDTHH:MM:SS so the two
@@ -459,6 +511,14 @@ maybe_install_prebuilt() {
         fi
     fi
 
+    # A local checkout with tracked edits is not represented by any release
+    # artifact even when HEAD happens to equal the release commit. Build those
+    # exact sources instead of replacing them with a clean prebuilt.
+    if [[ -n "$(git -C "$OMEGA_SRC" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
+        info "Tracked source changes present — building from the exact local checkout"
+        return 0
+    fi
+
     local base tarball tmp
     base="https://github.com/agentik-os/OmegaOS/releases/download/$tag"
     tarball="omega-$triple.tar.gz"
@@ -468,35 +528,59 @@ maybe_install_prebuilt() {
     if ! curl -fsSL "$base/$tarball" -o "$tmp/$tarball"; then
         info "Prebuilt $tarball not in release $tag — building from source"; rm -rf "$tmp"; return 0
     fi
-    # Checksum: if the .sha256 sidecar exists it MUST match (tamper/partial guard).
-    if curl -fsSL "$base/$tarball.sha256" -o "$tmp/$tarball.sha256" 2>/dev/null; then
-        local want got
-        want="$(awk '{print $1}' "$tmp/$tarball.sha256" 2>/dev/null)" || true
-        got="$( { sha256sum "$tmp/$tarball" 2>/dev/null || shasum -a 256 "$tmp/$tarball" 2>/dev/null; } | awk '{print $1}')" || true
-        if [[ -n "$want" && "$want" != "$got" ]]; then
-            err "Prebuilt checksum mismatch — refusing prebuilt, building from source"; rm -rf "$tmp"; return 0
-        fi
+    # Provenance is fail-closed for the prebuilt lane. A missing or malformed
+    # sidecar is not evidence; fall back to the reproducible source build.
+    if ! curl -fsSL "$base/$tarball.sha256" -o "$tmp/$tarball.sha256" 2>/dev/null; then
+        warn "Prebuilt checksum sidecar missing — refusing prebuilt, building from source"
+        rm -rf "$tmp"
+        return 0
+    fi
+    local want got
+    want="$(awk 'NF {print $1; exit}' "$tmp/$tarball.sha256" 2>/dev/null)" || true
+    got="$( { sha256sum "$tmp/$tarball" 2>/dev/null || shasum -a 256 "$tmp/$tarball" 2>/dev/null; } | awk 'NF {print $1; exit}')" || true
+    if [[ ! "$want" =~ ^[0-9a-fA-F]{64}$ || ! "$got" =~ ^[0-9a-fA-F]{64}$ || "$want" != "$got" ]]; then
+        err "Prebuilt checksum is missing, malformed, or mismatched — refusing prebuilt"
+        rm -rf "$tmp"
+        return 0
     fi
     if ! tar xzf "$tmp/$tarball" -C "$tmp" 2>/dev/null; then
         info "Prebuilt extract failed — building from source"; rm -rf "$tmp"; return 0
     fi
-    [[ -f "$tmp/omega" && -f "$tmp/rmux" ]] || { info "Prebuilt missing binaries — building from source"; rm -rf "$tmp"; return 0; }
+    [[ -f "$tmp/omega" && -f "$tmp/rmux" && -f "$tmp/BUILD-INFO.json" ]] || {
+        info "Prebuilt missing binaries or BUILD-INFO.json — building from source"
+        rm -rf "$tmp"
+        return 0
+    }
+
+    # The archive checksum proves only that the archive matches its sidecar.
+    # Bind the release payload to THIS checkout before executing either binary:
+    # exact OmegaOS HEAD + Cargo.lock + pinned rmux revision + host target.
+    if ! prebuilt_build_info_matches_source "$tmp/BUILD-INFO.json" "$triple"; then
+        warn "Prebuilt BUILD-INFO.json does not match this source authority — building from source"
+        rm -rf "$tmp"
+        return 0
+    fi
 
     mkdir -p "$INSTALL_DIR"
     install_binary "$tmp/omega" "$INSTALL_DIR/omega" || { rm -rf "$tmp"; return 0; }
     install_binary "$tmp/rmux"  "$INSTALL_DIR/rmux"  || { rm -rf "$tmp"; return 0; }
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"
-    rm -rf "$tmp"
 
     # Sanity: the downloaded binaries actually run on THIS host (right libc/arch).
     # rmux is tmux-style — its version flag is `-V` (NOT --version, which exits 1).
     if "$INSTALL_DIR/omega" --version >/dev/null 2>&1 && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
+        mkdir -p "$OMEGA_DIR/state"
+        chmod 700 "$OMEGA_DIR/state"
+        install -m 0644 "$tmp/BUILD-INFO.json" "$OMEGA_DIR/state/.installed-build-info.json.new"
+        mv -f "$OMEGA_DIR/state/.installed-build-info.json.new" \
+            "$OMEGA_DIR/state/installed-build-info.json"
         PREBUILT_OK=1
         ok "Prebuilt omega + rmux installed ($tag, $triple) — skipped the source build"
     else
         info "Prebuilt binaries did not run here — building from source"
         rm -f "$INSTALL_DIR/omega" "$INSTALL_DIR/rmux"
     fi
+    rm -rf "$tmp"
     return 0
 }
 maybe_install_prebuilt
@@ -511,21 +595,42 @@ step "Phase 3: Building rmux"
 # dir still cannot be removed (e.g. leftover root-owned files), fall back to a
 # fresh mktemp dir so the clone never fails.
 RMUX_BUILD_DIR="/tmp/omega-rmux-build-$(id -u)"
-if [[ -f "$INSTALL_DIR/rmux" ]]; then
-    ok "rmux already installed at $INSTALL_DIR/rmux"
+RMUX_REV_STAMP="$OMEGA_DIR/state/rmux-source-rev"
+if [[ -n "${PREBUILT_OK:-}" ]]; then
+    mkdir -p "$(dirname "$RMUX_REV_STAMP")"
+    chmod 700 "$(dirname "$RMUX_REV_STAMP")"
+    printf '%s\n' "$RMUX_REV" > "$RMUX_REV_STAMP.new"
+    chmod 0644 "$RMUX_REV_STAMP.new"
+    mv -f "$RMUX_REV_STAMP.new" "$RMUX_REV_STAMP"
+fi
+if [[ -x "$INSTALL_DIR/rmux" && -f "$RMUX_REV_STAMP" ]] \
+    && [[ "$(tr -d '[:space:]' < "$RMUX_REV_STAMP")" = "$RMUX_REV" ]] \
+    && "$INSTALL_DIR/rmux" -V >/dev/null 2>&1; then
+    ok "rmux already matches pinned revision $RMUX_REV"
 else
     if [[ -d "$RMUX_BUILD_DIR" ]]; then
         rm -rf "$RMUX_BUILD_DIR" 2>/dev/null \
             || RMUX_BUILD_DIR="$(mktemp -d /tmp/omega-rmux-build-XXXXXX)"
     fi
     ensure_build_toolchain
-    info "Cloning rmux..."
-    git clone --depth 1 "$RMUX_REPO" "$RMUX_BUILD_DIR"
+    info "Fetching pinned rmux revision $RMUX_REV..."
+    git clone --filter=blob:none --no-checkout "$RMUX_REPO" "$RMUX_BUILD_DIR"
+    git -C "$RMUX_BUILD_DIR" checkout --detach -q "$RMUX_REV"
+    ACTUAL_RMUX_REV="$(git -C "$RMUX_BUILD_DIR" rev-parse HEAD)"
+    [[ "$ACTUAL_RMUX_REV" == "$RMUX_REV"* ]] || {
+        err "rmux checkout mismatch: expected $RMUX_REV, got $ACTUAL_RMUX_REV"
+        exit 1
+    }
     info "Building rmux (this may take a few minutes)..."
     cd "$RMUX_BUILD_DIR"
     cargo_build_live
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/rmux "$INSTALL_DIR/rmux"
+    mkdir -p "$(dirname "$RMUX_REV_STAMP")"
+    chmod 700 "$(dirname "$RMUX_REV_STAMP")"
+    printf '%s\n' "$RMUX_REV" > "$RMUX_REV_STAMP.new"
+    chmod 0644 "$RMUX_REV_STAMP.new"
+    mv -f "$RMUX_REV_STAMP.new" "$RMUX_REV_STAMP"
     cd -
     rm -rf "$RMUX_BUILD_DIR"
     ok "rmux installed to $INSTALL_DIR/rmux"
@@ -810,17 +915,6 @@ EOF
 
 step "Phase 4: Building OmegaOS"
 
-if [[ -z "$OMEGA_SRC" ]]; then
-    # Per-user build dir (same multi-user /tmp collision fix as rmux above).
-    OMEGA_SRC="/tmp/omega-build-$(id -u)"
-    if [[ -d "$OMEGA_SRC" ]]; then
-        rm -rf "$OMEGA_SRC" 2>/dev/null \
-            || OMEGA_SRC="$(mktemp -d /tmp/omega-build-XXXXXX)"
-    fi
-    info "Cloning OmegaOS..."
-    git clone --depth 1 "$REPO_URL" "$OMEGA_SRC"
-fi
-
 cd "$OMEGA_SRC"
 # curl|bash path: the version parse at the top of the script ran before the
 # clone existed — re-derive from the cloned Cargo.toml (still the single source
@@ -832,13 +926,25 @@ if [[ -n "${PREBUILT_OK:-}" ]]; then
 else
     ensure_build_toolchain
     info "Building omega CLI..."
-    # --locked: build against the committed Cargo.lock so a fresh clone resolves the
-    # exact same transitive deps (reproducible builds). Falls back to an unlocked
-    # build only if the lockfile is somehow absent/out of sync.
-    cargo_build_live --locked || cargo_build_live
+    # The committed lockfile is part of the release contract. An out-of-sync
+    # lockfile aborts instead of silently resolving a different dependency set.
+    cargo_build_live --locked
     mkdir -p "$INSTALL_DIR"
     install_binary target/release/omega "$INSTALL_DIR/omega"
     ln -sf "$INSTALL_DIR/omega" "$INSTALL_DIR/omg"   # short alias: omg == omega
+    mkdir -p "$OMEGA_DIR/state"
+    chmod 700 "$OMEGA_DIR/state"
+    OMEGA_COMMIT="$(git rev-parse HEAD)"
+    CARGO_LOCK_SHA="$( { sha256sum Cargo.lock 2>/dev/null || shasum -a 256 Cargo.lock; } | awk '{print $1}')"
+    BUILD_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+    DIRTY=false
+    [[ -z "$(git status --porcelain --untracked-files=no)" ]] || DIRTY=true
+    printf '{"schema_version":1,"omega_commit":"%s","rmux_commit":"%s","cargo_lock_sha256":"%s","target":"%s","dirty":%s}\n' \
+        "$OMEGA_COMMIT" "$ACTUAL_RMUX_REV" "$CARGO_LOCK_SHA" "$BUILD_TARGET" "$DIRTY" \
+        > "$OMEGA_DIR/state/.installed-build-info.json.new"
+    chmod 0644 "$OMEGA_DIR/state/.installed-build-info.json.new"
+    mv -f "$OMEGA_DIR/state/.installed-build-info.json.new" \
+        "$OMEGA_DIR/state/installed-build-info.json"
     ok "omega CLI installed to $INSTALL_DIR/omega"
 fi
 
@@ -1026,7 +1132,16 @@ if [[ -d "$OSS_SRC" ]]; then
         _os_skill_slug="$(basename "$_os_skill_src")"
         _os_skill_dst="$OMEGA_DIR/skills/$_os_skill_slug"
         mkdir -p "$_os_skill_dst"
-        cp -rf "$_os_skill_src/." "$_os_skill_dst/"
+        if [[ -d "$OMEGA_SRC/skills/$_os_skill_slug" ]]; then
+            # The native skills tree is canonical when both surfaces ship the
+            # same slug. Reconcile it with --delete so an older OS payload
+            # cannot leave a second nested SKILL.md behind and make the strict
+            # catalog reject the duplicate identity on an idempotent reinstall.
+            rsync -a --delete --exclude=node_modules --exclude=.next \
+                "$OMEGA_SRC/skills/$_os_skill_slug/" "$_os_skill_dst/"
+        else
+            cp -rf "$_os_skill_src/." "$_os_skill_dst/"
+        fi
     done
     unset _os_skill_file _os_skill_src _os_skill_slug _os_skill_dst
     # Per-OS bin wrappers (e.g. omega-stepper) → ~/.local/bin. Symlink from the
@@ -1055,7 +1170,7 @@ if [[ -d "$OSS_SRC" ]]; then
         done
         unset _os_cx
     fi
-    ok "AgentikOS OS suite installed → $OSS_DST/ ($(find "$OSS_DST" -mindepth 1 -maxdepth 1 -type d | wc -l) operative systems)"
+    ok "AgentikOS OS suite installed → $OSS_DST/ ($(find "$OSS_DST" -mindepth 1 -maxdepth 1 -type d | wc -l) payload directories; 'omega os list' is authoritative)"
 else
     info "OS suite payload not found — skipping"
 fi
@@ -1453,7 +1568,13 @@ if [[ -d "$AUDITS_SRC" ]]; then
     # guarantee the bit on every fs). The audits invoke _shared/*.sh
     # (hinge-analyzer.sh, grep-loop.sh, …).
     [[ -d "$AUDITS_DST/_shared" ]] && chmod +x "$AUDITS_DST/_shared/"*.sh 2>/dev/null || true
-    ok "Quality Arsenal installed: $(ls -d "$AUDITS_DST"/*/ 2>/dev/null | wc -l) audit skills → $AUDITS_DST/"
+    # The canonical registry uses TOML's plural [[audits]] table. Count that
+    # exact schema marker rather than a stale singular spelling, otherwise a
+    # healthy fresh install misleadingly reports zero registered audits.
+    AUDIT_REGISTERED="$(grep -c '^\[\[audits\]\]' "$AUDITS_DST/registry.toml" 2>/dev/null || true)"
+    AUDIT_PROTOCOLS="$(find "$AUDITS_DST" -mindepth 2 -maxdepth 2 -name SKILL.md -type f | wc -l)"
+    AUDIT_HELPERS=$((AUDIT_PROTOCOLS - AUDIT_REGISTERED))
+    ok "Quality Arsenal installed: $AUDIT_REGISTERED registered forensic audits + $AUDIT_HELPERS orchestration helpers → $AUDITS_DST/"
 
     # Make each audit invocable as a Claude Code slash command (/codeaudit, etc.).
     # The full SKILL.md is large, so the stub points the agent at the installed
@@ -1480,7 +1601,8 @@ EOF
         done
         AUDIT_STUBS=$((AUDIT_STUBS + 1))
     done
-    ok "Audit slash commands installed ($AUDIT_STUBS audits → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
+    ok "Audit slash commands installed ($AUDIT_STUBS callable protocols → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
+    unset AUDIT_REGISTERED AUDIT_PROTOCOLS AUDIT_HELPERS
 
     # Quality Arsenal RUNTIME. The audit SKILLs invoke the hybrid orchestrator
     # by ABSOLUTE path under the single OmegaOS home: ~/.omega/lib/audit-runner.sh
@@ -1864,7 +1986,8 @@ done
 # and the deep audit team), the skill teaches an agent WHICH state means what and
 # why a BLOCKED session must never be nudged. Same copy -> ~/.omega/skills/<name>/
 # + /<name> and /omg-<name> stub shape as the loops around it. See R-MONITOR.
-for NSK in monitor; do
+MONITOR_SKILLS=(monitor)
+for NSK in "${MONITOR_SKILLS[@]}"; do
     NSK_SRC="$OMEGA_SRC/skills/$NSK"
     NSK_DST="$OMEGA_DIR/skills/$NSK"
     if [[ -d "$NSK_SRC" ]]; then
@@ -2247,11 +2370,11 @@ else
     info "watch skill not found — skipping"
 fi
 
-# Install the artifact-design live-report skill (/artifact-design + /omg-artifact-design)
-# — surface 1 of the OmegaOS report router (R-ARTIFACT). A pure protocol layer over the
-# NATIVE Claude Code Artifact tool: publishes deliverable reports as live claude.ai
-# Artifacts. Nothing external is installed and there are no runtime deps — the skill
-# ships as markdown only and orchestrates capabilities already in the harness.
+# Install the artifact-design local-report skill (/artifact-design +
+# /omg-artifact-design), surface 1 of the OmegaOS report router (R-ARTIFACT).
+# The installed protocol emits one self-contained HTML file under the project's
+# agentic/reports/ and ~/.omega/artifacts/, then serves it tailnet-only. It does
+# not publish to claude.ai or depend on a provider-specific artifact surface.
 ARTD_SRC="$OMEGA_SRC/skills/artifact-design"
 ARTD_DST="$OMEGA_DIR/skills/artifact-design"
 if [[ -d "$ARTD_SRC" ]]; then
@@ -2906,7 +3029,7 @@ RMUX_SOURCE_LINE="source-file $OMEGA_DIR/rmux.conf.omega"
 if [[ -f "$RMUX_CONF" ]]; then
     if ! grep -qF "rmux.conf.omega" "$RMUX_CONF" 2>/dev/null; then
         echo "" >> "$RMUX_CONF"
-        echo "# OmegaOS keybindings (Option+Z launches session manager)" >> "$RMUX_CONF"
+        echo "# OmegaOS keybindings (Ctrl+Space opens the session manager)" >> "$RMUX_CONF"
         echo "$RMUX_SOURCE_LINE" >> "$RMUX_CONF"
         ok "Added OmegaOS source line to $RMUX_CONF"
     else
@@ -2919,7 +3042,7 @@ else
 fi
 
 # System-wide rmux config so EVERY user — root and any future account — gets the
-# same hardened session (mouse/scroll/clipboard/escape-time/truecolor + Option+Z),
+# same hardened session (mouse/scroll/clipboard/escape-time/truecolor + Ctrl+Space),
 # not just the installing user. rmux reads /etc/rmux.conf on server start (proven
 # empirically), so we drop a world-readable copy under /etc/omega and source it
 # from /etc/rmux.conf idempotently. Best-effort: needs root; if unavailable the
@@ -3332,20 +3455,106 @@ fi
 # the Phase 5 vendored copies are canonical here, the mirror only fills gaps.
 if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
     SKMIRROR=0
+    SKMIRROR_REJECTED=0
     while IFS= read -r sk_md; do
         sk_dir="$(dirname "$sk_md")"
         sk_name="$(basename "$sk_dir")"
         [[ -d "$OMEGA_SRC/skills/$sk_name" ]] && continue   # OmegaOS-vendored = canon
+        # The external corpus may contain a flat skill whose declared name is
+        # already provided by a nested OmegaOS pack (for example
+        # design-intelligence/a-b-test-design). The catalog rejects duplicate
+        # names after Unicode/case normalization, so reject the incoming
+        # mirror before copying it rather than leaving a successful installer
+        # with a broken final provider sync.
+        source_skill_name="$(awk '/^name:[[:space:]]*/ { sub(/^name:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$sk_md")"
+        duplicate_md=""
+        if [[ -n "$source_skill_name" ]]; then
+            while IFS= read -r installed_md; do
+                [[ "$installed_md" == "$OMEGA_DIR/skills/$sk_name/SKILL.md" ]] && continue
+                installed_skill_name="$(awk '/^name:[[:space:]]*/ { sub(/^name:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$installed_md")"
+                if [[ "$installed_skill_name" == "$source_skill_name" ]]; then
+                    duplicate_md="$installed_md"
+                    break
+                fi
+            done < <(find "$OMEGA_DIR/skills" -type f -name SKILL.md 2>/dev/null)
+        fi
+        if [[ -n "$duplicate_md" ]]; then
+            warn "Agentik-Skills rejected duplicate protocol before mirror: $source_skill_name ($duplicate_md is canonical)"
+            installed_md="$OMEGA_DIR/skills/$sk_name/SKILL.md"
+            if [[ -f "$installed_md" ]] && cmp -s "$sk_md" "$installed_md"; then
+                mkdir -p "$OMEGA_DIR/state/rejected-skills"
+                rejected_dir="$(mktemp -d "$OMEGA_DIR/state/rejected-skills/$sk_name.XXXXXX")"
+                rmdir "$rejected_dir"
+                mv "$OMEGA_DIR/skills/$sk_name" "$rejected_dir"
+                warn "quarantined unchanged duplicate mirror → $rejected_dir"
+            fi
+            SKMIRROR_REJECTED=$((SKMIRROR_REJECTED + 1))
+            continue
+        fi
+        if ! "$INSTALL_DIR/omega" skills validate --root "$sk_dir" >/dev/null 2>&1; then
+            warn "Agentik-Skills rejected invalid protocol before mirror: $sk_name"
+            installed_md="$OMEGA_DIR/skills/$sk_name/SKILL.md"
+            if [[ -f "$installed_md" ]] && cmp -s "$sk_md" "$installed_md"; then
+                # Migration from the former blind mirror: quarantine only an
+                # exact, unchanged copy of the now-rejected upstream skill.
+                # A locally edited or OS-provided replacement never matches
+                # and is therefore preserved.
+                mkdir -p "$OMEGA_DIR/state/rejected-skills"
+                rejected_dir="$(mktemp -d "$OMEGA_DIR/state/rejected-skills/$sk_name.XXXXXX")"
+                rmdir "$rejected_dir"
+                mv "$OMEGA_DIR/skills/$sk_name" "$rejected_dir"
+                warn "quarantined unchanged rejected mirror → $rejected_dir"
+            fi
+            SKMIRROR_REJECTED=$((SKMIRROR_REJECTED + 1))
+            continue
+        fi
         mkdir -p "$OMEGA_DIR/skills/$sk_name"
         if command -v rsync >/dev/null 2>&1; then
-            rsync -a "$sk_dir/" "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
+            # This directory is an SSOT mirror, not a merge surface. Remove
+            # files deleted upstream so stale nested protocols cannot survive
+            # indefinitely and later collide in the strict installed catalog.
+            rsync -a --delete "$sk_dir/" "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
         else
             cp -r "$sk_dir/." "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
         fi
         SKMIRROR=$((SKMIRROR + 1))
     done < <(find "$SKILLS_REPO_DIR" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/.git/*' 2>/dev/null)
-    ok "Agentik-Skills mirrored → $OMEGA_DIR/skills/ ($SKMIRROR skills from the SSOT library)"
+    ok "Agentik-Skills mirrored → $OMEGA_DIR/skills/ ($SKMIRROR schema-valid skills; $SKMIRROR_REJECTED rejected)"
+    unset SKMIRROR_REJECTED installed_md rejected_dir
 fi
+
+# Earlier versions of the installer could leave an unchanged flat third-party
+# mirror beside the identical nested canonical pack. That makes the strict
+# catalog rightly reject the whole provider projection. Normalize only the
+# provably identical case: keep the nested canonical skill and recoverably
+# quarantine the flat copy. Divergent same-name skills remain in place and
+# fail closed during the final catalog compile rather than choosing silently.
+declare -A OMEGA_NESTED_SKILL
+while IFS= read -r nested_md; do
+    nested_name="$(awk '/^name:[[:space:]]*/ { sub(/^name:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$nested_md")"
+    [[ -n "$nested_name" && -z "${OMEGA_NESTED_SKILL[$nested_name]:-}" ]] \
+        && OMEGA_NESTED_SKILL[$nested_name]="$nested_md"
+done < <(find "$OMEGA_DIR/skills" -mindepth 3 -maxdepth 3 -type f -name SKILL.md 2>/dev/null)
+OMEGA_DUPLICATES_RECOVERED=0
+for flat_md in "$OMEGA_DIR/skills"/*/SKILL.md; do
+    [[ -f "$flat_md" ]] || continue
+    flat_name="$(awk '/^name:[[:space:]]*/ { sub(/^name:[[:space:]]*/, ""); gsub(/^"|"$/, ""); print; exit }' "$flat_md")"
+    nested_md="${OMEGA_NESTED_SKILL[$flat_name]:-}"
+    [[ -n "$nested_md" ]] || continue
+    if cmp -s "$flat_md" "$nested_md"; then
+        flat_dir="$(dirname "$flat_md")"
+        mkdir -p "$OMEGA_DIR/state/rejected-skills"
+        recovered_dir="$(mktemp -d "$OMEGA_DIR/state/rejected-skills/${flat_name}.duplicate.XXXXXX")"
+        rmdir "$recovered_dir"
+        mv "$flat_dir" "$recovered_dir"
+        OMEGA_DUPLICATES_RECOVERED=$((OMEGA_DUPLICATES_RECOVERED + 1))
+        warn "quarantined unchanged duplicate skill → $recovered_dir (canonical: $nested_md)"
+    else
+        warn "same-name skills differ; preserving both and failing catalog validation: $flat_md vs $nested_md"
+    fi
+done
+[[ "$OMEGA_DUPLICATES_RECOVERED" -gt 0 ]] && ok "Recovered $OMEGA_DUPLICATES_RECOVERED unchanged duplicate skill mirror(s)"
+unset OMEGA_NESTED_SKILL OMEGA_DUPLICATES_RECOVERED nested_md nested_name flat_md flat_name flat_dir recovered_dir
 
 # The private/library mirror changes the canonical skill corpus after the
 # earlier bootstrap Atlas pass. Recompile discovery surfaces and provider

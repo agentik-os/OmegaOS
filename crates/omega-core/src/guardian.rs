@@ -33,7 +33,10 @@ pub struct Guardian {
 
 impl Guardian {
     pub fn new(max_attempts: u8, verify_timeout: Duration) -> Self {
-        Self { max_attempts: max_attempts.max(1), verify_timeout }
+        Self {
+            max_attempts: max_attempts.max(1),
+            verify_timeout,
+        }
     }
 
     /// Tier 1 — deterministic. Re-run the step's verify_command in the project
@@ -85,7 +88,9 @@ impl Guardian {
                     let feedback = result
                         .command_results
                         .iter()
-                        .map(|c| format!("$ {}\nexit {}\n{}", c.command, c.exit_code, c.stderr.trim()))
+                        .map(|c| {
+                            format!("$ {}\nexit {}\n{}", c.command, c.exit_code, c.stderr.trim())
+                        })
                         .collect::<Vec<_>>()
                         .join("\n---\n");
                     Verdict::Retry { feedback }
@@ -142,8 +147,14 @@ mod tests {
         let g = Guardian::new(2, TIMEOUT);
         let dir = tempfile::tempdir().unwrap();
         let s = done_step("false");
-        assert!(matches!(g.verify(&s, dir.path(), 1).await, Verdict::Retry { .. }));
-        assert!(matches!(g.verify(&s, dir.path(), 2).await, Verdict::Fail { .. }));
+        assert!(matches!(
+            g.verify(&s, dir.path(), 1).await,
+            Verdict::Retry { .. }
+        ));
+        assert!(matches!(
+            g.verify(&s, dir.path(), 2).await,
+            Verdict::Fail { .. }
+        ));
     }
 
     #[tokio::test]
@@ -151,7 +162,10 @@ mod tests {
         let g = Guardian::new(2, TIMEOUT);
         let dir = tempfile::tempdir().unwrap();
         let s = done_step("   ");
-        assert!(matches!(g.verify(&s, dir.path(), 1).await, Verdict::Fail { .. }));
+        assert!(matches!(
+            g.verify(&s, dir.path(), 1).await,
+            Verdict::Fail { .. }
+        ));
     }
 
     #[tokio::test]
@@ -162,12 +176,18 @@ mod tests {
         let s = done_step("sleep 30");
         let start = std::time::Instant::now();
         let v1 = g.verify(&s, dir.path(), 1).await;
-        assert!(start.elapsed() < Duration::from_secs(5), "verify did not time out");
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "verify did not time out"
+        );
         match v1 {
             Verdict::Retry { feedback } => assert!(feedback.contains("timed out")),
             other => panic!("expected Retry on first attempt, got {other:?}"),
         }
         // Out of attempts → terminal Fail, same timeout path.
-        assert!(matches!(g.verify(&s, dir.path(), 2).await, Verdict::Fail { .. }));
+        assert!(matches!(
+            g.verify(&s, dir.path(), 2).await,
+            Verdict::Fail { .. }
+        ));
     }
 }

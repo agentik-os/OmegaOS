@@ -1,6 +1,7 @@
 ---
 name: context-memory-os
-description: Maintain one trustworthy, inspectable and permissioned memory layer so Omega and its OSs recover context without mixing facts, inferences, temporary states, projects or identities. Omega Core canonical shared context layer for every other OS. Contains 14 specialist agents, 20 skills, 7 protocols and 8 schemas. Use for memory design, context recall, fact-versus-inference separation, cross-project isolation checks, or permissioned knowledge retrieval. Trigger words: context, memory, recall, knowledge layer, fact versus inference, permissioned memory; FR: contexte, memoire, rappel, couche de connaissance, faits versus inferences, memoire permissionnee.
+description: >
+  Maintain one trustworthy, inspectable and permissioned memory layer so Omega and its OSs recover context without mixing facts, inferences, temporary states, projects or identities. Omega Core canonical shared context layer for every other OS. Contains 14 specialist agents, 20 skills, 7 protocols and 8 schemas. Use for memory design, context recall, fact-versus-inference separation, cross-project isolation checks, or permissioned knowledge retrieval. Trigger words: context, memory, recall, knowledge layer, fact versus inference, permissioned memory; FR: contexte, memoire, rappel, couche de connaissance, faits versus inferences, memoire permissionnee.
 ---
 
 # Context & Memory {OS}

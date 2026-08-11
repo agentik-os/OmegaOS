@@ -34,7 +34,7 @@ violating any of them is not compliant and fails `/metaudit`.
 |---|---|---|
 | 1 | **At least 16 scored phases** (## headings counted as audit work, not doc) | Breadth floor — fewer phases = shallow coverage. NOTE: phase count is a floor for *breadth*, never a substitute for *depth* — see #9 |
 | 2 | **Phase N-1 (PRE-FIX BASELINE)** implemented before first fix | Hippocratic rule — can't prove "no regression" without baseline |
-| 3 | **Phase N+4 (before-after matrix)** produced to `.{audit}/before-after.md` | Proof-of-work artifact required for 100/100 verdict |
+| 3 | **Phase N+4 (before-after matrix)** produced to `audits/.<audit-id>/before-after.md` | Proof-of-work artifact required for 100/100 verdict |
 | 4 | **Score normalized to /100** (raw may be /100, /320, /360, /420, /540 — must include normalization formula `raw / max * 100 = /100`) | Cross-skill comparison |
 | 5 | **HINGE {DOMAIN}** identification before Phase 1 (10× scrutiny on the one thing that dominates the domain's risk/value) | Gestalt clarity gate — not all phases equal |
 | 6 | **Popper falsification** in each scored item (how would you disprove this claim?) | Epistemic rigor — prevents confirmation bias |
@@ -117,7 +117,7 @@ For each file/resource about to be modified:
      - Shell cron: validate expression
      - TypeScript: tsc --noEmit PROJECT (if applicable)
      - Skill: frontmatter present (head -3 | grep "^name:")
-  3. Save baseline to .{audit}/baseline/{file}.baseline
+  3. Save baseline to audits/.<audit-id>/baseline/{file}.baseline
   4. If ANY baseline check already fails → abort the fix, flag it as "pre-existing broken"
      Do NOT fix unrelated broken things. Note and move on.
 ```
@@ -197,7 +197,7 @@ echo "=== STALE REFERENCES CHECK ==="
 for old_path in "${MOVED_OR_DELETED[@]}"; do
   BROKEN=$(grep -rln "$old_path" ~/.claude ~/.aisb ~/VibeCoding/work 2>/dev/null \
            | grep -v ".backup" | grep -v "/file-history/" | grep -v ".jsonl" \
-           | grep -v ".{audit}/" | head -20)
+           | grep -v "audits/.<audit-id>/" | head -20)
   if [ -n "$BROKEN" ]; then
     echo "🔴 STALE REFERENCES to $old_path:"
     echo "$BROKEN"
@@ -210,7 +210,7 @@ done
 
 ### Phase N+4: BEFORE/AFTER MATRIX (mandatory output)
 
-Every audit MUST produce `.{audit}/before-after.md`:
+Every audit MUST produce `audits/.<audit-id>/before-after.md`:
 
 ```markdown
 # Before / After Verification Matrix
@@ -294,7 +294,7 @@ Every audit skill's `## PHASE N+4: VERDICT & SCORING` section MUST end with:
 
 1. Read AUDIT-VERIFICATION-CONTRACT.md fully
 2. Execute every check in the "IT STILL WORKS CHECKLIST"
-3. Produce .{audit}/before-after.md
+3. Produce audits/.<audit-id>/before-after.md
 4. Grep for stale references — must be 0
 5. ONLY THEN write final verdict
 

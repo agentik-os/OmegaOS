@@ -5,9 +5,17 @@ async fn main() -> anyhow::Result<()> {
     let mgr = SessionManager::connect().await?;
     let session = "test-space-bug";
 
-    let _ = std::process::Command::new("rmux").args(&["kill-session", "-t", session]).status();
+    let _ = std::process::Command::new("rmux")
+        .args(["kill-session", "-t", session])
+        .status();
     std::process::Command::new("rmux")
-        .args(&["new-session", "-d", "-s", session, "bash --noprofile --norc"])
+        .args([
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "bash --noprofile --norc",
+        ])
         .status()?;
     std::thread::sleep(std::time::Duration::from_millis(1500));
 
@@ -25,7 +33,14 @@ async fn main() -> anyhow::Result<()> {
 
     let cap = mgr.capture_pane(session).await?;
     println!("=== capture (bottom) ===");
-    for line in cap.lines().rev().take(4).collect::<Vec<_>>().into_iter().rev() {
+    for line in cap
+        .lines()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
         println!("|{}|", line);
     }
     if let Some(last) = cap.lines().rev().find(|l| !l.trim().is_empty()) {
@@ -33,6 +48,8 @@ async fn main() -> anyhow::Result<()> {
         println!("\nlast text: {}", last);
         println!("last hex:  {}", hex);
     }
-    let _ = std::process::Command::new("rmux").args(&["kill-session", "-t", session]).status();
+    let _ = std::process::Command::new("rmux")
+        .args(["kill-session", "-t", session])
+        .status();
     Ok(())
 }

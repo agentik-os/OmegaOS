@@ -317,10 +317,7 @@ mod tests {
             ),
             Provider::Codex
         );
-        assert_eq!(
-            provider(None, "project-gemini", None, ""),
-            Provider::Gemini
-        );
+        assert_eq!(provider(None, "project-gemini", None, ""), Provider::Gemini);
         assert_eq!(
             provider(None, "research", None, "ordinary output"),
             Provider::Other

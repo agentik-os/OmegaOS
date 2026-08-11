@@ -9,6 +9,20 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub const WORKER_DISPATCH_SCHEMA_VERSION: u32 = 1;
+
+/// Crash-resumable authority for one detached worker generation. The scope
+/// receipt is prepared before spawn, persisted with the tracker, and is the
+/// only claim a later cleanup may release.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkerDispatchBinding {
+    pub schema_version: u32,
+    pub generation: String,
+    pub session: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_claim: Option<crate::scope::ScopeClaim>,
+}
+
 /// A single implementation step with full context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlanStep {
@@ -38,6 +52,9 @@ pub struct PlanStep {
     /// delivers it to the retry worker so retries are never blind.
     #[serde(default)]
     pub last_feedback: Option<String>,
+    /// Exact detached worker generation currently authorized for this step.
+    #[serde(default)]
+    pub worker_binding: Option<WorkerDispatchBinding>,
     pub status: StepStatus,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
@@ -175,7 +192,10 @@ impl PlanTracker {
         let raw = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
         let tracker = serde_json::from_str(&raw).with_context(|| {
-            format!("{} exists but failed to parse — fix the JSON/schema", path.display())
+            format!(
+                "{} exists but failed to parse — fix the JSON/schema",
+                path.display()
+            )
         })?;
         Ok(Some(tracker))
     }
@@ -245,8 +265,8 @@ impl PlanTracker {
             // Content checks: at run time, only steps with REMAINING work are
             // gated — terminal steps are history, and refusing to resume a
             // half-built project over them would brick it.
-            let content_gated = strict
-                || matches!(s.status, StepStatus::Pending | StepStatus::InProgress);
+            let content_gated =
+                strict || matches!(s.status, StepStatus::Pending | StepStatus::InProgress);
             if !content_gated {
                 continue;
             }
@@ -311,7 +331,7 @@ impl PlanTracker {
         let dir = project_dir.join(".planner");
         std::fs::create_dir_all(&dir)?;
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(dir.join("tracker.json"), json)?;
+        crate::config::atomic_write_private(&dir.join("tracker.json"), json.as_bytes())?;
         Ok(())
     }
 
@@ -336,22 +356,13 @@ impl PlanTracker {
             .context("phase not found")?;
 
         if phase.step_ids.len() >= 25 {
-            bail!(
-                "phase {} already has 25 steps (max per phase)",
-                phase.name
-            );
+            bail!("phase {} already has 25 steps (max per phase)", phase.name);
         }
 
         // Validate dependencies exist
         for dep in &step.depends_on {
-            if !self.steps.iter().any(|s| s.step_id == *dep)
-                && !step.step_id.eq(dep)
-            {
-                bail!(
-                    "step {} depends on unknown step {}",
-                    step.step_id,
-                    dep
-                );
+            if !self.steps.iter().any(|s| s.step_id == *dep) && !step.step_id.eq(dep) {
+                bail!("step {} depends on unknown step {}", step.step_id, dep);
             }
         }
 
@@ -378,9 +389,9 @@ impl PlanTracker {
     /// Returns the next unblocked step whose dependencies are ALL done.
     /// This is the ONLY way to get the next step — enforces the DAG.
     pub fn next_step(&self) -> Option<&PlanStep> {
-        self.steps.iter().find(|step| {
-            step.status == StepStatus::Pending && self.deps_satisfied(&step.step_id)
-        })
+        self.steps
+            .iter()
+            .find(|step| step.status == StepStatus::Pending && self.deps_satisfied(&step.step_id))
     }
 
     /// All pending steps whose deps are Done, whose wave is open, and whose
@@ -449,16 +460,15 @@ impl PlanTracker {
     /// Mark a step as in-progress. Fails if deps aren't met.
     pub fn start_step(&mut self, step_id: &str) -> Result<()> {
         if !self.deps_satisfied(step_id) {
-            bail!(
-                "cannot start {} — dependencies not satisfied",
-                step_id
-            );
+            bail!("cannot start {} — dependencies not satisfied", step_id);
         }
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::Pending {
-            bail!("step {} is not pending (status: {})", step_id, step.status.label());
+            bail!(
+                "step {} is not pending (status: {})",
+                step_id,
+                step.status.label()
+            );
         }
         step.status = StepStatus::InProgress;
         step.started_at = Some(chrono::Utc::now().to_rfc3339());
@@ -468,9 +478,7 @@ impl PlanTracker {
     /// Mark a step as done. In a real execution, the verify_command would be
     /// run first — the caller is responsible for checking that.
     pub fn mark_done(&mut self, step_id: &str) -> Result<()> {
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::InProgress {
             bail!(
                 "step {} is not in_progress (status: {})",
@@ -489,9 +497,7 @@ impl PlanTracker {
     /// Mark a step as failed. Only an in-progress step can fail (mirrors
     /// `mark_done`'s guard) — a step cannot fail without having been attempted.
     pub fn mark_failed(&mut self, step_id: &str) -> Result<()> {
-        let step = self
-            .get_step_mut(step_id)
-            .context("step not found")?;
+        let step = self.get_step_mut(step_id).context("step not found")?;
         if step.status != StepStatus::InProgress {
             bail!(
                 "step {} is not in_progress (status: {})",
@@ -525,6 +531,7 @@ impl PlanTracker {
         }
         step.status = StepStatus::Pending;
         step.started_at = None;
+        step.worker_binding = None;
         Ok(())
     }
 
@@ -544,15 +551,31 @@ impl PlanTracker {
     /// Progress summary.
     pub fn status(&self) -> PlanStatus {
         let total = self.steps.len();
-        let done = self.steps.iter().filter(|s| s.status == StepStatus::Done).count();
-        let in_progress = self.steps.iter().filter(|s| s.status == StepStatus::InProgress).count();
-        let failed = self.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
-        let blocked = self.steps.iter().filter(|s| {
-            s.status == StepStatus::Pending && !self.deps_satisfied(&s.step_id)
-        }).count();
-        let ready = self.steps.iter().filter(|s| {
-            s.status == StepStatus::Pending && self.deps_satisfied(&s.step_id)
-        }).count();
+        let done = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Done)
+            .count();
+        let in_progress = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::InProgress)
+            .count();
+        let failed = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Failed)
+            .count();
+        let blocked = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending && !self.deps_satisfied(&s.step_id))
+            .count();
+        let ready = self
+            .steps
+            .iter()
+            .filter(|s| s.status == StepStatus::Pending && self.deps_satisfied(&s.step_id))
+            .count();
 
         PlanStatus {
             total,
@@ -778,6 +801,7 @@ impl PlanStepBuilder {
             attempt: 0,
             timeout_mins: None,
             last_feedback: None,
+            worker_binding: None,
             status: StepStatus::Pending,
             started_at: None,
             completed_at: None,
@@ -849,7 +873,10 @@ mod tests {
         // a post-hoc mutation). It must be refused so the step can't fake-pass.
         let mut t = sample_tracker();
         t.steps[0].verify_command = "true".to_string();
-        assert!(t.validate().is_err(), "trivial `true` verify must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "trivial `true` verify must be rejected"
+        );
         t.steps[0].verify_command = "echo done".to_string();
         assert!(t.validate().is_err(), "echo-only verify must be rejected");
         t.steps[0].verify_command = String::new();
@@ -877,12 +904,18 @@ mod tests {
         // vacuous (R-SCOPE violation); the SKILL promises this is rejected.
         let mut t = sample_tracker();
         t.steps[0].files_to_touch = vec![];
-        assert!(t.validate().is_err(), "empty files_to_touch must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "empty files_to_touch must be rejected"
+        );
 
         // Directory entries are not a claimable scope.
         let mut t = sample_tracker();
         t.steps[0].files_to_touch = vec!["src/".to_string()];
-        assert!(t.validate().is_err(), "directory files_to_touch must be rejected");
+        assert!(
+            t.validate().is_err(),
+            "directory files_to_touch must be rejected"
+        );
     }
 
     #[test]
@@ -906,7 +939,10 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join(".planner")).unwrap();
         std::fs::write(tmp.path().join(".planner/tracker.json"), "{not json").unwrap();
         let err = PlanTracker::load_strict(tmp.path()).unwrap_err();
-        assert!(format!("{err:#}").contains("failed to parse"), "got: {err:#}");
+        assert!(
+            format!("{err:#}").contains("failed to parse"),
+            "got: {err:#}"
+        );
         // The lenient loader still degrades to None for display surfaces.
         assert!(PlanTracker::load(tmp.path()).is_none());
     }
@@ -987,7 +1023,11 @@ mod tests {
         // 26th should fail
         let result = tracker.add_step(
             pid,
-            step("S-026", pid).title("Too many").criteria("ok").verify("true").build(),
+            step("S-026", pid)
+                .title("Too many")
+                .criteria("ok")
+                .verify("true")
+                .build(),
         );
         assert!(result.is_err());
     }
@@ -1003,11 +1043,22 @@ mod tests {
         let mut tracker = PlanTracker::new("Dup");
         let pid = tracker.add_phase("P1", "g");
         tracker
-            .add_step(pid, step("S-001", pid).title("A").criteria("ok").verify("true").build())
+            .add_step(
+                pid,
+                step("S-001", pid)
+                    .title("A")
+                    .criteria("ok")
+                    .verify("true")
+                    .build(),
+            )
             .unwrap();
         let result = tracker.add_step(
             pid,
-            step("S-001", pid).title("B").criteria("ok").verify("true").build(),
+            step("S-001", pid)
+                .title("B")
+                .criteria("ok")
+                .verify("true")
+                .build(),
         );
         assert!(result.is_err());
     }
@@ -1043,7 +1094,11 @@ mod tests {
 
     #[test]
     fn wave_and_attempt_defaults() {
-        let s = step("STEP-001", 1).title("X").criteria("ok").verify("true").build();
+        let s = step("STEP-001", 1)
+            .title("X")
+            .criteria("ok")
+            .verify("true")
+            .build();
         assert_eq!(s.attempt, 0);
         assert!(s.wave.is_none());
     }
@@ -1067,10 +1122,41 @@ mod tests {
     fn ready_steps_parallel_disjoint_files() {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
-        t.add_step(p, step("A", p).title("a").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("B", p).title("b").files(&["b.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("C", p).title("c").files(&["a.rs"]).criteria("ok").verify("true").build()).unwrap();
-        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        t.add_step(
+            p,
+            step("A", p)
+                .title("a")
+                .files(&["a.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("B", p)
+                .title("b")
+                .files(&["b.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("C", p)
+                .title("c")
+                .files(&["a.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        let ready: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready, vec!["A".to_string(), "B".to_string()]);
     }
 
@@ -1079,8 +1165,16 @@ mod tests {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
         for i in 0..5 {
-            t.add_step(p, step(&format!("S{i}"), p).title("x")
-                .files(&[&format!("f{i}.rs")]).criteria("ok").verify("true").build()).unwrap();
+            t.add_step(
+                p,
+                step(&format!("S{i}"), p)
+                    .title("x")
+                    .files(&[&format!("f{i}.rs")])
+                    .criteria("ok")
+                    .verify("true")
+                    .build(),
+            )
+            .unwrap();
         }
         assert_eq!(t.ready_steps(2).len(), 2);
     }
@@ -1089,13 +1183,40 @@ mod tests {
     fn ready_steps_holds_audit_until_impl_done() {
         let mut t = PlanTracker::new("P");
         let p = t.add_phase("F", "g");
-        t.add_step(p, step("IMPL", p).title("impl").files(&["x.rs"]).criteria("ok").verify("true").build()).unwrap();
-        t.add_step(p, step("AUD", p).title("audit").files(&["y.rs"]).criteria("ok").verify("true").wave(Wave::Audit).build()).unwrap();
-        let ready: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        t.add_step(
+            p,
+            step("IMPL", p)
+                .title("impl")
+                .files(&["x.rs"])
+                .criteria("ok")
+                .verify("true")
+                .build(),
+        )
+        .unwrap();
+        t.add_step(
+            p,
+            step("AUD", p)
+                .title("audit")
+                .files(&["y.rs"])
+                .criteria("ok")
+                .verify("true")
+                .wave(Wave::Audit)
+                .build(),
+        )
+        .unwrap();
+        let ready: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready, vec!["IMPL".to_string()]);
         t.start_step("IMPL").unwrap();
         t.mark_done("IMPL").unwrap();
-        let ready2: Vec<_> = t.ready_steps(10).iter().map(|s| s.step_id.clone()).collect();
+        let ready2: Vec<_> = t
+            .ready_steps(10)
+            .iter()
+            .map(|s| s.step_id.clone())
+            .collect();
         assert_eq!(ready2, vec!["AUD".to_string()]);
     }
 

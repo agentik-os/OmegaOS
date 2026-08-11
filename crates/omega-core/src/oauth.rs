@@ -11,8 +11,8 @@
 //!      `~/.claude/.credentials.json` until its mtime changes (or 20s timeout),
 //!      then kills the reauth session.
 //!
-//! State is tracked in-memory AND persisted to `/tmp/omega-pending-reauth.json`
-//! so a bridge restart doesn't lose the pending flag.
+//! State is tracked in-memory AND persisted as private OmegaOS authority under
+//! `$OMEGA_DIR/state/` so a bridge restart doesn't lose the pending flag.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::session::SessionManager;
 
 pub const REAUTH_SESSION: &str = "aisb-reauth";
-pub const PENDING_STATE_PATH: &str = "/tmp/omega-pending-reauth.json";
 pub const COOLDOWN_SEC: u64 = 30;
 pub const PENDING_TTL_SEC: u64 = 300;
 
@@ -44,6 +43,7 @@ pub const AUTH_FAILURE_MARKERS: &[&str] = &[
 static REAUTH_COOLDOWN_TS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PendingReauth {
     pub pending: bool,
     #[serde(default)]
@@ -55,28 +55,64 @@ pub struct PendingReauth {
 }
 
 impl PendingReauth {
-    pub fn load() -> Self {
-        std::fs::read_to_string(PENDING_STATE_PATH)
-            .ok()
-            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
-            .unwrap_or_default()
+    fn path() -> PathBuf {
+        crate::config::omega_dir().join("state/pending-reauth.json")
     }
 
-    pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(PENDING_STATE_PATH, json)
-            .with_context(|| format!("writing {}", PENDING_STATE_PATH))?;
+    fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.ts.is_finite() && self.ts >= 0.0,
+            "invalid reauth timestamp"
+        );
+        anyhow::ensure!(
+            !self.pending || self.ts > 0.0,
+            "pending reauth authority requires a timestamp"
+        );
+        anyhow::ensure!(
+            self.target_account.len() <= 512 && self.reason.len() <= 4096,
+            "reauth authority fields exceed their safety bounds"
+        );
         Ok(())
     }
 
-    pub fn clear() {
+    fn load_at(path: &std::path::Path) -> Result<Self> {
+        let Some(bytes) = crate::config::read_private_optional(path)? else {
+            return Ok(Self::default());
+        };
+        let state: Self = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parsing pending reauth authority {}", path.display()))?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn load() -> Result<Self> {
+        Self::load_at(&Self::path())
+    }
+
+    fn save_at(&self, path: &std::path::Path) -> Result<()> {
+        self.validate()?;
+        let lock = path.with_extension("json.lock");
+        let _guard = crate::config::acquire_private_lock_path(&lock)?;
+        crate::config::atomic_write_private(path, &serde_json::to_vec_pretty(self)?)
+            .with_context(|| format!("writing pending reauth authority {}", path.display()))
+    }
+
+    pub fn save(&self) -> Result<()> {
+        self.save_at(&Self::path())
+    }
+
+    fn clear_at(path: &std::path::Path) -> Result<()> {
         let cleared = Self {
             pending: false,
             ts: 0.0,
             target_account: String::new(),
             reason: String::new(),
         };
-        let _ = cleared.save();
+        cleared.save_at(path)
+    }
+
+    pub fn clear() -> Result<()> {
+        Self::clear_at(&Self::path())
     }
 
     /// Stale = pending but set more than PENDING_TTL_SEC ago.
@@ -139,10 +175,14 @@ pub async fn request_reauth(
         }
 
         // Stale check — clear if pending > TTL.
-        let mut state = PendingReauth::load();
+        let mut state = PendingReauth::load()
+            .context("reading pending reauth authority before automatic login")?;
         if state.is_stale() {
             tracing::warn!("reauth: stale pending flag — auto-clearing");
             state.pending = false;
+            state
+                .save()
+                .context("clearing stale pending reauth authority")?;
         }
         if state.pending {
             tracing::debug!("reauth skipped: already pending");
@@ -162,7 +202,9 @@ pub async fn request_reauth(
         target_account: target_account.unwrap_or("").to_string(),
         reason: reason.to_string(),
     };
-    new_state.save().ok();
+    new_state
+        .save()
+        .context("persisting pending reauth authority before session spawn")?;
 
     // Spawn the reauth session.
     let cmd = "claude --dangerously-skip-permissions";
@@ -171,7 +213,7 @@ pub async fn request_reauth(
         .create_session(REAUTH_SESSION, Some(&cwd), Some(cmd))
         .await
     {
-        PendingReauth::clear();
+        PendingReauth::clear().context("clearing reauth authority after spawn failure")?;
         return Err(anyhow::anyhow!("failed to spawn reauth session: {}", e));
     }
 
@@ -195,7 +237,7 @@ pub async fn request_reauth(
     // Send /login.
     if let Err(e) = mgr.send_text(REAUTH_SESSION, "/login").await {
         let _ = mgr.kill_session(REAUTH_SESSION).await;
-        PendingReauth::clear();
+        PendingReauth::clear().context("clearing reauth authority after login send failure")?;
         return Err(anyhow::anyhow!("send_text /login failed: {}", e));
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -220,7 +262,8 @@ pub async fn request_reauth(
         }
         if let Some(marker) = detect_auth_failure(&pane) {
             let _ = mgr.kill_session(REAUTH_SESSION).await;
-            PendingReauth::clear();
+            PendingReauth::clear()
+                .context("clearing reauth authority after authentication failure")?;
             return Err(anyhow::anyhow!(
                 "auth failure during /login (marker: {}). Pane tail: {}",
                 marker,
@@ -231,7 +274,7 @@ pub async fn request_reauth(
 
     if url.is_empty() {
         let _ = mgr.kill_session(REAUTH_SESSION).await;
-        PendingReauth::clear();
+        PendingReauth::clear().context("clearing reauth authority after URL timeout")?;
         return Err(anyhow::anyhow!(
             "could not extract OAuth URL from /login output (15s timeout). Pane tail: {}",
             pane.chars().rev().take(300).collect::<String>()
@@ -271,28 +314,32 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
 
     // Verify Claude is actually waiting for the code (VPS pattern).
     let pre_capture = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
-    let waiting_for_code = pre_capture.contains("Paste code here")
-        || pre_capture.contains("Paste your code");
+    let waiting_for_code =
+        pre_capture.contains("Paste code here") || pre_capture.contains("Paste your code");
     if !waiting_for_code {
         tracing::warn!(
             "Claude does not appear to be waiting for code. Last 300 chars: {}",
-            &pre_capture.chars().rev().take(300).collect::<String>().chars().rev().collect::<String>()
+            &pre_capture
+                .chars()
+                .rev()
+                .take(300)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>()
         );
     }
 
     // CRITICAL: paste code WITHOUT Enter, sleep 1s, then send Enter separately.
     // VPS Python pattern: load-buffer + paste-buffer + sleep 1 + send-keys Enter.
     // Without this gap, Claude /login input field rejects the paste.
-    let pane = mgr.get_active_pane(REAUTH_SESSION)
+    let pane = mgr
+        .get_active_pane(REAUTH_SESSION)
         .await
         .context("get reauth pane failed")?;
-    pane.send_text(code)
-        .await
-        .context("paste code failed")?;
+    pane.send_text(code).await.context("paste code failed")?;
     tokio::time::sleep(Duration::from_secs(1)).await;
-    pane.send_key("Enter")
-        .await
-        .context("send Enter failed")?;
+    pane.send_key("Enter").await.context("send Enter failed")?;
 
     // Poll credentials.json for mtime change — up to 20s.
     // Also: Claude shows "Press Enter to continue..." after a successful login
@@ -344,10 +391,7 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     }
 
     let after_token = read_refresh_token(&creds_path);
-    let pane_tail = mgr
-        .capture_pane(REAUTH_SESSION)
-        .await
-        .unwrap_or_default();
+    let pane_tail = mgr.capture_pane(REAUTH_SESSION).await.unwrap_or_default();
     let pane_tail: String = pane_tail
         .lines()
         .rev()
@@ -363,8 +407,8 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     // and is not proof on its own: trusting it lets callers assume a valid token
     // when none was persisted. So every success path requires after_token.
     let pane_says_ok = pane_tail.contains("Logged in as");
-    let success = !after_token.is_empty()
-        && (updated || pane_says_ok || after_token != before_token);
+    let success =
+        !after_token.is_empty() && (updated || pane_says_ok || after_token != before_token);
     if pane_says_ok && after_token.is_empty() {
         tracing::warn!(
             "OAuth: pane reported 'Logged in as' but no refresh_token landed on disk — \
@@ -383,7 +427,7 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
     }
 
     // Always clean up.
-    PendingReauth::clear();
+    PendingReauth::clear().context("clearing completed reauth authority")?;
     let _ = mgr.kill_session(REAUTH_SESSION).await;
 
     if !success {
@@ -551,7 +595,9 @@ pub fn looks_like_oauth_code(s: &str) -> bool {
 /// after upgrade still works before migration runs.
 pub fn credentials_path() -> PathBuf {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
-    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
+    let canonical = crate::config::omega_dir()
+        .join("credentials")
+        .join("claude.json");
     let legacy = home.join(".claude").join(".credentials.json");
     // Prefer canonical ONLY if it actually holds a usable refresh_token. A
     // present-but-stale/empty canonical (e.g. a truncated write) must not shadow
@@ -592,7 +638,9 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
     // Use the SAME resolver credentials_path() reads from — honoring $OMEGA_DIR /
     // the consolidated ~/OmegaOS/System layout. A hardcoded ~/.omega here would
     // write fresh OAuth creds where the reader never looks under a relocated root.
-    let canonical = crate::config::omega_dir().join("credentials").join("claude.json");
+    let canonical = crate::config::omega_dir()
+        .join("credentials")
+        .join("claude.json");
 
     // If native is a real file (Claude's atomic write broke the symlink),
     // copy it into omega and re-link.
@@ -624,10 +672,7 @@ pub fn sync_credentials_to_omega() -> std::io::Result<()> {
     let staged = shared_target.with_extension("omega-sync.tmp");
     let _ = std::fs::remove_file(&staged); // clear any stale temp
     std::fs::write(&staged, &bytes)?;
-    let _ = std::fs::set_permissions(
-        &staged,
-        std::os::unix::fs::PermissionsExt::from_mode(0o660),
-    );
+    let _ = std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o660));
     if let Err(e) = std::fs::rename(&staged, &shared_target) {
         let _ = std::fs::remove_file(&staged); // don't leak the temp
         return Err(e);
@@ -673,10 +718,10 @@ impl CredentialsInfo {
 }
 
 pub fn read_credentials(path: &std::path::Path) -> Result<CredentialsInfo> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    let v: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("parsing {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     let oauth = v
         .get("claudeAiOauth")
         .ok_or_else(|| anyhow::anyhow!("missing claudeAiOauth"))?;
@@ -735,7 +780,9 @@ mod tests {
     #[test]
     fn looks_like_oauth_code_accepts_realistic() {
         assert!(looks_like_oauth_code("abc123_DEF-456_xyz789012345"));
-        assert!(looks_like_oauth_code("abc123_DEF-456_xyz789012345#state_value"));
+        assert!(looks_like_oauth_code(
+            "abc123_DEF-456_xyz789012345#state_value"
+        ));
     }
 
     #[test]
@@ -818,12 +865,56 @@ mod tests {
 
     #[test]
     fn pending_reauth_stale_detection() {
-        let mut p = PendingReauth::default();
-        p.pending = true;
-        p.ts = (now_epoch_secs() - PENDING_TTL_SEC - 10) as f64;
+        let mut p = PendingReauth {
+            pending: true,
+            ts: (now_epoch_secs() - PENDING_TTL_SEC - 10) as f64,
+            ..PendingReauth::default()
+        };
         assert!(p.is_stale());
 
         p.ts = now_epoch_secs() as f64;
         assert!(!p.is_stale());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pending_reauth_authority_is_private_strict_and_alias_safe() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("state/pending-reauth.json");
+        let state = PendingReauth {
+            pending: true,
+            ts: 42.0,
+            target_account: "operator".to_string(),
+            reason: "expired".to_string(),
+        };
+        state.save_at(&path).unwrap();
+        assert_eq!(
+            PendingReauth::load_at(&path).unwrap().target_account,
+            "operator"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        std::fs::write(
+            &path,
+            r#"{"pending":false,"ts":0,"target_account":"","reason":"","extra":true}"#,
+        )
+        .unwrap();
+        assert!(PendingReauth::load_at(&path).is_err());
+
+        let external = tmp.path().join("external.json");
+        std::fs::write(&external, serde_json::to_vec(&state).unwrap()).unwrap();
+        std::fs::set_permissions(&external, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        symlink(&external, &path).unwrap();
+        assert!(PendingReauth::load_at(&path).is_err());
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::hard_link(&external, &path).unwrap();
+        assert!(PendingReauth::load_at(&path).is_err());
     }
 }

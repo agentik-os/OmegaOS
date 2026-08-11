@@ -193,6 +193,43 @@ pub fn update_group_env(group: &str, updates: &[(String, String)]) -> Result<()>
     update_services_env_at(&group_env_path(group), updates)
 }
 
+/// Parse `export KEY="value"` / `export KEY=value` → (KEY, value). `None` for any
+/// line that isn't an env-var export (comments, blanks, prose all fall through).
+fn parse_export(line: &str) -> Option<(String, String)> {
+    let rest = line.trim().strip_prefix("export ")?;
+    let (k, v) = rest.split_once('=')?;
+    let key = k.trim().to_string();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+    {
+        return None;
+    }
+    // Take the quoted body when quoted (so a trailing `# comment` after the
+    // closing quote is dropped); otherwise the value ends at an inline `#`.
+    let v = v.trim();
+    let val = if let Some(rest) = v.strip_prefix('"') {
+        rest.split_once('"')
+            .map(|(inner, _)| inner)
+            .unwrap_or(rest)
+            .to_string()
+    } else if let Some(rest) = v.strip_prefix('\'') {
+        rest.split_once('\'')
+            .map(|(inner, _)| inner)
+            .unwrap_or(rest)
+            .to_string()
+    } else {
+        v.split('#').next().unwrap_or("").trim().to_string()
+    };
+    Some((key, val))
+}
+
+/// Double-quote a value for a sourceable env file, escaping `\` and `"`.
+fn quote_env_value(v: &str) -> String {
+    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -264,41 +301,4 @@ mod tests {
         assert_eq!(sanitize_group("Acme Corp!"), "acme-corp");
         assert_eq!(sanitize_group("  Big_Client-2  "), "big_client-2");
     }
-}
-
-/// Parse `export KEY="value"` / `export KEY=value` → (KEY, value). `None` for any
-/// line that isn't an env-var export (comments, blanks, prose all fall through).
-fn parse_export(line: &str) -> Option<(String, String)> {
-    let rest = line.trim().strip_prefix("export ")?;
-    let (k, v) = rest.split_once('=')?;
-    let key = k.trim().to_string();
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
-    {
-        return None;
-    }
-    // Take the quoted body when quoted (so a trailing `# comment` after the
-    // closing quote is dropped); otherwise the value ends at an inline `#`.
-    let v = v.trim();
-    let val = if let Some(rest) = v.strip_prefix('"') {
-        rest.split_once('"')
-            .map(|(inner, _)| inner)
-            .unwrap_or(rest)
-            .to_string()
-    } else if let Some(rest) = v.strip_prefix('\'') {
-        rest.split_once('\'')
-            .map(|(inner, _)| inner)
-            .unwrap_or(rest)
-            .to_string()
-    } else {
-        v.split('#').next().unwrap_or("").trim().to_string()
-    };
-    Some((key, val))
-}
-
-/// Double-quote a value for a sourceable env file, escaping `\` and `"`.
-fn quote_env_value(v: &str) -> String {
-    format!("\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))
 }

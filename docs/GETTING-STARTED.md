@@ -4,7 +4,7 @@
 > Everything below is also checkable with one command: `omega doctor`.
 
 The installer just set up the full stack: the `rmux` session daemon, the `omega`
-CLI + TUI, 7 self-healing cron jobs, the quality arsenal (23 audits), and the
+CLI + TUI, scheduled health and maintenance jobs, the quality arsenal (23 audits), and the
 Telegram command bot service (dormant until you give it a token). **Only the
 personal pieces are left — they take ~5 minutes.**
 
@@ -122,8 +122,10 @@ omega dispatch <Project> "fix the signup flow"   # your first mission
 omega audit list # the 23-audit quality arsenal
 ```
 
-Daily drivers: `omega` (TUI) · the Telegram bot · `omega master` (AISB chat) ·
-`omega attach -t <session>` (jump into any live agent).
+Daily drivers: `omega` (TUI), the Telegram bot, `omega aisb-chat` (interactive
+local chat), and `omega attach -t <session>` (jump into any live agent).
+`omega aisb-view` opens the separate read-only conversation mirror; the legacy
+`omega master` spelling remains an alias for that viewer.
 
 ---
 

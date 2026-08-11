@@ -3,7 +3,7 @@
 //! files and credential files that the AISB system already maintains.
 //!
 //! Files we read (read-only):
-//! - `~/.omega/state/usage.json`       — live billing percentages (written by
+//! - `$OMEGA_DIR/state/usage.json`     — live billing percentages (written by
 //!   the native `omega usage --check` cron)
 //! - `~/.claude/.credentials.json`     — current OAuth credentials
 //! - `~/.claude/accounts/*.json`       — saved account profiles
@@ -18,7 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-// (removed) legacy /tmp/aisb-usage.json — billing now reads ~/.omega/state/usage.json natively.
+// (removed) legacy /tmp/aisb-usage.json — billing now reads the configured OmegaOS state.
 
 /// Live billing snapshot read from the AISB usage cache.
 /// Values mirror what the AISB bot's `/billing` command shows.
@@ -67,22 +67,18 @@ impl UsageSnapshot {
     /// /tmp/aisb-usage.json which holds a local-token ESTIMATE that
     /// over-reports (showed 89% when the real 5h was 36%).
     fn omega_usage_path() -> std::path::PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/tmp")))
-            .join(".omega/state/usage.json")
+        crate::config::omega_dir().join("state/usage.json")
     }
 
-    /// Read the usage snapshot from ~/.omega/state/usage.json (written natively
+    /// Read the usage snapshot from `$OMEGA_DIR/state/usage.json` (written natively
     /// by `omega usage --check` from the OAuth endpoint). Omega-owned, zero
     /// legacy dependency — returns None if absent (e.g. the cron hasn't run yet).
     pub fn read() -> Result<Option<Self>> {
         let omega = Self::omega_usage_path();
-        if !omega.exists() {
+        let Some(content) = crate::config::read_private_optional(&omega)? else {
             return Ok(None);
-        }
-        let content = std::fs::read_to_string(&omega)
-            .with_context(|| format!("reading {}", omega.display()))?;
-        let snap: Self = serde_json::from_str(&content)
+        };
+        let snap: Self = serde_json::from_slice(&content)
             .with_context(|| format!("parsing {}", omega.display()))?;
         Ok(Some(snap))
     }
@@ -145,11 +141,19 @@ pub fn connected_account() -> Option<ConnectedAccount> {
         return None;
     }
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    if !json.get("loggedIn").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if !json
+        .get("loggedIn")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return None;
     }
     Some(ConnectedAccount {
-        email: json.get("email").and_then(|v| v.as_str()).unwrap_or("?").to_string(),
+        email: json
+            .get("email")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string(),
         plan: json
             .get("subscriptionType")
             .and_then(|v| v.as_str())
@@ -276,16 +280,16 @@ pub fn login_command_hint() -> String {
 }
 
 /// Omega's own Telegram bot configuration (separate from AISB's).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OmegaTelegramConfig {
     pub bot_token: String,
     /// The ONLY chat_id allowed to talk to the bot. Messages from any other
     /// chat are silently dropped.
     pub chat_id: i64,
-    /// Optional allow-list of Telegram user IDs (sender). The chat_id check
-    /// ALWAYS applies. When empty, any sender in the configured chat is allowed.
-    /// When non-empty, the sender MUST additionally match one of these IDs
-    /// (it narrows within the chat — it never bypasses the chat_id gate).
+    /// Required allow-list of Telegram user IDs (sender). The chat_id check
+    /// ALWAYS applies and the sender MUST additionally appear here. Empty
+    /// lists are rejected because this bot controls the host.
     #[serde(default)]
     pub allow_user_ids: Vec<i64>,
     /// Session to relay messages to (default: aisb-master)
@@ -298,52 +302,91 @@ pub struct OmegaTelegramConfig {
     pub enabled: bool,
 }
 
+impl std::fmt::Debug for OmegaTelegramConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OmegaTelegramConfig")
+            .field("has_bot_token", &!self.bot_token.is_empty())
+            .field("chat_id", &self.chat_id)
+            .field("allow_user_ids", &self.allow_user_ids)
+            .field("relay_session", &self.relay_session)
+            .field("label", &self.label)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
+}
+
 fn default_relay_session() -> String {
     crate::aisb::MASTER_SESSION_NAME.to_string()
 }
 
 impl OmegaTelegramConfig {
     fn path() -> PathBuf {
-        dirs::home_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".omega")
-            .join("telegram.toml")
+        crate::config::omega_dir().join("telegram.toml")
     }
 
-    pub fn read() -> Option<Self> {
+    pub fn try_read() -> Result<Option<Self>> {
         let path = Self::path();
-        if !path.exists() {
-            return None;
+        let Some(bytes) = crate::config::read_private_optional(&path)? else {
+            return Ok(None);
+        };
+        let content = std::str::from_utf8(&bytes)
+            .with_context(|| format!("Telegram config {} is not UTF-8", path.display()))?;
+        let config: Self = toml::from_str(content).map_err(|error: toml::de::Error| {
+            crate::config::private_toml_error("Telegram config", &path, error.span())
+        })?;
+        config.validate()?;
+        Ok(Some(config))
+    }
+
+    /// Compatibility reader for UI/gateway callers that only support an
+    /// optional state. Security-sensitive CLI paths use `try_read` so malformed
+    /// authority is an error, not "not configured".
+    pub fn read() -> Option<Self> {
+        Self::try_read().ok().flatten()
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.bot_token.trim().is_empty() {
+            anyhow::bail!("Telegram bot token is empty");
         }
-        let content = std::fs::read_to_string(&path).ok()?;
-        toml::from_str(&content).ok()
+        if self.chat_id == 0 {
+            anyhow::bail!("Telegram chat id cannot be zero");
+        }
+        if self.allow_user_ids.is_empty() {
+            anyhow::bail!("Telegram sender allow-list is empty");
+        }
+        if self.relay_session.trim().is_empty() {
+            anyhow::bail!("Telegram relay session is empty");
+        }
+        Ok(())
     }
 
     pub fn write(&self) -> Result<()> {
+        self.validate()?;
         let path = Self::path();
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let lock_path = path.with_extension("toml.lock");
+        let _guard = crate::config::acquire_private_lock_path(&lock_path)?;
         let content = toml::to_string_pretty(self)?;
-        // The file holds the bot token — owner-only (0600). `mode()` only
-        // applies when the file is CREATED, so additionally tighten a
-        // pre-existing (possibly world-readable) file before rewriting it.
-        #[cfg(unix)]
-        {
-            use std::io::Write as _;
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&path)?;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-            f.write_all(content.as_bytes())?;
-        }
-        #[cfg(not(unix))]
-        std::fs::write(&path, content)?;
-        Ok(())
+        crate::config::atomic_write_private(&path, content.as_bytes())
+    }
+
+    pub fn update_enabled(enabled: bool) -> Result<Self> {
+        let path = Self::path();
+        let lock_path = path.with_extension("toml.lock");
+        let _guard = crate::config::acquire_private_lock_path(&lock_path)?;
+        let Some(bytes) = crate::config::read_private_optional(&path)? else {
+            anyhow::bail!("Telegram is not configured");
+        };
+        let content = std::str::from_utf8(&bytes)
+            .with_context(|| format!("Telegram config {} is not UTF-8", path.display()))?;
+        let mut config: Self = toml::from_str(content).map_err(|error: toml::de::Error| {
+            crate::config::private_toml_error("Telegram config", &path, error.span())
+        })?;
+        config.validate()?;
+        config.enabled = enabled;
+        crate::config::atomic_write_private(&path, toml::to_string_pretty(&config)?.as_bytes())?;
+        Ok(config)
     }
 
     pub fn exists() -> bool {
@@ -353,20 +396,19 @@ impl OmegaTelegramConfig {
     /// Remove the active config file. Returns Ok(true) if a file was removed.
     pub fn disconnect() -> Result<bool> {
         let path = Self::path();
-        if !path.exists() {
-            return Ok(false);
-        }
-        std::fs::remove_file(&path)
+        let lock_path = path.with_extension("toml.lock");
+        let _guard = crate::config::acquire_private_lock_path(&lock_path)?;
+        let existed = crate::config::read_private_optional(&path)?.is_some();
+        crate::scope::remove_private_file(&path)
             .with_context(|| format!("removing {}", path.display()))?;
-        Ok(true)
+        Ok(existed)
     }
 
     /// True if a Telegram message is allowed to interact with this bot.
     ///
     /// Security model (BOTH gates must pass — no bypass):
     ///   1. chat_id MUST equal the configured chat_id, AND
-    ///   2. EITHER allow_user_ids is empty (no per-sender restriction)
-    ///      OR the sender_id is present and in allow_user_ids.
+    ///   2. allow_user_ids is non-empty and the sender_id is present in it.
     ///
     /// This closes N17: previously a non-empty allow-list bypassed the chat_id
     /// check, so a listed sender in the WRONG chat was authorized and the
@@ -376,10 +418,8 @@ impl OmegaTelegramConfig {
         if chat_id != self.chat_id {
             return false;
         }
-        if self.allow_user_ids.is_empty() {
-            return true;
-        }
-        matches!(sender_id, Some(uid) if self.allow_user_ids.contains(&uid))
+        !self.allow_user_ids.is_empty()
+            && matches!(sender_id, Some(uid) if self.allow_user_ids.contains(&uid))
     }
 }
 
@@ -411,6 +451,29 @@ mod tests {
     }
 
     #[test]
+    fn telegram_config_is_strict_and_never_debugs_its_token() {
+        let mut cfg = auth_cfg(-1001, vec![42]);
+        cfg.bot_token = "secret-token-sentinel".to_string();
+        cfg.relay_session = "AISB-master".to_string();
+        cfg.validate().unwrap();
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("secret-token-sentinel"));
+        assert!(debug.contains("has_bot_token: true"));
+
+        cfg.allow_user_ids.clear();
+        assert!(cfg.validate().is_err());
+        let unknown = r#"
+            bot_token = "token"
+            chat_id = -1001
+            allow_user_ids = [42]
+            relay_session = "AISB-master"
+            enabled = true
+            surprise = "not allowed"
+        "#;
+        assert!(toml::from_str::<OmegaTelegramConfig>(unknown).is_err());
+    }
+
+    #[test]
     fn is_authorized_requires_both_chat_and_sender() {
         // Right chat + right sender = allow
         let cfg = auth_cfg(100, vec![42]);
@@ -428,13 +491,10 @@ mod tests {
     }
 
     #[test]
-    fn is_authorized_empty_allowlist_gates_on_chat_only() {
-        // Right chat + empty allow-list = allow (any sender, incl. None)
+    fn is_authorized_rejects_an_empty_allowlist() {
         let cfg = auth_cfg(100, vec![]);
-        assert!(cfg.is_authorized(100, Some(7)));
-        assert!(cfg.is_authorized(100, None));
-
-        // Wrong chat + empty allow-list = reject
+        assert!(!cfg.is_authorized(100, Some(7)));
+        assert!(!cfg.is_authorized(100, None));
         assert!(!cfg.is_authorized(200, Some(7)));
         assert!(!cfg.is_authorized(200, None));
     }

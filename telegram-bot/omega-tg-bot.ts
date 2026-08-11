@@ -10,14 +10,347 @@
  * Single poller per bot token. config ← ~/.omega/telegram.toml.
  */
 import { $ } from "bun";
-import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync, readdirSync } from "node:fs";
+import {
+  constants,
+  chmodSync,
+  closeSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  readdirSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 
 const OMEGA_DIR = process.env.OMEGA_DIR || `${homedir()}/.omega`;
 const TG_TOML = `${OMEGA_DIR}/telegram.toml`;
 const MC_ENV = `${OMEGA_DIR}/repos/omega-mc/.env`;
 const GROUPS_FILE = `${OMEGA_DIR}/telegram-groups.json`;
 const OMEGA = process.env.OMEGA_BIN || `${homedir()}/.local/bin/omega`;
+const READY_FILE = process.env.OMEGA_TG_READY_FILE || "";
+
+// ── Durable JSON state ──────────────────────────────────────────────────────
+// Rust's ProjectRegistry uses the same `<file>.lock` directory convention, so
+// Telegram and the CLI participate in one cross-language critical section.
+// Every write is temp(unique, mode 0600) → fsync → rename → directory fsync.
+function positiveDurationEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < 1)
+    throw new Error(`${name} must be a positive integer number of milliseconds`);
+  return value;
+}
+const STORE_LOCK_WAIT_MS = positiveDurationEnv("OMEGA_STORE_LOCK_WAIT_MS", 5_000);
+const STORE_LOCK_STALE_MS = positiveDurationEnv("OMEGA_STORE_LOCK_STALE_MS", 120_000);
+const STORE_SLEEP = new Int32Array(new SharedArrayBuffer(4));
+let STORE_TEMP_SEQUENCE = 0;
+const STORE_BASELINES = new WeakMap<object, unknown>();
+const JSON_LOCK_OWNER_FILE = "owner.json";
+
+type JsonLockOwner = {
+  schema_version: 1;
+  token: string;
+  pid: number;
+  process_start: string | null;
+  created_ms: number;
+};
+
+function sleepSync(ms: number) { Atomics.wait(STORE_SLEEP, 0, 0, ms); }
+function isObject(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function cloneJson<T>(value: T): T { return structuredClone(value); }
+function sameJson(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b); }
+
+function linuxProcessStart(pid: number): string | null {
+  if (process.platform !== "linux") return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const close = stat.lastIndexOf(")");
+    if (close < 0) return null;
+    // After `comm`, state is field 3 (index 0) and starttime is field 22
+    // (index 19). `comm` itself may contain whitespace or parentheses.
+    return stat.slice(close + 1).trim().split(/\s+/)[19] || null;
+  } catch { return null; }
+}
+
+function isJsonLockOwner(value: unknown): value is JsonLockOwner {
+  return isObject(value) && value.schema_version === 1 &&
+    typeof value.token === "string" && value.token.length > 0 &&
+    Number.isSafeInteger(value.pid) && value.pid > 0 &&
+    (value.process_start === null || typeof value.process_start === "string") &&
+    Number.isSafeInteger(value.created_ms) && value.created_ms >= 0;
+}
+
+function validateJsonLockDirectory(lock: string) {
+  const metadata = lstatSync(lock);
+  if (metadata.isSymbolicLink() || !metadata.isDirectory())
+    throw new Error(`JSON lock ${lock} must be a real directory`);
+  if (process.platform !== "win32") {
+    if ((metadata.mode & 0o077) !== 0)
+      throw new Error(`JSON lock ${lock} is accessible by group or other users`);
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid())
+      throw new Error(`JSON lock ${lock} is not owned by the current user`);
+  }
+  return metadata;
+}
+
+function readJsonLockOwner(lock: string): JsonLockOwner | undefined {
+  validateJsonLockDirectory(lock);
+  const ownerPath = join(lock, JSON_LOCK_OWNER_FILE);
+  let raw: string;
+  let fd: number | undefined;
+  try {
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    fd = openSync(ownerPath, constants.O_RDONLY | noFollow);
+    const opened = fstatSync(fd);
+    const current = lstatSync(ownerPath);
+    if (current.isSymbolicLink() || !opened.isFile() || !current.isFile() ||
+        opened.dev !== current.dev || opened.ino !== current.ino)
+      throw new Error(`JSON lock owner ${ownerPath} changed identity or is not a regular file`);
+    if (opened.nlink !== 1)
+      throw new Error(`JSON lock owner ${ownerPath} must have exactly one hard link`);
+    if (process.platform !== "win32") {
+      if ((opened.mode & 0o077) !== 0)
+        throw new Error(`JSON lock owner ${ownerPath} is accessible by group or other users`);
+      if (typeof process.getuid === "function" && opened.uid !== process.getuid())
+        throw new Error(`JSON lock owner ${ownerPath} is not owned by the current user`);
+    }
+    raw = readFileSync(fd, "utf8");
+    closeSync(fd); fd = undefined;
+  }
+  catch (error: any) {
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+    if (error?.code === "ENOENT") return undefined;
+    throw new Error(`cannot read JSON lock owner ${ownerPath}: ${error?.message || error}`);
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch (error: any) { throw new Error(`invalid JSON lock owner ${ownerPath}: ${error?.message || error}`); }
+  if (!isJsonLockOwner(value)) throw new Error(`invalid JSON lock owner shape ${ownerPath}`);
+  return value;
+}
+
+function jsonLockIsStale(lock: string): boolean {
+  let oldEnough = false;
+  try { oldEnough = Date.now() - validateJsonLockDirectory(lock).mtimeMs >= STORE_LOCK_STALE_MS; }
+  catch { return false; }
+  if (!oldEnough) return false;
+  try {
+    const owner = readJsonLockOwner(lock);
+    if (!owner) return true; // legacy empty lock; replacement is tokenized/non-empty
+    if (process.platform !== "linux" || owner.process_start === null) return false;
+    if (!existsSync(`/proc/${owner.pid}`)) return true;
+    const current = linuxProcessStart(owner.pid);
+    // An extant /proc entry whose generation cannot be read is not proof of
+    // death. Fail closed instead of stealing a potentially live lock.
+    return current !== null && current !== owner.process_start;
+  } catch {
+    // A malformed owner is authority we cannot safely guess away.
+    return false;
+  }
+}
+
+function newJsonLockOwner(): JsonLockOwner {
+  return {
+    schema_version: 1,
+    token: `ts-${process.pid}-${randomUUID()}`,
+    pid: process.pid,
+    process_start: linuxProcessStart(process.pid),
+    created_ms: Date.now(),
+  };
+}
+
+function writeJsonLockOwner(lock: string, owner: JsonLockOwner) {
+  const ownerPath = join(lock, JSON_LOCK_OWNER_FILE);
+  let fd: number | undefined;
+  try {
+    const noFollow = process.platform === "win32" ? 0 : constants.O_NOFOLLOW;
+    fd = openSync(
+      ownerPath,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow,
+      0o600,
+    );
+    writeFileSync(fd, JSON.stringify(owner) + "\n");
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+  } catch (error) {
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+    try { unlinkSync(ownerPath); } catch {}
+    throw error;
+  }
+}
+
+function removeQuarantinedJsonLock(quarantine: string) {
+  try { unlinkSync(join(quarantine, JSON_LOCK_OWNER_FILE)); }
+  catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+  rmdirSync(quarantine);
+}
+
+function acquireJsonLock(path: string): { lock: string; token: string } {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const lock = `${path}.lock`;
+  const deadline = Date.now() + STORE_LOCK_WAIT_MS;
+  while (true) {
+    try {
+      mkdirSync(lock, { mode: 0o700 });
+      const owner = newJsonLockOwner();
+      try { writeJsonLockOwner(lock, owner); }
+      catch (error) { try { rmdirSync(lock); } catch {} throw error; }
+      return { lock, token: owner.token };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw new Error(`cannot create JSON lock ${lock}: ${error?.message || error}`);
+      if (jsonLockIsStale(lock)) {
+        const quarantine = `${lock}.stale.${randomUUID()}`;
+        try {
+          renameSync(lock, quarantine);
+          try { removeQuarantinedJsonLock(quarantine); }
+          catch (cleanup) {
+            if (!existsSync(lock)) try { renameSync(quarantine, lock); } catch {}
+            throw cleanup;
+          }
+          continue;
+        } catch (staleError: any) {
+          if (staleError?.code !== "ENOENT") throw new Error(`cannot quarantine stale JSON lock ${lock}: ${staleError?.message || staleError}`);
+        }
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for JSON lock ${lock}`);
+      sleepSync(10);
+    }
+  }
+}
+
+function releaseJsonLock(lock: string, token: string) {
+  const owner = readJsonLockOwner(lock);
+  if (!owner || owner.token !== token) return;
+  unlinkSync(join(lock, JSON_LOCK_OWNER_FILE));
+  rmdirSync(lock);
+}
+
+function reconcileJson(base: any, desired: any, current: any): any {
+  if (sameJson(base, desired)) return cloneJson(current);
+  if (isObject(base) && isObject(desired) && isObject(current)) {
+    const merged: Record<string, any> = cloneJson(current);
+    const keys = new Set([...Object.keys(base), ...Object.keys(desired)]);
+    for (const key of keys) {
+      if (!(key in desired)) {
+        if (key in base) delete merged[key];
+      } else if (!(key in base)) {
+        merged[key] = cloneJson(desired[key]);
+      } else {
+        merged[key] = reconcileJson(base[key], desired[key], current[key]);
+      }
+    }
+    return merged;
+  }
+  return cloneJson(desired);
+}
+
+function readJsonStrict<T>(path: string, initial: () => T, validate: (value: unknown) => value is T): T {
+  let raw: string;
+  try { raw = readFileSync(path, "utf8"); }
+  catch (error: any) {
+    if (error?.code === "ENOENT") return initial();
+    throw new Error(`cannot read JSON state ${path}: ${error?.message || error}`);
+  }
+  let value: unknown;
+  try { value = JSON.parse(raw); }
+  catch (error: any) { throw new Error(`refusing malformed JSON state ${path}: ${error?.message || error}`); }
+  if (!validate(value)) throw new Error(`refusing invalid JSON state shape ${path}`);
+  return value;
+}
+
+function withJsonLock<T>(path: string, action: () => T): T {
+  const owner = acquireJsonLock(path);
+  try { return action(); }
+  finally {
+    try { releaseJsonLock(owner.lock, owner.token); }
+    catch (error: any) { throw new Error(`cannot release JSON lock ${owner.lock}: ${error?.message || error}`); }
+  }
+}
+
+function atomicWriteJsonUnlocked(path: string, value: unknown) {
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const temp = join(dir, `.${basename(path)}.tmp.${process.pid}.${STORE_TEMP_SEQUENCE++}`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(temp, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify(value, null, 2) + "\n");
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+    renameSync(temp, path);
+    chmodSync(path, 0o600);
+    let dirFd: number | undefined;
+    try { dirFd = openSync(dir, "r"); fsyncSync(dirFd); }
+    catch (error: any) {
+      if (!["EINVAL", "ENOTSUP", "EBADF"].includes(error?.code)) throw error;
+    } finally { if (dirFd !== undefined) closeSync(dirFd); }
+  } catch (error) {
+    if (fd !== undefined) try { closeSync(fd); } catch {}
+    try { unlinkSync(temp); } catch {}
+    throw error;
+  }
+}
+
+function atomicWriteJsonLocked(path: string, value: unknown) {
+  withJsonLock(path, () => atomicWriteJsonUnlocked(path, value));
+}
+
+function updateJsonLocked<T>(
+  path: string,
+  initial: () => T,
+  validate: (value: unknown) => value is T,
+  update: (value: T) => void,
+): T {
+  return withJsonLock(path, () => {
+    const current = readJsonStrict(path, initial, validate);
+    update(current);
+    if (!validate(current)) throw new Error(`refusing invalid mutated JSON state shape ${path}`);
+    atomicWriteJsonUnlocked(path, current);
+    return current;
+  });
+}
+
+function signalReady() {
+  if (!READY_FILE) return;
+  atomicWriteJsonLocked(READY_FILE, {
+    schema_version: 1,
+    pid: process.pid,
+    bot_id: BOT_ID,
+    ready_at: new Date().toISOString(),
+  });
+}
+
+function saveReconciledJson<T extends object>(
+  path: string,
+  desired: T,
+  initial: () => T,
+  validate: (value: unknown) => value is T,
+) {
+  withJsonLock(path, () => {
+    const current = readJsonStrict(path, initial, validate);
+    const baseline = (STORE_BASELINES.get(desired) as T | undefined) ?? current;
+    const merged = reconcileJson(baseline, desired, current) as T;
+    if (!validate(merged)) throw new Error(`refusing invalid reconciled JSON state shape ${path}`);
+    atomicWriteJsonUnlocked(path, merged);
+    for (const key of Object.keys(desired)) delete (desired as Record<string, any>)[key];
+    Object.assign(desired, cloneJson(merged));
+    STORE_BASELINES.set(desired, cloneJson(merged));
+  });
+}
 
 // ── Conversation history: persisted per chat+topic so Atlas, the project oracles,
 // and the agent-bots all have FULL access to the running conversation (not stateless
@@ -208,12 +541,78 @@ const AGENT_BOTS_FILE = `${OMEGA_DIR}/agent-bots.json`;
 // read/write its own ledger and send files), `model` the Claude id. This is how the Librarian
 // (@AGK_knowledge_bot) and any future persona bot are wired with ZERO code per persona.
 type AgentBot = { token: string; allow: number[]; project: string; kind?: "oracle" | "companion" | "security" | "persona"; model?: string; agent?: AgentPick; persona?: string; dir?: string };
-function loadAgentBots(): Record<string, AgentBot> { try { return JSON.parse(readFileSync(AGENT_BOTS_FILE, "utf8")); } catch { return {}; } }
-function saveAgentBots(b: Record<string, AgentBot>) { try { writeFileSync(AGENT_BOTS_FILE, JSON.stringify(b, null, 2)); } catch {} }
+type AgentBots = Record<string, AgentBot>;
+const AGENT_BOT_KINDS = new Set<NonNullable<AgentBot["kind"]>>(["oracle", "companion", "security", "persona"]);
+const isOptionalString = (value: unknown): value is string | undefined => value === undefined || typeof value === "string";
+const isAgentBot = (value: unknown): value is AgentBot =>
+  isObject(value) &&
+  typeof value.token === "string" && value.token.length > 0 &&
+  Array.isArray(value.allow) && value.allow.every(id => Number.isSafeInteger(id) && id > 0) &&
+  typeof value.project === "string" && value.project.length > 0 &&
+  (value.kind === undefined || AGENT_BOT_KINDS.has(value.kind)) &&
+  isOptionalString(value.model) &&
+  (value.agent === undefined || value.agent === "claude" || value.agent === "codex") &&
+  isOptionalString(value.persona) &&
+  isOptionalString(value.dir);
+const isAgentBots = (value: unknown): value is AgentBots =>
+  isObject(value) && Object.entries(value).every(([id, bot]) => id.length > 0 && isAgentBot(bot));
+function loadAgentBots(): AgentBots { return readJsonStrict(AGENT_BOTS_FILE, () => ({}), isAgentBots); }
+function updateAgentBots(update: (bots: AgentBots) => void): AgentBots {
+  return updateJsonLocked(AGENT_BOTS_FILE, () => ({}), isAgentBots, update);
+}
+
+type TelegramRuntimeConfig = { botToken: string; allowUserIds: number[]; enabled: boolean };
+function loadTelegramRuntimeConfig(path: string): TelegramRuntimeConfig {
+  let raw: string;
+  try { raw = readFileSync(path, "utf8"); }
+  catch (error: any) {
+    if (error?.code === "ENOENT") return { botToken: "", allowUserIds: [], enabled: true };
+    throw new Error(`cannot read Telegram config ${path}: ${error?.message || error}`);
+  }
+  const fields = new Map<string, string>();
+  for (const [index, source] of raw.split("\n").entries()) {
+    const line = source.trim();
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/);
+    if (!match || !match[2]) throw new Error(`refusing malformed Telegram config ${path}:${index + 1}`);
+    if (fields.has(match[1])) throw new Error(`refusing duplicate Telegram config key ${match[1]} in ${path}:${index + 1}`);
+    fields.set(match[1], match[2]);
+  }
+  const stringValue = (name: string): string => {
+    const value = fields.get(name);
+    if (value === undefined) return "";
+    if (value.startsWith('"')) {
+      try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed === "string") return parsed;
+      } catch {}
+      throw new Error(`Telegram config ${path} key ${name} must be a valid quoted string`);
+    }
+    if (/^[A-Za-z0-9:_-]+$/.test(value)) return value;
+    throw new Error(`Telegram config ${path} key ${name} has an invalid string value`);
+  };
+  const allowRaw = fields.get("allow_user_ids");
+  let allowUserIds: number[] = [];
+  if (allowRaw !== undefined) {
+    if (!/^\[\s*(?:\d+\s*(?:,\s*\d+\s*)*)?\]$/.test(allowRaw))
+      throw new Error(`Telegram config ${path} allow_user_ids must be an array of positive integers`);
+    allowUserIds = (allowRaw.match(/\d+/g) || []).map(Number);
+    if (allowUserIds.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(allowUserIds).size !== allowUserIds.length)
+      throw new Error(`Telegram config ${path} allow_user_ids must contain unique positive integers`);
+  }
+  const enabledRaw = fields.get("enabled");
+  if (enabledRaw !== undefined && enabledRaw !== "true" && enabledRaw !== "false")
+    throw new Error(`Telegram config ${path} enabled must be true or false`);
+  return { botToken: stringValue("bot_token"), allowUserIds, enabled: enabledRaw !== "false" };
+}
 
 function loadConfig(): boolean {
-  const cfg = readKV(TG_TOML, /^\s*([a-z_]+)\s*=\s*(.+?)\s*$/i);
-  const operatorAllow = (cfg.allow_user_ids?.match(/\d+/g) || []).map(Number);
+  const cfg = loadTelegramRuntimeConfig(TG_TOML);
+  const operatorAllow = cfg.allowUserIds;
+  if (!cfg.enabled) {
+    TOKEN = ""; API = ""; BOT_ID = 0; ALLOW = [];
+    return false;
+  }
   // AGENT MODE: this process IS a per-agent bot — token + whitelist from the registry.
   const agentId = process.env.OMEGA_AGENT_BOT;
   if (agentId) {
@@ -223,7 +622,7 @@ function loadConfig(): boolean {
     ALLOW = (b.allow?.length ? b.allow : operatorAllow);
     return ALLOW.length > 0; // deny-by-default: never serve without a whitelist
   }
-  TOKEN = process.env.OMEGA_MC_TELEGRAM_TOKEN || cfg.bot_token || "";
+  TOKEN = process.env.OMEGA_MC_TELEGRAM_TOKEN || cfg.botToken || "";
   if (!/^\d+:/.test(TOKEN)) return false;
   API = `https://api.telegram.org/bot${TOKEN}`;
   BOT_ID = Number(TOKEN.split(":")[0]);
@@ -246,8 +645,35 @@ type Groups = { hub?: number; isForum?: boolean; topics?: Record<string, string>
 // Never dispatched as a project, never a /delete or /topic target, recreated by /sync.
 const RESERVED_TOPICS = new Set(["atlas", "alerts"]);
 const isReserved = (n?: string) => !!n && RESERVED_TOPICS.has(String(n).toLowerCase());
-function loadGroups(): Groups { try { return JSON.parse(readFileSync(GROUPS_FILE, "utf8")); } catch { return {}; } }
-function saveGroups(g: Groups) { try { writeFileSync(GROUPS_FILE, JSON.stringify(g, null, 2)); } catch {} }
+const isTelegramGroupId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value < 0;
+const isTopicId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+const isTopics = (value: unknown): value is Record<string, string> => {
+  if (!isObject(value)) return false;
+  const owners = new Set<string>();
+  return Object.entries(value).every(([id, name]) => {
+    const topicId = Number(id);
+    if (!/^\d+$/.test(id) || !isTopicId(topicId) || typeof name !== "string" || name.length === 0) return false;
+    const owner = name.toLowerCase();
+    if (owners.has(owner)) return false;
+    owners.add(owner);
+    return true;
+  });
+};
+const isGroups = (value: unknown): value is Groups =>
+  isObject(value) &&
+  (value.hub === undefined || isTelegramGroupId(value.hub)) &&
+  (value.isForum === undefined || typeof value.isForum === "boolean") &&
+  (value.topics === undefined || isTopics(value.topics)) &&
+  (value.atlas_topic === undefined || isTopicId(value.atlas_topic)) &&
+  (value.alerts_topic === undefined || isTopicId(value.alerts_topic));
+function loadGroups(): Groups {
+  const groups = readJsonStrict(GROUPS_FILE, () => ({}), isGroups);
+  STORE_BASELINES.set(groups, cloneJson(groups));
+  return groups;
+}
+function saveGroups(groups: Groups) {
+  saveReconciledJson(GROUPS_FILE, groups, () => ({}), isGroups);
+}
 
 // ── Telegram API ─────────────────────────────────────────────────────────────
 async function tg(method: string, body: any, _retry = 0): Promise<any> {
@@ -531,9 +957,51 @@ const PROJECTS_FILE = `${OMEGA_DIR}/projects.json`;
 // `telegram` is the per-project visibility toggle (topic sync + Atlas display).
 // Absent or true = enabled (default); false = disabled (sync skips/removes its
 // topic, the bot marks it 🔕 but keeps it listed). Mirrors the Rust struct field.
-type RegProject = { name: string; path: string; icon?: string | null; telegram_topic_id?: number | null; oracle_session?: string | null; git_email?: string | null; created_at: string; telegram?: boolean | null };
-function loadRegistry(): { projects: RegProject[] } { try { const r = JSON.parse(readFileSync(PROJECTS_FILE, "utf8")); return Array.isArray(r?.projects) ? r : { projects: [] }; } catch { return { projects: [] }; } }
-function saveRegistry(r: { projects: RegProject[] }) { try { writeFileSync(PROJECTS_FILE, JSON.stringify(r, null, 2)); } catch {} }
+type RegProject = {
+  name: string;
+  path: string;
+  icon?: string | null;
+  telegram_topic_id: number | null;
+  oracle_session: string | null;
+  git_email: string | null;
+  created_at: string;
+  telegram?: boolean | null;
+  category?: string | null;
+  repo?: string | null;
+  slug?: string | null;
+  default_branch?: string | null;
+  deploy_target?: unknown;
+  credential_refs?: unknown;
+  key_locations?: unknown;
+  [key: string]: unknown;
+};
+type ProjectsRegistry = { projects: RegProject[]; [key: string]: unknown };
+const isNullableString = (value: unknown): value is string | null => value === null || typeof value === "string";
+const isNullableTopicId = (value: unknown): value is number | null => value === null || isTopicId(value);
+const isRegProject = (value: unknown): value is RegProject =>
+  isObject(value) &&
+  typeof value.name === "string" && value.name.trim().length > 0 &&
+  typeof value.path === "string" && value.path.length > 0 &&
+  typeof value.created_at === "string" &&
+  (value.icon === undefined || isNullableString(value.icon)) &&
+  isNullableTopicId(value.telegram_topic_id) &&
+  isNullableString(value.oracle_session) &&
+  isNullableString(value.git_email) &&
+  (value.telegram === undefined || value.telegram === null || typeof value.telegram === "boolean") &&
+  (value.category === undefined || isNullableString(value.category)) &&
+  (value.repo === undefined || isNullableString(value.repo)) &&
+  (value.slug === undefined || isNullableString(value.slug)) &&
+  (value.default_branch === undefined || isNullableString(value.default_branch));
+const isProjectsRegistry = (value: unknown): value is ProjectsRegistry =>
+  isObject(value) &&
+  (value.schema_version === undefined || (typeof value.schema_version === "number" && Number.isSafeInteger(value.schema_version) && value.schema_version >= 1)) &&
+  Array.isArray(value.projects) && value.projects.every(isRegProject);
+function loadRegistry(): ProjectsRegistry {
+  return readJsonStrict(PROJECTS_FILE, () => ({ projects: [] }), isProjectsRegistry);
+}
+function updateRegistry(update: (registry: ProjectsRegistry) => void): ProjectsRegistry {
+  return updateJsonLocked(PROJECTS_FILE, () => ({ projects: [] }), isProjectsRegistry, update);
+}
 // View shape kept stable: { name: { dir, category(derived), topic, telegram } }.
 function loadProjects(): Record<string, { dir: string; category: string; topic?: number | null; telegram: boolean }> {
   const out: Record<string, { dir: string; category: string; topic?: number | null; telegram: boolean }> = {};
@@ -542,41 +1010,83 @@ function loadProjects(): Record<string, { dir: string; category: string; topic?:
 }
 // Flip a project's Telegram toggle in the shared registry (TUI + bot agree).
 function setProjectTelegram(name: string, enabled: boolean): boolean {
-  const reg = loadRegistry();
-  const p = reg.projects.find(x => x.name.toLowerCase() === name.toLowerCase());
-  if (!p) return false;
-  p.telegram = enabled;
-  saveRegistry(reg);
-  return true;
+  let found = false;
+  updateRegistry(reg => {
+    const project = reg.projects.find(candidate => candidate.name.toLowerCase() === name.toLowerCase());
+    if (!project) return;
+    project.telegram = enabled;
+    found = true;
+  });
+  return found;
 }
 // Telegram-command-safe id for a project name: lowercase, only [a-z0-9_], ≤32 chars
 // (Telegram's rule for /commands). Used for the per-project /{project} command.
 const tgCmd = (name: string) => name.toLowerCase().replace(/[^a-z0-9_]/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+type ProjectCommandPlan = {
+  commands: { command: string; description: string }[];
+  collisions: { command: string; projects: string[] }[];
+  omitted: string[];
+};
+function planProjectCommands(
+  base: { command: string; description: string }[],
+  projects: RegProject[],
+): ProjectCommandPlan {
+  const reserved = new Set(base.map(command => command.command));
+  const candidates = new Map<string, string[]>();
+  for (const project of projects.filter(project => project.telegram !== false)) {
+    const command = tgCmd(project.name);
+    if (!command) {
+      console.error(`omega-tg-bot: project ${project.name} has no Telegram-safe command (command withheld)`);
+      continue;
+    }
+    const names = candidates.get(command) || [];
+    if (!names.includes(project.name)) names.push(project.name);
+    candidates.set(command, names);
+  }
+
+  const commands: { command: string; description: string }[] = [];
+  const collisions: { command: string; projects: string[] }[] = [];
+  const eligible: { command: string; project: string }[] = [];
+  for (const [command, names] of [...candidates.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    names.sort((a, b) => a.localeCompare(b));
+    if (reserved.has(command) || names.length !== 1) {
+      collisions.push({ command, projects: reserved.has(command) ? [...names, "<reserved>"] : names });
+    } else {
+      eligible.push({ command, project: names[0] });
+    }
+  }
+
+  const capacity = Math.max(0, 100 - base.length);
+  const omitted = eligible.slice(capacity).map(candidate => candidate.project);
+  for (const candidate of eligible.slice(0, capacity))
+    commands.push({ command: candidate.command, description: `Mission → ${candidate.project} oracle` });
+  return { commands, collisions, omitted };
+}
 // Resolve a typed slash command to a managed project name (matches the project name,
 // its projId, or its telegram-safe command id). Returns the canonical name or undefined.
 function projectForCommand(cmd: string): string | undefined {
   const c = cmd.toLowerCase();
-  for (const p of loadRegistry().projects) {
-    if (p.name.toLowerCase() === c || projId(p.name) === c || tgCmd(p.name) === c) return p.name;
+  const matches = [...new Set(loadRegistry().projects
+    .filter(project => project.name.toLowerCase() === c || projId(project.name) === c || tgCmd(project.name) === c)
+    .map(project => project.name))];
+  if (matches.length > 1) {
+    console.error(`omega-tg-bot: ambiguous project command /${c}: ${matches.join(", ")} (dispatch refused)`);
+    return undefined;
   }
-  return undefined;
+  return matches[0];
 }
 // (Re)publish the bot's command menu: the static MENU + one /{project} command per
 // Telegram-enabled managed project (so /myproject talks to its oracle). Called at
 // startup and after add/create/delete/sync so the list stays current.
 async function refreshCommands() {
   const base = MENU.map(([command, description]) => ({ command, description }));
-  const reserved = new Set(base.map(c => c.command));
-  const seen = new Set(reserved);
-  const projCmds: { command: string; description: string }[] = [];
-  for (const p of loadRegistry().projects) {
-    if (p.telegram === false) continue;            // hidden project → no command
-    const c = tgCmd(p.name);
-    if (!c || seen.has(c)) continue;               // skip empties + collisions
-    seen.add(c);
-    projCmds.push({ command: c, description: `Mission → ${p.name} oracle` });
-  }
-  const cmds = [...base, ...projCmds].slice(0, 100); // Telegram caps at 100 commands
+  const plan = planProjectCommands(base, loadRegistry().projects);
+  for (const collision of plan.collisions)
+    console.error(`omega-tg-bot: command collision /${collision.command}: ${collision.projects.join(", ")} (command withheld)`);
+  if (plan.omitted.length)
+    console.error(`omega-tg-bot: Telegram command limit 100 reached; omitted projects: ${plan.omitted.join(", ")}`);
+  const projCmds = plan.commands;
+  const cmds = [...base, ...projCmds];
   // tg() RESOLVES with {ok:false} on an API error instead of throwing, so a
   // caller that only catches rejections would report a menu it never published.
   const a = await tg("setMyCommands", { commands: cmds });
@@ -588,18 +1098,43 @@ async function refreshCommands() {
 /// startup wait loop so it never claims a menu is live when it is not.
 let published = false;
 // Upsert a project in the shared registry (matched by path or name). Optionally bind its Telegram topic.
+function registryPathIdentity(path: string): string {
+  try { return realpathSync(path); }
+  catch { return resolve(path); }
+}
 function recordProject(name: string, dir: string, _category?: string, topicId?: number | null) {
-  const reg = loadRegistry();
-  const existing = reg.projects.find(p => (dir && p.path === dir) || p.name.toLowerCase() === name.toLowerCase());
-  if (existing) { if (dir) existing.path = dir; if (topicId != null) existing.telegram_topic_id = topicId; }
-  else reg.projects.push({ name, path: dir, icon: null, telegram_topic_id: topicId ?? null, oracle_session: null, git_email: null, created_at: new Date().toISOString() });
-  saveRegistry(reg);
+  updateRegistry(reg => {
+    const byName = reg.projects.find(project => project.name.toLowerCase() === name.toLowerCase());
+    const dirIdentity = dir ? registryPathIdentity(dir) : "";
+    const byPath = dir ? reg.projects.find(project => registryPathIdentity(project.path) === dirIdentity) : undefined;
+    if (byName && byPath && byName !== byPath)
+      throw new Error(`project identity conflict: name ${name} and path ${dir} refer to different registry entries`);
+    if (byName && dir && registryPathIdentity(byName.path) !== dirIdentity)
+      throw new Error(`project name ${name} is already registered at ${byName.path}`);
+    const existing = byPath || byName;
+    if (existing) {
+      if (topicId != null) existing.telegram_topic_id = topicId;
+      if (_category) existing.category = _category;
+    } else {
+      if (!dir) throw new Error(`cannot register project ${name} without a project path`);
+      reg.projects.push({
+        name,
+        path: dir,
+        icon: null,
+        telegram_topic_id: topicId ?? null,
+        oracle_session: null,
+        git_email: null,
+        created_at: new Date().toISOString(),
+        ...(_category ? { category: _category } : {}),
+      });
+    }
+  });
 }
 // Remove a project from the shared registry (TUI menu + Telegram both stop seeing it).
 function removeProject(name: string) {
-  const reg = loadRegistry();
-  reg.projects = reg.projects.filter(p => p.name.toLowerCase() !== name.toLowerCase());
-  saveRegistry(reg);
+  updateRegistry(reg => {
+    reg.projects = reg.projects.filter(project => project.name.toLowerCase() !== name.toLowerCase());
+  });
 }
 function projTopicId(name: string): number | undefined {
   const g = loadGroups();
@@ -641,7 +1176,7 @@ async function deleteProject(name: string, mode: "omega" | "local" | "all"): Pro
   // 3. Agent-bot service (if one was associated)
   const bots = loadAgentBots();
   if (bots[id] || bots[name]) {
-    delete bots[id]; delete bots[name]; saveAgentBots(bots);
+    updateAgentBots(latest => { delete latest[id]; delete latest[name]; });
     teardownAgentBot(id);
     steps.push("🔗 Dedicated agent bot: stopped + removed ✅");
   }
@@ -820,11 +1355,35 @@ function atlasPrompt(): string {
 // from the SINGLE source (`omega rules context <scope>`) and injected into every
 // brain — so Atlas and the project oracles always know how OmegaOS is
 // orchestrated and which rules/audits to respect, with NO re-explaining per prompt.
-function doctrine(scope: string): string { try { return Bun.spawnSync([OMEGA, "rules", "context", scope]).stdout.toString().trim(); } catch { return ""; } }
-const DOCTRINE_CACHE: Record<string, string> = {};
+function doctrine(scope: string): string {
+  const result = Bun.spawnSync([OMEGA, "rules", "context", scope], { stdout: "pipe", stderr: "pipe" });
+  const output = result.stdout.toString().trim();
+  if (result.exitCode !== 0 || !output) {
+    const reason = result.stderr.toString().trim().slice(0, 300) || `exit ${result.exitCode}`;
+    throw new Error(`OmegaOS doctrine unavailable for ${scope}: ${reason}`);
+  }
+  return output;
+}
+function doctrineFingerprint(): string {
+  const files = [OMEGA, `${OMEGA_DIR}/AGENTS.md`, `${OMEGA_DIR}/OMEGA.md`];
+  const rulesDir = `${OMEGA_DIR}/rules`;
+  try {
+    for (const name of readdirSync(rulesDir).filter(name => name.endsWith(".md")).sort())
+      files.push(`${rulesDir}/${name}`);
+  } catch {}
+  return files.map(path => {
+    try { const stat = statSync(path); return `${path}:${stat.size}:${stat.mtimeMs}`; }
+    catch { return `${path}:missing`; }
+  }).join("|");
+}
+const DOCTRINE_CACHE: Record<string, { fingerprint: string; value: string }> = {};
 function doctrineCached(scope: string): string {
-  if (!DOCTRINE_CACHE[scope]) DOCTRINE_CACHE[scope] = doctrine(scope);
-  return DOCTRINE_CACHE[scope];
+  const fingerprint = doctrineFingerprint();
+  const cached = DOCTRINE_CACHE[scope];
+  if (cached?.fingerprint === fingerprint) return cached.value;
+  const value = doctrine(scope);
+  DOCTRINE_CACHE[scope] = { fingerprint, value };
+  return value;
 }
 const IDENTITY =
   "You are ATLAS of OmegaOS — the boss the operator talks to here on Telegram. " +
@@ -2129,17 +2688,60 @@ function extractJson(out: string): any {
 const PENDING_FILE = `${OMEGA_DIR}/state/tg-pending.json`;
 const PENDING_TTL = 15 * 60 * 1000;
 type Pending = { kind: "login-code" | "new-project" | "add-project" | "import-project" | "tg-link" | "oracle-prompt" | "kairos-field" | "kairos-confirm" | "kairos-day" | "kairos-cap" | "zernio-post"; ts: number; arg?: string };
+type PendingDisk = [string | number, Pending][];
+const PENDING_KINDS = new Set<Pending["kind"]>([
+  "login-code", "new-project", "add-project", "import-project", "tg-link",
+  "oracle-prompt", "kairos-field", "kairos-confirm", "kairos-day", "kairos-cap",
+  "zernio-post",
+]);
+const isPendingKey = (value: unknown): value is string | number => {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value > 0;
+  if (typeof value !== "string") return false;
+  const match = /^(?:main|agent-[a-z0-9_-]+):(\d+)$/.exec(value);
+  return !!match && Number.isSafeInteger(Number(match[1])) && Number(match[1]) > 0;
+};
+const isPending = (value: unknown): value is Pending =>
+  isObject(value) &&
+  Object.keys(value).every(key => key === "kind" || key === "ts" || key === "arg") &&
+  PENDING_KINDS.has(value.kind) &&
+  typeof value.ts === "number" && Number.isSafeInteger(value.ts) && value.ts > 0 &&
+  (value.arg === undefined || typeof value.arg === "string");
 const pending = new Map<number, Pending>();
-function savePending() { try { writeFileSync(PENDING_FILE, JSON.stringify([...pending.entries()])); } catch {} }
+const isPendingDisk = (value: unknown): value is PendingDisk => Array.isArray(value) && value.every(entry =>
+  Array.isArray(entry) && entry.length === 2 && isPendingKey(entry[0]) && isPending(entry[1])
+);
+const pendingNamespace = () => process.env.OMEGA_AGENT_BOT ? `agent-${process.env.OMEGA_AGENT_BOT}` : "main";
+const pendingDiskKey = (id: number) => `${pendingNamespace()}:${id}`;
 function loadPending() {
-  try {
-    const now = Date.now();
-    for (const [id, p] of JSON.parse(readFileSync(PENDING_FILE, "utf8")) as [number, Pending][])
-      if (now - p.ts < PENDING_TTL) pending.set(id, p);
-  } catch {}
+  const now = Date.now();
+  const ownPrefix = `${pendingNamespace()}:`;
+  const isMain = !process.env.OMEGA_AGENT_BOT;
+  for (const [rawKey, flow] of readJsonStrict(PENDING_FILE, () => [], isPendingDisk)) {
+    const legacy = typeof rawKey === "number";
+    const key = String(rawKey);
+    if ((!legacy && !key.startsWith(ownPrefix)) || (legacy && !isMain)) continue;
+    const id = legacy ? rawKey : Number(key.slice(ownPrefix.length));
+    if (Number.isSafeInteger(id) && now - flow.ts < PENDING_TTL) pending.set(Number(id), flow);
+  }
 }
-function setPending(id: number, kind: Pending["kind"], arg?: string) { pending.set(id, { kind, ts: Date.now(), arg }); savePending(); }
-function clearPending(id: number) { if (pending.delete(id)) savePending(); }
+function setPending(id: number, kind: Pending["kind"], arg?: string) {
+  const flow = { kind, ts: Date.now(), arg } as Pending;
+  const diskKey = pendingDiskKey(id);
+  updateJsonLocked(PENDING_FILE, () => [], isPendingDisk, entries => {
+    const next = entries.filter(([key]) => String(key) !== diskKey && !(typeof key === "number" && key === id && !process.env.OMEGA_AGENT_BOT));
+    next.push([diskKey, flow]);
+    entries.splice(0, entries.length, ...next);
+  });
+  pending.set(id, flow);
+}
+function clearPending(id: number) {
+  const diskKey = pendingDiskKey(id);
+  updateJsonLocked(PENDING_FILE, () => [], isPendingDisk, entries => {
+    const next = entries.filter(([key]) => String(key) !== diskKey && !(typeof key === "number" && key === id && !process.env.OMEGA_AGENT_BOT));
+    entries.splice(0, entries.length, ...next);
+  });
+  pending.delete(id);
+}
 function getPending(id: number): Pending | undefined {
   const p = pending.get(id);
   if (p && Date.now() - p.ts >= PENDING_TTL) { clearPending(id); return undefined; }
@@ -2970,7 +3572,10 @@ async function onCallback(data: string, chat: number, msgId: number, from: numbe
   if (ns === "proj" && action === "botunlink") {
     const id = projId(arg);
     const abots = loadAgentBots();
-    if (abots[id] || abots[arg]) { delete abots[id]; delete abots[arg]; saveAgentBots(abots); teardownAgentBot(id); }
+    if (abots[id] || abots[arg]) {
+      updateAgentBots(latest => { delete latest[id]; delete latest[arg]; });
+      teardownAgentBot(id);
+    }
     return edit(chat, msgId, card("DEDICATED BOT", ` 🛑 <b>${esc(arg)}</b> — bot unlinked + stopped ✅`), kb([[{ text: "« Project", callback_data: `proj:open:${arg}`.slice(0, 64) }, { text: "📋 Projects", callback_data: "nav:projects" }]]));
   }
   if (ns === "proj" && action === "del") { const m = projDeleteMenu(arg); return edit(chat, msgId, m.text, m.markup); }
@@ -4242,7 +4847,9 @@ async function main() {
   // clients read the private-chat scope preferentially, so setting only default
   // can leave a stale/empty menu in DMs.
   await refreshCommands();
-  await tg("deleteWebhook", { drop_pending_updates: false });
+  if (!published) throw new Error("omega-tg-bot: startup refused because the Telegram command menu could not be published");
+  const webhook = await tg("deleteWebhook", { drop_pending_updates: false });
+  if (!webhook.ok) throw new Error(`omega-tg-bot: startup refused because deleteWebhook failed: ${webhook.description || "unknown Telegram error"}`);
   await resolvePublicIP();
   // Resurrect every registered per-project agent bot (agent-bots.json) — the
   // units live in ~/.config/systemd/user which a fresh install does NOT ship,
@@ -4254,6 +4861,7 @@ async function main() {
     const r = spawnAgentBot(id);
     if (r !== "ok") console.log(`agent-bot resurrect ${id}: ${r}`);
   }
+  signalReady();
   console.log(`omega-tg-bot v3 up. botId=${BOT_ID} commands=${MENU.length} allow=${ALLOW.join(",") || "ALL"}`);
   rehydrateWatching();  // re-attach to live cards lost on restart (one card per oracle, survives restart)
   setInterval(() => pollProgress().catch(() => {}), 6000);  // live progress card (▰▰▰░ %)
@@ -4377,9 +4985,9 @@ async function main() {
               : isSecurity ? "security"
               : isLibrarian ? "librarian"
               : ((repoPath(agentId) || gitRepos().find(r => r.name.toLowerCase() === agentId.toLowerCase())) ? agentId : agentId);
-            const bots = loadAgentBots();
-            bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : isSecurity ? { kind: "security" } : isLibrarian ? { kind: "persona", persona: libPersona, dir: libDir, model: "claude-sonnet-4-6" } : {}) };
-            saveAgentBots(bots);
+            updateAgentBots(bots => {
+              bots[agentId] = { token, allow: ALLOW.slice(), project, ...(isCompanion ? { kind: "companion" } : isSecurity ? { kind: "security" } : isLibrarian ? { kind: "persona", persona: libPersona, dir: libDir, model: "claude-sonnet-4-6" } : {}) };
+            });
             try { Bun.spawnSync(["chmod", "600", AGENT_BOTS_FILE]); } catch {}
             const spawn = spawnAgentBot(agentId);
             const me = `@${botInfo.result?.username || "?"}`;
@@ -4503,6 +5111,26 @@ async function main() {
 //   bun omega-tg-bot.ts project-telegram <name> <on|off>
 const ARGV = process.argv.slice(2);
 const stripHtml = (s: string) => s.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+export {
+  acquireJsonLock,
+  atomicWriteJsonLocked,
+  clearPending,
+  doctrineCached,
+  doctrineFingerprint,
+  loadAgentBots,
+  loadGroups,
+  loadRegistry,
+  loadTelegramRuntimeConfig,
+  planProjectCommands,
+  readJsonStrict,
+  recordProject,
+  releaseJsonLock,
+  saveGroups,
+  setPending,
+  updateAgentBots,
+  updateJsonLocked,
+  updateRegistry,
+};
 if (ARGV[0] === "project-delete") {
   loadConfig();
   const name = ARGV[1] || "";
@@ -4521,6 +5149,6 @@ if (ARGV[0] === "project-delete") {
     console.log(`Telegram ${on ? "ON" : "OFF"} for ${name}${r === "deleted" ? " (topic removed)" : ""}`);
     process.exit(0);
   });
-} else {
+} else if (process.env.OMEGA_ECOSYSTEM_TEST !== "1") {
   main();
 }

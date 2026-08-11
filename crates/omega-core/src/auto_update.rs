@@ -304,7 +304,9 @@ pub fn decide(
     // Order matters: report the condition the user must FIX before the one they
     // merely have to wait out.
     if state.dirty {
-        return Decision::Skip { reason: SkipReason::DirtyTree };
+        return Decision::Skip {
+            reason: SkipReason::DirtyTree,
+        };
     }
     if state.ahead > 0 {
         return Decision::Skip {
@@ -417,15 +419,29 @@ mod tests {
         let mut dirty = behind(2);
         dirty.dirty = true;
         assert!(matches!(
-            decide(AutoUpdatePolicy::Apply, &dirty, &AutoUpdateState::default(), None),
-            Decision::Skip { reason: SkipReason::DirtyTree }
+            decide(
+                AutoUpdatePolicy::Apply,
+                &dirty,
+                &AutoUpdateState::default(),
+                None
+            ),
+            Decision::Skip {
+                reason: SkipReason::DirtyTree
+            }
         ));
 
         let mut ahead = behind(2);
         ahead.ahead = 4;
         assert!(matches!(
-            decide(AutoUpdatePolicy::Apply, &ahead, &AutoUpdateState::default(), None),
-            Decision::Skip { reason: SkipReason::LocalCommits { ahead: 4 } }
+            decide(
+                AutoUpdatePolicy::Apply,
+                &ahead,
+                &AutoUpdateState::default(),
+                None
+            ),
+            Decision::Skip {
+                reason: SkipReason::LocalCommits { ahead: 4 }
+            }
         ));
     }
 
@@ -479,7 +495,12 @@ mod tests {
     fn a_clean_current_machine_still_does_nothing() {
         let state = ff_done_install_failed(); // same shape, but no failure history
         assert_eq!(
-            decide(AutoUpdatePolicy::Apply, &state, &AutoUpdateState::default(), None),
+            decide(
+                AutoUpdatePolicy::Apply,
+                &state,
+                &AutoUpdateState::default(),
+                None
+            ),
             Decision::UpToDate
         );
     }
@@ -491,7 +512,12 @@ mod tests {
         let mut history = AutoUpdateState::default();
         history.record_failure("0ldc0de");
         assert_eq!(
-            decide(AutoUpdatePolicy::Apply, &ff_done_install_failed(), &history, None),
+            decide(
+                AutoUpdatePolicy::Apply,
+                &ff_done_install_failed(),
+                &history,
+                None
+            ),
             Decision::UpToDate
         );
     }
@@ -503,7 +529,12 @@ mod tests {
         let mut s = behind(0);
         s.dirty = true;
         assert_eq!(
-            decide(AutoUpdatePolicy::Apply, &s, &AutoUpdateState::default(), None),
+            decide(
+                AutoUpdatePolicy::Apply,
+                &s,
+                &AutoUpdateState::default(),
+                None
+            ),
             Decision::UpToDate
         );
     }
@@ -715,7 +746,9 @@ mod tests {
         match decide(AutoUpdatePolicy::Apply, &state, &history, None) {
             Decision::Skip { reason } => {
                 assert!(reason.needs_human());
-                assert!(matches!(reason, SkipReason::RepeatedFailure { failures, .. } if failures == FAILURE_CAP));
+                assert!(
+                    matches!(reason, SkipReason::RepeatedFailure { failures, .. } if failures == FAILURE_CAP)
+                );
             }
             other => panic!("expected the cap to stop it, got {:?}", other),
         }

@@ -2,12 +2,12 @@ use crate::config::OmegaConfig;
 use crate::done::{DoneSignal, DoneStatus, OracleDoneSignal, WorkerBlocked};
 use crate::inbox::{Inbox, InboxEvent};
 use crate::oracle_lifecycle::{
-    OracleRegistry, OracleRegistryStatus, OracleState, SignalWatcher,
-    WorkerEntryStatus, WorkerStallDetector, StallAction, StallThresholds,
+    OracleRegistry, OracleRegistryStatus, OracleState, SignalWatcher, StallAction, StallThresholds,
+    WorkerEntryStatus, WorkerStallDetector,
 };
 use crate::scope::ScopeClaim;
 use crate::session::{SessionManager, SessionRole};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::time::Duration;
 
@@ -87,48 +87,130 @@ impl Patrol {
         }
     }
 
-    fn transition_v3_worker_attempt(
+    /// Resolve V3 task authority for one worker. `None` means the session is a
+    /// legacy/unregistered worker; any malformed V3 binding is an error, never
+    /// permission to fall back to compatibility state.
+    fn v3_worker_attempt_state(
+        &self,
+        oracle_states: &[OracleState],
+        session: &str,
+    ) -> Result<Option<crate::mission::TaskAttemptState>> {
+        let Some((oracle, worker)) = oracle_states.iter().find_map(|oracle| {
+            oracle
+                .workers
+                .iter()
+                .find(|worker| worker.session_name == session)
+                .map(|worker| (oracle, worker))
+        }) else {
+            return Ok(None);
+        };
+        let attempt_id = worker
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("registered V3 worker has no attempt id"))?;
+        let revision = worker
+            .plan_revision
+            .ok_or_else(|| anyhow::anyhow!("registered V3 worker has no plan revision"))?;
+        let ledger = crate::mission_ledger::MissionLedger::open(
+            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+        )?;
+        oracle.require_ledger_authority(&ledger)?;
+        let attempt = ledger
+            .task_attempt(attempt_id)?
+            .ok_or_else(|| anyhow::anyhow!("registered V3 attempt is missing"))?;
+        if attempt.mission_id != oracle.mission_id
+            || attempt.task_id != worker.task_id
+            || attempt.plan_revision != revision
+        {
+            anyhow::bail!("registered worker differs from exact ledger task authority");
+        }
+        Ok(Some(attempt.state))
+    }
+
+    fn release_exact_accepted_worker_scopes(
         &self,
         oracle: &OracleState,
         worker: &crate::oracle_lifecycle::WorkerEntry,
-        next: crate::mission::TaskAttemptState,
-        event_key: &str,
-    ) -> Result<bool> {
-        let (Some(attempt_id), Some(plan_revision)) =
-            (worker.attempt_id.as_deref(), worker.plan_revision)
-        else {
-            return Ok(false);
-        };
-        let ledger_path = self.config.state_dir.join("mission-engine-v3.sqlite3");
-        if !ledger_path.exists() || oracle.mission_id.as_str().is_empty() {
-            return Ok(false);
-        }
-        let ledger = crate::mission_ledger::MissionLedger::open(ledger_path)?;
+    ) -> Result<()> {
+        let attempt_id = worker
+            .attempt_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("registered V3 worker has no attempt id"))?;
+        let plan_revision = worker
+            .plan_revision
+            .ok_or_else(|| anyhow::anyhow!("registered V3 worker has no plan revision"))?;
+        let ledger = crate::mission_ledger::MissionLedger::open(
+            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+        )?;
+        oracle.require_ledger_authority(&ledger)?;
         let projection = ledger
-            .mission(&oracle.mission_id)?
-            .ok_or_else(|| anyhow::anyhow!("V3 mission projection is missing"))?;
-        let attempt = ledger
             .task_attempt(attempt_id)?
-            .ok_or_else(|| anyhow::anyhow!("V3 task attempt projection is missing"))?;
-        if attempt.state == next {
-            return Ok(true);
+            .ok_or_else(|| anyhow::anyhow!("registered V3 attempt is missing"))?;
+        if projection.mission_id != oracle.mission_id
+            || projection.task_id != worker.task_id
+            || projection.plan_revision != plan_revision
+            || projection.state != crate::mission::TaskAttemptState::Accepted
+        {
+            anyhow::bail!("scope release requires the exact Accepted V3 attempt");
         }
-        let mut event = crate::mission_ledger::AppendEvent::new(
-            oracle.mission_id.clone(),
-            projection.version,
-            format!("patrol:{attempt_id}:{event_key}"),
-            "omega-patrol",
-            format!("task_attempt_{}", format!("{next:?}").to_lowercase()),
-        );
-        event.task_attempt = Some(crate::mission_ledger::TaskAttemptMutation {
+        let attempt = crate::orchestration::AuthoritativeTaskAttempt {
+            mission_id: oracle.mission_id.clone(),
             task_id: worker.task_id.clone(),
             attempt_id: attempt_id.to_string(),
             plan_revision,
-            expected_version: attempt.version,
-            next_state: next,
-        });
-        ledger.append(event)?;
-        Ok(true)
+            owner: Some(worker.session_name.clone()),
+            leases: ledger.active_leases_for_attempt(
+                &oracle.mission_id,
+                &worker.task_id,
+                attempt_id,
+            )?,
+            scope_receipt: None,
+        };
+        crate::orchestration::release_authoritative_scopes(
+            &ledger,
+            &self.config.state_dir,
+            &attempt,
+        )
+    }
+
+    fn require_delivered_oracle_authority(
+        &self,
+        oracle_states: &[OracleState],
+        oracle_name: &str,
+        signal: &OracleDoneSignal,
+    ) -> Result<OracleState> {
+        let matches: Vec<_> = oracle_states
+            .iter()
+            .filter(|state| state.oracle_name == oracle_name)
+            .collect();
+        if matches.len() != 1 {
+            anyhow::bail!(
+                "expected one strict V3 OracleState for {oracle_name}, found {}",
+                matches.len()
+            );
+        }
+        let state = matches[0];
+        let ledger = crate::mission_ledger::MissionLedger::open(
+            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+        )?;
+        state.require_ledger_authority(&ledger)?;
+        ledger
+            .mission_record(&state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("immutable V3 mission is missing"))?;
+        let projection = ledger
+            .mission(&state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("V3 mission projection is missing"))?;
+        if projection.state != crate::mission::MissionState::Delivered {
+            anyhow::bail!("V3 mission is {:?}, not Delivered", projection.state);
+        }
+        ledger.validate_mission_acceptance(&state.mission_id)?;
+        crate::orchestration::validate_oracle_done_signal_authority(
+            &ledger,
+            &state.mission_id,
+            oracle_name,
+            signal,
+        )?;
+        Ok(state.clone())
     }
 
     pub async fn run_once(&mut self) -> Result<PatrolReport> {
@@ -136,8 +218,7 @@ impl Patrol {
         // `omega doctor`) verify the self-improvement loop is alive rather
         // than silently dead (the failure mode of the old Smith agent).
         let hb = self.config.state_dir.join("patrol-heartbeat.txt");
-        let _ = std::fs::create_dir_all(&self.config.state_dir);
-        let _ = std::fs::write(&hb, Utc::now().to_rfc3339());
+        crate::config::atomic_write_private(&hb, Utc::now().to_rfc3339().as_bytes())?;
 
         // connect_cached: the patrol daemon calls run_once every tick — reuse one
         // process-wide rmux connection instead of opening a fresh socket per tick.
@@ -146,8 +227,14 @@ impl Patrol {
 
         let mut report = PatrolReport {
             total_sessions: sessions.len(),
-            oracles: sessions.iter().filter(|s| s.role == SessionRole::Oracle).count(),
-            workers: sessions.iter().filter(|s| s.role == SessionRole::Worker).count(),
+            oracles: sessions
+                .iter()
+                .filter(|s| s.role == SessionRole::Oracle)
+                .count(),
+            workers: sessions
+                .iter()
+                .filter(|s| s.role == SessionRole::Worker)
+                .count(),
             done_workers: Vec::new(),
             stalled_workers: Vec::new(),
             blocked_workers: Vec::new(),
@@ -165,7 +252,25 @@ impl Patrol {
         // needs it to resolve a worker -> its governing oracle, and it's called
         // once per signaling worker; reading it per call was an O(W×O) disk scan +
         // JSON parse every tick. Compute it here and pass the slice down.
-        let oracle_states = crate::oracle_lifecycle::OracleState::read_all(&self.config.state_dir);
+        let oracle_states =
+            crate::oracle_lifecycle::OracleState::read_all_strict(&self.config.state_dir)?;
+        let team_runs = crate::team::TeamRunState::read_all_strict(&self.config.state_dir)?;
+        let team_session_names: std::collections::HashSet<String> = team_runs
+            .iter()
+            .map(|run| run.team_session.clone())
+            .collect();
+        let live_team_snapshot: std::collections::HashSet<String> = sessions
+            .iter()
+            .map(|session| session.name.clone())
+            .collect();
+        let team_report = crate::team::reconcile_team_runs(
+            &self.config.state_dir,
+            &mgr,
+            &team_runs,
+            &live_team_snapshot,
+        )
+        .await?;
+        report.actions_taken.extend(team_report.actions);
 
         // ── Broken-pane sweep: panes whose terminal object the daemon lost ──
         // rmux (≤0.3.1) can lose a pane's in-memory terminal while the pane
@@ -181,6 +286,13 @@ impl Patrol {
             match mgr.capture_pane(&session.name).await {
                 Err(e) if format!("{e:#}").contains("missing pane terminal") => {}
                 _ => continue,
+            }
+            if team_session_names.contains(&session.name) {
+                report.actions_taken.push(format!(
+                    "Team {} has a broken pane; held for exact team-run reconciliation",
+                    session.name
+                ));
+                continue;
             }
             tracing::warn!(session = %session.name, "Broken pane (terminal lost) — respawning");
             let respawned = std::process::Command::new("rmux")
@@ -200,18 +312,40 @@ impl Patrol {
             let relaunch_agent = session.project.is_some()
                 || matches!(session.role, SessionRole::Oracle | SessionRole::Worker);
             if relaunch_agent {
-                // Give the respawned shell a beat before typing into it.
-                tokio::time::sleep(Duration::from_millis(500)).await;
-                let agent = crate::agents::Agent::from_name(&self.config.agent_command)
-                    .unwrap_or(crate::agents::Agent::Codex);
-                let launch = agent.launch_command_with(
-                    None,
-                    crate::agents::LaunchOptions {
-                        resume_conversation: true,
-                        ..Default::default()
-                    },
-                );
-                let _ = mgr.send_text(&session.name, &launch).await;
+                let configured = session
+                    .provider
+                    .as_deref()
+                    .unwrap_or(self.config.agent_command.as_str());
+                let Some(agent) = crate::agents::Agent::from_name(configured) else {
+                    report.actions_taken.push(format!(
+                        "Session {}: pane respawned but agent relaunch REFUSED; unknown configured provider {:?}",
+                        session.name, configured
+                    ));
+                    continue;
+                };
+                let working_dir = session
+                    .working_dir
+                    .as_deref()
+                    .and_then(std::path::Path::to_str);
+                if let Err(error) = mgr
+                    .relaunch_agent_session_with_opts(
+                        &session.name,
+                        working_dir,
+                        agent,
+                        None,
+                        crate::agents::LaunchOptions {
+                            resume_conversation: true,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                {
+                    report.actions_taken.push(format!(
+                        "Session {}: pane respawned but typed agent relaunch FAILED ({error})",
+                        session.name
+                    ));
+                    continue;
+                }
             }
             report.actions_taken.push(format!(
                 "Session {}: pane terminal lost (rmux bug) — respawned pane{}",
@@ -226,7 +360,7 @@ impl Patrol {
 
         // ── Worker patrol: done signals ──
         for session in &sessions {
-            if session.role == SessionRole::Worker {
+            if session.role == SessionRole::Worker && !team_session_names.contains(&session.name) {
                 // ── Freshness guard (worker twin of the oracle guard below) ──
                 // Worker names are deterministic (`<project>-worker-<task>`)
                 // and the done.json survives its session, so a re-dispatch
@@ -266,18 +400,17 @@ impl Patrol {
                 if let Some(done) = fresh_done {
                     report.done_workers.push(session.name.clone());
 
-                    // ── Opus 4.8 ground-truth gate ──
-                    // A worker's `done_clean` narration is inadmissible as
-                    // proof. Verify every artifact it cited against the real
-                    // repo. A concrete fabrication is a failure. Weak or
-                    // absent proof remains a candidate (`Pending`) and keeps
-                    // its scope: a worker never accepts its own work.
+                    // A worker's narration is only a CandidateDone. Patrol uses
+                    // the same exact-plan independent finalizer as native
+                    // orchestration; no compatibility-only artifact path may
+                    // write Accepted.
                     let repo_root = crate::session::OmegaSession::classify(&session.name)
                         .project
                         .as_deref()
                         .and_then(|p| resolve_repo_root(&self.config, p));
                     let mut effective_status = done.status;
                     let mut contest_reason: Option<String> = None;
+                    let mut accepted_persisted = false;
                     let v3_worker = oracle_states.iter().find_map(|state| {
                         state
                             .workers
@@ -285,101 +418,151 @@ impl Patrol {
                             .find(|worker| worker.session_name == session.name)
                             .map(|worker| (state, worker))
                     });
-                    let mut ledger_ready = true;
-                    if let Some((oracle, worker)) = v3_worker {
-                        if let Err(error) = self.transition_v3_worker_attempt(
-                            oracle,
-                            worker,
-                            crate::mission::TaskAttemptState::Verifying,
-                            &format!("{}:verifying", done.finished_at.timestamp_micros()),
-                        ) {
-                            ledger_ready = false;
-                            effective_status = DoneStatus::Pending;
-                            report.actions_taken.push(format!(
-                                "{}: authoritative verification transition failed; scope held ({error})",
-                                session.name
-                            ));
-                        }
-                    }
-                    if done.status == DoneStatus::DoneClean && ledger_ready {
-                        let verifier_checks = oracle_states
-                            .iter()
-                            .find_map(|state| {
-                                state
-                                    .workers
-                                    .iter()
-                                    .find(|worker| worker.session_name == session.name)
-                                    .map(|worker| (state.mission_id.clone(), worker.task_id.clone()))
-                            })
-                            .and_then(|(mission_id, task_id)| {
-                                let path =
-                                    self.config.state_dir.join("mission-engine-v3.sqlite3");
-                                let ledger =
-                                    crate::mission_ledger::MissionLedger::open(path).ok()?;
-                                let plan = ledger.active_plan(&mission_id).ok().flatten()?;
-                                plan.tasks
-                                    .into_iter()
-                                    .find(|task| task.task_id.as_str() == task_id)
-                                    .map(|task| task.verifier_checks)
-                            })
-                            .unwrap_or_default();
-                        let verdict = crate::done::verify_done_against_contract(
-                            &done,
-                            repo_root.as_deref(),
-                            &verifier_checks,
-                        );
-                        let fabrication = verdict_contests_worker(&verdict);
-                        if fabrication {
-                            let reasons: Vec<String> = verdict
-                                .checks
-                                .iter()
-                                .filter(|c| c.outcome.is_contradicted())
-                                .map(|c| c.detail.clone())
-                                .collect();
-                            contest_reason = Some(reasons.join("; "));
-                            effective_status = DoneStatus::Failed;
-                        } else if !verdict.passes {
-                            effective_status = DoneStatus::Pending;
-                            report.actions_taken.push(format!(
-                                "{}: candidate completion retained as pending; proof is insufficient ({})",
-                                session.name,
-                                verdict.failures.join("; ")
-                            ));
-                        }
-                    }
-
-                    if ledger_ready {
-                        if let Some((oracle, worker)) = v3_worker {
-                            let target = match effective_status {
-                                DoneStatus::DoneClean => {
-                                    crate::mission::TaskAttemptState::Accepted
+                    if done.status == DoneStatus::DoneClean {
+                        match (v3_worker, repo_root.as_deref()) {
+                            (Some((oracle, worker)), Some(root)) => {
+                                let attempt_id = worker.attempt_id.as_deref();
+                                let plan_revision = worker.plan_revision;
+                                let result = match (attempt_id, plan_revision) {
+                                    (Some(attempt_id), Some(plan_revision)) => {
+                                        let ledger = crate::mission_ledger::MissionLedger::open(
+                                            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+                                        );
+                                        ledger.map_err(anyhow::Error::from).and_then(|ledger| {
+                                            crate::orchestration::verify_and_finalize_candidate(
+                                                &ledger,
+                                                &oracle.mission_id,
+                                                &worker.task_id,
+                                                attempt_id,
+                                                plan_revision,
+                                                &session.name,
+                                                &done,
+                                                root,
+                                            )
+                                        })
+                                    }
+                                    _ => Err(anyhow::anyhow!(
+                                        "worker registry has no exact V3 attempt binding"
+                                    )),
+                                };
+                                match result {
+                                    Ok(outcome)
+                                        if outcome.accepted
+                                            && outcome.attempt_state
+                                                == crate::mission::TaskAttemptState::Accepted =>
+                                    {
+                                        match self
+                                            .release_exact_accepted_worker_scopes(oracle, worker)
+                                        {
+                                            Ok(()) => {
+                                                accepted_persisted = true;
+                                                effective_status = DoneStatus::DoneClean;
+                                            }
+                                            Err(error) => {
+                                                effective_status = DoneStatus::Pending;
+                                                report.actions_taken.push(format!(
+                                                    "{}: Accepted persisted but exact scope release failed closed ({error})",
+                                                    session.name
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    Ok(outcome) => {
+                                        effective_status = DoneStatus::Pending;
+                                        let reason = if outcome.verification.failures.is_empty() {
+                                            format!(
+                                                "authoritative attempt settled as {:?}",
+                                                outcome.attempt_state
+                                            )
+                                        } else {
+                                            outcome.verification.failures.join("; ")
+                                        };
+                                        let contradicted = outcome
+                                            .verification
+                                            .observations
+                                            .iter()
+                                            .filter(|observation| !observation.passed)
+                                            .map(|observation| observation.detail.as_str())
+                                            .any(|detail| {
+                                                detail.contains(" exited ")
+                                                    || detail.contains("does NOT exist")
+                                                    || detail.contains("returned ")
+                                            });
+                                        if contradicted {
+                                            contest_reason = Some(reason.clone());
+                                        }
+                                        report.actions_taken.push(format!(
+                                            "{}: candidate retained as pending; exact independent verification rejected ({reason})",
+                                            session.name
+                                        ));
+                                    }
+                                    Err(error) => {
+                                        effective_status = DoneStatus::Pending;
+                                        report.actions_taken.push(format!(
+                                            "{}: candidate authority/verification failed closed; scope held ({error})",
+                                            session.name
+                                        ));
+                                    }
                                 }
-                                DoneStatus::Pending => {
-                                    crate::mission::TaskAttemptState::CorrectionRequired
-                                }
-                                DoneStatus::Failed => crate::mission::TaskAttemptState::Failed,
-                                DoneStatus::Blocked => crate::mission::TaskAttemptState::Blocked,
-                            };
-                            if let Err(error) = self.transition_v3_worker_attempt(
-                                oracle,
-                                worker,
-                                target,
-                                &format!(
-                                    "{}:{}",
-                                    done.finished_at.timestamp_micros(),
-                                    format!("{target:?}").to_lowercase()
-                                ),
-                            ) {
+                            }
+                            (None, _) => {
                                 effective_status = DoneStatus::Pending;
                                 report.actions_taken.push(format!(
-                                    "{}: authoritative verdict transition failed; scope held ({error})",
+                                    "{}: no V3 worker binding; candidate remains pending and scope held",
+                                    session.name
+                                ));
+                            }
+                            (_, None) => {
+                                effective_status = DoneStatus::Pending;
+                                report.actions_taken.push(format!(
+                                    "{}: project root is unresolved; candidate remains pending and scope held",
                                     session.name
                                 ));
                             }
                         }
+                    } else if let Some((oracle, worker)) = v3_worker {
+                        let target = match done.status {
+                            DoneStatus::Failed => crate::mission::TaskAttemptState::Failed,
+                            DoneStatus::Blocked | DoneStatus::Pending => {
+                                crate::mission::TaskAttemptState::Blocked
+                            }
+                            DoneStatus::DoneClean => unreachable!("handled above"),
+                        };
+                        let result = match (worker.attempt_id.as_deref(), worker.plan_revision) {
+                            (Some(attempt_id), Some(plan_revision)) => {
+                                let ledger = crate::mission_ledger::MissionLedger::open(
+                                    self.config.state_dir.join("mission-engine-v3.sqlite3"),
+                                );
+                                ledger.map_err(anyhow::Error::from).and_then(|ledger| {
+                                    oracle.require_ledger_authority(&ledger)?;
+                                    crate::orchestration::finalize_nonclean_candidate(
+                                        &ledger,
+                                        &oracle.mission_id,
+                                        &worker.task_id,
+                                        attempt_id,
+                                        plan_revision,
+                                        &session.name,
+                                        &done,
+                                        target,
+                                    )
+                                })
+                            }
+                            _ => Err(anyhow::anyhow!(
+                                "worker registry has no exact V3 attempt binding"
+                            )),
+                        };
+                        if let Err(error) = result {
+                            effective_status = DoneStatus::Pending;
+                            report.actions_taken.push(format!(
+                                "{}: non-clean authoritative transition failed; scope held ({error})",
+                                session.name
+                            ));
+                        }
                     }
 
-                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states) {
+                    if let Some(oracle) =
+                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
+                    {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
                         let status_str = if contest_reason.is_some() {
                             "contested"
@@ -398,49 +581,80 @@ impl Patrol {
                         // fired) and delivered the same event to the oracle
                         // repeatedly. The marker is keyed on status+finished_at
                         // so a NEW or upgraded signal re-arms automatically.
-                        let event_key =
-                            format!("{}:{}", status_str, done.finished_at.timestamp());
+                        let event_key = format!("{}:{}", status_str, done.finished_at.timestamp());
                         if !inbox_event_already_sent(
                             &self.config.state_dir,
                             &session.name,
                             "done",
                             &event_key,
-                        ) {
-                            let pushed = inbox
+                        )? {
+                            let pushed = match inbox
                                 .push(&InboxEvent::worker_done(&session.name, status_str))
-                                .is_ok();
+                            {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    report.actions_taken.push(format!(
+                                        "Worker {} done-event delivery FAILED ({error})",
+                                        session.name
+                                    ));
+                                    false
+                                }
+                            };
                             // Surface the fabrication detail so the oracle can
                             // re-dispatch with eyes open.
                             if let Some(reason) = &contest_reason {
-                                let _ = inbox.push(&InboxEvent::worker_blocked(
+                                if let Err(error) = inbox.push(&InboxEvent::worker_blocked(
                                     &session.name,
                                     &format!("GROUND-TRUTH CONTEST: {}", reason),
-                                ));
+                                )) {
+                                    report.actions_taken.push(format!(
+                                        "Worker {} contest-detail delivery FAILED ({error})",
+                                        session.name
+                                    ));
+                                }
                             }
                             // Record only on a successful push — a failed one
                             // must retry next tick, not be marked delivered.
                             if pushed {
-                                record_inbox_event_sent(
+                                if let Err(error) = record_inbox_event_sent(
                                     &self.config.state_dir,
                                     &session.name,
                                     "done",
                                     &event_key,
-                                );
+                                ) {
+                                    report.actions_taken.push(format!(
+                                        "Worker {} done event delivered, but delivery marker FAILED ({error})",
+                                        session.name
+                                    ));
+                                }
                             }
                         }
 
                         // Update oracle state with worker completion
-                        if let Ok(Some(mut oracle_state)) =
-                            OracleState::read(&self.config.state_dir, &oracle.name)
-                        {
-                            let ws = match effective_status {
-                                DoneStatus::DoneClean => WorkerEntryStatus::DoneClean,
-                                DoneStatus::Pending => WorkerEntryStatus::Pending,
-                                DoneStatus::Failed => WorkerEntryStatus::Failed,
-                                DoneStatus::Blocked => WorkerEntryStatus::Blocked,
-                            };
-                            oracle_state.update_worker_status(&session.name, ws);
-                            let _ = oracle_state.write(&self.config.state_dir);
+                        match OracleState::read(&self.config.state_dir, &oracle.name) {
+                            Ok(Some(mut oracle_state)) => {
+                                let ws = match effective_status {
+                                    DoneStatus::DoneClean => WorkerEntryStatus::DoneClean,
+                                    DoneStatus::Pending => WorkerEntryStatus::Pending,
+                                    DoneStatus::Failed => WorkerEntryStatus::Failed,
+                                    DoneStatus::Blocked => WorkerEntryStatus::Blocked,
+                                };
+                                oracle_state.update_worker_status(&session.name, ws);
+                                if let Err(error) = oracle_state.write(&self.config.state_dir) {
+                                    report.actions_taken.push(format!(
+                                        "Worker {} delivered, but oracle-state update FAILED ({error})",
+                                        session.name
+                                    ));
+                                }
+                            }
+                            Ok(None) => report.actions_taken.push(format!(
+                                "Worker {} delivered, but parent oracle state is missing",
+                                session.name
+                            )),
+                            Err(error) => report.actions_taken.push(format!(
+                                "Worker {} delivered, but parent oracle state is unreadable ({error})",
+                                session.name
+                            )),
                         }
                     }
 
@@ -459,11 +673,9 @@ impl Patrol {
                         // evidence", enforced at the orchestration layer).
                         let thrash =
                             crate::loop_guard::bump_thrash(&self.config.state_dir, &session.name);
-                        if let Some(oracle) = self.find_parent_oracle(
-                            &session.name,
-                            &oracle_sessions,
-                            &oracle_states,
-                        ) {
+                        if let Some(oracle) =
+                            self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
+                        {
                             crate::loop_guard::MissionLog::event(
                                 &self.config.state_dir,
                                 &oracle.name,
@@ -493,8 +705,7 @@ impl Patrol {
                                 ));
                             }
                         }
-                    } else if effective_status == DoneStatus::DoneClean {
-                        let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
+                    } else if accepted_persisted && effective_status == DoneStatus::DoneClean {
                         self.stall_detector.forget(&session.name);
                         // Clean, uncontested close → the loop converged; reset
                         // the worker's thrash counter so a future reuse of the
@@ -509,23 +720,29 @@ impl Patrol {
                         let parent = self
                             .find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
                             .map(|o| o.name.clone());
-                        WorkerCloseMarker::ensure(
+                        match WorkerCloseMarker::ensure(
                             &self.config.state_dir,
                             &session.name,
                             parent.as_deref(),
-                        );
-                        report
-                            .actions_taken
-                            .push(format!("Released scope for {} (ground-truth [+]); marked Closeable", session.name));
+                        ) {
+                            Ok(()) => report.actions_taken.push(format!(
+                                "Released scope for {} (ground-truth [+]); marked Closeable",
+                                session.name
+                            )),
+                            Err(error) => report.actions_taken.push(format!(
+                                "Released scope for {}, but Closeable marker FAILED ({error})",
+                                session.name
+                            )),
+                        }
                     }
                 }
 
                 // Check for blocked workers
-                if let Ok(Some(blocked)) =
-                    WorkerBlocked::read(&self.config.state_dir, &session.name)
-                {
+                if let Some(blocked) = WorkerBlocked::read(&self.config.state_dir, &session.name)? {
                     report.blocked_workers.push(session.name.clone());
-                    if let Some(oracle) = self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states) {
+                    if let Some(oracle) =
+                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
+                    {
                         let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
                         // Same push-once contract as worker_done above: the
                         // blocked file persists across ticks, so an unguarded
@@ -537,19 +754,24 @@ impl Patrol {
                             &session.name,
                             "blocked",
                             &bkey,
-                        ) && inbox
+                        )? && inbox
                             .push(&InboxEvent::worker_blocked(
                                 &session.name,
                                 &blocked.question,
                             ))
                             .is_ok()
                         {
-                            record_inbox_event_sent(
+                            if let Err(error) = record_inbox_event_sent(
                                 &self.config.state_dir,
                                 &session.name,
                                 "blocked",
                                 &bkey,
-                            );
+                            ) {
+                                report.actions_taken.push(format!(
+                                    "Worker {} blocked event delivered, but delivery marker FAILED ({error})",
+                                    session.name
+                                ));
+                            }
                         }
                     }
                 }
@@ -558,7 +780,7 @@ impl Patrol {
 
         // ── Worker patrol: pane-based stall detection (30s nudge / 5min escalate) ──
         for session in &sessions {
-            if session.role != SessionRole::Worker {
+            if session.role != SessionRole::Worker || team_session_names.contains(&session.name) {
                 continue;
             }
             let has_done = DoneSignal::read(&self.config.state_dir, &session.name)?.is_some();
@@ -577,13 +799,18 @@ impl Patrol {
                         if let Some(oracle) =
                             self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
                         {
-                            let inbox =
-                                Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                            let _ = inbox
-                                .push(&InboxEvent::worker_blocked(&session.name, reason));
+                            let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
+                            if let Err(error) =
+                                inbox.push(&InboxEvent::worker_blocked(&session.name, reason))
+                            {
+                                report.actions_taken.push(format!(
+                                    "Worker {} fatal error detected, but oracle escalation FAILED ({error})",
+                                    session.name
+                                ));
+                            }
                         }
                         report.actions_taken.push(format!(
-                            "Worker {} blocked by {} — escalated to oracle",
+                            "Worker {} blocked by {}; oracle escalation attempted",
                             session.name, reason
                         ));
                         self.stall_detector.forget(&session.name);
@@ -591,34 +818,48 @@ impl Patrol {
                     }
                     let action = self.stall_detector.check(&session.name, &content);
                     match action {
-                        StallAction::Nudge { ref session, idle_secs } => {
+                        StallAction::Nudge {
+                            ref session,
+                            idle_secs,
+                        } => {
                             tracing::info!(worker = %session, idle_secs, "Worker idle — nudge");
                             // Send a nudge via the session pane
-                            let _ = mgr
+                            match mgr
                                 .send_text(
                                     session,
                                     "You appear idle. Continue your mission or report done.",
                                 )
-                                .await;
-                            report.actions_taken.push(format!(
-                                "Nudged {} (idle {}s)",
-                                session, idle_secs
-                            ));
+                                .await
+                            {
+                                Ok(()) => report
+                                    .actions_taken
+                                    .push(format!("Nudged {} (idle {}s)", session, idle_secs)),
+                                Err(error) => report.actions_taken.push(format!(
+                                    "Nudge FAILED for {} (idle {}s): {error}",
+                                    session, idle_secs
+                                )),
+                            }
                         }
-                        StallAction::Escalate { ref session, idle_secs } => {
+                        StallAction::Escalate {
+                            ref session,
+                            idle_secs,
+                        } => {
                             report.stalled_workers.push(session.clone());
                             if let Some(oracle) =
                                 self.find_parent_oracle(session, &oracle_sessions, &oracle_states)
                             {
-                                let inbox =
-                                    Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                                let _ = inbox.push(&InboxEvent::worker_stalled(
-                                    session,
-                                    idle_secs,
-                                ));
+                                let inbox = Inbox::for_oracle(&self.config.state_dir, &oracle.name);
+                                if let Err(error) =
+                                    inbox.push(&InboxEvent::worker_stalled(session, idle_secs))
+                                {
+                                    report.actions_taken.push(format!(
+                                        "Stall escalation delivery FAILED for {}: {error}",
+                                        session
+                                    ));
+                                }
                             }
                             report.actions_taken.push(format!(
-                                "Escalated stall: {} (idle {}s)",
+                                "Stall detected: {} (idle {}s); oracle escalation attempted",
                                 session, idle_secs
                             ));
                         }
@@ -634,7 +875,7 @@ impl Patrol {
 
         // ── Worker patrol: file-based stall detection (progress files) ──
         for session in &sessions {
-            if session.role == SessionRole::Worker {
+            if session.role == SessionRole::Worker && !team_session_names.contains(&session.name) {
                 if let Some(progress) =
                     crate::progress::ProgressInfo::read(&self.config.state_dir, &session.name)
                 {
@@ -650,15 +891,22 @@ impl Patrol {
                                 && !report.stalled_workers.contains(&session.name)
                             {
                                 report.stalled_workers.push(session.name.clone());
-                                if let Some(oracle) =
-                                    self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
-                                {
+                                if let Some(oracle) = self.find_parent_oracle(
+                                    &session.name,
+                                    &oracle_sessions,
+                                    &oracle_states,
+                                ) {
                                     let inbox =
                                         Inbox::for_oracle(&self.config.state_dir, &oracle.name);
-                                    let _ = inbox.push(&InboxEvent::worker_stalled(
+                                    if let Err(error) = inbox.push(&InboxEvent::worker_stalled(
                                         &session.name,
                                         idle_secs as u64,
-                                    ));
+                                    )) {
+                                        report.actions_taken.push(format!(
+                                            "Progress-stall escalation delivery FAILED for {}: {error}",
+                                            session.name
+                                        ));
+                                    }
                                 }
                                 report.actions_taken.push(format!(
                                     "Stall detected (progress): {} (idle {}s)",
@@ -700,8 +948,7 @@ impl Patrol {
                             // code until the progress-schema fix made these files
                             // parse — the 120s tuning never ran against a live
                             // worker.)
-                            let session_gone =
-                                mgr.capture_pane(&session.name).await.is_err();
+                            let session_gone = mgr.capture_pane(&session.name).await.is_err();
                             let idle_threshold = if session_gone {
                                 AUTO_DONE_IDLE_SECS
                             } else {
@@ -735,8 +982,19 @@ impl Patrol {
                                 // state. N8: scope is NOT released here — it stays
                                 // HELD until a real done_clean clears the gate, so
                                 // no other worker can claim these files yet.
-                                // (No-op / Err when the session is already gone.)
-                                let _ = mgr.kill_session(&session.name).await;
+                                // A still-live worker must be stopped before we
+                                // persist the heuristic signal. If the kill
+                                // fails, claiming otherwise would allow it to
+                                // keep editing behind patrol's recorded state.
+                                if !session_gone {
+                                    if let Err(error) = mgr.kill_session(&session.name).await {
+                                        report.actions_taken.push(format!(
+                                            "Auto-done held for {}: live worker kill FAILED ({error}); no signal written",
+                                            session.name
+                                        ));
+                                        continue;
+                                    }
+                                }
                                 // N8: the idle-heuristic NEVER claims done_clean
                                 // on a silently-exited worker's behalf. Ticking
                                 // todos + going idle is not ground truth — only a
@@ -750,68 +1008,89 @@ impl Patrol {
                                 } else {
                                     "auto-done HEURISTIC: todos completed + idle past threshold (session still alive) — patrol killed the worker, recorded PENDING (not clean), scope HELD"
                                 };
-                                let mut signal = DoneSignal::new(
-                                    &session.name,
-                                    DoneStatus::Pending,
-                                    reason,
-                                );
+                                let mut signal =
+                                    DoneSignal::new(&session.name, DoneStatus::Pending, reason);
                                 signal.todos_total = progress.todos_total;
                                 signal.todos_completed = progress.todos_completed;
                                 match signal.write(&self.config.state_dir) {
                                     Ok(()) => {
-                                    report.done_workers.push(session.name.clone());
-                                    // Do NOT release scope here — the heuristic is
-                                    // not proof of clean completion. Scope stays
-                                    // held until a real done_clean clears the
-                                    // ground-truth gate in the primary path.
-                                    self.stall_detector.forget(&session.name);
-                                    if let Some(oracle) =
-                                        self.find_parent_oracle(&session.name, &oracle_sessions, &oracle_states)
-                                    {
-                                        let inbox = Inbox::for_oracle(
-                                            &self.config.state_dir,
-                                            &oracle.name,
-                                        );
-                                        // Mark the event sent under the SAME
-                                        // key the main done pass will compute
-                                        // for this signal next tick, so it
-                                        // doesn't re-deliver it (only on a
-                                        // successful push — a failure retries).
-                                        if inbox
-                                            .push(&InboxEvent::worker_done(
-                                                &session.name,
-                                                "pending",
-                                            ))
-                                            .is_ok()
-                                        {
-                                            record_inbox_event_sent(
-                                                &self.config.state_dir,
-                                                &session.name,
-                                                "done",
-                                                &format!(
-                                                    "pending:{}",
-                                                    signal.finished_at.timestamp()
-                                                ),
-                                            );
-                                        }
-                                        if let Ok(Some(mut oracle_state)) = OracleState::read(
-                                            &self.config.state_dir,
-                                            &oracle.name,
+                                        report.done_workers.push(session.name.clone());
+                                        // Do NOT release scope here — the heuristic is
+                                        // not proof of clean completion. Scope stays
+                                        // held until a real done_clean clears the
+                                        // ground-truth gate in the primary path.
+                                        self.stall_detector.forget(&session.name);
+                                        if let Some(oracle) = self.find_parent_oracle(
+                                            &session.name,
+                                            &oracle_sessions,
+                                            &oracle_states,
                                         ) {
-                                            oracle_state.update_worker_status(
-                                                &session.name,
-                                                WorkerEntryStatus::Pending,
+                                            let inbox = Inbox::for_oracle(
+                                                &self.config.state_dir,
+                                                &oracle.name,
                                             );
-                                            let _ = oracle_state.write(&self.config.state_dir);
+                                            // Mark the event sent under the SAME
+                                            // key the main done pass will compute
+                                            // for this signal next tick, so it
+                                            // doesn't re-deliver it (only on a
+                                            // successful push — a failure retries).
+                                            if inbox
+                                                .push(&InboxEvent::worker_done(
+                                                    &session.name,
+                                                    "pending",
+                                                ))
+                                                .is_ok()
+                                            {
+                                                if let Err(error) = record_inbox_event_sent(
+                                                    &self.config.state_dir,
+                                                    &session.name,
+                                                    "done",
+                                                    &format!(
+                                                        "pending:{}",
+                                                        signal.finished_at.timestamp()
+                                                    ),
+                                                ) {
+                                                    report.actions_taken.push(format!(
+                                                        "Auto-done event delivered for {}, but delivery marker FAILED ({error})",
+                                                        session.name
+                                                    ));
+                                                }
+                                            }
+                                            match OracleState::read(
+                                                &self.config.state_dir,
+                                                &oracle.name,
+                                            ) {
+                                                Ok(Some(mut oracle_state)) => {
+                                                    oracle_state.update_worker_status(
+                                                        &session.name,
+                                                        WorkerEntryStatus::Pending,
+                                                    );
+                                                    if let Err(error) = oracle_state
+                                                        .write(&self.config.state_dir)
+                                                    {
+                                                        report.actions_taken.push(format!(
+                                                            "Auto-done signal persisted for {}, but oracle-state update FAILED ({error})",
+                                                            session.name
+                                                        ));
+                                                    }
+                                                }
+                                                Ok(None) => report.actions_taken.push(format!(
+                                                    "Auto-done signal persisted for {}, but parent oracle state is missing",
+                                                    session.name
+                                                )),
+                                                Err(error) => report.actions_taken.push(format!(
+                                                    "Auto-done signal persisted for {}, but parent oracle state is unreadable ({error})",
+                                                    session.name
+                                                )),
+                                            }
                                         }
-                                    }
-                                    tracing::info!(
-                                        worker = %session.name,
-                                        todos = progress.todos_completed,
-                                        idle_secs,
-                                        "Patrol auto-done HEURISTIC: worker recorded PENDING (scope held)"
-                                    );
-                                    report.actions_taken.push(format!(
+                                        tracing::info!(
+                                            worker = %session.name,
+                                            todos = progress.todos_completed,
+                                            idle_secs,
+                                            "Patrol auto-done HEURISTIC: worker recorded PENDING (scope held)"
+                                        );
+                                        report.actions_taken.push(format!(
                                         "Auto-done HEURISTIC -> PENDING {} ({}/{} todos, idle {}s, scope held)",
                                         session.name,
                                         progress.todos_completed,
@@ -855,38 +1134,114 @@ impl Patrol {
         // the reap is deterministic rather than gated on the idle/CPU heuristic.
         let live_session_names: std::collections::HashSet<&str> =
             sessions.iter().map(|s| s.name.as_str()).collect();
-        for marker in WorkerCloseMarker::read_all(&self.config.state_dir) {
+        for marker in WorkerCloseMarker::read_all(&self.config.state_dir)? {
+            match self.v3_worker_attempt_state(&oracle_states, &marker.session) {
+                Ok(Some(crate::mission::TaskAttemptState::Accepted)) => {}
+                Ok(None) => {
+                    report.actions_taken.push(format!(
+                        "Held close marker and scope for {}: no exact V3 worker authority",
+                        marker.session
+                    ));
+                    continue;
+                }
+                Ok(Some(state)) => {
+                    report.actions_taken.push(format!(
+                        "Held close marker and scope for {}: V3 attempt is {:?}, not Accepted",
+                        marker.session, state
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Held close marker and scope for {}: V3 authority failed closed ({error})",
+                        marker.session
+                    ));
+                    continue;
+                }
+            }
             // Oracle ack = the worker_done event was drained from its inbox.
             // peek() lists what's still queued; absence after we pushed it ⇒
             // the oracle consumed it (its drain deletes the file).
             let oracle_acked = match &marker.oracle {
                 Some(oracle_name) => {
                     let inbox = Inbox::for_oracle(&self.config.state_dir, oracle_name);
-                    let still_queued = inbox
-                        .peek()
-                        .map(|evts| {
-                            evts.iter().any(|e| {
-                                e.event_type == crate::inbox::EventType::WorkerDone
-                                    && e.payload.get("session").and_then(|v| v.as_str())
-                                        == Some(marker.session.as_str())
-                            })
-                        })
-                        .unwrap_or(false);
-                    !still_queued
+                    match inbox.peek() {
+                        Ok(evts) => !evts.iter().any(|e| {
+                            e.event_type == crate::inbox::EventType::WorkerDone
+                                && e.payload.get("session").and_then(|v| v.as_str())
+                                    == Some(marker.session.as_str())
+                        }),
+                        Err(error) => {
+                            // An unreadable inbox is not an acknowledgement.
+                            // Fail closed so storage corruption cannot authorize
+                            // an early worker reap before the grace window.
+                            report.actions_taken.push(format!(
+                                "Held {}: oracle inbox acknowledgement unreadable ({error})",
+                                marker.session
+                            ));
+                            false
+                        }
+                    }
                 }
                 // No known parent ⇒ rely solely on the grace window.
                 None => false,
             };
             let closeable_secs = (Utc::now() - marker.since).num_seconds();
             if should_reap_closeable(oracle_acked, closeable_secs) {
+                let scope_receipt =
+                    match ScopeClaim::read_strict(&self.config.state_dir, &marker.session) {
+                        Ok(receipt) => receipt,
+                        Err(error) => {
+                            report.actions_taken.push(format!(
+                                "Held {}: exact scope receipt could not be read ({error})",
+                                marker.session
+                            ));
+                            continue;
+                        }
+                    };
                 // Kill the rmux session (no-op/Err if already gone) and release
                 // any remaining scope lock, atomically from patrol's view.
-                let _ = mgr.kill_session(&marker.session).await;
-                let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
+                if live_session_names.contains(marker.session.as_str()) {
+                    if let Err(error) = mgr.kill_session(&marker.session).await {
+                        report.actions_taken.push(format!(
+                            "Held scope/marker for {}: session reap failed ({error})",
+                            marker.session
+                        ));
+                        continue;
+                    }
+                }
+                if let Some(receipt) = &scope_receipt {
+                    if let Err(error) = ScopeClaim::release_exact(&self.config.state_dir, receipt) {
+                        report.actions_taken.push(format!(
+                            "Reaped {} but retained close marker: exact scope release failed ({error})",
+                            marker.session
+                        ));
+                        continue;
+                    }
+                }
                 self.stall_detector.forget(&marker.session);
-                WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
-                remove_inbox_event_markers(&self.config.state_dir, &marker.session);
-                let trigger = if oracle_acked { "oracle ack'd" } else { "grace elapsed" };
+                if let Err(error) =
+                    WorkerCloseMarker::remove(&self.config.state_dir, &marker.session)
+                {
+                    report.actions_taken.push(format!(
+                        "Reaped {} but close marker removal FAILED ({error})",
+                        marker.session
+                    ));
+                    continue;
+                }
+                if let Err(error) =
+                    remove_inbox_event_markers(&self.config.state_dir, &marker.session)
+                {
+                    report.actions_taken.push(format!(
+                        "Reaped {} but inbox marker cleanup FAILED ({error})",
+                        marker.session
+                    ));
+                }
+                let trigger = if oracle_acked {
+                    "oracle ack'd"
+                } else {
+                    "grace elapsed"
+                };
                 tracing::info!(
                     worker = %marker.session,
                     trigger,
@@ -900,9 +1255,43 @@ impl Patrol {
             } else if !live_session_names.contains(marker.session.as_str()) {
                 // Session already gone (e.g. the worker exited on its own before
                 // the reap fired). Nothing to kill — just clear the marker + lock.
-                let _ = ScopeClaim::release(&self.config.state_dir, &marker.session);
-                WorkerCloseMarker::remove(&self.config.state_dir, &marker.session);
-                remove_inbox_event_markers(&self.config.state_dir, &marker.session);
+                match ScopeClaim::read_strict(&self.config.state_dir, &marker.session) {
+                    Ok(Some(receipt)) => {
+                        if let Err(error) =
+                            ScopeClaim::release_exact(&self.config.state_dir, &receipt)
+                        {
+                            report.actions_taken.push(format!(
+                                "Held close marker for {}: exact scope release failed ({error})",
+                                marker.session
+                            ));
+                            continue;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        report.actions_taken.push(format!(
+                            "Held close marker for {}: scope receipt read failed ({error})",
+                            marker.session
+                        ));
+                        continue;
+                    }
+                }
+                if let Err(error) =
+                    WorkerCloseMarker::remove(&self.config.state_dir, &marker.session)
+                {
+                    report.actions_taken.push(format!(
+                        "Session {} was gone and scope released, but close marker removal FAILED ({error})",
+                        marker.session
+                    ));
+                }
+                if let Err(error) =
+                    remove_inbox_event_markers(&self.config.state_dir, &marker.session)
+                {
+                    report.actions_taken.push(format!(
+                        "Session {} was gone, but inbox marker cleanup FAILED ({error})",
+                        marker.session
+                    ));
+                }
             }
         }
 
@@ -918,40 +1307,82 @@ impl Patrol {
         // scope an instant BEFORE its rmux session appears): require a
         // recorded done/blocked signal on disk AND a minimum claim age.
         const SCOPE_RELEASE_MIN_AGE_SECS: i64 = 300;
-        for claim in ScopeClaim::read_all(&self.config.state_dir) {
+        for claim in ScopeClaim::read_all_strict(&self.config.state_dir)? {
             if live_session_names.contains(claim.session.as_str()) {
                 continue;
             }
             if (Utc::now() - claim.claimed_at).num_seconds() < SCOPE_RELEASE_MIN_AGE_SECS {
                 continue;
             }
-            let has_signal = DoneSignal::read(&self.config.state_dir, &claim.session)
-                .ok()
-                .flatten()
-                .is_some()
-                || WorkerBlocked::read(&self.config.state_dir, &claim.session)
-                    .ok()
-                    .flatten()
-                    .is_some();
+            let has_done_signal = match DoneSignal::read(&self.config.state_dir, &claim.session) {
+                Ok(signal) => signal.is_some(),
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Held scope of dead session {}: done signal read failed ({error})",
+                        claim.session
+                    ));
+                    continue;
+                }
+            };
+            let has_signal = if has_done_signal {
+                true
+            } else {
+                match WorkerBlocked::read(&self.config.state_dir, &claim.session) {
+                    Ok(signal) => signal.is_some(),
+                    Err(error) => {
+                        report.actions_taken.push(format!(
+                            "Held scope of dead session {}: blocked signal read failed ({error})",
+                            claim.session
+                        ));
+                        continue;
+                    }
+                }
+            };
             if has_signal {
-                let _ = ScopeClaim::release(&self.config.state_dir, &claim.session);
-                report.actions_taken.push(format!(
-                    "Released scope of dead session {} (terminal signal on disk)",
-                    claim.session
-                ));
+                match self.v3_worker_attempt_state(&oracle_states, &claim.session) {
+                    Ok(Some(crate::mission::TaskAttemptState::Accepted)) => {}
+                    Ok(None) => {
+                        report.actions_taken.push(format!(
+                            "Held scope of dead session {}: no exact V3 worker authority",
+                            claim.session
+                        ));
+                        continue;
+                    }
+                    Ok(Some(state)) => {
+                        report.actions_taken.push(format!(
+                            "Held scope of dead session {}: V3 attempt is {:?}, not Accepted",
+                            claim.session, state
+                        ));
+                        continue;
+                    }
+                    Err(error) => {
+                        report.actions_taken.push(format!(
+                            "Held scope of dead session {}: V3 authority failed closed ({error})",
+                            claim.session
+                        ));
+                        continue;
+                    }
+                }
+                match ScopeClaim::release_exact(&self.config.state_dir, &claim) {
+                    Ok(()) => report.actions_taken.push(format!(
+                        "Released scope of dead Accepted V3 session {}",
+                        claim.session
+                    )),
+                    Err(error) => report.actions_taken.push(format!(
+                        "Held scope of dead session {}: release failed ({error})",
+                        claim.session
+                    )),
+                }
             }
         }
 
         // ── Orphan detection: sessions with no done/progress and empty pane ──
         for session in &sessions {
-            if session.role == SessionRole::Worker {
-                let has_done =
-                    DoneSignal::read(&self.config.state_dir, &session.name)?.is_some();
-                let has_progress = crate::progress::ProgressInfo::read(
-                    &self.config.state_dir,
-                    &session.name,
-                )
-                .is_some();
+            if session.role == SessionRole::Worker && !team_session_names.contains(&session.name) {
+                let has_done = DoneSignal::read(&self.config.state_dir, &session.name)?.is_some();
+                let has_progress =
+                    crate::progress::ProgressInfo::read(&self.config.state_dir, &session.name)
+                        .is_some();
 
                 if !has_done && !has_progress && !report.orphaned_sessions.contains(&session.name) {
                     match mgr.capture_pane(&session.name).await {
@@ -970,7 +1401,8 @@ impl Patrol {
         }
 
         // ── Oracle patrol: check done signals + registry cleanup ──
-        self.patrol_oracles(&mgr, &sessions, &mut report).await?;
+        self.patrol_oracles(&mgr, &sessions, &oracle_states, &mut report)
+            .await?;
 
         // ── Orphan-worker sweep: workers whose done_clean oracle is gone ──
         // The cascade close above only fires while the oracle SESSION is still
@@ -981,16 +1413,25 @@ impl Patrol {
             .await?;
 
         // ── Oracle recovery: resurrect crashed-mid-mission oracles (guarded) ──
-        let _ = self.resurrect_dead_oracles(&mut report).await;
+        if let Err(error) = self.resurrect_dead_oracles(&mut report).await {
+            report.actions_taken.push(format!(
+                "Oracle resurrection authority failed closed ({error})"
+            ));
+        }
 
         // ── Signal file watcher: detect new oracle result files ──
-        if let Ok(new_signals) = self.signal_watcher.poll() {
-            for (oracle_name, signal) in &new_signals {
-                report.actions_taken.push(format!(
-                    "Signal file detected: {} (status: {:?})",
-                    oracle_name, signal.status
-                ));
+        match self.signal_watcher.poll() {
+            Ok(new_signals) => {
+                for (oracle_name, signal) in &new_signals {
+                    report.actions_taken.push(format!(
+                        "Signal file detected: {} (status: {:?})",
+                        oracle_name, signal.status
+                    ));
+                }
             }
+            Err(error) => report
+                .actions_taken
+                .push(format!("Oracle signal watcher failed closed ({error})")),
         }
 
         // ── State-dir GC (bounded, age-gated) ──
@@ -1046,18 +1487,33 @@ impl Patrol {
                 .config
                 .state_dir
                 .join(format!("{}.wallclock-soft", key));
-            if !marker.exists() {
-                let _ = std::fs::write(&marker, Utc::now().to_rfc3339());
-                loop_guard::MissionLog::event(
-                    &self.config.state_dir,
-                    session_name,
-                    "wallclock",
-                    &format!(
-                        "mission running {}h (soft ceiling {}h) — still no closeable done signal",
-                        hrs,
-                        loop_guard::SOFT_WALLCLOCK_SECS / 3_600
-                    ),
-                );
+            match crate::config::read_private_optional(&marker) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    match crate::config::atomic_write_private(
+                        &marker,
+                        Utc::now().to_rfc3339().as_bytes(),
+                    ) {
+                        Ok(()) => loop_guard::MissionLog::event(
+                            &self.config.state_dir,
+                            session_name,
+                            "wallclock",
+                            &format!(
+                                "mission running {}h (soft ceiling {}h) — still no closeable done signal",
+                                hrs,
+                                loop_guard::SOFT_WALLCLOCK_SECS / 3_600
+                            ),
+                        ),
+                        Err(error) => report.actions_taken.push(format!(
+                            "Wall-clock soft marker FAILED for {} ({error})",
+                            session_name
+                        )),
+                    }
+                }
+                Err(error) => report.actions_taken.push(format!(
+                    "Wall-clock soft marker unreadable for {} ({error})",
+                    session_name
+                )),
             }
         }
     }
@@ -1067,6 +1523,7 @@ impl Patrol {
         &mut self,
         mgr: &SessionManager,
         sessions: &[crate::session::OmegaSession],
+        oracle_states: &[OracleState],
         report: &mut PatrolReport,
     ) -> Result<()> {
         let live_names: Vec<String> = sessions.iter().map(|s| s.name.clone()).collect();
@@ -1077,7 +1534,7 @@ impl Patrol {
         // no lock) clobbered any oracle a concurrent locked dispatch
         // registered mid-tick, erasing the spawned_at its freshness guard
         // depends on.
-        let registry = OracleRegistry::load(&self.config.state_dir);
+        let registry = OracleRegistry::load_strict(&self.config.state_dir)?;
         let mut status_changes: Vec<(String, OracleRegistryStatus)> = Vec::new();
 
         for session in sessions {
@@ -1095,17 +1552,24 @@ impl Patrol {
                 .iter()
                 .find(|e| e.session_name == session.name)
                 .map(|e| e.spawned_at);
-            let has_closeable_done = OracleDoneSignal::read(&self.config.state_dir, &session.name)
-                .ok()
-                .flatten()
-                .map(|d| d.is_closeable())
+            let done_signal = match OracleDoneSignal::read(&self.config.state_dir, &session.name) {
+                Ok(signal) => signal,
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Held oracle {}: done signal read failed ({error})",
+                        session.name
+                    ));
+                    continue;
+                }
+            };
+            let has_closeable_done = done_signal
+                .as_ref()
+                .map(|done| done.is_closeable())
                 .unwrap_or(false);
             self.check_mission_wallclock(&session.name, spawned_at, has_closeable_done, report);
 
             // Check oracle done signal
-            if let Ok(Some(mut done)) =
-                OracleDoneSignal::read(&self.config.state_dir, &session.name)
-            {
+            if let Some(mut done) = done_signal {
                 // ── Freshness guard (layered defense, stale-reap audit) ──
                 // Oracle names recycle (Dead-purged registry entries make
                 // next_oracle_name re-issue the base name) and the done.json
@@ -1153,18 +1617,35 @@ impl Patrol {
                 // holding a failed task), and an unreadable ledger or an absent
                 // gate leaves the signal HONESTLY pending.
                 if !stale && done.status == DoneStatus::Pending && done.gate_pending {
-                    let plan_complete =
-                        crate::oracle_todo::OracleTodo::load(&self.config.state_dir, &session.name)
-                            .map(|t| t.is_complete())
-                            .unwrap_or(false);
+                    let plan_complete = match crate::oracle_todo::OracleTodo::load(
+                        &self.config.state_dir,
+                        &session.name,
+                    ) {
+                        Ok(todo) => todo.is_complete(),
+                        Err(error) => {
+                            report.actions_taken.push(format!(
+                                "Held gate-pending oracle {}: plan read failed ({error})",
+                                session.name
+                            ));
+                            false
+                        }
+                    };
                     // `None` = no gate result on disk at all, which is a
                     // REFUSAL here, never a pass (L5: an absent verdict is not
                     // an accepted one).
-                    let gate_overall_pass =
-                        crate::gate::GateResult::read(&self.config.state_dir, &session.name)
-                            .ok()
-                            .flatten()
-                            .map(|g| g.overall_pass);
+                    let gate_overall_pass = match crate::gate::GateResult::read(
+                        &self.config.state_dir,
+                        &session.name,
+                    ) {
+                        Ok(gate) => gate.map(|gate| gate.overall_pass),
+                        Err(error) => {
+                            report.actions_taken.push(format!(
+                                "Held gate-pending oracle {}: gate result read failed ({error})",
+                                session.name
+                            ));
+                            None
+                        }
+                    };
                     if may_upgrade_gate_pending(plan_complete, gate_overall_pass) {
                         done.status = DoneStatus::DoneClean;
                         done.pending_actions.clear();
@@ -1172,12 +1653,27 @@ impl Patrol {
                         done.finished_at = Utc::now();
                         done.duration_secs =
                             (done.finished_at - done.started_at).num_seconds().max(0) as u64;
-                        let _ = done.write(&self.config.state_dir);
+                        if let Err(error) = done.write(&self.config.state_dir) {
+                            report.actions_taken.push(format!(
+                                "Held gate-pending oracle {}: secure signal rewrite failed ({error})",
+                                session.name
+                            ));
+                            continue;
+                        }
                         // The notifier may have already reported the
                         // transient Pending state and written its per-path
                         // marker — invalidate it so the corrected
                         // done_clean is notified exactly once.
-                        OracleDoneSignal::invalidate_notified(&self.config.state_dir, &session.name);
+                        if let Err(error) = OracleDoneSignal::invalidate_notified_strict(
+                            &self.config.state_dir,
+                            &session.name,
+                        ) {
+                            report.actions_taken.push(format!(
+                                "Oracle {} upgraded but notification re-arm failed ({error})",
+                                session.name
+                            ));
+                            continue;
+                        }
                         tracing::info!(
                             oracle = %session.name,
                             "L4 gate satisfied — pending upgraded to done_clean"
@@ -1190,13 +1686,22 @@ impl Patrol {
                 }
 
                 if !stale && done.is_closeable() {
+                    let delivered_state = match self.require_delivered_oracle_authority(
+                        oracle_states,
+                        &session.name,
+                        &done,
+                    ) {
+                        Ok(state) => state,
+                        Err(error) => {
+                            report.actions_taken.push(format!(
+                                "Held closeable oracle {}: exact Delivered V3 authority failed ({error})",
+                                session.name
+                            ));
+                            continue;
+                        }
+                    };
                     report.done_oracles.push(session.name.clone());
                     status_changes.push((session.name.clone(), OracleRegistryStatus::Done));
-                    // Self-improvement: auto-dispatch the curator worker
-                    // ONCE per done oracle. The marker file prevents
-                    // re-triggering after the curator already ran. Must run
-                    // BEFORE the reap below — its flag file keeps it idempotent.
-                    let _ = self.maybe_trigger_curator(&session.name);
 
                     // ── Deterministic oracle reap (mirror of the worker reap) ──
                     // The inline auto-close in `omega done` / `omega progress`
@@ -1214,17 +1719,92 @@ impl Patrol {
                         // done_clean while a worker still runs, so a running
                         // worker here means an old-binary or hand-written
                         // signal — reaped too, loudly.
-                        let lw = crate::oracle_lifecycle::live_workers_of_oracle(
+                        let lw = match crate::oracle_lifecycle::live_workers_of_oracle_strict(
                             &self.config.state_dir,
                             &session.name,
                             sessions,
-                        );
-                        for w in lw.all() {
-                            let _ = mgr.kill_session(&w).await;
-                            let _ = ScopeClaim::release(&self.config.state_dir, &w);
+                        ) {
+                            Ok(workers) => workers,
+                            Err(error) => {
+                                report.actions_taken.push(format!(
+                                    "Held oracle {}: strict V3 worker authority failed ({error})",
+                                    session.name
+                                ));
+                                continue;
+                            }
+                        };
+                        let state = &delivered_state;
+                        let worker_names = lw.all();
+                        let mut worker_receipts = Vec::with_capacity(worker_names.len());
+                        let mut receipt_error = None;
+                        for worker in &worker_names {
+                            match ScopeClaim::read_strict(&self.config.state_dir, worker) {
+                                Ok(receipt) => worker_receipts.push((worker.clone(), receipt)),
+                                Err(error) => {
+                                    receipt_error = Some(format!(
+                                        "worker {worker} scope receipt failed: {error}"
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                        let oracle_receipt =
+                            match ScopeClaim::read_strict(&self.config.state_dir, &session.name) {
+                                Ok(receipt) => receipt,
+                                Err(error) => {
+                                    receipt_error =
+                                        Some(format!("oracle scope receipt failed: {error}"));
+                                    None
+                                }
+                            };
+                        if let Some(error) = receipt_error {
+                            report.actions_taken.push(format!(
+                                "Held oracle {} before cascade kill: {error}",
+                                session.name
+                            ));
+                            continue;
+                        }
+                        let mut close_failed = false;
+                        for (w, receipt) in worker_receipts {
+                            if let Err(error) = mgr.kill_session(&w).await {
+                                close_failed = true;
+                                report.actions_taken.push(format!(
+                                    "Held scope for {} and oracle {}: worker kill failed ({error})",
+                                    w, session.name
+                                ));
+                                continue;
+                            }
+                            if let Some(receipt) = &receipt {
+                                if let Err(error) =
+                                    ScopeClaim::release_exact(&self.config.state_dir, receipt)
+                                {
+                                    close_failed = true;
+                                    report.actions_taken.push(format!(
+                                        "Worker {} closed but exact scope release failed ({error})",
+                                        w
+                                    ));
+                                    continue;
+                                }
+                            }
                             self.stall_detector.forget(&w);
-                            WorkerCloseMarker::remove(&self.config.state_dir, &w);
-                            remove_inbox_event_markers(&self.config.state_dir, &w);
+                            if let Err(error) =
+                                WorkerCloseMarker::remove(&self.config.state_dir, &w)
+                            {
+                                close_failed = true;
+                                report.actions_taken.push(format!(
+                                    "Worker {} closed but close marker removal FAILED ({error})",
+                                    w
+                                ));
+                                continue;
+                            }
+                            if let Err(error) =
+                                remove_inbox_event_markers(&self.config.state_dir, &w)
+                            {
+                                report.actions_taken.push(format!(
+                                    "Worker {} closed but inbox marker cleanup FAILED ({error})",
+                                    w
+                                ));
+                            }
                             let was_running = lw.running.contains(&w);
                             tracing::info!(
                                 oracle = %session.name, worker = %w, was_running,
@@ -1234,16 +1814,39 @@ impl Patrol {
                                 "Cascade-closed worker {} with done_clean oracle {}{}",
                                 w,
                                 session.name,
-                                if was_running { " (was still running!)" } else { "" }
+                                if was_running {
+                                    " (was still running!)"
+                                } else {
+                                    ""
+                                }
                             ));
                         }
-                        let _ = mgr.kill_session(&session.name).await;
+                        if close_failed {
+                            continue;
+                        }
+                        if let Err(error) = mgr.kill_session(&session.name).await {
+                            report.actions_taken.push(format!(
+                                "Held oracle scope {}: oracle kill failed ({error})",
+                                session.name
+                            ));
+                            continue;
+                        }
                         // Release any scope claim the oracle still held —
                         // parity with the worker reap above (a gate-pending
                         // oracle skips the cmd_done-time release because its
                         // signal was not closeable yet, so the claim would
                         // otherwise leak until a manual cleanup).
-                        let _ = ScopeClaim::release(&self.config.state_dir, &session.name);
+                        if let Some(receipt) = &oracle_receipt {
+                            if let Err(error) =
+                                ScopeClaim::release_exact(&self.config.state_dir, receipt)
+                            {
+                                report.actions_taken.push(format!(
+                                    "Oracle {} closed but exact scope release failed ({error})",
+                                    session.name
+                                ));
+                                continue;
+                            }
+                        }
                         tracing::info!(
                             oracle = %session.name,
                             closeable_secs,
@@ -1253,13 +1856,22 @@ impl Patrol {
                             "Reaped done_clean oracle {} ({}s past finished_at)",
                             session.name, closeable_secs
                         ));
+                        if let Err(error) =
+                            self.maybe_trigger_curator(mgr, state, &session.name).await
+                        {
+                            report.actions_taken.push(format!(
+                                "Oracle {} closed, curator trigger failed closed ({error})",
+                                session.name
+                            ));
+                        }
                     }
                 }
             }
 
             // Check oracle state for all-workers-terminal
-            if let Ok(Some(oracle_state)) =
-                OracleState::read(&self.config.state_dir, &session.name)
+            if let Some(oracle_state) = oracle_states
+                .iter()
+                .find(|state| state.oracle_name == session.name)
             {
                 if oracle_state.all_workers_terminal()
                     && !report.done_oracles.contains(&session.name)
@@ -1273,12 +1885,12 @@ impl Patrol {
         // Apply cleanup + the collected status changes atomically on a FRESH
         // reload under the registry lock, so a registration made by a
         // concurrent dispatch during this tick is merged, never lost.
-        let _ = OracleRegistry::update_locked(&self.config.state_dir, |reg| {
+        OracleRegistry::update_locked(&self.config.state_dir, |reg| {
             reg.cleanup(&live_names);
             for (name, status) in &status_changes {
                 reg.mark_status(name, *status);
             }
-        });
+        })?;
         Ok(())
     }
 
@@ -1320,15 +1932,22 @@ impl Patrol {
                     if live_oracles.contains(oracle_name.as_str()) {
                         continue; // parent alive — cascade/ack paths own this
                     }
-                    (
-                        OracleDoneSignal::read(&self.config.state_dir, oracle_name)
-                            .ok()
-                            .flatten(),
-                        oracle_name.clone(),
-                    )
+                    let signal = match OracleDoneSignal::read(&self.config.state_dir, oracle_name) {
+                        Ok(signal) => signal,
+                        Err(error) => {
+                            report.actions_taken.push(format!(
+                                "Orphan sweep held {}: parent done signal read failed ({error})",
+                                w.name
+                            ));
+                            continue;
+                        }
+                    };
+                    (signal, oracle_name.clone())
                 }
                 None => {
-                    let Some(project) = w.project.as_deref() else { continue };
+                    let Some(project) = w.project.as_deref() else {
+                        continue;
+                    };
                     if live_oracle_projects.contains(project) {
                         continue; // a live oracle of this project may own it
                     }
@@ -1346,11 +1965,70 @@ impl Patrol {
             if !should_reap_orphan(sig.is_closeable(), finished_secs) {
                 continue;
             }
-            let _ = mgr.kill_session(&w.name).await;
-            let _ = ScopeClaim::release(&self.config.state_dir, &w.name);
+            match self.v3_worker_attempt_state(oracle_states, &w.name) {
+                Ok(Some(crate::mission::TaskAttemptState::Accepted)) => {}
+                Ok(None) => {
+                    report.actions_taken.push(format!(
+                        "Orphan sweep held {}: no exact V3 worker authority",
+                        w.name
+                    ));
+                    continue;
+                }
+                Ok(Some(state)) => {
+                    report.actions_taken.push(format!(
+                        "Orphan sweep held {}: V3 attempt is {:?}, not Accepted",
+                        w.name, state
+                    ));
+                    continue;
+                }
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Orphan sweep held {}: V3 authority failed closed ({error})",
+                        w.name
+                    ));
+                    continue;
+                }
+            }
+            let scope_receipt = match ScopeClaim::read_strict(&self.config.state_dir, &w.name) {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Orphan sweep held {}: exact scope receipt failed ({error})",
+                        w.name
+                    ));
+                    continue;
+                }
+            };
+            if let Err(error) = mgr.kill_session(&w.name).await {
+                report.actions_taken.push(format!(
+                    "Orphan sweep held scope for {}: kill failed ({error})",
+                    w.name
+                ));
+                continue;
+            }
+            if let Some(receipt) = &scope_receipt {
+                if let Err(error) = ScopeClaim::release_exact(&self.config.state_dir, receipt) {
+                    report.actions_taken.push(format!(
+                        "Orphan {} closed but exact scope release failed ({error})",
+                        w.name
+                    ));
+                    continue;
+                }
+            }
             self.stall_detector.forget(&w.name);
-            WorkerCloseMarker::remove(&self.config.state_dir, &w.name);
-            remove_inbox_event_markers(&self.config.state_dir, &w.name);
+            if let Err(error) = WorkerCloseMarker::remove(&self.config.state_dir, &w.name) {
+                report.actions_taken.push(format!(
+                    "Orphan {} closed but close marker removal FAILED ({error})",
+                    w.name
+                ));
+                continue;
+            }
+            if let Err(error) = remove_inbox_event_markers(&self.config.state_dir, &w.name) {
+                report.actions_taken.push(format!(
+                    "Orphan {} closed but inbox marker cleanup FAILED ({error})",
+                    w.name
+                ));
+            }
             tracing::info!(
                 worker = %w.name, governed_by = %governed_by, finished_secs,
                 "Orphan sweep: worker closed (oracle gone, mission done_clean)"
@@ -1377,7 +2055,13 @@ impl Patrol {
         for name in dispatcher.dead_oracles().await {
             let state = match OracleState::read(&self.config.state_dir, &name) {
                 Ok(Some(s)) => s,
-                _ => continue,
+                Ok(None) => continue,
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Oracle resurrection held for {name}: state unreadable ({error})"
+                    ));
+                    continue;
+                }
             };
             // Finished → leave it dead.
             if state.all_workers_terminal() {
@@ -1393,8 +2077,13 @@ impl Patrol {
             if state.workers.is_empty() {
                 continue;
             }
-            if let Ok(Some(done)) = OracleDoneSignal::read(&self.config.state_dir, &name) {
-                if done.is_closeable() {
+            match OracleDoneSignal::read(&self.config.state_dir, &name) {
+                Ok(Some(done)) if done.is_closeable() => continue,
+                Ok(_) => {}
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Oracle resurrection held for {name}: done signal unreadable ({error})"
+                    ));
                     continue;
                 }
             }
@@ -1407,22 +2096,48 @@ impl Patrol {
                 .config
                 .state_dir
                 .join(format!("oracle-{}.resurrect-attempt", name));
-            let recently_tried = std::fs::metadata(&marker)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.elapsed().ok())
-                .map(|e| e.as_secs() < 300)
-                .unwrap_or(false);
+            let recently_tried = match crate::config::read_private_optional(&marker) {
+                Ok(None) => false,
+                Ok(Some(_)) => match std::fs::symlink_metadata(&marker)
+                    .and_then(|metadata| metadata.modified())
+                    .and_then(|modified| modified.elapsed().map_err(std::io::Error::other))
+                {
+                    Ok(age) => age.as_secs() < 300,
+                    Err(error) => {
+                        report.actions_taken.push(format!(
+                            "Oracle resurrection held for {name}: attempt marker timestamp unreadable ({error})"
+                        ));
+                        continue;
+                    }
+                },
+                Err(error) => {
+                    report.actions_taken.push(format!(
+                        "Oracle resurrection held for {name}: attempt marker unreadable ({error})"
+                    ));
+                    continue;
+                }
+            };
             if recently_tried {
                 continue;
             }
-            let _ = std::fs::write(&marker, Utc::now().to_rfc3339());
-            if let Ok(crate::dispatch::ResurrectOutcome::Resurrected) =
-                dispatcher.resurrect_oracle(&name).await
+            if let Err(error) =
+                crate::config::atomic_write_private(&marker, Utc::now().to_rfc3339().as_bytes())
             {
-                report
+                report.actions_taken.push(format!(
+                    "Oracle resurrection held for {name}: attempt marker write FAILED ({error})"
+                ));
+                continue;
+            }
+            match dispatcher.resurrect_oracle(&name).await {
+                Ok(crate::dispatch::ResurrectOutcome::Resurrected) => report.actions_taken.push(
+                    format!("Resurrected crashed oracle {} (mission unfinished)", name),
+                ),
+                Ok(other) => report
                     .actions_taken
-                    .push(format!("Resurrected crashed oracle {} (mission unfinished)", name));
+                    .push(format!("Oracle resurrection skipped for {name}: {other:?}")),
+                Err(error) => report.actions_taken.push(format!(
+                    "Oracle resurrection attempt FAILED for {name} ({error})"
+                )),
             }
         }
         Ok(())
@@ -1436,78 +2151,92 @@ impl Patrol {
     ///
     /// Idempotent: marker file `~/.omega/state/curator-triggered/<oracle>.flag`
     /// prevents re-trigger on subsequent patrol ticks.
-    fn maybe_trigger_curator(&self, oracle_name: &str) -> Result<()> {
+    async fn maybe_trigger_curator(
+        &self,
+        mgr: &SessionManager,
+        oracle_state: &OracleState,
+        oracle_name: &str,
+    ) -> Result<()> {
+        crate::scope::validate_session_identity(oracle_name)?;
+        let ledger = crate::mission_ledger::MissionLedger::open(
+            self.config.state_dir.join("mission-engine-v3.sqlite3"),
+        )?;
+        oracle_state.require_ledger_authority(&ledger)?;
+        let mission = ledger
+            .mission_record(&oracle_state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("immutable mission is missing"))?;
+        let projection = ledger
+            .mission(&oracle_state.mission_id)?
+            .ok_or_else(|| anyhow::anyhow!("mission projection is missing"))?;
+        if projection.state != crate::mission::MissionState::Delivered {
+            anyhow::bail!("curator dispatch requires exact Delivered V3 authority");
+        }
+        let signal = OracleDoneSignal::read(&self.config.state_dir, oracle_name)?
+            .filter(|signal| signal.is_closeable())
+            .ok_or_else(|| {
+                anyhow::anyhow!("curator dispatch requires a strict closeable signal")
+            })?;
+        crate::orchestration::validate_oracle_done_signal_authority(
+            &ledger,
+            &oracle_state.mission_id,
+            oracle_name,
+            &signal,
+        )?;
         let flag_dir = self.config.state_dir.join("curator-triggered");
         let flag = flag_dir.join(format!("{}.flag", oracle_name));
-        if flag.exists() {
-            return Ok(());
+        {
+            let _lock = crate::scope::lock_private_state_file(
+                &self.config.state_dir,
+                ".curator-trigger.lock",
+            )?;
+            if crate::config::read_private_optional(&flag)?.is_some() {
+                return Ok(());
+            }
         }
         std::fs::create_dir_all(&flag_dir)?;
         std::fs::create_dir_all(self.config.state_dir.join("curator"))?;
-        std::fs::write(&flag, Utc::now().to_rfc3339())?;
 
-        // Spawn the curator as a detached rmux session so its output is
-        // visible in `omega menu`. The session name is prefixed with
-        // "curator-" so it's grouped distinctly in the TUI session list.
-        // This is a direct `rmux new-session` (not via SessionManager), so
-        // slugify here too — keep the curator name killable even if oracle_name
-        // carries legacy garbage. See session::sanitize_session_name.
         let curator_session =
             crate::session::sanitize_session_name(&format!("curator-{}", oracle_name));
-        // `oracle_name` is the FULL session name (`oracle-X`), but the signal
-        // on disk is single-prefixed via OracleDoneSignal's oracle_key rule —
-        // formatting the full name in produced `oracle-oracle-X.done.json`, a
-        // path that never exists, so every curator since install read nothing
-        // (7 trigger flags, zero outputs). Strip the one prefix first.
         let done_key = oracle_name.strip_prefix("oracle-").unwrap_or(oracle_name);
         let done_path = self
             .config
             .state_dir
             .join(format!("oracle-{}.done.json", done_key));
-        let prompt = format!(
-            "/omega-curate {}",
-            done_path.to_string_lossy()
-        );
-        // Use claude --print --dangerously-skip-permissions for a
-        // non-interactive one-shot. The session's output goes to its
-        // pane (capturable) AND the curator skill writes its report
-        // markdown to ~/.omega/state/curator/.
-        // Manual shell-escape: wrap in single quotes and escape any
-        // internal single quotes. Keeps us dependency-free.
-        let escaped = prompt.replace('\'', r"'\''");
-        // Build the curator command from the configured agent, not a hardcoded
-        // "claude". Resolve config.agent_command -> Agent -> binary name; fall
-        // back to the literal string if it's an unknown agent name.
-        let agent_bin = crate::agents::Agent::from_name(&self.config.agent_command)
-            .map(|a| a.name().to_string())
-            .unwrap_or_else(|| self.config.agent_command.clone());
-        let cmd = format!(
-            "{} --print --dangerously-skip-permissions '{}' ; exec bash",
-            agent_bin, escaped
-        );
-        let mgr_dispatch = std::process::Command::new("rmux")
-            .args([
-                "new-session",
-                "-d",
-                "-s",
-                &curator_session,
-                "bash",
-                "-c",
-                &cmd,
-            ])
-            .status();
-        match mgr_dispatch {
-            Ok(s) if s.success() => {
-                tracing::info!(
-                    oracle = %oracle_name,
-                    curator = %curator_session,
-                    "curator dispatched"
-                );
-            }
-            _ => {
-                tracing::warn!(oracle = %oracle_name, "curator dispatch failed");
+        let prompt = format!("/omega-curate {}", done_path.to_string_lossy());
+        let agent =
+            crate::agents::Agent::from_name(&self.config.agent_command).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown configured curator provider {:?}",
+                    self.config.agent_command
+                )
+            })?;
+        let working_dir = mission
+            .working_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("mission working directory is not UTF-8"))?;
+        mgr.create_agent_session_with_opts(
+            &curator_session,
+            working_dir,
+            agent,
+            Some(&prompt),
+            crate::agents::LaunchOptions::default(),
+        )
+        .await?;
+        {
+            let _lock = crate::scope::lock_private_state_file(
+                &self.config.state_dir,
+                ".curator-trigger.lock",
+            )?;
+            if crate::config::read_private_optional(&flag)?.is_none() {
+                crate::config::atomic_write_private(&flag, Utc::now().to_rfc3339().as_bytes())?;
             }
         }
+        tracing::info!(
+            oracle = %oracle_name,
+            curator = %curator_session,
+            "curator dispatched through typed provider launch"
+        );
         Ok(())
     }
 
@@ -1521,11 +2250,7 @@ impl Patrol {
     /// an instant before the rmux session appears) is never swept. Also
     /// migrates legacy double-prefixed oracle state files in passing (see
     /// `OracleState::state_key`).
-    fn gc_state_dir(
-        &self,
-        live: &std::collections::HashSet<&str>,
-        report: &mut PatrolReport,
-    ) {
+    fn gc_state_dir(&self, live: &std::collections::HashSet<&str>, report: &mut PatrolReport) {
         const HOUR: u64 = 3_600;
         const DAY: u64 = 86_400;
         let dir = &self.config.state_dir;
@@ -1754,42 +2479,67 @@ impl WorkerCloseMarker {
 
     /// Write the marker once. Idempotent: if it already exists, keep the
     /// original `since` so the grace clock isn't reset every tick.
-    fn ensure(state_dir: &std::path::Path, session: &str, oracle: Option<&str>) {
+    fn ensure(state_dir: &std::path::Path, session: &str, oracle: Option<&str>) -> Result<()> {
+        crate::scope::validate_session_identity(session)?;
         let path = Self::path(state_dir, session);
-        if path.exists() {
-            return;
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".worker-close.lock")?;
+        if crate::config::read_private_optional(&path)?.is_some() {
+            return Ok(());
         }
         let marker = WorkerCloseMarker {
             session: session.to_string(),
             oracle: oracle.map(|s| s.to_string()),
             since: Utc::now(),
         };
-        if let Ok(content) = serde_json::to_string(&marker) {
-            let _ = std::fs::write(&path, content);
-        }
+        let content = serde_json::to_vec(&marker).context("serializing worker close marker")?;
+        crate::config::atomic_write_private(&path, &content)
+            .with_context(|| format!("writing worker close marker for {session}"))
     }
 
-    fn read_all(state_dir: &std::path::Path) -> Vec<WorkerCloseMarker> {
+    fn read_all(state_dir: &std::path::Path) -> Result<Vec<WorkerCloseMarker>> {
         let mut out = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(state_dir) {
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("worker-close-") && name.ends_with(".json") {
-                        if let Ok(c) = std::fs::read_to_string(&p) {
-                            if let Ok(m) = serde_json::from_str::<WorkerCloseMarker>(&c) {
-                                out.push(m);
-                            }
-                        }
-                    }
-                }
+        let entries = match std::fs::read_dir(state_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("reading patrol state dir {}", state_dir.display()))
             }
+        };
+        for entry in entries {
+            let entry = entry.context("reading worker close marker directory entry")?;
+            let p = entry.path();
+            let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with("worker-close-") || !name.ends_with(".json") {
+                continue;
+            }
+            let content = crate::config::read_private_optional_string(&p)?
+                .with_context(|| format!("worker close marker disappeared: {}", p.display()))?;
+            let marker: WorkerCloseMarker = serde_json::from_str(&content)
+                .with_context(|| format!("parsing worker close marker {}", p.display()))?;
+            crate::scope::validate_session_identity(&marker.session)?;
+            if Self::path(state_dir, &marker.session) != p {
+                anyhow::bail!(
+                    "worker close marker filename/session mismatch at {}",
+                    p.display()
+                );
+            }
+            out.push(marker);
         }
-        out
+        Ok(out)
     }
 
-    fn remove(state_dir: &std::path::Path, session: &str) {
-        let _ = std::fs::remove_file(Self::path(state_dir, session));
+    fn remove(state_dir: &std::path::Path, session: &str) -> Result<()> {
+        crate::scope::validate_session_identity(session)?;
+        let path = Self::path(state_dir, session);
+        let _lock = crate::scope::lock_private_state_file(state_dir, ".worker-close.lock")?;
+        if crate::config::read_private_optional(&path)?.is_none() {
+            return Ok(());
+        }
+        std::fs::remove_file(&path)
+            .with_context(|| format!("removing worker close marker {}", path.display()))
     }
 }
 
@@ -1839,8 +2589,7 @@ fn should_reap_oracle(closeable: bool, secs: i64) -> bool {
 /// A real orphan is swept within grace plus one tick; past the ceiling, a live
 /// worker is by definition a newer one that this mission never dispatched.
 fn should_reap_orphan(closeable: bool, finished_secs: i64) -> bool {
-    closeable
-        && (ORPHAN_WORKER_GRACE_SECS..=ORPHAN_SIGNAL_MAX_AGE_SECS).contains(&finished_secs)
+    closeable && (ORPHAN_WORKER_GRACE_SECS..=ORPHAN_SIGNAL_MAX_AGE_SECS).contains(&finished_secs)
 }
 
 /// Freshness guard predicate (pure + testable). A done signal whose
@@ -1890,19 +2639,30 @@ fn inbox_event_already_sent(
     session: &str,
     kind: &str,
     key: &str,
-) -> bool {
-    std::fs::read_to_string(event_sent_path(state_dir, session, kind))
-        .map(|c| c.trim() == key)
-        .unwrap_or(false)
+) -> Result<bool> {
+    let path = event_sent_path(state_dir, session, kind);
+    Ok(crate::config::read_private_optional_string(&path)?
+        .is_some_and(|content| content.trim() == key))
 }
 
-fn record_inbox_event_sent(state_dir: &std::path::Path, session: &str, kind: &str, key: &str) {
-    let _ = std::fs::write(event_sent_path(state_dir, session, kind), key);
+fn record_inbox_event_sent(
+    state_dir: &std::path::Path,
+    session: &str,
+    kind: &str,
+    key: &str,
+) -> Result<()> {
+    crate::config::atomic_write_private(&event_sent_path(state_dir, session, kind), key.as_bytes())
 }
 
-fn remove_inbox_event_markers(state_dir: &std::path::Path, session: &str) {
-    let _ = std::fs::remove_file(event_sent_path(state_dir, session, "done"));
-    let _ = std::fs::remove_file(event_sent_path(state_dir, session, "blocked"));
+fn remove_inbox_event_markers(state_dir: &std::path::Path, session: &str) -> Result<()> {
+    for kind in ["done", "blocked"] {
+        let path = event_sent_path(state_dir, session, kind);
+        if crate::config::read_private_optional(&path)?.is_some() {
+            std::fs::remove_file(&path)
+                .with_context(|| format!("removing inbox delivery marker {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Age of a file in seconds via mtime — `None` when unreadable (the GC then
@@ -1941,6 +2701,7 @@ fn is_retired_done_name(name: &str) -> bool {
 /// This used to be `any(|c| !c.passed)`, which could not tell those apart and
 /// escalated four unverifiable checks to a human as fabrications on mission
 /// OmegaOS-m-8fe7d35df5bf.
+#[cfg(test)]
 fn verdict_contests_worker(verdict: &crate::done::GroundTruthVerdict) -> bool {
     verdict.checks.iter().any(|c| c.outcome.is_contradicted())
 }
@@ -2004,12 +2765,18 @@ mod tests {
 
     #[test]
     fn detects_hard_api_error() {
-        assert_eq!(detect_fatal_agent_error("boom\nAPI Error: 500 internal\n❯"), Some("API error"));
+        assert_eq!(
+            detect_fatal_agent_error("boom\nAPI Error: 500 internal\n❯"),
+            Some("API error")
+        );
     }
 
     #[test]
     fn ignores_retrying_and_normal_output() {
-        assert_eq!(detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"), None);
+        assert_eq!(
+            detect_fatal_agent_error("API Error: 529 overloaded, Retrying in 5s"),
+            None
+        );
         assert_eq!(detect_fatal_agent_error("just working on it\n❯"), None);
     }
 
@@ -2065,7 +2832,7 @@ mod tests {
         // closed three README workers within 60s of spawn — before any of them
         // could write a file or a done signal. Grace-elapsed alone said "reap".
         const INCIDENT_AGE_SECS: i64 = 3_185_365;
-        assert!(INCIDENT_AGE_SECS > ORPHAN_SIGNAL_MAX_AGE_SECS);
+        const _: () = assert!(INCIDENT_AGE_SECS > ORPHAN_SIGNAL_MAX_AGE_SECS);
         assert!(
             !should_reap_orphan(true, INCIDENT_AGE_SECS),
             "a 36-day-old done signal must never authorize reaping a live worker"
@@ -2110,11 +2877,20 @@ mod tests {
         let spawn = Utc::now();
         // Signal from a PRIOR mission (finished before this session spawned)
         // → stale: no reap, no gate-pending upgrade.
-        assert!(signal_predates_session(spawn - chrono::Duration::hours(3), Some(spawn)));
-        assert!(signal_predates_session(spawn - chrono::Duration::seconds(1), Some(spawn)));
+        assert!(signal_predates_session(
+            spawn - chrono::Duration::hours(3),
+            Some(spawn)
+        ));
+        assert!(signal_predates_session(
+            spawn - chrono::Duration::seconds(1),
+            Some(spawn)
+        ));
         // Signal written BY this session (at or after spawn) → fresh.
         assert!(!signal_predates_session(spawn, Some(spawn)));
-        assert!(!signal_predates_session(spawn + chrono::Duration::seconds(30), Some(spawn)));
+        assert!(!signal_predates_session(
+            spawn + chrono::Duration::seconds(30),
+            Some(spawn)
+        ));
         // Unknown spawn time (no registry entry) → conservatively stale:
         // never kill a session you cannot date.
         assert!(signal_predates_session(Utc::now(), None));
@@ -2144,22 +2920,24 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
         // Nothing sent yet.
-        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
-        record_inbox_event_sent(dir, "w1", "done", "done_clean:100");
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100").unwrap());
+        record_inbox_event_sent(dir, "w1", "done", "done_clean:100").unwrap();
         // Same signal → already sent (no per-tick re-push).
-        assert!(inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
+        assert!(inbox_event_already_sent(dir, "w1", "done", "done_clean:100").unwrap());
         // Upgraded / new signal (different key) → re-armed.
-        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:200"));
-        assert!(!inbox_event_already_sent(dir, "w1", "done", "pending:100"));
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:200").unwrap());
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "pending:100").unwrap());
         // Kinds are independent.
-        assert!(!inbox_event_already_sent(dir, "w1", "blocked", "100"));
-        remove_inbox_event_markers(dir, "w1");
-        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100"));
+        assert!(!inbox_event_already_sent(dir, "w1", "blocked", "100").unwrap());
+        remove_inbox_event_markers(dir, "w1").unwrap();
+        assert!(!inbox_event_already_sent(dir, "w1", "done", "done_clean:100").unwrap());
     }
 
     #[test]
     fn retired_done_name_matcher() {
-        assert!(is_retired_done_name("oracle-OmegaOS-prev1765432100.done.json"));
+        assert!(is_retired_done_name(
+            "oracle-OmegaOS-prev1765432100.done.json"
+        ));
         // A live signal is never "retired", even for a project containing -prev.
         assert!(!is_retired_done_name("oracle-OmegaOS.done.json"));
         assert!(!is_retired_done_name("oracle-x-prevention.done.json"));
@@ -2170,25 +2948,47 @@ mod tests {
     fn close_marker_is_idempotent_keeps_since() {
         let tmp = tempfile::TempDir::new().unwrap();
         let dir = tmp.path();
-        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X"));
-        let first = WorkerCloseMarker::read_all(dir);
+        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X")).unwrap();
+        let first = WorkerCloseMarker::read_all(dir).unwrap();
         assert_eq!(first.len(), 1);
         let since0 = first[0].since;
         // Re-ensure must NOT reset `since` (grace clock stability).
-        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X"));
-        let second = WorkerCloseMarker::read_all(dir);
+        WorkerCloseMarker::ensure(dir, "worker-x", Some("oracle-X")).unwrap();
+        let second = WorkerCloseMarker::read_all(dir).unwrap();
         assert_eq!(second.len(), 1);
         assert_eq!(second[0].since, since0);
-        WorkerCloseMarker::remove(dir, "worker-x");
-        assert!(WorkerCloseMarker::read_all(dir).is_empty());
+        WorkerCloseMarker::remove(dir, "worker-x").unwrap();
+        assert!(WorkerCloseMarker::read_all(dir).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn close_marker_reader_rejects_symlink_and_hardlink_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path();
+        let target = state.join("target.json");
+        std::fs::write(
+            &target,
+            serde_json::to_vec(&WorkerCloseMarker {
+                session: "worker-x".to_string(),
+                oracle: None,
+                since: Utc::now(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let marker = WorkerCloseMarker::path(state, "worker-x");
+        std::os::unix::fs::symlink(&target, &marker).unwrap();
+        assert!(WorkerCloseMarker::read_all(state).is_err());
+        std::fs::remove_file(&marker).unwrap();
+        std::fs::hard_link(&target, &marker).unwrap();
+        assert!(WorkerCloseMarker::read_all(state).is_err());
     }
 
     #[test]
     fn ignores_stale_error_in_scrollback() {
         let mut lines = vec!["API Error: Output blocked by content filtering policy"];
-        for _ in 0..20 {
-            lines.push("normal output line");
-        }
+        lines.extend(std::iter::repeat_n("normal output line", 20));
         assert_eq!(detect_fatal_agent_error(&lines.join("\n")), None);
     }
 

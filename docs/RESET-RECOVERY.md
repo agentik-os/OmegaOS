@@ -37,7 +37,7 @@ git clone https://github.com/agentik-os/OmegaOS && cd OmegaOS && ./install.sh
 ```
 
 That **reproduces everything OmegaOS needs to function**: `omega` + `rmux` binaries
-(built from source), agent prompts (`~/.omega/agents`), the Laws+Rules registry
+(verified release binaries when current, with a locked source-build fallback), agent prompts (`~/.omega/agents`), the Laws+Rules registry
 (`omega rules export` → `~/.omega/rules` → `~/.claude/rules` symlinks), slash commands
 (`omega-*`, `/dynamic`, audit stubs), skills (`audits`, `pdfgen`), docs, the
 **persistent Telegram systemd service**, the **tracking + verify hooks**, a **SOUL.md**
@@ -49,8 +49,8 @@ Do these **manually after install**:
 ## 🔑 Secrets to re-add
 | What | How |
 |---|---|
-| Telegram bot | `omega telegram setup <BOT_TOKEN> <CHAT_ID> --user-id <YOUR_USER_ID>` then `systemctl --user start omega-telegram` |
-| Claude / Codex / Gemini auth | run `claude` (and `codex`/`gemini`) and log in — writes through to `~/.omega/credentials/` |
+| Telegram bot | `OMEGA_TG_TOKEN=<BOT_TOKEN> omega telegram setup <CHAT_ID> --user-id <YOUR_USER_ID>` then `systemctl --user start omega-tg-bot.service` |
+| Claude / Codex / Gemini auth | run each provider's login; then use `omega doctor --deep` (and `omega codex-reconcile --json` for Codex) to verify topology without printing secrets |
 | Vercel tokens | recreate `~/.omega/config/vercel-tokens.json` → `{"teams":{"<orgId>":{"token":"…"}}}` |
 | GitHub | `gh auth login` |
 | Tella (if used) | `~/.omega/secrets/integrations.env` → `TELLA_API_KEY=…` (chmod 600) |
@@ -66,8 +66,8 @@ Do these **manually after install**:
 
 ## ✅ Verify after install
 ```bash
-omega rules list                       # 6 Laws + operational rules render
-systemctl --user status omega-telegram # bridge service present (running once token set)
+omega rules list                       # 7 Laws + operational rules render
+systemctl --user status omega-tg-bot.service # command bot service (once configured)
 omega usage --check && cat ~/.omega/state/usage.json   # native billing
 ls ~/.omega/hooks/ ~/.omega/SOUL.md    # hooks + identity present
 ./scripts/verify-install.sh            # INSTALL PARITY OK

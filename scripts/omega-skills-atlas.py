@@ -6,7 +6,17 @@ migration, a recursive, bounded legacy reader remains available when that
 artifact is absent. Both paths exclude vendor/build trees and fail on duplicate
 skill identities instead of silently dropping one.
 """
-import os, re, json, html, datetime, hashlib, sys, unicodedata
+import datetime
+import fcntl
+import hashlib
+import html
+import json
+import os
+from pathlib import PurePosixPath
+import re
+import sys
+import tempfile
+import unicodedata
 
 HOME = os.path.expanduser("~")
 OMEGA = os.environ.get("OMEGA_DIR") or os.path.join(HOME, ".omega")
@@ -16,6 +26,52 @@ POWERUP_MANIFEST = os.path.join(OMEGA, "skills-library/youraipowerup/MANIFEST.js
 EXCLUDED_DIRS = {".git", ".venv", "build", "dist", "node_modules", "target", "vendor"}
 MAX_SKILL_BYTES = 2 * 1024 * 1024
 MAX_SKILLS = 10_000
+MAX_CATALOG_BYTES = 64 * 1024 * 1024
+
+os.makedirs(OMEGA, mode=0o700, exist_ok=True)
+lock_path = os.path.join(OMEGA, ".skills-atlas.lock")
+lock_flags = os.O_CREAT | os.O_RDWR
+if hasattr(os, "O_NOFOLLOW"):
+    lock_flags |= os.O_NOFOLLOW
+lock_fd = os.open(lock_path, lock_flags, 0o600)
+atlas_lock = os.fdopen(lock_fd, "r+")
+fcntl.flock(atlas_lock.fileno(), fcntl.LOCK_EX)
+
+
+def is_sha256(value):
+    return (isinstance(value, str) and len(value) == 64 and
+            all(character in "0123456789abcdefABCDEF" for character in value))
+
+
+def validate_relative_skill_path(value):
+    if not isinstance(value, str) or not value or "\\" in value:
+        return False
+    path = PurePosixPath(value)
+    return (
+        not path.is_absolute()
+        and value == path.as_posix()
+        and all(part not in ("", ".", "..") for part in path.parts)
+        and path.name == "SKILL.md"
+    )
+
+
+def atomic_write_text(path, content):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(path)}.", suffix=".tmp", dir=directory)
+    try:
+        os.fchmod(descriptor, 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 def parse_frontmatter(path):
     """Legacy fallback parser for required name and description fields."""
@@ -74,22 +130,42 @@ def validate_unique(rows):
 
 def canonical_native():
     if not os.path.isfile(CATALOG):
-        return None, None
+        return None, None, None, None
     try:
+        if os.path.getsize(CATALOG) > MAX_CATALOG_BYTES:
+            raise ValueError(f"catalog exceeds {MAX_CATALOG_BYTES} bytes")
         data = json.load(open(CATALOG, encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("canonical catalog root must be an object")
         if data.get("schema_version") != 1:
             raise ValueError(f"unsupported schema_version {data.get('schema_version')!r}")
         digest = data.get("content_digest")
         skills = data.get("skills")
-        if not isinstance(digest, str) or len(digest) < 32 or not isinstance(skills, list):
+        if not is_sha256(digest) or not isinstance(skills, list):
             raise ValueError("canonical catalog is missing digest or skills")
+        projection = json.dumps(
+            [1, skills], ensure_ascii=False, separators=(",", ":")).encode()
+        if hashlib.sha256(projection).hexdigest() != digest:
+            raise ValueError("canonical catalog content_digest does not match skills")
+        if len(skills) > MAX_SKILLS:
+            raise ValueError(f"canonical catalog exceeds {MAX_SKILLS} skills")
         rows = []
         for skill in skills:
+            if not isinstance(skill, dict):
+                raise ValueError("canonical skill must be an object")
             name = skill.get("name")
             desc = skill.get("description")
             rel = skill.get("relative_path")
             if not all(isinstance(value, str) and value.strip() for value in (name, desc, rel)):
                 raise ValueError("canonical skill is missing name, description, or relative_path")
+            if not validate_relative_skill_path(rel):
+                raise ValueError(f"canonical skill has unsafe relative_path: {rel!r}")
+            if not isinstance(skill.get("root_id"), str) or not skill["root_id"].strip():
+                raise ValueError(f"canonical skill has invalid root_id: {name}")
+            if not is_sha256(skill.get("content_digest")):
+                raise ValueError(f"canonical skill has invalid content_digest: {name}")
+            if not isinstance(skill.get("provider_states", {}), dict):
+                raise ValueError(f"canonical skill has invalid provider_states: {name}")
             category = str(skill.get("category", "Custom"))
             group = "Audits" if category.lower() == "audit" else category
             if group.lower() in ("custom", "utility"):
@@ -106,11 +182,12 @@ def canonical_native():
             })
         rows.sort(key=lambda row: (identity(row["name"]), row["slug"]))
         validate_unique(rows)
-        return rows, digest
+        source_tree_digest = data.get("source_tree_digest")
+        if source_tree_digest not in (None, "") and not is_sha256(source_tree_digest):
+            raise ValueError("canonical catalog has an invalid source_tree_digest")
+        return rows, digest, source_tree_digest, data.get("metadata_coverage")
     except Exception as exc:
-        print(f"[atlas] canonical catalog invalid ({exc}); using legacy fallback",
-              file=sys.stderr)
-        return None, None
+        raise ValueError(f"canonical catalog invalid: {exc}") from exc
 
 def legacy_native():
     rows = []
@@ -146,12 +223,18 @@ def legacy_native():
     validate_unique(rows)
     return rows
 
-native, catalog_hash = canonical_native()
+try:
+    native, catalog_hash, source_tree_digest, metadata_coverage = canonical_native()
+except ValueError as error:
+    print(f"[atlas] {error}", file=sys.stderr)
+    raise SystemExit(1) from None
 if native is None:
     native = legacy_native()
     legacy_projection = json.dumps(native, ensure_ascii=False, sort_keys=True,
                                    separators=(",", ":")).encode()
     catalog_hash = "legacy-sha256:" + hashlib.sha256(legacy_projection).hexdigest()
+    source_tree_digest = catalog_hash
+    metadata_coverage = None
 
 # ---- 2. power-up library ----
 powerups = []
@@ -170,6 +253,8 @@ atlas = {
     "generated": datetime.date.today().isoformat(),
     "schema_version": 2,
     "catalog_hash": catalog_hash,
+    "source_tree_digest": source_tree_digest,
+    "metadata_coverage": metadata_coverage,
     "native_count": len(native),
     "powerup_count": len(powerups),
     "total": len(native) + len(powerups),
@@ -178,19 +263,18 @@ atlas = {
 }
 hash_payload = {
     "catalog_hash": catalog_hash,
+    "source_tree_digest": source_tree_digest,
     "native": native,
     "powerups": powerups,
 }
 atlas["atlas_hash"] = hashlib.sha256(json.dumps(
     hash_payload, ensure_ascii=False, sort_keys=True,
     separators=(",", ":")).encode()).hexdigest()
-os.makedirs(OMEGA, exist_ok=True)
 atlas_path = os.path.join(OMEGA, "skills-atlas.json")
-atlas_tmp = atlas_path + ".tmp"
-with open(atlas_tmp, "w", encoding="utf-8") as handle:
-    json.dump(atlas, handle, indent=2, ensure_ascii=False, sort_keys=True)
-    handle.write("\n")
-os.replace(atlas_tmp, atlas_path)
+atomic_write_text(
+    atlas_path,
+    json.dumps(atlas, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+)
 
 # ---- 3. HTML ----
 def esc(s): return html.escape(s or "")
@@ -296,11 +380,7 @@ function filt(){{const t=q.value.trim().toLowerCase();
 q.addEventListener('input',filt);
 </script></body></html>"""
 
-os.makedirs(os.path.join(OMEGA, "artifacts"), exist_ok=True)
 html_path = os.path.join(OMEGA, "artifacts/omega-skill-atlas.html")
-html_tmp = html_path + ".tmp"
-with open(html_tmp, "w", encoding="utf-8") as handle:
-    handle.write(doc)
-os.replace(html_tmp, html_path)
+atomic_write_text(html_path, doc)
 print(f"native={nc} powerup={pc} total={tot}")
 print("wrote ~/.omega/skills-atlas.json + ~/.omega/artifacts/omega-skill-atlas.html")

@@ -168,8 +168,8 @@ const fn mono(accent: Color, bg: Color, text: Color, dim: Color, dim2: Color) ->
             lighten(accent),           // special — subtle but themed
             dim,
             dim2,
-            Color::White,              // bright
-            Color::Black,              // sel_fg
+            Color::White, // bright
+            Color::Black, // sel_fg
         )
     }
 }
@@ -191,9 +191,9 @@ const OMEGA: Theme = Theme {
         Color::Green,
         Color::Red,
         Color::LightRed, // warn — named ANSI like every other Omega role, so
-                         // it adapts to light terminal schemes (a fixed orange
-                         // went near-invisible there); red-orange alert family,
-                         // distinct from pending (Yellow) and error (Red)
+        // it adapts to light terminal schemes (a fixed orange
+        // went near-invisible there); red-orange alert family,
+        // distinct from pending (Yellow) and error (Red)
         Color::Blue,
         Color::Magenta,
         Color::Gray,
@@ -242,18 +242,18 @@ const NOIR: Theme = Theme {
     bg: Some(Color::Rgb(0, 0, 0)),
     text: Color::Rgb(220, 220, 220),
     ..mk(
-    Color::White,
-    Color::White,              // accent2 — separators / selected-field bg pop above the 220 text
-    Color::Rgb(235, 235, 235), // success — actives brighter than body text
-    Color::Rgb(255, 255, 255),
-    Color::Rgb(255, 165, 0),   // warn — the one non-gray: blocked must read at a glance
-    Color::Rgb(170, 170, 170),
-    Color::Rgb(215, 215, 215),
-    Color::Rgb(120, 120, 120),
-    Color::Rgb(90, 90, 90),
-    Color::White,
-    Color::Black,
-)
+        Color::White,
+        Color::White, // accent2 — separators / selected-field bg pop above the 220 text
+        Color::Rgb(235, 235, 235), // success — actives brighter than body text
+        Color::Rgb(255, 255, 255),
+        Color::Rgb(255, 165, 0), // warn — the one non-gray: blocked must read at a glance
+        Color::Rgb(170, 170, 170),
+        Color::Rgb(215, 215, 215),
+        Color::Rgb(120, 120, 120),
+        Color::Rgb(90, 90, 90),
+        Color::White,
+        Color::Black,
+    )
 };
 
 /// Paper — full white: ink-on-paper for LIGHT terminal backgrounds.
@@ -261,18 +261,18 @@ const PAPER: Theme = Theme {
     bg: Some(Color::Rgb(245, 245, 240)),
     text: Color::Rgb(20, 20, 20),
     ..mk(
-    Color::Rgb(20, 20, 20),
-    Color::Rgb(0, 0, 0),       // accent2 — separators / selected-field bg: pure ink
-    Color::Rgb(30, 30, 30),    // success — actives darker than body ink
-    Color::Rgb(0, 0, 0),
-    Color::Rgb(150, 75, 0),    // warn — burnt orange, legible on the paper bg
-    Color::Rgb(90, 90, 90),
-    Color::Rgb(60, 60, 60),
-    Color::Rgb(112, 112, 112),
-    Color::Rgb(141, 141, 141),
-    Color::Rgb(0, 0, 0),
-    Color::Rgb(255, 255, 255),
-)
+        Color::Rgb(20, 20, 20),
+        Color::Rgb(0, 0, 0), // accent2 — separators / selected-field bg: pure ink
+        Color::Rgb(30, 30, 30), // success — actives darker than body ink
+        Color::Rgb(0, 0, 0),
+        Color::Rgb(150, 75, 0), // warn — burnt orange, legible on the paper bg
+        Color::Rgb(90, 90, 90),
+        Color::Rgb(60, 60, 60),
+        Color::Rgb(112, 112, 112),
+        Color::Rgb(141, 141, 141),
+        Color::Rgb(0, 0, 0),
+        Color::Rgb(255, 255, 255),
+    )
 };
 
 /// Transparent Dark — NO painted background: the terminal's own bg (and any
@@ -282,18 +282,18 @@ const TRANSPARENT_DARK: Theme = Theme {
     bg: None,
     text: Color::Rgb(220, 220, 220),
     ..mk(
-    Color::White,
-    Color::White,              // accent2 — separators / selected-field bg pop above the 220 text
-    Color::Rgb(235, 235, 235), // success — actives brighter than body text
-    Color::Rgb(255, 255, 255),
-    Color::Rgb(255, 165, 0),   // warn — the one non-gray: blocked must read at a glance
-    Color::Rgb(170, 170, 170),
-    Color::Rgb(215, 215, 215),
-    Color::Rgb(120, 120, 120),
-    Color::Rgb(90, 90, 90),
-    Color::White,
-    Color::Black,
-)
+        Color::White,
+        Color::White, // accent2 — separators / selected-field bg pop above the 220 text
+        Color::Rgb(235, 235, 235), // success — actives brighter than body text
+        Color::Rgb(255, 255, 255),
+        Color::Rgb(255, 165, 0), // warn — the one non-gray: blocked must read at a glance
+        Color::Rgb(170, 170, 170),
+        Color::Rgb(215, 215, 215),
+        Color::Rgb(120, 120, 120),
+        Color::Rgb(90, 90, 90),
+        Color::White,
+        Color::Black,
+    )
 };
 
 /// Transparent Light — NO painted background, black-ink mono chrome —
@@ -302,18 +302,18 @@ const TRANSPARENT_LIGHT: Theme = Theme {
     bg: None,
     text: Color::Rgb(20, 20, 20),
     ..mk(
-    Color::Rgb(20, 20, 20),
-    Color::Rgb(0, 0, 0),       // accent2 — separators / selected-field bg: pure ink
-    Color::Rgb(30, 30, 30),    // success — actives darker than body ink
-    Color::Rgb(0, 0, 0),
-    Color::Rgb(150, 75, 0),    // warn — burnt orange, legible on a light bg
-    Color::Rgb(90, 90, 90),
-    Color::Rgb(60, 60, 60),
-    Color::Rgb(112, 112, 112),
-    Color::Rgb(141, 141, 141),
-    Color::Rgb(0, 0, 0),
-    Color::Rgb(255, 255, 255),
-)
+        Color::Rgb(20, 20, 20),
+        Color::Rgb(0, 0, 0), // accent2 — separators / selected-field bg: pure ink
+        Color::Rgb(30, 30, 30), // success — actives darker than body ink
+        Color::Rgb(0, 0, 0),
+        Color::Rgb(150, 75, 0), // warn — burnt orange, legible on a light bg
+        Color::Rgb(90, 90, 90),
+        Color::Rgb(60, 60, 60),
+        Color::Rgb(112, 112, 112),
+        Color::Rgb(141, 141, 141),
+        Color::Rgb(0, 0, 0),
+        Color::Rgb(255, 255, 255),
+    )
 };
 
 /// Monogram — the original: mono chrome + cyan.
@@ -739,7 +739,12 @@ mod tests {
     #[test]
     fn slugs_roundtrip() {
         for id in ThemeId::all() {
-            assert_eq!(ThemeId::from_slug(id.slug()), Some(*id), "slug {}", id.slug());
+            assert_eq!(
+                ThemeId::from_slug(id.slug()),
+                Some(*id),
+                "slug {}",
+                id.slug()
+            );
         }
         assert_eq!(ThemeId::from_slug("nope"), None);
     }
@@ -826,7 +831,11 @@ mod tests {
                 7.787 * t + 16.0 / 116.0
             }
         }
-        (116.0 * f(y) - 16.0, 500.0 * (f(x) - f(y)), 200.0 * (f(y) - f(z)))
+        (
+            116.0 * f(y) - 16.0,
+            500.0 * (f(x) - f(y)),
+            200.0 * (f(y) - f(z)),
+        )
     }
 
     /// CIE76 color difference — perceptual distance between two roles.

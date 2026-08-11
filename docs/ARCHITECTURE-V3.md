@@ -1,181 +1,113 @@
-# OmegaOS — Centralized Configuration Architecture v3
+# OmegaOS centralized configuration architecture v3
 
-> **Scope:** authoritative for the `~/.omega/` centralized runtime layout
-> (credentials, models, settings). For the full system architecture
-> (crates, orchestration, agent levels, CLI), see [ARCHITECTURE.md](ARCHITECTURE.md).
->
-> Single source of truth for ALL LLM coding agents.
-> `~/.omega/` is the master. Each LLM reads from it.
-> Credentials, models, and settings live ONLY in ~/.omega/ — never elsewhere.
+> **Scope:** authoritative for the `~/.omega/` runtime layout and provider
+> topology. For crates, orchestration, agent levels, and channels, see
+> [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## Directory Structure
+`~/.omega/` is OmegaOS's persistent home. It contains configuration,
+OmegaOS-owned credential copies, registries, installed assets, logs, and state.
+Provider CLIs can still require native files outside that directory; those
+compatibility paths are coordinated explicitly rather than silently assumed to
+be symlinks.
 
-```
-~/.omega/                              MASTER — all LLMs reference this
-│
-├── OMEGA.md                           Universal system prompt (every agent)
-│
-├── rules/                             The typed doctrine, 7 Laws + 47 named Rules
-├── agents/                            14 Matrix agents + oracle/worker prompts
-├── skills/                            Cross-LLM skills (pdfgen, audits, llm-council, browser-use, marketing pack, ...)
-├── docs/                              Reference documentation
-├── projects.json                      Project registry (paths, topics, oracle sessions)
-│
-├── config.toml                        General OmegaOS settings
-├── providers.toml                     Per-provider config (model, base_url, default)
-├── telegram.toml                      Telegram bridge (gitignored)
-├── deposit.toml                       Deposit/inbox bot token (0600, gitignored)
-├── agent-bots.json                    Per-project Telegram agent bots (tokens — local secret, never in the repo)
-│
-├── telegram-bot/                      Installed bot runtimes (omega-tg-bot.ts command bot, inbox-bot.ts deposit bot)
-├── inbox/                             Operator deposit inbox — files/photos/notes sent from the phone (timestamped, indexed)
-│
-├── credentials/                       ALL provider credentials live HERE
-│   ├── claude.json                    Claude OAuth tokens (was ~/.claude/.credentials.json)
-│   ├── codex.json                     OpenAI/Codex API key
-│   ├── gemini.json                    Google Gemini API key
-│   ├── glm.json                       Z.AI/Zhipu key
-│   ├── openrouter.json                OpenRouter key (multi-model)
-│   ├── pi.json                        earendil/Pi config
-│   ├── hermes.json                    Nous Research key
-│   └── accounts/                      Multiple accounts per provider
-│       ├── claude-gareth.json
-│       ├── claude-work.json
-│       └── ...
-│
-├── state/                             Runtime state (sessions, locks, done.json)
-├── logs/                              Session logs
-└── audit/                             Audit results
+## Runtime layout
+
+```text
+~/.omega/
+├── OMEGA.md                  universal agent instructions
+├── config.toml               general runtime settings
+├── providers.toml            typed per-provider settings
+├── telegram.toml             Telegram configuration (secret, mode 0600)
+├── projects.json             compatibility project-registry projection
+├── credentials/
+│   ├── <provider>.json       OmegaOS-owned active copies
+│   ├── accounts/             named account profiles
+│   └── quarantine/           conflicting or invalid Codex copies
+├── rules/                    7 Laws plus 52 operational Rules
+├── agents/                   shared prompts and 15 Matrix templates
+├── skills/                   installed skill catalog
+├── telegram-bot/             installed Bun/TypeScript bot runtime
+├── inbox/                    operator file deposits
+├── state/                    mission ledger, projections, locks, sessions
+├── logs/                     operational logs
+└── audit/                    audit results
 ```
 
-## Symlinks for LLM Compatibility
-
-OmegaOS creates symlinks so existing LLM CLIs find their credentials in the
-expected location, but the canonical files are ALWAYS in `~/.omega/credentials/`:
-
-```
-~/.claude/.credentials.json    → ~/.omega/credentials/claude.json
-~/.codex/auth.json             → ~/.omega/credentials/codex.json
-~/.config/gemini/oauth_creds.json → ~/.omega/credentials/gemini.json
-```
-
-This way:
-- `omega telegram setup` writes only to `~/.omega/`
-- `omega install <provider>` writes only to `~/.omega/`
-- LLM CLIs still find their creds because of the symlinks
-- One backup directory covers everything
-- Account switching = updating the symlink target
-
-## Provider Catalog
-
-Stored in `~/.omega/providers.toml`:
-
-```toml
-default_provider = "codex"
-default_model    = "gpt-5.6-sol"
-
-[claude]
-type      = "oauth"
-cred_file = "credentials/claude.json"
-models    = ["opus", "sonnet", "haiku"]
-default_model = "opus"
-
-[codex]
-type      = "api_key"
-cred_file = "credentials/codex.json"
-models    = ["gpt-5", "gpt-5-codex", "o3"]
-default_model = "gpt-5-codex"
-
-[gemini]
-type      = "oauth"
-cred_file = "credentials/gemini.json"
-models    = ["gemini-2.5-pro", "gemini-2.5-flash"]
-default_model = "gemini-2.5-pro"
-
-[glm]
-type      = "api_key"
-cred_file = "credentials/glm.json"
-models    = ["glm-4.6", "glm-4.5"]
-
-[openrouter]
-type      = "api_key"
-cred_file = "credentials/openrouter.json"
-base_url  = "https://openrouter.ai/api/v1"
-models    = ["anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-2.5-pro"]
-
-[pi]
-type      = "config"
-cred_file = "credentials/pi.json"
-default_provider = "openrouter"
-default_model    = "anthropic/claude-sonnet-4.6"
-
-[hermes]
-type      = "api_key"
-cred_file = "credentials/hermes.json"
-```
-
-## Telegram Model Selection
-
-Users can switch the active provider/model per session:
-
-```
-/model              → show current + list available
-/model claude       → switch to Claude (uses default model)
-/model claude opus  → switch to Claude with opus model
-/model codex gpt-5  → switch to Codex with gpt-5
-/model openrouter   → switch to OpenRouter (with its default model)
-```
-
-Each Telegram chat tracks its own `active_provider` and `active_model` —
-stored in `~/.omega/state/telegram-active-model.json`.
-
-## Account Management
-
-```
-/account              → show current account for each provider
-/account claude       → list Claude accounts
-/account claude gareth → switch to claude-gareth account
-/account add claude work → save current Claude creds as "work" profile
-```
-
-Behind the scenes:
-- Each account = a file in `~/.omega/credentials/accounts/`
-- Switching updates the symlink: `~/.omega/credentials/claude.json → accounts/claude-gareth.json`
-- Plus updates `~/.claude/.credentials.json` symlink (which points to omega)
-
-## CLI Commands
-
-```
-omega rules list / export       Operational rules
-omega sync                      Symlink omega config into all LLM dirs
-omega accounts                  List all accounts across providers
-omega accounts switch <provider> <name>
-omega model show / set <provider> [model]
-omega install <agent>           Install LLM CLI + auto-sync credentials
-omega init                      Full setup: dirs + export + sync + symlinks
-```
-
-## Key Principles
-
-1. **~/.omega/ is the master** — credentials, config, rules, agents, skills
-2. **Symlinks for compatibility** — LLM CLIs see their expected paths, but real files are in omega
-3. **Multi-provider first** — Claude / Codex / Gemini / GLM / OpenRouter / Pi / Hermes
-4. **Multi-account per provider** — Switch between work/personal/client accounts
-5. **Per-chat model selection** — Choose provider+model from Telegram on the fly
-6. **No secrets outside omega** — credentials NEVER live in ~/.claude/, ~/.codex/, etc.
-7. **install.sh handles symlinks** — moves existing creds into omega, creates the links
-
-## Migration (existing users)
-
-`omega init` (or first install) migrates existing credentials:
+The live inventories are authoritative:
 
 ```bash
-# For each detected provider:
-if [ -f ~/.claude/.credentials.json ] && [ ! -L ~/.claude/.credentials.json ]; then
-    mv ~/.claude/.credentials.json ~/.omega/credentials/claude.json
-    ln -s ~/.omega/credentials/claude.json ~/.claude/.credentials.json
-fi
-# Same for Codex (~/.codex/auth.json), Gemini, etc.
+omega rules list
+omega agents
+omega skills validate --root ~/.omega/skills
 ```
 
-Result: existing setups keep working, but all data is now centralized.
+## Credential topology
+
+- **Claude:** the installer can migrate
+  `~/.claude/.credentials.json` into `~/.omega/credentials/claude.json` and
+  leave the provider-compatible link.
+- **Gemini:** the installer applies the equivalent migration for its OAuth
+  credential file when present.
+- **Codex:** `CODEX_HOME/auth.json` (default `~/.codex/auth.json`) remains the
+  provider-native file. `omega codex-reconcile` validates and reconciles it
+  with `~/.omega/credentials/codex.json` under a lock, preserving a valid newer
+  copy and quarantining conflicts. Do not replace this protocol with a blind
+  symlink or file copy.
+- **API-key providers:** keys configured in `providers.toml` are injected only
+  into the launched provider process. They must never be committed.
+
+Back up `~/.omega/` with `omega backup`, but remember that a provider-native
+home may also participate in its login topology. `omega doctor --deep` and
+`omega codex-login-status` are the supported diagnostics.
+
+## Provider catalog
+
+The built-in default provider is Codex. Default models at this revision are:
+
+| Provider | Default model | Authentication |
+|---|---|---|
+| Claude | `opus` | OAuth or API key |
+| Codex | `gpt-5.5-codex` | ChatGPT device auth or API key |
+| Gemini | `gemini-3.1-pro` | OAuth or API key |
+| GLM | `glm-5.1` | API key |
+| OpenRouter | `anthropic/claude-opus-5` | API key |
+| Pi | `anthropic/claude-opus-5` | OpenRouter configuration |
+| Hermes | `anthropic/claude-opus-5` | API key |
+| Kimi | `kimi-for-coding` | OAuth or API key |
+| Shell | none | local process |
+
+Run `omega agents`, use the TUI Settings tab, or inspect
+`crates/omega-core/src/providers.rs` for the current catalog. Do not copy a
+static model list into automation.
+
+`providers.toml` contains typed provider tables, for example:
+
+```toml
+[claude]
+model = "opus"
+
+[codex]
+model = "gpt-5.5-codex"
+
+[gemini]
+model = "gemini-3.1-pro"
+```
+
+The active Telegram model selection is stored under
+`~/.omega/state/telegram-active-model.json` and can be changed with `/model`.
+
+## Safe migration and verification
+
+The installer migrates Claude and Gemini credentials and delegates Codex
+conflict handling to the typed reconciler. After install or provider login:
+
+```bash
+omega sync
+omega codex-reconcile --json
+omega codex-login-status
+omega doctor --deep
+```
+
+A topology check is not proof that a credential can authenticate. The provider
+login command or a real provider request is the final runtime check. Never print
+credential contents while diagnosing the topology.

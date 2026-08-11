@@ -7,7 +7,7 @@ total_audits = 23
 doctrine = "Gestalt-Popper"
 categories = ["preventive", "detective"]
 
-# ── Preventive Audits (16) — Architecture & Design ──────────────────────────
+# ── Preventive audits, core set (14 of 16) ──────────────────────────────────
 
 [[audits]]
 id = "codeaudit"
@@ -163,7 +163,7 @@ triggers = ["dep", "depaudit", "dependency audit", "supply chain", "license audi
 read_only = false
 answers = "Is the supply chain SAFE?"
 
-# ── Detective Audits (7) — Runtime & Security ───────────────────────────────
+# ── Runtime/shipping set (7 detective + 2 preventive) ──────────────────────
 
 [[audits]]
 id = "debugaudit"

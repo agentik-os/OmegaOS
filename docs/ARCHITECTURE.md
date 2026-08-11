@@ -22,20 +22,21 @@
 
 ## 1. System Overview
 
-OmegaOS is a 100% Rust agentic terminal operating system. It coordinates multiple
-AI coding agents (Claude, Codex, Gemini, Pi, Hermes, GLM, OpenRouter) through a
-unified orchestration layer, with a centralized config directory and a Telegram
-bot for remote control.
+OmegaOS is a Rust-first agentic terminal operating system. Its core, CLI, TUI,
+and orchestration engine are Rust; Bun/TypeScript powers Telegram and supporting
+tools, while shell scripts bootstrap and operate the install. It supports
+Claude, Codex, Gemini, GLM, OpenRouter, Pi, Hermes, Kimi, and local shell
+sessions through a unified configuration and orchestration layer.
 
 **Key components:**
 
 | Component | Role |
 |-----------|------|
-| `omega` CLI | Main binary — 40+ commands |
-| TUI | 5-tab session manager (Sessions/Menu/Agentic/Settings/Help — Monitor and Projects live inside Settings and Agentic) |
+| `omega` CLI | Main binary; `omega --help` is the command source of truth |
+| TUI | 7-tab manager: Sessions, Projects, OS, Menu, System, Help, Settings |
 | rmux SDK | Terminal multiplexer (sessions, panes, send/capture) |
-| AISB Master | Always-on Claude session with 14 Matrix agents |
-| Telegram Bridge | Long-poll bot, relays messages to AISB |
+| Atlas Telegram service | Persistent orchestration process that classifies and routes messages |
+| AISB conversation viewer | Optional read-only `aisb-master` rmux mirror; not an agent |
 | Quality Arsenal | 23 forensic audits (code, UX, perf, security, etc.) |
 
 ---
@@ -49,11 +50,11 @@ bot for remote control.
 ├── config.toml                    General settings
 ├── providers.toml                 Per-provider config
 ├── telegram.toml                  Telegram bridge config (gitignored)
-├── projects.json                  Registry of all projects
+├── projects.json                  Compatibility project-registry projection
 │
-├── credentials/                   ALL provider credentials live HERE
+├── credentials/                   OmegaOS-owned credential copies
 │   ├── claude.json                ← ~/.claude/.credentials.json (symlink)
-│   ├── codex.json                 ← ~/.codex/auth.json (symlink)
+│   ├── codex.json                 ↔ CODEX_HOME/auth.json (reconciled)
 │   ├── gemini.json                ← ~/.gemini/oauth_creds.json (symlink)
 │   ├── glm.json
 │   ├── openrouter.json
@@ -64,14 +65,14 @@ bot for remote control.
 ├── rules/                         the typed doctrine (.md, editable — `omega rules list` prints the current set)
 │   ├── L0-ship-the-truth...md
 │   ├── L1-runtime-is-the-only-truth.md
-│   └── ... (7 Laws + 47 named R-* rules)
+│   └── ... (the Laws + registry-owned named R-* rules; inspect with `omega rules list`)
 │
 ├── agents/                        Agent system prompts
-│   ├── aisb-master.md             Master AISB brain
+│   ├── aisb-master.md             orchestration prompt retained for service compatibility
 │   ├── oracle.md / worker.md / team-lead.md
-│   └── aisb/                      14 Matrix agents
+│   └── aisb/                      15 typed Matrix agent templates
 │       ├── oracle.md / morpheus.md / seraph.md
-│       └── ... (13 total)
+│       └── ... (15 total, including Trinity)
 │
 ├── skills/                        OmegaOS-shipped skills (audits, design, planner…)
 │   ├── pdfgen/                    PDF generator (Next.js + Playwright)
@@ -90,6 +91,7 @@ bot for remote control.
 ├── projects/<slug>/               Per-project overrides
 │
 ├── state/                         Runtime (not in git)
+│   ├── mission-engine-v3.sqlite3  Authoritative mission event ledger
 │   ├── sessions/                  Active session metadata
 │   ├── locks/                     Scope-claim file locks
 │   ├── done/                      .done.json files
@@ -123,9 +125,11 @@ One home, everything ordered. When an agent/LLM installs something, it lands her
 
 ### Principle
 
-ALL provider credentials live in `~/.omega/credentials/`. The legacy paths
-(`~/.claude/.credentials.json`, `~/.codex/auth.json`, etc.) are symlinks
-pointing into `~/.omega/`. This way:
+OmegaOS keeps its canonical credential copies under `~/.omega/credentials/`.
+Claude and Gemini compatibility paths may be symlinked there. Codex is a
+special two-copy topology: its native `auth.json` stays under `CODEX_HOME`
+(default `~/.codex`) while `omega codex-reconcile` compares, validates,
+quarantines conflicts, and updates the canonical OmegaOS copy. This way:
 
 - LLM CLIs still find their creds at the expected paths
 - Backups only need to cover `~/.omega/`
@@ -137,21 +141,23 @@ pointing into `~/.omega/`. This way:
 | Provider | Type | Credential file | Default model |
 |----------|------|-----------------|---------------|
 | Claude | OAuth | `credentials/claude.json` | opus |
-| Codex | API key | `credentials/codex.json` | gpt-5-codex |
-| Gemini | OAuth | `credentials/gemini.json` | gemini-2.5-pro |
-| GLM | API key | `credentials/glm.json` | glm-4.6 |
-| OpenRouter | API key | `credentials/openrouter.json` | anthropic/claude-sonnet-4.6 |
-| Pi | Config | `credentials/pi.json` | (uses OpenRouter) |
-| Hermes | API key | `credentials/hermes.json` | (Nous Research) |
+| Codex | ChatGPT device auth or API key | native `CODEX_HOME/auth.json`, reconciled with `credentials/codex.json` | gpt-5.5-codex |
+| Gemini | OAuth | `credentials/gemini.json` | gemini-3.1-pro |
+| GLM | API key | `credentials/glm.json` | glm-5.1 |
+| OpenRouter | API key | `credentials/openrouter.json` | anthropic/claude-opus-5 |
+| Pi | OpenRouter config | `credentials/pi.json` | anthropic/claude-opus-5 |
+| Hermes | API key | `credentials/hermes.json` | anthropic/claude-opus-5 |
+| Kimi | OAuth or API key | `credentials/kimi.json` | kimi-for-coding |
+| Shell | local process | none | none |
 
 ### Account Switching
 
-Multiple accounts per provider live in `~/.omega/credentials/accounts/`:
+Named credential profiles live in `~/.omega/credentials/accounts/`. Manage
+them through the TUI Settings surface or the Telegram `/account` menu; there is
+no top-level `omega accounts` command.
 
 ```
-omega accounts list                   Show all saved accounts
-omega accounts add claude work        Save current Claude creds as "work"
-omega accounts switch claude gareth   Switch to claude-gareth account
+/account                              Show and manage provider accounts
 ```
 
 Behind the scenes: switching updates `~/.omega/credentials/claude.json`
@@ -176,14 +182,14 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (5 tabs) · CLI (40+ cmds) · Telegram Bridge                │
+│  TUI (7 tabs) · CLI (`omega --help`) · Telegram Bridge          │
 │                      ↓ intent                                    │
 ├─────────────────────────────────────────────────────────────────┤
-│  Level 2 — AISB Master (persistent, auto-restart, --continue)   │
-│  14 Matrix Agents:                                               │
+│  Level 2 — Atlas Telegram orchestration service (persistent)    │
+│  Matrix agent registry:                                          │
 │    Oracle · Morpheus · Seraph · Keymaker · Smith · Niobe         │
 │    Architect · Merovingian · Neo · Zion · Link · Construct       │
-│    Pythia · Council                                              │
+│    Pythia · Council · Trinity                                    │
 │                      ↓ dispatch                                  │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 3 — Oracle (1 per project)                                │
@@ -199,11 +205,11 @@ Active selection persisted to `~/.omega/state/telegram-active-model.json`.
 
 | Role | Icon | Pattern | Purpose |
 |------|------|---------|---------|
-| AISB Master | ★ | `aisb-master` | Always-on brain, 14 agents |
+| AISB viewer | (hidden) | `aisb-master` | Optional read-only Telegram conversation mirror |
 | Oracle | ◆ | `oracle-{Project}` | Strategic — classify, plan, dispatch |
 | Worker | ● | `{Project}-worker-{task}` | Tactical — one task, scope-claimed |
 | Home | ⌂ | `claude-1`, `codex-2` | Interactive user sessions |
-| System | ⚙ | `omega-telegram-bridge` | Infrastructure daemons |
+| System | ⚙ | e.g. `omega-tg-bot` | Infrastructure services and viewers |
 
 ### Plan execution engine
 
@@ -255,7 +261,7 @@ Each LLM CLI reads OmegaOS config:
 | Channel | How |
 |---------|-----|
 | TUI | `omega` or `omega menu` — full session manager |
-| CLI | `omega <cmd>` — 40+ commands |
+| CLI | `omega <cmd>`; inspect the current surface with `omega --help` |
 | Telegram | `/help`, `/list`, `/model`, `/newproject`, `/account`, etc. |
 
 ### Inter-process
@@ -300,7 +306,9 @@ Phase 5: Setup ~/.omega/ + migrate existing credentials
          - Create credentials/, accounts/, state/, bin/
          - Move ~/.claude/.credentials.json → ~/.omega/credentials/claude.json
          - Create symlinks back to legacy paths
-         - Same for codex, gemini, glm (if present)
+         - Migrate Claude and Gemini compatibility credentials
+         - Reconcile Codex's native and canonical copies without replacing
+           its native home or ignoring CODEX_HOME
          - Copy OMEGA.md, agents/, rules/, skills/
          - Run `omega rules export` and `omega sync`
 Phase 6: Shell integration (PATH, completions, aliases)
@@ -311,8 +319,8 @@ Phase 6: Shell integration (PATH, completions, aliases)
 When a user installs a new LLM CLI:
 1. Run the official installer (curl|sh pattern with TTY preserved)
 2. `omega sync` — symlinks into LLM config dirs
-3. If credentials get written by the installer to legacy path,
-   migrate them to `~/.omega/credentials/` + create symlink
+3. Reconcile credentials with the provider-specific topology. Claude/Gemini
+   can use compatibility migration; Codex uses `omega codex-reconcile`.
 
 ---
 
@@ -323,29 +331,21 @@ When a user installs a new LLM CLI:
 ```toml
 state_dir = "~/.omega/state"
 logs_dir = "~/.omega/logs"
-auto_spawn_master = true       # AISB Master auto-created on launch
+auto_spawn_master = false      # optional legacy read-only viewer
 auto_naming = true             # Sessions named claude-1, codex-2, ...
 ```
 
 ### `~/.omega/providers.toml`
 
 ```toml
-default_provider = "claude"
-default_model = "opus"
-
 [claude]
-type = "oauth"
-cred_file = "credentials/claude.json"
-models = ["opus", "sonnet", "haiku"]
-default_model = "opus"
+model = "opus"
 
 [codex]
-type = "api_key"
-cred_file = "credentials/codex.json"
-models = ["gpt-5", "gpt-5-codex", "o3"]
-default_model = "gpt-5-codex"
+model = "gpt-5.5-codex"
 
-# ... (other providers)
+# The built-in provider default is Codex. `providers.toml` contains typed
+# per-provider settings; `omega config` manages the active selection.
 ```
 
 ### `~/.omega/telegram.toml` (gitignored)
@@ -354,7 +354,6 @@ default_model = "gpt-5-codex"
 bot_token = "..."
 chat_id = ...
 allow_user_ids = [...]
-relay_session = "aisb-master"
 enabled = true
 ```
 
@@ -365,18 +364,20 @@ enabled = true
 ```
 omega                    Launch TUI
 omega menu               Same as omega
-omega master             Attach AISB Master
+omega aisb-view          Open read-only AISB conversation viewer
+omega master             Compatibility alias for omega aisb-view
+omega aisb-chat          Interactive local chat through the Telegram service
 omega list               List sessions
 omega new <name>         Create session
 omega kill <name>        Kill session
 omega dispatch <P> <M>   Send mission to oracle
 omega orchestrate <P> <M>  Full pipeline (classify → plan → dispatch → gate)
-omega rules list         Show the 7 Laws + 47 named operational Rules
+omega rules list         Show the current Laws + operational Rule registry
 omega rules export       Write to ~/.omega/rules/
 omega sync               Symlink to all LLMs
-omega accounts list      List provider accounts
-omega accounts switch <provider> <name>
-omega model show / set <provider> [model]
+omega config show        Show provider configuration (secrets redacted)
+omega config models      List canonical providers and models
+omega config set <provider>.<key> <value>
 OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <CHAT> --user-id <UID>
 omega telegram run       Start bridge
 omega pdf --template=... --send
@@ -392,8 +393,8 @@ To verify the architecture is correctly set up:
 
 ```bash
 ls ~/.omega/                              # Should show: credentials/ rules/ agents/ skills/ ...
-ls ~/.omega/credentials/                  # Should show: claude.json codex.json ...
-ls -la ~/.claude/.credentials.json        # Should be a symlink to ~/.omega/credentials/claude.json
-omega rules list                          # Should show the 7 Laws + 47 named Rules
-cargo build --release                     # Should be 0 errors
+ls ~/.omega/credentials/                  # Canonical OmegaOS credential copies
+omega codex-reconcile --json              # Validate/reconcile Codex topology
+omega rules list                          # Should match the runtime Rule registry
+cargo build --workspace --locked          # Should be 0 errors
 ```

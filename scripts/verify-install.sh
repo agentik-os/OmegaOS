@@ -152,7 +152,7 @@ if [ -z "$(git status --porcelain)" ]; then ok "working tree clean (fresh clone 
 
 # 8. Local branch in sync with origin (latest pushed).
 git fetch -q origin 2>/dev/null || true
-if [ -n "$(git rev-parse @ 2>/dev/null)" ] && [ "$(git rev-parse @ 2>/dev/null)" = "$(git rev-parse @{u} 2>/dev/null)" ]; then
+if [ -n "$(git rev-parse @ 2>/dev/null)" ] && [ "$(git rev-parse @ 2>/dev/null)" = "$(git rev-parse '@{u}' 2>/dev/null)" ]; then
   ok "local in sync with origin (latest pushed)"
 else
   bad "local commits not pushed to origin"
@@ -227,7 +227,9 @@ if grep -qF 'mkdir -p "$OMEGA_DIR/state/monitor"' install.sh; then
 else
   bad "monitor audit report directory (state/monitor) missing from install.sh"
 fi
-if [ -f skills/monitor/SKILL.md ] && grep -qF 'for NSK in monitor; do' install.sh; then
+if [ -f skills/monitor/SKILL.md ] \
+  && grep -qF 'MONITOR_SKILLS=(monitor)' install.sh \
+  && grep -qF 'for NSK in "${MONITOR_SKILLS[@]}"; do' install.sh; then
   ok "/monitor skill shipped + wired (/monitor + /omg-monitor)"
 else
   bad "/monitor skill not shipped/wired in install.sh"
@@ -498,7 +500,8 @@ fi
 # Quality Arsenal audit SKILLS shipped + wired (the registry is 23 audits; the
 # skill dirs must match so a fresh install can actually run them — excludes the
 # 3 non-audit dirs _shared / audit-orchestrator / audit-tracker).
-N_AUDITS=$(ls -d skills/audits/*/ 2>/dev/null | grep -vE '/(_shared|audit-orchestrator|audit-tracker)/$' | wc -l)
+N_AUDITS=$(find skills/audits -mindepth 1 -maxdepth 1 -type d \
+  ! -name _shared ! -name audit-orchestrator ! -name audit-tracker 2>/dev/null | wc -l)
 if [ "$N_AUDITS" -ge 23 ] && grep -q "skills/audits" install.sh; then ok "Quality Arsenal audit skills shipped + wired ($N_AUDITS)"; else bad "audit skills missing or not wired in install.sh ($N_AUDITS dirs, need >=23)"; fi
 # Design skills (generative UI/UX) shipped + wired.
 N_DESIGN=$(ls -d skills/design/*/ 2>/dev/null | wc -l)
@@ -564,6 +567,38 @@ else ok "marketing-machine payload carries NO credentials (keys stay in secrets/
 if grep -q 'published_at' install.sh && grep -q 'is newer than release' install.sh; then
   ok "prebuilt freshness gate present (never installs a release older than the source)"
 else bad "install.sh can still install a stale prebuilt over newer source"; fi
+# The source checkout must exist before the prebuilt selector runs, otherwise
+# the freshness/provenance checks are vacuous on the documented curl|bash path.
+source_authority_line=$(grep -n -m1 '^OMEGA_SOURCE_REV=' install.sh | cut -d: -f1)
+prebuilt_call_line=$(grep -n -m1 '^maybe_install_prebuilt$' install.sh | cut -d: -f1)
+if [ -n "$source_authority_line" ] && [ -n "$prebuilt_call_line" ] \
+  && [ "$source_authority_line" -lt "$prebuilt_call_line" ]; then
+  ok "prebuilt selection is bound to a source checkout resolved first"
+else
+  bad "prebuilt selection runs before the source authority is resolved"
+fi
+if grep -qF 'prebuilt_build_info_matches_source "$tmp/BUILD-INFO.json" "$triple"' install.sh \
+  && grep -qF 'and (.omega_commit == $omega_commit)' install.sh \
+  && grep -qF 'and (.cargo_lock_sha256 == $cargo_lock_sha256)' install.sh \
+  && grep -qF 'and (.target == $target)' install.sh \
+  && grep -qF 'startswith($rmux_rev)' install.sh; then
+  ok "prebuilt BUILD-INFO is bound to exact source/rmux/lock/target provenance"
+else
+  bad "prebuilt BUILD-INFO is present but not bound to the exact source authority"
+fi
+if grep -qF 'status --porcelain --untracked-files=no' install.sh \
+  && grep -qF 'Tracked source changes present' install.sh; then
+  ok "tracked local source changes force the source-build fallback"
+else
+  bad "a prebuilt can still replace tracked local source changes"
+fi
+if grep -qF 'chmod 700 "$OMEGA_DIR/state"' install.sh \
+  && grep -qF '.installed-build-info.json.new' install.sh \
+  && grep -qF 'mv -f "$OMEGA_DIR/state/.installed-build-info.json.new"' install.sh; then
+  ok "installed provenance is published atomically inside an owner-only state directory"
+else
+  bad "installed provenance publication is non-atomic or state permissions are too broad"
+fi
 # Telegram liveness watchdog must cover the AGENT bots, not just the master: they
 # run the same poll-loop core, so watching omega-tg-bot.service alone left every
 # project bot able to go "alive but deaf" with nothing to recover it.
@@ -584,8 +619,8 @@ else bad "install.sh still cp's over a possibly-running binary (ETXTBSY aborts t
 #      else under ~/.claude/ (lib/data/agents/resources/rules/projects/…) or under /home/hacker/
 #      is a leak. Documented blank-VPS warnings ("never reference ~/.claude/…") are prose, not leaks.
 leaks=$(grep -rhnE '(~/\.claude/|/home/hacker/)[A-Za-z0-9_./-]+' skills/audits/*/SKILL.md skills/audits/_shared/* 2>/dev/null \
-  | grep -vE '~/\.claude/(commands/|workflows/|settings\.json|\.credentials\.json)' \
-  | grep -vE '~/\.claude/\.\.\.' \
+  | grep -vE '[~]/[.]claude/(commands/|workflows/|settings[.]json|[.]credentials[.]json)' \
+  | grep -vE '[~]/[.]claude/[.][.][.]' \
   | grep -vE '(blank-VPS|never reference|never reach|forbids|ships them|shipped INSIDE|vendored next)')
 if [ -z "$leaks" ]; then
   ok "no SKILL.md references an unshipped ~/.claude or /home/hacker path"
@@ -726,6 +761,20 @@ if [[ -f tools/agent-reach/install-agent-reach.sh ]] && grep -q "install-agent-r
 # The pin must be a real commit, not a branch — an unpinned external repo is an
 # unreviewed one on every future install.
 if grep -qE '^PIN="[0-9a-f]{40}"' tools/agent-reach/install-agent-reach.sh; then ok "Agent Reach pinned to a reviewed commit"; else bad "Agent Reach pin missing or not a full sha"; fi
+if grep -q 'skip_metadata' tools/agent-reach/install-agent-reach.sh \
+  && grep -q 'skills validate --root "$SKILL_DST"' tools/agent-reach/install-agent-reach.sh; then
+  ok "Agent Reach frontmatter is normalized and schema-validated before provider sync"
+else
+  bad "Agent Reach can publish upstream-only metadata that breaks omega sync"
+fi
+if grep -q 'rsync -a --delete "$sk_dir/"' install.sh \
+  && grep -q 'rsync -a --delete --exclude=node_modules' install.sh \
+  && grep -q 'skills validate --root "$sk_dir"' install.sh \
+  && grep -q 'SKMIRROR_REJECTED' install.sh; then
+  ok "skill mirrors prune stale files and reject invalid external protocols before publication"
+else
+  bad "skill mirrors can retain stale or schema-invalid protocols across reinstall"
+fi
 
 # omega-gateway (app API daemon): unit shipped, a workspace member (so the
 # source-build `cargo build --release` above produces omega-gatewayd for
@@ -799,8 +848,8 @@ EOF
       scripts/install-os-commands.sh >/dev/null; then
     while IFS='|' read -r os_slug skill_slug aliases; do
       [ -n "$os_slug" ] || continue
-      old_ifs="$IFS"; IFS=','; set -- $aliases; IFS="$old_ifs"
-      for command_name in "$@"; do
+      IFS=',' read -r -a alias_list <<< "$aliases"
+      for command_name in "${alias_list[@]}"; do
         for exposed_name in "$command_name" "omg-$command_name"; do
           [ -f "$os_command_test_home/.claude/commands/$exposed_name.md" ] \
             || { bad "OS commands: Claude /$exposed_name missing for $os_slug"; os_commands_ok=0; }

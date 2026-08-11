@@ -21,7 +21,10 @@ impl RubricGenerator {
             CriterionCategory::Functional,
         ));
 
-        if has_any(&lower, &["fix", "bug", "broken", "error", "crash", "regression"]) {
+        if has_any(
+            &lower,
+            &["fix", "bug", "broken", "error", "crash", "regression"],
+        ) {
             criteria.push(criterion(
                 "bug-resolved",
                 "The reported bug no longer reproduces",
@@ -141,7 +144,13 @@ fn has_any(text: &str, patterns: &[&str]) -> bool {
 
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -165,8 +174,7 @@ mod tests {
 
     #[test]
     fn feature_adds_criteria() {
-        let rubric =
-            RubricGenerator::generate("implement new dashboard", &[], &PathBuf::from("."));
+        let rubric = RubricGenerator::generate("implement new dashboard", &[], &PathBuf::from("."));
         assert!(rubric.criteria.iter().any(|c| c.id == "feature-functional"));
     }
 
@@ -215,18 +223,15 @@ mod tests {
 
     #[test]
     fn ui_work_adds_visual_criteria() {
-        let rubric = RubricGenerator::generate("redesign the dashboard UI", &[], &PathBuf::from("."));
+        let rubric =
+            RubricGenerator::generate("redesign the dashboard UI", &[], &PathBuf::from("."));
         assert!(rubric.criteria.iter().any(|c| c.id == "visual-correct"));
-        assert!(rubric
-            .criteria
-            .iter()
-            .any(|c| c.id == "no-console-errors"));
+        assert!(rubric.criteria.iter().any(|c| c.id == "no-console-errors"));
     }
 
     #[test]
     fn performance_work_adds_criteria() {
-        let rubric =
-            RubricGenerator::generate("optimize page speed", &[], &PathBuf::from("."));
+        let rubric = RubricGenerator::generate("optimize page speed", &[], &PathBuf::from("."));
         assert!(rubric.criteria.iter().any(|c| c.id == "perf-target"));
     }
 }

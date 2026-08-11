@@ -1062,10 +1062,14 @@ fn parse_status_output(success: bool, stdout: &[u8], stderr: &[u8]) -> LoginStat
         String::from_utf8_lossy(stderr)
     );
     let clean = strip_ansi(&text);
-    if let Some((_, rest)) = clean.split_once("Logged in using") {
-        return LoginStatus::LoggedIn {
-            mode: rest.trim().lines().next().unwrap_or("?").trim().to_string(),
-        };
+    // A non-zero status command may print stale or diagnostic text containing
+    // the success phrase. Never promote that failed command to authenticated.
+    if success {
+        if let Some((_, rest)) = clean.split_once("Logged in using") {
+            return LoginStatus::LoggedIn {
+                mode: rest.trim().lines().next().unwrap_or("?").trim().to_string(),
+            };
+        }
     }
     if clean.to_ascii_lowercase().contains("not logged in") {
         return LoginStatus::NotLoggedIn;
@@ -1494,10 +1498,7 @@ fn abort_with(paths: &LoginPaths, requested_pid: u32) -> AbortResult {
             )
         }
         Err(error) => {
-            return abort_settlement_failure(
-                "active Codex login flow record is unreadable",
-                error,
-            )
+            return abort_settlement_failure("active Codex login flow record is unreadable", error)
         }
     };
     if requested_pid == 0 || requested_pid != record.supervisor_pid {
@@ -1506,10 +1507,7 @@ fn abort_with(paths: &LoginPaths, requested_pid: u32) -> AbortResult {
     let store = match paths.store() {
         Ok(store) => store,
         Err(error) => {
-            return abort_settlement_failure(
-                "could not open the canonical credential store",
-                error,
-            )
+            return abort_settlement_failure("could not open the canonical credential store", error)
         }
     };
 
@@ -1654,6 +1652,10 @@ fn auth_diagnostic(text: &str) -> Option<AuthProbe> {
         .then_some(AuthProbe::QuotaLimited)
 }
 
+fn exact_auth_marker(stdout: &str) -> bool {
+    strip_ansi(stdout).trim() == "AUTH_OK"
+}
+
 fn probe_auth_with(paths: &LoginPaths, runtime: &Runtime, cwd: &Path) -> AuthProbe {
     let prompt = "Reply with exactly AUTH_OK";
     let mut child = match Command::new(&runtime.codex_bin)
@@ -1705,7 +1707,7 @@ fn probe_auth_with(paths: &LoginPaths, runtime: &Runtime, cwd: &Path) -> AuthPro
                 if let Some(classified) = auth_diagnostic(&diagnostics) {
                     return classified;
                 }
-                if status.success() && stdout.split_whitespace().any(|word| word == "AUTH_OK") {
+                if status.success() && exact_auth_marker(&stdout) {
                     return AuthProbe::Usable;
                 }
                 return AuthProbe::Unknown {
@@ -1971,6 +1973,10 @@ mod tests {
         );
         assert!(matches!(
             parse_status_output(true, b"unexpected", b""),
+            LoginStatus::Unknown { .. }
+        ));
+        assert!(matches!(
+            parse_status_output(false, b"Logged in using stale-cache\n", b"fatal"),
             LoginStatus::Unknown { .. }
         ));
     }
@@ -2675,6 +2681,14 @@ exit 1
             auth_diagnostic("HTTP 429 usage limit"),
             Some(AuthProbe::QuotaLimited)
         );
+    }
+
+    #[test]
+    fn auth_probe_marker_must_be_the_entire_response() {
+        assert!(exact_auth_marker("AUTH_OK\n"));
+        assert!(exact_auth_marker("\x1b[32mAUTH_OK\x1b[0m\n"));
+        assert!(!exact_auth_marker("I should reply AUTH_OK"));
+        assert!(!exact_auth_marker("AUTH_OK extra"));
     }
 
     #[test]

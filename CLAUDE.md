@@ -17,7 +17,7 @@ Anyone clones this repo, runs `./install.sh`, and gets:
 ```
 Level 1 — Human Interface (Telegram / CLI / Web)
     ↓ intent
-Level 2 — AISB Orchestrator (persistent daemon)
+Level 2 — Atlas Telegram orchestration service (persistent daemon)
     ↓ dispatch
 Level 3 — Oracle (1 per project, strategic)
     ↓ decompose + delegate
@@ -35,13 +35,13 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
 ## Key Patterns
 
 ### Inspired by tmux-claude UX (re-implemented in Rust against the rmux SDK — no tmux runtime dependency)
-- Option+Z session manager menu (fzf-based, grouped, progress bars)
+- Ctrl+Space session-manager popup, with prefix+o and prefix+z aliases
 - Oracle/worker tree hierarchy display
 - Team spawn + layout (N agents in split panes)
 - Session protection, kill history, auto-discovery
 
 ### From Omega System (Orchestration)
-- 16 AISB Matrix agents (Oracle, Morpheus, Seraph, Keymaker, Trinity, etc.)
+- 15 typed Matrix agent templates (Oracle, Morpheus, Seraph, Keymaker, Trinity, etc.)
 - Quality gates (rubric, grader consensus, Popper falsification)
 - Done.json webhook → Telegram reports
 - Multi-account Claude rotation for unlimited budget
@@ -59,7 +59,7 @@ Level 4 — Workers (ephemeral, parallel, file-lock scoped)
   (TUI System tab, `omega rules list`, every prompt block) and visually distinct.
   The seven: L0 ship-the-truth (install-parity), L1 runtime-is-truth, L2 researcher-not-sycophant,
   L3 decide-and-proceed, L4 done-means-100%, L5 quality-over-speed, L6 finish-the-mission
-  (never stop mid-workflow — enumerate, execute, verify, report; three legal stops only).
+  (never stop mid-workflow — enumerate, execute, verify, report; four legal stops only).
 - **Rules (R-*, named)** — operational, categorized (Universal / QualityGate / Orchestration /
   Reporting / Safety), scoped per agent level (Master / Global / Oracle / Worker via the explicit
   `scopes` field). Guidelines that implement the Laws in practice.

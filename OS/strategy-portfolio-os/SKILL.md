@@ -1,6 +1,7 @@
 ---
 name: strategy-portfolio-os
-description: Convert ambition, evidence and constraints into a coherent strategy, explicit choices, a ranked portfolio of bets and disciplined allocation of time, attention, people and capital. Omega Core function that selects goals, bets, projects and resource allocation before execution begins. Contains 12 specialist agents, 20 skills, 6 protocols and 7 schemas. Use for strategy formulation, bet ranking, portfolio prioritization, or resource allocation decisions across projects. Trigger words: strategy, portfolio, bets, resource allocation, prioritization, strategic choice; FR: strategie, portefeuille, paris strategiques, allocation de ressources, priorisation, choix strategique.
+description: >
+  Convert ambition, evidence and constraints into a coherent strategy, explicit choices, a ranked portfolio of bets and disciplined allocation of time, attention, people and capital. Omega Core function that selects goals, bets, projects and resource allocation before execution begins. Contains 12 specialist agents, 20 skills, 6 protocols and 7 schemas. Use for strategy formulation, bet ranking, portfolio prioritization, or resource allocation decisions across projects. Trigger words: strategy, portfolio, bets, resource allocation, prioritization, strategic choice; FR: strategie, portefeuille, paris strategiques, allocation de ressources, priorisation, choix strategique.
 ---
 
 # Strategy & Portfolio {OS}

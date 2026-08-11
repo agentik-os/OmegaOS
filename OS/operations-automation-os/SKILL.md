@@ -1,6 +1,7 @@
 ---
 name: operations-automation-os
-description: Interview and observe how a product or business actually works, reveal waste and control gaps, decide what to remove, simplify, standardize, delegate or automate, and produce production-ready automation blueprints with monitoring and recovery. Contains 24 specialist agents, 39 skills, 9 protocols and 9 schemas. Use for process audits, workflow simplification, automation design, standard operating procedures, or control-gap review. Trigger words: operations, automation, process audit, workflow, standardize, delegate, automation blueprint, SOP; FR: operations, automatisation, audit de processus, flux de travail, standardiser, deleguer, blueprint d'automatisation.
+description: >
+  Interview and observe how a product or business actually works, reveal waste and control gaps, decide what to remove, simplify, standardize, delegate or automate, and produce production-ready automation blueprints with monitoring and recovery. Contains 24 specialist agents, 39 skills, 9 protocols and 9 schemas. Use for process audits, workflow simplification, automation design, standard operating procedures, or control-gap review. Trigger words: operations, automation, process audit, workflow, standardize, delegate, automation blueprint, SOP; FR: operations, automatisation, audit de processus, flux de travail, standardiser, deleguer, blueprint d'automatisation.
 ---
 
 # Operations & Automation {OS}

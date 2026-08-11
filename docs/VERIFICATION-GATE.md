@@ -1,81 +1,104 @@
-# OmegaOS — Verification Gate Protocol
+# OmegaOS verification gate protocol
 
-> "Code lies. Only runtime tells the truth." — Rule L1
-> Every oracle's output passes through this gate. No exceptions.
+> Code and documentation are claims. A gate accepts only fresh evidence from
+> the exact revision and runtime under review.
 
-## Gate 1: Build (automated, mandatory)
+This checklist covers the current non-gateway OmegaOS release unit. Release
+publication and rollback are documented in [RELEASE.md](RELEASE.md).
+
+## 1. Source gate
+
+Run the checked-in CI boundary with the lockfile:
 
 ```bash
-cargo build --release 2>&1  # 0 errors = PASS
-cargo test 2>&1             # all tests pass = PASS
+cargo fmt -p omega-core -p omega-tui -p omega -- --check
+cargo clippy --locked -p omega-core -p omega-tui -p omega --all-targets -- -D warnings
+RUSTFLAGS="-D warnings" cargo build --release --locked -p omega-core -p omega-tui -p omega
+cargo test --locked -p omega-core -p omega-tui -p omega
+bash scripts/check-workflows.sh
+bash scripts/tests/test_audit_runner.sh
+python3 scripts/tests/test_hook_plan_state.py
+python3 scripts/tests/test_skill_catalog_scripts.py
+python3 scripts/tests/test_release_contract.py
+cargo run --locked --bin omega -- skills validate --root skills
+(cd installer && npm test)
 ```
 
-If ANY oracle's code breaks the build → revert their changes, re-dispatch.
+Any nonzero exit is a failure. Preserve the failing output and repair the cause;
+do not discard unrelated work or convert a warning into a pass.
 
-## Gate 2: Module Coherence (manual review)
+## 2. Architecture and state gate
 
-For each new .rs file, verify:
-- [ ] Types match across module boundaries (no orphan structs)
-- [ ] All `pub fn` have at least 1 caller
-- [ ] No duplicate functionality between oracles
-- [ ] lib.rs properly declares all new modules
+- Orchestration sessions use the typed rmux SDK, not tmux text scraping.
+- `~/.omega/state/mission-engine-v3.sqlite3` is the only mission write
+  authority. JSON, Telegram cards, timelines, and task lists are projections.
+- Compatibility projections carry ledger version, event, and hash provenance;
+  forged or stale projections fail closed.
+- Worker completion is a candidate until its exact task attempt and independent
+  evidence are accepted in the ledger.
+- File scope and worktree leases use generation/fencing identity; a stale owner
+  cannot release a newer claim.
+- Telegram routing and bot state use the Bun/TypeScript service and typed core
+  registries. Secrets remain in user-owned configuration with restrictive
+  permissions.
+- Configuration and state paths derive from OmegaOS configuration, the user
+  home, or explicit overrides. No operator-specific absolute path belongs in
+  runtime code.
 
-## Gate 3: Architecture Compliance
+## 3. Runtime inventory gate
 
-- [ ] All orchestration uses rmux SDK (NEVER tmux commands)
-- [ ] All Telegram uses reqwest HTTP (NEVER python-telegram-bot)
-- [ ] All state uses JSONL/JSON files (NEVER SQLite for now)
-- [ ] All config reads from ~/.omega/ (NEVER hardcoded paths)
-- [ ] No Python, no bash scripts in the Rust pipeline
+Run the freshly built binary, not an older installed copy:
 
-## Gate 4: Rule Enforcement in Code
-
-- [ ] R-19: rubric.rs generates criteria BEFORE worker dispatch
-- [ ] R-21: gate.rs implements 3-lens verification
-- [ ] R-30: gate.rs implements ≥12 Popper challenges
-- [ ] R-14: ship.rs verifies deploy returns 200
-- [ ] R-28: mission.rs tracks token budget
-- [ ] R-35: verifier.rs rejects uncited claims
-- [ ] L3: oracle_lifecycle.rs never waits for user input
-- [ ] SCOPE-CLAIM: dispatch.rs rejects overlapping file claims
-
-## Gate 5: E2E Flow Test
-
-Simulate the full chain:
-```
-1. Create a test project via omega projects add
-2. Send a message via Telegram bridge
-3. Intent parser classifies it
-4. Router dispatches to correct oracle
-5. Oracle spawns worker with fresh context
-6. Worker completes, writes done.json
-7. Quality gate runs (rubric + multi-grader)
-8. Ship pipeline (build + commit + push)
-9. Report sent back via Telegram
-10. Reply to report → auto-routes to same oracle
+```bash
+cargo run --locked --bin omega -- --version
+cargo run --locked --bin omega -- --help
+cargo run --locked --bin omega -- rules list
+cargo run --locked --bin omega -- audit list
+cargo run --locked --bin omega -- doctor
 ```
 
-Each step must produce verifiable evidence (log line, file, pane capture).
+Verify that help and documentation agree with the runtime. `doctor` warnings
+remain warnings until fixed; binary-provenance drift is expected before install
+but must be green after the install gate.
 
-## Gate 6: Regression Check
+## 4. Mission lifecycle gate
 
-Compare before/after:
-- All existing TUI features still work (scroll, tabs, Enter/Esc, Ctrl+L)
-- Telegram bridge still sends/receives messages
-- AISB Master still auto-restarts on crash
-- PDF generator still works from any directory
-- omega rules list/export/sync still function
-- All Laws + the named Rules still render in the System tab (`omega rules list` is the count of record)
+Exercise a disposable mission or test fixture and capture evidence for each
+transition:
 
-## Execution
+1. create/classify the mission and persist its immutable identity;
+2. persist a typed plan with explicit acceptance and verification checks;
+3. dispatch a task attempt with exact project, worktree, and scope identity;
+4. submit a completion candidate;
+5. independently verify the candidate and record the verdict;
+6. reject closure while any required task or worker remains nonterminal;
+7. close delivery once, then replay/retry it to prove idempotency;
+8. restart and resume from the ledger, not from transcript memory.
 
-After all 5 oracles write .done.json:
-1. Merge all changes (resolve lib.rs conflicts)
-2. Run Gate 1 (build + test)
-3. Run Gate 2 (module coherence)
-4. Run Gate 3 (architecture compliance)
-5. Run Gate 4 (rule enforcement)
-6. Fix any failures, re-run gates
-7. Run Gate 5 (E2E)
-8. Run Gate 6 (regression)
-9. Only then: git push
+Test a negative path as well: stale scope generation, stale plan revision,
+forged projection, failed verifier, or unavailable delivery must not be accepted.
+
+## 5. Installed-runtime gate
+
+After `./install.sh`, verify install parity and actual operator paths:
+
+```bash
+./scripts/verify-install.sh
+omega -V
+omega doctor --deep
+omega rules list
+omega audit list
+omega list
+systemctl --user status omega-tg-bot.service
+```
+
+Then exercise the TUI tabs and input, a disposable CLI dispatch, and configured
+Telegram topic routing. Authentication or delivery paths that are not
+configured are unverified, not passing.
+
+## 6. Release acceptance
+
+Only a clean, pushed revision with successful blocking CI can be tagged. Verify
+checksums, `BUILD-INFO.json`, SPDX SBOMs, GitHub attestations, and a source
+install of the exact tag as described in [RELEASE.md](RELEASE.md). A worker or
+oracle self-report never substitutes for these checks.

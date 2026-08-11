@@ -1,4 +1,4 @@
-use crate::agents::Agent;
+use crate::agents::{Agent, AgentLaunch};
 use anyhow::{Context, Result};
 use rmux_sdk::{
     EnsureSession, EnsureSessionPolicy, Pane, ProcessSpec, Rmux, Session, SessionName,
@@ -6,6 +6,7 @@ use rmux_sdk::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +15,162 @@ use std::time::Duration;
 /// `callback_data` that embeds a session name under the 64-byte API cap
 /// (longest prefix today is `stop_workers:` = 13 bytes; 13 + 48 = 61 < 64).
 pub const MAX_SESSION_NAME_LEN: usize = 48;
+const TYPED_AGENT_SESSION_POLICY: EnsureSessionPolicy = EnsureSessionPolicy::CreateOnly;
+pub const SESSION_DISPATCH_AUTHORITY_SCHEMA_VERSION: u32 = 1;
+pub const DISPATCH_GENERATION_ENV: &str = "OMEGA_DISPATCH_GENERATION";
+pub const SCOPE_CLAIM_ID_ENV: &str = "OMEGA_SCOPE_CLAIM_ID";
+
+/// Immutable receipt for one concrete same-name session generation.
+///
+/// It contains no credential or prompt material. The receipt is safe to pass
+/// through a structured child-process environment and lets cleanup distinguish
+/// a late generation A signal from the current generation B session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionDispatchAuthority {
+    pub schema_version: u32,
+    pub session: String,
+    pub dispatch_generation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_claim_id: Option<String>,
+}
+
+impl SessionDispatchAuthority {
+    pub fn generate(session: &str, scope_claim_id: Option<&str>) -> Result<Self> {
+        validate_canonical_session_name(session)?;
+        if let Some(claim_id) = scope_claim_id {
+            validate_generation_token("scope claim", claim_id)?;
+        }
+        let mut entropy = [0_u8; 32];
+        getrandom::fill(&mut entropy).map_err(|error| {
+            anyhow::anyhow!("reading OS entropy for dispatch generation failed: {error}")
+        })?;
+        let authority = Self {
+            schema_version: SESSION_DISPATCH_AUTHORITY_SCHEMA_VERSION,
+            session: session.to_string(),
+            dispatch_generation: blake3::hash(&entropy).to_hex().to_string(),
+            scope_claim_id: scope_claim_id.map(str::to_string),
+        };
+        authority.validate()?;
+        Ok(authority)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema_version != SESSION_DISPATCH_AUTHORITY_SCHEMA_VERSION {
+            anyhow::bail!(
+                "unsupported session dispatch authority schema {}",
+                self.schema_version
+            );
+        }
+        validate_canonical_session_name(&self.session)?;
+        validate_generation_token("dispatch", &self.dispatch_generation)?;
+        if let Some(claim_id) = &self.scope_claim_id {
+            validate_generation_token("scope claim", claim_id)?;
+        }
+        Ok(())
+    }
+
+    pub fn environment(&self) -> Vec<(String, String)> {
+        let mut environment = vec![(
+            DISPATCH_GENERATION_ENV.to_string(),
+            self.dispatch_generation.clone(),
+        )];
+        if let Some(claim_id) = &self.scope_claim_id {
+            environment.push((SCOPE_CLAIM_ID_ENV.to_string(), claim_id.clone()));
+        }
+        environment
+    }
+
+    pub fn read_strict(state_dir: &Path, session: &str) -> Result<Option<Self>> {
+        validate_canonical_session_name(session)?;
+        let _lock = session_authority_lock(state_dir, session)?;
+        Self::read_locked(state_dir, session)
+    }
+
+    pub fn validate_current(&self, state_dir: &Path) -> Result<()> {
+        self.validate()?;
+        let _lock = session_authority_lock(state_dir, &self.session)?;
+        self.validate_current_locked(state_dir)
+    }
+
+    pub fn remove_exact(&self, state_dir: &Path) -> Result<()> {
+        self.validate()?;
+        let _lock = session_authority_lock(state_dir, &self.session)?;
+        self.validate_current_locked(state_dir)?;
+        crate::scope::remove_private_file(&session_authority_path(state_dir, &self.session)?)
+    }
+
+    fn read_locked(state_dir: &Path, session: &str) -> Result<Option<Self>> {
+        let authority =
+            crate::scope::read_private_json::<Self>(&session_authority_path(state_dir, session)?)?;
+        if let Some(authority) = &authority {
+            authority.validate()?;
+            if authority.session != session {
+                anyhow::bail!(
+                    "session authority filename/document mismatch: expected {session}, found {}",
+                    authority.session
+                );
+            }
+        }
+        Ok(authority)
+    }
+
+    fn write_locked(&self, state_dir: &Path) -> Result<()> {
+        self.validate()?;
+        let path = session_authority_path(state_dir, &self.session)?;
+        // A create-only launch proved there was no live same-name session.
+        // Replacing a valid stale receipt is therefore safe while this lock is
+        // held; the strict read prevents overwriting unsafe metadata.
+        let _ = Self::read_locked(state_dir, &self.session)?;
+        crate::config::atomic_write_private(&path, &serde_json::to_vec_pretty(self)?)?;
+        let published = Self::read_locked(state_dir, &self.session)?
+            .ok_or_else(|| anyhow::anyhow!("session dispatch authority vanished after publish"))?;
+        if published != *self {
+            anyhow::bail!("session dispatch authority changed during publish");
+        }
+        Ok(())
+    }
+
+    fn validate_current_locked(&self, state_dir: &Path) -> Result<()> {
+        let current = Self::read_locked(state_dir, &self.session)?
+            .ok_or_else(|| anyhow::anyhow!("session dispatch authority is absent"))?;
+        if current != *self {
+            anyhow::bail!(
+                "session dispatch generation changed: expected {}, current {}",
+                self.dispatch_generation,
+                current.dispatch_generation
+            );
+        }
+        Ok(())
+    }
+}
+
+fn validate_canonical_session_name(session: &str) -> Result<()> {
+    crate::scope::validate_session_identity(session)?;
+    let canonical = sanitize_session_name(session);
+    if canonical != session {
+        anyhow::bail!(
+            "session authority requires exact canonical identity `{canonical}`, received `{session}`"
+        );
+    }
+    Ok(())
+}
+
+fn validate_generation_token(label: &str, generation: &str) -> Result<()> {
+    if generation.len() != 64 || !generation.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid {label} generation token");
+    }
+    Ok(())
+}
+
+fn session_authority_path(state_dir: &Path, session: &str) -> Result<PathBuf> {
+    validate_canonical_session_name(session)?;
+    Ok(state_dir.join(format!("session-authority-{session}.json")))
+}
+
+fn session_authority_lock(state_dir: &Path, session: &str) -> Result<std::fs::File> {
+    validate_canonical_session_name(session)?;
+    crate::scope::lock_private_state_file(state_dir, &format!(".session-authority-{session}.lock"))
+}
 
 /// Slugify an arbitrary string into a safe rmux session name.
 ///
@@ -70,6 +227,19 @@ fn fold_accent(ch: char) -> char {
     }
 }
 
+fn resolve_agent_command(agent_command: &str) -> Result<Agent> {
+    Agent::from_name(agent_command).with_context(|| {
+        format!(
+            "unknown agent provider {agent_command:?}; expected one of: {}",
+            Agent::all()
+                .iter()
+                .map(Agent::name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRole {
     Oracle,
@@ -115,8 +285,20 @@ impl OmegaSession {
         // Check this BEFORE the system-prefix check so that e.g. AISB-worker-X
         // is correctly identified as a Worker under project AISB.
         let worker_suffixes = [
-            "-worker-", "-fix-", "-dev-", "-dispatch-", "-work-", "-linear", "-task-", "-audit-",
-            "-challenger-", "-report-", "-verify-", "-build-", "-deploy-", "-team-",
+            "-worker-",
+            "-fix-",
+            "-dev-",
+            "-dispatch-",
+            "-work-",
+            "-linear",
+            "-task-",
+            "-audit-",
+            "-challenger-",
+            "-report-",
+            "-verify-",
+            "-build-",
+            "-deploy-",
+            "-team-",
         ];
         for suffix in &worker_suffixes {
             // rfind (RIGHTMOST match): the role suffix is the LAST component, so
@@ -168,35 +350,22 @@ impl OmegaSession {
 }
 
 fn session_provider_path(name: &str) -> PathBuf {
-    crate::config::omega_dir()
-        .join("state")
-        .join(format!(
-            "session-provider-{}.json",
-            sanitize_session_name(name)
-        ))
+    crate::config::omega_dir().join("state").join(format!(
+        "session-provider-{}.json",
+        sanitize_session_name(name)
+    ))
 }
 
-fn record_session_provider(name: &str, agent: Agent) {
+fn record_session_provider(name: &str, agent: Agent) -> Result<()> {
     let path = session_provider_path(name);
-    let Some(parent) = path.parent() else {
-        return;
-    };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
-    let tmp = path.with_extension("json.tmp");
     let payload = serde_json::json!({
         "session": sanitize_session_name(name),
         "provider": agent.name(),
         "recorded_at": chrono::Utc::now().to_rfc3339(),
     });
-    if serde_json::to_vec_pretty(&payload)
-        .ok()
-        .and_then(|bytes| std::fs::write(&tmp, bytes).ok())
-        .is_some()
-    {
-        let _ = std::fs::rename(tmp, path);
-    }
+    let bytes = serde_json::to_vec_pretty(&payload).context("serializing session provider")?;
+    crate::config::atomic_write_private(&path, &bytes)
+        .with_context(|| format!("recording provider for session {name}"))
 }
 
 fn read_session_provider(name: &str) -> Option<String> {
@@ -285,6 +454,78 @@ impl SessionManager {
         working_dir: Option<&str>,
         command: Option<&str>,
     ) -> Result<Session> {
+        self.create_session_with_environment(name, working_dir, command, &[])
+            .await
+    }
+
+    pub(crate) async fn create_session_with_environment(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        command: Option<&str>,
+        environment: &[(String, String)],
+    ) -> Result<Session> {
+        self.create_session_with_environment_and_policy(
+            name,
+            working_dir,
+            command,
+            environment,
+            EnsureSessionPolicy::CreateOrReuse,
+        )
+        .await
+    }
+
+    /// Create one explicit-command session bound to an immutable dispatch
+    /// generation. Authority variables travel through rmux's structured
+    /// environment and the receipt is published only after create-only
+    /// succeeds. A metadata failure rolls the new session back.
+    pub async fn create_command_session_create_only_with_authority(
+        &self,
+        state_dir: &Path,
+        name: &str,
+        working_dir: Option<&str>,
+        command: &str,
+        authority: &SessionDispatchAuthority,
+    ) -> Result<Session> {
+        authority.validate()?;
+        if authority.session != name {
+            anyhow::bail!(
+                "session authority identity {} differs from launch target {name}",
+                authority.session
+            );
+        }
+        let _lock = session_authority_lock(state_dir, name)?;
+        let environment = authority.environment();
+        let session = self
+            .create_session_with_environment_and_policy(
+                name,
+                working_dir,
+                Some(command),
+                &environment,
+                EnsureSessionPolicy::CreateOnly,
+            )
+            .await?;
+        if let Err(error) = authority.write_locked(state_dir) {
+            let rollback = session.kill().await.err();
+            return Err(error).with_context(|| match rollback {
+                Some(rollback) => format!(
+                    "dispatch authority publication failed; session rollback also failed: {rollback}"
+                ),
+                None => "dispatch authority publication failed; session was rolled back"
+                    .to_string(),
+            });
+        }
+        Ok(session)
+    }
+
+    async fn create_session_with_environment_and_policy(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        command: Option<&str>,
+        environment: &[(String, String)],
+        policy: EnsureSessionPolicy,
+    ) -> Result<Session> {
         // Defense-in-depth chokepoint: rmux keys every operation (kill, rename,
         // capture) on the session name, and names with spaces, non-ASCII, or
         // punctuation (`:`, `?`, U+202F …) break that lookup — the session
@@ -295,12 +536,23 @@ impl SessionManager {
         let safe = sanitize_session_name(name);
         let session_name = SessionName::new(&safe)?;
         let mut builder = EnsureSession::named(session_name)
-            .policy(EnsureSessionPolicy::CreateOrReuse)
+            .policy(policy)
             .detached(true)
             .size(TerminalSizeSpec::new(200, 50));
 
         if let Some(cmd) = command {
-            builder = builder.process(ProcessSpec::shell(cmd));
+            let mut process = ProcessSpec::shell(cmd);
+            if !environment.is_empty() {
+                process.environment = Some(
+                    environment
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect(),
+                );
+            }
+            builder = builder.process(process);
+        } else if !environment.is_empty() {
+            anyhow::bail!("session environment requires an explicit process command");
         }
 
         if let Some(dir) = working_dir {
@@ -322,12 +574,10 @@ impl SessionManager {
         agent_command: &str,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        // Invalid or absent provider names follow the current OmegaOS default.
-        let agent = Agent::from_name(agent_command).unwrap_or(Agent::Codex);
-        let cmd = agent.launch_command(prompt);
-        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
-        record_session_provider(name, agent);
-        Ok(session)
+        let agent = resolve_agent_command(agent_command)?;
+        let launch = agent.try_launch(prompt)?;
+        self.create_recorded_agent_session(name, Some(working_dir), agent, launch)
+            .await
     }
 
     pub async fn create_session_with_agent(
@@ -337,15 +587,13 @@ impl SessionManager {
         agent: Agent,
         prompt: Option<&str>,
     ) -> Result<Session> {
-        let cmd = agent.launch_command(prompt);
-        let session = self.create_session(name, working_dir, Some(&cmd)).await?;
-        record_session_provider(name, agent);
-        Ok(session)
+        let launch = agent.try_launch(prompt)?;
+        self.create_recorded_agent_session(name, working_dir, agent, launch)
+            .await
     }
 
-    /// Spawn an agent session with full LaunchOptions — for Claude this
-    /// enables /goal injection, --effort, --max-turns, --max-budget-usd.
-    /// Other providers ignore the Claude-only fields.
+    /// Spawn an agent session with full LaunchOptions. Claude's interactive
+    /// lane intentionally omits its print-only max-turn/max-budget flags.
     pub async fn create_agent_session_with_opts(
         &self,
         name: &str,
@@ -354,10 +602,175 @@ impl SessionManager {
         prompt: Option<&str>,
         opts: crate::agents::LaunchOptions,
     ) -> Result<Session> {
-        let cmd = agent.launch_command_with(prompt, opts);
-        let session = self.create_session(name, Some(working_dir), Some(&cmd)).await?;
-        record_session_provider(name, agent);
+        let launch = agent.try_launch_with(prompt, opts)?;
+        self.create_recorded_agent_session(name, Some(working_dir), agent, launch)
+            .await
+    }
+
+    /// Atomically replace a pane process with a typed agent launch. rmux sends
+    /// credentials through its structured environment field, so repair never
+    /// types secrets into a shell or exposes them in process argv.
+    pub async fn relaunch_agent_session_with_opts(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        prompt: Option<&str>,
+        opts: crate::agents::LaunchOptions,
+    ) -> Result<()> {
+        let launch = agent.try_launch_with(prompt, opts)?;
+        let session = self.get_session(name).await?;
+        let pane = session.pane(0, 0);
+        let (command, environment) = launch.into_parts();
+        let mut spawn = pane.shell(command).kill_existing(true);
+        if let Some(dir) = working_dir {
+            spawn = spawn.cwd(dir);
+        }
+        for (key, value) in environment {
+            spawn = spawn.env(key, value);
+        }
+        spawn
+            .await
+            .context("Failed to relaunch agent process in session pane")?;
+        record_session_provider(name, agent)?;
+        self.invalidate_pane(name).await;
+        Ok(())
+    }
+
+    pub(crate) async fn create_recorded_agent_session(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        launch: AgentLaunch,
+    ) -> Result<Session> {
+        // An agent launch owns authority and process provenance. Reusing an
+        // existing same-name pane would return success without starting this
+        // command, then overwrite that live pane's provider metadata. Generic
+        // terminal creation retains create-or-reuse semantics; typed agent
+        // launches are create-only and callers that intend replacement must
+        // use the explicit relaunch API.
+        self.create_recorded_agent_session_create_only(name, working_dir, agent, launch)
+            .await
+    }
+
+    /// A fresh authority owner must never inherit a same-name pane. This path
+    /// atomically fails on collision instead of reusing an unrelated session.
+    pub(crate) async fn create_recorded_agent_session_create_only(
+        &self,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        launch: AgentLaunch,
+    ) -> Result<Session> {
+        let (command, environment) = launch.into_parts();
+        let session = self
+            .create_session_with_environment_and_policy(
+                name,
+                working_dir,
+                Some(&command),
+                &environment,
+                TYPED_AGENT_SESSION_POLICY,
+            )
+            .await?;
+        if let Err(error) = record_session_provider(name, agent) {
+            let rollback = self.kill_session(name).await.err();
+            return Err(error).with_context(|| match rollback {
+                Some(rollback) => format!(
+                    "provider provenance failed after create-only session launch; rollback also failed: {rollback}"
+                ),
+                None => "provider provenance failed; create-only session was rolled back".to_string(),
+            });
+        }
         Ok(session)
+    }
+
+    /// Typed-agent counterpart of
+    /// [`Self::create_command_session_create_only_with_authority`]. Provider
+    /// credentials remain in the existing structured launch environment; the
+    /// two authority values are non-secret and duplicate reserved keys are
+    /// refused rather than silently shadowed.
+    pub async fn create_agent_session_create_only_with_authority(
+        &self,
+        state_dir: &Path,
+        name: &str,
+        working_dir: Option<&str>,
+        agent: Agent,
+        launch: AgentLaunch,
+        authority: &SessionDispatchAuthority,
+    ) -> Result<Session> {
+        authority.validate()?;
+        if authority.session != name {
+            anyhow::bail!(
+                "session authority identity {} differs from launch target {name}",
+                authority.session
+            );
+        }
+        let (command, mut environment) = launch.into_parts();
+        if environment
+            .iter()
+            .any(|(key, _)| key == DISPATCH_GENERATION_ENV || key == SCOPE_CLAIM_ID_ENV)
+        {
+            anyhow::bail!("agent launch attempted to override reserved dispatch authority");
+        }
+        environment.extend(authority.environment());
+
+        let _lock = session_authority_lock(state_dir, name)?;
+        let session = self
+            .create_session_with_environment_and_policy(
+                name,
+                working_dir,
+                Some(&command),
+                &environment,
+                TYPED_AGENT_SESSION_POLICY,
+            )
+            .await?;
+        if let Err(error) = record_session_provider(name, agent) {
+            let rollback = session.kill().await.err();
+            return Err(error).with_context(|| match rollback {
+                Some(rollback) => format!(
+                    "provider provenance failed after generated launch; rollback also failed: {rollback}"
+                ),
+                None => "provider provenance failed; generated launch was rolled back".to_string(),
+            });
+        }
+        if let Err(error) = authority.write_locked(state_dir) {
+            let rollback = session.kill().await.err();
+            let provider_cleanup =
+                crate::scope::remove_private_file(&session_provider_path(name)).err();
+            return Err(error).with_context(|| {
+                let mut detail = "dispatch authority publication failed".to_string();
+                if let Some(rollback) = rollback {
+                    detail.push_str(&format!("; session rollback also failed: {rollback}"));
+                }
+                if let Some(provider_cleanup) = provider_cleanup {
+                    detail.push_str(&format!(
+                        "; provider metadata rollback also failed: {provider_cleanup}"
+                    ));
+                }
+                detail
+            });
+        }
+        Ok(session)
+    }
+
+    /// Kill only the session generation named by `authority`. The per-session
+    /// lock serializes OmegaOS create and cleanup paths, so a late A cleanup
+    /// cannot validate against or kill a replacement B generation.
+    pub async fn kill_session_exact(
+        &self,
+        state_dir: &Path,
+        authority: &SessionDispatchAuthority,
+    ) -> Result<()> {
+        authority.validate()?;
+        let _lock = session_authority_lock(state_dir, &authority.session)?;
+        authority.validate_current_locked(state_dir)?;
+        let session = self.get_session(&authority.session).await?;
+        session.kill().await?;
+        crate::scope::remove_private_file(&session_authority_path(state_dir, &authority.session)?)?;
+        crate::scope::remove_private_file(&session_provider_path(&authority.session))?;
+        self.invalidate_pane(&authority.session).await;
+        Ok(())
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<OmegaSession>> {
@@ -459,7 +872,9 @@ impl SessionManager {
         if !status.success() {
             anyhow::bail!("rmux rename-session failed (exit {:?})", status.code());
         }
-        crate::tuilog::log(format!("rename: '{old_name}' → '{safe}' (raw input: '{new_name}')"));
+        crate::tuilog::log(format!(
+            "rename: '{old_name}' → '{safe}' (raw input: '{new_name}')"
+        ));
         // Old name is no longer addressable — drop its cached pane. Also drop
         // any entry under new_name: a stale cache slot left from a prior session
         // of the same name would otherwise point at a now-different daemon pane.
@@ -592,11 +1007,7 @@ impl SessionManager {
     /// The Enter is deliberately NOT inside the retried block: replaying a
     /// submit could duplicate a turn, whereas replaying the paste alone can
     /// only ever re-fill a composer that never received it.
-    pub async fn send_paste_then_submit(
-        &self,
-        session_name: &str,
-        text: &str,
-    ) -> Result<()> {
+    pub async fn send_paste_then_submit(&self, session_name: &str, text: &str) -> Result<()> {
         self.send_paste_block(session_name, text).await?;
         let pane = self.pane_for(session_name).await?;
         match pane.send_key("Enter").await {
@@ -811,11 +1222,7 @@ impl SessionManager {
         Ok(())
     }
 
-    pub async fn split_pane(
-        &self,
-        session_name: &str,
-        command: Option<&str>,
-    ) -> Result<Pane> {
+    pub async fn split_pane(&self, session_name: &str, command: Option<&str>) -> Result<Pane> {
         let pane = self.get_active_pane(session_name).await?;
 
         if let Some(cmd) = command {
@@ -896,8 +1303,12 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
         let mut cur_underline = false;
         let mut started = false;
         for col in 0..cols {
-            let Some(cell) = snapshot.cell(r, col) else { continue };
-            if cell.glyph.is_padding() { continue; }
+            let Some(cell) = snapshot.cell(r, col) else {
+                continue;
+            };
+            if cell.glyph.is_padding() {
+                continue;
+            }
             let ch = cell.glyph.text.clone();
             let attr_bits = cell.attributes.bits;
             let reverse = attr_bits & rmux_sdk::PaneAttributes::REVERSE.bits != 0;
@@ -910,8 +1321,12 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             if reverse {
                 std::mem::swap(&mut fg, &mut bg);
                 // ensure a visible swap even when one side was default
-                if fg.is_none() { fg = Some(PreviewColor::Indexed(0)); }
-                if bg.is_none() { bg = Some(PreviewColor::Indexed(7)); }
+                if fg.is_none() {
+                    fg = Some(PreviewColor::Indexed(0));
+                }
+                if bg.is_none() {
+                    bg = Some(PreviewColor::Indexed(7));
+                }
             }
             let glyph = if ch.is_empty() { " ".to_string() } else { ch };
             if started
@@ -925,7 +1340,15 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
                 cur_text.push_str(&glyph);
             } else {
                 if started {
-                    line.push(PreviewSpan { text: std::mem::take(&mut cur_text), fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
+                    line.push(PreviewSpan {
+                        text: std::mem::take(&mut cur_text),
+                        fg: cur_fg,
+                        bg: cur_bg,
+                        bold: cur_bold,
+                        dim: cur_dim,
+                        italic: cur_italic,
+                        underline: cur_underline,
+                    });
                 }
                 cur_fg = fg;
                 cur_bg = bg;
@@ -938,7 +1361,15 @@ fn styled_rows_from_snapshot(snapshot: &rmux_sdk::PaneSnapshot) -> Vec<PreviewLi
             }
         }
         if started && !cur_text.is_empty() {
-            line.push(PreviewSpan { text: cur_text, fg: cur_fg, bg: cur_bg, bold: cur_bold, dim: cur_dim, italic: cur_italic, underline: cur_underline });
+            line.push(PreviewSpan {
+                text: cur_text,
+                fg: cur_fg,
+                bg: cur_bg,
+                bold: cur_bold,
+                dim: cur_dim,
+                italic: cur_italic,
+                underline: cur_underline,
+            });
         }
         // Trim trailing all-blank spans to keep lines tight.
         while line
@@ -971,7 +1402,6 @@ fn pane_color_to_preview(c: &rmux_sdk::PaneColor) -> Option<PreviewColor> {
         _ => None,
     }
 }
-
 
 /// Menu ordering for the session list. Groups by section (Home, project work,
 /// System), then by project, then — within a project — oracles BEFORE their
@@ -1043,13 +1473,13 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
         let (mut bold, mut dim, mut italic, mut underline) = (false, false, false, false);
 
         let flush = |cur: &mut String,
-                         line: &mut PreviewLine,
-                         fg: Option<PreviewColor>,
-                         bg: Option<PreviewColor>,
-                         bold: bool,
-                         dim: bool,
-                         italic: bool,
-                         underline: bool| {
+                     line: &mut PreviewLine,
+                     fg: Option<PreviewColor>,
+                     bg: Option<PreviewColor>,
+                     bold: bool,
+                     dim: bool,
+                     italic: bool,
+                     underline: bool| {
             if !cur.is_empty() {
                 line.push(PreviewSpan {
                     text: std::mem::take(cur),
@@ -1085,9 +1515,7 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
                     if final_byte != Some('m') {
                         continue; // non-SGR CSI: consumed, never rendered
                     }
-                    flush(
-                        &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
-                    );
+                    flush(&mut cur, &mut line, fg, bg, bold, dim, italic, underline);
                     let nums: Vec<i32> = params
                         .split(';')
                         .map(|p| p.trim().parse::<i32>().unwrap_or(0))
@@ -1173,9 +1601,7 @@ pub fn styled_rows_from_ansi(input: &str) -> (Vec<PreviewLine>, String) {
                 }
             }
         }
-        flush(
-            &mut cur, &mut line, fg, bg, bold, dim, italic, underline,
-        );
+        flush(&mut cur, &mut line, fg, bg, bold, dim, italic, underline);
         rows.push(line);
         plain.push('\n');
     }
@@ -1206,8 +1632,7 @@ mod ansi_parse_tests {
 
     #[test]
     fn parses_truecolor_and_drops_non_sgr_sequences() {
-        let (rows, plain) =
-            styled_rows_from_ansi("\u{1b}[2K\u{1b}[38;2;10;20;30mRGB\u{1b}[m tail");
+        let (rows, plain) = styled_rows_from_ansi("\u{1b}[2K\u{1b}[38;2;10;20;30mRGB\u{1b}[m tail");
         assert_eq!(plain, "RGB tail");
         assert!(matches!(rows[0][0].fg, Some(PreviewColor::Rgb(10, 20, 30))));
         assert!(rows[0][1].fg.is_none());
@@ -1216,8 +1641,9 @@ mod ansi_parse_tests {
 
 #[cfg(test)]
 mod sanitize_tests {
-    use super::sanitize_session_name as s;
-    use super::MAX_SESSION_NAME_LEN;
+    use super::{resolve_agent_command, sanitize_session_name as s};
+    use super::{EnsureSessionPolicy, MAX_SESSION_NAME_LEN, TYPED_AGENT_SESSION_POLICY};
+    use crate::agents::Agent;
 
     #[test]
     fn clean_names_unchanged() {
@@ -1248,9 +1674,13 @@ mod sanitize_tests {
             let out = s(raw);
             assert!(!out.is_empty());
             assert!(out.len() <= MAX_SESSION_NAME_LEN, "too long: {out}");
-            assert!(!out.starts_with('-') && !out.ends_with('-'), "edge dash: {out}");
             assert!(
-                out.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
+                !out.starts_with('-') && !out.ends_with('-'),
+                "edge dash: {out}"
+            );
+            assert!(
+                out.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')),
                 "non-slug char survived in {out:?}"
             );
         }
@@ -1274,6 +1704,82 @@ mod sanitize_tests {
         assert_eq!(s("???"), "session"); // empty-after-strip → fallback
         assert_eq!(s(""), "session");
         assert!(s(&"x".repeat(200)).len() <= MAX_SESSION_NAME_LEN);
+    }
+
+    #[test]
+    fn unknown_agent_command_is_rejected_without_codex_fallback() {
+        assert_eq!(resolve_agent_command("codex").unwrap(), Agent::Codex);
+        let error = resolve_agent_command("codxe").unwrap_err();
+        assert!(error.to_string().contains("unknown agent provider"));
+    }
+
+    #[test]
+    fn typed_agent_launch_policy_is_create_only() {
+        assert_eq!(TYPED_AGENT_SESSION_POLICY, EnsureSessionPolicy::CreateOnly);
+    }
+}
+
+#[cfg(test)]
+mod dispatch_authority_tests {
+    use super::*;
+
+    #[test]
+    fn stale_generation_cannot_validate_or_remove_replacement() {
+        let state = tempfile::TempDir::new().unwrap();
+        let claim_id = "a".repeat(64);
+        let first = SessionDispatchAuthority::generate("worker-exact", Some(&claim_id)).unwrap();
+        let second = SessionDispatchAuthority::generate("worker-exact", Some(&claim_id)).unwrap();
+        assert_ne!(first.dispatch_generation, second.dispatch_generation);
+
+        {
+            let _lock = session_authority_lock(state.path(), "worker-exact").unwrap();
+            first.write_locked(state.path()).unwrap();
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = session_authority_path(state.path(), "worker-exact").unwrap();
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        first.validate_current(state.path()).unwrap();
+
+        {
+            let _lock = session_authority_lock(state.path(), "worker-exact").unwrap();
+            second.write_locked(state.path()).unwrap();
+        }
+        assert!(first.validate_current(state.path()).is_err());
+        assert!(first.remove_exact(state.path()).is_err());
+        assert_eq!(
+            SessionDispatchAuthority::read_strict(state.path(), "worker-exact")
+                .unwrap()
+                .unwrap(),
+            second
+        );
+        second.remove_exact(state.path()).unwrap();
+        assert!(
+            SessionDispatchAuthority::read_strict(state.path(), "worker-exact")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn authority_environment_contains_only_generation_receipts() {
+        let claim_id = "b".repeat(64);
+        let authority = SessionDispatchAuthority::generate("worker-env", Some(&claim_id)).unwrap();
+        let environment = authority.environment();
+        assert_eq!(environment.len(), 2);
+        assert_eq!(environment[0].0, DISPATCH_GENERATION_ENV);
+        assert_eq!(environment[0].1, authority.dispatch_generation);
+        assert_eq!(environment[1].0, SCOPE_CLAIM_ID_ENV);
+        assert_eq!(environment[1].1, claim_id);
+        assert!(!serde_json::to_string(&authority)
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("token"));
     }
 }
 
@@ -1301,8 +1807,8 @@ mod order_tests {
         assert_eq!(
             names,
             vec![
-                "oracle-DentistryGPT-1",        // oracle idx 1 first
-                "oracle-DentistryGPT-2",        // then idx 2
+                "oracle-DentistryGPT-1",             // oracle idx 1 first
+                "oracle-DentistryGPT-2",             // then idx 2
                 "DentistryGPT-worker-agent-actions", // workers after, by name
                 "DentistryGPT-worker-composio-v3",
             ]

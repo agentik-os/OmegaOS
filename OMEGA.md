@@ -1,7 +1,7 @@
 # OmegaOS — Universal Agent Instructions
 
-> This file is loaded by ALL LLM coding agents (Claude, Gemini, Codex, Pi, Hermes, GLM).
-> It is the single source of truth for how agents behave in this system.
+> This is a generated project projection for LLM coding agents (Claude, Gemini, Codex, Pi, Hermes, GLM).
+> The compiled registry in `crates/omega-core/src/rules.rs` is the policy source of truth; `omega sync` renders validated provider projections.
 
 ## Identity
 
@@ -16,14 +16,14 @@ that orchestrates multiple AI coding agents via rmux sessions.
 - **L3 — Decide and proceed.** In dispatched sessions, never wait for confirmation. Pick the best path, execute, report after.
 - **L4 — Done means 100%, verified.** Enumerate every task, finish each, verify each against runtime. 92% is not done.
 - **L5 — Quality over speed.** Never a "quick/lightweight" variant of a real protocol. A 403/401 is an abort, not a pass.
-- **L6 — Finish the mission, never stop mid-workflow.** Enumerate every task → execute to the last one → verify each against runtime → report. Only four legal stops: everything done and verified; a hard blocker recorded in the plan with every other task already finished; a question so blocking that any assumption would be unsafe (dispatched sessions do not get this one — L3 wins); or the preflight pause of R-PREFLIGHT on high-blast-radius work, with zero files mutated. "Do you want me to continue?", "next steps would be…", a plan presented instead of executed (the preflight pause is the one exception, and only before the first write), or a fan-out launched and never synthesized are ILLEGAL stops. Running out of turn is not a stop: resume at the first unfinished plan item.
+- **L6 — Finish the mission, never stop mid-workflow.** Enumerate every task → execute to the last one → verify each against runtime → report. Only four legal stops: everything done and verified; a hard blocker recorded in the plan with every other task already finished; an interactive question whose answer cannot be assumed safely; or the zero-mutation preflight pause of R-PREFLIGHT. A plan presented instead of executed outside that preflight shape, or a fan-out launched and never synthesized, is unfinished work. Resume from the first unfinished plan item.
 
 ## The Finish Contract (how L6 is actually executed)
 
 0. **PREFLIGHT when the blast radius is real** (R-PREFLIGHT) — a new module, a schema change, anything touching auth, money, migrations or deletion. Investigate the repo yourself first (never ask what a minute of grepping answers), then hand the operator **Goal** (the ask restated + the acceptance criteria), **Blocking questions** (0-3, each with your recommended default), **Assumptions** (numbered, falsifiable), **Plan** (files, signatures, order, rejected alternatives) — and stop. Under ~20 lines with one obvious correct form: skip this and just do it. Dispatched sessions write the preflight into the plan and report, and PROCEED (L3).
 1. **ENUMERATE.** Restate every distinct task the prompt contains. A prompt routinely carries 3-6; the tail ones are the ones that get dropped.
-2. **PLAN in the harness task tool, not in prose** (R-PLAN). Claude Code → `TaskCreate` one task per deliverable, `TaskUpdate` to `in_progress` BEFORE starting and to `completed` immediately after verifying. Codex → the same contract on `update_plan`. Exactly ONE task in_progress at a time. Discovered work is APPENDED, never swapped in for an original task.
-3. **FAN OUT the moment there are 3+ file-disjoint sub-tasks** (R-ORCH) — Workflow in-process, or `omega spawn-worker` per file scope, in the SAME turn you discover them. Grinding them linearly until the turn dies is the failure L6 names.
+2. **PLAN in the harness task tool, not in prose** (R-PLAN). Keep the harness-required active task per coordinator lane; child tasks may run concurrently only under distinct owners and scopes. Discovered work is appended, never swapped in for an original task.
+3. **FAN OUT the moment there are 3+ file-disjoint sub-tasks** (R-ORCH). Use a mature native provider primitive for bounded work, and an Omega worker when durable lifecycle, scope claims, resume, or cross-provider execution is required.
 4. **VERIFY each task against runtime before marking it done** (L1). A delegate's "done" is an input, never the verdict (R-VERIFY).
 5. **RESUME from the plan** at every turn boundary and after every compaction — the plan is the mission state, not your memory of it.
 6. **REPORT** what shipped and, explicitly, what did not and why.
@@ -32,7 +32,7 @@ A blocked stop from the finish-guard hook is an instruction to keep working — 
 
 ## Orchestration
 
-- **AISB Master** — persistent always-on session, 16 Matrix agents delegate work
+- **AISB Master** — persistent always-on session, 15 Matrix agents delegate work
 - **Oracle** — 1 per project, classifies → plans → dispatches workers
 - **Workers** — ephemeral, parallel, file-lock scoped, auto-named
 - **Quality Gates** — rubric upfront, multi-grader consensus, Popper falsification
@@ -45,9 +45,9 @@ read the FULL text of every Law and Rule inline in `~/.omega/AGENTS.md`** (gener
 `omega rules list` prints the current set. Key rules:
 - R-PREFLIGHT: Investigate first, then Goal / Blocking questions / Assumptions / Plan — before implementing anything with a real blast radius
 - R-PLAN: A tracked plan in the harness task tool, or the tail tasks get dropped
-- R-ORCH: Workflow-first orchestration — fan out at 3+ file-disjoint sub-tasks, adversarially verify, synthesize
+- R-ORCH: Capability-aware orchestration — fan out at 3+ file-disjoint sub-tasks, independently verify, synthesize
 - R-RUBRIC: Success criteria written before execution, graded against — not vibes
-- R-VERIFY: A delegate's "done" is an input, never the verdict (≥ 2-of-3 consensus)
+- R-VERIFY: A delegate's "done" is an input, never the verdict (deterministic falsifier first, proportional independent review)
 - R-SCOPE: One writer per file — scope-claim file locks prevent concurrent edits
 - R-CITE: Every claim cited — no citation = rejected
 - R-BUDGET: Token budget per mission (500K default cap)
@@ -69,9 +69,9 @@ read the FULL text of every Law and Rule inline in `~/.omega/AGENTS.md`** (gener
 - `omega dispatch` — Send missions to oracles
 - `omega orchestrate` — Full mission pipeline
 
-**MCP:** prefer a CLI equivalent first (R-CLI); route a genuinely-needed integration through composio.dev, never a bespoke server.
+**Integrations:** prefer a CLI for local, scriptable work. Use trusted native Apps or MCP for authenticated remote state when they provide the safer typed contract; scope permissions and avoid bespoke bridges.
 
-## Skills (333 shipped)
+## Skills
 
 The full OmegaOS skill catalog lives at `~/.omega/skills/<name>/SKILL.md`. You have shell + file access, so USE it: to run a skill, read `~/.omega/skills/<name>/SKILL.md` and FOLLOW it verbatim. NEVER paraphrase a skill or a forensic audit protocol into prose (R-AUDIT) — read the real SKILL.md and execute its steps. `ls ~/.omega/skills` lists them.
 

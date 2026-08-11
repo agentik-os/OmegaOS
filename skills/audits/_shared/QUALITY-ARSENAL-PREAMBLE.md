@@ -1,17 +1,15 @@
 ---
 name: QUALITY-ARSENAL-PREAMBLE
 description: >
-  Shared doctrine, invariants, and contracts for all 15 Quality Arsenal forensic
-  audits (/codeaudit, /debugaudit, /uiuxaudit, /flowaudit, /featureaudit, /perfaudit,
-  /secaudit, /a11yaudit, /seoaudit, /copyaudit, /dxaudit, /motionaudit, /dataaudit,
-  /apiaudit, /automationaudit, /logicaudit). Every audit MUST implement these contracts.
+  Shared doctrine, invariants, and contracts for every audit declared in the
+  Quality Arsenal registry. Every registered audit MUST implement these contracts.
   Referenced by /metaudit for compliance verification.
   NOT a user-invokable skill — this is a shared source of truth.
 ---
 
 # Quality Arsenal Preamble v1.0
 
-> *"One doctrine, fourteen implementations, zero drift."*
+> *"One doctrine, twenty-three implementations, zero drift."*
 
 Every Gestalt-Popper forensic audit in the Quality Arsenal inherits the contracts below. Deviations are either (a) declared explicitly with rationale, or (b) a bug caught by `/metaudit`.
 
@@ -45,7 +43,7 @@ Before any finding, any fix, any conclusion: **observe the actual runtime behavi
 
 ---
 
-## 2. SCOPED INVOCATION FLAGS (MANDATORY across all 14)
+## 2. SCOPED INVOCATION FLAGS (MANDATORY across all registered audits)
 
 Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on this compatibility.
 
@@ -54,7 +52,7 @@ Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on
 | `--url={page_url}` | Scope URL-based walkthroughs to this page | Linear ticket audits |
 | `--files={comma-separated-paths}` | Scope code-side checks to these files | Targeted code fixes |
 | `--scope={1-line description}` | Free-text scope note in outputs | Multi-audit orchestration |
-| `--ticket={TICKET_ID}` | Link audit to Linear ticket, write results to `.linear-fix/{TICKET}/{audit}.json` | Rule 43 pipeline |
+| `--ticket={TICKET_ID}` | Link audit to Linear ticket, write evidence below `audits/.linear-fix/{TICKET}/.<audit-id>/` | Rule 43 pipeline |
 | `--no-fix` | Dry-run scoring only; skip fix execution | Review before authorize |
 | `--focus={area}` | Per-audit narrower scope with FULL phase depth | Targeted concerns |
 
@@ -68,25 +66,23 @@ Every audit parses these flags identically. Rule 43 (Linear pipeline) depends on
 
 ## 3. CONCURRENCY LOCK (MANDATORY)
 
-Every audit acquires a lock at Phase 0 to prevent simultaneous runs from stomping outputs.
+Every audit enters through `audit-runner.sh` at Phase 0. The runner opens the
+canonical `audits/.<audit-id>/.runner.lock` and acquires a non-blocking kernel
+`flock` before touching logs, raw evidence, summaries, or verdicts. A collision
+exits 2. The kernel releases the lock on crash, so stale PID-file reclamation is
+neither needed nor permitted.
 
 ```bash
-LOCKFILE=".{audit}/.lock"
-mkdir -p ".{audit}"
-if [ -f "$LOCKFILE" ]; then
-  LOCK_AGE=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
-  if [ $LOCK_AGE -lt 14400 ]; then  # 4h max; rule 46 allows long audits
-    echo "ABORT: another /{audit} holds $LOCKFILE (age ${LOCK_AGE}s, PID $(cat $LOCKFILE))."
-    echo "Wait or rm $LOCKFILE if stale."
-    exit 1
-  fi
-  echo "WARNING: stale lockfile (>4h), reclaiming"
-fi
-echo $$ > "$LOCKFILE"
-trap "rm -f $LOCKFILE" EXIT
+~/.omega/lib/audit-runner.sh <audit> "$PROJECT_PATH" \
+  --user-need="$USER_NEED_QUOTE" --hinge="$HINGE_POINT"
+# exit 2 means invalid inputs, unsafe paths/evidence, gather failure, or lock collision.
 ```
 
-Rule 43's parallel DYNAMIC audit chain (`/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` on the same ticket) uses distinct `.{audit}/` directories, so locks don't collide across different audits — only duplicate invocations of the same audit are blocked.
+Rule 43's parallel DYNAMIC audit chain (`/codeaudit` + `/uiuxaudit` + `/flowaudit` + `/debugaudit` on the same ticket) uses distinct `audits/.<audit-id>/` directories, so locks don't collide across different audits — only duplicate invocations of the same audit are blocked.
+
+Never hand-roll a check-then-create PID lock and never delete a lock reported by
+the runner. File-scope ownership for the longer LLM analysis/fix phase remains a
+separate OmegaOS scope claim; the runner lock protects its shared artifact writes.
 
 ---
 
@@ -100,7 +96,7 @@ while score < target_threshold (80 for solo run, 100 for rule-43 ticket audit):
     iteration += 1
     apply fixes from fix-plan.json
     re-run failing phases
-    record score trajectory in .{audit}/iterations.md
+    record score trajectory in audits/.<audit-id>/iterations.md
     if iteration >= 5:
         mark remaining findings as NEEDS_REVIEW in verdict.json
         send Telegram SOS with iterations.md path
@@ -113,7 +109,9 @@ Zero tolerance for silent infinite loops. 5 is a hard cap, not a suggestion.
 
 ## 5. NON-UI CONTEXT HANDLING (MANDATORY per audit)
 
-Not every project has UI/URLs/flows. Each audit declares its compatibility:
+Not every project has UI/URLs/flows. The table below covers the core surface
+audits; every additional registry entry declares the same applicability contract
+inside its own `SKILL.md`:
 
 | Project type | /codeaudit | /debugaudit | /uiuxaudit | /flowaudit | /featureaudit | /perfaudit | /secaudit | /a11yaudit | /seoaudit | /copyaudit | /dxaudit | /motionaudit | /dataaudit | /apiaudit |
 |--------------|-----------|-------------|-----------|-----------|---------------|-----------|-----------|-----------|-----------|-----------|----------|--------------|-----------|-----------|
@@ -135,7 +133,7 @@ Every audit declares outputs. Before reporting success, verify they exist with v
 ### Required outputs per audit
 
 ```
-.{audit}/
+audits/.<audit-id>/
 ├── session.log              # timestamps, scope, args, duration
 ├── verdict.json             # machine-readable score + findings (schema below)
 ├── verdict.md               # human-readable final report
@@ -261,7 +259,7 @@ When two audits produce findings on the same file:line or same concern:
    - verdict.json.preamble_version == "1.0"
 2. If any check fails:
    - Do NOT report success
-   - Write .{audit}/OUTPUT_GATE_FAILED.md with details
+   - Write audits/.<audit-id>/OUTPUT_GATE_FAILED.md with details
    - Exit non-zero, Telegram SOS
 3. Only mark audit "complete" when all checks pass.
 ```
@@ -285,7 +283,7 @@ Every audit sends structured notifications. Use helper: `~/.omega/bin/audit-noti
 
 ## 8. DISCOVERY-DRIFT CHECK (MANDATORY on resumed audits)
 
-If `.{audit}/discovery/` exists and is older than 1h:
+If `audits/.<audit-id>/discovery/` exists and is older than 1h:
 1. Re-run light discovery pass
 2. Diff against existing inventory
 3. If diff detected: flag as DRIFT, abort or user-confirm
@@ -295,7 +293,7 @@ If `.{audit}/discovery/` exists and is older than 1h:
 
 ## 9. SELF-TELEMETRY (MANDATORY)
 
-Emit `.{audit}/telemetry.json` at completion (schema in §6). Used by `/metaudit` + capacity planning.
+Emit `audits/.<audit-id>/telemetry.json` at completion (schema in §6). Used by `/metaudit` + capacity planning.
 
 ---
 
@@ -393,9 +391,9 @@ Narrower scope is achieved via `--focus` flag with FULL phase depth, never degra
 
 | Audit | Max | Phases | Non-UI ABORT | Code-touching | External-fetch | Specialty |
 |-------|-----|--------|-------------|---------------|----------------|-----------|
-| /codeaudit | 420 | 24 | No | Yes | No | SOLID, phantoms, deps |
+| /codeaudit | 420 | 23 | No | Yes | No | SOLID, phantoms, deps |
 | /debugaudit | 360 | 23 | Partial | Yes | No | Runtime bugs, console |
-| /uiuxaudit | 420 | 25 | Yes | Yes | No | Visual coherence |
+| /uiuxaudit | 420 | 23 | Yes | Yes | No | Visual coherence |
 | /flowaudit | 400 | 25 | Yes | Yes | No | User journeys |
 | /featureaudit | 320 | 19 | No | Yes | Yes (WebSearch) | PRD completeness |
 | /perfaudit | 360 | 23 | No | Yes | No | Core Web Vitals |
@@ -407,6 +405,15 @@ Narrower scope is achieved via `--focus` flag with FULL phase depth, never degra
 | /motionaudit | 360 | 23 | Yes | Yes | No | Motion purpose |
 | /dataaudit | 320 | 21 | No | **Yes (DESTRUCTIVE)** | No | Schema + integrity |
 | /apiaudit | 360 | 23 | No | Yes | Yes (fuzz) | REST/GraphQL contracts |
+| /automationaudit | 330 | 22 | No | Yes | No | Cron, daemons, scripts |
+| /logicaudit | 360 | 20 | No | Yes | No | System logic |
+| /i18naudit | 360 | 18 | No | Yes | No | Locale and RTL readiness |
+| /retentionaudit | 400 | 20 | No | No (read-only) | Yes | Retention opportunities |
+| /depaudit | 360 | 18 | No | Yes | Yes | Supply-chain integrity |
+| /privacyaudit | 360 | 18 | No | Yes | Yes | Privacy and data protection |
+| /releaseaudit | 400 | 20 | No | Yes | No | Shipping safety |
+| /refontaudit | 540 | 25 | Yes | Yes | Yes | Dashboard redesign |
+| /observabilityaudit | 360 | 18 | No | Yes | No | Logs, traces, metrics |
 
 ---
 

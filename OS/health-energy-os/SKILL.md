@@ -1,6 +1,7 @@
 ---
 name: health-energy-os
-description: Build and protect physical and cognitive capacity through sleep, movement, training, nutrition, recovery, stress regulation, environment design and appropriate professional care. Upstream capacity provider for Habit, Execution and Strategy OS. Contains 12 specialist agents, 18 skills, 8 protocols and 6 schemas. Use for sleep and recovery planning, training and nutrition design, stress regulation, energy audits, or deciding when to escalate to a professional. Trigger words: health, energy, sleep, movement, training, nutrition, recovery, stress, capacity; FR: sante, energie, sommeil, mouvement, entrainement, nutrition, recuperation, stress, capacite.
+description: >
+  Build and protect physical and cognitive capacity through sleep, movement, training, nutrition, recovery, stress regulation, environment design and appropriate professional care. Upstream capacity provider for Habit, Execution and Strategy OS. Contains 12 specialist agents, 18 skills, 8 protocols and 6 schemas. Use for sleep and recovery planning, training and nutrition design, stress regulation, energy audits, or deciding when to escalate to a professional. Trigger words: health, energy, sleep, movement, training, nutrition, recovery, stress, capacity; FR: sante, energie, sommeil, mouvement, entrainement, nutrition, recuperation, stress, capacite.
 ---
 
 # Health & Energy {OS}

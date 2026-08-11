@@ -167,7 +167,11 @@ impl Inbox {
         }
         let file = std::fs::File::open(&self.path)?;
         let reader = std::io::BufReader::new(file);
-        Ok(reader.lines().map_while(Result::ok).filter(|l| !l.trim().is_empty()).count())
+        Ok(reader
+            .lines()
+            .map_while(Result::ok)
+            .filter(|l| !l.trim().is_empty())
+            .count())
     }
 }
 
@@ -224,7 +228,10 @@ mod tests {
                 let inbox = Inbox::for_oracle(&dir, "race");
                 for i in 0..PER {
                     inbox
-                        .push(&InboxEvent::worker_done(&format!("w-{t}-{i}"), "done_clean"))
+                        .push(&InboxEvent::worker_done(
+                            &format!("w-{t}-{i}"),
+                            "done_clean",
+                        ))
                         .unwrap();
                 }
             }));
@@ -240,6 +247,10 @@ mod tests {
         }
         collected += inbox.drain().unwrap().len();
 
-        assert_eq!(collected, THREADS * PER, "lock must lose no event across push/drain");
+        assert_eq!(
+            collected,
+            THREADS * PER,
+            "lock must lose no event across push/drain"
+        );
     }
 }

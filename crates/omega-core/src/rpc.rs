@@ -3,7 +3,7 @@ use crate::dispatch::Dispatcher;
 use crate::done::{DoneSignal, DoneStatus};
 use crate::routing;
 use crate::session::SessionManager;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -100,7 +100,8 @@ pub enum RpcResponse {
 }
 
 pub async fn run_rpc_loop() -> Result<()> {
-    let config = OmegaConfig::load().unwrap_or_default();
+    let config = OmegaConfig::load()
+        .context("OmegaOS RPC refused to start with invalid runtime configuration")?;
     config.ensure_dirs()?;
 
     let stdin = tokio::io::stdin();
@@ -138,7 +139,8 @@ pub async fn run_rpc_loop() -> Result<()> {
             },
         };
 
-        let is_shutdown = matches!(response, RpcResponse::Ok { ref command, .. } if command == "shutdown");
+        let is_shutdown =
+            matches!(response, RpcResponse::Ok { ref command, .. } if command == "shutdown");
         write_response(&mut stdout, &response).await?;
 
         if is_shutdown {
@@ -148,10 +150,7 @@ pub async fn run_rpc_loop() -> Result<()> {
     Ok(())
 }
 
-async fn write_response(
-    stdout: &mut tokio::io::Stdout,
-    response: &RpcResponse,
-) -> Result<()> {
+async fn write_response(stdout: &mut tokio::io::Stdout, response: &RpcResponse) -> Result<()> {
     let line = serde_json::to_string(response)?;
     stdout.write_all(line.as_bytes()).await?;
     stdout.write_all(b"\n").await?;
@@ -212,38 +211,44 @@ async fn handle_command(config: &OmegaConfig, cmd: RpcCommand) -> RpcResponse {
                 id,
             },
         },
-        RpcCommand::Dispatch { project, mission, id } => {
-            match dispatch_oracle(config, &project, &mission).await {
-                Ok(oracle) => RpcResponse::Ok {
-                    command: "dispatch".to_string(),
-                    id,
-                    data: Some(serde_json::json!({
-                        "oracle": oracle,
-                        "project": project,
-                        "mission": mission,
-                    })),
-                },
-                Err(e) => RpcResponse::Error {
-                    command: "dispatch".to_string(),
-                    message: e.to_string(),
-                    id,
-                },
-            }
-        }
-        RpcCommand::Done { session, status, summary, commit, id } => {
-            match write_done(config, &session, &status, &summary, commit.as_deref()) {
-                Ok(()) => RpcResponse::Ok {
-                    command: "done".to_string(),
-                    id,
-                    data: Some(serde_json::json!({ "session": session, "status": status })),
-                },
-                Err(e) => RpcResponse::Error {
-                    command: "done".to_string(),
-                    message: e.to_string(),
-                    id,
-                },
-            }
-        }
+        RpcCommand::Dispatch {
+            project,
+            mission,
+            id,
+        } => match dispatch_oracle(config, &project, &mission).await {
+            Ok(oracle) => RpcResponse::Ok {
+                command: "dispatch".to_string(),
+                id,
+                data: Some(serde_json::json!({
+                    "oracle": oracle,
+                    "project": project,
+                    "mission": mission,
+                })),
+            },
+            Err(e) => RpcResponse::Error {
+                command: "dispatch".to_string(),
+                message: e.to_string(),
+                id,
+            },
+        },
+        RpcCommand::Done {
+            session,
+            status,
+            summary,
+            commit,
+            id,
+        } => match write_done(config, &session, &status, &summary, commit.as_deref()) {
+            Ok(()) => RpcResponse::Ok {
+                command: "done".to_string(),
+                id,
+                data: Some(serde_json::json!({ "session": session, "status": status })),
+            },
+            Err(e) => RpcResponse::Error {
+                command: "done".to_string(),
+                message: e.to_string(),
+                id,
+            },
+        },
         RpcCommand::Send { session, text, id } => match send_text(&session, &text).await {
             Ok(()) => RpcResponse::Ok {
                 command: "send".to_string(),

@@ -107,6 +107,10 @@ RULES:
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh automation "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>"` (plus `--ticket` and `--url` together when ticket-scoped). A non-zero exit is an audit failure. Read the emitted `audits/.automationaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`.
+
 ## OUTPUT CONTRACT
 
 ```
@@ -163,17 +167,8 @@ SESSION_ID="automationaudit-$(date +%Y%m%d-%H%M%S)"
 mkdir -p audits/.automationaudit/{discovery,reports,graphs,evidence}
 echo "AUDIT STARTED: $(date -Iseconds)" > audits/.automationaudit/session.log
 
-# CONCURRENCY LOCK (preamble §3)
-LOCKFILE="audits/.automationaudit/.lock"
-if [ -f "$LOCKFILE" ]; then
-  LOCK_AGE=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
-  if [ $LOCK_AGE -lt 14400 ]; then
-    echo "ABORT: another /automationaudit holds $LOCKFILE (age ${LOCK_AGE}s)"
-    exit 1
-  fi
-fi
-echo $$ > "$LOCKFILE"
-trap "rm -f $LOCKFILE" EXIT
+# The canonical runner gate above already acquired `.runner.lock` with `flock`.
+# Do not create or reclaim a second PID-file lock here.
 
 # DISCOVERY — map the full automation landscape
 crontab -l 2>/dev/null > audits/.automationaudit/discovery/crontab.txt
@@ -1098,7 +1093,7 @@ Automation fixes are HIGH RISK (touch live crons, daemons, scripts). Every fix M
 This audit implements contracts from `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge automation, falsification, evidence chain
-- ✅ **Concurrency lock** — `audits/.automationaudit/.lock` with 4h stale timeout
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.automationaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit bounded
 - ✅ **Scoped invocation flags** — `--files=`, `--scope=`, `--focus=`, `--no-fix`
 - ✅ **Non-UI context gate** — runs on ALL project types (automation is universal)

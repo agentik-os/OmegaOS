@@ -1,5 +1,5 @@
 > **Historical concept note (pre-0.1)** — superseded by [README.md](../../README.md) and [GUIDE.md](../../GUIDE.md).
-> Kept for context: it still describes the original "Three Laws" doctrine; the live doctrine is 6 Laws (L0–L5) + named Rules — `omega rules list`.
+> Kept for context: it still describes the original "Three Laws" doctrine; the live doctrine is 7 Laws (L0–L6) + named Rules — `omega rules list`.
 
 # OmegaOS — Concept & Principes
 

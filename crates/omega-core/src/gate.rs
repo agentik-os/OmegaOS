@@ -153,9 +153,7 @@ impl GateResult {
         token_budget_pass: bool,
         citation_pass: bool,
     ) -> Self {
-        let rubric_pass = grades
-            .iter()
-            .all(|g| g.verdict == GradeVerdict::Satisfied);
+        let rubric_pass = grades.iter().all(|g| g.verdict == GradeVerdict::Satisfied);
 
         let satisfied_votes = consensus_votes
             .iter()
@@ -251,9 +249,7 @@ impl GateResult {
             anyhow::bail!("an acceptance needs an approver: pass --approver \"<who>\"");
         }
         if evidence.is_empty() {
-            anyhow::bail!(
-                "an acceptance needs evidence: pass --evidence \"<what you verified>\""
-            );
+            anyhow::bail!("an acceptance needs evidence: pass --evidence \"<what you verified>\"");
         }
         Ok(Self {
             oracle: oracle.to_string(),
@@ -295,7 +291,9 @@ impl GateResult {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?))
+        Ok(Some(serde_json::from_str(&std::fs::read_to_string(
+            &path,
+        )?)?))
     }
 }
 
@@ -530,7 +528,9 @@ impl TokenBudget {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?))
+        Ok(Some(serde_json::from_str(&std::fs::read_to_string(
+            &path,
+        )?)?))
     }
 }
 
@@ -678,7 +678,12 @@ impl QualityGate {
         // counter. Every run leaves a timeline note for `omega log`.
         if result.overall_pass {
             crate::loop_guard::clear_gate_attempt(&self.state_dir, oracle);
-            crate::loop_guard::MissionLog::event(&self.state_dir, oracle, "gate", "quality gate PASSED");
+            crate::loop_guard::MissionLog::event(
+                &self.state_dir,
+                oracle,
+                "gate",
+                "quality gate PASSED",
+            );
         } else {
             let attempts = crate::loop_guard::bump_gate_attempt(&self.state_dir, oracle);
             crate::loop_guard::MissionLog::event(
@@ -696,7 +701,10 @@ impl QualityGate {
                     &self.state_dir,
                     oracle,
                     crate::loop_guard::EscalationReason::GateRetryCap,
-                    &format!("quality gate failed {}× — re-verify cap hit, needs a human", attempts),
+                    &format!(
+                        "quality gate failed {}× — re-verify cap hit, needs a human",
+                        attempts
+                    ),
                 );
             }
         }
@@ -771,9 +779,24 @@ mod tests {
     #[test]
     fn multi_grader_two_of_three_passes() {
         let submissions = vec![
-            (GraderLens::CodeReviewer, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::Debugger, GradeVerdict::NeedsRevision, 0.7, "issue".into()),
-            (GraderLens::GeneralPurpose, GradeVerdict::Satisfied, 0.85, "ok".into()),
+            (
+                GraderLens::CodeReviewer,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::Debugger,
+                GradeVerdict::NeedsRevision,
+                0.7,
+                "issue".into(),
+            ),
+            (
+                GraderLens::GeneralPurpose,
+                GradeVerdict::Satisfied,
+                0.85,
+                "ok".into(),
+            ),
         ];
         let (votes, pass) = MultiGrader::evaluate(&submissions);
         assert_eq!(votes.len(), 3);
@@ -783,9 +806,24 @@ mod tests {
     #[test]
     fn multi_grader_one_of_three_fails() {
         let submissions = vec![
-            (GraderLens::CodeReviewer, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::Debugger, GradeVerdict::NeedsRevision, 0.7, "no".into()),
-            (GraderLens::GeneralPurpose, GradeVerdict::NeedsRevision, 0.6, "no".into()),
+            (
+                GraderLens::CodeReviewer,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::Debugger,
+                GradeVerdict::NeedsRevision,
+                0.7,
+                "no".into(),
+            ),
+            (
+                GraderLens::GeneralPurpose,
+                GradeVerdict::NeedsRevision,
+                0.6,
+                "no".into(),
+            ),
         ];
         let (_, pass) = MultiGrader::evaluate(&submissions);
         assert!(!pass);
@@ -794,9 +832,24 @@ mod tests {
     #[test]
     fn multi_grader_all_three_passes() {
         let submissions = vec![
-            (GraderLens::CodeReviewer, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::Debugger, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::GeneralPurpose, GradeVerdict::Satisfied, 0.9, "ok".into()),
+            (
+                GraderLens::CodeReviewer,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::Debugger,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::GeneralPurpose,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
         ];
         let (_, pass) = MultiGrader::evaluate(&submissions);
         assert!(pass);
@@ -1000,7 +1053,14 @@ mod tests {
         let falsification = PopperFalsifier::validate(&challenges);
         // R-21: a passing gate needs a quorum of SATISFIED consensus votes.
         let result = GateResult::evaluate(
-            &rubric, grades, passing_votes(), &falsification, vec![], true, true, true,
+            &rubric,
+            grades,
+            passing_votes(),
+            &falsification,
+            vec![],
+            true,
+            true,
+            true,
         );
         assert!(result.overall_pass);
         assert!(result.adversarial_pass);
@@ -1015,7 +1075,14 @@ mod tests {
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, vec![], true, true, true,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            vec![],
+            true,
+            true,
+            true,
         );
         assert!(!result.consensus_pass);
         assert!(!result.overall_pass);
@@ -1028,7 +1095,14 @@ mod tests {
         let challenges: Vec<_> = (0..5).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, vec![], true, true, true,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            vec![],
+            true,
+            true,
+            true,
         );
         assert!(!result.overall_pass);
         assert!(!result.adversarial_pass);
@@ -1044,7 +1118,14 @@ mod tests {
         // 40/100 → Fail verdict.
         let audits = vec![AuditResult::new("codeaudit", 168.0, 420)];
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, audits, true, true, true,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            audits,
+            true,
+            true,
+            true,
         );
         assert!(!result.audit_pass);
         assert!(!result.overall_pass);
@@ -1056,7 +1137,14 @@ mod tests {
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, vec![], true, false, true,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            vec![],
+            true,
+            false,
+            true,
         );
         assert!(!result.overall_pass);
         assert!(!result.token_budget_pass);
@@ -1068,7 +1156,14 @@ mod tests {
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, vec![], true, true, false,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            vec![],
+            true,
+            true,
+            false,
         );
         assert!(!result.overall_pass);
         assert!(!result.citation_pass);
@@ -1080,7 +1175,14 @@ mod tests {
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let falsification = PopperFalsifier::validate(&challenges);
         let result = GateResult::evaluate(
-            &rubric, vec![], vec![], &falsification, vec![], false, true, true,
+            &rubric,
+            vec![],
+            vec![],
+            &falsification,
+            vec![],
+            false,
+            true,
+            true,
         );
         assert!(!result.overall_pass);
         assert!(!result.regression_pass);
@@ -1103,14 +1205,38 @@ mod tests {
         );
         let grades = vec![make_grade("c1", GradeVerdict::Satisfied)];
         let submissions = vec![
-            (GraderLens::CodeReviewer, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::Debugger, GradeVerdict::Satisfied, 0.9, "ok".into()),
-            (GraderLens::GeneralPurpose, GradeVerdict::Satisfied, 0.9, "ok".into()),
+            (
+                GraderLens::CodeReviewer,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::Debugger,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
+            (
+                GraderLens::GeneralPurpose,
+                GradeVerdict::Satisfied,
+                0.9,
+                "ok".into(),
+            ),
         ];
         let challenges: Vec<_> = (0..12).map(|i| make_challenge(i, false)).collect();
         let claims = &["Verified at src/main.rs:1"];
 
-        let result = qg.run("test-oracle", &rubric, grades, submissions, challenges, None, 1000, claims);
+        let result = qg.run(
+            "test-oracle",
+            &rubric,
+            grades,
+            submissions,
+            challenges,
+            None,
+            1000,
+            claims,
+        );
         assert!(result.overall_pass);
         assert!(result.adversarial_pass);
         assert!(dir.path().join("test-oracle.gate-result.json").exists());
@@ -1175,6 +1301,9 @@ mod tests {
         }"#;
         let g: GateResult = serde_json::from_str(legacy).expect("legacy result must still parse");
         assert!(g.overall_pass);
-        assert!(g.accepted_by.is_none(), "a graded pass is not an acceptance");
+        assert!(
+            g.accepted_by.is_none(),
+            "a graded pass is not an acceptance"
+        );
     }
 }

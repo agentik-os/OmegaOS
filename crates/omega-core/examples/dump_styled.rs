@@ -26,8 +26,16 @@ async fn main() -> anyhow::Result<()> {
         if text.contains("/team") || text.contains("/codeaudit") || text.contains("/debugaudit") {
             print!("ROW {:?}\n   spans:", text.trim());
             for s in row {
-                if s.text.trim().is_empty() { continue; }
-                print!(" [{:?} fg={:?} bg={:?} bold={}]", s.text.trim(), s.fg, s.bg, s.bold);
+                if s.text.trim().is_empty() {
+                    continue;
+                }
+                print!(
+                    " [{:?} fg={:?} bg={:?} bold={}]",
+                    s.text.trim(),
+                    s.fg,
+                    s.bg,
+                    s.bold
+                );
             }
             println!();
         }

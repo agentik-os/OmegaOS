@@ -186,7 +186,9 @@ impl ReplyRouter {
     }
 
     pub fn lookup(&self, reply_to_message_id: i64) -> Option<&str> {
-        self.report_map.get(&reply_to_message_id).map(|s| s.as_str())
+        self.report_map
+            .get(&reply_to_message_id)
+            .map(|s| s.as_str())
     }
 }
 
@@ -288,7 +290,11 @@ impl SmartRouter {
         };
 
         let enhanced_prompt = if !targets.is_empty() {
-            Some(PromptEnhancer::enhance(&full_text, &intent, targets.first()))
+            Some(PromptEnhancer::enhance(
+                &full_text,
+                &intent,
+                targets.first(),
+            ))
         } else {
             None
         };
@@ -368,11 +374,7 @@ pub struct PromptEnhancer;
 
 impl PromptEnhancer {
     /// Enhance raw user text into a structured oracle prompt.
-    pub fn enhance(
-        raw_text: &str,
-        intent: &IntentJson,
-        target: Option<&RouteTarget>,
-    ) -> String {
+    pub fn enhance(raw_text: &str, intent: &IntentJson, target: Option<&RouteTarget>) -> String {
         let mut prompt = String::with_capacity(512);
 
         // Header with project context
@@ -459,9 +461,12 @@ mod tests {
                 .with_topic_id(31),
         );
         reg.register(
-            ProjectEntry::new("DentistryGPT", PathBuf::from("/home/user/projects/DentistryGPT"))
-                .with_aliases(vec!["dent".into(), "dentistry".into()])
-                .with_topic_id(27),
+            ProjectEntry::new(
+                "DentistryGPT",
+                PathBuf::from("/home/user/projects/DentistryGPT"),
+            )
+            .with_aliases(vec!["dent".into(), "dentistry".into()])
+            .with_topic_id(27),
         );
         reg
     }
@@ -573,13 +578,11 @@ mod tests {
     #[test]
     fn registry_from_config() {
         use crate::config::{ProjectCategory, ProjectConfig};
-        let configs = vec![
-            ProjectConfig {
-                name: "TestProject".into(),
-                path: PathBuf::from("/tmp/test"),
-                category: ProjectCategory::Work,
-            },
-        ];
+        let configs = vec![ProjectConfig {
+            name: "TestProject".into(),
+            path: PathBuf::from("/tmp/test"),
+            category: ProjectCategory::Work,
+        }];
         let reg = ProjectRegistry::from_config(&configs);
         assert_eq!(reg.len(), 1);
         assert!(reg.by_name("testproject").is_some());

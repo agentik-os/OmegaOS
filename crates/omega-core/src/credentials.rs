@@ -23,7 +23,6 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use fs2::FileExt;
 use serde_json::Value;
 use std::cmp::Ordering;
 use std::fs::OpenOptions;
@@ -94,31 +93,6 @@ pub struct CodexReconcileReport {
     pub topology: CodexTopologyReport,
 }
 
-/// Secrets-at-rest: chmod a file to 0600 (owner read/write only). No-op target
-/// must already exist. Called before the atomic rename on every credential write
-/// so a multi-user host never sees another user's OAuth tokens / API keys.
-/// `pub(crate)` so other secret-writers (e.g. providers.toml) share one impl
-/// instead of duplicating the unix/non-unix split.
-#[cfg(unix)]
-pub(crate) fn chmod_600(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-}
-#[cfg(not(unix))]
-pub(crate) fn chmod_600(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn chmod_700(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-}
-#[cfg(not(unix))]
-fn chmod_700(_path: &Path) -> std::io::Result<()> {
-    Ok(())
-}
-
 /// Manager for ~/.omega/credentials/ — every provider's creds + saved accounts.
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -135,16 +109,8 @@ impl CredentialStore {
     /// deterministic constructor for login flows and tests.
     pub(crate) fn from_roots(root: &Path, codex_home: &Path) -> Result<Self> {
         let base = root.join("credentials");
-        std::fs::create_dir_all(base.join("accounts"))
-            .with_context(|| format!("creating {}", base.display()))?;
-        // The credentials tree holds OAuth tokens + API keys — owner-only (0700)
-        // so a multi-user host can't traverse into another user's secrets.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700));
-            let _ = std::fs::set_permissions(base.join("accounts"), std::fs::Permissions::from_mode(0o700));
-        }
+        ensure_owner_only_dir(&base)?;
+        ensure_owner_only_dir(&base.join("accounts"))?;
         Ok(Self {
             base_dir: base,
             codex_home: codex_home.to_path_buf(),
@@ -153,45 +119,50 @@ impl CredentialStore {
 
     /// Path to the active credentials file for a provider.
     pub fn active_path(&self, provider: &str) -> PathBuf {
-        self.base_dir.join(format!("{}.json", provider))
+        self.base_dir
+            .join(format!("{}.json", safe_provider_component(provider)))
     }
 
     /// Path to a named saved account for a provider.
     pub fn account_path(&self, provider: &str, name: &str) -> PathBuf {
-        self.base_dir
-            .join("accounts")
-            .join(format!("{}-{}.json", provider, sanitize(name)))
+        self.base_dir.join("accounts").join(format!(
+            "{}-{}.json",
+            safe_provider_component(provider),
+            sanitize(name)
+        ))
     }
 
     /// Read the active credentials for a provider as JSON.
     pub fn read(&self, provider: &str) -> Result<Value> {
+        validate_provider_id(provider)?;
         let path = self.active_path(provider);
-        let raw = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let v: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let raw = crate::config::read_private_optional_string(&path)?
+            .with_context(|| format!("credential file {} does not exist", path.display()))?;
+        let v: Value =
+            serde_json::from_str(&raw).with_context(|| format!("parsing {}", path.display()))?;
         Ok(v)
     }
 
     /// Write the active credentials for a provider. Atomic via tmp+rename.
     pub fn write(&self, provider: &str, data: &Value) -> Result<()> {
+        validate_provider_id(provider)?;
         let path = self.active_path(provider);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(data)?;
-        std::fs::write(&tmp, json).with_context(|| format!("writing {}", tmp.display()))?;
-        // Secrets at rest: 0600 on the tmp BEFORE rename (rename adopts the tmp's
-        // mode, so chmod-after-rename would still leave a world-readable window).
-        chmod_600(&tmp).with_context(|| format!("chmod 600 {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path)
-            .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-        Ok(())
+        crate::config::with_private_file_lock(&path, || {
+            // Existing authority must itself be a private regular file. Atomic
+            // rename may replace a symlink safely, but silently accepting one
+            // would hide a compromised credential topology from the operator.
+            let _ = crate::config::read_private_optional(&path)?;
+            crate::config::atomic_write_private(&path, json.as_bytes())
+                .with_context(|| format!("writing {}", path.display()))
+        })
     }
 
     /// List saved account names for a provider (just the `<name>` part).
     pub fn list_accounts(&self, provider: &str) -> Vec<String> {
+        if validate_provider_id(provider).is_err() {
+            return Vec::new();
+        }
         let accounts = self.base_dir.join("accounts");
         let prefix = format!("{}-", provider);
         let mut out = Vec::new();
@@ -217,51 +188,47 @@ impl CredentialStore {
     /// Switch the active provider credentials to a named saved account.
     /// Copies the account file over the active file (atomic via tmp+rename).
     pub fn switch_account(&self, provider: &str, name: &str) -> Result<()> {
+        validate_provider_id(provider)?;
+        validate_account_name(name)?;
         let from = self.account_path(provider, name);
-        if !from.exists() {
-            anyhow::bail!(
-                "account not found: {} (looked at {})",
-                name,
-                from.display()
-            );
-        }
+        let bytes = crate::config::read_private_optional(&from)?
+            .with_context(|| format!("account not found: {name} (looked at {})", from.display()))?;
+        serde_json::from_slice::<Value>(&bytes)
+            .with_context(|| format!("parsing saved account {}", from.display()))?;
         let to = self.active_path(provider);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        let tmp = to.with_extension("json.switching");
-        std::fs::copy(&from, &tmp)
-            .with_context(|| format!("copy {} -> {}", from.display(), tmp.display()))?;
-        chmod_600(&tmp).with_context(|| format!("chmod 600 {}", tmp.display()))?;
-        std::fs::rename(&tmp, &to)
-            .with_context(|| format!("rename {} -> {}", tmp.display(), to.display()))?;
-        Ok(())
+        crate::config::with_private_file_lock(&to, || {
+            let _ = crate::config::read_private_optional(&to)?;
+            crate::config::atomic_write_private(&to, &bytes)
+                .with_context(|| format!("switching {} -> {}", from.display(), to.display()))
+        })
     }
 
     /// Save the currently active credentials as a named account.
     pub fn save_as_account(&self, provider: &str, name: &str) -> Result<()> {
+        validate_provider_id(provider)?;
+        validate_account_name(name)?;
         let from = self.active_path(provider);
-        if !from.exists() {
-            anyhow::bail!(
-                "no active credentials for {} (no file at {})",
-                provider,
+        let bytes = crate::config::read_private_optional(&from)?.with_context(|| {
+            format!(
+                "no active credentials for {provider} (no file at {})",
                 from.display()
-            );
-        }
+            )
+        })?;
+        serde_json::from_slice::<Value>(&bytes)
+            .with_context(|| format!("parsing active credential {}", from.display()))?;
         let to = self.account_path(provider, name);
-        if let Some(parent) = to.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::copy(&from, &to)
-            .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
-        chmod_600(&to).with_context(|| format!("chmod 600 {}", to.display()))?;
-        Ok(())
+        crate::config::with_private_file_lock(&to, || {
+            let _ = crate::config::read_private_optional(&to)?;
+            crate::config::atomic_write_private(&to, &bytes)
+                .with_context(|| format!("saving account {} -> {}", from.display(), to.display()))
+        })
     }
 
     /// Ensure the legacy path for a provider exists as a symlink to the
     /// canonical file in ~/.omega/credentials/. Creates parent dirs as needed.
     /// No-op if the legacy path already points to the canonical file.
     pub fn ensure_legacy_symlink(&self, provider: &str) -> Result<()> {
+        validate_provider_id(provider)?;
         if provider == "codex" {
             self.reconcile_codex()?;
             return Ok(());
@@ -291,11 +258,7 @@ impl CredentialStore {
                         std::fs::create_dir_all(p).ok();
                     }
                     std::fs::rename(&legacy, &canonical).with_context(|| {
-                        format!(
-                            "migrating {} -> {}",
-                            legacy.display(),
-                            canonical.display()
-                        )
+                        format!("migrating {} -> {}", legacy.display(), canonical.display())
                     })?;
                 } else {
                     // Both exist. The legacy real file is what the CLI just
@@ -325,11 +288,7 @@ impl CredentialStore {
         if canonical.exists() {
             #[cfg(unix)]
             std::os::unix::fs::symlink(&canonical, &legacy).with_context(|| {
-                format!(
-                    "symlink {} -> {}",
-                    legacy.display(),
-                    canonical.display()
-                )
+                format!("symlink {} -> {}", legacy.display(), canonical.display())
             })?;
             #[cfg(not(unix))]
             std::fs::copy(&canonical, &legacy)?;
@@ -491,9 +450,8 @@ impl CredentialStore {
                     .chain(extra_copy.as_ref().map(|copy| ("candidate-invalid", copy)));
                 for (label, copy) in invalid_copies {
                     if let Some(bytes) = copy.bytes.as_deref() {
-                        let canonical_already_preserves_bytes =
-                            label != "candidate-invalid"
-                                && canonical_copy.bytes.as_deref() == Some(bytes);
+                        let canonical_already_preserves_bytes = label != "candidate-invalid"
+                            && canonical_copy.bytes.as_deref() == Some(bytes);
                         if canonical_already_preserves_bytes
                             || quarantined_contents
                                 .iter()
@@ -527,32 +485,22 @@ impl CredentialStore {
         anyhow::bail!("Codex kept replacing auth.json while Omega restored canonical topology")
     }
 
-    fn lock_codex_reconciliation(&self) -> Result<std::fs::File> {
+    fn lock_codex_reconciliation(&self) -> Result<crate::config::PrivateFileLock> {
         let omega_root = self
             .base_dir
             .parent()
             .context("credential store has no Omega root")?;
         let locks = omega_root.join("locks");
-        std::fs::create_dir_all(&locks).with_context(|| format!("creating {}", locks.display()))?;
-        chmod_700(&locks).with_context(|| format!("chmod 700 {}", locks.display()))?;
+        ensure_owner_only_dir(&locks)?;
         let path = locks.join("codex-credentials.lock");
-        let file = secret_open_options()
-            .create_new(false)
-            .create(true)
-            .open(&path)
-            .with_context(|| format!("opening {}", path.display()))?;
-        chmod_600(&path).with_context(|| format!("chmod 600 {}", path.display()))?;
-        file.lock_exclusive()
-            .with_context(|| format!("locking {}", path.display()))?;
-        Ok(file)
+        crate::config::acquire_private_lock_path(&path)
     }
 
     fn quarantine_codex_copy(&self, label: &str, bytes: &[u8]) -> Result<PathBuf> {
         let root = self.base_dir.join("quarantine");
         let dir = root.join("codex");
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        chmod_700(&root).with_context(|| format!("chmod 700 {}", root.display()))?;
-        chmod_700(&dir).with_context(|| format!("chmod 700 {}", dir.display()))?;
+        ensure_owner_only_dir(&root)?;
+        ensure_owner_only_dir(&dir)?;
 
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -597,8 +545,7 @@ impl CredentialStore {
 /// On error the caller must leave the legacy file in place — it may hold the
 /// only copy of the freshest rotated refresh token.
 fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
-    let bytes = std::fs::read(legacy)
-        .with_context(|| format!("reading {}", legacy.display()))?;
+    let bytes = std::fs::read(legacy).with_context(|| format!("reading {}", legacy.display()))?;
     // Corrupt/truncated legacy must never clobber a good canonical.
     if serde_json::from_slice::<Value>(&bytes).is_err() {
         return Ok(());
@@ -615,8 +562,7 @@ fn adopt_fresher_legacy(legacy: &Path, canonical: &Path) -> Result<()> {
     }
     let staged = target.with_extension("json.adopt.tmp");
     let _ = std::fs::remove_file(&staged); // clear any stale temp
-    std::fs::write(&staged, &bytes)
-        .with_context(|| format!("writing {}", staged.display()))?;
+    std::fs::write(&staged, &bytes).with_context(|| format!("writing {}", staged.display()))?;
     // Preserve the target's existing mode (0660 group-shared on multi-user
     // hosts); fall back to owner-only. chmod the TEMP we own, never the
     // target (which may be root-owned → EPERM), then rename(2) — readers
@@ -924,22 +870,21 @@ fn atomic_replace_resolved(path: &Path, bytes: &[u8]) -> Result<()> {
         .context("Codex canonical credential has no parent directory")?;
     std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     let staged = unique_sibling(&target, "omega-adopt");
-    let mode = std::fs::metadata(&target).ok().map(|m| m.permissions());
     let result = (|| -> Result<()> {
         let mut file = secret_open_options()
             .open(&staged)
             .with_context(|| format!("creating {}", staged.display()))?;
         file.write_all(bytes)
             .with_context(|| format!("writing {}", staged.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("setting owner-only mode on {}", staged.display()))?;
+        }
         file.sync_all()
             .with_context(|| format!("syncing {}", staged.display()))?;
         drop(file);
-        if let Some(permissions) = mode {
-            std::fs::set_permissions(&staged, permissions)
-                .with_context(|| format!("preserving mode on {}", staged.display()))?;
-        } else {
-            chmod_600(&staged).with_context(|| format!("chmod 600 {}", staged.display()))?;
-        }
         std::fs::rename(&staged, &target)
             .with_context(|| format!("renaming {} -> {}", staged.display(), target.display()))?;
         sync_parent(parent);
@@ -967,10 +912,15 @@ fn atomic_create_new_secret(path: &Path, bytes: &[u8]) -> Result<()> {
             .with_context(|| format!("creating {}", staged.display()))?;
         file.write_all(bytes)
             .with_context(|| format!("writing {}", staged.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("setting owner-only mode on {}", staged.display()))?;
+        }
         file.sync_all()
             .with_context(|| format!("syncing {}", staged.display()))?;
         drop(file);
-        chmod_600(&staged).with_context(|| format!("chmod 600 {}", staged.display()))?;
         if std::fs::symlink_metadata(path).is_ok() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
@@ -1032,8 +982,13 @@ fn capture_native_and_restore_link(native: &Path, canonical: &Path) -> Result<Ve
             match std::fs::symlink_metadata(native) {
                 Ok(metadata) => {
                     if metadata.file_type().is_file() {
-                        chmod_600(native)
-                            .with_context(|| format!("chmod 600 {}", native.display()))?;
+                        let _ =
+                            crate::config::read_private_optional(native)?.with_context(|| {
+                                format!(
+                                    "native Codex credential disappeared before capture: {}",
+                                    native.display()
+                                )
+                            })?;
                     }
                     let capture = unique_sibling(native, "omega-capture");
                     match std::fs::rename(native, &capture) {
@@ -1124,6 +1079,88 @@ fn omega_dir() -> PathBuf {
     crate::config::omega_dir()
 }
 
+fn ensure_owner_only_dir(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("creating {}", path.display()))?;
+    let before = std::fs::symlink_metadata(path)
+        .with_context(|| format!("inspecting credential directory {}", path.display()))?;
+    if !before.file_type().is_dir() {
+        anyhow::bail!(
+            "credential directory {} is not a real directory",
+            path.display()
+        );
+    }
+    let directory = std::fs::File::open(path)
+        .with_context(|| format!("opening credential directory {}", path.display()))?;
+    let opened = directory
+        .metadata()
+        .with_context(|| format!("inspecting opened credential directory {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if before.dev() != opened.dev() || before.ino() != opened.ino() {
+            anyhow::bail!(
+                "credential directory {} changed identity while being opened",
+                path.display()
+            );
+        }
+        if opened.uid() != crate::config::effective_uid() {
+            anyhow::bail!(
+                "credential directory {} is owned by uid {}, current uid is {}",
+                path.display(),
+                opened.uid(),
+                crate::config::effective_uid()
+            );
+        }
+        directory
+            .set_permissions(std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("setting owner-only mode on {}", path.display()))?;
+        let after = std::fs::symlink_metadata(path)
+            .with_context(|| format!("re-checking credential directory {}", path.display()))?;
+        if after.dev() != opened.dev() || after.ino() != opened.ino() {
+            anyhow::bail!(
+                "credential directory {} changed identity during validation",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_provider_id(provider: &str) -> Result<()> {
+    if !ProvidersConfig::is_known(provider)
+        || provider.is_empty()
+        || provider.len() > 32
+        || !provider.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+        })
+    {
+        anyhow::bail!("invalid credential provider id {provider:?}");
+    }
+    Ok(())
+}
+
+fn safe_provider_component(provider: &str) -> &str {
+    if validate_provider_id(provider).is_ok() {
+        provider
+    } else {
+        "__invalid_provider"
+    }
+}
+
+fn validate_account_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name.len() > 64
+        || !name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '-'
+        })
+    {
+        anyhow::bail!(
+            "invalid credential account name {name:?}; use 1-64 ASCII letters, digits, '_' or '-'"
+        );
+    }
+    Ok(())
+}
+
 fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| {
@@ -1211,18 +1248,46 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
         // write() — the active-creds path
-        store.write("codex", &json!({"refresh_token": "sk-secret-xyz"})).unwrap();
-        let mode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
-        assert_eq!(mode & 0o077, 0, "active creds must be 0600, got {:o}", mode & 0o777);
+        store
+            .write("codex", &json!({"refresh_token": "sk-secret-xyz"}))
+            .unwrap();
+        let mode = std::fs::metadata(store.active_path("codex"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "active creds must be 0600, got {:o}",
+            mode & 0o777
+        );
         // save_as_account() — the saved-profile copy
         store.save_as_account("codex", "work").unwrap();
-        let amode = std::fs::metadata(store.account_path("codex", "work")).unwrap().permissions().mode();
-        assert_eq!(amode & 0o077, 0, "saved account must be 0600, got {:o}", amode & 0o777);
+        let amode = std::fs::metadata(store.account_path("codex", "work"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            amode & 0o077,
+            0,
+            "saved account must be 0600, got {:o}",
+            amode & 0o777
+        );
         // switch_account() — the copy-over-active path
-        store.write("codex", &json!({"refresh_token": "v2"})).unwrap();
+        store
+            .write("codex", &json!({"refresh_token": "v2"}))
+            .unwrap();
         store.switch_account("codex", "work").unwrap();
-        let smode = std::fs::metadata(store.active_path("codex")).unwrap().permissions().mode();
-        assert_eq!(smode & 0o077, 0, "switched creds must be 0600, got {:o}", smode & 0o777);
+        let smode = std::fs::metadata(store.active_path("codex"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(
+            smode & 0o077,
+            0,
+            "switched creds must be 0600, got {:o}",
+            smode & 0o777
+        );
     }
 
     fn fresh_store(tmp: &Path) -> (CredentialStore, LockedEnvironment) {
@@ -1299,6 +1364,138 @@ mod tests {
     }
 
     #[test]
+    fn provider_and_account_components_cannot_escape_or_alias() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _) = codex_store(tmp.path());
+        let outside = tmp.path().join("outside.json");
+
+        assert!(store.write("../outside", &json!({"secret": true})).is_err());
+        assert!(!outside.exists());
+        store.write("codex", &json!({"secret": true})).unwrap();
+        for invalid in ["../work", "work/name", "work name", "", "."] {
+            assert!(
+                store.save_as_account("codex", invalid).is_err(),
+                "{invalid:?}"
+            );
+            assert!(
+                store.switch_account("codex", invalid).is_err(),
+                "{invalid:?}"
+            );
+        }
+        assert!(store.list_accounts("../outside").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn credential_authorities_reject_symlinks_hardlinks_and_symlinked_roots() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _) = codex_store(tmp.path());
+        let authority = store.active_path("codex");
+        let victim = tmp.path().join("victim.json");
+        std::fs::write(&victim, r#"{"do_not_touch":true}"#).unwrap();
+        let victim_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        symlink(&victim, &authority).unwrap();
+        assert!(store.read("codex").is_err());
+        assert!(store.write("codex", &json!({"replacement": true})).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            r#"{"do_not_touch":true}"#
+        );
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            victim_mode
+        );
+
+        std::fs::remove_file(&authority).unwrap();
+        std::fs::hard_link(&victim, &authority).unwrap();
+        assert!(store.read("codex").is_err());
+        assert!(store.write("codex", &json!({"replacement": true})).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            r#"{"do_not_touch":true}"#
+        );
+
+        let omega = tmp.path().join("symlink-root");
+        let external = tmp.path().join("external-credentials");
+        std::fs::create_dir_all(&omega).unwrap();
+        std::fs::create_dir_all(&external).unwrap();
+        symlink(&external, omega.join("credentials")).unwrap();
+        assert!(CredentialStore::from_roots(&omega, &tmp.path().join("codex-home")).is_err());
+    }
+
+    #[test]
+    fn concurrent_credential_writes_remain_complete_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _) = codex_store(tmp.path());
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let mut writers = Vec::new();
+        for marker in ["first", "second"] {
+            let store = store.clone();
+            let barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                barrier.wait();
+                store
+                    .write(
+                        "codex",
+                        &json!({"marker": marker, "payload": "x".repeat(4096)}),
+                    )
+                    .unwrap();
+            }));
+        }
+        barrier.wait();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let final_value = store.read("codex").unwrap();
+        assert!(matches!(
+            final_value.get("marker").and_then(Value::as_str),
+            Some("first" | "second")
+        ));
+        assert_eq!(
+            final_value
+                .get("payload")
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(4096)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_reconciliation_lock_rejects_symlink_and_hardlink_poisoning() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let (store, _) = codex_store(tmp.path());
+        let locks = store.base_dir.parent().unwrap().join("locks");
+        std::fs::create_dir_all(&locks).unwrap();
+        let lock = locks.join("codex-credentials.lock");
+        let victim = tmp.path().join("lock-victim");
+        std::fs::write(&victim, "unchanged").unwrap();
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        symlink(&victim, &lock).unwrap();
+        assert!(store.reconcile_codex().is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "unchanged");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&victim, &lock).unwrap();
+        assert!(store.reconcile_codex().is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "unchanged");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+    }
+
+    #[test]
     fn save_and_switch_account() {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
@@ -1319,7 +1516,9 @@ mod tests {
     fn ensure_legacy_symlink_creates_link() {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
-        store.write("claude", &json!({"claudeAiOauth": {}})).unwrap();
+        store
+            .write("claude", &json!({"claudeAiOauth": {}}))
+            .unwrap();
         store.ensure_legacy_symlink("claude").unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
         let meta = std::fs::symlink_metadata(&legacy).unwrap();
@@ -1383,11 +1582,20 @@ mod tests {
 
         // shared target adopted the fresh content
         let shared_content = std::fs::read_to_string(&shared).unwrap();
-        assert!(shared_content.contains("FRESH"), "shared must hold the fresh token, got: {shared_content}");
+        assert!(
+            shared_content.contains("FRESH"),
+            "shared must hold the fresh token, got: {shared_content}"
+        );
         // canonical→shared symlink untouched
-        assert!(std::fs::symlink_metadata(&canonical).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&canonical)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         // legacy is a symlink again, and a backup of the real file exists
-        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+        assert!(std::fs::symlink_metadata(&legacy)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(legacy.with_extension("json.pre-omega").exists());
     }
 
@@ -1399,7 +1607,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (store, _env) = fresh_store(tmp.path());
         store
-            .write("claude", &json!({"claudeAiOauth": {"refreshToken": "GOOD"}}))
+            .write(
+                "claude",
+                &json!({"claudeAiOauth": {"refreshToken": "GOOD"}}),
+            )
             .unwrap();
         std::fs::create_dir_all(tmp.path().join(".claude")).unwrap();
         let legacy = tmp.path().join(".claude").join(".credentials.json");
@@ -1408,8 +1619,14 @@ mod tests {
         store.ensure_legacy_symlink("claude").unwrap();
 
         let canonical_content = std::fs::read_to_string(store.active_path("claude")).unwrap();
-        assert!(canonical_content.contains("GOOD"), "canonical must keep good creds, got: {canonical_content}");
-        assert!(std::fs::symlink_metadata(&legacy).unwrap().file_type().is_symlink());
+        assert!(
+            canonical_content.contains("GOOD"),
+            "canonical must keep good creds, got: {canonical_content}"
+        );
+        assert!(std::fs::symlink_metadata(&legacy)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]
@@ -1426,12 +1643,15 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn codex_reconcile_adopts_newer_native_and_quarantines_old_canonical() {
+        use std::os::unix::fs::PermissionsExt;
+
         let tmp = tempfile::tempdir().unwrap();
         let (store, codex_home) = codex_store(tmp.path());
         let canonical = store.active_path("codex");
         let native = codex_home.join("auth.json");
         write_codex(&canonical, "2026-07-20T10:00:00Z", "canonical-old");
         write_codex(&native, "2026-07-21T10:00:00Z", "native-new");
+        std::fs::set_permissions(&canonical, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let before = store.codex_topology();
         assert!(before.split);
@@ -1453,6 +1673,10 @@ mod tests {
         );
         assert!(report.topology.native_links_to_canonical);
         assert!(!report.topology.split);
+        assert_eq!(
+            std::fs::metadata(&canonical).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]

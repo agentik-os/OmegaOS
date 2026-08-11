@@ -95,15 +95,42 @@ pub fn classify(http_status: Option<u16>, message: &str) -> FailoverReason {
 
     // 2. Message patterns. Ordered most-specific → most-generic.
     let patterns: &[(&[&str], FailoverReason)] = &[
-        (&["budget exhausted", "no budget left"], FailoverReason::BudgetExhausted),
-        (&["context length", "maximum context", "token limit"], FailoverReason::ContextOverflow),
-        (&["model not found", "model_not_found", "deprecated"], FailoverReason::ModelUnavailable),
-        (&["unknown tool", "invalid tool", "tool schema"], FailoverReason::InvalidToolCall),
-        (&["refused", "content policy", "safety"], FailoverReason::ContentRefused),
-        (&["rate limit", "too many requests", "quota"], FailoverReason::RateLimit),
-        (&["unauthorized", "invalid api key", "authentication"], FailoverReason::Auth),
-        (&["timeout", "timed out", "connection reset", "dns"], FailoverReason::Network),
-        (&["internal server error", "service unavailable", "upstream"], FailoverReason::UpstreamError),
+        (
+            &["budget exhausted", "no budget left"],
+            FailoverReason::BudgetExhausted,
+        ),
+        (
+            &["context length", "maximum context", "token limit"],
+            FailoverReason::ContextOverflow,
+        ),
+        (
+            &["model not found", "model_not_found", "deprecated"],
+            FailoverReason::ModelUnavailable,
+        ),
+        (
+            &["unknown tool", "invalid tool", "tool schema"],
+            FailoverReason::InvalidToolCall,
+        ),
+        (
+            &["refused", "content policy", "safety"],
+            FailoverReason::ContentRefused,
+        ),
+        (
+            &["rate limit", "too many requests", "quota"],
+            FailoverReason::RateLimit,
+        ),
+        (
+            &["unauthorized", "invalid api key", "authentication"],
+            FailoverReason::Auth,
+        ),
+        (
+            &["timeout", "timed out", "connection reset", "dns"],
+            FailoverReason::Network,
+        ),
+        (
+            &["internal server error", "service unavailable", "upstream"],
+            FailoverReason::UpstreamError,
+        ),
     ];
 
     for (needles, reason) in patterns {
@@ -151,10 +178,7 @@ mod tests {
 
     #[test]
     fn message_network_timeout() {
-        assert_eq!(
-            classify(None, "request timed out"),
-            FailoverReason::Network
-        );
+        assert_eq!(classify(None, "request timed out"), FailoverReason::Network);
     }
 
     #[test]

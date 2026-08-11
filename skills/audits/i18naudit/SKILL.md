@@ -204,13 +204,13 @@ actually ran).
 Output is written to:
 
 ```
-$PROJECT_PATH/.i18n/
+$PROJECT_PATH/audits/.i18naudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), the artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.i18n/` so multiple audits on the same ticket can cross-reference.
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.i18naudit/` so multiple audits on the same ticket can cross-reference.
 
 ### 0.2 evidence-summary.json schema
 
@@ -261,7 +261,7 @@ You MAY still:
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
 If this audit runs as part of a Linear-fix mission, sibling audits' summaries are at
-`$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`. Read them. Use them.
+`$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`. Read them. Use them.
 
 High-value confluences for i18n:
 - **i18naudit + copyaudit** flag the same string → copyaudit owns CLARITY of the source string;
@@ -1097,7 +1097,7 @@ sibling top-5 relevant to localization, add it to your findings as
   ],
   "edge_cases": [ ... ],                         // H1.4
   "cross_audit_links": [ ... ],                  // H1.5
-  "evidence_summary_path": "$PROJECT_PATH/.i18n/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.i18naudit/evidence-summary.json",
   "confidence_basis": "Why I'm confident (or not). Cite Popper test counts, hinge scrutiny depth, runtime locale-walk coverage, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)"
 }
@@ -1394,7 +1394,7 @@ THE QUALITY ARSENAL:
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — localization hinge point, falsification, runtime evidence chain, adversarial "switch the locale" mindset
-- ✅ **Concurrency lock** — `audits/.i18naudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.i18naudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations. On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (areas: hardcoded | routing | rtl | formatting | completeness | encoding | runtime)
 - ✅ **Non-UI context gate** — Backend/CLI/library targets: Phases 1/2/4/5/5b/6/8/10/11/12/13 still apply (server-rendered strings, log-vs-user-facing, formatters, catalogs, encoding). UI-only phases (3/9/14/16 runtime-walk) are marked N/A and EXCLUDED from the normalized denominator (preamble §5). A pure backend with no user-facing strings scores on its formatter/encoding surface only.

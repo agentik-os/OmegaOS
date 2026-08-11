@@ -14,7 +14,7 @@ All audits share the **Gestalt-Popper doctrine**:
 
 ## Categories
 
-### Preventive (13) — Architecture & Design
+### Preventive (16) — Architecture & Design
 
 | Audit | Domain | Phases | Score | What it answers |
 |-------|--------|--------|-------|-----------------|
@@ -30,9 +30,12 @@ All audits share the **Gestalt-Popper doctrine**:
 | `/motionaudit` | Motion | 23 | /360 | Is the motion PURPOSEFUL? |
 | `/automationaudit` | Automation | 22 | /330 | Is automation RELIABLE? |
 | `/logicaudit` | Logic | 20 | /360 | Is the logic OPTIMAL? |
+| `/i18naudit` | Localization | 18 | /360 | Is it WORLD-READY? |
 | `/retentionaudit` | Retention | 20 | /400 | What FEATURES are missing? (READ-ONLY) |
+| `/depaudit` | Dependencies | 18 | /360 | Is the supply chain SAFE? |
+| `/releaseaudit` | Release | 20 | /400 | Is shipping SAFE + reversible? |
 
-### Detective (5) — Runtime & Security
+### Detective (7) — Runtime & Security
 
 | Audit | Domain | Phases | Score | What it answers |
 |-------|--------|--------|-------|-----------------|
@@ -40,7 +43,9 @@ All audits share the **Gestalt-Popper doctrine**:
 | `/perfaudit` | Performance | 23 | /360 | Is it FAST enough? |
 | `/secaudit` | Security | 25 | /400 | Is it SECURE? |
 | `/dataaudit` | Data | 21 | /320 | Is the data INTACT? |
+| `/privacyaudit` | Privacy | 18 | /360 | Is user data HANDLED LAWFULLY? |
 | `/apiaudit` | API | 23 | /360 | Is the API SOLID? |
+| `/observabilityaudit` | Observability | 18 | /360 | Can we SEE what it does in prod? |
 
 ## How Oracles Use Audits
 
@@ -57,7 +62,7 @@ Oracles automatically select relevant audits at end of mission based on what cha
 | Bug fixes | `/debugaudit` |
 | Performance work | `/perfaudit` |
 | Content/copy | `/copyaudit`, `/seoaudit` |
-| Full product audit | All 18 in parallel |
+| Full product audit | All 23 in file-safe waves |
 
 ### Manual invocation
 
@@ -137,6 +142,11 @@ skills/audits/
 ├── motionaudit/SKILL.md
 ├── automationaudit/SKILL.md
 ├── logicaudit/SKILL.md
+├── i18naudit/SKILL.md
+├── depaudit/SKILL.md
+├── releaseaudit/SKILL.md
+├── privacyaudit/SKILL.md
+├── observabilityaudit/SKILL.md
 ├── refontaudit/SKILL.md
 └── retentionaudit/SKILL.md
 ```

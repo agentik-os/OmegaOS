@@ -66,28 +66,19 @@ and shown at the end of the install). In short:
 2. **Telegram remote** *(recommended)* — token from [@BotFather](https://t.me/BotFather), your id from [@userinfobot](https://t.me/userinfobot), then `OMEGA_TG_TOKEN=<TOKEN> omega telegram setup <ID> --user-id <ID>` (the env form keeps the token out of the process list). For one-topic-per-project: group + Topics on + bot admin → `/setupgroup` → `/sync`.
 3. **Service keys** *(optional)* — `~/.omega/provisioning/services.env` (Vercel / GitHub / Convex / Stripe / OpenAI-for-voice) powers auto-provisioning of new apps.
 4. **Add a project** — `omega` → **[N] New Project**, Telegram → *Import from GitHub*, or just drop a repo under `~/Station/<Category>/`.
-5. **Verify** — `omega doctor`: every line `[+]`.
+5. **Verify** — `omega doctor`: investigate every `[x]`; treat `[!]` as an
+   explicit warning rather than a pass.
 
-Here is a real `omega doctor` run:
+Representative invariant lines from the source-built runtime are below.
+Session counts, paths, installed provenance, authentication, and service health
+are machine-specific and must come from your own run:
 
 ```
 OmegaOS doctor
 
-  [+] binary           omega 0.1.9
-  [+] binary provenance built from HEAD (3e84acd)
-  [+] rmux daemon      connected, 3 live session(s)
-  [+] rmux socket      /tmp/rmux-1000/default
-  [+] doctrine         7 Laws + 51 Rules
-  [+] agent CLI        codex available
-  [+] state dir        /home/vibe/.omega/state
-  [+] telegram service omega-tg-bot active
-  [+] hooks            track + verify present, registered in settings.json
-  [+] secrets dir      /home/vibe/.omega present
-  [+] memory           249088MB available
-  [+] usage cache      usage cache 1 min old
-  [+] codex auth       Codex login valid
-  [+] telegram poller  1 poller
-  [+] provisioning     provisioning: VERCEL_TOKEN, CONVEX_TEAM_TOKEN, STRIPE_SECRET_KEY
+  [+] binary           omega 0.1.13
+  [+] doctrine         7 Laws + 52 Rules
+  ... machine-specific checks follow ...
 ```
 
 `[!]` lines are warnings with the repair command inline; `omega doctor --fix` repairs the mechanical ones.
@@ -102,35 +93,25 @@ OmegaOS doctor
 - **Convene a council.** `/omg-llm-council` puts one question to four different Claude models in parallel, has them peer-review each other anonymously, and synthesizes a verdict with the dissent intact — no API keys, it runs inside your existing session.
 - **Browse agentically.** `/omg-browser-use` drives a cloud browser for tasks scripted Playwright can't express.
 - **Do the go-to-market too.** A vendored marketing pack (market research, positioning, content strategy, social, cold email, ad creative, launch strategy) plus the Higgsfield visual-identity pair.
-- **Get reports on your phone.** Every mission ends with a branded PDF report in the project's Telegram topic, and a live progress card updates in place while it runs. A deposit bot gives agents a private inbox for files you send from your phone.
+- **Get reports on your phone.** With Telegram configured, completed mission delivery can include a branded PDF report in the project's topic while a live progress card updates in place. A deposit bot gives agents a private inbox for files you send from your phone.
 - **Operate it.** `omega doctor` (whole-stack health), `patrol` (session watchdog), `usage` (token budget + Telegram alerts), `backup` (irreproducible `~/.omega` state → one tgz), `cleanup` / `kill-all`, `timeline` (replay a mission), `resurrect` (revive a crashed oracle), `provision` (per-client credential groups).
 - **Resolve Linear tickets end to end.** `/omg-linear` fixes, captures evidence, audits to 100/100, comments, and moves the ticket to review — never to Done; a human does that. See [Linear integration](#linear-integration).
 - **Learn from any book — the Librarian.** ALEXANDRIA OS (`/alexandria`) is a personal librarian, learning coach and intellectual sparring partner: it X-rays a book chapter by chapter, distills an idea across many books, puts authors in combat, challenges your plan in a 10-round sparring, builds flashcards and spaced repetition, and finds the 50 best books worldwide on a topic with 50 actionable tips (`/best`). It runs as a Skill in any session AND as its own **Telegram persona bot** you connect in one tap — **Menu → 🤖 Agents → 📚 Link your librarian (Alexandria)**, paste a @BotFather token, done. It replies in **English by default** (`/language fr` to switch), transcribes voice notes and audio, reads PDF/EPUB files, and starts with `/setup` to adapt to how *you* learn. Same wiring links your companion (Nova) and security agent (Trinity).
 
-Three ways in: the `ratatui` TUI (7 tabs: Sessions, Projects, OS, Menu, System, Help, Settings — opening a project offers Coding, Marketing, or the Oracle, each under any installed LLM agent), the `omega` CLI (60+ commands), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
+Three ways in: the `ratatui` TUI (7 tabs: Sessions, Projects, OS, Menu, System, Help, Settings — opening a project offers Coding, Marketing, or the Oracle, each under any installed LLM agent), the `omega` CLI (`omega --help` is the live command inventory), and the Telegram hub. An RPC mode (JSONL over stdin/stdout) drives it from other tools. Underneath, it all runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer — no tmux dependency.
 
 ## The OS suite
 
-OmegaOS ships the AgentikOS product line of operative systems under [`OS/`](OS/), surfaced in the TUI's **OS** tab and installed to `~/.omega/os/`:
-
-The build chain is its own group — `01 Ideation -> 02 Researcher -> 03 Blueprint -> 04 Designer (UX/UI) -> 05 Stepper -> 06 Builder` — followed by the personal OSes:
-
-| # | OS | Focus | Status |
-|---|----|-------|--------|
-| 01 | **Ideation OS** | Brainstorm {OS} v3: imagination + decision council | **integrated** |
-| 02 | **Researcher OS** | Market Research {OS}: evidence + validation compiler | **integrated** |
-| 03 | **Blueprint OS** | The product-definition compiler (v3) | **integrated** |
-| 04 | **Designer OS (UX/UI)** | Design {OS}: challenge the blueprint into flows + a Stepper handoff | **integrated** |
-| 05 | **Stepper OS** | Step-by-step execution of a blueprint | **integrated** |
-| 06 | **Builder OS** | The implementation runtime: roadmap to release-ready code | **integrated** |
-| — | **Mindset · Habits · Execution · Storytelling · Alignment · Books** | The personal OSes (Mindset · Habits · Execution · Storytelling · Alignment wisdom/decision coach · Books librarian) | all six **integrated** |
-| Sys | **AI Logic OS** | Workflow optimizer + agentic-system challenger — code-vs-AI arbitration, finds the logic gaps and specs the fix (default bias NO) | **integrated** |
-
-Every OS carries a **master agent** (`MASTER.md`): the TUI's Enter opens it as a session, and each OS can link its own **Telegram bot** (`T` in the OS tab, or `omega-os-bot <slug>`) whose brain is that same master agent — one brain, every surface. The build chain runs `Idea -> Ideation -> Researcher -> Blueprint -> Stepper -> Builder -> Ship`. **Ideation OS** (Brainstorm {OS} v3) is live: a multi-agent imagination + decision council (`/brainstorm`) that turns a raw idea into challenged, evolved, decision-ready concepts before research. **Builder OS** is live: the autonomous implementation runtime (`/build`) that executes the frozen Blueprint handoff through the Stepper roadmap into tested, reviewed, release-ready code — evidence-gated (BG01-BG20, `omega-builder` state CLI). **Blueprint OS v3** is live: a product-definition compiler over one canonical state — 38 sections, stable IDs, epistemic ledgers, 20 quality gates, and a frozen handoff Stepper consumes (`/blueprint <idea>` in Claude or Codex, `omega-blueprint` CLI for the state contract). **Stepper OS** is live: a Blueprint compiler + execution runtime that walks a project one verified step at a time — planner (ranked READY candidates + safe waves), tracker (restart-safe state + append-only events), and a deterministic verifier that gates DONE (an agent's self-report never closes a step). Drive it as `/stepper-os` (Claude or Codex) or the `omega-stepper` CLI. **Books OS** is live too: the librarian / knowledge system (X-ray a book, idea atlas, author combat, flashcards, spaced repetition, /best 50 books on any topic) as `/books-os` (= the alexandria skill), the `omega-books` CLI, or its own Telegram librarian bot. The convention, and the playbook for integrating the next OS, live in [`docs/OS-SUITE.md`](docs/OS-SUITE.md).
+OmegaOS registers 24 canonical operative-system products under [`OS/`](OS/),
+grouped as Personal, Build, Growth, and Systems. Five older slugs remain as
+compatibility aliases. The TUI's **OS** tab derives readiness labels from
+filesystem evidence; those labels are not claims that an OS has passed live
+runtime verification. See the canonical registry and alias table in
+[`docs/OS-SUITE.md`](docs/OS-SUITE.md).
 
 ## The doctrine
 
-There's a typed registry of 7 Laws and 51 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.
+There's a typed registry of 7 Laws and 52 named operational Rules. `omega rules list` prints the current set. The compiler lives in `crates/omega-core/src/rules.rs`; it emits a deterministic, provider-aware context with a hard 24 KB OmegaOS budget.
 
 **Laws are inviolable.** They bind every agent and override every rule and task. There are seven:
 
@@ -165,11 +146,11 @@ Four levels, top to bottom:
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Level 1 — Human Interface                                      │
-│  TUI (7 tabs) · CLI (60+ cmds) · Telegram hub                   │
+│  TUI (7 tabs) · CLI (`omega --help`) · Telegram hub             │
 │                      ↓ intent                                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  Level 2 — Master (persistent brain — the Atlas topic)          │
-│  14 Matrix-named agent templates, classify → route              │
+│  Level 2 — Atlas Telegram orchestration service                 │
+│  15 typed Matrix agent templates, classify → dispatch           │
 │                      ↓ dispatch                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │  Level 3 — Oracle (1 per project)                               │
@@ -181,7 +162,11 @@ Four levels, top to bottom:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Level 2 — the Master.** A persistent agent that stays running, auto-restarts if it dies, and resumes its own conversation. It ships 14 agent templates named after Matrix characters (Oracle, Morpheus, Seraph, Keymaker, Smith, Niobe, Architect, Merovingian, Neo, Zion, Link, Construct, Pythia, Council). The Master is a dispatcher. It only classifies and routes work to oracles.
+**Level 2 — Atlas.** A persistent Telegram service receives operator messages,
+resolves the project or topic, and dispatches work to an oracle. The typed
+registry contains 15 Matrix-named agent templates, including Trinity. The
+legacy `aisb-master` session is a read-only conversation viewer, not the
+routing authority.
 
 **Level 3 — Oracle.** One per project. It classifies the request, plans, dispatches workers, and runs the quality gate at the end. An oracle orchestrates. It does not edit project code itself, so the grader and the writer are never the same agent.
 
@@ -189,7 +174,11 @@ Four levels, top to bottom:
 
 ### How a mission runs
 
-A request enters via the TUI, the CLI, or Telegram. Wherever it starts, it lands on the Master, which reads it, classifies it, and routes it to the oracle that owns the relevant project. The oracle plans the mission, splits it into tasks, and dispatches a worker per task. Workers verify their own results against actual runtime and write their `done.json`; the oracle reads it, runs the gate, and reports up the chain.
+A request enters via the TUI, CLI, or Telegram. Direct dispatch resolves the
+project oracle; Telegram messages first pass through Atlas for topic and
+project routing. The oracle plans the mission, splits it into tasks, and
+dispatches workers. A worker's `done.json` is only a candidate projection;
+independent verification and the mission acceptance gate decide closure.
 
 A worker doesn't have to chew through its subtasks one at a time. It can run a workflow in-process: spawn parallel sub-agents, check their outputs, and combine them into one answer. Code review uses this, as do research, audits, and design work.
 
@@ -239,15 +228,17 @@ The graph itself is a library primitive in `omega-core` (`graph.rs` for the voca
 
 ## Stack
 
-It's a Rust workspace with three crates:
+It's a Rust-first workspace with four members:
 
 - `omega-core` — orchestration, the rules registry, doctor, timeline, cleanup, patrol, file-scope locking.
 - `omega-cli` — the `omega` binary, built on `clap`.
 - `omega-tui` — the session manager, built on `ratatui`.
+- `omega-gateway` — the optional HTTP gateway surface.
 
 Underneath, it runs on [rmux](https://github.com/agentik-os/rmux), a Rust terminal multiplexer: a daemon, a typed SDK, and PTY handling. rmux is a typed Rust library, so OmegaOS calls it directly instead of shelling out to tmux and parsing text. There is no tmux dependency anywhere.
 
-Bun and TypeScript do the PDF report rendering (through Next.js and Playwright) and the Telegram bots. Bash shows up in exactly one place: the install bootstrap.
+Bun and TypeScript power the Telegram bots and supporting scripts. Shell is
+used for bootstrap and operational wrappers; Rust remains the primary runtime.
 
 ## Connecting remotely
 
@@ -266,7 +257,7 @@ Detach again with `Ctrl-b d` — the session and its agents keep running without
 ```
 omega                       # open the TUI session manager (browse / launch / monitor)
 omega attach -t claude-1    # drop straight into one session to work in it
-omega master                # jump to the Master session
+omega aisb-view             # open the read-only Telegram conversation viewer
 omega list                  # list every live session
 ```
 

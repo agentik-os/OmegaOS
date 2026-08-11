@@ -431,9 +431,9 @@ pub fn question_ui_visible(pane: &str) -> bool {
 /// (it reports the turn's total), and `✻ Cooked for 3s` is the FINISHED form of
 /// the spinner line with no token count at all: neither is activity.
 pub fn working_indicator_visible(pane: &str) -> bool {
-    live_chrome(pane).into_iter().any(|line| {
-        line.contains(WORKING_MARKER_INTERRUPT) || is_activity_line(line)
-    })
+    live_chrome(pane)
+        .into_iter()
+        .any(|line| line.contains(WORKING_MARKER_INTERRUPT) || is_activity_line(line))
 }
 
 fn is_activity_line(line: &str) -> bool {
@@ -1252,7 +1252,9 @@ pub fn monitor_viewer_name(target: &StreamTarget) -> String {
 }
 
 fn with_monitor_prefix(stream_name: &str) -> String {
-    let stem = stream_name.strip_prefix(STREAM_PREFIX).unwrap_or(stream_name);
+    let stem = stream_name
+        .strip_prefix(STREAM_PREFIX)
+        .unwrap_or(stream_name);
     format!("{MONITOR_PREFIX}{stem}")
 }
 
@@ -1261,7 +1263,9 @@ fn with_monitor_prefix(stream_name: &str) -> String {
 /// The poll loop the monitor session runs. Installed by `install.sh` from
 /// `scripts/omega-monitor.sh`.
 pub fn monitor_script_path() -> PathBuf {
-    crate::config::omega_dir().join("bin").join("omega-monitor.sh")
+    crate::config::omega_dir()
+        .join("bin")
+        .join("omega-monitor.sh")
 }
 
 /// The exact command string handed to `rmux new-session`.
@@ -1614,7 +1618,10 @@ mod tests {
     #[test]
     fn an_ordinary_line_above_a_modal_never_downgrades_a_live_question() {
         for (name, pane) in [
-            ("option list directly under its own rule", PANE_Q_OPTION_UNDER_RULE),
+            (
+                "option list directly under its own rule",
+                PANE_Q_OPTION_UNDER_RULE,
+            ),
             ("a rule then a quoted arrow line", PANE_Q_RULE_ARROW),
             ("a rule then a markdown blockquote", PANE_Q_RULE_BLOCKQUOTE),
         ] {
@@ -1649,8 +1656,14 @@ mod tests {
             find_input_box(PANE_STOPPED).is_some(),
             "the real stopped capture draws a composer and it must still be located"
         );
-        assert_eq!(classify(PANE_STOPPED, WorkSignal::Available), MonitorState::Stalled);
-        assert_eq!(classify(PANE_STOPPED, WorkSignal::None), MonitorState::Blocked);
+        assert_eq!(
+            classify(PANE_STOPPED, WorkSignal::Available),
+            MonitorState::Stalled
+        );
+        assert_eq!(
+            classify(PANE_STOPPED, WorkSignal::None),
+            MonitorState::Blocked
+        );
     }
 
     #[test]
@@ -1677,8 +1690,14 @@ mod tests {
         // GOLDEN-stalled-real is the SAME session as GOLDEN-question-real, one
         // turn later: the question was answered and neither marker is on
         // screen. Only the work probe can tell a stall from a block.
-        assert_eq!(classify(PANE_STOPPED, WorkSignal::Available), MonitorState::Stalled);
-        assert_eq!(classify(PANE_STOPPED, WorkSignal::None), MonitorState::Blocked);
+        assert_eq!(
+            classify(PANE_STOPPED, WorkSignal::Available),
+            MonitorState::Stalled
+        );
+        assert_eq!(
+            classify(PANE_STOPPED, WorkSignal::None),
+            MonitorState::Blocked
+        );
         assert_eq!(
             classify(PANE_STOPPED, WorkSignal::Unknown),
             MonitorState::Stalled,
@@ -1732,7 +1751,10 @@ mod tests {
             );
         }
         // That session was in fact busy, which is what it should be called.
-        assert_eq!(classify(PANE_SELF_ECHO, WorkSignal::Available), MonitorState::Working);
+        assert_eq!(
+            classify(PANE_SELF_ECHO, WorkSignal::Available),
+            MonitorState::Working
+        );
     }
 
     // ── The question test ────────────────────────────────────────────────────
@@ -1746,7 +1768,10 @@ mod tests {
   Press Enter to select the default and move on, they said, but there is no list.
 ";
         assert!(!question_ui_visible(prose));
-        assert_eq!(classify(prose, WorkSignal::Available), MonitorState::Stalled);
+        assert_eq!(
+            classify(prose, WorkSignal::Available),
+            MonitorState::Stalled
+        );
     }
 
     #[test]
@@ -1867,7 +1892,10 @@ mod tests {
             !working_indicator_visible(&pane),
             "a stopped session would never be nudged again"
         );
-        assert_eq!(classify(&pane, WorkSignal::Available), MonitorState::Stalled);
+        assert_eq!(
+            classify(&pane, WorkSignal::Available),
+            MonitorState::Stalled
+        );
     }
 
     #[test]
@@ -1905,8 +1933,14 @@ mod tests {
 
     /// name -> the real capture of a dead agent with that `PS1` under its frame.
     const DEAD_AGENT_SHELLS: &[(&str, &str)] = &[
-        ("distro   \\u@\\h:\\w\\$", include_str!("../tests/fixtures/adv-shell-ps1-distro.txt")),
-        ("starship ❯", include_str!("../tests/fixtures/adv-shell-ps1-starship.txt")),
+        (
+            "distro   \\u@\\h:\\w\\$",
+            include_str!("../tests/fixtures/adv-shell-ps1-distro.txt"),
+        ),
+        (
+            "starship ❯",
+            include_str!("../tests/fixtures/adv-shell-ps1-starship.txt"),
+        ),
         (
             "inline   \\u@\\h \\w ❯",
             include_str!("../tests/fixtures/adv-shell-ps1-inlinearrow.txt"),
@@ -1915,10 +1949,22 @@ mod tests {
             "ohmybash ➜  omegaos git:(main)",
             include_str!("../tests/fixtures/adv-shell-ps1-ohmybash.txt"),
         ),
-        ("angle    \\w >", include_str!("../tests/fixtures/adv-shell-ps1-angle.txt")),
-        ("plain    omegaos", include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt")),
-        ("sigil    \\W \\$", include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt")),
-        ("root     omegaos #", include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt")),
+        (
+            "angle    \\w >",
+            include_str!("../tests/fixtures/adv-shell-ps1-angle.txt"),
+        ),
+        (
+            "plain    omegaos",
+            include_str!("../tests/fixtures/adv-shell-ps1-plainname.txt"),
+        ),
+        (
+            "sigil    \\W \\$",
+            include_str!("../tests/fixtures/adv-shell-ps1-baresigil.txt"),
+        ),
+        (
+            "root     omegaos #",
+            include_str!("../tests/fixtures/adv-shell-ps1-rootsigil.txt"),
+        ),
         (
             "typed    \\u@\\h:\\w\\$ + a command",
             include_str!("../tests/fixtures/adv-shell-ps1-distro-typed.txt"),
@@ -1998,7 +2044,10 @@ mod tests {
             "  ◯ build-omega-monitor  Build /monitor",
             "",
         ] {
-            assert!(is_composer_footer_line(row), "real footer row read as foreign: {row:?}");
+            assert!(
+                is_composer_footer_line(row),
+                "real footer row read as foreign: {row:?}"
+            );
         }
         // A count is what makes the token row chrome, not the bare word: a shell
         // sitting in a directory called `tokens` is not the agent's footer.
@@ -2076,7 +2125,10 @@ mod tests {
             .find(|l| !l.trim().is_empty())
             .unwrap();
         assert!(
-            !matches!(typed.trim().chars().last(), Some('$') | Some('#') | Some('%')),
+            !matches!(
+                typed.trim().chars().last(),
+                Some('$') | Some('#') | Some('%')
+            ),
             "fixture premise: the sigil is no longer last, so only the user@host arm can catch it"
         );
         assert!(
@@ -2085,7 +2137,9 @@ mod tests {
         );
         // And it stays a predicate about prompts, not about prose.
         assert!(!is_shell_prompt_line("● Ready."));
-        assert!(!is_shell_prompt_line("  ⏵⏵ bypass permissions on (shift+tab to cycle)"));
+        assert!(!is_shell_prompt_line(
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)"
+        ));
     }
 
     // ── The work probe ───────────────────────────────────────────────────────
@@ -2093,9 +2147,19 @@ mod tests {
     #[test]
     fn the_work_probe_reads_an_integer_and_distrusts_everything_else() {
         assert_eq!(WorkSignal::from_probe_output("7\n"), WorkSignal::Available);
-        assert_eq!(WorkSignal::from_probe_output("  3  "), WorkSignal::Available);
+        assert_eq!(
+            WorkSignal::from_probe_output("  3  "),
+            WorkSignal::Available
+        );
         assert_eq!(WorkSignal::from_probe_output("0\n"), WorkSignal::None);
-        for junk in ["", "  ", "none", "bash: jq: command not found", "3 steps", "-1"] {
+        for junk in [
+            "",
+            "  ",
+            "none",
+            "bash: jq: command not found",
+            "3 steps",
+            "-1",
+        ] {
             assert_eq!(
                 WorkSignal::from_probe_output(junk),
                 WorkSignal::Unknown,
@@ -2115,7 +2179,10 @@ mod tests {
         // build whose remaining steps all await a human still reports a count,
         // and that count must produce Stalled rather than Blocked.
         assert_eq!(WorkSignal::from_probe_output("12\n"), WorkSignal::Available);
-        assert_eq!(classify(PANE_STOPPED, WorkSignal::Available), MonitorState::Stalled);
+        assert_eq!(
+            classify(PANE_STOPPED, WorkSignal::Available),
+            MonitorState::Stalled
+        );
     }
 
     // ── Failure signals ──────────────────────────────────────────────────────
@@ -2141,7 +2208,11 @@ mod tests {
   Traceback (most recent call last):
 ";
         let signals = failure_signals(real, &[]);
-        assert_eq!(signals.len(), 4, "each exact structure fires once: {signals:?}");
+        assert_eq!(
+            signals.len(),
+            4,
+            "each exact structure fires once: {signals:?}"
+        );
         assert!(signals.iter().any(|s| s.contains("MISSING ROW: 12")));
         assert!(signals.iter().any(|s| s.contains("is RED.")));
         assert!(signals.iter().any(|s| s.contains("exit code 3")));
@@ -2262,7 +2333,9 @@ mod tests {
             "the roll-up line is churn too: {active:?}"
         );
         assert!(
-            active.iter().any(|l| l.contains("Record the specimen-inherited exemption")),
+            active
+                .iter()
+                .any(|l| l.contains("Record the specimen-inherited exemption")),
             "the in-progress item is the whole point: {active:?}"
         );
     }
@@ -2298,7 +2371,10 @@ mod tests {
                 .any(|l| l.contains("Design the classifier")),
             "the item that only completed between the two frames is churn"
         );
-        assert!(task_transitions(now, now).is_empty(), "no churn on a still frame");
+        assert!(
+            task_transitions(now, now).is_empty(),
+            "no churn on a still frame"
+        );
     }
 
     #[test]
@@ -2339,16 +2415,31 @@ mod tests {
     fn the_budget_exhausts_only_after_nudges_that_produced_nothing() {
         let mut budget = NudgeBudget::new(3);
         budget.record_progress(10);
-        assert_eq!(budget.try_nudge(), NudgeDecision::Nudge { attempt: 1, of: 3 });
-        assert_eq!(budget.try_nudge(), NudgeDecision::Nudge { attempt: 2, of: 3 });
+        assert_eq!(
+            budget.try_nudge(),
+            NudgeDecision::Nudge { attempt: 1, of: 3 }
+        );
+        assert_eq!(
+            budget.try_nudge(),
+            NudgeDecision::Nudge { attempt: 2, of: 3 }
+        );
         // The metric did not move, and going BACKWARDS is not an advance.
         assert!(!budget.record_progress(10));
         assert!(!budget.record_progress(4));
-        assert_eq!(budget.spent(), 2, "a stalled or rewound metric earns nothing");
-        assert_eq!(budget.try_nudge(), NudgeDecision::Nudge { attempt: 3, of: 3 });
+        assert_eq!(
+            budget.spent(),
+            2,
+            "a stalled or rewound metric earns nothing"
+        );
         assert_eq!(
             budget.try_nudge(),
-            NudgeDecision::Exhausted { without_progress: 3 }
+            NudgeDecision::Nudge { attempt: 3, of: 3 }
+        );
+        assert_eq!(
+            budget.try_nudge(),
+            NudgeDecision::Exhausted {
+                without_progress: 3
+            }
         );
         assert!(budget.is_exhausted());
         assert_eq!(budget.remaining(), 0);
@@ -2373,7 +2464,9 @@ mod tests {
         let mut budget = NudgeBudget::new(0);
         assert_eq!(
             budget.try_nudge(),
-            NudgeDecision::Exhausted { without_progress: 0 },
+            NudgeDecision::Exhausted {
+                without_progress: 0
+            },
             "a read-only monitor is a legitimate configuration"
         );
     }
@@ -2449,7 +2542,10 @@ mod tests {
             let t = stream::parse_target(label);
             let mon = monitor_viewer_name(&t);
             assert_ne!(mon, stream::viewer_name(&t), "{label}");
-            assert!(mon.starts_with(MONITOR_PREFIX), "monitors are recognizable: {mon}");
+            assert!(
+                mon.starts_with(MONITOR_PREFIX),
+                "monitors are recognizable: {mon}"
+            );
             assert!(
                 mon.len() <= MAX_SESSION_NAME_LEN,
                 "a name over the cap is a name rmux truncates again: {mon} ({})",
@@ -2512,9 +2608,14 @@ mod tests {
         let fp = stream::fingerprinted_viewer_name(&t);
         let stem = fp.strip_prefix(STREAM_PREFIX).expect("stream prefix");
         let tail = &stem[stem.len() - FINGERPRINT_LEN - 1..];
-        assert!(tail.starts_with('-'), "the tail is `-<fingerprint>`: {tail:?}");
         assert!(
-            tail[1..].chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
+            tail.starts_with('-'),
+            "the tail is `-<fingerprint>`: {tail:?}"
+        );
+        assert!(
+            tail[1..]
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()),
             "the fingerprint is base-36: {tail:?}"
         );
     }
@@ -2552,11 +2653,20 @@ mod tests {
             cmd.contains(r"'jq '\''.left'\'' plan.json'"),
             "a probe with spaces and quotes must arrive as ONE argument: {cmd}"
         );
-        assert!(cmd.ends_with(" '' 30"), "an absent probe is still a positional: {cmd}");
-        assert!(cmd.starts_with('/'), "the script path must be expanded: {cmd}");
+        assert!(
+            cmd.ends_with(" '' 30"),
+            "an absent probe is still a positional: {cmd}"
+        );
+        assert!(
+            cmd.starts_with('/'),
+            "the script path must be expanded: {cmd}"
+        );
 
         let argv = monitor_viewer_argv("monitor-oracle-OmegaOS", &t, 60, 120, "", "", 30);
-        assert_eq!(argv[..4], ["new-session", "-d", "-s", "monitor-oracle-OmegaOS"]);
+        assert_eq!(
+            argv[..4],
+            ["new-session", "-d", "-s", "monitor-oracle-OmegaOS"]
+        );
         assert_eq!(argv.len(), 5, "the loop is ONE command argument");
     }
 
@@ -2614,14 +2724,23 @@ mod tests {
         }
         assert!(remote.contains("capture-pane -p -t 'MAC-STREAM' -S -120"));
         assert_eq!(argv[0], "ssh");
-        assert!(argv.iter().any(|a| a == "BatchMode=yes"), "captures never prompt");
-        assert!(argv.iter().any(|a| a == "matrix"), "the ALIAS is passed to ssh");
+        assert!(
+            argv.iter().any(|a| a == "BatchMode=yes"),
+            "captures never prompt"
+        );
+        assert!(
+            argv.iter().any(|a| a == "matrix"),
+            "the ALIAS is passed to ssh"
+        );
     }
 
     #[test]
     fn the_local_capture_uses_the_absolute_rmux() {
         let argv = capture_pane_argv(&stream::parse_target("oracle-OmegaOS"), 90);
-        assert!(argv[0].ends_with("rmux"), "rmux is not on the non-interactive PATH: {argv:?}");
+        assert!(
+            argv[0].ends_with("rmux"),
+            "rmux is not on the non-interactive PATH: {argv:?}"
+        );
         assert_eq!(
             argv[1..],
             ["capture-pane", "-p", "-t", "oracle-OmegaOS", "-S", "-90"]
@@ -2636,12 +2755,18 @@ mod tests {
             !keys.iter().any(|a| a == "Enter"),
             "appending Enter to the text types the word instead of submitting: {keys:?}"
         );
-        assert!(keys.iter().any(|a| a == "-l"), "the text is sent literally: {keys:?}");
+        assert!(
+            keys.iter().any(|a| a == "-l"),
+            "the text is sent literally: {keys:?}"
+        );
         assert_eq!(keys.last().unwrap(), "continue with the plan");
 
         let enter = send_enter_argv(&t);
         assert_eq!(enter.last().unwrap(), "Enter");
-        assert!(!enter.iter().any(|a| a == "-l"), "Enter is a KEY, not literal text");
+        assert!(
+            !enter.iter().any(|a| a == "-l"),
+            "Enter is a KEY, not literal text"
+        );
     }
 
     #[test]
@@ -2675,7 +2800,10 @@ mod tests {
             MonitorState::Working,
         ] {
             assert_eq!(MonitorState::parse(state.as_str()), Some(state));
-            assert_eq!(MonitorState::parse(&state.as_str().to_lowercase()), Some(state));
+            assert_eq!(
+                MonitorState::parse(&state.as_str().to_lowercase()),
+                Some(state)
+            );
         }
         assert_eq!(MonitorState::parse("idle"), None);
     }
@@ -2683,7 +2811,11 @@ mod tests {
     #[test]
     fn only_a_stall_is_answered_mechanically() {
         assert!(MonitorState::Stalled.should_nudge());
-        for state in [MonitorState::Question, MonitorState::Blocked, MonitorState::Working] {
+        for state in [
+            MonitorState::Question,
+            MonitorState::Blocked,
+            MonitorState::Working,
+        ] {
             assert!(!state.should_nudge(), "{state:?} must never be nudged");
         }
         assert!(MonitorState::Question.needs_human());

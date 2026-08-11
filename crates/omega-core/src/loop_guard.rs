@@ -371,11 +371,26 @@ mod tests {
         let dir = tmp.path();
         // First call fires (no script present in test env, but the cooldown
         // marker + record are still written and it returns true).
-        assert!(escalate_to_human(dir, "oracle-Proj", EscalationReason::ThrashCap, "5 retries"));
+        assert!(escalate_to_human(
+            dir,
+            "oracle-Proj",
+            EscalationReason::ThrashCap,
+            "5 retries"
+        ));
         // Second call in the same window is suppressed.
-        assert!(!escalate_to_human(dir, "oracle-Proj", EscalationReason::ThrashCap, "6 retries"));
+        assert!(!escalate_to_human(
+            dir,
+            "oracle-Proj",
+            EscalationReason::ThrashCap,
+            "6 retries"
+        ));
         // A DIFFERENT reason is a different cooldown key → still fires.
-        assert!(escalate_to_human(dir, "oracle-Proj", EscalationReason::WallClock, "ran 25h"));
+        assert!(escalate_to_human(
+            dir,
+            "oracle-Proj",
+            EscalationReason::WallClock,
+            "ran 25h"
+        ));
         // The durable record reflects the latest detail for the thrash reason.
         let rec = EscalationRecord::read(dir, "Proj").unwrap();
         assert_eq!(rec.mission, "Proj");
@@ -385,7 +400,12 @@ mod tests {
     fn escalation_record_surfaces_in_render() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        escalate_to_human(dir, "Proj", EscalationReason::GateRetryCap, "gate failed 3x");
+        escalate_to_human(
+            dir,
+            "Proj",
+            EscalationReason::GateRetryCap,
+            "gate failed 3x",
+        );
         let rendered = MissionLog::render(dir, "Proj");
         assert!(rendered.contains("ESCALATED TO HUMAN"));
         assert!(rendered.contains("gate-retry-cap"));

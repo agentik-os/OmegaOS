@@ -143,12 +143,16 @@ RULES:
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh uiux "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>"` (plus `--url`, and `--ticket` only together with that URL, when scoped). A non-zero exit is an audit failure. Read the emitted `audits/.uiuxaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`.
+
 ## OUTPUT CONTRACT — Omega Integration
 
 Every `/uiuxaudit` run produces these files. Oracles, AISB, and monitor.py read them.
 
 ```
-.audit/
+audits/.uiuxaudit/
 ├── design/
 │   ├── system-extraction.md   # Phase 0: tokens, components, pages inventory
 │   ├── colors.md              # Phase 1: rogue colors, contrast fails
@@ -235,7 +239,7 @@ Before judging, understand what exists:
    → This becomes the STANDARD against which everything is judged
 ```
 
-**Output:** `.audit/design/system-extraction.md`
+**Output:** `audits/.uiuxaudit/design/system-extraction.md`
 
 ---
 
@@ -283,7 +287,7 @@ Before judging, understand what exists:
    - Does the palette work for colorblind users? (check deuteranopia, protanopia)
 ```
 
-**Output:** `.audit/design/colors.md`
+**Output:** `audits/.uiuxaudit/design/colors.md`
 
 ---
 
@@ -333,7 +337,7 @@ Before judging, understand what exists:
    - Does any text overflow its container on mobile?
 ```
 
-**Output:** `.audit/design/typography.md`
+**Output:** `audits/.uiuxaudit/design/typography.md`
 
 ---
 
@@ -386,7 +390,7 @@ Before judging, understand what exists:
    - Is there breathing room on small screens? (no edge-to-edge text)
 ```
 
-**Output:** `.audit/design/spacing.md`
+**Output:** `audits/.uiuxaudit/design/spacing.md`
 
 ---
 
@@ -457,7 +461,7 @@ Before judging, understand what exists:
    Run: Skill("shadcn-ui") for reference on correct usage patterns
 ```
 
-**Output:** `.audit/design/components.md`
+**Output:** `audits/.uiuxaudit/design/components.md`
 
 ---
 
@@ -511,7 +515,7 @@ This is the HARDEST and most important phase. It catches what individual compone
    - Would a new user feel lost navigating between pages?
 ```
 
-**Output:** `.audit/design/coherence.md`
+**Output:** `audits/.uiuxaudit/design/coherence.md`
 
 ---
 
@@ -584,7 +588,7 @@ This is the HARDEST and most important phase. It catches what individual compone
    → ANY interactive element missing ANY of these four states = FINDING
 ```
 
-**Output:** `.audit/design/interaction.md`
+**Output:** `audits/.uiuxaudit/design/interaction.md`
 
 ---
 
@@ -627,7 +631,7 @@ This is the HARDEST and most important phase. It catches what individual compone
    - Is navigation reachable without scrolling?
 ```
 
-**Output:** `.audit/design/responsive.md`
+**Output:** `audits/.uiuxaudit/design/responsive.md`
 
 ---
 
@@ -671,7 +675,7 @@ This is the HARDEST and most important phase. It catches what individual compone
    - Are autoplay videos/carousels pausable?
 ```
 
-**Output:** `.audit/design/accessibility.md`
+**Output:** `audits/.uiuxaudit/design/accessibility.md`
 
 ---
 
@@ -729,7 +733,7 @@ These patterns scream "AI made this" and must be eliminated:
    - Placeholder text as label (disappears on focus)
 ```
 
-**Output:** `.audit/design/smells.md`
+**Output:** `audits/.uiuxaudit/design/smells.md`
 
 ---
 
@@ -767,7 +771,7 @@ These patterns scream "AI made this" and must be eliminated:
    - Decision fatigue: can the user decide in <3 seconds what to do?
 ```
 
-**Output:** `.audit/design/hierarchy.md`
+**Output:** `audits/.uiuxaudit/design/hierarchy.md`
 
 ---
 
@@ -812,7 +816,7 @@ These patterns scream "AI made this" and must be eliminated:
    - Is the position consistent? (always top-right? always bottom?)
 ```
 
-**Output:** `.audit/design/microcopy.md`
+**Output:** `audits/.uiuxaudit/design/microcopy.md`
 
 ---
 
@@ -854,7 +858,7 @@ These patterns scream "AI made this" and must be eliminated:
    - Are decorative images optimized? (SVG for icons, not PNG)
 ```
 
-**Output:** `.audit/design/performance.md`
+**Output:** `audits/.uiuxaudit/design/performance.md`
 
 ---
 
@@ -889,7 +893,7 @@ These patterns scream "AI made this" and must be eliminated:
    - No flash of wrong mode on page load? (blocking script or CSS)
 ```
 
-**Output:** `.audit/design/darkmode.md`
+**Output:** `audits/.uiuxaudit/design/darkmode.md`
 
 ---
 
@@ -931,7 +935,7 @@ These patterns scream "AI made this" and must be eliminated:
    - Is there a clear hierarchy: tokens → primitives → components → patterns → pages?
 ```
 
-**Output:** `.audit/design/maturity.md`
+**Output:** `audits/.uiuxaudit/design/maturity.md`
 
 ---
 
@@ -968,7 +972,7 @@ These patterns scream "AI made this" and must be eliminated:
    → History: does browser back/forward work correctly?
 ```
 
-**Output:** `.audit/design/navigation.md`
+**Output:** `audits/.uiuxaudit/design/navigation.md`
 
 ---
 
@@ -1003,7 +1007,7 @@ These patterns scream "AI made this" and must be eliminated:
    → Can the user get help without leaving the page?
 ```
 
-**Output:** `.audit/design/onboarding.md`
+**Output:** `audits/.uiuxaudit/design/onboarding.md`
 
 ---
 
@@ -1043,7 +1047,7 @@ These patterns scream "AI made this" and must be eliminated:
    → Are zero values meaningful or should they be hidden?
 ```
 
-**Output:** `.audit/design/data-visualization.md`
+**Output:** `audits/.uiuxaudit/design/data-visualization.md`
 
 ---
 
@@ -1084,7 +1088,7 @@ These patterns scream "AI made this" and must be eliminated:
    → Are forbidden UI elements hidden or disabled with explanation?
 ```
 
-**Output:** `.audit/design/error-recovery.md`
+**Output:** `audits/.uiuxaudit/design/error-recovery.md`
 
 ---
 
@@ -1130,7 +1134,7 @@ These patterns scream "AI made this" and must be eliminated:
    → Does the brand personality come through in microcopy?
 ```
 
-**Output:** `.audit/design/brand-expression.md`
+**Output:** `audits/.uiuxaudit/design/brand-expression.md`
 
 ---
 
@@ -1278,7 +1282,7 @@ After the verdict, AUTOMATICALLY generate and execute the fix plan.
    → Document WHY that page is the reference
 
 5. WRITE PLAN
-   Save to .audit/design-fix-plan.json + .audit/design-fix-plan.md
+   Save to audits/.uiuxaudit/design-fix-plan.json + audits/.uiuxaudit/design-fix-plan.md
 ```
 
 ---
@@ -1324,7 +1328,7 @@ OUTPUT: Include FUNCTIONAL-BUG findings in fix-plan with severity CRITICAL.
 These get fixed BEFORE design issues (broken feature > ugly feature).
 ```
 
-**Output:** `.audit/design/functional-bugs.md`
+**Output:** `audits/.uiuxaudit/design/functional-bugs.md`
 
 ---
 
@@ -1372,7 +1376,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.uiuxaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -1440,7 +1444,7 @@ RULES:
 2. SCREENSHOT EVERY PAGE (Playwright CLI)
    → Same pages as Phase 0 inventory
    → At 1440px (desktop) + 375px (mobile)
-   → Save to .audit/design/screenshots/after/
+   → Save to audits/.uiuxaudit/design/screenshots/after/
 
 2. PIXEL COMPARISON
    For each page:
@@ -1485,7 +1489,7 @@ RULES:
 | `/uiuxaudit` | Full pipeline: audit → plan → fix → re-audit |
 | `/uiuxaudit [path]` | Target specific directory |
 | `/uiuxaudit --audit-only` | Phases 1-20 only (no fix) |
-| `/uiuxaudit --fix-only` | Phases 21-23 from existing .audit/design-fix-plan.json |
+| `/uiuxaudit --fix-only` | Phases 21-23 from existing audits/.uiuxaudit/design-fix-plan.json |
 | `/uiuxaudit --focus colors` | Phase 1 audit + fix colors |
 | `/uiuxaudit --focus coherence` | Phase 5 audit + fix (most impactful) |
 | `/uiuxaudit --focus typography` | Phase 2 audit + fix |
@@ -1559,7 +1563,7 @@ No excuses. No punting. Fix it.
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial thinking
-- ✅ **Concurrency lock** — `audits/.uiuxaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.uiuxaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations (rule 43 step 8b alignment). On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: ABORT with routing suggestions (/dxaudit, /copyaudit).
@@ -1706,11 +1710,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 
@@ -1720,7 +1724,7 @@ Every fix MUST follow the "Do No Harm" protocol:
 
 > *"A design audit is not a checklist you walk top-to-bottom. It is twelve specialists looking at the same product at once — and a creative director who only trusts what survives a second pair of eyes."*
 
-This section governs HOW the audit executes when run. It changes the **execution engine**, never the audit's identity: every phase (0–23), every scoring weight, the /420 raw max, the verdict template, the Gestalt-Popper dual-pass doctrine, and the `.audit/design/` output contract above remain **exactly** as defined. Dynamic orchestration is a faster, more rigorous way to *produce* the same verdict — not a different verdict.
+This section governs HOW the audit executes when run. It changes the **execution engine**, never the audit's identity: every phase (0–23), every scoring weight, the /420 raw max, the verdict template, the Gestalt-Popper dual-pass doctrine, and the `audits/.uiuxaudit/design/` output contract above remain **exactly** as defined. Dynamic orchestration is a faster, more rigorous way to *produce* the same verdict — not a different verdict.
 
 ### 1. Fan-out — decompose phases into INDEPENDENT parallel tracks (Workflow tool)
 
@@ -1729,7 +1733,7 @@ The 19 scoring phases are NOT a linear pipeline. Most read-only design surfaces 
 **Hard ordering constraint (the only one):**
 - **Phase 0 (Design System Extraction)** runs FIRST, alone. It produces `system-extraction.md` — the tokens, component inventory, page inventory, and design-language hypothesis. Every other track depends on it (it is the STANDARD against which everything is judged). Do not fan out until Phase 0 is complete and the **HINGE COMPONENT** is named.
 
-**Then fan out the remaining phases into independent tracks** (each track = one Workflow branch, each writing only its own `.audit/design/*.md` output — one writer per file, no collisions):
+**Then fan out the remaining phases into independent tracks** (each track = one Workflow branch, each writing only its own `audits/.uiuxaudit/design/*.md` output — one writer per file, no collisions):
 
 | Track | Phases | Reads | Writes | Independence rationale |
 |-------|--------|-------|--------|------------------------|

@@ -5,7 +5,7 @@ description: >
   status", "audit dashboard", "audit history", "list audits", "where am I with
   audits", "setup audits", "init audits". Ensures audits/ folder exists, .gitignore
   configured, tracks all audits run with scores + freshness, recommends re-runs
-  when stale (>30 days). Reads audits/.{name}audit/verdict.json across all
+  when stale (>30 days). Reads audits/.<audit-id>/verdict.json across all
   audit subdirs to build dashboard.
 disable-model-invocation: false
 ---
@@ -62,7 +62,7 @@ Bootstrap audits infrastructure in the current project:
 
 ## Mode 2 — `/audit-tracker` (dashboard)
 
-Scan `audits/` for all `.{name}audit*/verdict.json` files. Build a markdown table:
+Scan `audits/` for all `<audit-id>/verdict.json` files. Build a markdown table:
 
 ```
 🎯 AUDIT DASHBOARD — {project_name}
@@ -107,7 +107,7 @@ Show the single most recent audit + its findings summary + verdict link.
 
 To parse a verdict.json:
 ```bash
-jq -r '.score, .grade, .timestamp' audits/.{name}audit/verdict.json
+jq -r '.score, .grade, .timestamp' audits/.<audit-id>/verdict.json
 ```
 
 If the audit has v2/v3/v4 variants (e.g., `.codeaudit-v3/`), prefer the
@@ -163,7 +163,7 @@ and the read-only Modes are independent lenses on the same corpus. Use the
 **Workflow tool** to fan these out concurrently (NOT one-by-one):
 
 - **Track A — Subdir discovery (per audit, parallel):** one concurrent unit per
-  `audits/.{name}audit*/` directory found. Each unit parses its own
+  `audits/.<audit-id>/` directory found. Each unit parses its own
   `verdict.json` (`jq -r '.score, .grade, .timestamp_end // .timestamp, .skill_used, .version, .iterations, .needs_review'`),
   resolves the highest version when `-v2/-v3/` variants collide, and computes
   freshness from BOTH the file `mtime` AND the embedded `timestamp_end`. No
@@ -253,7 +253,7 @@ verdict to account for".
 
 ## Sources
 
-- Reads: `audits/SYNTHESIS.md`, `audits/.{name}audit*/verdict.json`
+- Reads: `audits/SYNTHESIS.md`, `audits/.<audit-id>/verdict.json`
 - Writes: `audits/SYNTHESIS.md` (updates), `.gitignore` (init mode)
 - Related: `/audit-orchestrator` to actually RUN audits
 - Public mirror: https://github.com/agentik-os/quality-arsenal

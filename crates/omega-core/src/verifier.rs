@@ -208,7 +208,9 @@ impl IntentVerifier {
         if !path.exists() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_str(&std::fs::read_to_string(&path)?)?))
+        Ok(Some(serde_json::from_str(&std::fs::read_to_string(
+            &path,
+        )?)?))
     }
 }
 

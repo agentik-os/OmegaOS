@@ -62,7 +62,9 @@ def _ensure_atlas_current():
         if not os.path.isfile(generator):
             raise RuntimeError(
                 f"skill Atlas is stale and generator is unavailable: {generator}")
-        subprocess.run([sys.executable, generator], check=True)
+        # Atlas output is diagnostic. Keep stdout reserved for query payloads,
+        # especially `query --json` on a cold or drifted installation.
+        subprocess.run([sys.executable, generator], check=True, stdout=sys.stderr)
         atlas = json.load(open(ATLAS, encoding="utf-8"))
         if expected is not None and atlas.get("catalog_hash") != expected:
             raise RuntimeError("Atlas rebuild did not consume the current canonical catalog")
@@ -119,11 +121,14 @@ def build():
             np.save(VEC, arr)
             meta["model"] = MODEL
             meta["backend"] = "embeddings"
-            print(f"[rag] embeddings index built: {len(rows)} skills ({MODEL})")
+            print(f"[rag] embeddings index built: {len(rows)} skills ({MODEL})", file=sys.stderr)
         except Exception as e:
             print(f"[rag] embedding build failed ({e}); using BM25 fallback", file=sys.stderr)
     else:
-        print(f"[rag] no OPENAI_API_KEY; built BM25 lexical index ({len(rows)} skills)")
+        print(
+            f"[rag] no OPENAI_API_KEY; built BM25 lexical index ({len(rows)} skills)",
+            file=sys.stderr,
+        )
     temp = META + ".tmp"
     with open(temp, "w", encoding="utf-8") as handle:
         json.dump(meta, handle, ensure_ascii=False, sort_keys=True)

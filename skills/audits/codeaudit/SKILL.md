@@ -115,7 +115,7 @@ EXAMPLES:
   → Focus: Phase 18 (API contracts) + Phase 12.5 (feature verification)
 
   "/codeaudit the except:pass problem we found"
-  → TARGETED: resume from existing .audit/fix-plan.json if it exists
+  → TARGETED: resume from existing audits/.codeaudit/fix-plan.json if it exists
   → Otherwise: Phase 10 (error propagation) deep scan + fix
 
   "/codeaudit everything, full pipeline"
@@ -125,7 +125,7 @@ RULES:
 - If specific files/dirs mentioned: scope to those
 - If a problem described: focus on relevant phases, skip irrelevant ones
 - If "all" or "everything" or "full": all phases, all files
-- If .audit/fix-plan.json exists and no new scope: resume fixing
+- If audits/.codeaudit/fix-plan.json exists and no new scope: resume fixing
 - Parse the intent, don't ask for clarification
 ```
 
@@ -136,7 +136,7 @@ RULES:
 Every `/codeaudit` run produces these files. Oracles, AISB, and monitor.py read them.
 
 ```
-.audit/
+audits/.codeaudit/
 ├── session.log              # Audit start/end timestamps
 ├── evidence/
 │   └── fingerprint.txt      # Language census, file sizes, surface area
@@ -204,13 +204,13 @@ ESLint, TypeScript --noEmit, ts-prune (unused exports), depcheck (unused/missing
 Output is written to:
 
 ```
-$PROJECT_PATH/.code/
+$PROJECT_PATH/audits/.codeaudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), the artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.code/` so multiple audits on the same
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.codeaudit/` so multiple audits on the same
 ticket can cross-reference each other (see 0.5).
 
 ### 0.2 evidence-summary.json schema
@@ -273,7 +273,7 @@ You MAY still:
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
 If this audit runs as part of a Linear-fix mission, sibling audits' summaries
-are at `$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`.
+are at `$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`.
 Read them. Use them.
 
 Examples of high-value cross-audit findings:
@@ -294,21 +294,21 @@ in your `verdict.json` and bump severity by one level.
 
 ```bash
 SESSION_ID="codeaudit-$(date +%Y%m%d-%H%M%S)"
-mkdir -p .audit/{evidence,graphs,reports,traces,diffs}
-echo "AUDIT STARTED: $(date -Iseconds)" > .audit/session.log
+mkdir -p audits/.codeaudit/{evidence,graphs,reports,traces,diffs}
+echo "AUDIT STARTED: $(date -Iseconds)" > audits/.codeaudit/session.log
 
 # FINGERPRINT — know EXACTLY what you're dealing with
-echo "=== LANGUAGE CENSUS ===" >> .audit/evidence/fingerprint.txt
+echo "=== LANGUAGE CENSUS ===" >> audits/.codeaudit/evidence/fingerprint.txt
 find . -type f -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/.venv/*" -not -path "*/venv/*" -not -path "*/__pycache__/*" \
-  | sed 's|.*\.||' | sort | uniq -c | sort -rn >> .audit/evidence/fingerprint.txt
+  | sed 's|.*\.||' | sort | uniq -c | sort -rn >> audits/.codeaudit/evidence/fingerprint.txt
 
-echo "=== SIZE MONSTERS (>300 lines) ===" >> .audit/evidence/fingerprint.txt
+echo "=== SIZE MONSTERS (>300 lines) ===" >> audits/.codeaudit/evidence/fingerprint.txt
 find . -type f \( -name "*.py" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" -o -name "*.sh" -o -name "*.md" \) \
-  -not -path "*/node_modules/*" -not -path "*/.git/*" | xargs wc -l 2>/dev/null | sort -rn | awk '$1>300' >> .audit/evidence/fingerprint.txt
+  -not -path "*/node_modules/*" -not -path "*/.git/*" | xargs wc -l 2>/dev/null | sort -rn | awk '$1>300' >> audits/.codeaudit/evidence/fingerprint.txt
 
-echo "=== TOTAL SURFACE AREA ===" >> .audit/evidence/fingerprint.txt
+echo "=== TOTAL SURFACE AREA ===" >> audits/.codeaudit/evidence/fingerprint.txt
 find . -type f \( -name "*.py" -o -name "*.ts" -o -name "*.tsx" -o -name "*.js" \) \
-  -not -path "*/node_modules/*" -not -path "*/.git/*" | xargs wc -l 2>/dev/null | tail -1 >> .audit/evidence/fingerprint.txt
+  -not -path "*/node_modules/*" -not -path "*/.git/*" | xargs wc -l 2>/dev/null | tail -1 >> audits/.codeaudit/evidence/fingerprint.txt
 ```
 
 ---
@@ -912,7 +912,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Does it conflict with other crons? (same table, same time)
 ```
 
-**Output:** `.audit/reports/feature-verification.md` — Every route, function, query, button documented with PASS/FAIL.
+**Output:** `audits/.codeaudit/reports/feature-verification.md` — Every route, function, query, button documented with PASS/FAIL.
 
 ---
 
@@ -1090,7 +1090,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Console.log / print statements in production code?
 ```
 
-**Output:** `.audit/reports/observability.md`
+**Output:** `audits/.codeaudit/reports/observability.md`
 
 ---
 
@@ -1132,7 +1132,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Flaky tests — which ones? (run 10x, count failures)
 ```
 
-**Output:** `.audit/reports/test-coverage.md`
+**Output:** `audits/.codeaudit/reports/test-coverage.md`
 
 ---
 
@@ -1175,7 +1175,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Is the schema documented?
 ```
 
-**Output:** `.audit/reports/api-contracts.md`
+**Output:** `audits/.codeaudit/reports/api-contracts.md`
 
 ---
 
@@ -1219,7 +1219,7 @@ This is the phase that separates a code audit from a CODE AUDIT. You don't sampl
    → Are cache invalidations reliable? (stale cache after write)
 ```
 
-**Output:** `.audit/reports/resilience.md`
+**Output:** `audits/.codeaudit/reports/resilience.md`
 
 ---
 
@@ -1432,7 +1432,7 @@ audits' findings open in context:
   ],
   "edge_cases": [ ... ],                          // §2.4
   "cross_audit_links": [ ... ],                   // §2.5
-  "evidence_summary_path": "$PROJECT_PATH/.code/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.codeaudit/evidence-summary.json",
   "confidence_basis": "Why I'm confident (or not). Cite Popper test counts, hinge scrutiny depth, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no occurrences of `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)"
 }
@@ -1539,7 +1539,7 @@ GRADE:
 ║  {description} — ETA: {date/condition}                       ║
 ║  ...                                                         ║
 ╠══════════════════════════════════════════════════════════════╣
-║  Full evidence: .audit/reports/ (.audit/evidence/)           ║
+║  Full evidence: audits/.codeaudit/reports/ (audits/.codeaudit/evidence/)           ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
@@ -1585,7 +1585,7 @@ After the verdict, AUTOMATICALLY generate the fix plan. No human approval needed
    }
 
 5. WRITE PLAN
-   Save to .audit/fix-plan.json + .audit/fix-plan.md
+   Save to audits/.codeaudit/fix-plan.json + audits/.codeaudit/fix-plan.md
    Human-readable summary + machine-readable task list
 ```
 
@@ -1652,7 +1652,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.codeaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -1665,10 +1665,10 @@ FOR EACH FIX TASK (in priority order):
   d. Run POST-FIX VERIFICATION (syntax, import, smoke test, tests)
   e. If all green → commit
   f. If any red → revert → log → mark NEEDS_REVIEW
-  g. Mark task DONE/FAILED in .audit/fix-plan.json
-  h. Log: .audit/fix-log.md
+  g. Mark task DONE/FAILED in audits/.codeaudit/fix-plan.json
+  h. Log: audits/.codeaudit/fix-log.md
 
-PROGRESS: Update .audit/progress.json after each fix:
+PROGRESS: Update audits/.codeaudit/progress.json after each fix:
 {
   "total": 47,
   "done": 12,
@@ -1726,7 +1726,7 @@ If AFTER score >= 80: DONE. Ship it.
 | `/codeaudit` | Full pipeline: audit → plan → fix → re-audit |
 | `/codeaudit [path]` | Target specific directory |
 | `/codeaudit --audit-only` | Phases 1-20 only (no fix) |
-| `/codeaudit --fix-only` | Phases 21-23 from existing .audit/fix-plan.json |
+| `/codeaudit --fix-only` | Phases 21-23 from existing audits/.codeaudit/fix-plan.json |
 | `/codeaudit --focus phantoms` | Phase 1 audit + fix phantoms |
 | `/codeaudit --focus security` | Phases 4+5+6+9+10 audit + fix |
 | `/codeaudit --focus architecture` | Phases 2+7+13 audit + fix |
@@ -1781,7 +1781,7 @@ If it's broken, fix it. If it's ugly AND caused by code, fix it.
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial thinking
-- ✅ **Concurrency lock** — `audits/.codeaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.codeaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations (rule 43 step 8b alignment). On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: /codeaudit runs on ALL project types (primary owner of code-quality for CLIs, libraries, backends).
@@ -1927,11 +1927,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state (syntax/parse/load), save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state (syntax/parse/load), save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 
@@ -1958,7 +1958,7 @@ After Phase 0's gather writes `evidence-summary.json` and the HINGE POINT is ide
 | **T6 — Surface verification** | 12.5 Feature Verification, 18 API Contracts | 100%-coverage census of routes/functions/endpoints |
 
 Rules:
-- Dispatch T1–T6 as **parallel Workflow branches**; each branch consumes the shared `evidence-summary.json` (read-only) and writes ONLY its own `.audit/reports/<phase>.md`. One writer per report file → no R-SCOPE collision.
+- Dispatch T1–T6 as **parallel Workflow branches**; each branch consumes the shared `evidence-summary.json` (read-only) and writes ONLY its own `audits/.codeaudit/reports/<phase>.md`. One writer per report file → no R-SCOPE collision.
 - **HINGE POINT override:** whichever track contains the hinge file/module runs at 10× depth (per Phase H1 §2.2) and is NEVER skipped or time-boxed; lighter tracks may finish first.
 - Tracks are analysis-only and emit *candidate* findings — nothing reaches the scoring matrix until it survives Section B.
 - If two phases would touch the same file during the FIX stage (Phases 21–23), they are **serialized** there (the existing "SEQUENTIAL by file group" rule in Phase 22 still governs all mutation). Parallelism is for *discovery*, not for edits.

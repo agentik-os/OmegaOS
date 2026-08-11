@@ -35,8 +35,10 @@ github.com/agentik-os/OmegaOS
 ```bash
 curl -sSL https://raw.githubusercontent.com/agentik-os/OmegaOS/main/install.sh | bash
 ```
-This downloads ONLY install.sh, which then `git clone`s the full repo to
-`/tmp/omega-build`, compiles, installs, and cleans up.
+This downloads only `install.sh`, which then clones the full repository to the
+per-user build path `/tmp/omega-build-<uid>`. It selects verified release
+binaries when they match the requested source and platform, and otherwise
+falls back to a locked source build.
 
 **Method B — clone first:**
 ```bash
@@ -50,16 +52,15 @@ builds from the current directory.
 ### What install.sh creates on the user's machine
 
 ```
-~/.local/bin/omega           ← the compiled Rust binary (8.9 MB)
+~/.local/bin/omega           ← the installed Rust binary
 ~/.local/bin/rmux            ← the terminal multiplexer
 ~/.omega/                    ← the runtime master directory:
   ├── OMEGA.md               (copied from repo)
   ├── config.toml            (from repo's config/default.toml)
   ├── providers.toml         (provider catalog)
   ├── rules/                 (the typed doctrine, via `omega rules export`)
-  ├── agents/                (19 agent prompts, copied)
-  ├── skills/pdfgen/         (PDF generator, rsynced)
-  ├── skills/audits/         (23 audits, copied)
+  ├── agents/                (shared and role-specific prompts)
+  ├── skills/                (the validated shipped catalog)
   ├── credentials/           (created empty, populated on first login)
   └── state/ logs/ locks/    (runtime dirs)
 ```
@@ -72,12 +73,15 @@ by install.sh Phase 5:
 ```bash
 # Phase 5a: Credential Migration (migrate_creds function)
 migrate_creds "claude" "$HOME/.claude/.credentials.json"
-migrate_creds "codex"  "$HOME/.codex/auth.json"
 migrate_creds "gemini" "$HOME/.config/gemini/oauth_creds.json"
-# → moves existing creds to ~/.omega/credentials/, creates symlinks back
+# → moves existing Claude/Gemini creds to ~/.omega/credentials/ and links back
+
+# Codex is handled separately by the CODEX_HOME-aware omega-core reconciler.
+# It validates native and canonical copies under a lock and quarantines
+# conflicts instead of blindly replacing either file.
 
 # Then:
-omega rules export    # writes the 6 Laws + the named Rules to ~/.omega/rules/
+omega rules export    # writes the 7 Laws + named Rules to ~/.omega/rules/
 omega sync            # symlinks rules into ~/.claude/rules/omega-*.md
                       # appends @import to ~/.gemini/GEMINI.md
                       # symlinks ~/.codex/AGENTS.md → OMEGA.md
@@ -94,7 +98,8 @@ have to do anything — `omega sync` runs at install time.
 | `~/.local/bin/omega` | Compiled binary | No (built locally) | No |
 | `~/.omega/` | Runtime: creds, rules, agents, state | No (gitignored) | Yes (credentials) |
 
-The repo is immutable + public. `~/.omega/` is the user's living, private state.
+The repo is versioned and public. `~/.omega/` is the user's living, private
+state.
 
 ## Part 2 — Credentials System (SSOT)
 
@@ -103,7 +108,7 @@ The repo is immutable + public. `~/.omega/` is the user's living, private state.
 ```
 ~/.omega/credentials/
 ├── claude.json         OAuth tokens (accessToken, refreshToken, expiresAt)
-├── codex.json          OpenAI API key
+├── codex.json          Reconciled Codex copy (ChatGPT auth or API key)
 ├── gemini.json         Google OAuth
 ├── glm.json            Z.AI key
 ├── openrouter.json     OpenRouter key
@@ -114,11 +119,13 @@ The repo is immutable + public. `~/.omega/` is the user's living, private state.
 
 ### The symlink dance (and a gotcha)
 
-Each LLM CLI expects its creds at a native path. OmegaOS symlinks them:
+Each LLM CLI expects credentials at a native path. Claude and Gemini can use
+compatibility symlinks. Codex deliberately retains its native `auth.json` and
+uses `omega codex-reconcile` to coordinate it with OmegaOS:
 
 ```
 ~/.claude/.credentials.json  → ~/.omega/credentials/claude.json
-~/.codex/auth.json           → ~/.omega/credentials/codex.json
+CODEX_HOME/auth.json          ↔ ~/.omega/credentials/codex.json (reconciled)
 ```
 
 **GOTCHA:** Claude's `/login` does an **atomic write** (write to .tmp +
@@ -171,9 +178,13 @@ shows the real email instead of "unknown".
 
 | File | Purpose |
 |------|---------|
-| `/tmp/omega-pending-reauth.json` | Pending login flag (prevents double-trigger), 30s cooldown |
+| `~/.omega/state/pending-reauth.json` | Pending login record; expires after five minutes |
 | `~/.omega/state/telegram-active-model.json` | Per-chat active provider+model |
 | `~/.omega/credentials/accounts/*.json` | Saved account profiles |
+
+The pending record's five-minute lifetime is distinct from the in-process
+30-second trigger cooldown. Both prevent duplicate login attempts, but only the
+state file survives a process restart.
 
 ### Auto-detection of auth failures
 
@@ -193,6 +204,6 @@ When detected, the bridge can auto-trigger the reauth flow.
 | /projects | Project list | per-project + [+ New] [Scan & add existing] |
 | /sessions | Active sessions | per-session (tap to target) |
 
-Plain text (no slash) → relayed to AISB Master automatically.
+Plain text (no slash) → handled by the Atlas service and routed by chat/topic context.
 Reply to an oracle report → routed back to that project's oracle.
 /cancel → clears any session/project target.

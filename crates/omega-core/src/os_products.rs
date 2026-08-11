@@ -11,7 +11,8 @@
 //! `OS/<slug>/` in the repo (installed to `~/.omega/os/`); payloads arrive as
 //! zips via the Deposit box and are unpacked in place. This module answers,
 //! cheaply and with NO network: which OSes exist, where they live on THIS
-//! machine, and whether their payload has been integrated yet.
+//! machine, and which concrete readiness surfaces are present. Static presence
+//! is never reported as runtime verification.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -52,7 +53,7 @@ pub struct OsProduct {
     /// The suite group this OS renders under.
     pub group: OsGroup,
     /// What you can do with this OS — the command surface shown in the OS-tab
-    /// detail pane (integrated OSes only). One line per entry; empty for a
+    /// detail pane as declared capabilities. One line per entry; empty for a
     /// pre-integration OS (its detail shows the integration pipeline instead).
     pub commands: &'static [&'static str],
 }
@@ -688,23 +689,114 @@ impl OsProduct {
             .position(|p| p.slug == self.slug)
             .map(|i| i + 1)
     }
+
+    /// Resolve both the canonical value-chain slug and the five historical
+    /// payload names retained for command/install compatibility. Aliases never
+    /// create extra products or inflate the canonical suite count.
+    pub fn from_slug(slug: &str) -> Option<Self> {
+        let canonical = match slug {
+            "ideation-os" => "brainstorm-os",
+            "researcher-os" => "market-research-os",
+            "designer-os" => "design-os",
+            "habits-os" => "habit-tracker-os",
+            "storytelling-os" => "storyteller-os",
+            other => other,
+        };
+        Self::all()
+            .iter()
+            .find(|product| product.slug == canonical)
+            .copied()
+    }
+
+    pub fn legacy_aliases(&self) -> &'static [&'static str] {
+        match self.slug {
+            "brainstorm-os" => &["ideation-os"],
+            "market-research-os" => &["researcher-os"],
+            "design-os" => &["designer-os"],
+            "habit-tracker-os" => &["habits-os"],
+            "storyteller-os" => &["storytelling-os"],
+            _ => &[],
+        }
+    }
 }
 
-/// The dynamic half: has this OS's payload been integrated on this machine?
+/// Coarse stage derived from concrete local surfaces. The strongest stage is
+/// deliberately `Testable`, not `Verified`: finding test files does not prove
+/// that anybody ran them successfully against this revision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum OsStatus {
-    /// Directory absent or only the placeholder README — the zip has not
-    /// landed yet.
-    AwaitingDrop,
-    /// The directory carries a payload beyond the placeholder.
-    Integrated,
+pub enum OsReadinessLevel {
+    /// Directory missing or empty scaffold.
+    Scaffold,
+    /// Prompts/docs/packaging exist, but no local runtime entrypoint was found.
+    Reference,
+    /// A runtime surface exists, but no test surface was found.
+    Runnable,
+    /// Runtime and test surfaces both exist; tests have not been executed here.
+    Testable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OsManifestStatus {
+    Missing,
+    Invalid,
+    Valid,
+}
+
+/// Evidence behind the readiness label. These fields let the TUI state what it
+/// actually observed instead of compressing any arbitrary extra file into a
+/// green "integrated" badge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OsReadiness {
+    pub level: OsReadinessLevel,
+    pub directory_present: bool,
+    pub master_present: bool,
+    pub payload_present: bool,
+    pub manifest: OsManifestStatus,
+    pub runtime_present: bool,
+    pub tests_present: bool,
+    /// Raw `events.schema_status` from MANIFEST.json when present. Values such
+    /// as `stub` remain visible and never imply runtime verification.
+    pub event_schema_status: Option<String>,
+}
+
+impl OsReadiness {
+    fn missing() -> Self {
+        Self {
+            level: OsReadinessLevel::Scaffold,
+            directory_present: false,
+            master_present: false,
+            payload_present: false,
+            manifest: OsManifestStatus::Missing,
+            runtime_present: false,
+            tests_present: false,
+            event_schema_status: None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self.level {
+            OsReadinessLevel::Scaffold if !self.directory_present => "directory missing",
+            OsReadinessLevel::Scaffold => "scaffold only",
+            OsReadinessLevel::Reference => "reference surface only",
+            OsReadinessLevel::Runnable => "runtime present (tests not found)",
+            OsReadinessLevel::Testable => "runtime + tests present (not executed)",
+        }
+    }
+
+    pub fn manifest_label(&self) -> &'static str {
+        match self.manifest {
+            OsManifestStatus::Missing => "missing",
+            OsManifestStatus::Invalid => "invalid manifest",
+            OsManifestStatus::Valid => "valid manifest",
+        }
+    }
 }
 
 /// One row for the OS tab: identity + where it lives here + integration state.
 #[derive(Debug, Clone)]
 pub struct OsEntry {
     pub product: OsProduct,
-    pub status: OsStatus,
+    pub readiness: OsReadiness,
     /// `<os_root>/<slug>` when a root was found (the dir itself may not exist
     /// yet for an OS added to the registry before its folder).
     pub path: Option<PathBuf>,
@@ -780,24 +872,196 @@ pub fn os_root() -> Option<PathBuf> {
     None
 }
 
-/// Integrated = the OS dir contains a real payload beyond its scaffold.
-/// Scaffold files every OS carries from day one — the placeholder README,
-/// the MASTER.md master-agent prompt, the ledger/ working dir a linked
-/// Telegram bot accumulates, dotfiles — do NOT count as integration.
-/// Fast + local — safe on tab entry / F5.
-fn dir_status(dir: &Path) -> OsStatus {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return OsStatus::AwaitingDrop;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if name == "README.md" || name == "MASTER.md" || name == "ledger" || name.starts_with('.') {
-            continue;
-        }
-        return OsStatus::Integrated;
+/// Inspect bounded local filesystem evidence. Symlinked directories are not
+/// followed, and the walk is capped, so entering the OS tab cannot recurse
+/// forever through a malformed payload.
+fn dir_readiness(dir: &Path) -> OsReadiness {
+    if !dir.is_dir() {
+        return OsReadiness::missing();
     }
-    OsStatus::AwaitingDrop
+
+    let manifest_path = dir.join("MANIFEST.json");
+    let (manifest, event_schema_status) = if manifest_path.is_file() {
+        match std::fs::read_to_string(&manifest_path)
+            .ok()
+            .and_then(|raw| {
+                serde_json::from_str::<serde_json::Value>(&raw)
+                    .ok()
+                    .filter(|manifest| valid_os_manifest(manifest, dir))
+            }) {
+            Some(value) => (
+                OsManifestStatus::Valid,
+                value
+                    .pointer("/events/schema_status")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string),
+            ),
+            None => (OsManifestStatus::Invalid, None),
+        }
+    } else {
+        (OsManifestStatus::Missing, None)
+    };
+
+    let master_present = dir.join("MASTER.md").is_file();
+    let mut payload_present = false;
+    let mut runtime_present = false;
+    let mut tests_present = false;
+    let mut pending = vec![(dir.to_path_buf(), 0usize)];
+    let mut visited = 0usize;
+
+    while let Some((current, depth)) = pending.pop() {
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            visited += 1;
+            if visited > 4096 {
+                break;
+            }
+            let path = entry.path();
+            let file_type = match entry.file_type() {
+                Ok(file_type) if !file_type.is_symlink() => file_type,
+                _ => continue,
+            };
+            let Ok(relative) = path.strip_prefix(dir) else {
+                continue;
+            };
+            let components: Vec<String> = relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().to_lowercase())
+                .collect();
+            let Some(name) = components.last().map(String::as_str) else {
+                continue;
+            };
+            let top = components.first().map(String::as_str).unwrap_or(name);
+            if file_type.is_file() {
+                let is_scaffold = depth == 0 && matches!(name, "readme.md" | "master.md")
+                    || name.starts_with('.');
+                if !is_scaffold {
+                    payload_present = true;
+                }
+
+                let in_tests = components
+                    .iter()
+                    .any(|part| part == "tests" || part == "test");
+                let test_name = name.starts_with("test_")
+                    || name.contains(".test.")
+                    || name.contains("_test.")
+                    || name.ends_with("_spec.rs");
+                if (in_tests || test_name) && is_executable_surface(&path, name, top) {
+                    tests_present = true;
+                }
+
+                let runtime_dir =
+                    matches!(top, "bin" | "scripts" | "src" | "runtime" | "app" | "cli");
+                let root_entrypoint = depth == 0
+                    && matches!(
+                        name,
+                        "main.rs" | "main.py" | "app.py" | "index.ts" | "index.js"
+                    );
+                if root_entrypoint || (runtime_dir && is_executable_surface(&path, name, top)) {
+                    runtime_present = true;
+                }
+            }
+
+            if file_type.is_dir() && depth < 4 {
+                pending.push((path, depth + 1));
+            }
+        }
+        if visited > 4096 {
+            break;
+        }
+    }
+
+    let level = if runtime_present && tests_present {
+        OsReadinessLevel::Testable
+    } else if runtime_present {
+        OsReadinessLevel::Runnable
+    } else if master_present || payload_present || dir.join("README.md").is_file() {
+        OsReadinessLevel::Reference
+    } else {
+        OsReadinessLevel::Scaffold
+    };
+
+    OsReadiness {
+        level,
+        directory_present: true,
+        master_present,
+        payload_present,
+        manifest,
+        runtime_present,
+        tests_present,
+        event_schema_status,
+    }
+}
+
+fn valid_os_manifest(value: &serde_json::Value, dir: &Path) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let has_identity = ["name", "display_name", "id"].iter().any(|field| {
+        object
+            .get(*field)
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| !v.trim().is_empty())
+    });
+    let slug = object
+        .get("slug")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    let identity_matches_directory = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(OsProduct::from_slug)
+        .is_none_or(|product| slug == product.slug.strip_suffix("-os"));
+    has_identity
+        && identity_matches_directory
+        && slug.is_some()
+        && object
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        && object
+            .get("files")
+            .and_then(serde_json::Value::as_array)
+            .is_some()
+}
+
+fn is_executable_surface(path: &Path, name: &str, top: &str) -> bool {
+    if top == "bin" && !matches!(name, "readme" | "readme.md") {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if path
+                .metadata()
+                .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            {
+                return true;
+            }
+        }
+    }
+    Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "rs" | "py"
+                    | "js"
+                    | "mjs"
+                    | "cjs"
+                    | "ts"
+                    | "tsx"
+                    | "jsx"
+                    | "sh"
+                    | "bash"
+                    | "zsh"
+                    | "go"
+                    | "rb"
+                    | "php"
+                    | "bats"
+            )
+        })
 }
 
 /// Bot keys present in `~/.omega/agent-bots.json` (one read for the list).
@@ -811,11 +1075,21 @@ fn linked_bot_keys() -> std::collections::HashSet<String> {
     };
     serde_json::from_str::<serde_json::Value>(&raw)
         .ok()
-        .and_then(|v| {
-            v.as_object()
-                .map(|map| map.keys().cloned().collect())
-        })
+        .and_then(|v| v.as_object().map(|map| map.keys().cloned().collect()))
         .unwrap_or_default()
+}
+
+fn product_path(root: &Path, product: &OsProduct) -> PathBuf {
+    let canonical = root.join(product.slug);
+    if canonical.is_dir() {
+        return canonical;
+    }
+    product
+        .legacy_aliases()
+        .iter()
+        .map(|alias| root.join(alias))
+        .find(|alias| alias.is_dir())
+        .unwrap_or(canonical)
 }
 
 /// The whole suite with per-machine status, in product order.
@@ -825,15 +1099,14 @@ pub fn list_os_entries() -> Vec<OsEntry> {
     OsProduct::all()
         .iter()
         .map(|p| {
-            let path = root.as_ref().map(|r| r.join(p.slug));
-            let status = path
+            let path = root.as_ref().map(|root| product_path(root, p));
+            let readiness = path
                 .as_deref()
-                .filter(|d| d.is_dir())
-                .map(dir_status)
-                .unwrap_or(OsStatus::AwaitingDrop);
+                .map(dir_readiness)
+                .unwrap_or_else(OsReadiness::missing);
             OsEntry {
                 product: *p,
-                status,
+                readiness,
                 path,
                 bot_linked: bots.contains(&format!("os-{}", p.slug)),
             }
@@ -842,19 +1115,18 @@ pub fn list_os_entries() -> Vec<OsEntry> {
 }
 
 impl OsEntry {
-    /// Status glyph for the list: 🟢 integrated / ⚪ awaiting its drop.
+    /// Readiness glyph: absence/scaffold, reference, runnable, then testable.
     pub fn glyph(&self) -> &'static str {
-        match self.status {
-            OsStatus::Integrated => "🟢",
-            OsStatus::AwaitingDrop => "⚪",
+        match self.readiness.level {
+            OsReadinessLevel::Scaffold => "⚪",
+            OsReadinessLevel::Reference => "🔵",
+            OsReadinessLevel::Runnable => "🟡",
+            OsReadinessLevel::Testable => "🧪",
         }
     }
 
     pub fn status_label(&self) -> &'static str {
-        match self.status {
-            OsStatus::Integrated => "integrated",
-            OsStatus::AwaitingDrop => "awaiting drop (zip via Deposit)",
-        }
+        self.readiness.label()
     }
 }
 
@@ -899,6 +1171,37 @@ mod tests {
             OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
         assert_eq!(got.len(), 24, "24 = 23 value-chain OSes + books-os");
         assert_eq!(got, EXPECTED);
+    }
+
+    #[test]
+    fn legacy_slugs_resolve_without_inflating_the_canonical_suite() {
+        let aliases = [
+            ("ideation-os", "brainstorm-os"),
+            ("researcher-os", "market-research-os"),
+            ("designer-os", "design-os"),
+            ("habits-os", "habit-tracker-os"),
+            ("storytelling-os", "storyteller-os"),
+        ];
+        assert_eq!(OsProduct::all().len(), EXPECTED.len());
+        for (alias, canonical) in aliases {
+            let product = OsProduct::from_slug(alias).expect("legacy slug must resolve");
+            assert_eq!(product.slug, canonical);
+            assert!(product.legacy_aliases().contains(&alias));
+        }
+        assert!(OsProduct::from_slug("not-an-os").is_none());
+    }
+
+    #[test]
+    fn legacy_directory_is_a_fallback_but_canonical_directory_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let product = OsProduct::from_slug("brainstorm-os").unwrap();
+        let legacy = tmp.path().join("ideation-os");
+        std::fs::create_dir(&legacy).unwrap();
+        assert_eq!(product_path(tmp.path(), &product), legacy);
+
+        let canonical = tmp.path().join("brainstorm-os");
+        std::fs::create_dir(&canonical).unwrap();
+        assert_eq!(product_path(tmp.path(), &product), canonical);
     }
 
     #[test]
@@ -975,17 +1278,143 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_only_dir_is_awaiting_and_payload_is_integrated() {
-        let tmp = std::env::temp_dir().join(format!("os-products-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("README.md"), "# placeholder").unwrap();
-        std::fs::write(tmp.join("MASTER.md"), "# master agent").unwrap();
-        std::fs::create_dir_all(tmp.join("ledger")).unwrap();
-        assert_eq!(dir_status(&tmp), OsStatus::AwaitingDrop);
-        std::fs::write(tmp.join("app.py"), "payload").unwrap();
-        assert_eq!(dir_status(&tmp), OsStatus::Integrated);
-        let _ = std::fs::remove_dir_all(&tmp);
+    fn every_physical_os_directory_is_canonical_or_a_known_legacy_alias() {
+        if let Some(root) = os_root() {
+            for entry in std::fs::read_dir(root).unwrap().flatten() {
+                if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                    continue;
+                }
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                assert!(
+                    OsProduct::from_slug(&name).is_some(),
+                    "unclassified OS payload directory: {name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn canonical_os_manifests_are_structurally_valid_and_match_identity() {
+        if let Some(root) = os_root() {
+            for product in OsProduct::all() {
+                let dir = root.join(product.slug);
+                assert_eq!(
+                    dir_readiness(&dir).manifest,
+                    OsManifestStatus::Valid,
+                    "invalid or identity-drifted manifest for {}",
+                    product.slug
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn readiness_distinguishes_reference_runtime_and_test_surfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let empty = dir_readiness(dir);
+        assert_eq!(empty.level, OsReadinessLevel::Scaffold);
+        assert!(!empty.payload_present);
+
+        std::fs::write(dir.join("README.md"), "# reference").unwrap();
+        std::fs::write(dir.join("MASTER.md"), "# master prompt").unwrap();
+        let reference = dir_readiness(dir);
+        assert_eq!(reference.level, OsReadinessLevel::Reference);
+        assert!(reference.master_present);
+
+        // An arbitrary extra document is payload, but it is not a runtime.
+        std::fs::write(dir.join("notes.txt"), "not executable").unwrap();
+        let documented = dir_readiness(dir);
+        assert_eq!(documented.level, OsReadinessLevel::Reference);
+        assert!(documented.payload_present);
+        assert!(!documented.runtime_present);
+
+        std::fs::create_dir_all(dir.join("scripts")).unwrap();
+        std::fs::write(dir.join("scripts/run.py"), "print('run')").unwrap();
+        let runnable = dir_readiness(dir);
+        assert_eq!(runnable.level, OsReadinessLevel::Runnable);
+        assert!(runnable.runtime_present);
+        assert!(!runnable.tests_present);
+
+        std::fs::write(dir.join("scripts/test_os.py"), "assert True").unwrap();
+        let testable = dir_readiness(dir);
+        assert_eq!(testable.level, OsReadinessLevel::Testable);
+        assert!(testable.tests_present);
+        assert!(testable.label().contains("not executed"));
+    }
+
+    #[test]
+    fn empty_or_narrative_runtime_and_test_directories_do_not_promote_readiness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("MASTER.md"), "# reference").unwrap();
+        std::fs::create_dir(dir.join("scripts")).unwrap();
+        std::fs::create_dir(dir.join("tests")).unwrap();
+        std::fs::create_dir(dir.join("bin")).unwrap();
+        std::fs::write(dir.join("scripts/README.md"), "not executable").unwrap();
+        std::fs::write(dir.join("tests/plan.md"), "not a test program").unwrap();
+        std::fs::write(dir.join("bin/notes.txt"), "not executable").unwrap();
+
+        let readiness = dir_readiness(dir);
+        assert_eq!(readiness.level, OsReadinessLevel::Reference);
+        assert!(!readiness.runtime_present);
+        assert!(!readiness.tests_present);
+    }
+
+    #[test]
+    fn readiness_reports_manifest_validity_and_stub_schema_without_promoting_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("MASTER.md"), "# prompt").unwrap();
+        std::fs::write(dir.join("MANIFEST.json"), "not json").unwrap();
+        let invalid = dir_readiness(dir);
+        assert_eq!(invalid.manifest, OsManifestStatus::Invalid);
+        assert_eq!(invalid.level, OsReadinessLevel::Reference);
+
+        std::fs::write(
+            dir.join("MANIFEST.json"),
+            r#"{"events":{"schema_status":"stub"}}"#,
+        )
+        .unwrap();
+        let incomplete = dir_readiness(dir);
+        assert_eq!(incomplete.manifest, OsManifestStatus::Invalid);
+
+        std::fs::write(
+            dir.join("MANIFEST.json"),
+            r#"{"name":"Fixture OS","slug":"fixture","version":"1.0.0","files":[],"events":{"schema_status":"stub"}}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("runtime")).unwrap();
+        std::fs::write(dir.join("runtime/main.rs"), "fn main() {}").unwrap();
+        let stub = dir_readiness(dir);
+        assert_eq!(stub.manifest, OsManifestStatus::Valid);
+        assert_eq!(stub.event_schema_status.as_deref(), Some("stub"));
+        assert_eq!(stub.level, OsReadinessLevel::Runnable);
+        assert!(!stub.tests_present);
+    }
+
+    #[test]
+    fn manifest_identity_must_match_a_known_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("brainstorm-os");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(
+            dir.join("MANIFEST.json"),
+            r#"{"name":"Wrong OS","slug":"market-research","version":"1.0.0","files":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(dir_readiness(&dir).manifest, OsManifestStatus::Invalid);
+    }
+
+    #[test]
+    fn missing_directory_is_not_reported_as_an_awaiting_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = dir_readiness(&tmp.path().join("not-created"));
+        assert_eq!(missing.level, OsReadinessLevel::Scaffold);
+        assert!(!missing.directory_present);
+        assert_eq!(missing.label(), "directory missing");
     }
 
     #[test]

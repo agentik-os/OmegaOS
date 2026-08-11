@@ -1,6 +1,7 @@
 ---
 name: revenue-os
-description: Operate a conversational revenue brain and governed database for offers, positioning, pricing, leads, sales pipeline, customers, contracts, invoicing, payments, expenses, cash flow, reserves, forecasting, retention and expansion. Contains 24 specialist agents, 40 skills, 10 protocols and 14 JSON schemas. Use for CRM work, pricing and offer design, sales calls, invoicing and collections, cash flow forecasting, monthly revenue close, or renewal and expansion planning. Trigger words: revenue, offer, pricing, pipeline, invoice, collections, cash flow, forecast, CRM, sales call, proposal, renewal; FR: chiffre d'affaires, tarification, pipeline commercial, facture, recouvrement, prevision de tresorerie, CRM, appel de vente, renouvellement.
+description: >
+  Operate a conversational revenue brain and governed database for offers, positioning, pricing, leads, sales pipeline, customers, contracts, invoicing, payments, expenses, cash flow, reserves, forecasting, retention and expansion. Contains 24 specialist agents, 40 skills, 10 protocols and 14 JSON schemas. Use for CRM work, pricing and offer design, sales calls, invoicing and collections, cash flow forecasting, monthly revenue close, or renewal and expansion planning. Trigger words: revenue, offer, pricing, pipeline, invoice, collections, cash flow, forecast, CRM, sales call, proposal, renewal; FR: chiffre d'affaires, tarification, pipeline commercial, facture, recouvrement, prevision de tresorerie, CRM, appel de vente, renouvellement.
 ---
 
 # Revenue {OS}

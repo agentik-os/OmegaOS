@@ -1,12 +1,377 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::fs::File;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static ATOMIC_WRITE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Opaque content revision captured at a successful authority-file load.
+///
+/// Config values can contain credentials, so the digest is deliberately not
+/// printable. It exists only to make a later save a compare-and-swap: a stale
+/// in-memory copy must fail instead of silently replacing somebody else's
+/// concurrent update.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PrivateRevision([u8; 32]);
+
+impl PrivateRevision {
+    fn from_bytes(bytes: &[u8]) -> Self {
+        Self(*blake3::hash(bytes).as_bytes())
+    }
+}
+
+impl fmt::Debug for PrivateRevision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("<private-revision>")
+    }
+}
+
+pub(crate) struct PrivateFileLock(File);
+
+impl Drop for PrivateFileLock {
+    fn drop(&mut self) {
+        let _ = FileExt::unlock(&self.0);
+    }
+}
+
+/// Read an optional authority/config file through a descriptor that cannot
+/// follow a final-component symlink. Existing files must be regular, owned by
+/// the current user, and have exactly one hard link. Group/world permission
+/// drift is tightened on the already-open descriptor before any content is
+/// trusted, then descriptor/path identity is checked again after the read.
+pub(crate) fn read_private_optional(path: &Path) -> Result<Option<Vec<u8>>> {
+    let before = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("inspecting {}", path.display())),
+    };
+    if !before.file_type().is_file() {
+        anyhow::bail!(
+            "refusing non-regular authority file {} (symlinks are not trusted)",
+            path.display()
+        );
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(no_follow_flag());
+    }
+    let mut file = options.open(path).with_context(|| {
+        format!(
+            "opening authority file {} without symlink following",
+            path.display()
+        )
+    })?;
+    let opened = file
+        .metadata()
+        .with_context(|| format!("inspecting opened authority file {}", path.display()))?;
+    validate_private_file_identity(path, &before, &opened)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let mode = opened.mode();
+        if mode & 0o077 != 0 {
+            tracing::warn!(
+                path = %path.display(),
+                mode = format_args!("{:o}", mode & 0o777),
+                "authority file permissions were broader than owner-only; tightening through the verified descriptor"
+            );
+            file.set_permissions(std::fs::Permissions::from_mode(mode & !0o077))
+                .with_context(|| {
+                    format!(
+                        "tightening group/world permissions on authority file {}",
+                        path.display()
+                    )
+                })?;
+        }
+    }
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .with_context(|| format!("reading authority file {}", path.display()))?;
+    let after = std::fs::symlink_metadata(path)
+        .with_context(|| format!("re-checking authority file {}", path.display()))?;
+    let final_opened = file
+        .metadata()
+        .with_context(|| format!("re-checking opened authority file {}", path.display()))?;
+    validate_private_file_identity(path, &after, &final_opened)?;
+    Ok(Some(bytes))
+}
+
+pub(crate) fn read_private_optional_string(path: &Path) -> Result<Option<String>> {
+    read_private_optional(path)?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .with_context(|| format!("authority file {} is not UTF-8", path.display()))
+        })
+        .transpose()
+}
+
+fn validate_private_file_identity(
+    path: &Path,
+    path_metadata: &std::fs::Metadata,
+    opened_metadata: &std::fs::Metadata,
+) -> Result<()> {
+    if !path_metadata.file_type().is_file() || !opened_metadata.file_type().is_file() {
+        anyhow::bail!("authority path {} is not a regular file", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if path_metadata.dev() != opened_metadata.dev()
+            || path_metadata.ino() != opened_metadata.ino()
+        {
+            anyhow::bail!(
+                "authority path {} changed identity while being opened",
+                path.display()
+            );
+        }
+        if opened_metadata.nlink() != 1 {
+            anyhow::bail!(
+                "authority file {} has {} hard links; expected exactly one",
+                path.display(),
+                opened_metadata.nlink()
+            );
+        }
+        if opened_metadata.uid() != effective_uid() {
+            anyhow::bail!(
+                "authority file {} is owned by uid {}, current uid is {}",
+                path.display(),
+                opened_metadata.uid(),
+                effective_uid()
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+pub(crate) fn effective_uid() -> u32 {
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    // SAFETY: geteuid takes no arguments, has no preconditions, and only
+    // returns the kernel's effective uid for this process.
+    unsafe { geteuid() }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn no_follow_flag() -> i32 {
+    0o400000
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    )
+))]
+fn no_follow_flag() -> i32 {
+    0x100
+}
+
+#[cfg(all(
+    unix,
+    not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd"
+    ))
+))]
+fn no_follow_flag() -> i32 {
+    0
+}
+
+/// Serialize a read/validate/write transaction for one private authority file.
+/// The lock lives beside the target, is never opened through a symlink, and is
+/// held until the supplied operation returns.
+pub(crate) fn with_private_file_lock<T>(
+    path: &Path,
+    operation: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    let _guard = acquire_private_file_lock(path)?;
+    operation()
+}
+
+pub(crate) fn acquire_private_file_lock(path: &Path) -> Result<PrivateFileLock> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("omega-state");
+    let lock_path = parent.join(format!(".{filename}.omega-lock"));
+    acquire_private_lock_path(&lock_path)
+        .with_context(|| format!("locking authority file {}", path.display()))
+}
+
+/// Acquire an exact private lock path for subsystems with an established lock
+/// filename. Unlike [`acquire_private_file_lock`], this does not derive a
+/// sibling name from an authority target.
+pub(crate) fn acquire_private_lock_path(lock_path: &Path) -> Result<PrivateFileLock> {
+    let parent = lock_path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", lock_path.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    if let Ok(metadata) = std::fs::symlink_metadata(lock_path) {
+        if !metadata.file_type().is_file() {
+            anyhow::bail!(
+                "refusing non-regular authority lock {}",
+                lock_path.display()
+            );
+        }
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true).write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600).custom_flags(no_follow_flag());
+    }
+    let file = options
+        .open(lock_path)
+        .with_context(|| format!("opening authority lock {}", lock_path.display()))?;
+    let path_metadata = std::fs::symlink_metadata(lock_path)
+        .with_context(|| format!("inspecting authority lock {}", lock_path.display()))?;
+    let opened_metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting opened authority lock {}", lock_path.display()))?;
+    validate_private_file_identity(lock_path, &path_metadata, &opened_metadata)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("tightening authority lock {}", lock_path.display()))?;
+    }
+    file.lock_exclusive()
+        .with_context(|| format!("locking private file {}", lock_path.display()))?;
+    Ok(PrivateFileLock(file))
+}
+
+pub(crate) fn private_revision(bytes: &[u8]) -> PrivateRevision {
+    PrivateRevision::from_bytes(bytes)
+}
+
+pub(crate) fn private_toml_error(
+    label: &str,
+    path: &Path,
+    span: Option<std::ops::Range<usize>>,
+) -> anyhow::Error {
+    let location = span
+        .map(|range| format!(" near byte range {}..{}", range.start, range.end))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "{label} {} failed strict TOML/schema validation{location}; inspect the owner-only file directly",
+        path.display()
+    )
+}
+
+/// Refuse a stale full-file save. `None` means the caller loaded an absent
+/// file, so creation is allowed only while it is still absent.
+pub(crate) fn require_private_revision(
+    path: &Path,
+    expected: Option<&PrivateRevision>,
+) -> Result<()> {
+    let current = read_private_optional(path)?;
+    match (expected, current.as_deref()) {
+        (None, None) => Ok(()),
+        (Some(expected), Some(bytes)) if &PrivateRevision::from_bytes(bytes) == expected => Ok(()),
+        _ => anyhow::bail!(
+            "refusing stale write to {}; reload and retry the mutation",
+            path.display()
+        ),
+    }
+}
+
+/// Atomically replace a private OmegaOS state/config file.
+///
+/// The staged file is created beside the destination with `create_new`, synced,
+/// owner-locked, then renamed over the destination. A destination symlink is
+/// replaced rather than followed. Keeping this helper in the config module
+/// gives provider, active-model, and session metadata writes one crash-safe
+/// implementation without widening the public API.
+pub(crate) fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+
+    let serial = ATOMIC_WRITE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("omega-state");
+    let staged = parent.join(format!(
+        ".{filename}.omega-tmp-{}-{serial}",
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(&staged)
+            .with_context(|| format!("creating staged file {}", staged.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("writing staged file {}", staged.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("setting owner-only mode on {}", staged.display()))?;
+        }
+        file.sync_all()
+            .with_context(|| format!("syncing staged file {}", staged.display()))?;
+        drop(file);
+        std::fs::rename(&staged, path).with_context(|| {
+            format!(
+                "atomically replacing {} with {}",
+                path.display(),
+                staged.display()
+            )
+        })?;
+        if let Ok(directory) = std::fs::File::open(parent) {
+            directory
+                .sync_all()
+                .with_context(|| format!("syncing {}", parent.display()))?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // Every field falls back to the manual `Default` impl below, so a partial or
 // even empty config.toml deserializes cleanly instead of silently discarding
 // the whole file (`OmegaConfig::load()` used to Err on any missing field).
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OmegaConfig {
     pub state_dir: PathBuf,
     pub logs_dir: PathBuf,
@@ -25,6 +390,9 @@ pub struct OmegaConfig {
     #[serde(default = "default_agent_command")]
     pub agent_command: String,
     pub default_model: String,
+    /// Legacy compatibility field. The `aisb-master` rmux session is now a
+    /// read-only viewer and does not launch a provider, so runtime code must
+    /// not use this value to imply an active AISB agent.
     #[serde(default = "default_aisb_agent")]
     pub aisb_agent: String,
     #[serde(default = "default_auto_master")]
@@ -59,6 +427,12 @@ pub struct OmegaConfig {
     #[serde(default)]
     pub auto_update: AutoUpdatePolicy,
     pub telegram: Option<TelegramConfig>,
+    /// Revision of the exact file this value was loaded from. Public only so
+    /// downstream crates can continue using struct-update syntax; callers must
+    /// treat it as opaque.
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub source_revision: Option<PrivateRevision>,
 }
 
 /// How far the daily update cron may go on its own.
@@ -161,6 +535,7 @@ fn default_projects_dir() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectConfig {
     pub name: String,
     pub path: PathBuf,
@@ -175,10 +550,21 @@ pub enum ProjectCategory {
     System,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TelegramConfig {
     pub bot_token: String,
     pub chat_id: i64,
+}
+
+impl fmt::Debug for TelegramConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TelegramConfig")
+            .field("has_bot_token", &!self.bot_token.is_empty())
+            .field("chat_id", &self.chat_id)
+            .finish()
+    }
 }
 
 /// The OmegaOS system root — the single source of truth for where all state,
@@ -197,10 +583,33 @@ pub struct TelegramConfig {
 pub fn omega_dir() -> PathBuf {
     if let Ok(d) = std::env::var("OMEGA_DIR") {
         if !d.is_empty() {
-            return PathBuf::from(d);
+            let configured = PathBuf::from(&d);
+            if configured.is_absolute()
+                && configured.parent().is_some()
+                && !configured
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+            {
+                return configured;
+            }
+            eprintln!(
+                "omega: ignoring unsafe OMEGA_DIR {:?}; authority roots must be absolute, non-root, and traversal-free",
+                d
+            );
         }
     }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    let home = dirs::home_dir().unwrap_or_else(|| {
+        #[cfg(unix)]
+        let identity = effective_uid().to_string();
+        #[cfg(not(unix))]
+        let identity = std::env::var("USERNAME").unwrap_or_else(|_| "omega".to_string());
+        let fallback = std::env::temp_dir().join(format!("omega-{identity}"));
+        eprintln!(
+            "omega: home directory unavailable; using isolated temporary authority root {}",
+            fallback.display()
+        );
+        fallback
+    });
     let consolidated = home.join("OmegaOS").join("System");
     if consolidated.is_dir() {
         return consolidated;
@@ -234,6 +643,7 @@ impl Default for OmegaConfig {
             timezone: None,
             auto_update: AutoUpdatePolicy::default(),
             telegram: None,
+            source_revision: None,
         }
     }
 }
@@ -245,21 +655,24 @@ impl OmegaConfig {
 
     /// Load from an explicit path (testable without touching $OMEGA_DIR).
     ///
-    /// A malformed existing config.toml is NOT discarded silently: almost every
-    /// caller does `load().unwrap_or_default()`, so a parse error would quietly
-    /// revert to defaults — dropping the telegram token, project list, model,
-    /// timezone, etc. with no signal at all. On a parse failure we preserve the
-    /// offending file (single `.corrupt` copy so the operator can recover their
-    /// values) and log a loud error, then still return Err so the few callers
-    /// that propagate it fail loudly too.
+    /// A malformed existing config.toml is never discarded into defaults. The
+    /// original remains untouched and an owner-only `.corrupt` snapshot is
+    /// written atomically for recovery before the error is returned.
     fn load_from(config_path: &Path) -> Result<Self> {
-        if !config_path.exists() {
+        let Some(content) = read_private_optional_string(config_path)? else {
             return Ok(Self::default());
-        }
-        let content = std::fs::read_to_string(config_path)?;
+        };
         match toml::from_str(&content) {
-            Ok(cfg) => Ok(cfg),
-            Err(e) => {
+            Ok(cfg) => {
+                let mut cfg: Self = cfg;
+                cfg.validate().with_context(|| {
+                    format!("validating runtime config {}", config_path.display())
+                })?;
+                cfg.source_revision = Some(private_revision(content.as_bytes()));
+                Ok(cfg)
+            }
+            Err(error) => {
+                let safe_error = private_toml_error("runtime config", config_path, error.span());
                 let backup = config_path.with_file_name(format!(
                     "{}.corrupt",
                     config_path
@@ -267,35 +680,102 @@ impl OmegaConfig {
                         .map(|n| n.to_string_lossy())
                         .unwrap_or_default()
                 ));
-                let _ = std::fs::copy(config_path, &backup);
-                // tracing is often not wired up in the TUI menu or the background
-                // daemon, so a parse failure would otherwise be invisible. Mirror
-                // the loud error to stderr so the operator always sees that their
-                // settings (telegram token / projects / model / timezone) are not
-                // being applied and where to recover them.
+                if let Err(backup_error) = atomic_write_private(&backup, content.as_bytes()) {
+                    tracing::error!(
+                        path = %backup.display(),
+                        error = %backup_error,
+                        "failed to preserve corrupt OmegaOS config snapshot"
+                    );
+                }
                 eprintln!(
-                    "omega: config parse FAILURE at {} — running on hardcoded \
-                     DEFAULTS; your settings there are not applied. Original \
-                     preserved at {} (fix or restore it): {}",
+                    "omega: config parse failure at {}; runtime authority refused. \
+                     Original left untouched; recovery snapshot: {}. {}",
                     config_path.display(),
                     backup.display(),
-                    e
+                    safe_error
                 );
                 tracing::error!(
                     path = %config_path.display(),
                     backup = %backup.display(),
-                    error = %e,
-                    "config.toml failed to parse — running on DEFAULTS; original preserved at \
-                     .corrupt. Fix or restore it: telegram token / projects / model are lost \
-                     until then."
+                    error = %safe_error,
+                    "config.toml failed to parse; runtime authority refused"
                 );
-                Err(e.into())
+                Err(safe_error)
             }
         }
     }
 
+    fn validate(&self) -> Result<()> {
+        crate::agents::Agent::from_name(&self.agent_command).with_context(|| {
+            format!(
+                "unknown agent_command {:?}; choose one of: {}",
+                self.agent_command,
+                crate::agents::Agent::all()
+                    .iter()
+                    .map(crate::agents::Agent::name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        })?;
+        for (label, path) in [
+            ("state_dir", &self.state_dir),
+            ("logs_dir", &self.logs_dir),
+            ("locks_dir", &self.locks_dir),
+            ("projects_dir", &self.projects_dir),
+        ] {
+            if !path.is_absolute()
+                || path.parent().is_none()
+                || path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+            {
+                anyhow::bail!(
+                    "{label} must be an absolute, non-root, traversal-free path: {:?}",
+                    path
+                );
+            }
+        }
+        for project in &self.projects {
+            if project.name.trim().is_empty() || project.name.chars().any(char::is_control) {
+                anyhow::bail!("project names must be non-empty and contain no control characters");
+            }
+            if !project.path.is_absolute()
+                || project.path.parent().is_none()
+                || project
+                    .path
+                    .components()
+                    .any(|component| component == std::path::Component::ParentDir)
+            {
+                anyhow::bail!(
+                    "project path for {:?} must be absolute, non-root, and traversal-free: {:?}",
+                    project.name,
+                    project.path
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub fn config_path() -> PathBuf {
         omega_dir().join("config.toml")
+    }
+
+    /// Persist the complete config without exposing a torn or group-readable
+    /// file. An unreadable/corrupt existing file is never overwritten.
+    pub fn save(&self) -> Result<()> {
+        let path = Self::config_path();
+        self.save_to(&path)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<()> {
+        self.validate()
+            .with_context(|| format!("validating OmegaOS config for {}", path.display()))?;
+        let content = toml::to_string_pretty(self).context("serializing OmegaOS config")?;
+        with_private_file_lock(path, || {
+            require_private_revision(path, self.source_revision.as_ref())?;
+            atomic_write_private(path, content.as_bytes())
+                .with_context(|| format!("writing OmegaOS config {}", path.display()))
+        })
     }
 
     /// Persist the auto-update policy into config.toml.
@@ -313,38 +793,47 @@ impl OmegaConfig {
     }
 
     fn set_auto_update_at(path: &Path, policy: AutoUpdatePolicy) -> Result<()> {
-        let line = format!("auto_update = \"{}\"", policy.as_str());
-        let existing = std::fs::read_to_string(path).unwrap_or_default();
+        with_private_file_lock(path, || {
+            let line = format!("auto_update = \"{}\"", policy.as_str());
+            let existing = match read_private_optional_string(path)? {
+                Some(existing) => {
+                    toml::from_str::<toml::Value>(&existing).with_context(|| {
+                        format!(
+                            "refusing to update auto_update in malformed config {}",
+                            path.display()
+                        )
+                    })?;
+                    existing
+                }
+                None => String::new(),
+            };
 
-        let mut out: Vec<String> = Vec::new();
-        let mut written = false;
-        for raw in existing.lines() {
-            let trimmed = raw.trim_start();
-            if trimmed.starts_with("auto_update") && trimmed.contains('=') && !written {
-                out.push(line.clone());
-                written = true;
-                continue;
+            let mut out: Vec<String> = Vec::new();
+            let mut written = false;
+            for raw in existing.lines() {
+                let trimmed = raw.trim_start();
+                if trimmed.starts_with("auto_update") && trimmed.contains('=') && !written {
+                    out.push(line.clone());
+                    written = true;
+                    continue;
+                }
+                // First table header: the last point where a top-level key is still
+                // top-level. Insert here if we have not written the key yet.
+                if !written && trimmed.starts_with('[') {
+                    out.push(line.clone());
+                    out.push(String::new());
+                    written = true;
+                }
+                out.push(raw.to_string());
             }
-            // First table header: the last point where a top-level key is still
-            // top-level. Insert here if we have not written the key yet.
-            if !written && trimmed.starts_with('[') {
-                out.push(line.clone());
-                out.push(String::new());
-                written = true;
+            if !written {
+                out.push(line);
             }
-            out.push(raw.to_string());
-        }
-        if !written {
-            out.push(line);
-        }
 
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut body = out.join("\n");
-        body.push('\n');
-        std::fs::write(path, body)?;
-        Ok(())
+            let mut body = out.join("\n");
+            body.push('\n');
+            atomic_write_private(path, body.as_bytes())
+        })
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
@@ -424,6 +913,7 @@ impl OmegaConfig {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
@@ -486,8 +976,10 @@ mod tests {
     #[test]
     fn resolve_category_path_is_under_projects_dir_no_vibecoding() {
         // Fresh layout (no category dir exists yet) → the new canonical names.
-        let mut c = OmegaConfig::default();
-        c.projects_dir = PathBuf::from("/home/someuser/projects");
+        let c = OmegaConfig {
+            projects_dir: PathBuf::from("/home/someuser/projects"),
+            ..Default::default()
+        };
         assert_eq!(
             c.resolve_category_path("customer"),
             PathBuf::from("/home/someuser/projects/customers")
@@ -531,10 +1023,18 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("clients")).unwrap();
         std::fs::create_dir_all(tmp.path().join("work")).unwrap();
-        let mut c = OmegaConfig::default();
-        c.projects_dir = tmp.path().to_path_buf();
-        assert_eq!(c.resolve_category_path("customer"), tmp.path().join("clients"));
-        assert_eq!(c.resolve_category_path("side-business"), tmp.path().join("work"));
+        let c = OmegaConfig {
+            projects_dir: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert_eq!(
+            c.resolve_category_path("customer"),
+            tmp.path().join("clients")
+        );
+        assert_eq!(
+            c.resolve_category_path("side-business"),
+            tmp.path().join("work")
+        );
     }
 
     #[test]
@@ -587,10 +1087,11 @@ mod tests {
         let cfg: OmegaConfig = toml::from_str("").unwrap();
         assert!(cfg.theme_background);
         // An explicit OFF survives a save/load round-trip.
-        let mut cfg = OmegaConfig::default();
-        cfg.theme_background = false;
-        let reloaded: OmegaConfig =
-            toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
+        let cfg = OmegaConfig {
+            theme_background: false,
+            ..Default::default()
+        };
+        let reloaded: OmegaConfig = toml::from_str(&toml::to_string_pretty(&cfg).unwrap()).unwrap();
         assert!(!reloaded.theme_background);
     }
 
@@ -613,14 +1114,269 @@ mod tests {
         std::fs::write(&path, "default_model = \"opus\"\nbroken = = =\n[[[").unwrap();
 
         let r = OmegaConfig::load_from(&path);
-        assert!(r.is_err(), "malformed config must surface an error, not default silently");
+        assert!(
+            r.is_err(),
+            "malformed config must surface an error, not default silently"
+        );
 
         let backup = tmp.path().join("config.toml.corrupt");
-        assert!(backup.exists(), "the unparseable original must be preserved at .corrupt");
+        assert!(
+            backup.exists(),
+            "the unparseable original must be preserved at .corrupt"
+        );
         assert_eq!(
             std::fs::read_to_string(&backup).unwrap(),
             std::fs::read_to_string(&path).unwrap(),
             "the .corrupt backup must be a faithful copy of the original"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(backup).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn semantic_unknown_agent_config_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "agent_command = \"codxe\"\n").unwrap();
+        let error = OmegaConfig::load_from(&path).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("unknown agent_command"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn malformed_config_is_not_overwritten_by_mutations() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let corrupt = b"agent_command = = nope\n";
+        std::fs::write(&path, corrupt).unwrap();
+
+        assert!(OmegaConfig::set_auto_update_at(&path, AutoUpdatePolicy::Off).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+        assert!(OmegaConfig::default().save_to(&path).is_err());
+        assert_eq!(std::fs::read(path).unwrap(), corrupt);
+    }
+
+    #[test]
+    fn config_rejects_unknown_keys_and_stale_saves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "agent_command = 'codex'\n[telegram]\nbot_token = 'top-secret'\nchat_id = 1\ntypo = true\n",
+        )
+        .unwrap();
+        let error = OmegaConfig::load_from(&path).unwrap_err();
+        assert!(!format!("{error:#}").contains("top-secret"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("strict TOML/schema validation"),
+            "{error:#}"
+        );
+
+        std::fs::remove_file(&path).unwrap();
+        OmegaConfig::default().save_to(&path).unwrap();
+        let mut first = OmegaConfig::load_from(&path).unwrap();
+        let mut stale = OmegaConfig::load_from(&path).unwrap();
+        first.default_model = "first-writer".to_string();
+        stale.default_model = "stale-writer".to_string();
+        first.save_to(&path).unwrap();
+        assert!(stale.save_to(&path).is_err());
+        assert_eq!(
+            OmegaConfig::load_from(&path).unwrap().default_model,
+            "first-writer"
+        );
+    }
+
+    #[test]
+    fn runtime_config_debug_redacts_telegram_token() {
+        let config = OmegaConfig {
+            telegram: Some(TelegramConfig {
+                bot_token: "top-secret-token".to_string(),
+                chat_id: 42,
+            }),
+            ..Default::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("top-secret-token"));
+        assert!(debug.contains("has_bot_token: true"));
+    }
+
+    #[test]
+    fn runtime_config_rejects_broad_or_traversing_authority_roots() {
+        let root = OmegaConfig {
+            state_dir: PathBuf::from("/"),
+            ..Default::default()
+        };
+        assert!(root.validate().is_err());
+
+        let traversal = OmegaConfig {
+            projects_dir: PathBuf::from("/tmp/omega/../other"),
+            ..Default::default()
+        };
+        assert!(traversal.validate().is_err());
+
+        let project_root = OmegaConfig {
+            projects: vec![ProjectConfig {
+                name: "unsafe".to_string(),
+                path: PathBuf::from("/"),
+                category: ProjectCategory::System,
+            }],
+            ..Default::default()
+        };
+        assert!(project_root.validate().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_authority_lock_rejects_symlink_and_hardlink_poisoning() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        let lock = tmp.path().join(".config.toml.omega-lock");
+        let victim = tmp.path().join("victim");
+        std::fs::write(&victim, "unchanged").unwrap();
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+
+        symlink(&victim, &lock).unwrap();
+        assert!(OmegaConfig::default().save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "unchanged");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::hard_link(&victim, &lock).unwrap();
+        assert!(OmegaConfig::default().save_to(&path).is_err());
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "unchanged");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            mode
+        );
+    }
+
+    #[test]
+    fn full_config_save_is_atomic_and_owner_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        OmegaConfig::default().save_to(&path).unwrap();
+        assert_eq!(
+            OmegaConfig::load_from(&path).unwrap().agent_command,
+            "codex"
+        );
+        assert_eq!(
+            std::fs::read_dir(tmp.path())
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.file_name().to_string_lossy().contains("omega-tmp"))
+                .count(),
+            0
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_private_write_replaces_destination_symlink_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim");
+        let destination = tmp.path().join("config.toml");
+        std::fs::write(&victim, "do not replace").unwrap();
+        symlink(&victim, &destination).unwrap();
+
+        atomic_write_private(&destination, b"safe").unwrap();
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "do not replace");
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), "safe");
+        assert!(!std::fs::symlink_metadata(destination)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_load_rejects_symlink_and_dangling_symlink_without_touching_targets() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim.toml");
+        let linked = tmp.path().join("config.toml");
+        std::fs::write(&victim, "agent_command = \"codex\"\n").unwrap();
+        let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        symlink(&victim, &linked).unwrap();
+
+        assert!(OmegaConfig::load_from(&linked).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "agent_command = \"codex\"\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode,
+            "a rejected symlink must not chmod its target"
+        );
+
+        std::fs::remove_file(&linked).unwrap();
+        symlink(tmp.path().join("missing.toml"), &linked).unwrap();
+        assert!(OmegaConfig::load_from(&linked).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_load_rejects_hardlinks_before_changing_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let victim = tmp.path().join("victim.toml");
+        let linked = tmp.path().join("config.toml");
+        std::fs::write(&victim, "agent_command = \"codex\"\n").unwrap();
+        let original_mode = std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777;
+        std::fs::hard_link(&victim, &linked).unwrap();
+
+        let error = OmegaConfig::load_from(&linked).unwrap_err();
+        assert!(error.to_string().contains("hard links"), "{error:#}");
+        assert_eq!(
+            std::fs::metadata(&victim).unwrap().permissions().mode() & 0o777,
+            original_mode,
+            "a rejected hardlink must not chmod the shared inode"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "agent_command = \"codex\"\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_load_tightens_lax_permissions_on_the_verified_descriptor() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "agent_command = \"codex\"\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+        OmegaConfig::load_from(&path).unwrap();
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
         );
     }
 

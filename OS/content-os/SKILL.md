@@ -1,6 +1,7 @@
 ---
 name: content-os
-description: Operate the full content lifecycle from positioning and daily capture through story mining, research, writing, visual/audio/video production, platform-native packaging, publishing, community engagement and performance learning. Contains 38 specialist agents, 44 skills, 12 protocols and 10 schemas. Use for content strategy, daily capture, story mining, pillar assets, multi-platform cascades (Instagram, TikTok, YouTube, LinkedIn, X, newsletter, article), visual/video/sound briefs, editorial calendars, or performance review. Trigger words: content, capture, story mine, pillar, cascade, platform package, visual brief, video brief, content calendar; FR: contenu, capture du jour, mine d'histoires, cascade multi-plateforme, brief visuel, brief video, calendrier editorial.
+description: >
+  Operate the full content lifecycle from positioning and daily capture through story mining, research, writing, visual/audio/video production, platform-native packaging, publishing, community engagement and performance learning. Contains 38 specialist agents, 44 skills, 12 protocols and 10 schemas. Use for content strategy, daily capture, story mining, pillar assets, multi-platform cascades (Instagram, TikTok, YouTube, LinkedIn, X, newsletter, article), visual/video/sound briefs, editorial calendars, or performance review. Trigger words: content, capture, story mine, pillar, cascade, platform package, visual brief, video brief, content calendar; FR: contenu, capture du jour, mine d'histoires, cascade multi-plateforme, brief visuel, brief video, calendrier editorial.
 ---
 
 # Content {OS}

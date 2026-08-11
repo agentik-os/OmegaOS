@@ -45,19 +45,25 @@
 //! drift apart, and an `extra` key round-trips through an older or newer OmegaOS
 //! untouched, so a state file written here still loads there.
 //!
-//! JOIN SEMANTICS ARE AND, ROUTING IS THE CALLER'S. A node waits on ALL of its
-//! incoming edges. A [`crate::graph::Router`] is resolved by whoever produced the
-//! classification (`Graph::route`), and taking a branch is expressed by the
-//! caller reporting the untaken node rather than by this core guessing. Encoding
-//! OR-joins here would mean inventing a second branch mechanism beside the
-//! deterministic table `graph.rs` already ships.
+//! JOIN SEMANTICS ARE AND, ROUTING IS AUTHENTICATED DATA. A node waits on all of
+//! its live incoming edges. A router host must return a signed structured output;
+//! the executor reads the exact field declared by [`crate::graph::Router::on`],
+//! persists the selected route, cancels only branch-exclusive nodes, and treats
+//! those cancelled inputs as neutral at a later join. The caller cannot select a
+//! branch by merely editing the state document.
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
-use crate::graph::{Graph, GraphError, GraphState, Node, NodeId};
-use crate::mission::{InvalidTransition, TaskAttemptState};
+use crate::graph::{
+    Graph, GraphError, GraphExecutionAuthority, GraphState, GraphStateError, Node, NodeId,
+    NodeReservation,
+};
+use crate::mission::{
+    InvalidTransition, TaskAttemptState, VerifierCheck, VerifierCheckKind, CONTRACT_SCHEMA_VERSION,
+};
 
 // ---------------------------------------------------------------------------
 // Fallback declaration
@@ -103,7 +109,8 @@ pub fn fallback_of(node: &Node) -> Option<NodeId> {
 // ---------------------------------------------------------------------------
 
 /// What one dispatched node reported.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "result")]
 pub enum NodeResult {
     Succeeded,
     /// Failed with a human-readable reason. The reason is recorded in the state
@@ -115,27 +122,299 @@ pub enum NodeResult {
 }
 
 /// One node's result, as handed to [`advance`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeReport {
     pub node: NodeId,
     pub result: NodeResult,
+    /// Exact dispatch authority this report answers. `None` is deserializable for
+    /// source compatibility but is rejected by [`advance`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservation: Option<NodeReservation>,
+    /// Independently observed results for every check declared on the node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<NodeCheckResult>,
+    /// Authenticated machine-readable output. Required on successful router
+    /// hosts and on sources of dry-bounded loops; optional elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<NodeOutputReceipt>,
+}
+
+/// Structured output bound to exactly one dispatch reservation.
+///
+/// The worker may print JSON, but only the authority-holding driver can turn it
+/// into this receipt. Copying a reservation is therefore insufficient to forge
+/// a classification or a `changed` signal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeOutputReceipt {
+    pub reservation_id: String,
+    #[serde(default)]
+    pub fields: BTreeMap<String, Value>,
+    pub output_digest: String,
+    pub receipt_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_mac: String,
+}
+
+impl NodeOutputReceipt {
+    pub fn new(
+        reservation: &NodeReservation,
+        fields: BTreeMap<String, Value>,
+        authority: &GraphExecutionAuthority,
+    ) -> Result<Self, ExecutorError> {
+        let output_digest = structured_output_digest(&fields)?;
+        let receipt_id = output_receipt_id(&reservation.reservation_id, &output_digest);
+        let authority_mac = authority.mac(
+            "omega.graph.node-output.v1",
+            &[
+                receipt_id.as_bytes(),
+                reservation.reservation_id.as_bytes(),
+                output_digest.as_bytes(),
+            ],
+        );
+        Ok(Self {
+            reservation_id: reservation.reservation_id.clone(),
+            fields,
+            output_digest,
+            receipt_id,
+            authority_mac,
+        })
+    }
+
+    pub fn field(&self, name: &str) -> Option<&Value> {
+        self.fields.get(name)
+    }
+
+    fn authenticate(
+        &self,
+        reservation: &NodeReservation,
+        authority: &GraphExecutionAuthority,
+    ) -> Result<bool, ExecutorError> {
+        let digest = structured_output_digest(&self.fields)?;
+        let receipt_id = output_receipt_id(&reservation.reservation_id, &digest);
+        Ok(self.reservation_id == reservation.reservation_id
+            && self.output_digest == digest
+            && self.receipt_id == receipt_id
+            && self.authority_mac
+                == authority.mac(
+                    "omega.graph.node-output.v1",
+                    &[
+                        receipt_id.as_bytes(),
+                        reservation.reservation_id.as_bytes(),
+                        digest.as_bytes(),
+                    ],
+                ))
+    }
+}
+
+fn canonicalize_output(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted: BTreeMap<String, Value> = map
+                .into_iter()
+                .map(|(key, value)| (key, canonicalize_output(value)))
+                .collect();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(values) => Value::Array(values.into_iter().map(canonicalize_output).collect()),
+        other => other,
+    }
+}
+
+fn structured_output_digest(fields: &BTreeMap<String, Value>) -> Result<String, ExecutorError> {
+    let value = canonicalize_output(Value::Object(
+        fields
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    ));
+    let bytes = serde_json::to_vec(&value).map_err(|error| ExecutorError::OutputRejected {
+        node: "<output>".to_string(),
+        reason: format!("cannot fingerprint structured output: {error}"),
+    })?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn output_receipt_id(reservation_id: &str, output_digest: &str) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [reservation_id, output_digest] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCheckResult {
+    pub check_id: String,
+    pub passed: bool,
+    pub detail: String,
+    /// Cryptographic correlation to the exact declared check, dispatch
+    /// reservation and concrete observation. Legacy results deserialize but are
+    /// rejected at the execution boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<CheckReceipt>,
+}
+
+/// What the verifier actually observed. Inputs are repeated deliberately: the
+/// executor compares them to the immutable [`VerifierCheck`] instead of trusting
+/// a caller-supplied boolean about a different command, URL, path or object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum CheckObservation {
+    Command {
+        argv: Vec<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+        exit_code: i32,
+    },
+    Http {
+        url: String,
+        status: u16,
+    },
+    FileExists {
+        path: String,
+        exists: bool,
+    },
+    GitObject {
+        sha: String,
+        exists: bool,
+    },
+}
+
+/// Tamper-evident correlation receipt for one verifier observation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckReceipt {
+    #[serde(default = "contract_schema_version")]
+    pub schema_version: u32,
+    pub check_id: String,
+    pub check_contract_digest: String,
+    pub reservation_id: String,
+    pub observation: CheckObservation,
+    pub receipt_id: String,
+}
+
+fn contract_schema_version() -> u32 {
+    CONTRACT_SCHEMA_VERSION
+}
+
+impl CheckReceipt {
+    pub fn new(
+        check: &VerifierCheck,
+        reservation: &NodeReservation,
+        observation: CheckObservation,
+        authority: &GraphExecutionAuthority,
+    ) -> Result<Self, ExecutorError> {
+        let check_contract_digest = verifier_check_digest(check)?;
+        let receipt_id = receipt_digest(
+            check.check_id.as_str(),
+            &check_contract_digest,
+            reservation.reservation_id.as_str(),
+            &observation,
+            authority,
+        )?;
+        Ok(Self {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: check.check_id.clone(),
+            check_contract_digest,
+            reservation_id: reservation.reservation_id.clone(),
+            observation,
+            receipt_id,
+        })
+    }
+}
+
+impl NodeCheckResult {
+    /// Build a result from the concrete observation. `passed` is derived, never
+    /// accepted from the worker as an independent assertion.
+    pub fn observed(
+        check: &VerifierCheck,
+        reservation: &NodeReservation,
+        observation: CheckObservation,
+        detail: impl Into<String>,
+        authority: &GraphExecutionAuthority,
+    ) -> Result<Self, ExecutorError> {
+        let passed = observation_passes(check, &observation);
+        let receipt = CheckReceipt::new(check, reservation, observation, authority)?;
+        Ok(Self {
+            check_id: check.check_id.clone(),
+            passed,
+            detail: detail.into(),
+            receipt: Some(receipt),
+        })
+    }
 }
 
 impl NodeReport {
+    #[deprecated(note = "use NodeReport::succeeded_for with the dispatch reservation")]
     pub fn succeeded(node: impl Into<NodeId>) -> Self {
         Self {
             node: node.into(),
             result: NodeResult::Succeeded,
+            reservation: None,
+            checks: Vec::new(),
+            output: None,
         }
     }
 
+    pub fn succeeded_for(reservation: &NodeReservation) -> Self {
+        Self {
+            node: reservation.node.clone(),
+            result: NodeResult::Succeeded,
+            reservation: Some(reservation.clone()),
+            checks: Vec::new(),
+            output: None,
+        }
+    }
+
+    #[deprecated(note = "use NodeReport::failed_for with the dispatch reservation")]
     pub fn failed(node: impl Into<NodeId>, reason: impl Into<String>) -> Self {
         Self {
             node: node.into(),
             result: NodeResult::Failed {
                 reason: reason.into(),
             },
+            reservation: None,
+            checks: Vec::new(),
+            output: None,
         }
+    }
+
+    pub fn failed_for(reservation: &NodeReservation, reason: impl Into<String>) -> Self {
+        Self {
+            node: reservation.node.clone(),
+            result: NodeResult::Failed {
+                reason: reason.into(),
+            },
+            reservation: Some(reservation.clone()),
+            checks: Vec::new(),
+            output: None,
+        }
+    }
+
+    #[deprecated(note = "use NodeCheckResult::observed and with_check_result")]
+    pub fn with_check(
+        mut self,
+        check_id: impl Into<String>,
+        passed: bool,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.checks.push(NodeCheckResult {
+            check_id: check_id.into(),
+            passed,
+            detail: detail.into(),
+            receipt: None,
+        });
+        self
+    }
+
+    pub fn with_check_result(mut self, result: NodeCheckResult) -> Self {
+        self.checks.push(result);
+        self
+    }
+
+    pub fn with_output(mut self, output: NodeOutputReceipt) -> Self {
+        self.output = Some(output);
+        self
     }
 
     fn is_failure(&self) -> bool {
@@ -184,8 +463,12 @@ pub struct StepOutcome {
     pub fallbacks: Vec<NodeId>,
     /// Back edges traversed this step, as `(from, to)`.
     pub loops_taken: Vec<(NodeId, NodeId)>,
+    /// Authenticated branch decisions committed by router reports this step.
+    pub routes_taken: Vec<RouteDecisionReceipt>,
     /// Nodes newly proven unreachable this step.
     pub newly_unreachable: Vec<NodeId>,
+    /// Durable authorities corresponding one-for-one with `ready()`.
+    pub reservations: Vec<NodeReservation>,
 }
 
 impl StepOutcome {
@@ -199,6 +482,12 @@ impl StepOutcome {
 
     pub fn is_terminal(&self) -> bool {
         !matches!(self.outcome, ExecutionOutcome::Progressing { .. })
+    }
+
+    pub fn reservation_for(&self, node: &NodeId) -> Option<&NodeReservation> {
+        self.reservations
+            .iter()
+            .find(|reservation| reservation.node == *node)
     }
 }
 
@@ -215,12 +504,45 @@ pub enum ExecutorError {
     /// than trusted once, because the caller may have mutated it between calls
     /// and a dangling edge silently strands every node behind it.
     InvalidGraph(GraphError),
+    /// The persisted mutable half is inconsistent with the graph or with its
+    /// own reservation identities.
+    InvalidGraphState(GraphStateError),
     /// A report naming a node this graph does not contain.
     UnknownNode(String),
     /// The same node reported twice in one step. Rejected rather than
     /// last-one-wins: two results for one attempt means the caller lost track of
     /// a dispatch, and silently picking one hides that.
     DuplicateReport(String),
+    /// State belongs to another graph document.
+    GraphDigestMismatch { expected: String, actual: String },
+    /// The node was never dispatched, or its reservation was already consumed.
+    ReportNotReserved {
+        node: String,
+        state: TaskAttemptState,
+    },
+    /// A node-only report cannot prove which run or generation produced it.
+    UnboundReport(String),
+    /// A report carries an authority from another run, generation or version.
+    StaleReport {
+        node: String,
+        expected: String,
+        supplied: String,
+    },
+    /// Monotone reservation identity can no longer advance without wrapping.
+    ReservationCounterExhausted(String),
+    /// The graph declared a verifier contract that cannot be evaluated safely.
+    InvalidCheckContract { node: String, reason: String },
+    /// A success report did not prove every declared verifier check passed.
+    CheckRejected {
+        node: String,
+        check: String,
+        reason: String,
+    },
+    /// A router or dry-loop report did not carry valid structured evidence.
+    OutputRejected { node: String, reason: String },
+    /// Persisted executor routing/loop state failed authentication or no longer
+    /// matches the immutable graph/run/reservation it was created for.
+    InvalidExecutorState { subject: String, reason: String },
     /// A lifecycle move the mission state machine forbids, surfaced verbatim so
     /// the executor and the ledger report the same error for the same mistake.
     IllegalTransition(InvalidTransition),
@@ -230,8 +552,48 @@ impl fmt::Display for ExecutorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidGraph(err) => write!(f, "invalid graph: {err}"),
+            Self::InvalidGraphState(err) => write!(f, "invalid graph state: {err}"),
             Self::UnknownNode(id) => write!(f, "result reported for unknown node {id}"),
             Self::DuplicateReport(id) => write!(f, "node {id} reported twice in one step"),
+            Self::GraphDigestMismatch { expected, actual } => write!(
+                f,
+                "graph state digest mismatch: expected {expected}, actual {actual}"
+            ),
+            Self::ReportNotReserved { node, state } => {
+                write!(
+                    f,
+                    "node {node} reported from {state:?} without an active reservation"
+                )
+            }
+            Self::UnboundReport(node) => write!(
+                f,
+                "node {node} report has no run/generation reservation binding"
+            ),
+            Self::StaleReport {
+                node,
+                expected,
+                supplied,
+            } => write!(
+                f,
+                "node {node} report reservation is stale: expected {expected}, supplied {supplied}"
+            ),
+            Self::ReservationCounterExhausted(node) => {
+                write!(f, "node {node} reservation counter is exhausted")
+            }
+            Self::InvalidCheckContract { node, reason } => {
+                write!(f, "node {node} has an invalid verifier contract: {reason}")
+            }
+            Self::CheckRejected {
+                node,
+                check,
+                reason,
+            } => write!(f, "node {node} verifier {check} rejected success: {reason}"),
+            Self::OutputRejected { node, reason } => {
+                write!(f, "node {node} structured output rejected: {reason}")
+            }
+            Self::InvalidExecutorState { subject, reason } => {
+                write!(f, "executor state for {subject} is invalid: {reason}")
+            }
             Self::IllegalTransition(err) => write!(f, "{err}"),
         }
     }
@@ -242,6 +604,18 @@ impl std::error::Error for ExecutorError {}
 impl From<GraphError> for ExecutorError {
     fn from(err: GraphError) -> Self {
         Self::InvalidGraph(err)
+    }
+}
+
+impl From<GraphStateError> for ExecutorError {
+    fn from(err: GraphStateError) -> Self {
+        match err {
+            GraphStateError::InvalidGraph(graph) => Self::InvalidGraph(graph),
+            GraphStateError::GraphDigestMismatch { expected, actual } => {
+                Self::GraphDigestMismatch { expected, actual }
+            }
+            other => Self::InvalidGraphState(other),
+        }
     }
 }
 
@@ -259,8 +633,47 @@ impl From<InvalidTransition> for ExecutorError {
 /// collide with another writer's `extra` entries.
 const EXEC_KEY: &str = "graph_executor";
 const LOOPS_KEY: &str = "loop_traversals";
+const LOOP_PROGRESS_KEY: &str = "loop_progress";
+const ROUTES_KEY: &str = "route_decisions";
 const FAILURES_KEY: &str = "failures";
 const UNREACHABLE_KEY: &str = "unreachable";
+
+/// Durable authenticated selection made by one router-host report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteDecisionReceipt {
+    pub host: NodeId,
+    pub classification_field: String,
+    pub classification: String,
+    pub target: NodeId,
+    #[serde(default)]
+    pub skipped: Vec<NodeId>,
+    pub run_id: String,
+    pub graph_digest: String,
+    pub reservation_id: String,
+    pub generation: u64,
+    pub output_receipt_id: String,
+    pub decision_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_mac: String,
+}
+
+/// Last authenticated dry-progress observation for one bounded back edge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoopProgressReceipt {
+    pub from: NodeId,
+    pub to: NodeId,
+    pub run_id: String,
+    pub graph_digest: String,
+    pub reservation_id: String,
+    pub generation: u64,
+    pub output_receipt_id: String,
+    pub changed: bool,
+    pub dry_streak: u32,
+    pub traversals_after: u32,
+    pub progress_id: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub authority_mac: String,
+}
 
 fn edge_key(from: &NodeId, to: &NodeId) -> String {
     format!("{from}->{to}")
@@ -300,6 +713,237 @@ fn sub_map_mut<'a>(state: &'a mut GraphState, key: &str) -> &'a mut Map<String, 
     slot.as_object_mut().expect("object")
 }
 
+fn route_decision_id(receipt: &RouteDecisionReceipt) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        receipt.host.as_str(),
+        receipt.classification_field.as_str(),
+        receipt.classification.as_str(),
+        receipt.target.as_str(),
+        receipt.run_id.as_str(),
+        receipt.graph_digest.as_str(),
+        receipt.reservation_id.as_str(),
+        receipt.output_receipt_id.as_str(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&receipt.generation.to_le_bytes());
+    for id in &receipt.skipped {
+        hasher.update(&(id.as_str().len() as u64).to_le_bytes());
+        hasher.update(id.as_str().as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn route_decision_mac(
+    receipt: &RouteDecisionReceipt,
+    authority: &GraphExecutionAuthority,
+) -> String {
+    authority.mac(
+        "omega.graph.route-decision.v1",
+        &[
+            receipt.decision_id.as_bytes(),
+            receipt.reservation_id.as_bytes(),
+            receipt.output_receipt_id.as_bytes(),
+            receipt.run_id.as_bytes(),
+            receipt.graph_digest.as_bytes(),
+        ],
+    )
+}
+
+fn loop_progress_id(receipt: &LoopProgressReceipt) -> String {
+    let mut hasher = blake3::Hasher::new();
+    for value in [
+        receipt.from.as_str(),
+        receipt.to.as_str(),
+        receipt.run_id.as_str(),
+        receipt.graph_digest.as_str(),
+        receipt.reservation_id.as_str(),
+        receipt.output_receipt_id.as_str(),
+    ] {
+        hasher.update(&(value.len() as u64).to_le_bytes());
+        hasher.update(value.as_bytes());
+    }
+    hasher.update(&receipt.generation.to_le_bytes());
+    hasher.update(&[u8::from(receipt.changed)]);
+    hasher.update(&receipt.dry_streak.to_le_bytes());
+    hasher.update(&receipt.traversals_after.to_le_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn loop_progress_mac(receipt: &LoopProgressReceipt, authority: &GraphExecutionAuthority) -> String {
+    authority.mac(
+        "omega.graph.loop-progress.v1",
+        &[
+            receipt.progress_id.as_bytes(),
+            receipt.reservation_id.as_bytes(),
+            receipt.output_receipt_id.as_bytes(),
+            receipt.run_id.as_bytes(),
+            receipt.graph_digest.as_bytes(),
+        ],
+    )
+}
+
+fn route_decisions(
+    state: &GraphState,
+) -> Result<BTreeMap<NodeId, RouteDecisionReceipt>, ExecutorError> {
+    let Some(root) = state.extra.get(EXEC_KEY) else {
+        return Ok(BTreeMap::new());
+    };
+    let root = root
+        .as_object()
+        .ok_or_else(|| ExecutorError::InvalidExecutorState {
+            subject: "graph_executor".to_string(),
+            reason: "namespace is not an object".to_string(),
+        })?;
+    let Some(value) = root.get(ROUTES_KEY) else {
+        return Ok(BTreeMap::new());
+    };
+    let values = value
+        .as_object()
+        .ok_or_else(|| ExecutorError::InvalidExecutorState {
+            subject: ROUTES_KEY.to_string(),
+            reason: "route decision collection is not an object".to_string(),
+        })?;
+    values
+        .iter()
+        .map(|(host, value)| {
+            let receipt: RouteDecisionReceipt =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    ExecutorError::InvalidExecutorState {
+                        subject: host.clone(),
+                        reason: format!("route decision cannot be decoded: {error}"),
+                    }
+                })?;
+            if receipt.host.as_str() != host {
+                return Err(ExecutorError::InvalidExecutorState {
+                    subject: host.clone(),
+                    reason: "route decision map key does not match its host".to_string(),
+                });
+            }
+            Ok((receipt.host.clone(), receipt))
+        })
+        .collect()
+}
+
+fn loop_progress_records(
+    state: &GraphState,
+) -> Result<BTreeMap<String, LoopProgressReceipt>, ExecutorError> {
+    let Some(root) = state.extra.get(EXEC_KEY) else {
+        return Ok(BTreeMap::new());
+    };
+    let root = root
+        .as_object()
+        .ok_or_else(|| ExecutorError::InvalidExecutorState {
+            subject: "graph_executor".to_string(),
+            reason: "namespace is not an object".to_string(),
+        })?;
+    let Some(value) = root.get(LOOP_PROGRESS_KEY) else {
+        return Ok(BTreeMap::new());
+    };
+    let values = value
+        .as_object()
+        .ok_or_else(|| ExecutorError::InvalidExecutorState {
+            subject: LOOP_PROGRESS_KEY.to_string(),
+            reason: "loop progress collection is not an object".to_string(),
+        })?;
+    values
+        .iter()
+        .map(|(edge, value)| {
+            let receipt: LoopProgressReceipt =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    ExecutorError::InvalidExecutorState {
+                        subject: edge.clone(),
+                        reason: format!("loop progress cannot be decoded: {error}"),
+                    }
+                })?;
+            if edge_key(&receipt.from, &receipt.to) != *edge {
+                return Err(ExecutorError::InvalidExecutorState {
+                    subject: edge.clone(),
+                    reason: "loop progress map key does not match its edge".to_string(),
+                });
+            }
+            Ok((edge.clone(), receipt))
+        })
+        .collect()
+}
+
+fn record_route_decision(
+    state: &mut GraphState,
+    receipt: &RouteDecisionReceipt,
+) -> Result<(), ExecutorError> {
+    let value =
+        serde_json::to_value(receipt).map_err(|error| ExecutorError::InvalidExecutorState {
+            subject: receipt.host.0.clone(),
+            reason: format!("route decision cannot be persisted: {error}"),
+        })?;
+    sub_map_mut(state, ROUTES_KEY).insert(receipt.host.0.clone(), value);
+    state.mark_updated();
+    Ok(())
+}
+
+fn record_loop_progress(
+    state: &mut GraphState,
+    receipt: &LoopProgressReceipt,
+) -> Result<(), ExecutorError> {
+    let value =
+        serde_json::to_value(receipt).map_err(|error| ExecutorError::InvalidExecutorState {
+            subject: edge_key(&receipt.from, &receipt.to),
+            reason: format!("loop progress cannot be persisted: {error}"),
+        })?;
+    sub_map_mut(state, LOOP_PROGRESS_KEY).insert(edge_key(&receipt.from, &receipt.to), value);
+    state.mark_updated();
+    Ok(())
+}
+
+fn route_skipped_nodes(state: &GraphState) -> Result<BTreeSet<NodeId>, ExecutorError> {
+    Ok(route_decisions(state)?
+        .into_values()
+        .flat_map(|decision| decision.skipped)
+        .collect())
+}
+
+/// Retire route receipts whose hosts are about to enter a new loop generation.
+/// Their former exclusive branches become eligible again, except where another
+/// still-current router decision independently keeps the same node skipped.
+/// Decisions hosted outside `body` are left byte-for-byte intact.
+fn reseed_set_for_loop_iteration(
+    state: &mut GraphState,
+    body: &BTreeSet<NodeId>,
+) -> Result<BTreeSet<NodeId>, ExecutorError> {
+    let decisions = route_decisions(state)?;
+    let obsolete_hosts: BTreeSet<NodeId> = decisions
+        .keys()
+        .filter(|host| body.contains(*host))
+        .cloned()
+        .collect();
+    if obsolete_hosts.is_empty() {
+        return Ok(body.clone());
+    }
+
+    let mut obsolete_skipped = BTreeSet::new();
+    let mut retained_skipped = BTreeSet::new();
+    for (host, decision) in &decisions {
+        if obsolete_hosts.contains(host) {
+            obsolete_skipped.extend(decision.skipped.iter().cloned());
+        } else {
+            retained_skipped.extend(decision.skipped.iter().cloned());
+        }
+    }
+
+    let routes = sub_map_mut(state, ROUTES_KEY);
+    for host in &obsolete_hosts {
+        routes.remove(host.as_str());
+    }
+    state.mark_updated();
+
+    let mut reseed = body.clone();
+    reseed.extend(obsolete_skipped);
+    reseed.retain(|id| !retained_skipped.contains(id));
+    Ok(reseed)
+}
+
 /// Traversals already spent on one back edge.
 pub fn loop_traversals(state: &GraphState, from: &NodeId, to: &NodeId) -> u32 {
     sub_map(state, LOOPS_KEY)
@@ -312,6 +956,7 @@ pub fn loop_traversals(state: &GraphState, from: &NodeId, to: &NodeId) -> u32 {
 fn record_traversal(state: &mut GraphState, from: &NodeId, to: &NodeId) -> u32 {
     let next = loop_traversals(state, from, to).saturating_add(1);
     sub_map_mut(state, LOOPS_KEY).insert(edge_key(from, to), Value::from(next));
+    state.mark_updated();
     next
 }
 
@@ -325,6 +970,7 @@ pub fn failure_reason(state: &GraphState, id: &NodeId) -> Option<String> {
 
 fn record_failure(state: &mut GraphState, id: &NodeId, reason: &str) {
     sub_map_mut(state, FAILURES_KEY).insert(id.0.clone(), Value::from(reason));
+    state.mark_updated();
 }
 
 /// Nodes already proven unreachable in this run.
@@ -350,6 +996,7 @@ fn record_unreachable(state: &mut GraphState, ids: &BTreeSet<NodeId>) {
     all.extend(ids.iter().cloned());
     let encoded: Vec<Value> = all.iter().map(|id| Value::from(id.0.clone())).collect();
     bag_mut(state).insert(UNREACHABLE_KEY.to_string(), Value::Array(encoded));
+    state.mark_updated();
 }
 
 // ---------------------------------------------------------------------------
@@ -409,8 +1056,7 @@ const FAIL_PATH: [TaskAttemptState; 4] = [
 /// round one cannot buy a full new budget by going round again: that is the R-LOOP
 /// ceiling holding across iterations rather than resetting with them.
 fn reseed_for_iteration(state: &mut GraphState, id: &NodeId) {
-    let entry = state.nodes.entry(id.clone()).or_default();
-    entry.state = TaskAttemptState::Queued;
+    state.reseed(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +1121,312 @@ fn edge_satisfied(graph: &Graph, state: &GraphState, from: &NodeId, to: &NodeId)
     }
 }
 
+fn exclusive_route_nodes(graph: &Graph, host: &NodeId, chosen: &NodeId) -> BTreeSet<NodeId> {
+    let Some(router) = graph.routers.get(host) else {
+        return BTreeSet::new();
+    };
+    let chosen_reachable = reachable(graph, chosen, Direction::Forward);
+    let mut unchosen_reachable = BTreeSet::new();
+    for target in router
+        .routes
+        .values()
+        .chain(router.default.iter())
+        .filter(|target| *target != chosen)
+    {
+        unchosen_reachable.extend(reachable(graph, target, Direction::Forward));
+    }
+    unchosen_reachable
+        .difference(&chosen_reachable)
+        .filter(|id| *id != host)
+        .cloned()
+        .collect()
+}
+
+fn route_decision_from_report(
+    graph: &Graph,
+    state: &GraphState,
+    report: &NodeReport,
+    authority: &GraphExecutionAuthority,
+) -> Result<Option<RouteDecisionReceipt>, ExecutorError> {
+    let Some(router) = graph.routers.get(&report.node) else {
+        return Ok(None);
+    };
+    if report.is_failure() {
+        return Ok(None);
+    }
+    let output = report
+        .output
+        .as_ref()
+        .ok_or_else(|| ExecutorError::OutputRejected {
+            node: report.node.0.clone(),
+            reason: format!("router requires authenticated field {:?}", router.on),
+        })?;
+    let classification = output
+        .field(&router.on)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ExecutorError::OutputRejected {
+            node: report.node.0.clone(),
+            reason: format!("router field {:?} is missing or is not a string", router.on),
+        })?
+        .to_string();
+    let target =
+        router
+            .resolve(&classification)
+            .cloned()
+            .ok_or_else(|| ExecutorError::OutputRejected {
+                node: report.node.0.clone(),
+                reason: format!("classification {classification:?} matches no route or default"),
+            })?;
+    let reservation = report
+        .reservation
+        .as_ref()
+        .ok_or_else(|| ExecutorError::UnboundReport(report.node.0.clone()))?;
+    let mut receipt = RouteDecisionReceipt {
+        host: report.node.clone(),
+        classification_field: router.on.clone(),
+        classification,
+        target: target.clone(),
+        skipped: exclusive_route_nodes(graph, &report.node, &target)
+            .into_iter()
+            .collect(),
+        run_id: state.run_id.clone(),
+        graph_digest: state.graph_digest.clone(),
+        reservation_id: reservation.reservation_id.clone(),
+        generation: reservation.generation,
+        output_receipt_id: output.receipt_id.clone(),
+        decision_id: String::new(),
+        authority_mac: String::new(),
+    };
+    receipt.decision_id = route_decision_id(&receipt);
+    receipt.authority_mac = route_decision_mac(&receipt, authority);
+    Ok(Some(receipt))
+}
+
+fn apply_route_decisions(
+    graph: &Graph,
+    state: &mut GraphState,
+    reports: &[NodeReport],
+    authority: &GraphExecutionAuthority,
+) -> Result<Vec<RouteDecisionReceipt>, ExecutorError> {
+    let mut applied = Vec::new();
+    for report in reports {
+        let Some(receipt) = route_decision_from_report(graph, state, report, authority)? else {
+            continue;
+        };
+        for id in &receipt.skipped {
+            match state_of(state, id) {
+                TaskAttemptState::Queued | TaskAttemptState::CorrectionRequired => {
+                    state.transition(id, TaskAttemptState::Cancelled)?;
+                }
+                TaskAttemptState::Cancelled => {}
+                other => {
+                    return Err(ExecutorError::InvalidExecutorState {
+                        subject: receipt.host.0.clone(),
+                        reason: format!(
+                            "unchosen branch node {id} was already {other:?} before route selection"
+                        ),
+                    });
+                }
+            }
+        }
+        record_route_decision(state, &receipt)?;
+        applied.push(receipt);
+    }
+    Ok(applied)
+}
+
+fn validate_route_decision(
+    graph: &Graph,
+    state: &GraphState,
+    receipt: &RouteDecisionReceipt,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    let reject = |reason: String| ExecutorError::InvalidExecutorState {
+        subject: receipt.host.0.clone(),
+        reason,
+    };
+    let router = graph
+        .routers
+        .get(&receipt.host)
+        .ok_or_else(|| reject("decision names a node without a router".to_string()))?;
+    let target = router
+        .resolve(&receipt.classification)
+        .ok_or_else(|| reject("persisted classification no longer resolves".to_string()))?;
+    let expected_skipped: Vec<NodeId> = exclusive_route_nodes(graph, &receipt.host, target)
+        .into_iter()
+        .collect();
+    let run = state
+        .nodes
+        .get(&receipt.host)
+        .ok_or_else(|| reject("router host is absent from run state".to_string()))?;
+    let acceptance = run
+        .acceptance
+        .as_ref()
+        .ok_or_else(|| reject("router decision has no accepted host receipt".to_string()))?;
+    if run.state != TaskAttemptState::Accepted
+        || receipt.classification_field != router.on
+        || receipt.target != *target
+        || receipt.skipped != expected_skipped
+        || receipt.run_id != state.run_id
+        || receipt.graph_digest != state.graph_digest
+        || receipt.reservation_id != acceptance.reservation.reservation_id
+        || receipt.generation != acceptance.reservation.generation
+        || receipt.decision_id != route_decision_id(receipt)
+        || receipt.authority_mac != route_decision_mac(receipt, authority)
+    {
+        return Err(reject(
+            "identity, classification, skipped set, reservation, or authority MAC mismatch"
+                .to_string(),
+        ));
+    }
+    for skipped in &receipt.skipped {
+        if state_of(state, skipped) != TaskAttemptState::Cancelled {
+            return Err(reject(format!(
+                "unchosen branch node {skipped} is not durably cancelled"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_loop_progress(
+    graph: &Graph,
+    state: &GraphState,
+    receipt: &LoopProgressReceipt,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    let subject = edge_key(&receipt.from, &receipt.to);
+    let reject = |reason: String| ExecutorError::InvalidExecutorState {
+        subject: subject.clone(),
+        reason,
+    };
+    let bound = graph
+        .loop_bounds
+        .iter()
+        .find(|bound| bound.from == receipt.from && bound.to == receipt.to)
+        .ok_or_else(|| reject("progress names an undeclared loop bound".to_string()))?;
+    let stop_after = bound.stop_after_dry_rounds.ok_or_else(|| {
+        reject("progress exists for a loop without a dry-round policy".to_string())
+    })?;
+    let run = state
+        .nodes
+        .get(&receipt.from)
+        .ok_or_else(|| reject("loop source is absent from run state".to_string()))?;
+    if receipt.run_id != state.run_id
+        || receipt.graph_digest != state.graph_digest
+        || receipt.generation == 0
+        || receipt.generation > run.generation
+        || receipt.dry_streak > stop_after
+        || (receipt.changed && receipt.dry_streak != 0)
+        || (!receipt.changed && receipt.dry_streak == 0)
+        || receipt.traversals_after != loop_traversals(state, &receipt.from, &receipt.to)
+        || receipt.progress_id != loop_progress_id(receipt)
+        || receipt.authority_mac != loop_progress_mac(receipt, authority)
+    {
+        return Err(reject(
+            "run, generation, dry streak, traversal count, or authority MAC mismatch".to_string(),
+        ));
+    }
+    if run.state == TaskAttemptState::Accepted
+        && run
+            .acceptance
+            .as_ref()
+            .map(|acceptance| acceptance.reservation.reservation_id.as_str())
+            != Some(receipt.reservation_id.as_str())
+    {
+        return Err(reject(
+            "terminal dry observation does not match the source acceptance receipt".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_executor_state(
+    graph: &Graph,
+    state: &GraphState,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    if let Some(root) = state.extra.get(EXEC_KEY) {
+        let root = root
+            .as_object()
+            .ok_or_else(|| ExecutorError::InvalidExecutorState {
+                subject: EXEC_KEY.to_string(),
+                reason: "namespace is not an object".to_string(),
+            })?;
+        if let Some(raw) = root.get(LOOPS_KEY) {
+            let counters = raw
+                .as_object()
+                .ok_or_else(|| ExecutorError::InvalidExecutorState {
+                    subject: LOOPS_KEY.to_string(),
+                    reason: "loop traversal collection is not an object".to_string(),
+                })?;
+            for (edge, value) in counters {
+                let Some(bound) = graph
+                    .loop_bounds
+                    .iter()
+                    .find(|bound| edge_key(&bound.from, &bound.to) == *edge)
+                else {
+                    return Err(ExecutorError::InvalidExecutorState {
+                        subject: edge.clone(),
+                        reason: "traversal counter names an undeclared loop bound".to_string(),
+                    });
+                };
+                let count = value
+                    .as_u64()
+                    .ok_or_else(|| ExecutorError::InvalidExecutorState {
+                        subject: edge.clone(),
+                        reason: "traversal counter is not an unsigned integer".to_string(),
+                    })?;
+                if count > u64::from(bound.max_iterations) {
+                    return Err(ExecutorError::InvalidExecutorState {
+                        subject: edge.clone(),
+                        reason: "traversal counter exceeds the immutable ceiling".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    let decisions = route_decisions(state)?;
+    for receipt in decisions.values() {
+        validate_route_decision(graph, state, receipt, authority)?;
+    }
+    for host in graph.routers.keys() {
+        let accepted = state_of(state, host) == TaskAttemptState::Accepted;
+        if accepted != decisions.contains_key(host) {
+            return Err(ExecutorError::InvalidExecutorState {
+                subject: host.0.clone(),
+                reason: if accepted {
+                    "accepted router host has no authenticated route decision".to_string()
+                } else {
+                    "route decision exists before its host was accepted".to_string()
+                },
+            });
+        }
+    }
+
+    let progress = loop_progress_records(state)?;
+    for receipt in progress.values() {
+        validate_loop_progress(graph, state, receipt, authority)?;
+    }
+    for bound in &graph.loop_bounds {
+        if bound.stop_after_dry_rounds.is_none() {
+            continue;
+        }
+        let key = edge_key(&bound.from, &bound.to);
+        let source_accepted = state_of(state, &bound.from) == TaskAttemptState::Accepted;
+        if (source_accepted || loop_traversals(state, &bound.from, &bound.to) > 0)
+            && !progress.contains_key(&key)
+        {
+            return Err(ExecutorError::InvalidExecutorState {
+                subject: key,
+                reason: "dry-bounded loop has no authenticated progress receipt".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // ready_nodes
 // ---------------------------------------------------------------------------
@@ -497,10 +1449,20 @@ fn edge_satisfied(graph: &Graph, state: &GraphState, from: &NodeId, to: &NodeId)
 /// Returns a plain `Vec` rather than a `Result`: this is a lookup over data that
 /// [`Graph::validate`] has already had its chance to reject, and it treats an
 /// unknown node as `Queued` rather than failing.
-pub fn ready_nodes(graph: &Graph, state: &GraphState) -> Vec<NodeId> {
+pub fn ready_nodes(
+    graph: &Graph,
+    state: &GraphState,
+    authority: &GraphExecutionAuthority,
+) -> Result<Vec<NodeId>, ExecutorError> {
+    state.validate_for_graph_with_authority(graph, authority)?;
+    validate_executor_state(graph, state, authority)?;
+    let skipped = route_skipped_nodes(state)?;
     let mut ready = Vec::new();
     for node in &graph.nodes {
         let id = &node.id;
+        if skipped.contains(id) {
+            continue;
+        }
         if !matches!(
             state_of(state, id),
             TaskAttemptState::Queued | TaskAttemptState::CorrectionRequired
@@ -517,12 +1479,14 @@ pub fn ready_nodes(graph: &Graph, state: &GraphState) -> Vec<NodeId> {
             .iter()
             .filter(|edge| edge.to == *id)
             .filter(|edge| !is_back_edge(graph, &edge.from, &edge.to))
-            .all(|edge| edge_satisfied(graph, state, &edge.from, id));
+            .all(|edge| {
+                skipped.contains(&edge.from) || edge_satisfied(graph, state, &edge.from, id)
+            });
         if satisfied {
             ready.push(id.clone());
         }
     }
-    ready
+    Ok(ready)
 }
 
 // ---------------------------------------------------------------------------
@@ -554,8 +1518,29 @@ pub fn advance(
     graph: &Graph,
     state: &mut GraphState,
     results: &[NodeReport],
+    authority: &GraphExecutionAuthority,
 ) -> Result<StepOutcome, ExecutorError> {
-    graph.validate()?;
+    // State files are the durable checkpoint. Apply the whole step to a
+    // candidate and publish it only after the final authenticated validation,
+    // so every typed error is transactionally mutation-free.
+    let mut candidate = state.clone();
+    let outcome = advance_in_place(graph, &mut candidate, results, authority)?;
+    *state = candidate;
+    Ok(outcome)
+}
+
+fn advance_in_place(
+    graph: &Graph,
+    state: &mut GraphState,
+    results: &[NodeReport],
+    authority: &GraphExecutionAuthority,
+) -> Result<StepOutcome, ExecutorError> {
+    // Reject malformed graph/state documents before binding the previously
+    // pristine state to a key. Failed input validation must be mutation-free.
+    state.validate_for_graph(graph)?;
+    state.bind_authority_if_pristine(authority)?;
+    state.validate_for_graph_with_authority(graph, authority)?;
+    validate_executor_state(graph, state, authority)?;
 
     let known: BTreeSet<&str> = graph.nodes.iter().map(|node| node.id.as_str()).collect();
     let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -567,6 +1552,9 @@ pub fn advance(
             return Err(ExecutorError::DuplicateReport(report.node.0.clone()));
         }
     }
+    for report in results {
+        validate_report(graph, state, report, authority)?;
+    }
 
     let mut applied = Vec::new();
     let mut retrying = Vec::new();
@@ -577,6 +1565,17 @@ pub fn advance(
         match &report.result {
             NodeResult::Succeeded => {
                 drive(state, id, &ACCEPT_PATH)?;
+                let check_receipt_ids = report
+                    .checks
+                    .iter()
+                    .filter_map(|result| {
+                        result
+                            .receipt
+                            .as_ref()
+                            .map(|receipt| receipt.receipt_id.clone())
+                    })
+                    .collect();
+                state.record_acceptance(id, check_receipt_ids, authority)?;
             }
             NodeResult::Failed { reason } => {
                 // The attempt is counted BEFORE the ceiling is tested, so the
@@ -598,6 +1597,7 @@ pub fn advance(
                 }
             }
         }
+        state.clear_reservation(id);
         applied.push(id.clone());
     }
 
@@ -612,10 +1612,48 @@ pub fn advance(
         }
     }
 
-    let loops_taken = take_back_edges(graph, state, results);
+    let routes_taken = apply_route_decisions(graph, state, results, authority)?;
+    let loops_taken = take_back_edges(graph, state, results, authority)?;
     let newly_unreachable = strand_dependents(graph, state);
 
-    let outcome = classify(graph, state);
+    let ready = ready_nodes(graph, state, authority)?;
+    let reservation_count = u64::try_from(ready.len()).unwrap_or(u64::MAX);
+    if state.version.checked_add(reservation_count).is_none() {
+        return Err(ExecutorError::ReservationCounterExhausted(
+            ready
+                .first()
+                .map(|id| id.0.clone())
+                .unwrap_or_else(|| "<graph>".to_string()),
+        ));
+    }
+    for id in &ready {
+        if state
+            .nodes
+            .get(id)
+            .is_some_and(|node| node.generation == u64::MAX)
+        {
+            return Err(ExecutorError::ReservationCounterExhausted(id.0.clone()));
+        }
+    }
+    for id in ready {
+        state.reserve(&id, authority)?;
+    }
+    let reservations: Vec<NodeReservation> = graph
+        .nodes
+        .iter()
+        .filter_map(|node| state.reservation_of(&node.id).cloned())
+        .collect();
+    let dispatchable: Vec<NodeId> = reservations
+        .iter()
+        .map(|reservation| reservation.node.clone())
+        .collect();
+    let outcome = classify(graph, state, dispatchable);
+
+    // Validate our own output before handing it back as the next durable
+    // checkpoint. This catches an internal mutation regression in the same call
+    // that produced it, instead of after a restart.
+    state.validate_for_graph_with_authority(graph, authority)?;
+    validate_executor_state(graph, state, authority)?;
 
     Ok(StepOutcome {
         outcome,
@@ -624,8 +1662,341 @@ pub fn advance(
         exhausted,
         fallbacks,
         loops_taken,
+        routes_taken,
         newly_unreachable,
+        reservations,
     })
+}
+
+fn validate_report(
+    graph: &Graph,
+    state: &GraphState,
+    report: &NodeReport,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    let current_state = state
+        .state_of(&report.node)
+        .unwrap_or(TaskAttemptState::Queued);
+    let reservation =
+        state
+            .reservation_of(&report.node)
+            .ok_or_else(|| ExecutorError::ReportNotReserved {
+                node: report.node.0.clone(),
+                state: current_state,
+            })?;
+    if current_state != TaskAttemptState::Running {
+        return Err(ExecutorError::ReportNotReserved {
+            node: report.node.0.clone(),
+            state: current_state,
+        });
+    }
+    let supplied = report
+        .reservation
+        .as_ref()
+        .ok_or_else(|| ExecutorError::UnboundReport(report.node.0.clone()))?;
+    if supplied != reservation {
+        return Err(ExecutorError::StaleReport {
+            node: report.node.0.clone(),
+            expected: reservation.reservation_id.clone(),
+            supplied: supplied.reservation_id.clone(),
+        });
+    }
+    if !reservation.authenticate(authority) {
+        return Err(ExecutorError::StaleReport {
+            node: report.node.0.clone(),
+            expected: reservation.reservation_id.clone(),
+            supplied: "invalid-authority-mac".to_string(),
+        });
+    }
+
+    if let Some(output) = &report.output {
+        if !output.authenticate(reservation, authority)? {
+            return Err(ExecutorError::OutputRejected {
+                node: report.node.0.clone(),
+                reason: "output receipt does not authenticate for the active reservation"
+                    .to_string(),
+            });
+        }
+    }
+
+    let node = graph
+        .node(&report.node)
+        .ok_or_else(|| ExecutorError::UnknownNode(report.node.0.clone()))?;
+    validate_declared_checks(node)?;
+    if matches!(report.result, NodeResult::Succeeded) {
+        validate_check_results(node, report, authority)?;
+        let _ = route_decision_from_report(graph, state, report, authority)?;
+        if graph
+            .loop_bounds
+            .iter()
+            .any(|bound| bound.from == report.node && bound.stop_after_dry_rounds.is_some())
+        {
+            let changed = report
+                .output
+                .as_ref()
+                .and_then(|output| output.field("changed"))
+                .and_then(Value::as_bool);
+            if changed.is_none() {
+                return Err(ExecutorError::OutputRejected {
+                    node: report.node.0.clone(),
+                    reason:
+                        "dry-bounded loop source requires authenticated boolean field \"changed\""
+                            .to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_declared_checks(node: &Node) -> Result<(), ExecutorError> {
+    let mut ids = BTreeSet::new();
+    for check in &node.checks {
+        let id = check.check_id.trim();
+        let invalid = if check.schema_version != CONTRACT_SCHEMA_VERSION {
+            Some(format!(
+                "check {} uses unsupported schema {}",
+                check.check_id, check.schema_version
+            ))
+        } else if id.is_empty() {
+            Some("check id is empty".to_string())
+        } else if !ids.insert(id) {
+            Some(format!("duplicate check id {id}"))
+        } else if check.timeout_secs == 0 {
+            Some(format!("check {id} has a zero timeout"))
+        } else {
+            match &check.kind {
+                VerifierCheckKind::Command { argv, .. }
+                    if argv
+                        .first()
+                        .map(|program| program.trim().is_empty())
+                        .unwrap_or(true) =>
+                {
+                    Some(format!("check {id} has no command program"))
+                }
+                VerifierCheckKind::Http {
+                    url,
+                    expected_status,
+                } if url.trim().is_empty() || !(100..=599).contains(expected_status) => {
+                    Some(format!("check {id} has an invalid HTTP expectation"))
+                }
+                VerifierCheckKind::FileExists { path } if path.trim().is_empty() => {
+                    Some(format!("check {id} has an empty path"))
+                }
+                VerifierCheckKind::GitObject { sha } if sha.trim().is_empty() => {
+                    Some(format!("check {id} has an empty object id"))
+                }
+                _ => None,
+            }
+        };
+        if let Some(reason) = invalid {
+            return Err(ExecutorError::InvalidCheckContract {
+                node: node.id.0.clone(),
+                reason,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_check_results(
+    node: &Node,
+    report: &NodeReport,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    let expected: BTreeSet<&str> = node
+        .checks
+        .iter()
+        .map(|check| check.check_id.as_str())
+        .collect();
+    let mut observed = BTreeSet::new();
+    for result in &report.checks {
+        if !expected.contains(result.check_id.as_str()) {
+            return Err(ExecutorError::CheckRejected {
+                node: node.id.0.clone(),
+                check: result.check_id.clone(),
+                reason: "result was not declared by the node".to_string(),
+            });
+        }
+        if !observed.insert(result.check_id.as_str()) {
+            return Err(ExecutorError::CheckRejected {
+                node: node.id.0.clone(),
+                check: result.check_id.clone(),
+                reason: "result was reported more than once".to_string(),
+            });
+        }
+        let check = node
+            .checks
+            .iter()
+            .find(|check| check.check_id == result.check_id)
+            .expect("expected set was derived from node checks");
+        let receipt = result
+            .receipt
+            .as_ref()
+            .ok_or_else(|| ExecutorError::CheckRejected {
+                node: node.id.0.clone(),
+                check: result.check_id.clone(),
+                reason: "result has no contract/reservation receipt".to_string(),
+            })?;
+        let reservation = report
+            .reservation
+            .as_ref()
+            .expect("validate_report rejected an unbound report");
+        validate_check_receipt(node, check, reservation, result, receipt, authority)?;
+        if !result.passed {
+            return Err(ExecutorError::CheckRejected {
+                node: node.id.0.clone(),
+                check: result.check_id.clone(),
+                reason: if result.detail.trim().is_empty() {
+                    "check failed".to_string()
+                } else {
+                    result.detail.clone()
+                },
+            });
+        }
+    }
+    if let Some(missing) = expected.difference(&observed).next() {
+        return Err(ExecutorError::CheckRejected {
+            node: node.id.0.clone(),
+            check: (*missing).to_string(),
+            reason: "no passing result was supplied".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_check_receipt(
+    node: &Node,
+    check: &VerifierCheck,
+    reservation: &NodeReservation,
+    result: &NodeCheckResult,
+    receipt: &CheckReceipt,
+    authority: &GraphExecutionAuthority,
+) -> Result<(), ExecutorError> {
+    let reject = |reason: String| ExecutorError::CheckRejected {
+        node: node.id.0.clone(),
+        check: result.check_id.clone(),
+        reason,
+    };
+    if receipt.schema_version != CONTRACT_SCHEMA_VERSION {
+        return Err(reject(format!(
+            "receipt uses unsupported schema {}",
+            receipt.schema_version
+        )));
+    }
+    if receipt.check_id != result.check_id || receipt.check_id != check.check_id {
+        return Err(reject(
+            "receipt check identity does not match contract".to_string(),
+        ));
+    }
+    let expected_contract = verifier_check_digest(check)?;
+    if receipt.check_contract_digest != expected_contract {
+        return Err(reject(
+            "receipt was produced for a different verifier contract".to_string(),
+        ));
+    }
+    if receipt.reservation_id != reservation.reservation_id {
+        return Err(reject(
+            "receipt was produced for a different dispatch reservation".to_string(),
+        ));
+    }
+    let expected_receipt = receipt_digest(
+        receipt.check_id.as_str(),
+        receipt.check_contract_digest.as_str(),
+        receipt.reservation_id.as_str(),
+        &receipt.observation,
+        authority,
+    )?;
+    if receipt.receipt_id != expected_receipt {
+        return Err(reject(
+            "receipt digest does not match its contents".to_string(),
+        ));
+    }
+    let observed_pass = observation_passes(check, &receipt.observation);
+    if result.passed != observed_pass {
+        return Err(reject(
+            "reported verdict does not match the concrete observation".to_string(),
+        ));
+    }
+    if !observed_pass {
+        return Err(reject(if result.detail.trim().is_empty() {
+            "concrete observation did not satisfy the verifier contract".to_string()
+        } else {
+            result.detail.clone()
+        }));
+    }
+    Ok(())
+}
+
+fn verifier_check_digest(check: &VerifierCheck) -> Result<String, ExecutorError> {
+    let bytes = serde_json::to_vec(check).map_err(|error| ExecutorError::InvalidCheckContract {
+        node: "<receipt>".to_string(),
+        reason: format!("cannot fingerprint verifier contract: {error}"),
+    })?;
+    Ok(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn receipt_digest(
+    check_id: &str,
+    check_contract_digest: &str,
+    reservation_id: &str,
+    observation: &CheckObservation,
+    authority: &GraphExecutionAuthority,
+) -> Result<String, ExecutorError> {
+    let observation =
+        serde_json::to_vec(observation).map_err(|error| ExecutorError::InvalidCheckContract {
+            node: "<receipt>".to_string(),
+            reason: format!("cannot fingerprint verifier observation: {error}"),
+        })?;
+    let fields = [
+        check_id.as_bytes(),
+        check_contract_digest.as_bytes(),
+        reservation_id.as_bytes(),
+        observation.as_slice(),
+    ];
+    Ok(authority.mac("omega.graph.check-receipt.v1", &fields))
+}
+
+fn observation_passes(check: &VerifierCheck, observation: &CheckObservation) -> bool {
+    match (&check.kind, observation) {
+        (
+            VerifierCheckKind::Command {
+                argv,
+                cwd,
+                expected_exit_code,
+            },
+            CheckObservation::Command {
+                argv: observed_argv,
+                cwd: observed_cwd,
+                exit_code,
+            },
+        ) => argv == observed_argv && cwd == observed_cwd && expected_exit_code == exit_code,
+        (
+            VerifierCheckKind::Http {
+                url,
+                expected_status,
+            },
+            CheckObservation::Http {
+                url: observed_url,
+                status,
+            },
+        ) => url == observed_url && expected_status == status,
+        (
+            VerifierCheckKind::FileExists { path },
+            CheckObservation::FileExists {
+                path: observed_path,
+                exists,
+            },
+        ) => path == observed_path && *exists,
+        (
+            VerifierCheckKind::GitObject { sha },
+            CheckObservation::GitObject {
+                sha: observed_sha,
+                exists,
+            },
+        ) => sha == observed_sha && *exists,
+        _ => false,
+    }
 }
 
 /// Spend a traversal on every back edge whose source just completed, and re-seed
@@ -639,7 +2010,8 @@ fn take_back_edges(
     graph: &Graph,
     state: &mut GraphState,
     results: &[NodeReport],
-) -> Vec<(NodeId, NodeId)> {
+    authority: &GraphExecutionAuthority,
+) -> Result<Vec<(NodeId, NodeId)>, ExecutorError> {
     let completed: BTreeSet<&str> = results
         .iter()
         .filter(|report| !report.is_failure())
@@ -647,6 +2019,7 @@ fn take_back_edges(
         .collect();
 
     let mut taken = Vec::new();
+    let prior_progress = loop_progress_records(state)?;
     for bound in &graph.loop_bounds {
         if !completed.contains(bound.from.as_str()) {
             continue;
@@ -654,16 +2027,76 @@ fn take_back_edges(
         if state_of(state, &bound.from) != TaskAttemptState::Accepted {
             continue;
         }
-        if loop_traversals(state, &bound.from, &bound.to) >= bound.max_iterations {
-            continue;
+        let report = results
+            .iter()
+            .find(|report| report.node == bound.from && !report.is_failure())
+            .expect("completed set was derived from successful reports");
+        let traversals_before = loop_traversals(state, &bound.from, &bound.to);
+        let mut should_take = traversals_before < bound.max_iterations;
+        let mut changed = true;
+        let mut dry_streak = 0;
+        if let Some(stop_after) = bound.stop_after_dry_rounds {
+            let output = report
+                .output
+                .as_ref()
+                .ok_or_else(|| ExecutorError::OutputRejected {
+                    node: report.node.0.clone(),
+                    reason: "dry-bounded loop report has no authenticated output".to_string(),
+                })?;
+            changed = output
+                .field("changed")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| ExecutorError::OutputRejected {
+                    node: report.node.0.clone(),
+                    reason: "dry-bounded loop field \"changed\" is not boolean".to_string(),
+                })?;
+            let previous = prior_progress
+                .get(&edge_key(&bound.from, &bound.to))
+                .map(|receipt| receipt.dry_streak)
+                .unwrap_or(0);
+            dry_streak = if changed {
+                0
+            } else {
+                previous.saturating_add(1)
+            };
+            should_take &= dry_streak < stop_after;
         }
-        record_traversal(state, &bound.from, &bound.to);
-        for id in loop_body(graph, &bound.from, &bound.to) {
-            reseed_for_iteration(state, &id);
+
+        if should_take {
+            record_traversal(state, &bound.from, &bound.to);
+            let body = loop_body(graph, &bound.from, &bound.to);
+            for id in reseed_set_for_loop_iteration(state, &body)? {
+                reseed_for_iteration(state, &id);
+            }
+            taken.push((bound.from.clone(), bound.to.clone()));
         }
-        taken.push((bound.from.clone(), bound.to.clone()));
+
+        if bound.stop_after_dry_rounds.is_some() {
+            let reservation = report
+                .reservation
+                .as_ref()
+                .ok_or_else(|| ExecutorError::UnboundReport(report.node.0.clone()))?;
+            let output = report.output.as_ref().expect("dry output validated above");
+            let mut receipt = LoopProgressReceipt {
+                from: bound.from.clone(),
+                to: bound.to.clone(),
+                run_id: state.run_id.clone(),
+                graph_digest: state.graph_digest.clone(),
+                reservation_id: reservation.reservation_id.clone(),
+                generation: reservation.generation,
+                output_receipt_id: output.receipt_id.clone(),
+                changed,
+                dry_streak,
+                traversals_after: loop_traversals(state, &bound.from, &bound.to),
+                progress_id: String::new(),
+                authority_mac: String::new(),
+            };
+            receipt.progress_id = loop_progress_id(&receipt);
+            receipt.authority_mac = loop_progress_mac(&receipt, authority);
+            record_loop_progress(state, &receipt)?;
+        }
     }
-    taken
+    Ok(taken)
 }
 
 /// The nodes that belong to one loop: everything forward-reachable from `to`
@@ -783,8 +2216,7 @@ fn strand_dependents(graph: &Graph, state: &mut GraphState) -> Vec<NodeId> {
 }
 
 /// Decide the outcome, in the precedence documented on [`advance`].
-fn classify(graph: &Graph, state: &GraphState) -> ExecutionOutcome {
-    let ready = ready_nodes(graph, state);
+fn classify(graph: &Graph, state: &GraphState, ready: Vec<NodeId>) -> ExecutionOutcome {
     if !ready.is_empty() {
         return ExecutionOutcome::Progressing { ready };
     }
@@ -826,10 +2258,11 @@ fn classify(graph: &Graph, state: &GraphState) -> ExecutionOutcome {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::graph::{LoopBound, NodeKind};
-    use crate::mission::RetryPolicy;
+    use crate::mission::{RetryPolicy, VerifierCheck};
 
     fn chain() -> Graph {
         Graph::new()
@@ -857,8 +2290,84 @@ mod tests {
         values.iter().map(|value| NodeId::new(*value)).collect()
     }
 
+    fn output_report(
+        reservation: &NodeReservation,
+        fields: &[(&str, Value)],
+        authority: &GraphExecutionAuthority,
+    ) -> NodeReport {
+        let fields = fields
+            .iter()
+            .map(|(key, value)| ((*key).to_string(), value.clone()))
+            .collect();
+        NodeReport::succeeded_for(reservation).with_output(
+            NodeOutputReceipt::new(reservation, fields, authority).expect("output signs"),
+        )
+    }
+
+    fn routed_diamond() -> Graph {
+        Graph::new()
+            .with_node(Node::new("classify", NodeKind::Router))
+            .with_node(Node::new("branch_a", NodeKind::Agent))
+            .with_node(Node::new("branch_b", NodeKind::Agent))
+            .with_node(Node::new("join", NodeKind::Synthesis))
+            .with_edge("classify", "branch_a")
+            .with_edge("classify", "branch_b")
+            .with_edge("branch_a", "join")
+            .with_edge("branch_b", "join")
+            .with_router(
+                "classify",
+                crate::graph::Router::new("kind")
+                    .with_route("a", "branch_a")
+                    .with_route("b", "branch_b"),
+            )
+    }
+
+    fn routed_loop_with_outer_router() -> Graph {
+        Graph::new()
+            .with_node(Node::new("outer", NodeKind::Router))
+            .with_node(Node::new("off_path", NodeKind::Agent))
+            .with_node(Node::new("classify", NodeKind::Router))
+            .with_node(Node::new("branch_a", NodeKind::Agent))
+            .with_node(Node::new("branch_b", NodeKind::Agent))
+            .with_node(Node::new("join", NodeKind::Synthesis))
+            .with_edge("outer", "off_path")
+            .with_edge("outer", "classify")
+            .with_edge("classify", "branch_a")
+            .with_edge("classify", "branch_b")
+            .with_edge("branch_a", "join")
+            .with_edge("branch_b", "join")
+            .with_edge("join", "classify")
+            .with_router(
+                "outer",
+                crate::graph::Router::new("path")
+                    .with_route("off", "off_path")
+                    .with_route("loop", "classify"),
+            )
+            .with_router(
+                "classify",
+                crate::graph::Router::new("kind")
+                    .with_route("a", "branch_a")
+                    .with_route("b", "branch_b"),
+            )
+            .with_loop_bound(LoopBound::new("join", "classify", 1))
+    }
+
+    fn authority() -> GraphExecutionAuthority {
+        GraphExecutionAuthority::from_key([0x47; 32])
+    }
+
     fn step(graph: &Graph, state: &mut GraphState, reports: &[NodeReport]) -> StepOutcome {
-        advance(graph, state, reports).expect("step is legal")
+        let reports: Vec<NodeReport> = reports
+            .iter()
+            .cloned()
+            .map(|mut report| {
+                if report.reservation.is_none() {
+                    report.reservation = state.reservation_of(&report.node).cloned();
+                }
+                report
+            })
+            .collect();
+        advance(graph, state, &reports, &authority()).expect("step is legal")
     }
 
     #[test]
@@ -910,6 +2419,246 @@ mod tests {
 
         let done = step(&graph, &mut state, &[NodeReport::succeeded("d")]);
         assert_eq!(done.outcome, ExecutionOutcome::Complete);
+    }
+
+    #[test]
+    fn authenticated_router_runs_only_selected_branch_and_preserves_join() {
+        let graph = routed_diamond();
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-route-a", &authority);
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let classify = first
+            .reservation_for(&NodeId::new("classify"))
+            .unwrap()
+            .clone();
+
+        let routed = advance(
+            &graph,
+            &mut state,
+            &[output_report(
+                &classify,
+                &[("kind", Value::from("a"))],
+                &authority,
+            )],
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(routed.ready(), ids(&["branch_a"]));
+        assert_eq!(routed.routes_taken.len(), 1);
+        assert_eq!(routed.routes_taken[0].target, NodeId::new("branch_a"));
+        assert_eq!(routed.routes_taken[0].skipped, ids(&["branch_b"]));
+        assert_eq!(
+            state.state_of(&NodeId::new("branch_b")),
+            Some(TaskAttemptState::Cancelled)
+        );
+        assert!(state.reservation_of(&NodeId::new("branch_b")).is_none());
+
+        let branch_a = routed
+            .reservation_for(&NodeId::new("branch_a"))
+            .unwrap()
+            .clone();
+        let joined = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::succeeded_for(&branch_a)],
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(joined.ready(), ids(&["join"]));
+        let join = joined
+            .reservation_for(&NodeId::new("join"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&join)],
+                &authority,
+            )
+            .unwrap()
+            .outcome,
+            ExecutionOutcome::Complete
+        );
+    }
+
+    #[test]
+    fn router_reentered_by_loop_can_switch_branch_without_losing_unrelated_route() {
+        let graph = routed_loop_with_outer_router();
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-route-loop", &authority);
+
+        let initial = advance(&graph, &mut state, &[], &authority).unwrap();
+        let outer = initial
+            .reservation_for(&NodeId::new("outer"))
+            .unwrap()
+            .clone();
+        let entered = advance(
+            &graph,
+            &mut state,
+            &[output_report(
+                &outer,
+                &[("path", Value::from("loop"))],
+                &authority,
+            )],
+            &authority,
+        )
+        .unwrap();
+        let classify_first = entered
+            .reservation_for(&NodeId::new("classify"))
+            .unwrap()
+            .clone();
+        let first_branch = advance(
+            &graph,
+            &mut state,
+            &[output_report(
+                &classify_first,
+                &[("kind", Value::from("a"))],
+                &authority,
+            )],
+            &authority,
+        )
+        .unwrap();
+        let branch_a = first_branch
+            .reservation_for(&NodeId::new("branch_a"))
+            .unwrap()
+            .clone();
+        let at_join = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::succeeded_for(&branch_a)],
+            &authority,
+        )
+        .unwrap();
+        let join = at_join
+            .reservation_for(&NodeId::new("join"))
+            .unwrap()
+            .clone();
+
+        let second_round = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::succeeded_for(&join)],
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(second_round.ready(), ids(&["classify"]));
+        let persisted = route_decisions(&state).unwrap();
+        assert!(persisted.contains_key(&NodeId::new("outer")));
+        assert!(!persisted.contains_key(&NodeId::new("classify")));
+        assert_eq!(
+            state.state_of(&NodeId::new("off_path")),
+            Some(TaskAttemptState::Cancelled),
+            "the unrelated outer router decision must remain authoritative"
+        );
+        assert_eq!(
+            state.state_of(&NodeId::new("branch_b")),
+            Some(TaskAttemptState::Queued),
+            "the former skipped branch must be eligible in the new generation"
+        );
+
+        let classify_second = second_round
+            .reservation_for(&NodeId::new("classify"))
+            .unwrap()
+            .clone();
+        let switched = advance(
+            &graph,
+            &mut state,
+            &[output_report(
+                &classify_second,
+                &[("kind", Value::from("b"))],
+                &authority,
+            )],
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(switched.ready(), ids(&["branch_b"]));
+        assert_eq!(
+            state.state_of(&NodeId::new("branch_a")),
+            Some(TaskAttemptState::Cancelled)
+        );
+        assert_eq!(switched.routes_taken[0].target, NodeId::new("branch_b"));
+    }
+
+    #[test]
+    fn route_decision_survives_resume_and_tampering_fails_closed() {
+        let graph = routed_diamond();
+        let authority = authority();
+        let mut state =
+            GraphState::for_graph_with_authority(&graph, "run-route-resume", &authority);
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = first.reservation_for(&NodeId::new("classify")).unwrap();
+        advance(
+            &graph,
+            &mut state,
+            &[output_report(
+                reservation,
+                &[("kind", Value::from("b"))],
+                &authority,
+            )],
+            &authority,
+        )
+        .unwrap();
+
+        let encoded = serde_json::to_value(&state).unwrap();
+        let mut restored: GraphState = serde_json::from_value(encoded).unwrap();
+        let resumed = advance(&graph, &mut restored, &[], &authority).unwrap();
+        assert_eq!(resumed.ready(), ids(&["branch_b"]));
+        assert_eq!(
+            restored.state_of(&NodeId::new("branch_a")),
+            Some(TaskAttemptState::Cancelled)
+        );
+
+        let mut forged = restored.clone();
+        forged.extra[EXEC_KEY][ROUTES_KEY]["classify"]["target"] = Value::from("branch_a");
+        let before = forged.clone();
+        assert!(matches!(
+            advance(&graph, &mut forged, &[], &authority),
+            Err(ExecutorError::InvalidExecutorState { .. })
+        ));
+        assert_eq!(forged, before, "forged persisted routing must be inert");
+    }
+
+    #[test]
+    fn forged_or_unmatched_router_output_is_rejected_without_mutation() {
+        let graph = routed_diamond();
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-route-forge", &authority);
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = first
+            .reservation_for(&NodeId::new("classify"))
+            .unwrap()
+            .clone();
+
+        let mut forged = NodeOutputReceipt::new(
+            &reservation,
+            BTreeMap::from([("kind".to_string(), Value::from("a"))]),
+            &authority,
+        )
+        .unwrap();
+        forged.fields.insert("kind".to_string(), Value::from("b"));
+        let before = state.clone();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation).with_output(forged)],
+                &authority,
+            ),
+            Err(ExecutorError::OutputRejected { .. })
+        ));
+        assert_eq!(state, before);
+
+        let unmatched = output_report(
+            &reservation,
+            &[("kind", Value::from("unknown"))],
+            &authority,
+        );
+        assert!(matches!(
+            advance(&graph, &mut state, &[unmatched], &authority),
+            Err(ExecutorError::OutputRejected { reason, .. }) if reason.contains("matches no route")
+        ));
+        assert_eq!(state, before);
     }
 
     #[test]
@@ -1129,6 +2878,152 @@ mod tests {
         );
     }
 
+    fn dry_loop(stop_after: u32) -> Graph {
+        let mut bound = LoopBound::new("verify", "find", 8);
+        bound.stop_after_dry_rounds = Some(stop_after);
+        Graph::new()
+            .with_node(Node::new("find", NodeKind::Agent))
+            .with_node(Node::new("verify", NodeKind::Verifier))
+            .with_edge("find", "verify")
+            .with_edge("verify", "find")
+            .with_loop_bound(bound)
+    }
+
+    fn complete_dry_round(
+        graph: &Graph,
+        state: &mut GraphState,
+        find: &NodeReservation,
+        changed: bool,
+        authority: &GraphExecutionAuthority,
+    ) -> StepOutcome {
+        let after_find =
+            advance(graph, state, &[NodeReport::succeeded_for(find)], authority).unwrap();
+        let verify = after_find
+            .reservation_for(&NodeId::new("verify"))
+            .expect("verify becomes ready")
+            .clone();
+        advance(
+            graph,
+            state,
+            &[output_report(
+                &verify,
+                &[("changed", Value::from(changed))],
+                authority,
+            )],
+            authority,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dry_loop_stops_after_consecutive_dry_rounds_before_hard_ceiling() {
+        let graph = dry_loop(2);
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-dry-stop", &authority);
+        let initial = advance(&graph, &mut state, &[], &authority).unwrap();
+        let first_find = initial
+            .reservation_for(&NodeId::new("find"))
+            .unwrap()
+            .clone();
+        let first_dry = complete_dry_round(&graph, &mut state, &first_find, false, &authority);
+        assert_eq!(first_dry.ready(), ids(&["find"]));
+        let second_find = first_dry
+            .reservation_for(&NodeId::new("find"))
+            .unwrap()
+            .clone();
+        let stopped = complete_dry_round(&graph, &mut state, &second_find, false, &authority);
+        assert_eq!(stopped.outcome, ExecutionOutcome::Complete);
+        assert_eq!(
+            loop_traversals(&state, &NodeId::new("verify"), &NodeId::new("find")),
+            1,
+            "the second consecutive dry observation stops before another traversal"
+        );
+        let progress = loop_progress_records(&state).unwrap();
+        assert_eq!(progress["verify->find"].dry_streak, 2);
+        assert!(!progress["verify->find"].changed);
+    }
+
+    #[test]
+    fn changed_signal_resets_persisted_dry_streak() {
+        let graph = dry_loop(2);
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-dry-reset", &authority);
+        let mut outcome = advance(&graph, &mut state, &[], &authority).unwrap();
+        for (index, changed) in [false, true, false, false].into_iter().enumerate() {
+            let find = outcome
+                .reservation_for(&NodeId::new("find"))
+                .expect("find is ready until final dry stop")
+                .clone();
+            outcome = complete_dry_round(&graph, &mut state, &find, changed, &authority);
+            let expected_streak = match index {
+                0 => 1,
+                1 => 0,
+                2 => 1,
+                _ => 2,
+            };
+            assert_eq!(
+                loop_progress_records(&state).unwrap()["verify->find"].dry_streak,
+                expected_streak
+            );
+        }
+        assert_eq!(outcome.outcome, ExecutionOutcome::Complete);
+        assert_eq!(
+            loop_traversals(&state, &NodeId::new("verify"), &NodeId::new("find")),
+            3
+        );
+    }
+
+    #[test]
+    fn dry_loop_missing_or_forged_changed_signal_fails_closed() {
+        let graph = dry_loop(2);
+        let authority = authority();
+        let mut state = GraphState::for_graph_with_authority(&graph, "run-dry-missing", &authority);
+        let initial = advance(&graph, &mut state, &[], &authority).unwrap();
+        let find = initial
+            .reservation_for(&NodeId::new("find"))
+            .unwrap()
+            .clone();
+        let after_find = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::succeeded_for(&find)],
+            &authority,
+        )
+        .unwrap();
+        let verify = after_find
+            .reservation_for(&NodeId::new("verify"))
+            .unwrap()
+            .clone();
+        let before = state.clone();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&verify)],
+                &authority,
+            ),
+            Err(ExecutorError::OutputRejected { reason, .. }) if reason.contains("changed")
+        ));
+        assert_eq!(state, before);
+
+        let forged = NodeOutputReceipt::new(
+            &verify,
+            BTreeMap::from([("changed".to_string(), Value::from(false))]),
+            &GraphExecutionAuthority::from_key([0x99; 32]),
+        )
+        .unwrap();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&verify).with_output(forged)],
+                &authority,
+            ),
+            Err(ExecutorError::OutputRejected { .. })
+        ));
+        assert_eq!(state, before);
+    }
+
     #[test]
     fn advance_on_a_complete_graph_reports_complete_and_stays_idempotent() {
         let graph = chain();
@@ -1185,28 +3080,49 @@ mod tests {
     fn malformed_input_is_a_typed_error_never_a_panic() {
         let graph = chain();
         let mut state = GraphState::for_graph(&graph);
+        let authority = authority();
+        let pristine = state.clone();
 
         assert_eq!(
-            advance(&graph, &mut state, &[NodeReport::succeeded("ghost")]),
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded("ghost")],
+                &authority,
+            ),
             Err(ExecutorError::UnknownNode("ghost".to_string()))
+        );
+        assert_eq!(
+            state, pristine,
+            "a rejected report must not bind or mutate state"
         );
         assert_eq!(
             advance(
                 &graph,
                 &mut state,
                 &[NodeReport::succeeded("a"), NodeReport::failed("a", "x")],
+                &authority,
             ),
             Err(ExecutorError::DuplicateReport("a".to_string()))
+        );
+        assert_eq!(
+            state, pristine,
+            "duplicate input must be transactionally inert"
         );
 
         let broken = Graph::new()
             .with_node(Node::new("a", NodeKind::Agent))
             .with_edge("a", "ghost");
         let mut broken_state = GraphState::for_graph(&broken);
+        let before_broken = broken_state.clone();
         assert!(matches!(
-            advance(&broken, &mut broken_state, &[]),
+            advance(&broken, &mut broken_state, &[], &authority),
             Err(ExecutorError::InvalidGraph(GraphError::DanglingEdge { .. }))
         ));
+        assert_eq!(
+            broken_state, before_broken,
+            "invalid graph input must not bind or mutate state"
+        );
     }
 
     #[test]
@@ -1251,5 +3167,319 @@ mod tests {
             "a fallback declared in extra must persist like a real field"
         );
         assert_eq!(restored.validate(), Ok(()));
+    }
+
+    #[test]
+    fn reports_require_a_live_reservation_and_bound_reports_reject_old_generations() {
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            backoff_secs: 0,
+        };
+        let graph = Graph::new().with_node(Node::new("work", NodeKind::Agent).with_retry(policy));
+        let mut state = GraphState::for_graph_with_run_id(&graph, "run-reservations");
+        let authority = authority();
+
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded("work")],
+                &authority,
+            ),
+            Err(ExecutorError::ReportNotReserved { node, .. }) if node == "work"
+        ));
+
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation_1 = first.reservation_for(&NodeId::new("work")).unwrap().clone();
+        assert_eq!(
+            state.state_of(&NodeId::new("work")),
+            Some(TaskAttemptState::Running)
+        );
+        assert_eq!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded("work")],
+                &authority,
+            ),
+            Err(ExecutorError::UnboundReport("work".to_string()))
+        );
+        let retry = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::failed_for(&reservation_1, "retry")],
+            &authority,
+        )
+        .unwrap();
+        let reservation_2 = retry.reservation_for(&NodeId::new("work")).unwrap().clone();
+        assert!(reservation_2.generation > reservation_1.generation);
+        assert_ne!(reservation_2.reservation_id, reservation_1.reservation_id);
+
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_1)],
+                &authority,
+            ),
+            Err(ExecutorError::StaleReport { node, .. }) if node == "work"
+        ));
+        assert_eq!(
+            state.reservation_of(&NodeId::new("work")),
+            Some(&reservation_2),
+            "rejecting an old worker must not consume the current reservation"
+        );
+    }
+
+    #[test]
+    fn declared_checks_must_all_be_uniquely_reported_as_passed_before_acceptance() {
+        let check = VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "unit".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: None,
+                expected_exit_code: 0,
+            },
+            timeout_secs: 30,
+        };
+        let graph = Graph::new()
+            .with_node(Node::new("checked", NodeKind::Agent).with_checks(vec![check.clone()]));
+        let mut state = GraphState::for_graph_with_run_id(&graph, "run-checks");
+        let authority = authority();
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation = first
+            .reservation_for(&NodeId::new("checked"))
+            .unwrap()
+            .clone();
+
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { check, .. }) if check == "unit"
+        ));
+        let failed_check = NodeCheckResult::observed(
+            &check,
+            &reservation,
+            CheckObservation::Command {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: None,
+                exit_code: 1,
+            },
+            "test failed",
+            &authority,
+        )
+        .unwrap();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation).with_check_result(failed_check)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { reason, .. }) if reason == "test failed"
+        ));
+        assert_eq!(
+            state.state_of(&NodeId::new("checked")),
+            Some(TaskAttemptState::Running),
+            "rejected evidence must not advance lifecycle state"
+        );
+
+        let passing_check = NodeCheckResult::observed(
+            &check,
+            &reservation,
+            CheckObservation::Command {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: None,
+                exit_code: 0,
+            },
+            "ok",
+            &authority,
+        )
+        .unwrap();
+        let accepted = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::succeeded_for(&reservation).with_check_result(passing_check)],
+            &authority,
+        )
+        .unwrap();
+        assert_eq!(accepted.outcome, ExecutionOutcome::Complete);
+        assert_eq!(
+            state.state_of(&NodeId::new("checked")),
+            Some(TaskAttemptState::Accepted)
+        );
+    }
+
+    #[test]
+    fn check_receipts_reject_contract_reservation_observation_and_digest_substitution() {
+        let check = VerifierCheck {
+            schema_version: CONTRACT_SCHEMA_VERSION,
+            check_id: "unit".to_string(),
+            kind: VerifierCheckKind::Command {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: Some("crates/omega-core".to_string()),
+                expected_exit_code: 0,
+            },
+            timeout_secs: 30,
+        };
+        let policy = RetryPolicy {
+            max_attempts: 2,
+            backoff_secs: 0,
+        };
+        let graph = Graph::new().with_node(
+            Node::new("checked", NodeKind::Agent)
+                .with_retry(policy)
+                .with_checks(vec![check.clone()]),
+        );
+        let mut state = GraphState::for_graph_with_run_id(&graph, "run-receipt-binding");
+        let authority = authority();
+        let first = advance(&graph, &mut state, &[], &authority).unwrap();
+        let reservation_1 = first
+            .reservation_for(&NodeId::new("checked"))
+            .unwrap()
+            .clone();
+        let retry = advance(
+            &graph,
+            &mut state,
+            &[NodeReport::failed_for(&reservation_1, "retry")],
+            &authority,
+        )
+        .unwrap();
+        let reservation_2 = retry
+            .reservation_for(&NodeId::new("checked"))
+            .unwrap()
+            .clone();
+
+        let observation = CheckObservation::Command {
+            argv: vec!["cargo".to_string(), "test".to_string()],
+            cwd: Some("crates/omega-core".to_string()),
+            exit_code: 0,
+        };
+        let stale = NodeCheckResult::observed(
+            &check,
+            &reservation_1,
+            observation.clone(),
+            "old execution",
+            &authority,
+        )
+        .unwrap();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_2).with_check_result(stale)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { reason, .. })
+                if reason.contains("different dispatch reservation")
+        ));
+
+        let mut altered_check = check.clone();
+        altered_check.kind = VerifierCheckKind::Command {
+            argv: vec!["cargo".to_string(), "check".to_string()],
+            cwd: Some("crates/omega-core".to_string()),
+            expected_exit_code: 0,
+        };
+        let altered = NodeCheckResult::observed(
+            &altered_check,
+            &reservation_2,
+            CheckObservation::Command {
+                argv: vec!["cargo".to_string(), "check".to_string()],
+                cwd: Some("crates/omega-core".to_string()),
+                exit_code: 0,
+            },
+            "different command",
+            &authority,
+        )
+        .unwrap();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_2).with_check_result(altered)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { reason, .. })
+                if reason.contains("different verifier contract")
+        ));
+
+        let wrong_observation = NodeCheckResult::observed(
+            &check,
+            &reservation_2,
+            CheckObservation::Command {
+                argv: vec!["cargo".to_string(), "test".to_string()],
+                cwd: Some("another-directory".to_string()),
+                exit_code: 0,
+            },
+            "wrong cwd",
+            &authority,
+        )
+        .unwrap();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_2)
+                    .with_check_result(wrong_observation)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { reason, .. }) if reason == "wrong cwd"
+        ));
+
+        let mut tampered = NodeCheckResult::observed(
+            &check,
+            &reservation_2,
+            observation.clone(),
+            "ok",
+            &authority,
+        )
+        .unwrap();
+        tampered.receipt.as_mut().unwrap().receipt_id = "fabricated".to_string();
+        assert!(matches!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_2).with_check_result(tampered)],
+                &authority,
+            ),
+            Err(ExecutorError::CheckRejected { reason, .. })
+                if reason.contains("receipt digest")
+        ));
+
+        let valid =
+            NodeCheckResult::observed(&check, &reservation_2, observation, "ok", &authority)
+                .unwrap();
+        assert_eq!(
+            advance(
+                &graph,
+                &mut state,
+                &[NodeReport::succeeded_for(&reservation_2).with_check_result(valid)],
+                &authority,
+            )
+            .unwrap()
+            .outcome,
+            ExecutionOutcome::Complete
+        );
+    }
+
+    #[test]
+    fn state_bound_to_another_graph_is_rejected_before_any_report_is_applied() {
+        let graph_a = Graph::new().with_node(Node::new("a", NodeKind::Agent));
+        let graph_b = Graph::new().with_node(Node::new("b", NodeKind::Agent));
+        let mut state = GraphState::for_graph_with_run_id(&graph_a, "run-a");
+        let authority = authority();
+        assert!(matches!(
+            advance(&graph_b, &mut state, &[], &authority),
+            Err(ExecutorError::GraphDigestMismatch { .. })
+        ));
+        assert_eq!(
+            state.state_of(&NodeId::new("a")),
+            Some(TaskAttemptState::Queued)
+        );
     }
 }

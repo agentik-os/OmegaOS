@@ -156,13 +156,13 @@ axe-core, pa11y, and Lighthouse a11y category — runs in headless Chromium agai
 Output is written to:
 
 ```
-$PROJECT_PATH/.a11y/
+$PROJECT_PATH/audits/.a11yaudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), the artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.a11y/` so multiple audits on the same
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.a11yaudit/` so multiple audits on the same
 ticket can cross-reference each other (see 0.5).
 
 ### 0.2 evidence-summary.json schema
@@ -225,7 +225,7 @@ You MAY still:
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
 If this audit runs as part of a Linear-fix mission, sibling audits' summaries
-are at `$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`.
+are at `$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`.
 Read them. Use them.
 
 Examples of high-value cross-audit findings:
@@ -1100,7 +1100,7 @@ audits' findings open in context:
   ],
   "edge_cases": [ ... ],                          // §2.4
   "cross_audit_links": [ ... ],                   // §2.5
-  "evidence_summary_path": "$PROJECT_PATH/.a11y/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.a11yaudit/evidence-summary.json",
   "confidence_basis": "Why I'm confident (or not). Cite Popper test counts, hinge scrutiny depth, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no occurrences of `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)"
 }
@@ -1220,7 +1220,7 @@ POST-FIX VERIFICATION (after writing code, BEFORE commit):
 
 IF ANY POST-FIX CHECK FAILS:
   → `git revert HEAD` immediately
-  → Log the failure in .audit/fix-log.md with exact error
+  → Log the failure in audits/.a11yaudit/fix-log.md with exact error
   → Mark as NEEDS_REVIEW (never retry same approach blindly)
   → Try alternative approach OR skip this fix
 
@@ -1341,7 +1341,7 @@ THE QUALITY ARSENAL:
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial thinking
-- ✅ **Concurrency lock** — `audits/.a11yaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.a11yaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations (rule 43 step 8b alignment). On cap: NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — Non-UI contexts: for CLI tools, check for screen-reader-friendly terminal output (no unicode-only bar charts, no color-only status). ABORT for pure libraries.
@@ -1505,11 +1505,11 @@ After v1.2 compliance round:
 
 Every fix MUST follow the "Do No Harm" protocol:
 
-1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `.{audit}/baseline/`.
+1. **PRE-FIX BASELINE** — grep all references, capture functional state, save to `audits/.<audit-id>/baseline/`.
 2. **APPLY FIX** — normal execution.
 3. **POST-FIX CHECK** — repeat every baseline check. If any PASSED→FAILED transition occurs, revert immediately.
 4. **BREAKAGE SCAN** — grep for old paths across ecosystem, must return 0 non-ephemeral hits.
-5. **BEFORE/AFTER MATRIX** — produce `.{audit}/before-after.md` with functional status table per affected item.
+5. **BEFORE/AFTER MATRIX** — produce `audits/.<audit-id>/before-after.md` with functional status table per affected item.
 
 **An audit that breaks 1 working thing is WORSE than no audit.** Do NOT claim "done" without `before-after.md` showing zero regressions.
 

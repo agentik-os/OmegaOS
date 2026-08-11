@@ -8,35 +8,87 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::io::Read;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-/// Unique mission identifier — short hex string from timestamp + random.
+/// Opaque mission identifier.
+///
+/// Newly generated values retain the historical `m-` prefix but use a
+/// 128-bit digest. They are collision-resistant identifiers, not secrets or
+/// authorization tokens. Deserialization remains compatible with every legacy
+/// string because the wrapper intentionally imposes no format on stored IDs.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MissionId(pub String);
 
 impl MissionId {
     pub fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
-
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        let mixed = nanos ^ counter.wrapping_mul(0x9E3779B97F4A7C15);
-
-        Self(format!(
-            "m-{:08x}{:04x}",
-            (mixed >> 16) as u32,
-            (mixed & 0xffff) as u16
-        ))
+        let context = mission_id_process_context();
+        let (wall_direction, wall_nanos) = wall_clock_nanos();
+        let monotonic_nanos = context.monotonic_origin.elapsed().as_nanos();
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"omega.mission-id.v2");
+        hasher.update(&context.discriminator);
+        hasher.update(&std::process::id().to_le_bytes());
+        hasher.update(&counter.to_le_bytes());
+        hasher.update(&[wall_direction]);
+        hasher.update(&wall_nanos.to_le_bytes());
+        hasher.update(&monotonic_nanos.to_le_bytes());
+        let encoded = hasher.finalize().to_hex();
+        Self(format!("m-{}", &encoded[..32]))
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+struct MissionIdProcessContext {
+    monotonic_origin: Instant,
+    discriminator: [u8; 32],
+}
+
+fn mission_id_process_context() -> &'static MissionIdProcessContext {
+    static CONTEXT: OnceLock<MissionIdProcessContext> = OnceLock::new();
+    CONTEXT.get_or_init(|| {
+        let monotonic_origin = Instant::now();
+        let (wall_direction, wall_nanos) = wall_clock_nanos();
+        let mut os_seed = [0_u8; 32];
+        let has_os_seed = std::fs::File::open("/dev/urandom")
+            .and_then(|mut source| source.read_exact(&mut os_seed))
+            .is_ok();
+        let context_address = (&CONTEXT as *const OnceLock<MissionIdProcessContext>) as usize;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"omega.mission-process.v1");
+        hasher.update(&std::process::id().to_le_bytes());
+        hasher.update(&[wall_direction]);
+        hasher.update(&wall_nanos.to_le_bytes());
+        hasher.update(&context_address.to_le_bytes());
+        hasher.update(&[u8::from(has_os_seed)]);
+        hasher.update(&os_seed);
+        MissionIdProcessContext {
+            monotonic_origin,
+            discriminator: *hasher.finalize().as_bytes(),
+        }
+    })
+}
+
+/// Shared only inside omega-core so other process-wide identifiers can bind
+/// themselves to the same once-per-process discriminator.
+pub(crate) fn process_discriminator() -> &'static [u8; 32] {
+    &mission_id_process_context().discriminator
+}
+
+/// Preserve the direction as well as the full 128-bit nanosecond magnitude so
+/// clocks before the Unix epoch do not collapse to the same zero value.
+pub(crate) fn wall_clock_nanos() -> (u8, u128) {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => (1, duration.as_nanos()),
+        Err(error) => (0, error.duration().as_nanos()),
     }
 }
 
@@ -47,7 +99,7 @@ impl Default for MissionId {
 }
 
 /// A unit of work submitted by the human or AISB.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mission {
     pub id: MissionId,
     pub project: String,
@@ -363,15 +415,60 @@ pub struct PlanContract {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanContractError {
-    UnsupportedSchema { contract: String, version: u32 },
-    InvalidRevision { expected: u64, actual: u64 },
+    UnsupportedSchema {
+        contract: String,
+        version: u32,
+    },
+    InvalidRevision {
+        expected: u64,
+        actual: u64,
+    },
+    EmptyPlan,
     EmptyTaskId,
+    EmptyTaskField {
+        task: String,
+        field: &'static str,
+    },
+    EmptyAcceptanceCriteria(String),
+    EmptyAcceptanceCriterion {
+        task: String,
+        index: usize,
+    },
+    EmptyVerifierChecks(String),
+    EmptyVerifierId(String),
+    DuplicateVerifierId {
+        task: String,
+        check: String,
+    },
+    ZeroVerifierTimeout {
+        task: String,
+        check: String,
+    },
+    InvalidVerifier {
+        task: String,
+        check: String,
+        reason: String,
+    },
+    InvalidRetryPolicy(String),
+    EmptyPlanRequirement {
+        kind: &'static str,
+    },
+    DuplicatePlanRequirement {
+        kind: &'static str,
+        value: String,
+    },
     DuplicateTaskId(String),
-    UnknownDependency { task: String, dependency: String },
+    UnknownDependency {
+        task: String,
+        dependency: String,
+    },
     DependencyCycle,
     ProtectedTaskRemoved(String),
     ProtectedTaskChanged(String),
-    DigestMismatch { expected: String, actual: String },
+    DigestMismatch {
+        expected: String,
+        actual: String,
+    },
     Serialization(String),
 }
 
@@ -388,7 +485,47 @@ impl fmt::Display for PlanContractError {
                     "plan revision conflict: expected {expected}, got {actual}"
                 )
             }
+            EmptyPlan => write!(f, "plan must contain at least one task"),
             EmptyTaskId => write!(f, "task_id must not be empty"),
+            EmptyTaskField { task, field } => {
+                write!(f, "task {task} has an empty {field}")
+            }
+            EmptyAcceptanceCriteria(task) => {
+                write!(f, "task {task} must declare acceptance criteria")
+            }
+            EmptyAcceptanceCriterion { task, index } => {
+                write!(
+                    f,
+                    "task {task} has an empty acceptance criterion at index {index}"
+                )
+            }
+            EmptyVerifierChecks(task) => {
+                write!(f, "task {task} must declare at least one verifier check")
+            }
+            EmptyVerifierId(task) => write!(f, "task {task} has an empty verifier check id"),
+            DuplicateVerifierId { task, check } => {
+                write!(f, "task {task} has duplicate verifier check id {check}")
+            }
+            ZeroVerifierTimeout { task, check } => {
+                write!(f, "task {task} verifier {check} has a zero timeout")
+            }
+            InvalidVerifier {
+                task,
+                check,
+                reason,
+            } => write!(f, "task {task} verifier {check} is invalid: {reason}"),
+            InvalidRetryPolicy(task) => {
+                write!(
+                    f,
+                    "task {task} retry policy must allow at least one attempt"
+                )
+            }
+            EmptyPlanRequirement { kind } => {
+                write!(f, "plan contains an empty required {kind}")
+            }
+            DuplicatePlanRequirement { kind, value } => {
+                write!(f, "plan contains duplicate required {kind}: {value}")
+            }
             DuplicateTaskId(id) => write!(f, "duplicate task_id: {id}"),
             UnknownDependency { task, dependency } => {
                 write!(f, "task {task} depends on unknown task {dependency}")
@@ -421,6 +558,8 @@ impl PlanContract {
         tasks.sort_by(|a, b| a.task_id.0.cmp(&b.task_id.0));
         for task in &mut tasks {
             task.depends_on.sort_by(|a, b| a.0.cmp(&b.0));
+            task.verifier_checks
+                .sort_by(|a, b| a.check_id.cmp(&b.check_id));
             task.required_capabilities.sort();
             task.scope.sort();
         }
@@ -449,6 +588,17 @@ impl PlanContract {
                 version: self.schema_version,
             });
         }
+        if self.revision == 0 {
+            return Err(PlanContractError::InvalidRevision {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        if self.tasks.is_empty() {
+            return Err(PlanContractError::EmptyPlan);
+        }
+        validate_plan_requirements("gate", &self.required_gates)?;
+        validate_plan_requirements("approval", &self.required_approvals)?;
         let mut ids = HashSet::new();
         for task in &self.tasks {
             if task.schema_version != CONTRACT_SCHEMA_VERSION {
@@ -457,21 +607,53 @@ impl PlanContract {
                     version: task.schema_version,
                 });
             }
-            if let Some(check) = task
-                .verifier_checks
-                .iter()
-                .find(|check| check.schema_version != CONTRACT_SCHEMA_VERSION)
-            {
-                return Err(PlanContractError::UnsupportedSchema {
-                    contract: format!("verifier {}", check.check_id),
-                    version: check.schema_version,
-                });
-            }
             if task.task_id.0.trim().is_empty() {
                 return Err(PlanContractError::EmptyTaskId);
             }
             if !ids.insert(task.task_id.0.as_str()) {
                 return Err(PlanContractError::DuplicateTaskId(task.task_id.0.clone()));
+            }
+            let task_id = task.task_id.0.clone();
+            if task.name.trim().is_empty() {
+                return Err(PlanContractError::EmptyTaskField {
+                    task: task_id,
+                    field: "name",
+                });
+            }
+            if task.prompt.trim().is_empty() {
+                return Err(PlanContractError::EmptyTaskField {
+                    task: task.task_id.0.clone(),
+                    field: "prompt",
+                });
+            }
+            if task.acceptance_criteria.is_empty() {
+                return Err(PlanContractError::EmptyAcceptanceCriteria(
+                    task.task_id.0.clone(),
+                ));
+            }
+            if let Some(index) = task
+                .acceptance_criteria
+                .iter()
+                .position(|criterion| criterion.trim().is_empty())
+            {
+                return Err(PlanContractError::EmptyAcceptanceCriterion {
+                    task: task.task_id.0.clone(),
+                    index,
+                });
+            }
+            if task.verifier_checks.is_empty() {
+                return Err(PlanContractError::EmptyVerifierChecks(
+                    task.task_id.0.clone(),
+                ));
+            }
+            if task.retry_policy.max_attempts == 0 {
+                return Err(PlanContractError::InvalidRetryPolicy(
+                    task.task_id.0.clone(),
+                ));
+            }
+            let mut check_ids = HashSet::new();
+            for check in &task.verifier_checks {
+                validate_verifier_check(&task.task_id.0, check, &mut check_ids)?;
             }
         }
         for task in &self.tasks {
@@ -609,6 +791,90 @@ impl PlanContract {
             .keys()
             .any(|id| visit(id, &tasks, &mut visiting, &mut visited))
     }
+}
+
+fn validate_plan_requirements(
+    kind: &'static str,
+    requirements: &[String],
+) -> Result<(), PlanContractError> {
+    let mut seen = HashSet::new();
+    for requirement in requirements {
+        let trimmed = requirement.trim();
+        if trimmed.is_empty() {
+            return Err(PlanContractError::EmptyPlanRequirement { kind });
+        }
+        if !seen.insert(trimmed) {
+            return Err(PlanContractError::DuplicatePlanRequirement {
+                kind,
+                value: trimmed.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_verifier_check<'a>(
+    task_id: &str,
+    check: &'a VerifierCheck,
+    seen: &mut HashSet<&'a str>,
+) -> Result<(), PlanContractError> {
+    if check.schema_version != CONTRACT_SCHEMA_VERSION {
+        return Err(PlanContractError::UnsupportedSchema {
+            contract: format!("verifier {}", check.check_id),
+            version: check.schema_version,
+        });
+    }
+    let check_id = check.check_id.trim();
+    if check_id.is_empty() {
+        return Err(PlanContractError::EmptyVerifierId(task_id.to_string()));
+    }
+    if !seen.insert(check_id) {
+        return Err(PlanContractError::DuplicateVerifierId {
+            task: task_id.to_string(),
+            check: check_id.to_string(),
+        });
+    }
+    if check.timeout_secs == 0 {
+        return Err(PlanContractError::ZeroVerifierTimeout {
+            task: task_id.to_string(),
+            check: check_id.to_string(),
+        });
+    }
+    let invalid = match &check.kind {
+        VerifierCheckKind::Command { argv, .. } => argv
+            .first()
+            .filter(|program| !program.trim().is_empty())
+            .is_none()
+            .then_some("command argv must name a program"),
+        VerifierCheckKind::Http {
+            url,
+            expected_status,
+        } => {
+            if url.trim().is_empty() {
+                Some("HTTP URL must not be empty")
+            } else if !(100..=599).contains(expected_status) {
+                Some("HTTP expected_status must be between 100 and 599")
+            } else {
+                None
+            }
+        }
+        VerifierCheckKind::FileExists { path } => path
+            .trim()
+            .is_empty()
+            .then_some("file path must not be empty"),
+        VerifierCheckKind::GitObject { sha } => sha
+            .trim()
+            .is_empty()
+            .then_some("git object id must not be empty"),
+    };
+    if let Some(reason) = invalid {
+        return Err(PlanContractError::InvalidVerifier {
+            task: task_id.to_string(),
+            check: check_id.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -780,6 +1046,7 @@ pub struct WorkerResult {
 #[cfg(test)]
 mod v3_contract_tests {
     use super::*;
+    use std::collections::HashSet as StdHashSet;
 
     fn task(id: &str, depends_on: &[&str]) -> TaskContract {
         TaskContract {
@@ -802,6 +1069,30 @@ mod v3_contract_tests {
             retry_policy: RetryPolicy::default(),
             depends_on: depends_on.iter().map(|id| TaskId::new(*id)).collect(),
         }
+    }
+
+    #[test]
+    fn generated_mission_ids_have_a_stable_versioned_shape() {
+        for _ in 0..256 {
+            let id = MissionId::new();
+            let hex = id.0.strip_prefix("m-").expect("stable mission prefix");
+            assert_eq!(hex.len(), 32, "128 bits must be emitted as 32 hex digits");
+            assert!(
+                hex.bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "mission digest must use canonical lowercase hexadecimal"
+            );
+        }
+
+        let legacy: MissionId = serde_json::from_str("\"m-0123abcdef\"").unwrap();
+        assert_eq!(legacy.as_str(), "m-0123abcdef");
+    }
+
+    #[test]
+    fn generated_mission_ids_are_unique_at_high_volume() {
+        const SAMPLE_SIZE: usize = 100_000;
+        let ids: StdHashSet<String> = (0..SAMPLE_SIZE).map(|_| MissionId::new().0).collect();
+        assert_eq!(ids.len(), SAMPLE_SIZE);
     }
 
     #[test]
@@ -975,5 +1266,69 @@ mod v3_contract_tests {
             result.unwrap_err(),
             PlanContractError::ProtectedTaskChanged("a".to_string())
         );
+    }
+
+    #[test]
+    fn plan_contract_rejects_empty_or_unverifiable_work() {
+        let mission = MissionId("m-invalid-plan".to_string());
+        assert_eq!(
+            PlanContract::new(mission.clone(), 1, 1, vec![], vec![], vec![]).unwrap_err(),
+            PlanContractError::EmptyPlan
+        );
+
+        let mut invalid = task("a", &[]);
+        invalid.acceptance_criteria.clear();
+        assert_eq!(
+            PlanContract::new(mission.clone(), 1, 1, vec![invalid], vec![], vec![]).unwrap_err(),
+            PlanContractError::EmptyAcceptanceCriteria("a".to_string())
+        );
+
+        let mut invalid = task("a", &[]);
+        invalid.verifier_checks.clear();
+        assert_eq!(
+            PlanContract::new(mission.clone(), 1, 1, vec![invalid], vec![], vec![]).unwrap_err(),
+            PlanContractError::EmptyVerifierChecks("a".to_string())
+        );
+
+        let mut invalid = task("a", &[]);
+        invalid.retry_policy.max_attempts = 0;
+        assert_eq!(
+            PlanContract::new(mission, 1, 1, vec![invalid], vec![], vec![]).unwrap_err(),
+            PlanContractError::InvalidRetryPolicy("a".to_string())
+        );
+    }
+
+    #[test]
+    fn plan_contract_rejects_malformed_verifiers_and_requirements() {
+        let mission = MissionId("m-invalid-verifier".to_string());
+        let mut invalid = task("a", &[]);
+        invalid.verifier_checks[0].timeout_secs = 0;
+        assert!(matches!(
+            PlanContract::new(mission.clone(), 1, 1, vec![invalid], vec![], vec![]),
+            Err(PlanContractError::ZeroVerifierTimeout { .. })
+        ));
+
+        let mut invalid = task("a", &[]);
+        invalid.verifier_checks[0].kind = VerifierCheckKind::Command {
+            argv: vec![],
+            cwd: None,
+            expected_exit_code: 0,
+        };
+        assert!(matches!(
+            PlanContract::new(mission.clone(), 1, 1, vec![invalid], vec![], vec![]),
+            Err(PlanContractError::InvalidVerifier { .. })
+        ));
+
+        assert!(matches!(
+            PlanContract::new(
+                mission,
+                1,
+                1,
+                vec![task("a", &[])],
+                vec!["gate".to_string(), "gate".to_string()],
+                vec![]
+            ),
+            Err(PlanContractError::DuplicatePlanRequirement { kind: "gate", .. })
+        ));
     }
 }

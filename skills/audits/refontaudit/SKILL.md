@@ -108,6 +108,10 @@ Both are identified in Phase 13 and stress-tested in Phase 22. **50% of the refo
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh refont "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>"` (plus `--ticket` and `--url` together when ticket-scoped). A non-zero exit is an audit failure. Read the emitted `audits/.refontaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`.
+
 ## OUTPUT CONTRACT
 
 All artifacts land in `.refonte/{YYYY-MM-DD-HHMM}/`:

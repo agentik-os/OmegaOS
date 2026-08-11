@@ -24,7 +24,10 @@ falsification → hinge-point 10x scrutiny → auto-fix → auto-re-audit. Every
 | `motionaudit` | motion, animation, easing, scroll, WebGL | Is the motion PURPOSEFUL? (aborts on non-UI) |
 | `automationaudit` | automation, cron, scripts, daemon, scheduled tasks | Is automation RELIABLE? |
 | `logicaudit` | logic, optimize, system architecture, make it smarter | Is the logic OPTIMAL? |
+| `i18naudit` | i18n, localization, translation, RTL, world-ready | Is it WORLD-READY? |
 | `retentionaudit` | retention, feature ideas, make it sticky, CPO mindset | What FEATURES are missing? (READ-ONLY) |
+| `depaudit` | dependency, supply chain, lockfile, SBOM, license | Is the supply chain SAFE? |
+| `releaseaudit` | release, deploy, CI/CD, rollback, migration safety | Is shipping SAFE + reversible? |
 
 ## Detective — runtime & security (run on existing/deployed systems)
 
@@ -34,7 +37,9 @@ falsification → hinge-point 10x scrutiny → auto-fix → auto-re-audit. Every
 | `perfaudit` | perf, slow, core web vitals, bundle, render, N+1 | Is it FAST enough? |
 | `secaudit` | security, owasp, xss, sqli, auth bypass, vulnerab | Is it SECURE? |
 | `dataaudit` | data integrity, schema, orphans, migration | Is the data INTACT? |
+| `privacyaudit` | privacy, GDPR, PII, consent, retention | Is user data HANDLED LAWFULLY? |
 | `apiaudit` | api audit, endpoint, contract, rate limit | Is the API SOLID? |
+| `observabilityaudit` | observability, logs, traces, metrics, alerts, SLO | Can we SEE what it does in prod? |
 
 ## Orchestrators (meta)
 

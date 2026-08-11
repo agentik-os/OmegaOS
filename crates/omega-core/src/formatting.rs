@@ -64,12 +64,17 @@ pub fn markdown_to_telegram_html(md: &str) -> String {
 
         // Blockquotes
         if let Some(content) = trimmed.strip_prefix("> ") {
-            let _ = writeln!(out, "<blockquote>{}</blockquote>", format_inline(&escape_html(content)));
+            let _ = writeln!(
+                out,
+                "<blockquote>{}</blockquote>",
+                format_inline(&escape_html(content))
+            );
             continue;
         }
 
         // Horizontal rules
-        if trimmed == "---" || trimmed == "━━━" || trimmed.chars().all(|c| c == '─' || c == '━') {
+        if trimmed == "---" || trimmed == "━━━" || trimmed.chars().all(|c| c == '─' || c == '━')
+        {
             out.push_str("━━━━━━━━━━\n");
             continue;
         }
@@ -132,7 +137,9 @@ fn format_inline(text: &str) -> String {
     // Italic: *text*  (bold already converted **..** to <b>..</b>, so only single * remain).
     // Byte-index splice on ASCII '*' — always lands on char boundaries, never panics on UTF-8.
     while let Some(start) = result.find('*') {
-        let Some(rel_end) = result[start + 1..].find('*') else { break };
+        let Some(rel_end) = result[start + 1..].find('*') else {
+            break;
+        };
         let end = start + 1 + rel_end;
         let inner = result[start + 1..end].to_string();
         result = format!("{}<i>{}</i>{}", &result[..start], inner, &result[end + 1..]);
@@ -143,7 +150,12 @@ fn format_inline(text: &str) -> String {
         if let Some(end) = result[start + 1..].find('`') {
             let end = start + 1 + end;
             let inner = result[start + 1..end].to_string();
-            result = format!("{}<code>{}</code>{}", &result[..start], inner, &result[end + 1..]);
+            result = format!(
+                "{}<code>{}</code>{}",
+                &result[..start],
+                inner,
+                &result[end + 1..]
+            );
         } else {
             break;
         }
@@ -248,19 +260,18 @@ pub fn mask_secrets(html: &str) -> String {
     // we do simple find-loops). For complex patterns we'd use the regex crate;
     // here a hand-rolled scanner suffices and keeps formatting.rs leaf.
     let prefixes = [
-        "sk-ant-", "sk-or-", "sk-",
-        "whsec_",
-        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
-        "xoxb-", "xoxp-",
+        "sk-ant-", "sk-or-", "sk-", "whsec_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xoxb-",
+        "xoxp-",
     ];
 
     for prefix in prefixes {
         while let Some(start) = out.find(prefix) {
             // Don't double-wrap if already inside a spoiler
             let before = &out[..start];
-            if before.rfind("<tg-spoiler>").is_some_and(|p| {
-                before[p..].find("</tg-spoiler>").is_none()
-            }) {
+            if before
+                .rfind("<tg-spoiler>")
+                .is_some_and(|p| before[p..].find("</tg-spoiler>").is_none())
+            {
                 break;
             }
             // Token = prefix + run of [A-Za-z0-9_\-]
@@ -270,7 +281,9 @@ pub fn mask_secrets(html: &str) -> String {
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
                 .map(|c| c.len_utf8())
                 .sum();
-            if token_len == 0 { break; }
+            if token_len == 0 {
+                break;
+            }
             let end = start + prefix.len() + token_len;
             let secret = &out[start..end];
             let wrapped = format!("<tg-spoiler>{}</tg-spoiler>", secret);
@@ -287,7 +300,9 @@ pub fn mask_secrets(html: &str) -> String {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '.')
             .map(|c| c.len_utf8())
             .sum();
-        if token_len < 8 { break; }
+        if token_len < 8 {
+            break;
+        }
         let token_end = token_start + token_len;
         let secret = &out[token_start..token_end].to_string();
         let wrapped = format!("Bearer <tg-spoiler>{}</tg-spoiler>", secret);
@@ -319,7 +334,9 @@ pub fn smart_markdown_to_html(md: &str) -> String {
             let mut j = i + 1;
             while j < lines.len() {
                 let t = lines[j].trim();
-                if t.starts_with("## ") || t.starts_with("### ") { break; }
+                if t.starts_with("## ") || t.starts_with("### ") {
+                    break;
+                }
                 body.push(lines[j]);
                 j += 1;
             }
@@ -341,11 +358,7 @@ pub fn smart_markdown_to_html(md: &str) -> String {
             } else {
                 let _ = std::fmt::Write::write_fmt(
                     &mut out,
-                    format_args!(
-                        "<b>{}</b>\n{}\n",
-                        escape_html(heading_text),
-                        body_html,
-                    ),
+                    format_args!("<b>{}</b>\n{}\n", escape_html(heading_text), body_html,),
                 );
             }
             i = j;
@@ -488,7 +501,9 @@ pub fn scrub_internal_context(text: &str) -> String {
         let close_pat = format!("</{}>", close);
         loop {
             let lower = out.to_lowercase();
-            let Some(start) = lower.find(&open_pat) else { break };
+            let Some(start) = lower.find(&open_pat) else {
+                break;
+            };
             let Some(rel_end) = lower[start + open_pat.len()..].find(&close_pat) else {
                 // Unclosed fence — drop everything from the opener to EOF
                 // rather than leak partial scratchpad.
@@ -528,7 +543,12 @@ pub fn thinking_progress(agent: &str, elapsed_s: f32) -> String {
 /// Format a blockquote card with title and body (AISB report style).
 pub fn blockquote_card(title: &str, body: &str) -> String {
     let mut out = String::new();
-    let _ = write!(out, "<blockquote><b>{}</b>\n{}</blockquote>", escape_html(title), escape_html(body));
+    let _ = write!(
+        out,
+        "<blockquote><b>{}</b>\n{}</blockquote>",
+        escape_html(title),
+        escape_html(body)
+    );
     out
 }
 
@@ -577,7 +597,12 @@ pub fn format_oracle_report(project: &str, status: &str, body: &str) -> String {
         "PENDING" => "🟡",
         _ => "📋",
     };
-    let header = format!("{} <b>{}</b> — {}", status_icon, escape_html(project), escape_html(status));
+    let header = format!(
+        "{} <b>{}</b> — {}",
+        status_icon,
+        escape_html(project),
+        escape_html(status)
+    );
     let formatted_body = markdown_to_telegram_html(body);
     format!("{}\n━━━━━━━━━━\n{}", header, formatted_body)
 }
@@ -586,7 +611,11 @@ pub fn format_oracle_report(project: &str, status: &str, body: &str) -> String {
 pub fn format_audit_scores(scores: &[(&str, f32, f32)]) -> String {
     let mut out = String::from("<b>Quality Arsenal Scores</b>\n━━━━━━━━━━\n");
     for (name, score, max) in scores {
-        let pct = if *max > 0.0 { (score / max) * 100.0 } else { 0.0 };
+        let pct = if *max > 0.0 {
+            (score / max) * 100.0
+        } else {
+            0.0
+        };
         let icon = if pct >= 80.0 {
             "🟢"
         } else if pct >= 50.0 {
@@ -670,7 +699,10 @@ mod tests {
 
     #[test]
     fn escape_html_chars() {
-        assert_eq!(escape_html("<b>&\"test\"</b>"), "&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;");
+        assert_eq!(
+            escape_html("<b>&\"test\"</b>"),
+            "&lt;b&gt;&amp;&quot;test&quot;&lt;/b&gt;"
+        );
     }
 
     #[test]
@@ -767,10 +799,7 @@ mod tests {
 
     #[test]
     fn format_audit_scores_display() {
-        let scores = vec![
-            ("Code", 336.0_f32, 420.0_f32),
-            ("Debug", 100.0, 360.0),
-        ];
+        let scores = vec![("Code", 336.0_f32, 420.0_f32), ("Debug", 100.0, 360.0)];
         let output = format_audit_scores(&scores);
         assert!(output.contains("🟢")); // 336/420 = 80%
         assert!(output.contains("🔴")); // 100/360 = 27.8%
@@ -806,12 +835,21 @@ mod tests {
         let input = "<b>La cible</b> — c'est surtout le *visuel* (une page qu'on regarde), \
                      surtout le *système* (l'archi d'orchestration), ou *les deux* \
                      (alors je découpe en sous-projets séquentiels) ?";
-            let html = markdown_to_telegram_html(input);
-            assert!(html.contains("<i>visuel</i>"), "italic should wrap 'visuel'");
-            assert!(html.contains("<i>système</i>"), "italic should wrap 'système'");
-            assert!(html.contains("<i>les deux</i>"), "italic should wrap 'les deux'");
-            assert!(html.contains("système"), "accented chars must survive");
-            assert!(html.contains("séquentiels"), "accented chars must survive");
+        let html = markdown_to_telegram_html(input);
+        assert!(
+            html.contains("<i>visuel</i>"),
+            "italic should wrap 'visuel'"
+        );
+        assert!(
+            html.contains("<i>système</i>"),
+            "italic should wrap 'système'"
+        );
+        assert!(
+            html.contains("<i>les deux</i>"),
+            "italic should wrap 'les deux'"
+        );
+        assert!(html.contains("système"), "accented chars must survive");
+        assert!(html.contains("séquentiels"), "accented chars must survive");
     }
 
     #[test]

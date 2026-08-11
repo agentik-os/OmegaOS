@@ -207,18 +207,17 @@ postinstall/lifecycle-script extractor, `cyclonedx`/`syft` (SBOM), `pip-audit` (
 Output is written to:
 
 ```
-$PROJECT_PATH/.dep/
+$PROJECT_PATH/audits/.depaudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.dep/` for cross-audit reference (see 0.5).
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.depaudit/` for cross-audit reference (see 0.5).
 
-> If `audit-runner.sh` lacks a `dep` target on this host, fall back to running the
-> per-ecosystem commands above directly, write their normalized output to
-> `$PROJECT_PATH/.dep/evidence-summary.json` yourself (schema in 0.2), and note the
-> fallback in `tools_skipped[]`. Never skip the gather — degrade it.
+> The canonical runner accepts every registry audit. If no dependency-specific
+> gatherer is installed, it emits an explicit `llm-only` evidence envelope at
+> `$PROJECT_PATH/audits/.depaudit/evidence-summary.json`; never write a second root.
 
 ### 0.2 evidence-summary.json schema
 
@@ -274,7 +273,7 @@ You MAY still:
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
 If this audit runs in a Linear-fix mission, sibling summaries are at
-`$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`. Read them.
+`$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`. Read them.
 
 High-value confluences:
 - **depaudit + secaudit** flag the same package → depaudit confirms it's *present*, secaudit confirms it's *exploitable* → CRITICAL, joint fix (the version bump closes both).
@@ -885,7 +884,7 @@ Write `cross_audit_links[]` in `verdict.json`.
   "edge_cases": [ /* H1.4 */ ],
   "cross_audit_links": [ /* H1.5 */ ],
   "sbom_path": "audits/.depaudit/sbom/sbom.cyclonedx.json",
-  "evidence_summary_path": "$PROJECT_PATH/.dep/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.depaudit/evidence-summary.json",
   "confidence_basis": "Why I'm confident: Popper test counts, hinge scrutiny depth, reproducibility proof, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)"
 }
@@ -1119,7 +1118,7 @@ THE QUALITY ARSENAL (supply-chain seat):
 This audit implements `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — hinge point, falsification, evidence chain, adversarial framing
-- ✅ **Concurrency lock** — `audits/.depaudit/.lock` (4h stale timeout, released on EXIT trap)
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.depaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit bounded at 5; on cap → NEEDS_REVIEW + Telegram SOS
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (FULL depth per focus; rule 46 — no `--quick`/`--streamlined`/`--lightweight`)
 - ✅ **Non-UI context gate** — runs on any target (web, API, CLI, library, binary). Phase 12/13 mark N/A and renormalize when not applicable; never fabricate findings.

@@ -199,7 +199,7 @@ Format: `{"total": 31, "done": 9, "failed": 1, "skipped": 2, "remaining": 19, "c
   --ticket="$TICKET_ID"
 ```
 
-If no release-specific gather exists yet, gather these deterministically and write `$PROJECT_PATH/.release/evidence-summary.json`:
+If no release-specific gather exists yet, gather these deterministically and write `$PROJECT_PATH/audits/.releaseaudit/evidence-summary.json`:
 
 ```
 - CI config inventory: .github/workflows/*.yml, .gitlab-ci.yml, circle/, Jenkinsfile, .buildkite/
@@ -228,7 +228,7 @@ You MAY still: read SPECIFIC files cited in findings; run a SPECIFIC command to 
 ### 0.4 Cross-audit synthesis (read sibling summaries)
 
 If part of a Linear-fix mission, sibling summaries are at
-`$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`.
+`$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`.
 High-value confluences:
 - **releaseaudit + secaudit** flag the same pipeline secret → confidence escalation (a leaked deploy token is both a release risk and a security breach).
 - **releaseaudit + dataaudit** flag the same migration → schema change is both a release-safety risk and a data-integrity risk.
@@ -950,7 +950,7 @@ Re-read sibling summaries (Phase 0.4). For each top-5 finding, check if the same
   ],
   "edge_cases": [ ],              // H1.4
   "cross_audit_links": [ ],       // H1.5
-  "evidence_summary_path": "$PROJECT_PATH/.release/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.releaseaudit/evidence-summary.json",
   "reversibility_assertion": "Can this release be rolled back in one command, including schema? YES/NO + evidence",
   "confidence_basis": "Why I'm confident. Cite Popper test counts, hinge depth, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)",
@@ -1102,7 +1102,7 @@ THE QUALITY ARSENAL:
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — release hinge point, falsification, evidence chain, adversarial framing
-- ✅ **Concurrency lock** — `audits/.releaseaudit/.lock` with 4h stale timeout, released on EXIT trap
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.releaseaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit loop bounded at 5 iterations. On cap: NEEDS_REVIEW + SOS.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=`
 - ✅ **Non-UI context gate** — runs on any shippable target; phases scope per target type; N/A phases excluded from denominator

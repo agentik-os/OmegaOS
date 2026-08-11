@@ -1,6 +1,7 @@
 ---
 name: relationship-network-os
-description: Help build, protect and deepen valuable human relationships through attention, memory, generous relevance, follow-through, boundaries, communication and thoughtful introductions. Contains 12 specialist agents, 18 skills, 7 protocols and 6 schemas. Use for relationship tracking, follow-up planning, introduction crafting, boundary setting, or network stewardship. Trigger words: relationship, network, follow up, introduction, boundaries, relationship memory; FR: relation, reseau, suivi de contact, introduction, limites, memoire relationnelle.
+description: >
+  Help build, protect and deepen valuable human relationships through attention, memory, generous relevance, follow-through, boundaries, communication and thoughtful introductions. Contains 12 specialist agents, 18 skills, 7 protocols and 6 schemas. Use for relationship tracking, follow-up planning, introduction crafting, boundary setting, or network stewardship. Trigger words: relationship, network, follow up, introduction, boundaries, relationship memory; FR: relation, reseau, suivi de contact, introduction, limites, memoire relationnelle.
 ---
 
 # Relationship & Network {OS}

@@ -1,6 +1,7 @@
 ---
 name: review-governance-os
-description: Turn actions, incidents, metrics and decisions into honest learning, controlled change, explicit policy and continuously improved personal and professional systems. Omega Core function that closes learning loops and governs consequential change across all other OSs (approval authority referenced by Revenue OS for boundary/schema/quality-gate changes). Contains 13 specialist agents, 20 skills, 7 protocols and 7 schemas. Use for incident review, postmortems, policy changes, retrospectives, or governance approval of a consequential change. Trigger words: review, governance, incident, postmortem, policy, retrospective, approval; FR: revue, gouvernance, incident, retour d'experience, politique, retrospective, approbation.
+description: >
+  Turn actions, incidents, metrics and decisions into honest learning, controlled change, explicit policy and continuously improved personal and professional systems. Omega Core function that closes learning loops and governs consequential change across all other OSs (approval authority referenced by Revenue OS for boundary/schema/quality-gate changes). Contains 13 specialist agents, 20 skills, 7 protocols and 7 schemas. Use for incident review, postmortems, policy changes, retrospectives, or governance approval of a consequential change. Trigger words: review, governance, incident, postmortem, policy, retrospective, approval; FR: revue, gouvernance, incident, retour d'experience, politique, retrospective, approbation.
 ---
 
 # Review & Governance {OS}

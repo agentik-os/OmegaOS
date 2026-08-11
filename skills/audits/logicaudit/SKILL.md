@@ -100,6 +100,10 @@ EXAMPLES:
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh logic "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>"` (plus `--ticket` and `--url` together when ticket-scoped). A non-zero exit is an audit failure. Read the emitted `audits/.logicaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`.
+
 ## OUTPUT CONTRACT
 
 ```
@@ -152,17 +156,8 @@ SESSION_ID="logicaudit-$(date +%Y%m%d-%H%M%S)"
 mkdir -p audits/.logicaudit/{discovery,reports,graphs,evidence}
 echo "AUDIT STARTED: $(date -Iseconds)" > audits/.logicaudit/session.log
 
-# CONCURRENCY LOCK (preamble §3)
-LOCKFILE="audits/.logicaudit/.lock"
-if [ -f "$LOCKFILE" ]; then
-  LOCK_AGE=$(($(date +%s) - $(stat -c %Y "$LOCKFILE" 2>/dev/null || echo 0)))
-  if [ $LOCK_AGE -lt 14400 ]; then
-    echo "ABORT: another /logicaudit holds $LOCKFILE (age ${LOCK_AGE}s)"
-    exit 1
-  fi
-fi
-echo $$ > "$LOCKFILE"
-trap "rm -f $LOCKFILE" EXIT
+# The canonical runner gate above already acquired `.runner.lock` with `flock`.
+# Do not create or reclaim a second PID-file lock here.
 
 # COMPLEXITY CENSUS
 echo "=== COMPLEXITY CENSUS ===" > audits/.logicaudit/discovery/complexity-census.md
@@ -905,7 +900,7 @@ For every file this audit touches (moves, modifies, deletes), you MUST:
 ### Quality Arsenal Preamble Compliance
 
 - ✅ **Gestalt-Popper doctrine** — hinge logic, falsification with measurements, evidence chain
-- ✅ **Concurrency lock** — `audits/.logicaudit/.lock` with 4h stale timeout
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.logicaudit/.runner.lock`
 - ✅ **5-iteration cap** — fix-and-reaudit bounded
 - ✅ **Scoped invocation flags** — `--files=`, `--scope=`, `--focus=`, `--no-fix`
 - ✅ **Non-UI context gate** — runs on ALL project types (logic is universal)

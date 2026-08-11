@@ -185,13 +185,13 @@ classifier, retention-job detector (cron/TTL/cleanup scan), `.env` + transport (
 Output:
 
 ```
-$PROJECT_PATH/.privacy/
+$PROJECT_PATH/audits/.privacyaudit/
 ├── raw/                    # raw tool outputs (JSON / text per tool)
 └── evidence-summary.json   # normalized findings, single source of truth for the LLM
 ```
 
 When run inside a Linear-fix mission (`--ticket=ID`), artifacts move to
-`$PROJECT_PATH/.linear-fix/<ID>/.privacy/` so sibling audits can cross-reference (see 0.5).
+`$PROJECT_PATH/audits/.linear-fix/<ID>/.privacyaudit/` so sibling audits can cross-reference (see 0.5).
 
 ### 0.2 evidence-summary.json schema
 
@@ -243,7 +243,7 @@ You MAY still:
 ### 0.5 Cross-audit synthesis (read sibling evidence-summary.json files)
 
 If part of a Linear-fix mission, sibling summaries are at
-`$PROJECT_PATH/.linear-fix/<TICKET>/.<other-audit>/evidence-summary.json`. Read them. Use them.
+`$PROJECT_PATH/audits/.linear-fix/<TICKET>/.<other-audit-id>/evidence-summary.json`. Read them. Use them.
 
 High-value privacy confluences:
 - **privacyaudit + secaudit** flag the same PII column → it's BOTH unencrypted (privacy) AND a breach target (security). Escalate.
@@ -796,7 +796,7 @@ Re-read sibling summaries (Phase 0.5). For each of YOUR top-5: same file/field f
   ],
   "edge_cases": [ ],                      // H1.4
   "cross_audit_links": [ ],              // H1.5
-  "evidence_summary_path": "$PROJECT_PATH/.privacy/evidence-summary.json",
+  "evidence_summary_path": "$PROJECT_PATH/audits/.privacyaudit/evidence-summary.json",
   "confidence_basis": "Cite Popper test counts, hinge scrutiny depth, edge-case coverage, cross-audit confirmations.",
   "banned_phrase_check": "passed (no `looks correct`, `should be fine`, `appears to work`, `streamlined`, `to save time`)"
 }
@@ -971,7 +971,7 @@ THE QUALITY ARSENAL (where privacy sits):
 This audit implements contracts defined in `../_shared/QUALITY-ARSENAL-PREAMBLE.md` v1.0:
 
 - ✅ **Gestalt-Popper doctrine** — HINGE DATA FLOW (10× scrutiny), falsification per finding, evidence chain, adversarial framing.
-- ✅ **Concurrency lock** — `audits/.privacyaudit/.lock` with 4h stale timeout, released on EXIT trap.
+- ✅ **Concurrency lock** — canonical runner `flock` at `audits/.privacyaudit/.runner.lock`.
 - ✅ **5-iteration cap** — fix-and-reaudit bounded at 5; on cap → NEEDS_REVIEW + Telegram SOS. No silent infinite loops.
 - ✅ **Scoped invocation flags** — `--url=`, `--files=`, `--scope=`, `--ticket=`, `--no-fix`, `--focus=` (consent | erasure | sharing | cookies | encryption | minimization | policy | dsar).
 - ✅ **Non-UI context gate** — runs on web, API, backend, or data-only targets; cookie/tracking phases (6) auto-skip + excluded from denominator on headless/API-only targets.

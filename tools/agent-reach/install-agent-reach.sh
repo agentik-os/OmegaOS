@@ -109,13 +109,54 @@ SKILL_SRC="$SRC/agent_reach/skill"
 SKILL_DST="$OMEGA_DIR/skills/agent-reach"
 if [[ -d "$SKILL_SRC" ]]; then
     mkdir -p "$SKILL_DST"
+    SKILL_INPUT=""
     if [[ -f "$SKILL_SRC/SKILL_en.md" ]]; then
-        cp "$SKILL_SRC/SKILL_en.md" "$SKILL_DST/SKILL.md"
+        SKILL_INPUT="$SKILL_SRC/SKILL_en.md"
     elif [[ -f "$SKILL_SRC/SKILL.md" ]]; then
-        cp "$SKILL_SRC/SKILL.md" "$SKILL_DST/SKILL.md"
+        SKILL_INPUT="$SKILL_SRC/SKILL.md"
+    fi
+    if [[ -n "$SKILL_INPUT" ]]; then
+        # Upstream's OpenClaw-specific nested `metadata` mapping is outside the
+        # deliberately bounded OmegaOS skill schema. Keep the complete skill
+        # body and supported scalar frontmatter, but remove that foreign block
+        # before publishing into the canonical skill store. Publish atomically
+        # so `omega sync` can never observe a half-written protocol.
+        SKILL_TMP="$(mktemp "$SKILL_DST/.SKILL.md.XXXXXX")" || {
+            warn "could not create a private skill staging file — registration skipped"
+            SKILL_TMP=""
+        }
+        if [[ -n "$SKILL_TMP" ]]; then
+            if awk '
+                NR == 1 && $0 == "---" { in_frontmatter = 1; print; next }
+                in_frontmatter && $0 == "---" {
+                    in_frontmatter = 0; skip_metadata = 0; print; next
+                }
+                in_frontmatter && /^[^[:space:]][^:]*:/ {
+                    if ($0 ~ /^metadata:[[:space:]]*$/) {
+                        skip_metadata = 1; next
+                    }
+                    skip_metadata = 0
+                }
+                in_frontmatter && skip_metadata { next }
+                { print }
+            ' "$SKILL_INPUT" > "$SKILL_TMP"; then
+                chmod 0644 "$SKILL_TMP"
+                mv -f "$SKILL_TMP" "$SKILL_DST/SKILL.md"
+            else
+                rm -f "$SKILL_TMP"
+                warn "could not normalize Agent Reach skill metadata — registration skipped"
+            fi
+        fi
     fi
     [[ -d "$SKILL_SRC/references" ]] && cp -r "$SKILL_SRC/references" "$SKILL_DST/" 2>/dev/null
-    info "skill registered → $SKILL_DST (run 'omega sync' to link it into agent config dirs)"
+    if [[ -f "$SKILL_DST/SKILL.md" ]] \
+       && "$INSTALL_DIR/omega" skills validate --root "$SKILL_DST" >/dev/null 2>&1; then
+        info "skill registered + schema-validated → $SKILL_DST (run 'omega sync' to link it into agent config dirs)"
+    else
+        rm -f "$SKILL_DST/SKILL.md"
+        warn "Agent Reach skill failed OmegaOS schema validation — tool kept, skill registration skipped"
+    fi
+    unset SKILL_INPUT SKILL_TMP
 fi
 
 # ── 5. Optional keys, from the vault only ────────────────────────────────────

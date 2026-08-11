@@ -27,7 +27,7 @@ pub enum Action {
     DispatchOracle(String, String),
     /// New-project wizard result: spawn a Claude session that runs
     /// `/omega-new-project <stack> <category> <name>` (provision + scaffold +
-    /// vision/PRD/planner). `category` is "works" | "client", `stack` a stack id.
+    /// vision/PRD/planner). `category` and `stack` come from the typed wizard registries.
     CreateProject {
         name: String,
         category: String,
@@ -39,13 +39,17 @@ pub enum Action {
     ProvisioningSetup,
     /// Commit the provisioning-keys wizard — (env_key, value) pairs; blanks are
     /// ignored by the writer (existing values preserved).
-    ProvisioningCommit { values: Vec<(String, String)> },
+    ProvisioningCommit {
+        values: Vec<(String, String)>,
+    },
     /// Start the Claude OAuth re-login engine (request_reauth) — captures the
     /// authorize URL and surfaces it in the Monitor → Account view.
     LoginClaude,
     /// Submit the OAuth authorize code (Monitor → Account) — runs handle_code
     /// against the waiting reauth session.
-    SubmitReauthCode { code: String },
+    SubmitReauthCode {
+        code: String,
+    },
     /// Refresh the AISB usage cache (runs the usage-monitor.sh script).
     RefreshBilling,
     /// Open the Telegram bot setup flow.
@@ -53,7 +57,10 @@ pub enum Action {
     /// Disconnect the currently active Omega Telegram bot.
     TelegramDisconnect,
     /// Rename a session (old, new).
-    RenameSession { old: String, new: String },
+    RenameSession {
+        old: String,
+        new: String,
+    },
     /// Commit a freshly-completed Telegram setup wizard.
     TelegramSetupCommit {
         bot_token: String,
@@ -61,7 +68,10 @@ pub enum Action {
         user_ids: Vec<i64>,
     },
     /// Run a shell command (Settings Install/Uninstall actions).
-    RunShellCommand { label: String, command: String },
+    RunShellCommand {
+        label: String,
+        command: String,
+    },
     /// Begin editing a settings text field (opens input modal pre-filled).
     EditSettingsField {
         config_key: String,
@@ -69,9 +79,14 @@ pub enum Action {
         masked: bool,
     },
     /// Toggle a boolean settings field.
-    ToggleSettingsBool { config_key: String },
+    ToggleSettingsBool {
+        config_key: String,
+    },
     /// Commit an edited settings text field (saves to providers.toml).
-    CommitSettingsEdit { config_key: String, value: String },
+    CommitSettingsEdit {
+        config_key: String,
+        value: String,
+    },
     /// Ctrl+L — force a full terminal clear + redraw.
     ForceRedraw,
     /// Menu → Restart OmegaOS: tear down the terminal and re-exec the
@@ -81,55 +96,93 @@ pub enum Action {
     /// session running `agent`, in the project's dir. Never re-attaches to an
     /// existing session — the Sessions tab already does that, and silently
     /// re-attaching is what made "open" feel broken.
-    OpenProject { name: String, path: String, agent: omega_core::agents::Agent },
+    OpenProject {
+        name: String,
+        path: String,
+        agent: omega_core::agents::Agent,
+    },
     /// Projects tab → Marketing lane: open the project's DEDICATED marketing
     /// session under the picked LLM agent. `cwd` is `<project>/marketing/`
     /// (created if missing); `prompt` is the scoped marketing-agent brief
     /// (marketing machine + R-MARKETING skills, product code off-limits).
-    OpenMarketingSession { name: String, cwd: String, prompt: String, agent: omega_core::agents::Agent },
+    OpenMarketingSession {
+        name: String,
+        cwd: String,
+        prompt: String,
+        agent: omega_core::agents::Agent,
+    },
     /// OS tab: open a Claude session scoped to the selected operative system's
     /// directory (`OS/<slug>/`) running its MASTER.md master agent — the same
     /// brain its Telegram bot gets.
-    OpenOsSession { name: String, cwd: String, prompt: String },
+    OpenOsSession {
+        name: String,
+        cwd: String,
+        prompt: String,
+    },
     /// OS tab: link a Telegram bot to the selected OS (T). Runs the
     /// interactive `omega-os-bot.sh <slug>` in a terminal session — the
     /// operator pastes the @BotFather token there; the bot's brain is the
     /// OS's master agent.
-    LinkOsBot { slug: String },
-    /// Projects tab: dispatch `omega planner` for the selected project.
-    RunPlannerForProject { name: String, path: String },
+    LinkOsBot {
+        slug: String,
+    },
+    /// Projects tab: open the canonical `/omg-planner` skill for the project.
+    RunPlannerForProject {
+        name: String,
+        path: String,
+    },
     /// Projects tab: register an existing folder into the project registry
     /// (reuses `project_manager::add_existing_project`).
-    RegisterProject { path: String },
+    RegisterProject {
+        path: String,
+    },
     /// Projects tab: remove a project from the registry (two-press confirmed).
     /// Delete a project at one of the three Telegram-parity tiers:
     /// mode = "omega" (unmanage), "local" (+ folder), "all" (+ GitHub repo).
     /// Runs the bot's one-shot CLI — the ONE canonical deletion impl.
-    DeleteProjectTier { name: String, mode: &'static str },
+    DeleteProjectTier {
+        name: String,
+        mode: &'static str,
+    },
     /// Projects tab: flip the selected project's Telegram toggle (topic sync +
     /// Atlas bot visibility). Writes `ManagedProject.telegram`; the next `/sync`
     /// reconciles the forum topic (creates when ON, removes when OFF).
-    ToggleProjectTelegram { name: String },
+    ToggleProjectTelegram {
+        name: String,
+    },
     /// Projects tab: "Delete forever" (two-press confirmed) — runs the canonical
     /// deletion (Telegram topic + dashboard agent + agent-bot + registry + the
     /// local folder) via the bot's one-shot CLI so there is ONE implementation.
     /// Monitor → Project group: persist the Telegram supergroup id
     /// (`TelegramGroupConfig`). The manual fallback to the bot's auto-detect.
-    GroupSetupCommit { group_id: i64 },
+    GroupSetupCommit {
+        group_id: i64,
+    },
     /// Real-time keystroke forwarding to a rmux session (preview interactive
     /// mode). One key per Action — printable chars, special keys, Ctrl-combos
     /// all route through this so plan-mode / OAuth / choice menus work.
-    ForwardCharToSession { session: String, ch: char },
-    ForwardKeyToSession { session: String, key: &'static str },
+    ForwardCharToSession {
+        session: String,
+        ch: char,
+    },
+    ForwardKeyToSession {
+        session: String,
+        key: &'static str,
+    },
     /// Multi-char paste forwarded as a single literal write to the session
     /// (used by handle_paste so the entire bracketed-paste block lands as
     /// one PTY write rather than N individual keystrokes).
-    SendTextRawToSession { session: String, text: String },
+    SendTextRawToSession {
+        session: String,
+        text: String,
+    },
     /// Insert a literal newline into the agent's input box WITHOUT submitting
     /// (Shift+Enter / Alt+Enter). Empirically, Claude Code treats a trailing
     /// backslash followed by Enter as a newline-insert, so the main loop emits
     /// a `\` text write then an Enter key.
-    InsertNewlineToSession { session: String },
+    InsertNewlineToSession {
+        session: String,
+    },
 }
 
 /// Enter on the Monitor → Account section. Context-aware re-login driver: when
@@ -168,10 +221,10 @@ pub fn handle_event(app: &mut App, event: Event) -> Action {
 }
 
 fn handle_mouse(app: &mut App, mouse: MouseEvent) -> Action {
-    // Modal guard: while the SelectModel picker overlay is open, mouse events
-    // must not leak to the screen beneath it (scroll/clicks were mutating the
-    // panels under the modal). The picker is keyboard-driven.
-    if matches!(app.input_mode, InputMode::SelectModel(..)) {
+    // Every non-Normal input mode paints a modal overlay. Until a modal grows
+    // an explicit mouse contract, swallow the event: clicks and wheel motion
+    // must never mutate the hidden screen underneath it.
+    if !matches!(app.input_mode, InputMode::Normal) {
         return Action::None;
     }
     match mouse.kind {
@@ -338,8 +391,11 @@ fn rect_hit(rect: Option<ratatui::layout::Rect>, column: u16, row: u16) -> bool 
 /// hardcoded `column >= 30`) scrolls the preview regardless of focus state.
 fn scroll_active_panel_at(app: &mut App, lines: u16, down: bool, column: u16, row: u16) {
     if app.tab == Tab::Sessions && rect_hit(app.sessions_preview_area, column, row) {
-        if down { app.scroll_preview_down(lines); }
-        else { app.scroll_preview_up(lines); }
+        if down {
+            app.scroll_preview_down(lines);
+        } else {
+            app.scroll_preview_up(lines);
+        }
         return;
     }
     scroll_active_panel(app, lines, down);
@@ -348,9 +404,15 @@ fn scroll_active_panel_at(app: &mut App, lines: u16, down: bool, column: u16, ro
 fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
     match app.tab {
         Tab::Sessions => {
-            if matches!(app.session_focus, SessionFocus::Chat | SessionFocus::ChatFullscreen) {
-                if down { app.scroll_preview_down(lines); }
-                else { app.scroll_preview_up(lines); }
+            if matches!(
+                app.session_focus,
+                SessionFocus::Chat | SessionFocus::ChatFullscreen
+            ) {
+                if down {
+                    app.scroll_preview_down(lines);
+                } else {
+                    app.scroll_preview_up(lines);
+                }
             } else {
                 // fix6-T6: scrolling the list moves the selection exactly like
                 // keyboard ↑/↓, so it must end the grace + Esc-Esc chord the
@@ -358,7 +420,11 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
                 // arm claiming the (alive) armed session is gone.
                 app.end_post_drop_grace();
                 for _ in 0..lines {
-                    if down { app.select_next(); } else { app.select_prev(); }
+                    if down {
+                        app.select_next();
+                    } else {
+                        app.select_prev();
+                    }
                 }
             }
         }
@@ -374,49 +440,91 @@ fn scroll_active_panel(app: &mut App, lines: u16, down: bool) {
         }
         Tab::Settings => {
             if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
+                if down {
+                    app.scroll_detail_down(lines);
+                } else {
+                    app.scroll_detail_up(lines);
+                }
             } else {
                 for _ in 0..lines {
-                    if down { app.settings_tab_next(); } else { app.settings_tab_prev(); }
+                    if down {
+                        app.settings_tab_next();
+                    } else {
+                        app.settings_tab_prev();
+                    }
                 }
             }
         }
         Tab::Projects => {
             if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
+                if down {
+                    app.scroll_detail_down(lines);
+                } else {
+                    app.scroll_detail_up(lines);
+                }
             } else {
                 for _ in 0..lines {
-                    if down { app.projects_tab_next(); } else { app.projects_tab_prev(); }
+                    if down {
+                        app.projects_tab_next();
+                    } else {
+                        app.projects_tab_prev();
+                    }
                 }
             }
         }
         Tab::Os => {
             if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
+                if down {
+                    app.scroll_detail_down(lines);
+                } else {
+                    app.scroll_detail_up(lines);
+                }
             } else {
                 for _ in 0..lines {
-                    if down { app.os_tab_next(); } else { app.os_tab_prev(); }
+                    if down {
+                        app.os_tab_next();
+                    } else {
+                        app.os_tab_prev();
+                    }
                 }
             }
         }
         Tab::System => {
             if app.detail_focused {
-                if down { app.scroll_detail_down(lines); }
-                else { app.scroll_detail_up(lines); }
+                if down {
+                    app.scroll_detail_down(lines);
+                } else {
+                    app.scroll_detail_up(lines);
+                }
             } else {
                 for _ in 0..lines {
-                    if down { app.select_info_next(); } else { app.select_info_prev(); }
+                    if down {
+                        app.select_info_next();
+                    } else {
+                        app.select_info_prev();
+                    }
                 }
             }
         }
         Tab::Help => {
-            if down { app.scroll_detail_down(lines); }
-            else { app.scroll_detail_up(lines); }
+            if down {
+                app.scroll_detail_down(lines);
+            } else {
+                app.scroll_detail_up(lines);
+            }
         }
     }
+}
+
+/// Tabs that share the list/detail focus contract. Keeping this predicate in
+/// one place prevents a new two-column screen from gaining a visible `Tab ->
+/// detail` hint without receiving the keyboard handlers that make it true.
+fn is_two_column_tab(tab: Tab) -> bool {
+    matches!(tab, Tab::Settings | Tab::Projects | Tab::System | Tab::Os)
+}
+
+fn uses_detail_scroll(tab: Tab) -> bool {
+    is_two_column_tab(tab) || tab == Tab::Help
 }
 
 fn handle_paste(app: &mut App, text: String) -> Action {
@@ -462,11 +570,7 @@ fn installed_agents() -> Vec<omega_core::agents::Agent> {
 /// The Marketing-lane open action: a session in `<project>/marketing/` running
 /// the project's DEDICATED marketing agent — marketing machine structure,
 /// R-MARKETING skill chain, zernio publishing, product code off-limits.
-fn marketing_open_action(
-    name: &str,
-    path: &str,
-    agent: omega_core::agents::Agent,
-) -> Action {
+fn marketing_open_action(name: &str, path: &str, agent: omega_core::agents::Agent) -> Action {
     let slug = std::path::Path::new(path)
         .file_name()
         .map(|n| n.to_string_lossy().to_lowercase())
@@ -497,7 +601,20 @@ pas au code produit.",
 }
 
 fn open_dispatch_picker(app: &mut App) {
-    let names = crate::app::dispatch_project_names();
+    if app.project_registry.poisoned {
+        app.input_mode = InputMode::Normal;
+        app.status_message = Some(
+            "Dispatch refused: project registry is invalid; repair projects.json first."
+                .to_string(),
+        );
+        return;
+    }
+    let names = app
+        .project_registry
+        .projects
+        .iter()
+        .map(|project| project.name.clone())
+        .collect::<Vec<_>>();
     if names.is_empty() {
         app.input_mode = InputMode::Normal;
         app.status_message = Some(
@@ -522,14 +639,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
         InputMode::Normal => handle_key_normal(app, key),
 
         // Direct-agent flow: type name → create + chat focus (NO prompt step)
-        InputMode::NewNamedSession(agent_name) => {
-            handle_key_input(app, key, move |app, name| {
-                let agent = omega_core::agents::Agent::from_name(&agent_name)
-                    .unwrap_or(omega_core::agents::Agent::Shell);
-                app.input_mode = InputMode::Normal;
-                Action::CreateSessionWithAgent { name, agent, prompt: None }
-            })
-        }
+        InputMode::NewNamedSession(agent_name) => handle_key_input(app, key, move |app, name| {
+            let agent = omega_core::agents::Agent::from_name(&agent_name)
+                .unwrap_or(omega_core::agents::Agent::Shell);
+            app.input_mode = InputMode::Normal;
+            Action::CreateSessionWithAgent {
+                name,
+                agent,
+                prompt: None,
+            }
+        }),
 
         // Direct-agent flow: step 2 — optional prompt (name may be empty = auto-generate)
         InputMode::NewSessionPromptDirect(name, agent_name) => {
@@ -539,19 +658,34 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 KeyCode::Esc => {
                     app.input_mode = InputMode::Normal;
                     if name.is_empty() {
-                        Action::CreateSessionAutoName { agent, prompt: None }
+                        Action::CreateSessionAutoName {
+                            agent,
+                            prompt: None,
+                        }
                     } else {
-                        Action::CreateSessionWithAgent { name, agent, prompt: None }
+                        Action::CreateSessionWithAgent {
+                            name,
+                            agent,
+                            prompt: None,
+                        }
                     }
                 }
                 KeyCode::Enter => {
                     let value = std::mem::take(&mut app.input_buffer);
-                    let prompt = if value.trim().is_empty() { None } else { Some(value) };
+                    let prompt = if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value)
+                    };
                     app.input_mode = InputMode::Normal;
                     if name.is_empty() {
                         Action::CreateSessionAutoName { agent, prompt }
                     } else {
-                        Action::CreateSessionWithAgent { name, agent, prompt }
+                        Action::CreateSessionWithAgent {
+                            name,
+                            agent,
+                            prompt,
+                        }
                     }
                 }
                 KeyCode::Backspace => {
@@ -617,7 +751,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }),
 
-        // New-project wizard — step 2: category picker (works/client)
+        // New-project wizard — step 2: category picker (customer/side-business/tools)
         InputMode::NewProjectCategory(name, sel) => {
             let count = crate::app::NEW_PROJECT_CATEGORIES.len();
             match key.code {
@@ -648,7 +782,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                             groups
                         ));
                     } else {
-                        app.new_project_cred_group = None; // works → shared/default creds
+                        app.new_project_cred_group = None; // non-customer → shared/default creds
                         app.input_mode = InputMode::NewProjectStack(name, category, 0);
                         app.status_message =
                             Some("↑/↓ stack — Enter to continue, Esc to cancel".to_string());
@@ -659,7 +793,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
         }
 
-        // New-project wizard — step 2b (client only): pick/create a credential group.
+        // New-project wizard — step 2b (customer projects only): pick/create a credential group.
         InputMode::NewProjectCredGroup(name, category) => match key.code {
             KeyCode::Esc => {
                 app.new_project_cred_group = Some("default".to_string());
@@ -670,7 +804,11 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             }
             KeyCode::Enter => {
                 let typed = app.input_buffer.trim().to_string();
-                let group = if typed.is_empty() { "default".to_string() } else { typed };
+                let group = if typed.is_empty() {
+                    "default".to_string()
+                } else {
+                    typed
+                };
                 let existing = group == "default"
                     || omega_core::provisioning::list_groups()
                         .iter()
@@ -805,21 +943,26 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             _ => Action::None,
         },
 
-        InputMode::RenameSession(old_name) => {
-            handle_key_input(app, key, move |app, new_name| {
-                app.input_mode = InputMode::Normal;
-                if new_name.trim() == old_name {
-                    app.status_message = Some("(no change)".to_string());
-                    return Action::None;
-                }
-                Action::RenameSession { old: old_name.clone(), new: new_name }
-            })
-        }
+        InputMode::RenameSession(old_name) => handle_key_input(app, key, move |app, new_name| {
+            app.input_mode = InputMode::Normal;
+            if new_name.trim() == old_name {
+                app.status_message = Some("(no change)".to_string());
+                return Action::None;
+            }
+            Action::RenameSession {
+                old: old_name.clone(),
+                new: new_name,
+            }
+        }),
 
         InputMode::SessionFilter => handle_key_input(app, key, |app, query| {
             app.input_mode = InputMode::Normal;
             let q = query.trim();
-            app.session_filter = if q.is_empty() { None } else { Some(q.to_string()) };
+            app.session_filter = if q.is_empty() {
+                None
+            } else {
+                Some(q.to_string())
+            };
             // Anchor to the top row: the dispatched Refresh re-anchors by the
             // NAME at this index, and the old selection may not survive the
             // new filter at all — row 0 is the predictable landing spot.
@@ -845,16 +988,16 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 let chat_id: i64 = match chat_id_str.trim().parse() {
                     Ok(n) => n,
                     Err(_) => {
-                        app.status_message = Some(
-                            format!("Invalid chat_id '{}' — must be numeric", chat_id_str),
-                        );
+                        app.status_message = Some(format!(
+                            "Invalid chat_id '{}' — must be numeric",
+                            chat_id_str
+                        ));
                         app.input_mode = InputMode::Normal;
                         return Action::None;
                     }
                 };
                 app.input_buffer = String::new();
-                app.input_mode =
-                    InputMode::TelegramSetupUserId(token.clone(), chat_id.to_string());
+                app.input_mode = InputMode::TelegramSetupUserId(token.clone(), chat_id.to_string());
                 app.status_message = Some(
                     "Step 3/3: ALLOWED user_id (or Esc to skip — chat_id-only filter)".to_string(),
                 );
@@ -893,8 +1036,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                 };
             };
             let oracle = |app: &mut App, name: String| {
-                app.status_message =
-                    Some(format!("Oracle {} — mission (Enter to dispatch, Esc)", name));
+                app.status_message = Some(format!(
+                    "Oracle {} — mission (Enter to dispatch, Esc)",
+                    name
+                ));
                 app.input_buffer = String::new();
                 app.input_mode = InputMode::DispatchMission(name);
             };
@@ -964,9 +1109,7 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                         path: path.clone(),
                         agent,
                     },
-                    ProjectLane::Marketing => {
-                        marketing_open_action(&name, &path, agent)
-                    }
+                    ProjectLane::Marketing => marketing_open_action(&name, &path, agent),
                 }
             };
             match key.code {
@@ -1027,16 +1170,40 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
                     Action::None
                 }
                 // Digit shortcuts mirror the Telegram buttons (1️⃣/2️⃣/3️⃣).
-                KeyCode::Char('1') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "omega" } }
-                KeyCode::Char('2') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "local" } }
-                KeyCode::Char('3') => { app.input_mode = InputMode::Normal; Action::DeleteProjectTier { name, mode: "all" } }
+                KeyCode::Char('1') => {
+                    app.input_mode = InputMode::Normal;
+                    Action::DeleteProjectTier {
+                        name,
+                        mode: "omega",
+                    }
+                }
+                KeyCode::Char('2') => {
+                    app.input_mode = InputMode::Normal;
+                    Action::DeleteProjectTier {
+                        name,
+                        mode: "local",
+                    }
+                }
+                KeyCode::Char('3') => {
+                    app.input_mode = InputMode::Normal;
+                    Action::DeleteProjectTier { name, mode: "all" }
+                }
                 KeyCode::Enter => {
                     app.input_mode = InputMode::Normal;
                     match sel {
-                        0 => Action::DeleteProjectTier { name, mode: "omega" },
-                        1 => Action::DeleteProjectTier { name, mode: "local" },
+                        0 => Action::DeleteProjectTier {
+                            name,
+                            mode: "omega",
+                        },
+                        1 => Action::DeleteProjectTier {
+                            name,
+                            mode: "local",
+                        },
                         2 => Action::DeleteProjectTier { name, mode: "all" },
-                        _ => { app.status_message = Some("Cancelled".to_string()); Action::None }
+                        _ => {
+                            app.status_message = Some("Cancelled".to_string());
+                            Action::None
+                        }
                     }
                 }
                 _ => Action::None,
@@ -1095,8 +1262,10 @@ fn handle_key(app: &mut App, key: KeyEvent) -> Action {
             match value.trim().parse::<i64>() {
                 Ok(group_id) => Action::GroupSetupCommit { group_id },
                 Err(_) => {
-                    app.status_message =
-                        Some(format!("Invalid group_id '{}' — must be a numeric id", value.trim()));
+                    app.status_message = Some(format!(
+                        "Invalid group_id '{}' — must be a numeric id",
+                        value.trim()
+                    ));
                     Action::None
                 }
             }
@@ -1265,7 +1434,11 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     // keystream at whatever slid into the selection.
                     return grace_swallow_notice(
                         app,
-                        if key.code == KeyCode::Enter { "Enter" } else { "Tab" },
+                        if key.code == KeyCode::Enter {
+                            "Enter"
+                        } else {
+                            "Tab"
+                        },
                     );
                 }
                 KeyCode::Char(c) => {
@@ -1319,7 +1492,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     SessionFocus::Chat => "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Ctrl+X: close".to_string(),
                     SessionFocus::ChatFullscreen => "Session FULLSCREEN — Ctrl+X: close · Tab-Tab: show menu".to_string(),
                 });
-            } else if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            } else if is_two_column_tab(app.tab) {
                 // 2-column tabs: Tab toggles list↔detail, Tab-Tab → fullscreen
                 app.handle_tab_in_2col();
                 // When entering detail on the Settings group, snap cursor to the
@@ -1327,11 +1500,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 if app.tab == Tab::Settings && app.detail_focused && !app.settings_on_monitor() {
                     let section = app.selected_settings_section();
                     let providers = app.providers();
-                    let fields = crate::app::fields_for_section(
-                        section,
-                        &providers,
-                        &app.config,
-                    );
+                    let fields = crate::app::fields_for_section(section, &providers, &app.config);
                     if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
                         app.settings_field_selected = first;
                     }
@@ -1352,7 +1521,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
         // Scroll: depends on the active tab + focus. PageUp/PageDown super-
         // scroll a FULL page of the preview (Termius swipe rips through fast).
         KeyCode::PageDown => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if uses_detail_scroll(app.tab) {
                 app.scroll_detail_down(10);
             } else {
                 app.scroll_preview_down(app.preview_inner_height.max(10));
@@ -1360,7 +1529,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::PageUp => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if uses_detail_scroll(app.tab) {
                 app.scroll_detail_up(10);
             } else {
                 app.scroll_preview_up(app.preview_inner_height.max(10));
@@ -1368,7 +1537,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::Home => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if uses_detail_scroll(app.tab) {
                 app.detail_scroll = 0;
                 // Explicit scroll wins over the sub-cursor snap-back.
                 app.detail_follow_cursor = false;
@@ -1378,7 +1547,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             Action::None
         }
         KeyCode::End => {
-            if matches!(app.tab, Tab::Settings | Tab::Projects | Tab::System) {
+            if uses_detail_scroll(app.tab) {
                 // Jump to the renderer-published bound, not a huge sentinel:
                 // u16::MAX/2 scrolled the Paragraph ~32k lines past its
                 // content — an empty panel only Home could recover.
@@ -1415,7 +1584,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             // the Actions section) or scroll; Settings group → navigate fields.
             if app.tab == Tab::Settings && app.detail_focused {
                 if app.settings_on_monitor() {
-                    if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                    if matches!(
+                        app.selected_monitor_section(),
+                        crate::app::MonitorSection::Actions
+                    ) {
                         app.select_monitor_action_next();
                     } else {
                         app.scroll_detail_down(1);
@@ -1442,6 +1614,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 app.scroll_detail_down(1);
                 return Action::None;
             }
+            if app.tab == Tab::Os && app.detail_focused {
+                app.scroll_detail_down(1);
+                return Action::None;
+            }
             match app.tab {
                 Tab::Sessions => app.select_next(),
                 Tab::Menu => app.select_menu_next(),
@@ -1459,7 +1635,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             app.end_post_drop_grace();
             if app.tab == Tab::Settings && app.detail_focused {
                 if app.settings_on_monitor() {
-                    if matches!(app.selected_monitor_section(), crate::app::MonitorSection::Actions) {
+                    if matches!(
+                        app.selected_monitor_section(),
+                        crate::app::MonitorSection::Actions
+                    ) {
                         app.select_monitor_action_prev();
                     } else {
                         app.scroll_detail_up(1);
@@ -1481,6 +1660,10 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 return Action::None;
             }
             if app.tab == Tab::Projects && app.detail_focused {
+                app.scroll_detail_up(1);
+                return Action::None;
+            }
+            if app.tab == Tab::Os && app.detail_focused {
                 app.scroll_detail_up(1);
                 return Action::None;
             }
@@ -1519,18 +1702,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 // Once focused, Enter is forwarded to the rmux session below
                 // (interactive passthrough — see the SessionFocus::Chat branch
                 // earlier in this function).
-                if let Some(entry) = app.selected_session() {
-                    // Master + Telegram-not-yet-configured → Enter opens the
-                    // existing 3-step Telegram setup wizard instead of focusing
-                    // the (empty) live mirror. Reuses the canonical wizard;
-                    // commit auto-attaches the master so the user watches the
-                    // confirmation stream in (see TelegramSetupCommit handler).
-                    if app.session_focus == SessionFocus::List
-                        && omega_core::aisb::is_master(&entry.session.name)
-                        && !omega_core::monitor::OmegaTelegramConfig::exists()
-                    {
-                        return Action::TelegramSetup;
-                    }
+                if app.selected_session().is_some() {
                     if app.session_focus == SessionFocus::List {
                         // Canonical focus path (chord reset + follow tail,
                         // FIX-4) — same as the mouse click.
@@ -1560,7 +1732,8 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     if !app.settings_on_monitor() {
                         let section = app.selected_settings_section();
                         let providers = app.providers();
-                        let fields = crate::app::fields_for_section(section, &providers, &app.config);
+                        let fields =
+                            crate::app::fields_for_section(section, &providers, &app.config);
                         if let Some(first) = fields.iter().position(|f| f.is_actionable()) {
                             app.settings_field_selected = first;
                         }
@@ -1609,14 +1782,16 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                     // ── Settings group: activate the selected provider field. ──
                     let section = app.selected_settings_section();
                     let providers = app.providers();
-                    let fields = crate::app::fields_for_section(
-                        section,
-                        &providers,
-                        &app.config,
-                    );
-                    let idx = app.settings_field_selected.min(fields.len().saturating_sub(1));
+                    let fields = crate::app::fields_for_section(section, &providers, &app.config);
+                    let idx = app
+                        .settings_field_selected
+                        .min(fields.len().saturating_sub(1));
                     match fields.into_iter().nth(idx) {
-                        Some(crate::app::SettingsField::Action { label, command, confirm_first }) => {
+                        Some(crate::app::SettingsField::Action {
+                            label,
+                            command,
+                            confirm_first,
+                        }) => {
                             // Special: trigger Telegram wizard inline
                             if command == "__INTERNAL_TELEGRAM_SETUP__" {
                                 app.settings_confirm_pending = None;
@@ -1644,8 +1819,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                                         // First Enter → arm; the warning is
                                         // state-driven (armed_confirm_warning,
                                         // FIX-A) — no status duplicate (T9b).
-                                        app.settings_confirm_pending =
-                                            Some((idx, label.clone()));
+                                        app.settings_confirm_pending = Some((idx, label.clone()));
                                         Action::None
                                     }
                                 }
@@ -1654,14 +1828,32 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                                 Action::RunShellCommand { label, command }
                             }
                         }
-                        Some(crate::app::SettingsField::EditText { config_key, current_value, masked, .. }) => {
+                        Some(crate::app::SettingsField::EditText {
+                            config_key,
+                            current_value,
+                            masked,
+                            ..
+                        }) => {
                             app.settings_confirm_pending = None;
-                            Action::EditSettingsField { config_key, current: current_value, masked }
+                            Action::EditSettingsField {
+                                config_key,
+                                current: current_value,
+                                masked,
+                            }
                         }
-                        Some(crate::app::SettingsField::Select { config_key, options, current_index, .. }) => {
+                        Some(crate::app::SettingsField::Select {
+                            config_key,
+                            options,
+                            current_index,
+                            ..
+                        }) => {
                             // Open the arrow-key overlay (no typing).
                             app.settings_confirm_pending = None;
-                            app.input_mode = crate::app::InputMode::SelectModel(config_key, options, current_index);
+                            app.input_mode = crate::app::InputMode::SelectModel(
+                                config_key,
+                                options,
+                                current_index,
+                            );
                             Action::None
                         }
                         Some(crate::app::SettingsField::Toggle { config_key, .. }) => {
@@ -1681,8 +1873,7 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                         app.leave_tab();
                         app.tab = Tab::Os;
                         app.detail_focused = false;
-                        app.status_message =
-                            Some("AgentikOS suite — the OS tab".to_string());
+                        app.status_message = Some("AgentikOS suite — the OS tab".to_string());
                         Action::None
                     } else if app.project_registry.projects.is_empty() {
                         // Empty registry: Enter opens the same add-project modal
@@ -1736,10 +1927,22 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
                 Action::None
             }
             Tab::Os => {
-                // Enter opens a Claude session in the selected OS's directory
-                // running that OS's MASTER AGENT: the MASTER.md prompt every
-                // OS carries (same brain the Telegram bot gets via
-                // omega-os-bot). Fallback: the generic integrator prompt.
+                // Match every other two-column tab: the first Enter moves focus
+                // into the detail panel; only a deliberate second Enter opens
+                // the selected OS master prompt.
+                if !app.detail_focused {
+                    app.detail_focused = true;
+                    app.detail_scroll = 0;
+                    app.status_message = Some(
+                        "Focus: OS detail (up/down scroll, Enter opens master, Tab returns to list)"
+                            .to_string(),
+                    );
+                    return Action::None;
+                }
+
+                // Detail-focused Enter opens a session in the selected OS's
+                // directory with its MASTER.md prompt. Fallback: the generic
+                // integrator prompt.
                 match app.selected_os_entry() {
                     Some(e) => match e.path.clone() {
                         Some(path) if path.is_dir() => {
@@ -1784,27 +1987,39 @@ Statut actuel: {status}.",
         },
 
         // OS tab: 'T' → link a Telegram bot to the selected operative system.
-        KeyCode::Char('T') if app.tab == Tab::Os => {
-            match app.selected_os_entry() {
-                Some(e) => Action::LinkOsBot {
-                    slug: e.product.slug.to_string(),
-                },
-                None => {
-                    app.status_message = Some("No OS selected (F5 to load)".to_string());
-                    Action::None
-                }
+        KeyCode::Char('T') if app.tab == Tab::Os => match app.selected_os_entry() {
+            Some(e) => Action::LinkOsBot {
+                slug: e.product.slug.to_string(),
+            },
+            None => {
+                app.status_message = Some("No OS selected (F5 to load)".to_string());
+                Action::None
             }
-        }
+        },
 
         // Settings tab → Monitor group: letter shortcuts (only when the cursor
         // sits in the Monitor group, so they don't fire while editing providers).
-        KeyCode::Char('L') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::LoginClaude,
-        KeyCode::Char('T') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::TelegramSetup,
-        KeyCode::Char('P') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::ProvisioningSetup,
-        KeyCode::Char('D') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::TelegramDisconnect,
-        KeyCode::Char('B') if app.tab == Tab::Settings && app.settings_on_monitor() => Action::RefreshBilling,
-        KeyCode::Char('O') if app.tab == Tab::Settings && app.settings_on_monitor() => open_dashboard_action(app),
-        KeyCode::Char('U') if app.tab == Tab::Settings && app.settings_on_monitor() => execute_monitor_action(MonitorAction::UpdateOmega),
+        KeyCode::Char('L') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            Action::LoginClaude
+        }
+        KeyCode::Char('T') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            Action::TelegramSetup
+        }
+        KeyCode::Char('P') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            Action::ProvisioningSetup
+        }
+        KeyCode::Char('D') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            Action::TelegramDisconnect
+        }
+        KeyCode::Char('B') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            Action::RefreshBilling
+        }
+        KeyCode::Char('O') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            open_dashboard_action(app)
+        }
+        KeyCode::Char('U') if app.tab == Tab::Settings && app.settings_on_monitor() => {
+            execute_monitor_action(MonitorAction::UpdateOmega)
+        }
 
         // Projects tab: 'n' opens a guided "register existing folder" modal
         // (the in-TUI replacement for the `omega project add` CLI hint). For a
@@ -1812,8 +2027,10 @@ Statut actuel: {status}.",
         KeyCode::Char('n') if app.tab == Tab::Projects => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::AddProjectPath;
-            app.status_message =
-                Some("Add project — path to an existing folder (Enter to register, Esc to cancel)".to_string());
+            app.status_message = Some(
+                "Add project — path to an existing folder (Enter to register, Esc to cancel)"
+                    .to_string(),
+            );
             Action::None
         }
         // Settings group: 'x' clears the selected text field (e.g. unlink a saved
@@ -1825,21 +2042,28 @@ Statut actuel: {status}.",
             let section = app.selected_settings_section();
             let providers = app.providers();
             let fields = crate::app::fields_for_section(section, &providers, &app.config);
-            let idx = app.settings_field_selected.min(fields.len().saturating_sub(1));
+            let idx = app
+                .settings_field_selected
+                .min(fields.len().saturating_sub(1));
             match fields.into_iter().nth(idx) {
-                Some(crate::app::SettingsField::EditText { config_key, current_value, label, .. })
-                    if !current_value.is_empty() =>
-                {
+                Some(crate::app::SettingsField::EditText {
+                    config_key,
+                    current_value,
+                    label,
+                    ..
+                }) if !current_value.is_empty() => {
                     // fix6-T1: same pinned-identity confirm as the Enter arm.
                     match app.settings_confirm_pending.take() {
                         Some((aidx, alabel)) if aidx == idx && alabel == label => {
                             app.status_message = Some(format!("Cleared: {}", label.trim()));
-                            Action::CommitSettingsEdit { config_key, value: String::new() }
+                            Action::CommitSettingsEdit {
+                                config_key,
+                                value: String::new(),
+                            }
                         }
                         Some(_) => {
-                            app.status_message = Some(
-                                "Confirm cancelled — the settings list changed".to_string(),
-                            );
+                            app.status_message =
+                                Some("Confirm cancelled — the settings list changed".to_string());
                             Action::None
                         }
                         None => {
@@ -1883,7 +2107,10 @@ Statut actuel: {status}.",
                 Some(name) => {
                     if app.project_delete_pending.as_deref() == Some(name.as_str()) {
                         app.project_delete_pending = None;
-                        Action::DeleteProjectTier { name, mode: "local" }
+                        Action::DeleteProjectTier {
+                            name,
+                            mode: "local",
+                        }
                     } else {
                         // Arm — the warning renders state-driven via
                         // armed_confirm_warning (FIX-A/T9b).
@@ -1902,35 +2129,36 @@ Statut actuel: {status}.",
         KeyCode::Char('c') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("claude".to_string());
-            app.status_message = Some("Session name for new Claude (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new Claude (Enter, Esc to cancel)".to_string());
             Action::None
         }
         KeyCode::Char('o') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("codex".to_string());
-            app.status_message = Some("Session name for new Codex (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new Codex (Enter, Esc to cancel)".to_string());
             Action::None
         }
         KeyCode::Char('g') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("gemini".to_string());
-            app.status_message = Some("Session name for new Gemini (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new Gemini (Enter, Esc to cancel)".to_string());
             Action::None
         }
         // Projects tab: 'p' runs the planner for the selected project
         // (the global 'p' = new Pi session applies on every other tab).
-        KeyCode::Char('p') if app.tab == Tab::Projects => {
-            match app.selected_project() {
-                Some(p) => Action::RunPlannerForProject {
-                    name: p.name.clone(),
-                    path: p.path.to_string_lossy().to_string(),
-                },
-                None => {
-                    app.status_message = Some("No project selected".to_string());
-                    Action::None
-                }
+        KeyCode::Char('p') if app.tab == Tab::Projects => match app.selected_project() {
+            Some(p) => Action::RunPlannerForProject {
+                name: p.name.clone(),
+                path: p.path.to_string_lossy().to_string(),
+            },
+            None => {
+                app.status_message = Some("No project selected".to_string());
+                Action::None
             }
-        }
+        },
         KeyCode::Char('p') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("pi".to_string());
@@ -1940,13 +2168,15 @@ Statut actuel: {status}.",
         KeyCode::Char('G') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("glm".to_string());
-            app.status_message = Some("Session name for new GLM (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new GLM (Enter, Esc to cancel)".to_string());
             Action::None
         }
         KeyCode::Char('t') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("shell".to_string());
-            app.status_message = Some("Session name for new Terminal (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new Terminal (Enter, Esc to cancel)".to_string());
             Action::None
         }
         // 'h' is advertised in the Help/shortcut row as Hermes; wire it like
@@ -1954,7 +2184,8 @@ Statut actuel: {status}.",
         KeyCode::Char('h') => {
             app.input_buffer = String::new();
             app.input_mode = InputMode::NewNamedSession("hermes".to_string());
-            app.status_message = Some("Session name for new Hermes (Enter, Esc to cancel)".to_string());
+            app.status_message =
+                Some("Session name for new Hermes (Enter, Esc to cancel)".to_string());
             Action::None
         }
 
@@ -1965,8 +2196,10 @@ Statut actuel: {status}.",
                 Some(name) => {
                     app.input_buffer = String::new();
                     app.input_mode = InputMode::DispatchMission(name.clone());
-                    app.status_message =
-                        Some(format!("Dispatch to {} — type the mission (Enter to send)", name));
+                    app.status_message = Some(format!(
+                        "Dispatch to {} — type the mission (Enter to send)",
+                        name
+                    ));
                 }
                 None => open_dispatch_picker(app),
             }
@@ -1980,14 +2213,17 @@ Statut actuel: {status}.",
         // Kill — both lowercase x and uppercase X work. Sessions tab only:
         // the list isn't visible elsewhere, so don't kill a hidden selection
         // from another tab.
-        KeyCode::Char('x') | KeyCode::Char('X') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
+        KeyCode::Char('x') | KeyCode::Char('X')
+            if app.tab == Tab::Sessions && app.config.session_shortcuts =>
+        {
             // DESIGN-015: an in-flight 'x' right after a focus drop is
             // swallowed by the fix6-T2 intercept before this arm.
             if let Some(entry) = app.selected_session() {
                 if !entry.is_protected {
                     Action::KillSession(entry.session.name.clone())
                 } else {
-                    app.status_message = Some("Session is protected (press . to unlock)".to_string());
+                    app.status_message =
+                        Some("Session is protected (press . to unlock)".to_string());
                     Action::None
                 }
             } else {
@@ -1996,12 +2232,17 @@ Statut actuel: {status}.",
         }
 
         // Rename selected session (Sessions tab only)
-        KeyCode::Char('r') | KeyCode::Char('R') if app.tab == Tab::Sessions && app.config.session_shortcuts => {
+        KeyCode::Char('r') | KeyCode::Char('R')
+            if app.tab == Tab::Sessions && app.config.session_shortcuts =>
+        {
             if let Some(entry) = app.selected_session() {
                 let old = entry.session.name.clone();
                 app.input_buffer = old.clone();
                 app.input_mode = InputMode::RenameSession(old.clone());
-                app.status_message = Some(format!("Rename '{}' (Enter to confirm, Esc to cancel)", old));
+                app.status_message = Some(format!(
+                    "Rename '{}' (Enter to confirm, Esc to cancel)",
+                    old
+                ));
             } else {
                 app.status_message = Some("No session selected".to_string());
             }
@@ -2270,8 +2511,7 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         if app.selected_session().is_some_and(|e| e.is_protected) {
             // FIX-7/DESIGN-016: in chat focus '.' is forwarded to the PTY —
             // the unlock toggle only exists in list focus, so say so.
-            app.status_message =
-                Some("Session is protected (Tab, then . to unlock)".to_string());
+            app.status_message = Some("Session is protected (Tab, then . to unlock)".to_string());
             return Action::None;
         }
         app.set_list_focus();
@@ -2294,25 +2534,31 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
         _ => {}
     }
 
-    // Tab behavior (corrected per user):
-    //   Shift+Tab  → FORWARD to Claude — Claude Code uses Shift+Tab to
-    //                cycle modes (plan mode, bypass, accept-edits, …).
+    // Tab behavior:
+    //   Shift+Tab  → FORWARD to the focused agent session. Providers may use
+    //                this terminal key for their own mode cycling.
     //   Tab        → return to the session list (back out of chat focus).
     // crossterm delivers Shift+Tab as KeyCode::BackTab (and on some
     // terminals as Tab+SHIFT) — handle both, forward the rmux "BTab".
     if key.code == KeyCode::BackTab
         || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
     {
-        return Action::ForwardKeyToSession { session, key: "BTab" };
+        return Action::ForwardKeyToSession {
+            session,
+            key: "BTab",
+        };
     }
     if key.code == KeyCode::Tab {
         // Unified Tab behavior (same as from the list): single Tab navigates
         // list↔session, Tab-Tab toggles the left session menu (hide↔show).
-        // Shift+Tab (→ BTab for Claude mode-cycling) is handled above.
+        // Shift+Tab (forwarded as BTab) is handled above.
         app.handle_tab_in_sessions();
         app.status_message = Some(match app.session_focus {
             SessionFocus::List => "Session list — Tab: open · Tab-Tab: hide/show menu".to_string(),
-            SessionFocus::Chat => "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Tab-Tab: menu".to_string(),
+            SessionFocus::Chat => {
+                "In session — Shift+↑↓ read (pause) · End: back live · Tab: list · Tab-Tab: menu"
+                    .to_string()
+            }
             SessionFocus::ChatFullscreen => "Session FULLSCREEN — Tab-Tab: show menu".to_string(),
         });
         return Action::None;
@@ -2328,8 +2574,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     // survives a soft keyboard.
     if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) {
         match key.code {
-            KeyCode::Up => { app.scroll_preview_up(3); return Action::None; }
-            KeyCode::Down => { app.scroll_preview_down(3); return Action::None; }
+            KeyCode::Up => {
+                app.scroll_preview_up(3);
+                return Action::None;
+            }
+            KeyCode::Down => {
+                app.scroll_preview_down(3);
+                return Action::None;
+            }
             _ => {}
         }
     }
@@ -2337,8 +2589,14 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
     // Home / End = jump to the very top / bottom of the full scrollback.
     // (PageUp/PageDown super-scroll handled above.)
     match key.code {
-        KeyCode::Home => { app.scroll_preview_home(); return Action::None; }
-        KeyCode::End => { app.scroll_preview_end(); return Action::None; }
+        KeyCode::Home => {
+            app.scroll_preview_home();
+            return Action::None;
+        }
+        KeyCode::End => {
+            app.scroll_preview_end();
+            return Action::None;
+        }
         _ => {}
     }
 
@@ -2355,49 +2613,90 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
 
     match key.code {
         // (Tab + Shift+Tab handled earlier: Tab=back to list,
-        //  Shift+Tab=forward BTab to Claude for mode cycling.)
+        //  Shift+Tab=forward BTab to the focused agent session.)
 
         // Word-delete (readline conventions):
         //   Ctrl+W            → kill word back   (universal)
         //   Shift+Backspace   → kill word back   (tmux convention, what the user wants)
         //   Alt+Backspace     → kill word back   (macOS / readline)
         //   Ctrl+Backspace    → kill word back   (Windows convention)
-        KeyCode::Backspace if shift || alt || ctrl => {
-            Action::ForwardKeyToSession { session, key: "C-w" }
-        }
-        KeyCode::Backspace => Action::ForwardKeyToSession { session, key: "BSpace" },
+        KeyCode::Backspace if shift || alt || ctrl => Action::ForwardKeyToSession {
+            session,
+            key: "C-w",
+        },
+        KeyCode::Backspace => Action::ForwardKeyToSession {
+            session,
+            key: "BSpace",
+        },
         // Forward-delete word:
         //   Shift+Delete or Alt+Delete → kill word forward (M-d in readline)
-        KeyCode::Delete if shift || alt => {
-            Action::ForwardKeyToSession { session, key: "M-d" }
-        }
-        KeyCode::Delete => Action::ForwardKeyToSession { session, key: "Delete" },
+        KeyCode::Delete if shift || alt => Action::ForwardKeyToSession {
+            session,
+            key: "M-d",
+        },
+        KeyCode::Delete => Action::ForwardKeyToSession {
+            session,
+            key: "Delete",
+        },
         // Shift+Enter / Alt+Enter → insert a newline in the input (don't
         // submit), matching real Claude Code multi-line input. Plain Enter
         // still submits.
         KeyCode::Enter if shift || alt => Action::InsertNewlineToSession { session },
-        KeyCode::Enter => Action::ForwardKeyToSession { session, key: "Enter" },
+        KeyCode::Enter => Action::ForwardKeyToSession {
+            session,
+            key: "Enter",
+        },
         // Esc (plain or Alt) → literal ESC to the agent's PTY, ALWAYS.
         // Modal programs inside the session — vim, less, fzf, Claude's own
         // prompts and permission dialogs — need a real ESC, and swallowing it
         // TUI-side left the user stuck inside them. Leaving the session is
         // Tab (list) / Ctrl+X (close), so Esc never has to double as "back".
-        KeyCode::Esc => Action::ForwardKeyToSession { session, key: "Escape" },
+        KeyCode::Esc => Action::ForwardKeyToSession {
+            session,
+            key: "Escape",
+        },
         KeyCode::Up => Action::ForwardKeyToSession { session, key: "Up" },
-        KeyCode::Down => Action::ForwardKeyToSession { session, key: "Down" },
-        KeyCode::Left if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-b" },
-        KeyCode::Right if ctrl || alt => Action::ForwardKeyToSession { session, key: "M-f" },
-        KeyCode::Left => Action::ForwardKeyToSession { session, key: "Left" },
-        KeyCode::Right => Action::ForwardKeyToSession { session, key: "Right" },
+        KeyCode::Down => Action::ForwardKeyToSession {
+            session,
+            key: "Down",
+        },
+        KeyCode::Left if ctrl || alt => Action::ForwardKeyToSession {
+            session,
+            key: "M-b",
+        },
+        KeyCode::Right if ctrl || alt => Action::ForwardKeyToSession {
+            session,
+            key: "M-f",
+        },
+        KeyCode::Left => Action::ForwardKeyToSession {
+            session,
+            key: "Left",
+        },
+        KeyCode::Right => Action::ForwardKeyToSession {
+            session,
+            key: "Right",
+        },
         KeyCode::Insert => Action::ForwardKeyToSession { session, key: "IC" },
         KeyCode::F(n) if (1..=12).contains(&n) => {
             let key_str: &'static str = match n {
-                1 => "F1", 2 => "F2", 3 => "F3", 4 => "F4",
-                5 => "F5", 6 => "F6", 7 => "F7", 8 => "F8",
-                9 => "F9", 10 => "F10", 11 => "F11", 12 => "F12",
+                1 => "F1",
+                2 => "F2",
+                3 => "F3",
+                4 => "F4",
+                5 => "F5",
+                6 => "F6",
+                7 => "F7",
+                8 => "F8",
+                9 => "F9",
+                10 => "F10",
+                11 => "F11",
+                12 => "F12",
                 _ => return Action::None,
             };
-            Action::ForwardKeyToSession { session, key: key_str }
+            Action::ForwardKeyToSession {
+                session,
+                key: key_str,
+            }
         }
         KeyCode::Char(c) => {
             // Option+< / Option+> (readline beginning/end of buffer):
@@ -2407,10 +2706,16 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             if alt {
                 match c {
                     '<' | ',' if shift || c == '<' => {
-                        return Action::ForwardKeyToSession { session, key: "M-<" };
+                        return Action::ForwardKeyToSession {
+                            session,
+                            key: "M-<",
+                        };
                     }
                     '>' | '.' if shift || c == '>' => {
-                        return Action::ForwardKeyToSession { session, key: "M->" };
+                        return Action::ForwardKeyToSession {
+                            session,
+                            key: "M->",
+                        };
                     }
                     _ => {}
                 }
@@ -2422,10 +2727,9 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
                 let lower = c.to_ascii_lowercase();
                 if lower.is_ascii_lowercase() {
                     const META: [&str; 26] = [
-                        "M-a", "M-b", "M-c", "M-d", "M-e", "M-f", "M-g", "M-h",
-                        "M-i", "M-j", "M-k", "M-l", "M-m", "M-n", "M-o", "M-p",
-                        "M-q", "M-r", "M-s", "M-t", "M-u", "M-v", "M-w", "M-x",
-                        "M-y", "M-z",
+                        "M-a", "M-b", "M-c", "M-d", "M-e", "M-f", "M-g", "M-h", "M-i", "M-j",
+                        "M-k", "M-l", "M-m", "M-n", "M-o", "M-p", "M-q", "M-r", "M-s", "M-t",
+                        "M-u", "M-v", "M-w", "M-x", "M-y", "M-z",
                     ];
                     return Action::ForwardKeyToSession {
                         session,
@@ -2437,16 +2741,38 @@ fn handle_key_chat(app: &mut App, key: KeyEvent) -> Action {
             if ctrl {
                 let lower = c.to_ascii_lowercase();
                 let key_str: &'static str = match lower {
-                    'a' => "C-a", 'b' => "C-b", 'c' => "C-c", 'd' => "C-d",
-                    'e' => "C-e", 'f' => "C-f", 'g' => "C-g", 'h' => "C-h",
-                    'i' => "C-i", 'j' => "C-j", 'k' => "C-k", 'l' => "C-l",
-                    'm' => "C-m", 'n' => "C-n", 'o' => "C-o", 'p' => "C-p",
-                    'q' => "C-q", 'r' => "C-r", 's' => "C-s", 't' => "C-t",
-                    'u' => "C-u", 'v' => "C-v", 'w' => "C-w", 'x' => "C-x",
-                    'y' => "C-y", 'z' => "C-z",
+                    'a' => "C-a",
+                    'b' => "C-b",
+                    'c' => "C-c",
+                    'd' => "C-d",
+                    'e' => "C-e",
+                    'f' => "C-f",
+                    'g' => "C-g",
+                    'h' => "C-h",
+                    'i' => "C-i",
+                    'j' => "C-j",
+                    'k' => "C-k",
+                    'l' => "C-l",
+                    'm' => "C-m",
+                    'n' => "C-n",
+                    'o' => "C-o",
+                    'p' => "C-p",
+                    'q' => "C-q",
+                    'r' => "C-r",
+                    's' => "C-s",
+                    't' => "C-t",
+                    'u' => "C-u",
+                    'v' => "C-v",
+                    'w' => "C-w",
+                    'x' => "C-x",
+                    'y' => "C-y",
+                    'z' => "C-z",
                     _ => return Action::None,
                 };
-                Action::ForwardKeyToSession { session, key: key_str }
+                Action::ForwardKeyToSession {
+                    session,
+                    key: key_str,
+                }
             } else {
                 // Forward EVERY printable char to the agent — including a
                 // leading "/". We must NOT intercept "/" for OmegaOS command
@@ -2507,7 +2833,10 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
 
         if app.config.auto_naming {
             // Fire-and-attach: agent + auto-name + no prompt, then chat focus
-            return Action::CreateSessionAutoName { agent, prompt: None };
+            return Action::CreateSessionAutoName {
+                agent,
+                prompt: None,
+            };
         }
         // Auto-naming disabled → only ask for name (still no prompt step)
         app.input_buffer = String::new();
@@ -2538,7 +2867,11 @@ fn execute_menu_action(app: &mut App, action: MenuAction) -> Action {
                 app.status_message = Some(format!(
                     "{} {}",
                     entry.session.name,
-                    if entry.is_protected { "protected" } else { "unprotected" }
+                    if entry.is_protected {
+                        "protected"
+                    } else {
+                        "unprotected"
+                    }
                 ));
             }
             Action::None
@@ -2588,7 +2921,10 @@ fn provisioning_advance(
         Action::ProvisioningCommit { values }
     } else {
         app.input_buffer = String::new();
-        app.input_mode = InputMode::ProvisioningSetup { step: next, collected };
+        app.input_mode = InputMode::ProvisioningSetup {
+            step: next,
+            collected,
+        };
         app.status_message = Some(format!(
             "Step {}/{}: {}",
             next + 1,
@@ -2677,6 +3013,20 @@ mod tests {
         assert!(matches!(&app.input_mode, InputMode::DispatchMission(p) if p == "Beta"));
     }
 
+    #[test]
+    fn dispatch_picker_refuses_a_poisoned_project_registry() {
+        let mut app = test_app();
+        app.project_registry.poisoned = true;
+
+        open_dispatch_picker(&mut app);
+
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(app
+            .status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("project registry is invalid")));
+    }
+
     // The tab bar reads Sessions · Projects · OS · Menu · System · Help ·
     // Settings, and Right/Left walk it in that visual order. Locked down
     // because the order used to live in three hand-kept lists that drifted apart.
@@ -2694,7 +3044,11 @@ mod tests {
         // Right walks forward and wraps.
         let mut app = test_app();
         app.tab = Tab::Sessions;
-        for expected in Tab::ORDER.iter().skip(1).chain(std::iter::once(&Tab::Sessions)) {
+        for expected in Tab::ORDER
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(&Tab::Sessions))
+        {
             app.next_tab();
             assert_eq!(app.tab, *expected, "next_tab landed on the wrong tab");
         }
@@ -2734,13 +3088,21 @@ mod tests {
                 "{:?}+Up must stop the view chasing the tail",
                 modifier
             );
-            assert!(app.preview_scroll > 0, "{:?}+Up must move into history", modifier);
+            assert!(
+                app.preview_scroll > 0,
+                "{:?}+Up must move into history",
+                modifier
+            );
 
             // And back down to the tail re-glues to live.
             app.preview_max_scroll = 100;
             handle_key(&mut app, KeyEvent::new(KeyCode::Down, modifier));
             handle_key(&mut app, KeyEvent::new(KeyCode::Down, modifier));
-            assert!(app.preview_scroll < 6, "{:?}+Down must walk back toward live", modifier);
+            assert!(
+                app.preview_scroll < 6,
+                "{:?}+Down must walk back toward live",
+                modifier
+            );
         }
     }
 
@@ -2765,8 +3127,36 @@ mod tests {
             InfoSection::Skills,
             InfoSection::Docs,
         ] {
-            assert!(sections.contains(&required), "{:?} must be readable", required);
+            assert!(
+                sections.contains(&required),
+                "{:?} must be readable",
+                required
+            );
         }
+    }
+
+    #[test]
+    fn help_page_keys_scroll_the_help_document_not_the_session_preview() {
+        let mut app = test_app();
+        app.tab = Tab::Help;
+        app.detail_max_scroll = 100;
+        app.preview_scroll = 7;
+        app.preview_max_scroll = 200;
+
+        handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        );
+        assert_eq!(app.detail_scroll, 10);
+        assert_eq!(
+            app.preview_scroll, 7,
+            "Help keys must not mutate session preview state"
+        );
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 100);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 0);
     }
 
     // ↑/↓ walk the sections while the list has focus, and wrap both ways.
@@ -2789,7 +3179,10 @@ mod tests {
         handle_key(&mut app, up);
         assert_eq!(app.info_section_selected, last);
         handle_key(&mut app, down);
-        assert_eq!(app.info_section_selected, 0, "down from the last wraps home");
+        assert_eq!(
+            app.info_section_selected, 0,
+            "down from the last wraps home"
+        );
     }
 
     // With the detail focused, ↑/↓ belong to the section's own list (agents,
@@ -2808,13 +3201,23 @@ mod tests {
         let before = app.info_section_selected;
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.info_agent_selected, 1, "↑/↓ drive the agent list");
-        assert_eq!(app.info_section_selected, before, "and never the section list");
+        assert_eq!(
+            app.info_section_selected, before,
+            "and never the section list"
+        );
 
         handle_key(&mut app, press(']'));
-        assert_eq!(app.info_section_selected, before + 1, "] moves to the next section");
+        assert_eq!(
+            app.info_section_selected,
+            before + 1,
+            "] moves to the next section"
+        );
         handle_key(&mut app, press('['));
         assert_eq!(app.info_section_selected, before, "[ moves back");
-        assert_eq!(app.info_agent_selected, 0, "a section change resets the sub-cursor");
+        assert_eq!(
+            app.info_agent_selected, 0,
+            "a section change resets the sub-cursor"
+        );
     }
 
     // The Projects tab is projects and nothing else now — its cursor must walk
@@ -2863,7 +3266,10 @@ mod tests {
         let action = handle_key(&mut app, enter);
         assert!(matches!(action, Action::None));
         assert_eq!(app.tab, Tab::Os, "Enter on the pinned row opens the OS tab");
-        assert!(!app.detail_focused, "the jump does not leave detail focused");
+        assert!(
+            !app.detail_focused,
+            "the jump does not leave detail focused"
+        );
 
         // Index 1..=N are the projects, shifted one past the pinned row.
         let mut app = test_app();
@@ -2871,16 +3277,28 @@ mod tests {
         app.detail_focused = false;
         app.project_registry.projects = vec![mk("Alpha"), mk("Beta")];
         app.projects_selected = 1;
-        assert_eq!(app.selected_project().map(|p| p.name.as_str()), Some("Alpha"));
+        assert_eq!(
+            app.selected_project().map(|p| p.name.as_str()),
+            Some("Alpha")
+        );
         app.projects_selected = 2;
-        assert_eq!(app.selected_project().map(|p| p.name.as_str()), Some("Beta"));
+        assert_eq!(
+            app.selected_project().map(|p| p.name.as_str()),
+            Some("Beta")
+        );
 
         // Arrow-nav wraps across pinned + projects (count = N + 1 = 3).
         app.projects_selected = 2;
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        assert_eq!(app.projects_selected, 0, "Down past the last project wraps to the pinned row");
+        assert_eq!(
+            app.projects_selected, 0,
+            "Down past the last project wraps to the pinned row"
+        );
         handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
-        assert_eq!(app.projects_selected, 2, "Up from the pinned row wraps to the last project");
+        assert_eq!(
+            app.projects_selected, 2,
+            "Up from the pinned row wraps to the last project"
+        );
     }
 
     // Opening a project goes lane -> installed-agent -> action: the coding
@@ -2920,7 +3338,12 @@ mod tests {
             sel: 0,
         };
         match handle_key(&mut app, enter) {
-            Action::OpenMarketingSession { name, cwd, prompt, agent } => {
+            Action::OpenMarketingSession {
+                name,
+                cwd,
+                prompt,
+                agent,
+            } => {
                 assert_eq!(name, "mkt-verba");
                 assert_eq!(cwd, "/tmp/verba/marketing");
                 assert!(prompt.contains("MARKETING"));
@@ -2946,7 +3369,10 @@ mod tests {
         // Cancel row -> nothing opened.
         app.input_mode = InputMode::ProjectOpenLane("Verba".into(), "/tmp/verba".into(), 3);
         let action = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(action, Action::None), "Cancel must not open a session");
+        assert!(
+            matches!(action, Action::None),
+            "Cancel must not open a session"
+        );
         assert!(matches!(app.input_mode, InputMode::Normal));
 
         // Step 2 Esc -> back to the lane picker (not a hard cancel).
@@ -2978,8 +3404,7 @@ mod tests {
     #[test]
     fn dispatch_picker_wraps_at_edges() {
         let mut app = test_app();
-        app.input_mode =
-            InputMode::DispatchProject(vec!["A".into(), "B".into(), "C".into()], 0);
+        app.input_mode = InputMode::DispatchProject(vec!["A".into(), "B".into(), "C".into()], 0);
         let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
         handle_key(&mut app, up);
         assert!(
@@ -3035,7 +3460,10 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Sessions;
         app.session_focus = SessionFocus::Chat;
-        assert!(app.sessions.is_empty(), "precondition: no session to chat with");
+        assert!(
+            app.sessions.is_empty(),
+            "precondition: no session to chat with"
+        );
 
         let action = handle_key(&mut app, press('q'));
         assert!(
@@ -3106,13 +3534,20 @@ mod tests {
             &mut app,
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
         );
-        assert!(matches!(act, Action::None), "protected session must not die");
+        assert!(
+            matches!(act, Action::None),
+            "protected session must not die"
+        );
         assert_eq!(
             app.session_focus,
             SessionFocus::Chat,
             "nothing was killed — stay in chat"
         );
-        assert!(app.status_message.as_deref().unwrap_or("").contains("protected"));
+        assert!(app
+            .status_message
+            .as_deref()
+            .unwrap_or("")
+            .contains("protected"));
     }
 
     #[test]
@@ -3153,11 +3588,20 @@ mod tests {
         let mut app = test_app();
         app.tab = Tab::Sessions;
         app.session_focus = SessionFocus::Chat;
-        assert!(app.sessions.is_empty(), "precondition: focused session is gone");
+        assert!(
+            app.sessions.is_empty(),
+            "precondition: focused session is gone"
+        );
 
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "Esc must be swallowed, not quit");
-        assert!(!app.should_quit, "one Esc on a dead session must not quit the TUI");
+        assert!(
+            matches!(act, Action::None),
+            "Esc must be swallowed, not quit"
+        );
+        assert!(
+            !app.should_quit,
+            "one Esc on a dead session must not quit the TUI"
+        );
         assert_eq!(app.session_focus, SessionFocus::List);
     }
 
@@ -3178,20 +3622,28 @@ mod tests {
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(act, Action::None));
         assert_eq!(app.menu_confirm_pending, Some(MenuAction::KillAll));
-        assert!(app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM"));
+        assert!(app
+            .armed_confirm_warning()
+            .unwrap_or_default()
+            .contains("CONFIRM"));
 
         // The next keypress's TTL (runs BEFORE dispatch) can't touch the
         // state-driven warning.
         app.consume_status_ttl();
         assert!(
-            app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM"),
+            app.armed_confirm_warning()
+                .unwrap_or_default()
+                .contains("CONFIRM"),
             "TTL must not wipe the confirm warning while armed"
         );
 
         // Down (browse) keeps both state and indicator in lockstep.
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         app.consume_status_ttl();
-        let visible = app.armed_confirm_warning().unwrap_or_default().contains("CONFIRM");
+        let visible = app
+            .armed_confirm_warning()
+            .unwrap_or_default()
+            .contains("CONFIRM");
 
         // Enter on the OTHER row must not fire the armed mass-kill.
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -3277,12 +3729,18 @@ mod tests {
         assert!(matches!(act, Action::None), "in-flight 'x' must not kill");
         assert_eq!(app.session_focus, SessionFocus::List);
         let act = handle_key(&mut app, press('q'));
-        assert!(matches!(act, Action::None) && !app.should_quit, "in-flight 'q' must not quit");
+        assert!(
+            matches!(act, Action::None) && !app.should_quit,
+            "in-flight 'q' must not quit"
+        );
 
         // A navigation key ends the grace — deliberate hotkeys work again.
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let act = handle_key(&mut app, press('q'));
-        assert!(matches!(act, Action::Quit), "after navigation, q must quit again");
+        assert!(
+            matches!(act, Action::Quit),
+            "after navigation, q must quit again"
+        );
     }
 
     // DESIGN-015: the grace expires by time too (no navigation needed).
@@ -3291,8 +3749,8 @@ mod tests {
         let mut app = chat_app("oracle-Demo-1");
         vanish_drop(&mut app);
         // Backdate the drop beyond the 800ms window (FIX-D widened it).
-        app.focus_drop_at = std::time::Instant::now()
-            .checked_sub(std::time::Duration::from_millis(900));
+        app.focus_drop_at =
+            std::time::Instant::now().checked_sub(std::time::Duration::from_millis(900));
         let act = handle_key(&mut app, press('q'));
         assert!(matches!(act, Action::Quit), "expired grace must restore q");
     }
@@ -3309,7 +3767,10 @@ mod tests {
         // Enter → chat via the canonical path (must clear the chord).
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.session_focus, SessionFocus::Chat);
-        assert!(app.last_tab_press.is_none(), "Enter→chat must clear the chord");
+        assert!(
+            app.last_tab_press.is_none(),
+            "Enter→chat must clear the chord"
+        );
         // Tab right after → fresh first tap → List, NOT ChatFullscreen.
         handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(
@@ -3335,7 +3796,10 @@ mod tests {
             !app.detail_fullscreen,
             "a leaked Sessions chord must not fullscreen the 2col detail"
         );
-        assert!(app.detail_focused, "single Tab on a 2col tab focuses the detail");
+        assert!(
+            app.detail_focused,
+            "single Tab on a 2col tab focuses the detail"
+        );
     }
 
     // FIX-B (R-5): Esc must cancel EVERY armed two-press confirm. The
@@ -3359,22 +3823,34 @@ mod tests {
         app.detail_focused = true;
         app.settings_confirm_pending = Some((1, "[Uninstall] demo".into()));
         handle_key(&mut app, esc);
-        assert_eq!(app.settings_confirm_pending, None, "Esc must disarm settings confirm");
-        assert!(app.detail_focused, "the cancel CONSUMES the Esc — focus unchanged");
+        assert_eq!(
+            app.settings_confirm_pending, None,
+            "Esc must disarm settings confirm"
+        );
+        assert!(
+            app.detail_focused,
+            "the cancel CONSUMES the Esc — focus unchanged"
+        );
 
         // monitor_disconnect_armed (wired pre-fix5 — keep covered).
         let mut app = test_app();
         app.tab = Tab::Settings;
         app.monitor_disconnect_armed = true;
         handle_key(&mut app, esc);
-        assert!(!app.monitor_disconnect_armed, "Esc must disarm the disconnect");
+        assert!(
+            !app.monitor_disconnect_armed,
+            "Esc must disarm the disconnect"
+        );
 
         // menu_confirm_pending (KillAll).
         let mut app = test_app();
         app.tab = Tab::Menu;
         app.menu_confirm_pending = Some(MenuAction::KillAll);
         handle_key(&mut app, esc);
-        assert_eq!(app.menu_confirm_pending, None, "Esc must disarm the menu confirm");
+        assert_eq!(
+            app.menu_confirm_pending, None,
+            "Esc must disarm the menu confirm"
+        );
     }
 
     // FIX-B (D-9): a tab switch (leave_tab) cancels every armed confirm —
@@ -3404,7 +3880,10 @@ mod tests {
         assert!(matches!(act, Action::None), "the in-grace Esc must not act");
         assert!(!app.should_quit, "the in-grace Esc must NOT quit the TUI");
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("ignored"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("ignored"),
             "the swallow must be announced, got {:?}",
             app.status_message
         );
@@ -3430,7 +3909,15 @@ mod tests {
         );
         let idx = fields
             .iter()
-            .position(|f| matches!(f, crate::app::SettingsField::Action { confirm_first: true, .. }))
+            .position(|f| {
+                matches!(
+                    f,
+                    crate::app::SettingsField::Action {
+                        confirm_first: true,
+                        ..
+                    }
+                )
+            })
             .expect("Install section always exposes a confirm-first action");
         let label = fields[idx].label().to_string();
         app.settings_field_selected = idx;
@@ -3451,9 +3938,15 @@ mod tests {
             !matches!(act, Action::RunShellCommand { .. }),
             "the confirming Enter must NOT fire a different field"
         );
-        assert_eq!(app.settings_confirm_pending, None, "identity mismatch must disarm");
+        assert_eq!(
+            app.settings_confirm_pending, None,
+            "identity mismatch must disarm"
+        );
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("cancelled"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("cancelled"),
             "the disarm must be announced, got {:?}",
             app.status_message
         );
@@ -3491,13 +3984,19 @@ mod tests {
             vanish_drop(&mut app);
             assert_eq!(app.session_focus, SessionFocus::List);
             let act = handle_key(&mut app, press(key));
-            assert!(matches!(act, Action::None), "'{key}' must be swallowed in the grace");
+            assert!(
+                matches!(act, Action::None),
+                "'{key}' must be swallowed in the grace"
+            );
             assert!(
                 matches!(app.input_mode, InputMode::Normal),
                 "'{key}' must not open a modal during the grace"
             );
             assert!(
-                app.status_message.as_deref().unwrap_or("").contains("ignored"),
+                app.status_message
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("ignored"),
                 "the swallow must be announced for '{key}', got {:?}",
                 app.status_message
             );
@@ -3517,9 +4016,15 @@ mod tests {
         app.monitor_disconnect_armed = true;
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         assert!(matches!(act, Action::None));
-        assert_eq!(app.menu_confirm_pending, None, "one Esc must clear the menu arm");
+        assert_eq!(
+            app.menu_confirm_pending, None,
+            "one Esc must clear the menu arm"
+        );
         assert_eq!(app.settings_confirm_pending, None, "…and the settings arm");
-        assert_eq!(app.project_delete_pending, None, "…and the project-delete arm");
+        assert_eq!(
+            app.project_delete_pending, None,
+            "…and the project-delete arm"
+        );
         assert!(!app.monitor_disconnect_armed, "…and the disconnect arm");
         assert_eq!(app.status_message.as_deref(), Some("Cancelled"));
     }
@@ -3533,20 +4038,30 @@ mod tests {
         let mut app = chat_app("oracle-Demo-1");
         vanish_drop(&mut app);
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "in-grace Enter must be swallowed");
+        assert!(
+            matches!(act, Action::None),
+            "in-grace Enter must be swallowed"
+        );
         assert_eq!(app.session_focus, SessionFocus::List);
 
         let mut app = chat_app("oracle-Demo-1");
         vanish_drop(&mut app);
         let act = handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        assert!(matches!(act, Action::None), "in-grace Tab must be swallowed");
+        assert!(
+            matches!(act, Action::None),
+            "in-grace Tab must be swallowed"
+        );
         assert_eq!(app.session_focus, SessionFocus::List);
 
         // ↑/↓ proves a human is driving the list: the grace ends, Enter works.
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert!(!app.in_post_drop_grace(), "navigation ends the grace");
         handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(app.session_focus, SessionFocus::Chat, "Enter re-enters chat after nav");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::Chat,
+            "Enter re-enters chat after nav"
+        );
     }
 
     fn left_click(column: u16) -> MouseEvent {
@@ -3577,9 +4092,16 @@ mod tests {
         seed_sessions_geometry(&mut app);
         vanish_drop(&mut app);
         handle_event(&mut app, Event::Mouse(left_click(40)));
-        assert_eq!(app.session_focus, SessionFocus::List, "unpinned click must be swallowed");
+        assert_eq!(
+            app.session_focus,
+            SessionFocus::List,
+            "unpinned click must be swallowed"
+        );
         assert!(
-            app.status_message.as_deref().unwrap_or("").contains("ignored"),
+            app.status_message
+                .as_deref()
+                .unwrap_or("")
+                .contains("ignored"),
             "the swallow must be announced, got {:?}",
             app.status_message
         );
@@ -3654,7 +4176,10 @@ mod tests {
         app.menu_confirm_pending = Some(MenuAction::KillAll);
         handle_key(&mut app, KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE));
         assert_eq!(app.tab, Tab::Help);
-        assert_eq!(app.menu_confirm_pending, None, "F1 must disarm via leave_tab");
+        assert_eq!(
+            app.menu_confirm_pending, None,
+            "F1 must disarm via leave_tab"
+        );
 
         // Esc→Sessions jump from a non-Sessions tab clears the Tab chord.
         let mut app = test_app();
@@ -3680,11 +4205,26 @@ mod tests {
         vanish_drop(&mut app);
         assert!(app.in_post_drop_grace(), "precondition: grace is open");
 
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
-        assert!(matches!(act, Action::ForceRedraw), "Ctrl+L must redraw during the grace");
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
-        assert!(matches!(act, Action::Restart), "Ctrl+R must restart during the grace");
-        assert!(app.in_post_drop_grace(), "the pass-through must not end the grace");
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            matches!(act, Action::ForceRedraw),
+            "Ctrl+L must redraw during the grace"
+        );
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            matches!(act, Action::Restart),
+            "Ctrl+R must restart during the grace"
+        );
+        assert!(
+            app.in_post_drop_grace(),
+            "the pass-through must not end the grace"
+        );
 
         // Plain typed chars are still swallowed…
         let act = handle_key(&mut app, press('c'));
@@ -3693,16 +4233,209 @@ mod tests {
 
         // …and so are PTY-bound Ctrl combos: in chat they forward to the
         // agent (Ctrl+C interrupt), so post-drop they are in-flight input.
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
-        assert!(matches!(act, Action::None), "Ctrl+C must be swallowed in the grace");
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            matches!(act, Action::None),
+            "Ctrl+C must be swallowed in the grace"
+        );
         assert!(
             matches!(app.input_mode, InputMode::Normal),
             "Ctrl+C must not open the launcher modal during the grace"
         );
-        let act = handle_key(&mut app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL));
+        let act = handle_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL),
+        );
         assert!(
             matches!(act, Action::None),
             "Ctrl+X must not kill the clamped-in selection during the grace"
         );
+    }
+
+    #[test]
+    fn project_planner_shortcut_emits_the_plan_create_contract() {
+        use omega_core::project_manager::ManagedProject;
+        let mut app = test_app();
+        app.tab = Tab::Projects;
+        app.projects_selected = 1; // index 0 is the pinned OS row
+        app.project_registry.projects = vec![ManagedProject {
+            name: "ContractProject".to_string(),
+            path: std::path::PathBuf::from("/tmp/contract-project"),
+            telegram_topic_id: None,
+            oracle_session: None,
+            git_email: None,
+            created_at: String::new(),
+            telegram: None,
+            category: None,
+        }];
+
+        let action = handle_key(&mut app, press('p'));
+        assert!(matches!(
+            action,
+            Action::RunPlannerForProject { name, path }
+                if name == "ContractProject" && path == "/tmp/contract-project"
+        ));
+    }
+
+    #[test]
+    fn new_project_wizard_only_emits_supported_strategy_ids() {
+        let ids: Vec<&str> = crate::app::NEW_PROJECT_STACKS
+            .iter()
+            .map(|(id, _)| *id)
+            .collect();
+        assert_eq!(ids, vec!["nextstack", "custom"]);
+
+        let mut app = test_app();
+        app.input_mode =
+            InputMode::NewProjectStack("demo".to_string(), "side-business".to_string(), 0);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(
+            app.input_mode,
+            InputMode::NewProjectLaunchPrompt(_, _, ref stack) if stack == "custom"
+        ));
+    }
+
+    fn os_entry(product: omega_core::os_products::OsProduct) -> omega_core::os_products::OsEntry {
+        omega_core::os_products::OsEntry {
+            product,
+            readiness: omega_core::os_products::OsReadiness {
+                level: omega_core::os_products::OsReadinessLevel::Reference,
+                directory_present: true,
+                master_present: false,
+                payload_present: true,
+                manifest: omega_core::os_products::OsManifestStatus::Missing,
+                runtime_present: false,
+                tests_present: false,
+                event_schema_status: None,
+            },
+            path: Some(std::path::PathBuf::from("/tmp")),
+            bot_linked: false,
+        }
+    }
+
+    #[test]
+    fn os_tab_obeys_the_two_column_keyboard_contract() {
+        let products = omega_core::os_products::OsProduct::all();
+        let mut app = test_app();
+        app.tab = Tab::Os;
+        app.os_entries = vec![os_entry(products[0]), os_entry(products[1])];
+
+        // Moving the list cursor changes the detail document, so it must not
+        // retain an offset from the previously selected OS.
+        app.detail_scroll = 17;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.os_selected, 1);
+        assert_eq!(app.detail_scroll, 0, "OS selection must open at the top");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.os_selected, 0);
+
+        app.detail_max_scroll = 100;
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.detail_focused, "Tab must focus the OS detail panel");
+
+        let selected = app.os_selected;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(
+            app.os_selected, selected,
+            "detail arrows must not move the OS list"
+        );
+        assert_eq!(
+            app.detail_scroll, 1,
+            "detail arrows must scroll the OS detail"
+        );
+
+        handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 100);
+        handle_key(&mut app, KeyEvent::new(KeyCode::Home, KeyModifiers::NONE));
+        assert_eq!(app.detail_scroll, 0);
+
+        // A rapid second Tab uses the same fullscreen contract as Settings,
+        // Projects, and System.
+        app.last_tab_press = Some(std::time::Instant::now());
+        handle_key(&mut app, KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(app.detail_fullscreen);
+    }
+
+    #[test]
+    fn os_enter_focuses_detail_before_opening_the_master_prompt() {
+        let mut app = test_app();
+        app.tab = Tab::Os;
+        app.os_entries = vec![os_entry(omega_core::os_products::OsProduct::all()[0])];
+
+        let first = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(first, Action::None));
+        assert!(app.detail_focused);
+
+        let second = handle_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(second, Action::OpenOsSession { .. }));
+    }
+
+    #[test]
+    fn every_modal_swallows_mouse_events_before_the_underlay_can_change() {
+        let modes = vec![
+            InputMode::NewNamedSession("codex".into()),
+            InputMode::NewSessionPromptDirect("s".into(), "codex".into()),
+            InputMode::DispatchProject(vec!["p".into()], 0),
+            InputMode::ProjectOpenLane("p".into(), "/tmp".into(), 0),
+            InputMode::ProjectOpenAgentPick {
+                lane: ProjectLane::Coding,
+                name: "p".into(),
+                path: "/tmp".into(),
+                agents: vec![omega_core::agents::Agent::Codex],
+                sel: 0,
+            },
+            InputMode::ProjectDelete("p".into(), 0),
+            InputMode::DispatchMission("p".into()),
+            InputMode::RenameSession("s".into()),
+            InputMode::SessionFilter,
+            InputMode::NewProjectName,
+            InputMode::NewProjectCategory("p".into(), 0),
+            InputMode::NewProjectCredGroup("p".into(), "customer".into()),
+            InputMode::NewProjectStack("p".into(), "tools".into(), 0),
+            InputMode::NewProjectLaunchPrompt("p".into(), "tools".into(), "custom".into()),
+            InputMode::NewProjectLaunchDocs("p".into(), "tools".into(), "custom".into(), None),
+            InputMode::ProvisioningSetup {
+                step: 0,
+                collected: Vec::new(),
+            },
+            InputMode::TelegramSetupToken,
+            InputMode::TelegramSetupChatId("token".into()),
+            InputMode::TelegramSetupUserId("token".into(), "chat".into()),
+            InputMode::EditSettingsField {
+                config_key: "general.theme".into(),
+                masked: false,
+            },
+            InputMode::SelectModel("model".into(), vec!["one".into()], 0),
+            InputMode::GroupSetupId,
+            InputMode::AddProjectPath,
+            InputMode::ReauthCode,
+        ];
+        let mouse = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        };
+
+        for mode in modes {
+            let mut app = test_app();
+            app.tab = Tab::Projects;
+            app.detail_focused = true;
+            app.detail_max_scroll = 50;
+            app.detail_scroll = 7;
+            app.input_mode = mode.clone();
+            let action = handle_event(&mut app, Event::Mouse(mouse));
+            assert!(
+                matches!(action, Action::None),
+                "modal {:?} must swallow mouse",
+                mode
+            );
+            assert_eq!(app.detail_scroll, 7, "modal {:?} leaked wheel scroll", mode);
+        }
     }
 }

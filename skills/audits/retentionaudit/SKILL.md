@@ -181,6 +181,10 @@ EXAMPLES:
 
 ---
 
+## CANONICAL RUNNER GATE
+
+Before Phase 0, invoke `~/.omega/lib/audit-runner.sh retention "<absolute-project-path>" --files="<scoped-files>" --user-need="<verbatim-user-need>" --hinge="<load-bearing-region>" --no-fix` (plus `--ticket` and `--url` together when ticket-scoped). A non-zero exit is an audit failure. Read the emitted `audits/.retentionaudit/evidence-summary.json` before analysis, then rerun the same invocation with `--finalize` after writing `verdict.json`. This gate does not change the audit's read-only contract.
+
 ## OUTPUT CONTRACT
 
 ```

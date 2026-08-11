@@ -1,6 +1,7 @@
 ---
 name: wealth-capital-os
-description: Operate a conversational financial brain for personal cash flow, savings, emergency resilience, debt, goals, investment policy, risk and life-aligned capital allocation. Contains 12 specialist agents, 20 skills, 7 protocols and 7 schemas. Use for personal budgeting, emergency fund planning, debt payoff strategy, investment policy statements, risk tolerance, or goal-based capital allocation. Trigger words: wealth, capital, personal cash flow, savings, debt, investment policy, risk, capital allocation; FR: patrimoine, capital, tresorerie personnelle, epargne, dette, politique d'investissement, risque, allocation de capital.
+description: >
+  Operate a conversational financial brain for personal cash flow, savings, emergency resilience, debt, goals, investment policy, risk and life-aligned capital allocation. Contains 12 specialist agents, 20 skills, 7 protocols and 7 schemas. Use for personal budgeting, emergency fund planning, debt payoff strategy, investment policy statements, risk tolerance, or goal-based capital allocation. Trigger words: wealth, capital, personal cash flow, savings, debt, investment policy, risk, capital allocation; FR: patrimoine, capital, tresorerie personnelle, epargne, dette, politique d'investissement, risque, allocation de capital.
 ---
 
 # Wealth & Capital {OS}
