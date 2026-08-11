@@ -15,6 +15,16 @@ sys.path.insert(0, os.path.expanduser("~/Station/Tools/OmniVoice"))
 from omnivoice.eval.models.utmos import UTMOS22Strong  # noqa: E402
 
 WEIGHTS = os.path.expanduser("~/.omega/tts/models/eval/mos/utmos22_strong_step7459_v1.pt")
+# Lazy first-run download (411 MB, bench-only) so a fresh install works without
+# a separate model-fetch step.
+if not os.path.exists(WEIGHTS):
+    import urllib.request
+    os.makedirs(os.path.dirname(WEIGHTS), exist_ok=True)
+    url = ("https://huggingface.co/k2-fsa/TTS_eval_models/resolve/main/"
+           "mos/utmos22_strong_step7459_v1.pt")
+    print(f"downloading UTMOS weights → {WEIGHTS}", file=sys.stderr)
+    urllib.request.urlretrieve(url, WEIGHTS + ".part")
+    os.replace(WEIGHTS + ".part", WEIGHTS)
 
 model = UTMOS22Strong()
 model.load_state_dict(torch.load(WEIGHTS, map_location="cpu"))

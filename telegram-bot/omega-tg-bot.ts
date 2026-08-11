@@ -1187,9 +1187,20 @@ type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: str
 // real-time warm on CPU) in "both" mode, so a fresh install talks out of the box:
 // voice notes in are transcribed (omega-transcribe) and replies come back as text +
 // voice note. The operator can still switch mode/engine/voice from the 🔊 menu.
+// Shipped default cloning refs (install-tts.sh copies tools/tts/voices/ → here,
+// CC BY 4.0): present → a fresh install speaks with a STABLE bilingual voice
+// pair instead of the engine's per-call random draw.
+function defaultVoicePair(): Pick<VoicePrefs, "voiceFr" | "voiceEn"> {
+  const out: Pick<VoicePrefs, "voiceFr" | "voiceEn"> = {};
+  for (const [k, f] of [["voiceFr", "nova-fr.wav"], ["voiceEn", "nova-en.wav"]] as const) {
+    try { if (statSync(`${OMEGA_DIR}/tts/voices/${f}`).isFile()) out[k] = `${OMEGA_DIR}/tts/voices/${f}`; } catch {}
+  }
+  return out;
+}
 function voicePrefs(): VoicePrefs {
-  try { return { mode: "both", engine: "omnivoice", ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
-  catch { return { mode: "both", engine: "omnivoice" }; }
+  const base: VoicePrefs = { mode: "both", engine: "omnivoice", ...defaultVoicePair(), voiceParams: { num_step: 32 } };
+  try { return { ...base, ...JSON.parse(readFileSync(VOICE_PREFS_FILE, "utf8")) }; }
+  catch { return base; }
 }
 function saveVoicePrefs(p: VoicePrefs) {
   Bun.spawnSync(["mkdir", "-p", `${OMEGA_DIR}/state`]);

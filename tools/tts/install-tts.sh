@@ -27,7 +27,16 @@ mkdir -p "$TTS_DIR/venvs" "$TTS_DIR/workers" "$TTS_DIR/models/piper" "$TTS_DIR/o
 # must not silently pull VibeVoice's ~2 GB: it is English-only and opt-in by design.
 [[ -f "$TTS_DIR/config.json" ]] || printf '%s\n' '{"disabled": ["vibevoice"]}' > "$TTS_DIR/config.json"
 cp -f "$SRC_DIR/ttsd.py" "$TTS_DIR/ttsd.py"
-cp -f "$SRC_DIR/workers/"*.py "$TTS_DIR/workers/"
+cp -f "$SRC_DIR/workers/"*.py "$SRC_DIR/workers/"*.sh "$TTS_DIR/workers/" 2>/dev/null || cp -f "$SRC_DIR/workers/"*.py "$TTS_DIR/workers/"
+# Default bilingual cloning refs (CC BY 4.0, see voices/VOICES.md) — never
+# overwrite an operator-customized voice of the same name.
+if [[ -d "$SRC_DIR/voices" ]]; then
+    mkdir -p "$TTS_DIR/voices"
+    for v in "$SRC_DIR/voices/"*; do
+        dst="$TTS_DIR/voices/$(basename "$v")"
+        [[ -f "$dst" ]] || cp "$v" "$dst"
+    done
+fi
 
 # Operator preference: engines listed in config.json "disabled" are neither
 # served by the daemon nor (re)installed here — multi-GB venvs stay deleted.
@@ -138,6 +147,16 @@ if is_disabled omnivoice; then info "omnivoice disabled by config — skipped"; 
     else
         warn "omnivoice clone failed (network?) — will retry on the next run"; FAILED="$FAILED omnivoice"
     fi
+fi
+
+# Judge venv — faster-whisper (ref transcription + WER gate) and jiwer. Small
+# (~100 MB, CPU int8); the omnivoice cloning flow reads ref transcriptions from
+# .txt sidecars that judge_wer.py produces, and every voice delivered to the
+# operator is gated on MOS+WER (the UTMOS weights download lazily on first
+# judge_mos.py run — 411 MB, bench-only, not needed at install).
+if is_disabled judge; then info "judge disabled by config — skipped"; else
+    info "judge (faster-whisper WER + UTMOS MOS quality gates)…"
+    mkvenv judge faster-whisper jiwer || { warn "judge install failed"; FAILED="$FAILED judge"; }
 fi
 
 # systemd user service (Linux). The daemon is stdlib-only → system python3.
