@@ -1960,7 +1960,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2095,6 +2095,24 @@ Protocols: /morning /evening /weekly /decision /true_north /virtue_check
 /dichotomy_control /wu_wei /reframe /shadow /belief_audit /fear /meaning
 /manifestation /quantum_truth /personal_philosophy /anti_dependency /reset.
 Labels every claim E1..E5. Anti-dependency: ends in a concrete next action.
+MREOF
+            done; unset _c
+        fi
+        # AI Logic OS registers /ai-logic + /ailogic aliases.
+        if [[ "$BSK" == "ai-logic-os" ]]; then
+            for _c in ai-logic ailogic; do
+                cat > "$BCMD/$_c.md" <<MREOF
+# /$_c
+
+AI Logic {OS} — workflow optimizer + agentic-system challenger. Default bias
+is NO. Read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+~80% deterministic code / ~20% AI judgment. Triage: Codifier · Augmenter ·
+Garder humain · Supprimer. Challenge an agentic system with the 5 questions
+(LLM-doing-an-if / unverifiable output / no human gate / missing loop / absent
+primitive). Output ends with what it does NOT recommend.
 MREOF
             done; unset _c
         fi

@@ -3493,6 +3493,7 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
                 items.push(group_header(match e.product.group {
                     omega_core::os_products::OsGroup::BuildChain => "Build chain",
                     omega_core::os_products::OsGroup::Personal => "Personal",
+                    omega_core::os_products::OsGroup::Systems => "Systems & AI",
                 }));
                 last_group = Some(e.product.group);
             }

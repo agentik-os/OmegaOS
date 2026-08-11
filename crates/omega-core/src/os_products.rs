@@ -1,10 +1,12 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). Six products, in operator order: Mindset, Habits, Brainstorm,
-//! Blueprint, Stepper, Builder. Each lives under `OS/<slug>/` in the repo
-//! (installed to `~/.omega/os/`); payloads arrive as zips via the Deposit box
-//! and are unpacked in place. This module answers, cheaply and with NO network:
-//! which OSes exist, where they live on THIS machine, and whether their
-//! payload has been integrated yet.
+//! (TUI). 13 operative systems in three groups: the BUILD CHAIN
+//! (01 Ideation → 02 Researcher → 03 Blueprint → 04 Designer → 05 Stepper →
+//! 06 Builder), the PERSONAL OSes (Mindset, Habits, Execution, Storytelling,
+//! Alignment, Books), and SYSTEMS & AI (AI Logic OS). Each lives under
+//! `OS/<slug>/` in the repo (installed to `~/.omega/os/`); payloads arrive as
+//! zips via the Deposit box and are unpacked in place. This module answers,
+//! cheaply and with NO network: which OSes exist, where they live on THIS
+//! machine, and whether their payload has been integrated yet.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -19,6 +21,9 @@ pub enum OsGroup {
     BuildChain,
     /// The personal operative systems (Mindset, Habits, Books, …).
     Personal,
+    /// Systems / meta OSes that operate ON a system rather than a product or a
+    /// person (AI Logic OS challenges OmegaOS itself, agents and AI workflows).
+    Systems,
 }
 
 /// One operative system of the suite — the static half (identity). The single
@@ -325,6 +330,29 @@ impl OsProduct {
                     "omega-books CLI:   open the librarian master agent in a terminal session",
                 ],
             },
+            OsProduct {
+                slug: "ai-logic-os",
+                name: "AI Logic OS",
+                tagline: "Workflow optimizer + agentic-system challenger: code-vs-AI arbitration, default bias NO, finds the logic gaps and specs the fix.",
+                group: OsGroup::Systems,
+                commands: &[
+                    "Claude / Codex ( /ai-logic · /ailogic · /ai-logic-os ):",
+                    "  a technical adviser whose default bias is NO",
+                    "  ~80% deterministic code / ~20% AI judgment — a model call must justify itself",
+                    "two jobs:",
+                    "  1. optimize a workflow — map · instrument · triage · design · spec · measure · loop",
+                    "     triage bins: Codifier · Augmenter · Garder humain · Supprimer",
+                    "  2. challenge an agentic system (OmegaOS / an agent / a pipeline / a tool):",
+                    "     - where does a LLM do an `if`'s job?",
+                    "     - where is a consequential output unverifiable?",
+                    "     - where does an irreversible action lack a human gate?",
+                    "     - where is the feedback loop missing?",
+                    "     - what primitive is absent and should exist?",
+                    "  every finding cites proof (file:line / a rule / a log)",
+                    "  output always ends with what it does NOT recommend, and why",
+                    "omega-ailogic   open the AI Logic master agent in a session",
+                ],
+            },
         ]
     }
 
@@ -531,7 +559,8 @@ mod tests {
                 "execution-os",
                 "storytelling-os",
                 "alignment-os",
-                "books-os"
+                "books-os",
+                "ai-logic-os"
             ]
         );
     }

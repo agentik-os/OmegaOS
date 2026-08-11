@@ -28,6 +28,12 @@ Personal OSes:
 | Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop | **integrated** |
 | Storytelling OS | `storytelling-os` | Storyteller {OS}: coach + shape truthful stories, a story bank | **integrated** |
 | Alignment OS | `alignment-os` | Alignment Coach {OS}: wisdom + decision second brain | **integrated** |
+
+**Systems & AI:**
+
+| OS | Slug | Focus | Status |
+|----|------|-------|--------|
+| AI Logic OS | `ai-logic-os` | Workflow optimizer + agentic-system challenger | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Registry source of truth: `crates/omega-core/src/os_products.rs`

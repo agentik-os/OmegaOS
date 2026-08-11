@@ -32,6 +32,12 @@ Personal OSes:
 | Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop (commitments, focus, proof, recovery) | **integrated** |
 | Storytelling OS | `storytelling-os` | Storyteller {OS}: coach + shape truthful stories in your voice, a story bank | **integrated** |
 | Alignment OS | `alignment-os` | Alignment Coach {OS}: wisdom + decision second brain (Stoic/Daoist/Rohn synthesis, council-routed) | **integrated** |
+
+Systems & AI:
+
+| OS | Slug | Focus | Status |
+|----|------|-------|--------|
+| AI Logic OS | `ai-logic-os` | Workflow optimizer + agentic-system challenger (code-vs-AI arbitration, finds logic gaps, specs the fix) | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -94,6 +100,11 @@ Every OS exposes the SAME capability on four surfaces:
    R-TGSEC); the token lives in agent-bots.json (mode 600) and nowhere else.
 
 All four surfaces drive ONE brain. Never fork the logic per surface.
+
+**Groups.** The registry (`OsProduct::group`) sorts the OS tab into sections:
+**Build chain** (01→06, the product pipeline), **Personal** (Mindset, Habits,
+Execution, Storytelling, Alignment, Books), and **Systems & AI** (AI Logic OS —
+OSes that operate ON a system/workflow rather than a product or a person).
 
 ## Process - "add this OS" (a zip landed in Deposit)
 
