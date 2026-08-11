@@ -587,6 +587,100 @@ pub enum AuditStreamMsg {
     Error { message: String },
 }
 
+/// One entry of `GET /v1/doctor`'s `checks` array — one `omega doctor` check
+/// line, parsed from its rendered stdout (see
+/// `routes_box::parse_doctor_output`). `health` is `"ok"` / `"warn"` /
+/// `"fail"`, derived from the check's glyph (`[+]`/`[!]`/`[x]`). `text` is
+/// EVERYTHING after the glyph, trimmed — deliberately NOT split into a
+/// `name`/`detail` pair, since `omega doctor`'s own `{:16}`-padded name
+/// column is a MINIMUM width, not a delimiter (e.g. "binary provenance" is
+/// 18 characters, so that boundary is genuinely ambiguous from the text
+/// alone; see the parser's doc comment).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DoctorCheckEntry {
+    pub health: String,
+    pub text: String,
+}
+
+/// `GET /v1/doctor` response body — runs bare `omega doctor` (never `--fix`,
+/// which mutates state, nor `--deep`, which burns live API quota) and parses
+/// its stdout. `overall` is AGGREGATED from the parsed `checks` here
+/// (fail-if-any-fail, else warn-if-any-warn, else ok — mirroring
+/// `omega_core::doctor::overall()`'s own logic), never re-parsed from the
+/// CLI's own trailing summary line, since aggregating the already-parsed
+/// checks is more robust than re-matching a second piece of text. A
+/// non-zero `omega doctor` exit code (it calls `std::process::exit(1)` on
+/// overall `Fail`) is a NORMAL outcome here, not an error — all check lines
+/// were already printed before the exit.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct DoctorResponse {
+    pub overall: String,
+    pub checks: Vec<DoctorCheckEntry>,
+}
+
+/// `GET /v1/usage` response body — a mirror of `omega_core::monitor::
+/// UsageSnapshot::read()`'s live/no-cache distinction. `available` is
+/// `false` (and every other field `None`) exactly when the underlying
+/// `~/.omega/state/usage.json` cache doesn't exist yet (a normal, expected
+/// "no data yet" state — e.g. the `omega usage --check` cron hasn't run) or
+/// fails to parse; `true` with every field populated otherwise. Exposes the
+/// subset of `UsageSnapshot`'s fields useful for a client's Fleet health
+/// view (the 5h/week percentages, token counts, and the account label) —
+/// not every field the snapshot carries.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct UsageResponse {
+    pub available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week_pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sonnet_pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_pct: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_5h: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tokens_7d: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
+}
+
+/// `GET /v1/box-info` response body — this box's identity + the gateway
+/// process's own liveness. `hostname` shells out to the `hostname` binary
+/// (no `hostname` crate in this workspace — same "shell out to a small
+/// trusted local binary" convention `routes_agents::kill_process_group`
+/// uses for `kill`), `omega_version` is `omega --version`'s trimmed stdout,
+/// `gateway_version` is this crate's own `CARGO_PKG_VERSION` (same idiom
+/// `server::health` already uses), and `uptime_secs` is the seconds elapsed
+/// since `AppState` was constructed (i.e. since this gateway process
+/// started serving).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BoxInfoResponse {
+    pub hostname: String,
+    pub omega_version: String,
+    pub gateway_version: String,
+    pub uptime_secs: u64,
+}
+
+/// `POST /v1/backup` response body — `path` is the archive's final on-disk
+/// path (parsed off `omega backup`'s own `"  archive : <path>"` stdout
+/// line, falling back to the server-chosen `--out` path this endpoint
+/// itself passed if that line is somehow missing), `size` is the
+/// human-readable size from the `"  size    : <human>"` line (`None` if
+/// that line is missing — never treated as an error, since `path` alone is
+/// still a usable result). Takes NO client input: the caller supplies
+/// nothing, and the server always picks the output path itself (see
+/// `routes_box::backup_dir`) — never a client-controlled path.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct BackupResponse {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<String>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -643,6 +737,11 @@ pub struct Protocol {
     pub audit_request: AuditRequest,
     pub audit_check_response: AuditCheckResponse,
     pub audit_stream_msg: AuditStreamMsg,
+    pub doctor_check_entry: DoctorCheckEntry,
+    pub doctor_response: DoctorResponse,
+    pub usage_response: UsageResponse,
+    pub box_info_response: BoxInfoResponse,
+    pub backup_response: BackupResponse,
 }
 
 pub fn schema_json() -> String {

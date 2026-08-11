@@ -50,6 +50,11 @@ pub struct AppState {
     /// `session_org.rs`'s `Mutex`) and is shared across every clone of
     /// `AppState`.
     pub session_org: Arc<SessionOrgStore>,
+    /// When this gateway process's `AppState` was constructed -- the base
+    /// point `routes_box::box_info`'s `uptime_secs` measures `.elapsed()`
+    /// against. `Instant` is `Copy`, so cloning `AppState` carries the SAME
+    /// start point rather than resetting it.
+    pub started_at: std::time::Instant,
 }
 
 impl AppState {
@@ -64,7 +69,18 @@ impl AppState {
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
-        Self { dir, cfg, chats, accounts, chat_permits, dispatch_permits, events, session_org }
+        let started_at = std::time::Instant::now();
+        Self {
+            dir,
+            cfg,
+            chats,
+            accounts,
+            chat_permits,
+            dispatch_permits,
+            events,
+            session_org,
+            started_at,
+        }
     }
 }
 
@@ -185,6 +201,10 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/session-org/{name}",
             axum::routing::put(crate::routes_session_org::set),
         )
+        .route("/v1/doctor", get(crate::routes_box::doctor))
+        .route("/v1/usage", get(crate::routes_box::usage))
+        .route("/v1/box-info", get(crate::routes_box::box_info))
+        .route("/v1/backup", axum::routing::post(crate::routes_box::backup))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.
