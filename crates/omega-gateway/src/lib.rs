@@ -32,6 +32,7 @@ pub mod routes_rules;
 pub mod routes_session_org;
 pub mod routes_sessions;
 pub mod routes_skills;
+pub mod routes_team;
 pub mod routes_telegram;
 pub mod server;
 pub mod session_org;

@@ -164,7 +164,10 @@ async fn whoami(Extension(device): Extension<Device>) -> Json<WhoamiResponse> {
 pub fn build_router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/v1/whoami", get(whoami))
-        .route("/v1/sessions", get(crate::routes_sessions::list))
+        .route(
+            "/v1/sessions",
+            get(crate::routes_sessions::list).post(crate::routes_sessions::create),
+        )
         .route("/v1/sessions/{name}/stream", get(crate::routes_sessions::stream))
         .route(
             "/v1/sessions/{name}/keys",
@@ -178,6 +181,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/sessions/{name}/rename",
             axum::routing::post(crate::routes_sessions::rename),
         )
+        .route("/v1/team", axum::routing::post(crate::routes_team::create))
         .route(
             "/v1/chats",
             get(crate::routes_chat::list).post(crate::routes_chat::create),

@@ -441,6 +441,65 @@ pub struct RenameSessionResponse {
     pub name: String,
 }
 
+/// Body of `POST /v1/sessions` — wraps `omega new [OPTIONS] <NAME>`.
+/// `agent` is REQUIRED (unlike [`DispatchRequest::agent`]'s optional field):
+/// this endpoint always spawns a fresh interactive session, which always
+/// needs a real agent to launch. `name` is optional even though the CLI's
+/// own `NAME` positional is required — when omitted, the gateway generates
+/// one server-side (see `routes_sessions::create`'s doc comment) rather than
+/// inventing an "auto" sentinel the CLI itself doesn't support. `--cmd`
+/// (arbitrary shell exec) and `--files` (scope-claim) are deliberately NEVER
+/// exposed here — too dangerous for an API / out of scope this task.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct CreateSessionRequest {
+    pub agent: String,
+    pub name: Option<String>,
+    pub dir: Option<String>,
+    pub prompt: Option<String>,
+}
+
+/// `POST /v1/sessions` response body — `name`/`agent` are the
+/// already-validated (or server-generated) values the handler chose BEFORE
+/// spawning anything, never parsed off `cmd_new`'s own `"Created session:
+/// {name}"` stdout line (that line would be redundant with what the caller
+/// already knows — the same "we already know it" posture
+/// [`RenameSessionResponse`] takes for `new_name`). `output` is the raw
+/// stdout on success.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CreateSessionResponse {
+    pub name: String,
+    pub agent: String,
+    pub output: String,
+}
+
+/// Body of `POST /v1/team` — wraps `omega team [OPTIONS] <PROJECT>
+/// [MEMBERS]...`. `count`, when omitted, falls through to the real CLI's own
+/// default (3). `members` are optional `"name:prompt"` specs — when omitted
+/// (or empty) the CLI itself spawns `count` generic `worker-N` members.
+/// There is deliberately NO `layout` field: the real CLI (`omega team
+/// --help`) has no `--layout` flag at all, so this endpoint does not invent
+/// one either (ground-truth verified against the live binary; see
+/// `.superpowers/sdd/progress.md`'s Task A section).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct TeamRequest {
+    pub project: String,
+    pub count: Option<u32>,
+    pub dir: Option<String>,
+    pub members: Option<Vec<String>>,
+}
+
+/// `POST /v1/team` response body — `session` is the ALREADY-KNOWN spawned
+/// session name (`cmd_team` builds it literally as `format!("Team-{project}")`,
+/// `crates/omega-cli/src/main.rs::cmd_team` — never parsed off stdout).
+/// `output` is the raw stdout: this endpoint does NOT hand-parse the CLI's
+/// own per-member text, mirroring wave7's `reap`/`resurrect` "honest raw
+/// output" precedent ([`ReapResponse`]/[`ResurrectResponse`]).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TeamResponse {
+    pub session: String,
+    pub output: String,
+}
+
 /// One session's client-organizational overlay: a folder, a custom label,
 /// and a pinned flag. Purely metadata the gateway persists so it survives
 /// app restarts and syncs across the operator's devices — it is NEVER
@@ -1092,6 +1151,10 @@ pub struct Protocol {
     pub close_session_response: CloseSessionResponse,
     pub rename_session_request: RenameSessionRequest,
     pub rename_session_response: RenameSessionResponse,
+    pub create_session_request: CreateSessionRequest,
+    pub create_session_response: CreateSessionResponse,
+    pub team_request: TeamRequest,
+    pub team_response: TeamResponse,
     pub deposit_response: DepositResponse,
     pub session_org_entry: SessionOrgEntry,
     pub session_org_response: SessionOrgResponse,
