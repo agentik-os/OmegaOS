@@ -227,4 +227,53 @@ for its own `$HOME`-hardcoded lookup. Route wired above `route_layer`
 **Test count after Task C: 514, 0 failed (510→514, 4 new integration
 tests: empty station, full status flags + accounts never populated,
 multi-project name-sort, 401). Clippy clean. Release build OK.**
-## Task D — status: not started
+
+Commit `51d95c4`, then a fresh adversarial reviewer verdict "SHIP WITH
+MINOR FIXES" (no Critical): the module doc comment falsely claimed no
+subprocess, but `list_marketing_projects()` actually forks an UNBOUNDED
+`crontab -l` per call (unlike `project_accounts()`'s 4s-bounded call — same
+"copy-pasted claim, not re-verified" class as Task B's Finding 2); a
+non-unique `slug` (derived from directory basename, while dedup happens on
+lowercased NAME) let two entries for the SAME on-disk project appear with
+an identical `slug` and no `path` field left to disambiguate; and the
+shipped tests read the operator's REAL crontab for `engine_on`, making them
+environment-dependent/flaky. Fixed: doc comment corrected + the whole
+`spawn_blocking` call wrapped in a `tokio::time::timeout` (10s default,
+`OMEGA_MARKETING_LIST_TIMEOUT_MS` override, mirrors `routes_pdf.rs`'s
+idiom) → 504 on timeout; gateway-side dedupe by canonicalized path (never
+touching the shared `omega-core` function); tests now fake `crontab` on
+`PATH` for determinism. Commit `6af3240`.
+**Test count after Task C fix round: 516, 0 failed. Clippy clean.**
+
+## Task D — status: DONE
+
+`POST /v1/duo` (new `routes_duo.rs`), wrapping the real `omega-duo` bridge
+directly (option (b) from the wave brief — `"duo"` is not a member of
+`omega_core::agents::Agent::all()`, so option (a) was never viable).
+`{project?, dir?, prompt, profile}`, exactly one of `project`/`dir`
+required, `profile ∈ {build,review,reflect}` → bridge `--mode
+{code,review,plan}`. `project` resolved via the discovered-project
+allowlist; `dir` reuses `routes_sessions::dir_under_home` verbatim
+(including its `..`-component guard from Task A's own fix round). `prompt`
+written to a server-chosen scratch file under
+`~/.omega/state/gateway-duo/tasks/<random_hex>.md`. Response mirrors the
+real `BridgeResult` JSON field-for-field into new gateway-local protocol
+types. Two ground-truth corrections found while implementing (both cited
+with binary line numbers in `routes_duo.rs`'s doc comment): `--flag=value`
+does NOT work against `omega-duo`'s own `parseArgs` (it only understands
+two-token `--flag value`, confirmed by reading the binary source — using
+the `=` form would silently corrupt `--cwd`), and the bridge's own process
+exit code carries no information beyond its JSON body's `ok` field
+(`process.exitCode = result.ok ? 0 : ...`), so HTTP status is driven by
+"did stdout parse as the expected JSON" (502 if not), never by the
+subprocess exit code. Concurrency: a flat `duo_permits` semaphore
+(`MAX_CONCURRENT_DUO_RUNS=2`) PLUS a per-resolved-cwd lock
+(`duo_active_dirs`, RAII-released) enforcing the skill's own documented
+"never two duo runs on the same cwd" constraint (409 on collision). Never
+passes `--agent`/`--verify`. Timeout 1800s (env-overridable), real
+process-group kill on fire (verified: `omega-duo` spawns Codex/Claude
+without `detached:true`, so unlike `new-project` a group kill here
+genuinely reaches the nested agent turn). Never runs a real Codex/Claude/
+GLM in tests (fake `OMEGA_DUO_BIN` only). Commit `a7b01e6`.
+**Test count after Task D: 539, 0 failed (516→539, 23 new). Clippy clean.
+Release build OK.**
