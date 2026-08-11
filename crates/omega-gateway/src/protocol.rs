@@ -526,6 +526,67 @@ pub struct FileReadResponse {
     pub content: String,
 }
 
+/// One entry of `GET /v1/audits`'s `audits` array — mirrors
+/// `omega_core::audit::AuditSkill` for display: `domain` is
+/// `skill.domain.label()` (e.g. `"Code"`/`"Security"`), not a raw Debug form,
+/// matching `SkillEntry::category`'s convention. `max_score` is the raw,
+/// per-audit maximum (not `normalized_max`) since that is what `omega audit
+/// run`'s own printed metadata line reports and this type mirrors that.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AuditEntry {
+    pub id: String,
+    pub name: String,
+    pub domain: String,
+    pub phases: u32,
+    pub max_score: u32,
+    pub read_only: bool,
+}
+
+/// `GET /v1/audits` response body — the Quality Arsenal catalog from
+/// `omega_core::audit::all_audits()` (23 forensic audits).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AuditsResponse {
+    pub audits: Vec<AuditEntry>,
+}
+
+/// Body of `POST /v1/audit` — a pre-flight validation-only check, mirroring
+/// `DispatchRequest`'s shape. `kind` is an audit id from `GET /v1/audits`
+/// (e.g. `"codeaudit"`), `project` is a name from `GET /v1/projects`. Also
+/// doubles as the `?project=&kind=` query-param shape `GET /v1/audit/stream`
+/// validates with the exact same two checks before ever upgrading.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct AuditRequest {
+    pub project: String,
+    pub kind: String,
+}
+
+/// `POST /v1/audit` response body — echoes back the resolved audit's own
+/// metadata (mirrors what `omega audit run`'s own printed banner reports:
+/// name, phase count, max score) so a client can render a confirm dialog
+/// before opening `GET /v1/audit/stream`. Spawns nothing — the real run only
+/// happens over that WebSocket.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct AuditCheckResponse {
+    pub kind: String,
+    pub name: String,
+    pub phases: u32,
+    pub max_score: u32,
+}
+
+/// Server frames on `GET /v1/audit/stream`, which runs `omega audit run
+/// <kind> --dir <project_path>` and streams its output — the exact shape of
+/// [`AgentInstallStreamMsg`], for the same reasons (`Line` tags every line by
+/// the pipe it came from, `Exit` is always the last frame on a completed run,
+/// `Error` covers a spawn failure and is followed immediately by the socket
+/// closing).
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AuditStreamMsg {
+    Line { stream: String, text: String },
+    Exit { success: bool, code: Option<i32> },
+    Error { message: String },
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -577,6 +638,11 @@ pub struct Protocol {
     pub file_entry: FileEntry,
     pub files_response: FilesResponse,
     pub file_read_response: FileReadResponse,
+    pub audit_entry: AuditEntry,
+    pub audits_response: AuditsResponse,
+    pub audit_request: AuditRequest,
+    pub audit_check_response: AuditCheckResponse,
+    pub audit_stream_msg: AuditStreamMsg,
 }
 
 pub fn schema_json() -> String {

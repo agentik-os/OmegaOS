@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod rmux;
 pub mod routes_accounts;
 pub mod routes_agents;
+pub mod routes_audit;
 pub mod routes_chat;
 pub mod routes_deposit;
 pub mod routes_dispatch;
