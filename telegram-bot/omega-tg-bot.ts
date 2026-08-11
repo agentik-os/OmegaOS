@@ -1160,7 +1160,7 @@ const VOICE_PREFS_FILE = `${OMEGA_DIR}/state/nova-voice.json`;
 // path, or ElevenLabs voice_id) — set by «voix N» from the casting bench
 // (tools/tts/casting.py numbers every sample; the resolved map lives in
 // ~/.omega/tts/casting-manifest.json). Empty = the engine's default voice.
-type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: string; voiceLabel?: string; voiceParams?: Record<string, number> };
+type VoicePrefs = { mode: "text" | "voice" | "both"; engine: string; voice?: string; voiceLabel?: string; voiceParams?: Record<string, number>; voiceFr?: string; voiceEn?: string };
 // Default: omnivoice (k2-fsa — best local French measured on the bench, faster than
 // real-time warm on CPU) in "both" mode, so a fresh install talks out of the box:
 // voice notes in are transcribed (omega-transcribe) and replies come back as text +
@@ -1533,10 +1533,25 @@ function reportTeaser(title: string, md: string): string {
 // the text. mode "voice": the placeholder shows a teaser, and is deleted once
 // the note lands (synthesis failed → the full text is restored: never lose an
 // answer to a TTS hiccup).
+// Cheap stopword-based FR/EN detection so the voice matches the reply's language
+// (an FR-cloned voice reading English sounds wrong, and vice versa). Ties → FR,
+// the operator's primary language.
+function detectReplyLang(t: string): "fr" | "en" {
+  const s = ` ${t.toLowerCase().replace(/[’']/g, "' ")} `;
+  const frW = [" le ", " la ", " les ", " des ", " une ", " est ", " et ", " je ", " vous ", " pour ", " avec ", " dans ", " c' ", " qui ", " pas "];
+  const enW = [" the ", " is ", " and ", " you ", " for ", " with ", " to ", " of ", " it ", " that ", " this ", " are ", " have "];
+  const fs = frW.filter(w => s.includes(w)).length, es = enW.filter(w => s.includes(w)).length;
+  return es > fs ? "en" : "fr";
+}
 async function speakReply(chat: number, thread: number | undefined, out: string, phId?: number) {
   const vp = voicePrefs();
   if (vp.mode === "text") return;
-  const r = await synthVoice(vp.engine, out, vp.voice || "", vp.voiceParams);
+  // Per-language voice pair (voiceFr/voiceEn cloning refs) when configured;
+  // falls back to the single selected voice, then the engine default.
+  const lang = detectReplyLang(out);
+  const voice = (lang === "en" ? vp.voiceEn : vp.voiceFr) || vp.voice || "";
+  const params = vp.voiceFr || vp.voiceEn ? { ...(vp.voiceParams || {}), language: lang as any } : vp.voiceParams;
+  const r = await synthVoice(vp.engine, out, voice, params);
   if (r instanceof Uint8Array) {
     const sent = await sendVoiceNote(chat, r, thread);
     if (vp.mode === "voice" && sent?.ok && phId) await tg("deleteMessage", { chat_id: chat, message_id: phId });
