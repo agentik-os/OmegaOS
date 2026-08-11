@@ -24,7 +24,7 @@ BOTS="$OMEGA_DIR/agent-bots.json"
 TG="$OMEGA_DIR/telegram.toml"
 UNIT_DIR="$HOME/.config/systemd/user"
 
-SLUGS=(ideation-os researcher-os blueprint-os designer-os stepper-os builder-os mindset-os habits-os execution-os storytelling-os books-os)
+SLUGS=(ideation-os researcher-os blueprint-os designer-os stepper-os builder-os mindset-os habits-os execution-os storytelling-os alignment-os books-os)
 
 die() { echo "  ✗ $*" >&2; exit 1; }
 

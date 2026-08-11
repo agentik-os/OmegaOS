@@ -31,6 +31,7 @@ Personal OSes:
 | Habits OS | `habits-os` | Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews | **integrated** |
 | Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop (commitments, focus, proof, recovery) | **integrated** |
 | Storytelling OS | `storytelling-os` | Storyteller {OS}: coach + shape truthful stories in your voice, a story bank | **integrated** |
+| Alignment OS | `alignment-os` | Alignment Coach {OS}: wisdom + decision second brain (Stoic/Daoist/Rohn synthesis, council-routed) | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -147,6 +148,11 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   deepen, shape, write (only when authorized), adapt, truthcheck, score. Same
   privacy posture: the operator's real context + research canon stay
   user-local; the committed pack carries a generic template.
+- **Alignment OS** - INTEGRATED (Alignment Coach {OS} v1.0): a conversational
+  wisdom + decision second brain (Stoic/Daoist/Rohn synthesis, grounded
+  manifestation, quantum guardrails) with a 12-voice routed council and E1..E5
+  epistemic labels. Prompt-based (no CLI); `omega-align` opens the master
+  agent. Anti-dependency: every insight ends in a concrete next action.
 - **Ideation OS** - INTEGRATED (Brainstorm {OS} v3 ULTIMATE): a multi-agent
   imagination + decision council with lineage, the Surface Lab, quality gates
   and a frozen concept handoff to Market Research / Blueprint. The skill is

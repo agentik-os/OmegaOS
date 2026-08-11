@@ -1960,7 +1960,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2075,6 +2075,26 @@ Family: /story /mine /interview /deepen /shape /write /adapt /truthcheck
 /score /rehearse /storybank. State CLI: \`omega-story\` (SQLite story bank).
 Your private context at ~/.omega/os/storytelling-os/ledger/context.md overrides
 the template.
+MREOF
+            done; unset _c
+        fi
+        # Alignment OS (Alignment Coach {OS}) registers /coach + /align aliases
+        # (NOT /council — that is the llm-council command).
+        if [[ "$BSK" == "alignment-os" ]]; then
+            for _c in coach align; do
+                cat > "$BCMD/$_c.md" <<MREOF
+# /$_c
+
+Alignment Coach {OS} — a personal wisdom + decision inner counsel (Stoic ·
+Daoist · Rohn synthesis, grounded manifestation, quantum guardrails). Read and
+follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Protocols: /morning /evening /weekly /decision /true_north /virtue_check
+/dichotomy_control /wu_wei /reframe /shadow /belief_audit /fear /meaning
+/manifestation /quantum_truth /personal_philosophy /anti_dependency /reset.
+Labels every claim E1..E5. Anti-dependency: ends in a concrete next action.
 MREOF
             done; unset _c
         fi

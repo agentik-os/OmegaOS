@@ -279,6 +279,33 @@ impl OsProduct {
                 ],
             },
             OsProduct {
+                slug: "alignment-os",
+                name: "Alignment OS",
+                tagline: "Alignment Coach {OS}: a wisdom + decision second brain — clarity, values, right effort, next action.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /coach · /align · /alignment-os ):",
+                    "  a wisdom + decision inner counsel (Stoic · Daoist · Rohn synthesis)",
+                    "  labels every claim E1..E5 (never metaphysics as science)",
+                    "protocols / skills (say the word or the /command):",
+                    "  /morning /evening /weekly   the daily/weekly protocols",
+                    "  /decision      a structured decision protocol",
+                    "  /true_north    reconnect to chosen values",
+                    "  /virtue_check  virtue-before-outcome check",
+                    "  /dichotomy_control   separate control from non-control",
+                    "  /wu_wei        right effort vs forcing",
+                    "  /reframe       reframe a situation   ·   /shadow   shadow work",
+                    "  /belief_audit  audit a limiting belief   ·   /fear   fear work",
+                    "  /meaning       meaning work   ·   /manifestation   grounded",
+                    "  /quantum_truth accurate quantum guardrails",
+                    "  /personal_philosophy   compile your philosophy",
+                    "  /anti_dependency   hand agency back   ·   /reset   3-min reset",
+                    "council: stoic·daoist·rohn·scientist·quantum·manifestation·shadow",
+                    "         ·compassion·challenger·action·meaning·integrator (routed)",
+                    "omega-align   open the coach master agent in a session",
+                ],
+            },
+            OsProduct {
                 slug: "books-os",
                 name: "Books OS",
                 tagline: "Your library as an operating system: reading, retention and living knowledge.",
@@ -503,6 +530,7 @@ mod tests {
                 "habits-os",
                 "execution-os",
                 "storytelling-os",
+                "alignment-os",
                 "books-os"
             ]
         );
