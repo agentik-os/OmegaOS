@@ -600,13 +600,18 @@ pub enum AuditStreamMsg {
 /// default: 180 attempts * 500ms = 90s, both overridable via
 /// `OMEGA_AISB_POLL_ATTEMPTS`/`OMEGA_AISB_POLL_INTERVAL_MS` for tests)
 /// elapsed with no growth — the same "no response within 90s" outcome the
-/// CLI itself reports. Same derive/serde shape as [`AuditStreamMsg`].
+/// CLI itself reports. `Error` covers a rejected inbound client message (see
+/// `routes_master::MAX_MASTER_CHAT_MESSAGE_LEN`) — sent instead of touching
+/// the inbox, and the loop keeps waiting for the next client message rather
+/// than closing, the same "keep the socket open" posture `NotRunning`
+/// already documents. Same derive/serde shape as [`AuditStreamMsg`].
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum MasterChatMsg {
     NotRunning,
     Reply { text: String },
     Timeout,
+    Error { message: String },
 }
 
 /// One entry of `GET /v1/doctor`'s `checks` array — one `omega doctor` check

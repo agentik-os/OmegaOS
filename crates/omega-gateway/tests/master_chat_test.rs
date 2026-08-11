@@ -174,6 +174,87 @@ async fn running_timeout_when_log_never_grows() {
 }
 
 #[tokio::test]
+async fn oversized_message_rejected_with_error_frame_and_inbox_untouched() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    std::env::set_var("HOME", fake_home.path());
+
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+    let url = ws_url(&base, "/v1/master/chat", &token);
+    let (mut ws, _) = connect_async(url).await.unwrap();
+
+    // One byte over routes_master.rs's MAX_MASTER_CHAT_MESSAGE_LEN (8000).
+    let too_long = "x".repeat(8001);
+    ws.send(tokio_tungstenite::tungstenite::Message::Text(too_long)).await.unwrap();
+    let msg = ws.next().await.unwrap().unwrap().into_text().unwrap();
+    let frame: serde_json::Value = serde_json::from_str(&msg).unwrap();
+    assert_eq!(frame["type"], "error");
+    assert!(
+        frame["message"].as_str().unwrap().contains("too long"),
+        "unexpected error message: {frame}"
+    );
+
+    assert!(
+        !inbox_path(fake_home.path()).exists(),
+        "inbox must never be created/touched for an oversized message"
+    );
+
+    // The loop keeps serving after a rejection rather than closing — a
+    // normal-length follow-up message still gets a real (NotRunning) reply
+    // on the SAME socket.
+    ws.send(tokio_tungstenite::tungstenite::Message::Text("hello master".to_string())).await.unwrap();
+    let msg2 = ws.next().await.unwrap().unwrap().into_text().unwrap();
+    let frame2: serde_json::Value = serde_json::from_str(&msg2).unwrap();
+    assert_eq!(frame2["type"], "not_running");
+
+    clear_env();
+}
+
+#[tokio::test]
+async fn concurrency_cap_returns_429_when_master_chat_permits_exhausted() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let rmux_bin_dir = tempfile::tempdir().unwrap();
+    install_fake_rmux_master_live(rmux_bin_dir.path());
+    std::env::set_var("HOME", fake_home.path());
+    // Long poll budget (50s @ 50ms) so each held connection's round-trip is
+    // still in-flight -- and its permit still held -- when the extra
+    // connection attempt below fires.
+    std::env::set_var("OMEGA_AISB_POLL_INTERVAL_MS", "50");
+    std::env::set_var("OMEGA_AISB_POLL_ATTEMPTS", "1000");
+
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    // Must match server.rs's MAX_CONCURRENT_MASTER_CHATS.
+    const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
+
+    let mut held = Vec::new();
+    for i in 0..MAX_CONCURRENT_MASTER_CHATS {
+        let url = ws_url(&base, "/v1/master/chat", &token);
+        let (mut ws, _) = connect_async(url).await.unwrap();
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(format!("turn {i}"))).await.unwrap();
+        held.push(ws);
+    }
+
+    // Give the held connections time to acquire their permits and start
+    // polling (blocked well inside the 50s budget) before firing the one
+    // that should be rejected.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let url = ws_url(&base, "/v1/master/chat", &token);
+    let err = connect_async(url).await.unwrap_err();
+    assert!(err.to_string().contains("429"), "unexpected error: {err}");
+
+    clear_env();
+}
+
+#[tokio::test]
 async fn requires_auth() {
     let gateway_dir = tempfile::tempdir().unwrap();
     let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));

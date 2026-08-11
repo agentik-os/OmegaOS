@@ -27,6 +27,15 @@ const MAX_CONCURRENT_CHAT_TURNS: usize = 8;
 /// turn), so this stays well below [`MAX_CONCURRENT_CHAT_TURNS`].
 const MAX_CONCURRENT_DISPATCHES: usize = 4;
 
+/// Global cap on concurrently-open `GET /v1/master/chat` WebSockets. Each
+/// connection holds its permit for the WHOLE socket lifetime (not per
+/// round-trip), and a single round-trip can hold the connection open for up
+/// to a 90s poll plus fire a `spawn_blocking` task every ~500ms tick — a
+/// heavier, longer-held operation than a single chat turn, so this mirrors
+/// [`MAX_CONCURRENT_DISPATCHES`]'s reasoning rather than
+/// [`MAX_CONCURRENT_CHAT_TURNS`]'s.
+const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -40,6 +49,10 @@ pub struct AppState {
     /// Caps concurrently-running `POST /v1/dispatch` requests, mirroring
     /// `chat_permits` — see [`MAX_CONCURRENT_DISPATCHES`].
     pub dispatch_permits: Arc<Semaphore>,
+    /// Caps concurrently-open `GET /v1/master/chat` WebSockets, one permit
+    /// held for the WHOLE connection lifetime — see
+    /// [`MAX_CONCURRENT_MASTER_CHATS`].
+    pub master_chat_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -67,6 +80,7 @@ impl AppState {
         let accounts = AccountStore::open(&dir);
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
+        let master_chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MASTER_CHATS));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
@@ -77,6 +91,7 @@ impl AppState {
             accounts,
             chat_permits,
             dispatch_permits,
+            master_chat_permits,
             events,
             session_org,
             started_at,

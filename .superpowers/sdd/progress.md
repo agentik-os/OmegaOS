@@ -182,6 +182,56 @@ gap in what OmegaOS ships, not a defect in this endpoint — the mechanism
 built here is byte-for-byte the real, documented protocol, ready to work the
 moment something starts consuming that inbox file.
 
+### Task A — adversarial review-fix round
+
+An independent adversarial reviewer found 3 real issues in the Task A code;
+fixed with TDD (failing/reproducing test first where practical), each
+surgical:
+
+1. **UTF-8 char-boundary panic in `read_growth`** — `start` comes from a
+   byte-length snapshot (`before_len`) taken on an EARLIER read; if the log
+   is ever truncated and rewritten before the next read (a rotation, not the
+   normal append-only path), a stale `before_len` can land mid-character and
+   `content[start..]` panics. Fixed with `content.get(start..)`, treating
+   `None` (non-boundary or out-of-range) the same as "no growth yet" — the
+   exact idiom `routes_box.rs::parse_doctor_output` already uses for
+   adversarial subprocess output. Regression unit test:
+   `read_growth_none_on_stale_snapshot_mid_char_boundary` (log = `"aé"`,
+   `before_len = 2`, a byte index inside `é`'s 2-byte encoding) — panicked
+   before the fix, returns `None` after.
+2. **No concurrency cap on `/v1/master/chat`** — any authenticated device
+   could open unboundedly many concurrent WebSockets, each holding a
+   connection for up to a 90s round trip and firing a `spawn_blocking` task
+   every ~500ms tick. Added `AppState::master_chat_permits` (new
+   `MAX_CONCURRENT_MASTER_CHATS = 4` in `server.rs`, mirroring
+   `dispatch_permits`'s heavier/longer-held reasoning). `chat` now acquires
+   ONE permit for the whole connection lifetime BEFORE upgrading (mirrors
+   `routes_audit.rs::stream`'s reject-before-upgrade branch between
+   `ws.on_upgrade(...)` and `code.into_response()`) and returns a bare 429 on
+   exhaustion instead of upgrading; the permit moves into `master_chat_loop`
+   and releases on drop. Test:
+   `concurrency_cap_returns_429_when_master_chat_permits_exhausted` (4 live
+   round-trips held open on a long poll budget, 5th connection attempt
+   rejected with 429).
+3. **No length cap on the inbound WS message** — unlike every other free-text
+   input in this crate (`MAX_MISSION_LEN`, `MAX_SEND_KEYS_BYTES`), nothing
+   bounded the client's WS text before it was JSON-encoded into the inbox
+   file. Added `MAX_MASTER_CHAT_MESSAGE_LEN = 8000` in `routes_master.rs`; an
+   oversized message never touches the inbox and gets a new `MasterChatMsg::
+   Error{message}` frame (added to `protocol.rs`, already covered by
+   `Protocol`'s single `master_chat_msg` field and `schema_test.rs`'s single
+   `"MasterChatMsg"` entry — no per-variant wiring needed), and the loop
+   stays open for the next message (same "don't close over one bad message"
+   posture as `NotRunning`). Test:
+   `oversized_message_rejected_with_error_frame_and_inbox_untouched` (8001-byte
+   message → `Error` frame + untouched inbox, then a normal follow-up message
+   on the same socket still gets served).
+
+Test delta: **362 → 365** (+3: 1 unit regression test in `routes_master.rs`,
+2 WS integration tests in `tests/master_chat_test.rs`).
+`cargo test -p omega-gateway`: 365 passed, 0 failed, 0 ignored.
+`cargo clippy -p omega-gateway --all-targets --no-deps -- -D warnings`: clean.
+
 ## Status
 - [x] Task A — Master/AISB-chat WS
 - [ ] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)

@@ -50,10 +50,18 @@ use crate::protocol::MasterChatMsg;
 use crate::server::AppState;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
-use axum::response::Response;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
+use tokio::sync::OwnedSemaphorePermit;
+
+/// Byte-length cap on one inbound WS text message before it is JSON-encoded
+/// into the inbox file — matching `routes_dispatch.rs::MAX_MISSION_LEN`'s
+/// precedent (a free-text field with no other bound gets an explicit cap
+/// rather than an unbounded write to disk).
+const MAX_MASTER_CHAT_MESSAGE_LEN: usize = 8000;
 
 /// Resolves the home directory the SAME way `cmd_aisb_chat` does:
 /// `dirs::home_dir()`, falling back to the raw `$HOME` env var, falling back
@@ -88,8 +96,21 @@ fn poll_interval_ms() -> u64 {
     std::env::var("OMEGA_AISB_POLL_INTERVAL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500)
 }
 
-pub async fn chat(ws: WebSocketUpgrade, State(_state): State<AppState>) -> Response {
-    ws.on_upgrade(master_chat_loop)
+/// Acquires ONE permit for the WHOLE connection lifetime BEFORE ever
+/// upgrading — mirrors `routes_audit.rs::stream`'s reject-before-upgrade
+/// shape (branch between `ws.on_upgrade(...)` and `code.into_response()`
+/// rather than upgrading unconditionally and erroring inside the loop). When
+/// the pool ([`crate::server::AppState::master_chat_permits`]) is
+/// exhausted, this returns a bare `429` and never upgrades. The acquired
+/// permit is moved into `master_chat_loop` and released automatically when
+/// that future completes (client disconnect, dead socket, or the CLI-mirror
+/// loop's own return), so a client doing several turns on one open socket
+/// only ever holds one permit.
+pub async fn chat(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
+    let Ok(permit) = state.master_chat_permits.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    ws.on_upgrade(move |socket| master_chat_loop(socket, permit))
 }
 
 /// Serializes and sends one frame. `Err` means the socket is dead.
@@ -136,6 +157,18 @@ fn log_len(log: &std::path::Path) -> u64 {
 /// Reads the growth past `before_len`, or `None` if the log hasn't grown (or
 /// became unreadable — treated as "no growth yet" so a transient read glitch
 /// never crashes the poll loop, per the task brief).
+///
+/// `.get(start..)` (not `&content[start..]`) because `before_len` is a
+/// byte-length snapshot taken on an EARLIER read of this file, not something
+/// re-validated against the CURRENT content's char boundaries — this
+/// endpoint's normal path is append-only, but if the log is ever truncated
+/// and rewritten between the snapshot and this read (e.g. a rotation), a
+/// stale `before_len` can land in the middle of a multi-byte UTF-8
+/// character. A raw slice there panics ("byte index N is not a char
+/// boundary"); `.get` returns `None` on a non-boundary (or out-of-range)
+/// start instead, which this function already treats as "no growth yet" —
+/// the exact same defensive idiom `routes_box.rs::parse_doctor_output` uses
+/// for adversarial subprocess output (see its doc comment).
 fn read_growth(log: &std::path::Path, before_len: u64) -> Option<String> {
     let now_len = log_len(log);
     if now_len <= before_len {
@@ -143,7 +176,7 @@ fn read_growth(log: &std::path::Path, before_len: u64) -> Option<String> {
     }
     let content = std::fs::read_to_string(log).ok()?;
     let start = (before_len.min(content.len() as u64)) as usize;
-    let delta = content[start..].trim_start_matches('\n');
+    let delta = content.get(start..)?.trim_start_matches('\n');
     if delta.is_empty() {
         None
     } else {
@@ -194,7 +227,12 @@ async fn run_round_trip(text: String) -> Option<String> {
 /// the CLI's REPL. No unbounded background task outlives the connection —
 /// the poll for one round-trip runs to completion inside this same loop
 /// iteration and nothing is spawned that keeps running after `chat` returns.
-async fn master_chat_loop(mut socket: WebSocket) {
+///
+/// `_permit` is held for the WHOLE lifetime of this function (i.e. the whole
+/// WebSocket connection, however many turns it carries) and released
+/// automatically when this future completes, whatever the reason — see
+/// [`chat`]'s doc comment.
+async fn master_chat_loop(mut socket: WebSocket, _permit: OwnedSemaphorePermit) {
     loop {
         let text = match socket.recv().await {
             Some(Ok(Message::Text(text))) => text.to_string(),
@@ -203,6 +241,19 @@ async fn master_chat_loop(mut socket: WebSocket) {
             Some(Err(_)) => return,                        // socket error: dead
         };
         if text.is_empty() {
+            continue;
+        }
+        // Oversized inbound message: never touch the inbox file for it. Send
+        // a rejection frame and keep the loop open for the next client
+        // message — same "don't close over one bad message" posture as the
+        // `NotRunning` branch below, not a hard disconnect.
+        if text.len() > MAX_MASTER_CHAT_MESSAGE_LEN {
+            let frame = MasterChatMsg::Error {
+                message: format!("message too long (max {MAX_MASTER_CHAT_MESSAGE_LEN} bytes)"),
+            };
+            if send_frame(&mut socket, &frame).await.is_err() {
+                return;
+            }
             continue;
         }
 
@@ -256,6 +307,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("does-not-exist");
         assert_eq!(read_growth(&log, 0), None);
+    }
+
+    /// Regression for the UTF-8 char-boundary panic: `before_len` is a
+    /// byte-length snapshot from an EARLIER read, so if the log is ever
+    /// truncated and rewritten before this read (a rotation, not the normal
+    /// append-only path), the snapshot can land in the middle of a
+    /// multi-byte character. "a\u{e9}" ("aé") is 3 bytes — 'a' at index 0,
+    /// then the two bytes of 'é' at indices 1 and 2 — so byte index 2 is NOT
+    /// a char boundary. Before the fix, `content[2..]` panicked here with
+    /// "byte index 2 is not a char boundary"; `read_growth` must return
+    /// `None` instead.
+    #[test]
+    fn read_growth_none_on_stale_snapshot_mid_char_boundary() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("log");
+        std::fs::write(&log, "a\u{e9}").unwrap(); // "aé", 3 bytes, boundaries at 0/1/3
+        assert_eq!(read_growth(&log, 2), None);
     }
 
     #[test]
