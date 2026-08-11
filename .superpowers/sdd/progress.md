@@ -20,13 +20,26 @@ Base: `origin/main` @ e40a904
       so escape-via-existing-parent is still 403 regardless of leaf
       existence): regression test proven fail-before/pass-after. Re-verified
       clean: build/test/clippy green, 315 tests total in the crate.
-- [ ] Task B — Audit (Quality Arsenal): `GET /v1/audits` (catalog, in-process
+- [x] Task B — Audit (Quality Arsenal): `GET /v1/audits` (catalog, in-process
       from `omega_core::audit::all_audits()`, never CLI-parsed) + `POST
       /v1/audit` (pre-flight validate project+kind, mirrors
       `routes_agents::install_check`) + `GET /v1/audit/stream` WS (runs
       `omega audit run <kind> --dir <project_path>`, mirrors
       `install_stream_loop`'s disconnect-safe process-group-kill contract).
-      New routes_audit.rs, protocol.rs, server.rs, lib.rs, schema_test.rs.
+      Implementer commit `26749d0` (13 tests). Adversarial review CLEAN — no
+      fix needed. Reviewer independently verified: project path passed to
+      `--dir` comes only from server-side `discover()`, never client input;
+      both unknown-kind/unknown-project are rejected BEFORE the WS upgrade
+      (plain 400, never 101-then-error); both new routes sit above
+      `route_layer`; the silent-disconnect process-group kill test was
+      proven non-vacuous (broke `kill_process_group` -> test failed with the
+      marker written; restored -> passed, working tree byte-identical after);
+      `AuditDomain::label()` used correctly (SEO/DX, not raw Debug Seo/Dx).
+      Also resolved a test-count discrepancy from the implementer's own
+      report (233) — a fresh full `cargo test -p omega-gateway` reproducibly
+      returns 328 (315 carried from Task A + 13 new), confirmed by two
+      independent counting methods; 233 came from a scoped/partial run, not
+      the real total. Crate total after Task B: 328 tests.
 - [ ] Task C — Box health + usage + backup: `GET /v1/doctor` (no `--json`
       flag exists on the real CLI — confirmed by reading `omega doctor
       --help`; parses `omega doctor`'s fixed two-space-indented check-line
