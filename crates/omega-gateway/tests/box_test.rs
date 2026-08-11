@@ -497,6 +497,92 @@ async fn box_id_regenerates_when_file_is_empty() {
     assert_eq!(body["box_id"].as_str().unwrap().len(), 32);
 }
 
+/// Adversarial (review-fix regression test): a pre-existing but MALFORMED
+/// (non-empty, wrong length/charset) box_id.txt must be rejected and
+/// regenerated, not echoed back verbatim -- the endpoint's own contract is
+/// "32 lowercase hex chars", never whatever garbage happened to be on disk.
+#[tokio::test]
+async fn box_id_regenerates_when_file_is_malformed_but_nonempty() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    // Too short, and contains a non-hex char ('z').
+    std::fs::write(gateway_dir.path().join("box_id.txt"), "not-a-real-boxid-z").unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    let id = body["box_id"].as_str().unwrap();
+    assert_eq!(id.len(), 32);
+    assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    assert_ne!(id, "not-a-real-boxid-z", "the malformed content must never be echoed back as-is");
+}
+
+/// Adversarial (review-fix regression test): the SAME 16-way concurrent
+/// race as `box_id_concurrent_first_calls_converge_on_one_id`, but starting
+/// from a pre-existing EMPTY file rather than no file at all -- this is
+/// exactly the scenario the review found unprotected in the first pass (the
+/// empty-file branch did a direct, unguarded overwrite with no race
+/// protection at all, so N concurrent callers could each persist and return
+/// a DIFFERENT id).
+#[tokio::test]
+async fn box_id_concurrent_calls_against_a_preexisting_empty_file_converge_on_one_id() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    std::fs::write(gateway_dir.path().join("box_id.txt"), "").unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let mut handles = Vec::new();
+    for _ in 0..16 {
+        let base = base.clone();
+        let token = token.clone();
+        handles.push(tokio::spawn(async move {
+            let res = reqwest::Client::new()
+                .get(format!("{base}/v1/box-id"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .unwrap();
+            let body: serde_json::Value = res.json().await.unwrap();
+            let id = body["box_id"].as_str().unwrap().to_string();
+            assert!(!id.is_empty(), "must never return an empty box_id");
+            id
+        }));
+    }
+    let mut ids = std::collections::HashSet::new();
+    for h in handles {
+        ids.insert(h.await.unwrap());
+    }
+    assert_eq!(ids.len(), 1, "every concurrent call against a pre-existing empty file must converge on one id, got {ids:?}");
+}
+
+/// Adversarial (review-fix regression test): box_id.txt must be 0600 the
+/// moment it exists at its final path -- verified indirectly here by
+/// confirming a fresh id-creation call never leaves a stray, wrongly-permissioned
+/// `box_id.txt.tmp-*` file behind (the write-temp-then-rename must always
+/// complete the rename, never abandon the temp file).
+#[tokio::test]
+async fn box_id_creation_leaves_no_stray_tmp_files() {
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res =
+        reqwest::Client::new().get(format!("{base}/v1/box-id")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+
+    let leftovers: Vec<_> = std::fs::read_dir(gateway_dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("box_id.txt.tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "no temp file should survive a successful creation: {leftovers:?}");
+}
+
 /// Adversarial: `omega doctor` stdout with a check line whose glyph slot
 /// holds a multi-byte UTF-8 character (`€`) instead of the expected
 /// single-byte ASCII glyph. Before the fix, `parse_doctor_output`

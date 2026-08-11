@@ -203,65 +203,65 @@ fn box_id_path(dir: &Path) -> PathBuf {
     dir.join("box_id.txt")
 }
 
+/// A valid persisted box id is EXACTLY what `random_hex(16)` can produce:
+/// 32 lowercase hex chars. Anything else (empty, torn write, manual edit,
+/// disk corruption, stray whitespace aside) is treated as absent and
+/// regenerated -- an endpoint response must never echo back malformed
+/// content just because *something* was on disk.
+fn is_valid_box_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// REVIEW-FIX: the first pass raced on TWO different axes -- concurrent
+/// callers when the file was absent (guarded by `create_new`) and,
+/// separately, concurrent callers when the file existed but was empty (NOT
+/// guarded at all: every racing caller took the direct-overwrite branch,
+/// computed its OWN candidate, and each unconditionally re-wrote the file
+/// with a different id, so two callers could receive two different ids from
+/// one HTTP round-trip -- the exact "registers as two different boxes"
+/// failure the whole point of a stable box id exists to prevent). A
+/// process-wide mutex serializing the ENTIRE read-or-create sequence closes
+/// both races in one stroke and is simpler than reasoning about two
+/// independent atomic-file-op protocols: this endpoint is called rarely
+/// (once per pairing, occasionally thereafter), so a coarse lock costs
+/// nothing worth optimizing away. Global rather than per-`dir` because nothing
+/// in this crate needs finer granularity and a global lock is trivially
+/// correct; the only cost is serializing box-id reads/creates across
+/// unrelated `gateway_dir`s within the SAME process (irrelevant in
+/// production -- one process serves one dir -- and merely serializes,
+/// rather than breaks, the handful of tests that use different tempdirs).
+static BOX_ID_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Reads this box's stable id from `box_id.txt`, generating and persisting a
-/// fresh 32-hex-char id (`random_hex(16)`) on first access if the file
-/// doesn't exist yet or is empty/corrupted.
+/// fresh 32-hex-char id (`random_hex(16)`) on first access if the file is
+/// absent or its content isn't a valid id ([`is_valid_box_id`]).
 ///
-/// Concurrent-safe by construction rather than by locking: two requests
-/// racing to be "the first" both compute a candidate id, but only one wins
-/// the atomic `create_new` claim on the file; the loser reads back whatever
-/// the winner persisted instead of serving its own (different) candidate —
-/// otherwise two concurrent first-callers would each get a different id and
-/// the box would register into the Directory as two different boxes.
+/// The write itself is write-temp-then-rename, not a direct write to the
+/// final path: `harden_file` runs on the TEMP path before the rename, so
+/// `box_id.txt` is either absent or ALREADY 0600 at every instant it is
+/// observable at its final name -- no window where a concurrent reader (a
+/// different process, or a curious `ls` from another local user) could see
+/// it at default (umask) permissions before it gets hardened.
 fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
-    use std::io::Write;
     std::fs::create_dir_all(dir)?;
     harden_dir(dir);
     let path = box_id_path(dir);
 
-    match std::fs::read_to_string(&path) {
-        // Healthy existing id -- the common case on every call after the
-        // first.
-        Ok(existing) if !existing.trim().is_empty() => Ok(existing.trim().to_string()),
-        // The file EXISTS but is empty/corrupted: `create_new` below would
-        // always fail with AlreadyExists here (it only checks presence, not
-        // content) and silently re-serve the same empty string forever, so
-        // this case is handled with a direct overwrite instead -- no
-        // concurrent-first-call race to protect against, since the file is
-        // already there.
-        Ok(_empty) => {
-            let candidate = crate::util::random_hex(16); // 16 bytes -> 32 hex chars
-            std::fs::write(&path, &candidate)?;
-            harden_file(&path);
-            Ok(candidate)
-        }
-        // The file does not exist yet: this IS the race-prone path, since
-        // multiple concurrent "first" requests can all land here together.
-        Err(_not_found) => {
-            let candidate = crate::util::random_hex(16);
-            match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut f) => {
-                    f.write_all(candidate.as_bytes())?;
-                    harden_file(&path);
-                    Ok(candidate)
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Lost the create_new race to a concurrent first caller
-                    // -- serve what it actually persisted, never our own
-                    // discarded candidate.
-                    let existing = std::fs::read_to_string(&path)?;
-                    let trimmed = existing.trim();
-                    if trimmed.is_empty() {
-                        // Vanishingly unlikely (the winner is mid-write): one retry.
-                        std::fs::read_to_string(&path).map(|s| s.trim().to_string())
-                    } else {
-                        Ok(trimmed.to_string())
-                    }
-                }
-                Err(e) => Err(e),
-            }
+    let _guard = BOX_ID_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let trimmed = existing.trim();
+        if is_valid_box_id(trimmed) {
+            return Ok(trimmed.to_string());
         }
     }
+
+    let candidate = crate::util::random_hex(16); // 16 bytes -> 32 hex chars
+    let tmp_path = dir.join(format!("box_id.txt.tmp-{}", crate::util::random_hex(4)));
+    std::fs::write(&tmp_path, &candidate)?;
+    harden_file(&tmp_path);
+    std::fs::rename(&tmp_path, &path)?;
+    Ok(candidate)
 }
 
 /// `GET /v1/box-id` — this box's stable, non-secret identifier, generating
