@@ -259,6 +259,23 @@ pub struct AgentsResponse {
     pub agents: Vec<AgentEntry>,
 }
 
+/// One persistent OmegaOS/AISB teammate. This registry is intentionally
+/// distinct from [`AgentEntry`], which represents dispatch-provider engines.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SystemAgentEntry {
+    pub name: String,
+    pub model: String,
+    pub role: String,
+    pub tagline: String,
+    pub tools: Vec<String>,
+    pub responsibilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SystemAgentsResponse {
+    pub agents: Vec<SystemAgentEntry>,
+}
+
 /// `POST /v1/agents/{name}/install` response body — a pure pre-flight
 /// check, never a spawn: confirms `{name}` parses via
 /// `omega_core::agents::Agent::from_name` and is installable
@@ -311,6 +328,53 @@ pub struct SkillEntry {
 pub struct SkillsResponse {
     pub skills: Vec<SkillEntry>,
     pub total: usize,
+}
+
+/// Editable detail for one skill. Absolute host paths are never serialized.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillDetail {
+    pub name: String,
+    pub description: String,
+    pub category: String,
+    pub content: String,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillDetailResponse {
+    pub skill: SkillDetail,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillUpdateRequest {
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillAgentRequest {
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct SkillAgentResponse {
+    pub session: String,
+}
+
+/// One operative system from OmegaOS's compiled registry. `path` stays
+/// relative and `bot` is empty when no dedicated bot is linked.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OsEntry {
+    pub slug: String,
+    pub name: String,
+    pub category: String,
+    pub status: String,
+    pub path: String,
+    pub bot: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OsResponse {
+    pub os: Vec<OsEntry>,
 }
 
 /// One entry of `GET /v1/projects`'s `projects` array — a field-for-field
@@ -1297,10 +1361,19 @@ pub struct Protocol {
     pub rules_response: RulesResponse,
     pub agent_entry: AgentEntry,
     pub agents_response: AgentsResponse,
+    pub system_agent_entry: SystemAgentEntry,
+    pub system_agents_response: SystemAgentsResponse,
     pub agent_install_check_response: AgentInstallCheckResponse,
     pub agent_install_stream_msg: AgentInstallStreamMsg,
     pub skill_entry: SkillEntry,
     pub skills_response: SkillsResponse,
+    pub skill_detail: SkillDetail,
+    pub skill_detail_response: SkillDetailResponse,
+    pub skill_update_request: SkillUpdateRequest,
+    pub skill_agent_request: SkillAgentRequest,
+    pub skill_agent_response: SkillAgentResponse,
+    pub os_entry: OsEntry,
+    pub os_response: OsResponse,
     pub project_entry: ProjectEntry,
     pub projects_response: ProjectsResponse,
     pub marketing_project_entry: MarketingProjectEntry,
