@@ -1,261 +1,192 @@
-# omega-gateway wave 6 — progress ledger
+# omega-gateway wave7 — control-plane wave (A-E)
 
-Branch: `omega-gateway-wave6` (worktree `~/.omega/worktrees/omega-gateway-wave6`)
-Base: `origin/main` @ e40a904
+Merge-base: origin/main @ b642d72 (wave6 merged, ~351 tests).
+Branch: omega-gateway-wave7.
 
-## Plan (enumerated, operator order)
-
-- [x] Task A — Files browse/read: `GET /v1/files` + `GET /v1/files/read`,
-      scoped to one discovered project's path via `project=` query param
-      (never `$HOME`), traversal guard = component-join + canonicalize +
-      `starts_with(root)`. Implementer commit `80df155` (22 tests, build/
-      test/clippy green). Adversarial review NOT CLEAN first pass: real
-      info-leak bug — `resolve_scoped_path` canonicalized the leaf itself
-      before classifying Escaped(403)/NotFound(404), so a traversal to an
-      EXISTING outside file returned 403 while the SAME traversal to a
-      nonexistent outside file returned 404 — an authenticated caller could
-      enumerate arbitrary-file existence on the box from the status code
-      alone, without reading any content. Fixed in `6a42db8` (falls back to
-      canonicalizing the leaf's PARENT when the leaf itself doesn't resolve,
-      so escape-via-existing-parent is still 403 regardless of leaf
-      existence): regression test proven fail-before/pass-after. Re-verified
-      clean: build/test/clippy green, 315 tests total in the crate.
-- [x] Task B — Audit (Quality Arsenal): `GET /v1/audits` (catalog, in-process
-      from `omega_core::audit::all_audits()`, never CLI-parsed) + `POST
-      /v1/audit` (pre-flight validate project+kind, mirrors
-      `routes_agents::install_check`) + `GET /v1/audit/stream` WS (runs
-      `omega audit run <kind> --dir <project_path>`, mirrors
-      `install_stream_loop`'s disconnect-safe process-group-kill contract).
-      Implementer commit `26749d0` (13 tests). Adversarial review CLEAN — no
-      fix needed. Reviewer independently verified: project path passed to
-      `--dir` comes only from server-side `discover()`, never client input;
-      both unknown-kind/unknown-project are rejected BEFORE the WS upgrade
-      (plain 400, never 101-then-error); both new routes sit above
-      `route_layer`; the silent-disconnect process-group kill test was
-      proven non-vacuous (broke `kill_process_group` -> test failed with the
-      marker written; restored -> passed, working tree byte-identical after);
-      `AuditDomain::label()` used correctly (SEO/DX, not raw Debug Seo/Dx).
-      Also resolved a test-count discrepancy from the implementer's own
-      report (233) — a fresh full `cargo test -p omega-gateway` reproducibly
-      returns 328 (315 carried from Task A + 13 new), confirmed by two
-      independent counting methods; 233 came from a scoped/partial run, not
-      the real total. Crate total after Task B: 328 tests.
-- [x] Task C — Box health + usage + backup: `GET /v1/doctor` (shells to bare
-      `omega doctor`, no `--fix`/`--deep`; parses the two-space-indented
-      check-line format WITHOUT a fixed-width name/detail split — proven
-      against a real >16-char check name), `GET /v1/usage` (in-process
-      `omega_core::monitor::UsageSnapshot::read()`, zero subprocess, `$HOME`
-      env-override tested), `GET /v1/box-info` (hostname + `omega --version`
-      + gateway `CARGO_PKG_VERSION` + process uptime via `AppState.started_at:
-      Instant`), `POST /v1/backup` (the one mutating endpoint — takes ZERO
-      client input, server picks `<OMEGA_BACKUP_DIR|tmpdir>/omega-gateway-
-      backup-<ns-precision-ts>.tgz` itself). Implementer commit `40db4fb`
-      (16 tests). Adversarial review NOT CLEAN first pass: `parse_doctor_
-      output` panicked on a check line whose glyph slot held a multi-byte
-      UTF-8 char (raw `&s[0..3]` byte-slice on a non-char-boundary — reachable
-      from adversarial/malformed `omega doctor` stdout, would have dropped
-      the client connection rather than degrading to 502). Fixed in `c707a6b`
-      (`.get(0..3)` instead of a raw index range, skips the line instead of
-      panicking): regression proven fail-before/pass-after at both the unit
-      and HTTP-integration layer (second request on the same server still
-      succeeds post-fix, proving the process itself survives either way).
-      Reviewer also independently judged the backup-path symlink-race
-      question theoretical-not-realistic for this single-tenant local
-      gateway (would need an attacker to predict a nanosecond-precision,
-      request-time filename before an authenticated POST fires) and confirmed
-      cross-test-binary env isolation is a non-issue (`cargo test` runs each
-      `tests/*.rs` file as its own OS process). Crate total after Task C:
-      347 tests.
-- [x] Wiring — server.rs route table (every new route ABOVE route_layer),
-      protocol.rs schema_test, lib.rs module decls — done incrementally per
-      task, each reviewed as part of it. Final review re-verified independently:
-      all 39 route paths extracted from `server.rs:118-215` (including the
-      multi-line `.route(` forms) are UNIQUE — zero duplicates, zero collisions
-      with pre-existing routes; all 7 wave6 routes sit at lines 156-160 and
-      204-207, i.e. ABOVE the `route_layer` at `server.rs:211`; only
-      `/v1/health` + `/v1/pair` are outside `protected`. Proven live, not just
-      read: every wave6 route returns 401 with no token AND with a garbage
-      token. `AppState` is constructed ONLY via `AppState::new` (zero struct
-      literals anywhere in src/ or tests/), so Task C's `started_at` field
-      could not break any existing construction; `Instant` being `Copy`, the
-      live `uptime_secs` tracked the real process (240s after 4 min, and reset
-      to 17s after a deliberate restart).
-- [x] Final opus whole-branch review — RUN THE BINARY against live requests.
-      NOT CLEAN: found one real security bug the per-task reviews missed, in
-      Task A's traversal guard — see below.
-- [x] Runtime verify (L1): rebuild release, live-check every endpoint against
-      a real paired token; capture real evidence.
-
-## Final whole-branch review (opus) — live run against the real binary
-
-Method: clean `cargo build --release -p omega-gateway`, then the real
-`target/release/omega-gatewayd serve` started as a background process on a
-free port under a fully isolated scratch env (`HOME`, `OMEGA_HOME`,
-`OMEGA_GATEWAY_DIR`, `OMEGA_BACKUP_DIR` all tempdirs; `OMEGA_BIN` pointed at
-the REAL `~/.local/bin/omega` so every subprocess call was real integration,
-never a fake script). Real device paired the documented way
-(`omega-gatewayd pair` -> 8-char code -> `POST /v1/pair` -> 64-char bearer).
-`HOME` had to be overridden as well as `OMEGA_HOME`: `omega_cli::omega_bin()`,
-`UsageSnapshot::read()` and `omega backup` all resolve `dirs::home_dir()`
-(the real `$HOME`), NOT `OMEGA_HOME` — and `omega backup` both WRITES
-`crontab.bak` into the state dir and tars it, so left on the real `$HOME` a
-single `POST /v1/backup` would have written into the operator's real
-`~/.omega` and archived ~16 GB of it. All three real subcommands were
-dry-run under the scratch `HOME` first and proven bounded (doctor 0.21s,
-audit run 0.016s, backup 0.020s / 1.6 KB) before being driven over HTTP.
-
-### BUG FOUND + FIXED — `6725751`
-
-`resolve_scoped_path` (`routes_files.rs:116`) still leaked an existence
-oracle through 403-vs-404, one directory level ABOVE the one `6a42db8`
-closed. That earlier fix classified a non-resolving leaf by canonicalizing
-the leaf's immediate PARENT and nothing further, so `../<dir>/leaf` answered
-403 when `<dir>` existed outside the project root and 404 when it did not.
-An authenticated caller could therefore enumerate arbitrary DIRECTORY paths
-anywhere on the box from the status code alone. Proven LIVE against the
-running binary with a real token (this is exactly what a code re-read had
-already missed twice):
-
-    ../../../../../../../../home/vibe/.ssh/probe             -> 403
-    ../../../../../../../../home/vibe/.no-such-dir-xyz/probe -> 404
-    ../../../../../../../../home/vibe/.omega/secrets/probe   -> 403
-    ../../../../../../../../etc/ssl/probe                    -> 403
-    ../../../../../../../../etc/no-such-dir-xyz/probe        -> 404
-
-Fix: the status may depend ONLY on whether the NEAREST EXISTING ancestor is
-inside the root, never on what exists outside it — so on a leaf that does not
-resolve, walk UP the ancestor chain to the first entry that DOES resolve and
-classify on that (inside -> 404, outside -> 403). The walk terminates because
-`joined` is absolute, so the chain ends at `/`, which always canonicalizes.
-Regression tests proven fail-before/pass-after at BOTH layers (2 unit tests
-failed before the fix; a third pins that the walk does not over-broaden a
-legitimate in-root miss into 403, plus an HTTP-level test). Re-confirmed
-LIVE on the rebuilt binary: all six probes above now return 403 uniformly,
-while in-root misses (`nope.txt`, `src/nope.txt`, `no-such-subdir/nope.txt`)
-still return 404.
-
-### Live evidence, per endpoint (real bearer token, real server)
-
-- `GET /v1/files` root -> 200, real entries incl. `.git`/`src` dirs before
-  files, alphabetical within group; `path=src` -> 200 `main.rs` size 30.
-- `GET /v1/files/read` -> 200 `{"content":"hello from demo-proj\nline two\n"}`.
-- Traversal battery, all blocked, ZERO `/etc/passwd` content ever returned:
-  `../../../etc` -> 403; absolute `/etc/passwd` -> 400 "path must not be
-  absolute"; symlink `escape-link -> /etc/passwd` -> 403; URL-encoded
-  `%2e%2e%2f` -> 403; `project=../../etc` -> 400 unknown project.
-- `GET /v1/audits` -> 200, real 23-audit catalog over the wire, domains
-  rendered as LABELS (`SEO`, `DX`, not Debug `Seo`/`Dx`).
-- `POST /v1/audit` -> 200 for `codeaudit` (23 phases / 420); 400 unknown
-  kind; 400 unknown project.
-- `GET /v1/audit/stream` WS -> real 101 upgrade, 7 real `Line` frames from
-  the real `omega audit run` subprocess + a real `Exit{success:true,code:0}`
-  frame, clean close 1000. Pre-upgrade rejection verified: bad kind -> plain
-  400, bad project -> plain 400, no/bad token -> 401 (never 101-then-error).
-- `GET /v1/doctor` -> 200, 18 real checks, `overall:"warn"`, matching the
-  real `omega doctor` run directly on this box. Exercised the real
-  exit-code path and the >16-char name case live ("binary provenance",
-  18 chars, parsed as one `text` with no fixed-width split).
-- `GET /v1/usage` -> 200 `{"available":false}` with no cache in the scratch
-  `$HOME`; after seeding a cache file, 200 `available:true` with real
-  parsed fields. BOTH branches proven live.
-- `GET /v1/box-info` -> 200, real `hostname` "Agentik-os", real
-  `omega 0.1.9`, gateway `0.1.0`, `uptime_secs` tracking the real process.
-- `POST /v1/backup` -> 200, a REAL 1688-byte tgz written under the scratch
-  `OMEGA_BACKUP_DIR`; `tar tzf` confirms it archived the SCRATCH `.omega`
-  only. Operator's real `~/.omega` mtime byte-identical before and after, no
-  `crontab.bak` written there, no stray archive in the operator's home.
-- Every route above with NO token -> 401; with a garbage token -> 401. The
-  unauthenticated `POST /v1/backup` wrote no file (401 before the handler).
-
-Gates at final HEAD, fresh: `cargo test -p omega-gateway` = **351 passed, 0
-failed, 0 ignored** across 34 test binaries (347 carried in + 4 new
-regression tests); `cargo clippy -p omega-gateway --all-targets --no-deps --
--D warnings` = clean, exit 0; release build clean.
-- [ ] Rebase on origin/main, leave clean (no merge/push), report.
-
-Tasks are SERIALIZED (not parallel fan-out) because A/B/C all touch shared
-files (protocol.rs, server.rs, lib.rs, schema_test.rs) — R-SCOPE (one writer
-per file) forbids concurrent delegates on those, same reasoning wave5 recorded.
-Each task still gets a fresh implementer + fresh reviewer per the SDD
-contract; they just run one task at a time, each its own commit.
+Tasks A-E are SERIALIZED, not parallel fan-out: every task touches
+protocol.rs, server.rs, lib.rs, schema_test.rs (R-SCOPE — one writer per
+file). Each still gets a FRESH implementer + FRESH reviewer per the SDD
+contract, one task at a time, its own commit(s).
 
 ## Ground truth gathered before implementing (controller read, not guessed)
 
-- `server.rs::build_router`: every protected `.route(...)` MUST be registered
-  on `protected` BEFORE `.route_layer(middleware::from_fn_with_state(...,
-  require_device))` or it ships unauthenticated — comment at that line is
-  explicit.
-- `omega audit list` has NO `--json` flag (confirmed: `--json` errors
-  "unexpected argument"). `omega_core::audit::all_audits() -> Vec<AuditSkill>`
-  (id, name, domain: AuditDomain, phases, max_score, read_only) is the real
-  in-process registry (parsed once from `skills/audits/registry.toml`,
-  cached in a `OnceLock`) — `GET /v1/audits` calls this DIRECTLY, exactly the
-  idiom `routes_rules::list` already uses for `omega_core::rules`, never a
-  CLI subprocess.
-- `omega audit run <id> --dir <dir>` does NOT run the audit — it prints the
-  audit's metadata + the `omega spawn-worker` command an operator would run
-  to actually dispatch it (confirmed by running it live: prints "Audit:
-  ...", "Phases: ...", "To dispatch as a worker session: omega spawn-worker
-  ..."). So the WS stream this wave adds is real infrastructure (mirrors
-  `install_stream_loop`'s process-group-kill contract faithfully) but the
-  underlying command it drives is fast and side-effect-free, not a real
-  multi-minute audit run — that stays a `spawn-worker` dispatch, out of scope
-  for this wave.
-- `omega doctor` has options `--pre-reset` / `--fix` / `--deep` / `-h` —
-  `--json` does NOT exist. `--fix` mutates, `--deep` burns quota on a live
-  Codex auth check — `GET /v1/doctor` MUST run bare `omega doctor` only.
-  Real stdout format (from `crates/omega-cli/src/main.rs::cmd_doctor`):
-  `println!("  {} {:16} {}", c.health.glyph(), c.name, c.detail);` — glyph is
-  exactly `[+]`/`[!]`/`[x]` (`omega_core::doctor::Health::glyph()`). Check
-  lines are indented by EXACTLY two spaces before the glyph; the trailing
-  overall-summary line (`"[+] all systems healthy"` etc.) has ZERO leading
-  spaces — that is the unambiguous parser discriminant, since `{:16}` does
-  NOT truncate/delimit a `c.name` longer than 16 chars (e.g. "binary
-  provenance" is 18 chars, so name and detail are separated only by the
-  format string's single literal space, not a fixed column) — never split
-  name/detail on a fixed-width assumption; the parser must capture
-  `{health, text}` per checked line (glyph + full remainder), and derive
-  `overall` by aggregating check healths (mirrors
-  `omega_core::doctor::overall()`), never by re-parsing the trailing summary
-  line. `omega doctor` exits 1 on Fail (`std::process::exit(1)` in
-  `cmd_doctor`) — that is a NORMAL outcome (matches `omega_cli::run`'s own
-  non-zero-exit-is-not-an-error philosophy), never treated as a spawn/502
-  error by this endpoint.
-- `omega usage` (no flags) is a passive cache read: `omega_core::monitor::
-  UsageSnapshot::read() -> Result<Option<Self>>` reads
-  `~/.omega/state/usage.json`, zero network, zero subprocess.
-  `GET /v1/usage` calls this directly in-process (spawn_blocking), never
-  shells to `omega usage`. `--check` (live OAuth fetch + Telegram alert) is
-  explicitly OUT OF SCOPE — it has side effects (an alert send) a passive GET
-  must never trigger. NOTE: `UsageSnapshot::omega_usage_path()` hardcodes
-  `dirs::home_dir()` (NOT `OMEGA_HOME`/`OMEGA_STATE_DIR`) — a hermetic test
-  overrides via the `HOME` env var itself (Linux `dirs` reads `$HOME`),
-  LOCK-guarded like every other global-env test in this crate.
-  `UsageSnapshot` has no data when the cache file is absent (`None`) — the
-  endpoint must render that as a real, structured "no data yet" response,
-  never a 404/500.
-- `omega backup [--out PATH] [--include-memory]` archives `~/.omega` +
-  crontab to a `.tgz`; real, non-destructive (reads only, writes one new
-  file), but a real side effect — `POST /v1/backup` always passes `--out` at
-  a caller-chosen/temp path in tests, NEVER runs unbounded against the
-  operator's real `~/.omega` inside a test.
-- `omega --version` prints `"omega 0.1.9\n"` — `GET /v1/box-info` returns
-  this trimmed verbatim (no brittle parse) alongside the gateway's own
-  `CARGO_PKG_VERSION`, `hostname` (shelled — no hostname crate in this
-  crate's Cargo.toml, matches the existing shell-out convention), and a
-  process-uptime computed from a `once_cell`/`OnceLock<Instant>` captured at
-  gateway startup.
-- `routes_dispatch.rs`'s project-allowlist pattern (validate `project` against
-  `omega_core::projects::discover(&home)` BEFORE any subprocess/filesystem
-  touch beyond the read-only discover walk) is reused verbatim by Task A
-  (files root) and Task B (audit project dir) — `DiscoveredProject::path` is
-  the per-project root, never `$HOME` itself (browsing all of `$HOME` would
-  reach `~/.ssh`, `~/.omega/secrets`, violating R-ENV).
-- `routes_agents.rs::install_stream_loop` is the canonical disconnect-safe
-  WS-streams-a-subprocess pattern (process_group(0) + kill_on_drop + BOTH
-  `tokio::select!` arms — the mpsc frame channel AND the socket's own read
-  side — must be watched, a send-failure-only disconnect check misses a
-  client that goes quiet, see wave5's P1 fix) — Task B's audit-stream mirrors
-  its STRUCTURE (same discipline `omega_cli.rs` documents mirroring
-  `rmux.rs`'s shape while deviating on error semantics), not a forced shared
-  abstraction over already-shipped, tested code.
+- **Task A / Master chat — the mechanism is REAL but genuinely UNWIRED.**
+  `omega aisb-chat` (main.rs:8747 `cmd_aisb_chat`) does NOT spawn a
+  subprocess: it appends `{text, ts}` JSON to
+  `~/.omega/state/aisb-local-inbox.jsonl`, then polls
+  `~/.omega/state/aisb-conversation.log` for growth (up to 90s, 500ms
+  ticks) and prints the delta. `aisb.rs::ensure_master` confirms the
+  `aisb-master` rmux session is a PURE READ-ONLY VIEWER (`tail -F` on the
+  conversation log) — "NEW MODEL (2026-05-28): the Telegram bot owns its
+  own persistent Claude SDK subprocess — that is the brain." Grepped the
+  ENTIRE box (crates/, ~/.omega/telegram-bot/*.ts incl. node_modules-free
+  source, every .ts/.md/.toml under ~/.omega) for any reader of
+  `aisb-local-inbox` / `local-inbox`: ZERO matches outside
+  `cmd_aisb_chat` itself. Nothing on this box currently consumes that
+  inbox file — the CLI's own local-chat feature is unwired to the real
+  brain today. Decision: build the WS endpoint mirroring the CLI's exact
+  file protocol (inbox write + conversation-log poll) — this is the real,
+  documented, testable mechanism, and inventing a different call path
+  (e.g. shelling a headless prompt) would break the "same brain, same
+  response" contract and diverge further from what OmegaOS itself ships.
+  Gate on `aisb-master` liveness first (never write the inbox if the
+  session is dead — no auto-spawn, task said "not without care"); report
+  the pre-existing wiring gap in the final report rather than papering
+  over it.
+- **Task B / oracle ops — `timeline` and `gate` are PURE IN-PROCESS reads,
+  not CLI text to parse.** `omega_core::timeline::build(state_dir, oracle)
+  -> Result<Option<OracleTimeline>>` and `omega_core::gate::{GateResult,
+  Rubric}::read(state_dir, oracle) -> Result<Option<Self>>` are synchronous
+  file reads already used by `cmd_timeline`/`cmd_gate` — calling them
+  in-process (spawn_blocking, mirroring `routes_rules.rs` /
+  `routes_oracles.rs`) is simpler and far more robust than shelling to
+  `omega timeline`/`omega gate` and parsing rendered text, and several of
+  the `GateResult`/`Rubric` fields already derive `Serialize`.
+  `OracleTimeline`/`TimelineEvent` derive only `Debug, Clone` (no
+  Serialize) — mapped field-by-field into new gateway protocol types
+  rather than touching omega-core (surgical, R-KARPATHY). `reap` and
+  `resurrect` remain real CLI subprocess wraps (`omega reap <session>`,
+  `omega resurrect <oracle>`) — both mutate real state (scope
+  claims/worktrees, spawns) so go through `omega_cli::run`, argv-only,
+  fake-bin tested, NEVER run against a real session in tests or
+  live-verify.
+- **Task B / `orchestrate` is real, heavy, and long (`--timeout` default
+  3600s), dispatches an actual oracle end-to-end.** WebSocket upgrades are
+  GET-only per spec (browsers refuse to upgrade a POST) — the task brief's
+  `POST /v1/orchestrate` literal path can't carry a WS upgrade, so this
+  wave exposes `GET /v1/orchestrate/stream?project=&mission=&agent=`,
+  mirroring `routes_audit.rs`'s `check`/`stream` pair 1:1 (project
+  validated against `omega_core::projects::discover` before any spawn,
+  pre-upgrade rejection on bad params, same disconnect-safe
+  process-group-kill loop). Never run for real in tests/live-verify (fake
+  OMEGA_BIN only) — this is exactly the "never launch a real mission in
+  tests" instruction.
+- **Task C / config — `ProvidersConfig` is a pure in-process typed
+  store, and `omega config show` LEAKS EVERY PROVIDER API KEY IN
+  PLAINTEXT** (`claude.api_key`, `codex.api_key`, `gemini.api_key`,
+  `glm.api_key`, `pi.api_key`, `hermes.api_key`, `openrouter.api_key`
+  — confirmed live: `omega config show` prints raw secrets for every
+  configured provider). `omega_core::providers::ProvidersConfig::load()`
+  /`::save()` (omega-core/src/providers.rs) are the real in-process
+  read/write the CLI itself calls (`cmd_config`); `set_config_value`'s
+  match arms are the authoritative key allowlist. SECURITY DECISION
+  (beyond the literal task text, and load-bearing): `GET /v1/config`
+  NEVER returns raw `api_key` values — every `*.api_key` field is
+  redacted to a boolean `set: bool` (non-empty vs empty), never the
+  secret itself, even though the caller is already device-authenticated.
+  Rationale: a stolen/leaked device token would otherwise hand over
+  EVERY provider credential on the box in one GET, a blast radius wildly
+  disproportionate to what an app UI needs (it needs to know a key IS
+  configured, never the value) — same posture as R-SECRETS-VAULT/R-ENV.
+  `PUT /v1/config` still accepts `api_key` values (write-only — a client
+  can SET a key it already possesses, it just can never READ one back
+  over this API) and is validated against the same key allowlist
+  `set_config_value` uses, in-process, then `cfg.save()` — no CLI
+  subprocess at all for Task C. Hermetic test: `ProvidersConfig::path()`
+  is `crate::config::omega_dir()` which DOES honor `$OMEGA_DIR` (confirmed
+  in omega-core/src/config.rs), so tests set `OMEGA_DIR` to a scratch dir
+  under a LOCK-guarded mutex like every other global-env test in this
+  crate.
+- **Task D / telegram — `OmegaTelegramConfig` is also a pure in-process
+  typed store, no CLI shelling needed**, and it ALSO holds a plaintext
+  secret (`bot_token`) that must never round-trip to a GET caller.
+  `omega_core::monitor::OmegaTelegramConfig::{read,write}()` (used
+  directly by `cmd_telegram`'s Status/Enable/Disable arms) hardcode
+  `dirs::home_dir()` (NOT `$OMEGA_DIR`/`$OMEGA_HOME` — confirmed reading
+  `monitor.rs::OmegaTelegramConfig::path()`), so hermetic tests override
+  the `$HOME` env var itself, LOCK-guarded, same pattern wave6 used for
+  `UsageSnapshot`. `GET /v1/telegram/status` redacts `bot_token` to a
+  `set: bool` exactly like Task C's `api_key`; enable/disable read, flip
+  `enabled`, write — in-process, no subprocess, so "fake-bin tested" from
+  the task brief doesn't apply here (there is no bin to fake) — instead
+  enable/disable are tested against a scratch `$HOME`, and live-verify
+  reads the REAL status (safe, read-only) but NEVER calls enable/disable
+  against the operator's real `~/.omega/telegram.toml`.
+- **Task E / pdf — real CLI wrap, no shortcuts available.** `omega pdf
+  --template=<t> --data=<path> --out=<path> [--send] [--caption=]` has no
+  in-process library entry point in this workspace (pdfgen is its own
+  tool under `tools/pdfgen/`, invoked as a subprocess by the CLI itself)
+  — `POST /v1/pdf` shells to `omega_cli::run`, argv-only. `template` is
+  validated against the literal known set (`whitepaper|audit|marketing|doc`)
+  before spawning. `data` is client-supplied JSON: written to a
+  SERVER-CHOSEN scratch path (never a client-supplied path passed to
+  `--data`) mirroring `routes_box::backup`'s server-chosen-`--out`
+  posture. `GET /v1/pdf/download?path=` is scoped to the pdf OUTPUT dir
+  only (same canonicalize-and-prefix-check idiom `routes_files.rs`
+  already carries, including its ancestor-walk fix for the
+  outside-root-403-vs-404 leak wave6 found) — never an arbitrary
+  filesystem path. `--send` is NEVER passed by this endpoint (it would
+  push to the operator's real Telegram from an API call with no
+  operator-side confirmation) — this endpoint only generates + returns a
+  path/download link; sending stays a CLI/operator action.
+
+## Task A — done
+
+Built `GET /v1/master/chat` in a new `crates/omega-gateway/src/routes_master.rs`,
+wired above the `route_layer` line in `server.rs` and added to `lib.rs`. The
+handler mirrors `omega aisb-chat`'s (`cmd_aisb_chat`) exact file protocol: on
+each inbound client text message it (1) checks `aisb-master` rmux-session
+liveness via `rmux::list_sessions()` (spawn_blocking, same idiom
+`routes_oracles::list` uses) — if not live, sends a `NotRunning` frame and
+never touches the inbox, then keeps the loop open for more messages rather
+than closing the socket; (2) if live, appends `{text, ts}` JSON to
+`~/.omega/state/aisb-local-inbox.jsonl` (creating the file/parent dir if
+missing), records the pre-append conversation-log byte length, then polls
+`~/.omega/state/aisb-conversation.log` for growth (180 attempts * 500ms =
+90s by default, overridable via `OMEGA_AISB_POLL_ATTEMPTS` /
+`OMEGA_AISB_POLL_INTERVAL_MS` for tests); (3) on growth, sends `Reply{text}`
+with the delta (leading newline noise trimmed); on no growth within budget,
+sends `Timeout`. Both filesystem paths resolve via `dirs::home_dir()`
+falling back to raw `$HOME`, deliberately NOT `crate::config::home_dir()`
+(which additionally honors `$OMEGA_DIR`/`$OMEGA_HOME`) — a distinct
+resolution kept intentionally duplicated in `routes_master.rs` rather than
+reused, so this endpoint watches/writes the exact files a real `aisb-master`
+setup uses, bit for bit matching the CLI. Added `MasterChatMsg` to
+`protocol.rs` (`NotRunning` / `Reply{text}` / `Timeout`, same
+`#[serde(tag="type", rename_all="snake_case")]` shape as `AuditStreamMsg`),
+into the `Protocol` umbrella struct, and into `tests/schema_test.rs`'s type
+list.
+
+TDD: wrote the WS integration tests first (they compiled against the not-yet-
+existing route and failed to build), then implemented `routes_master.rs` to
+make them pass. Test delta: **+10** (6 unit tests inside `routes_master.rs`
+covering `read_growth`/`log_len`/`append_to_inbox` edge cases — missing log,
+no growth, delta trim, parent-dir creation, multi-line append; 4 WS
+integration tests in the new `tests/master_chat_test.rs` — not-running never
+touches the inbox, a live master's round trip writes the inbox and returns
+the right `Reply` text, a live master that never grows the log times out
+within a short overridden budget, and the pre-upgrade 401 with no token).
+Crate total after Task A: **362 tests, 0 failed, 0 ignored**
+(`cargo test -p omega-gateway`). `cargo clippy -p omega-gateway --all-targets
+--no-deps -- -D warnings` clean.
+
+Judgment calls beyond the literal brief: (1) on `NotRunning`, the loop stays
+open (doesn't close the socket) so a client watching the master start up
+mid-session doesn't need to reconnect — the brief allowed either choice and
+named this the "simplest and safest" one. (2) `read_growth` returns `None`
+(treated as "poll again") both when the log hasn't grown AND when it exists
+but fails to parse as UTF-8 — never a crash/panic, per the brief's explicit
+instruction. (3) Env-var poll overrides parse with `.ok().and_then(|v|
+v.parse().ok())`, so a garbage value falls back to the CLI's real default
+rather than erroring — matches this crate's general "degrade gracefully,
+never 500 on a bad env var" posture (e.g. `routes_oracles::list`'s rmux
+failure handling).
+
+Honest gap, restated: nothing on this box currently reads
+`aisb-local-inbox.jsonl` — confirmed by grepping every Rust crate and the
+Bun Telegram bot's brain source before implementation started (see the
+ground-truth section above). A real client hitting this endpoint today will
+always receive `Timeout` (assuming `aisb-master` is even running), exactly
+like the CLI's own local REPL does right now. This is a pre-existing wiring
+gap in what OmegaOS ships, not a defect in this endpoint — the mechanism
+built here is byte-for-byte the real, documented protocol, ready to work the
+moment something starts consuming that inbox file.
+
+## Status
+- [x] Task A — Master/AISB-chat WS
+- [ ] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)
+- [ ] Task C — Config GET/PUT
+- [ ] Task D — Telegram bridge control
+- [ ] Task E — PDF generation
+- [ ] Final opus whole-branch live-binary review
+- [ ] Rebase on origin/main, leave clean, report

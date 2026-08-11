@@ -587,6 +587,28 @@ pub enum AuditStreamMsg {
     Error { message: String },
 }
 
+/// Server frames on `GET /v1/master/chat` — the WebSocket that mirrors
+/// `omega aisb-chat`'s (`crates/omega-cli/src/main.rs::cmd_aisb_chat`) exact
+/// file-based protocol: each inbound client text message is one line to
+/// inject into `~/.omega/state/aisb-local-inbox.jsonl`, and the server polls
+/// `~/.omega/state/aisb-conversation.log` for growth. `NotRunning` means the
+/// `aisb-master` rmux session (the read-only viewer that gates whether
+/// anyone is watching this conversation at all — see
+/// `omega_core::aisb::MASTER_SESSION_NAME`) isn't live, so the inbox was
+/// never touched for that message. `Reply` carries the delta text read off
+/// the conversation log once it grows. `Timeout` means the poll budget (CLI
+/// default: 180 attempts * 500ms = 90s, both overridable via
+/// `OMEGA_AISB_POLL_ATTEMPTS`/`OMEGA_AISB_POLL_INTERVAL_MS` for tests)
+/// elapsed with no growth — the same "no response within 90s" outcome the
+/// CLI itself reports. Same derive/serde shape as [`AuditStreamMsg`].
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MasterChatMsg {
+    NotRunning,
+    Reply { text: String },
+    Timeout,
+}
+
 /// One entry of `GET /v1/doctor`'s `checks` array — one `omega doctor` check
 /// line, parsed from its rendered stdout (see
 /// `routes_box::parse_doctor_output`). `health` is `"ok"` / `"warn"` /
@@ -737,6 +759,7 @@ pub struct Protocol {
     pub audit_request: AuditRequest,
     pub audit_check_response: AuditCheckResponse,
     pub audit_stream_msg: AuditStreamMsg,
+    pub master_chat_msg: MasterChatMsg,
     pub doctor_check_entry: DoctorCheckEntry,
     pub doctor_response: DoctorResponse,
     pub usage_response: UsageResponse,

@@ -57,6 +57,7 @@ fn schema_contains_all_wire_types() {
         "AuditRequest",
         "AuditCheckResponse",
         "AuditStreamMsg",
+        "MasterChatMsg",
         "DoctorCheckEntry",
         "DoctorResponse",
         "UsageResponse",

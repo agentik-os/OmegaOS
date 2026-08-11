@@ -201,6 +201,7 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/session-org/{name}",
             axum::routing::put(crate::routes_session_org::set),
         )
+        .route("/v1/master/chat", get(crate::routes_master::chat))
         .route("/v1/doctor", get(crate::routes_box::doctor))
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
