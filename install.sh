@@ -1960,7 +1960,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2058,6 +2058,25 @@ Loop: Capture->Clarify->Select->Commit->Focus->Prove->Review->Adapt. State CLI:
 \`omega-execution\` (init/boot/focus/complete/halt/reset/audit). Your private
 profile at ~/.omega/os/execution-os/ledger/profile.md overrides the template.
 MREOF
+        fi
+        # Storytelling OS (Storyteller {OS}) registers the `/story` alias +
+        # the /storytelling-os slug command (skill is storyteller-os).
+        if [[ "$BSK" == "storyteller-os" ]]; then
+            for _c in story storytelling-os; do
+                cat > "$BCMD/$_c.md" <<MREOF
+# /$_c
+
+Storyteller {OS} — coach, mine, verify + shape truthful stories in YOUR voice.
+Read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Family: /story /mine /interview /deepen /shape /write /adapt /truthcheck
+/score /rehearse /storybank. State CLI: \`omega-story\` (SQLite story bank).
+Your private context at ~/.omega/os/storytelling-os/ledger/context.md overrides
+the template.
+MREOF
+            done; unset _c
         fi
         # Researcher OS (Market Research {OS}) registers the short `/research`
         # alias — NOT `/market-research`, which belongs to the gooseworks

@@ -252,6 +252,33 @@ impl OsProduct {
                 ],
             },
             OsProduct {
+                slug: "storytelling-os",
+                name: "Storytelling OS",
+                tagline: "Storyteller {OS}: coach, mine, verify and shape truthful stories without erasing your voice.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /storytelling-os · /story ):",
+                    "  /story        find + build a story from a real moment",
+                    "  /mine         mine lived material for story signal",
+                    "  /interview    a story interview (coach, don't ghost-write)",
+                    "  /deepen       make a story deeper (meaning + tension)",
+                    "  /shape        shape it into a structure (story model)",
+                    "  /write        write it — only when authorized, in YOUR voice",
+                    "  /adapt        adapt to a channel (reel/carousel/thread/keynote)",
+                    "  /truthcheck   verify claims against the evidence standard",
+                    "  /score        score the story   ·   /rehearse   perform it",
+                    "  /storybank    manage your bank of stories",
+                    "omega-story CLI (SQLite story bank):",
+                    "  init          create your story bank",
+                    "  capture       add a Story Object   ·   list / show   browse",
+                    "  update        set dotted Story Object fields",
+                    "  add-claim     a claim-ledger entry (evidence per claim)",
+                    "  add-consent   a third-party consent record",
+                    "  validate / score   validate / score one object",
+                    "  export        export Story Objects   ·   doctor   validate the bank",
+                ],
+            },
+            OsProduct {
                 slug: "books-os",
                 name: "Books OS",
                 tagline: "Your library as an operating system: reading, retention and living knowledge.",
@@ -475,6 +502,7 @@ mod tests {
                 "mindset-os",
                 "habits-os",
                 "execution-os",
+                "storytelling-os",
                 "books-os"
             ]
         );

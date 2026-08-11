@@ -30,6 +30,7 @@ Personal OSes:
 | Mindset OS | `mindset-os` | Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching + 90-day program | **integrated** |
 | Habits OS | `habits-os` | Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews | **integrated** |
 | Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop (commitments, focus, proof, recovery) | **integrated** |
+| Storytelling OS | `storytelling-os` | Storyteller {OS}: coach + shape truthful stories in your voice, a story bank | **integrated** |
 | Books OS | `books-os` | Your library as an OS: reading, retention, living knowledge | **integrated** |
 
 Status is derived from the filesystem (TUI + `os_products::dir_status`): a
@@ -141,6 +142,11 @@ All four surfaces drive ONE brain. Never fork the logic per surface.
   classification, weekly reset + monthly audit. The shipped profile is a
   generic template; the operator's real profile stays user-local in the
   ledger (privacy: no personal data in the public repo).
+- **Storytelling OS** - INTEGRATED (Storyteller {OS} v1.0): a truthful story
+  architect + coach with a SQLite story bank (`omega-story`) — mine, interview,
+  deepen, shape, write (only when authorized), adapt, truthcheck, score. Same
+  privacy posture: the operator's real context + research canon stay
+  user-local; the committed pack carries a generic template.
 - **Ideation OS** - INTEGRATED (Brainstorm {OS} v3 ULTIMATE): a multi-agent
   imagination + decision council with lineage, the Surface Lab, quality gates
   and a frozen concept handoff to Market Research / Blueprint. The skill is
