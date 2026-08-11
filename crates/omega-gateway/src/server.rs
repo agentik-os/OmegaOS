@@ -244,6 +244,21 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
         .route("/v1/backup", axum::routing::post(crate::routes_box::backup))
+        .route(
+            "/v1/config",
+            get(crate::routes_config::get).put(crate::routes_config::set),
+        )
+        .route("/v1/telegram/status", get(crate::routes_telegram::status))
+        .route(
+            "/v1/telegram/enable",
+            axum::routing::post(crate::routes_telegram::enable),
+        )
+        .route(
+            "/v1/telegram/disable",
+            axum::routing::post(crate::routes_telegram::disable),
+        )
+        .route("/v1/pdf", axum::routing::post(crate::routes_pdf::create))
+        .route("/v1/pdf/download", get(crate::routes_pdf::download))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.

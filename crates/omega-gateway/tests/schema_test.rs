@@ -76,6 +76,19 @@ fn schema_contains_all_wire_types() {
         "ReapResponse",
         "ResurrectResponse",
         "OrchestrateStreamMsg",
+        "ClaudeConfigEntry",
+        "CodexConfigEntry",
+        "GeminiConfigEntry",
+        "GlmConfigEntry",
+        "OpenRouterConfigEntry",
+        "PiConfigEntry",
+        "HermesConfigEntry",
+        "ConfigResponse",
+        "ConfigSetRequest",
+        "TelegramStatusResponse",
+        "TelegramToggleResponse",
+        "PdfRequest",
+        "PdfResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

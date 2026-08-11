@@ -902,6 +902,152 @@ pub enum OrchestrateStreamMsg {
     Error { message: String },
 }
 
+// ── Task C: provider config (`GET`/`PUT /v1/config`) ────────────────────
+
+/// One provider's REDACTED config snapshot — mirrors `omega_core::providers::
+/// ClaudeConfig`, except `api_key` never crosses the wire: `api_key_set` is
+/// `true`/`false` (non-empty vs empty), never the secret itself. See
+/// `routes_config.rs`'s doc comment for why.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ClaudeConfigEntry {
+    pub model: String,
+    pub effort: String,
+    pub api_key_set: bool,
+    pub dangerously_skip_permissions: bool,
+}
+
+/// Mirrors `omega_core::providers::CodexConfig`, `api_key` redacted (see
+/// [`ClaudeConfigEntry`]).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct CodexConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+    pub base_url: String,
+}
+
+/// Mirrors `omega_core::providers::GeminiConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GeminiConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+}
+
+/// Mirrors `omega_core::providers::GlmConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GlmConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+}
+
+/// Mirrors `omega_core::providers::OpenRouterConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct OpenRouterConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+    pub base_url: String,
+}
+
+/// Mirrors `omega_core::providers::PiConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PiConfigEntry {
+    pub provider: String,
+    pub model: String,
+    pub api_key_set: bool,
+}
+
+/// Mirrors `omega_core::providers::HermesConfig`, `api_key` redacted.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct HermesConfigEntry {
+    pub model: String,
+    pub api_key_set: bool,
+}
+
+/// `GET /v1/config` and `PUT /v1/config` response body — the full
+/// `omega_core::providers::ProvidersConfig` snapshot, every provider's
+/// `api_key` redacted to a boolean. Applies to ALL sessions on this box (a
+/// single shared `providers.toml`), not per-caller state.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ConfigResponse {
+    pub claude: ClaudeConfigEntry,
+    pub codex: CodexConfigEntry,
+    pub gemini: GeminiConfigEntry,
+    pub glm: GlmConfigEntry,
+    pub openrouter: OpenRouterConfigEntry,
+    pub pi: PiConfigEntry,
+    pub hermes: HermesConfigEntry,
+}
+
+/// Body of `PUT /v1/config` — one `provider.field` key/value pair, matching
+/// `omega config set <key> <value>`'s own CLI shape 1:1. `key` is validated
+/// against the exact allowlist `omega-cli`'s `set_config_value` match arms
+/// use (see `routes_config.rs::apply_config_value`) — an unknown key is a
+/// clean 400, never a silently-ignored no-op.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct ConfigSetRequest {
+    pub key: String,
+    pub value: String,
+}
+
+// ── Task D: Telegram bridge control ──────────────────────────────────────
+
+/// `GET /v1/telegram/status` response body — mirrors `omega_core::monitor::
+/// OmegaTelegramConfig`, REDACTED: `bot_token` never crosses the wire (same
+/// posture [`ClaudeConfigEntry`] takes for `api_key`), only
+/// `bot_token_set: bool`. `configured: false` (every other field `None`) is
+/// the normal "no `~/.omega/telegram.toml` yet" state — the exact case
+/// `TelegramAction::Status`'s CLI arm already renders as "Not configured.",
+/// never an error.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TelegramStatusResponse {
+    pub configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bot_token_set: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay_session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_user_ids_count: Option<usize>,
+}
+
+/// `POST /v1/telegram/enable` / `POST /v1/telegram/disable` response body —
+/// the just-written config's new `enabled` state, redacted the same way as
+/// [`TelegramStatusResponse`]. A 404 (never this type) when no
+/// `telegram.toml` exists yet — mirrors `TelegramAction::Enable`/`Disable`'s
+/// own CLI bail ("Not configured. Run: omega telegram setup …").
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TelegramToggleResponse {
+    pub enabled: bool,
+}
+
+// ── Task E: PDF generation ───────────────────────────────────────────────
+
+/// Body of `POST /v1/pdf` — `template` is validated against the literal
+/// known set (`whitepaper`/`audit`/`marketing`/`doc`) before any subprocess
+/// spawns; `data` is arbitrary client-supplied JSON, written server-side to
+/// a SERVER-CHOSEN scratch path (never a client-supplied path passed to
+/// `--data` — see `routes_pdf.rs`'s doc comment).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct PdfRequest {
+    pub template: String,
+    pub data: serde_json::Value,
+}
+
+/// `POST /v1/pdf` response body — `path` is the generated PDF's absolute
+/// on-disk path (the exact value to hand back to `GET /v1/pdf/download?path=`),
+/// `size_bytes` is the file's byte length. Never `--send`/`--caption`: this
+/// endpoint only generates + returns a path, it never pushes to the
+/// operator's real Telegram (that stays a CLI/operator action).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct PdfResponse {
+    pub path: String,
+    pub size_bytes: u64,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -977,6 +1123,19 @@ pub struct Protocol {
     pub reap_response: ReapResponse,
     pub resurrect_response: ResurrectResponse,
     pub orchestrate_stream_msg: OrchestrateStreamMsg,
+    pub claude_config_entry: ClaudeConfigEntry,
+    pub codex_config_entry: CodexConfigEntry,
+    pub gemini_config_entry: GeminiConfigEntry,
+    pub glm_config_entry: GlmConfigEntry,
+    pub openrouter_config_entry: OpenRouterConfigEntry,
+    pub pi_config_entry: PiConfigEntry,
+    pub hermes_config_entry: HermesConfigEntry,
+    pub config_response: ConfigResponse,
+    pub config_set_request: ConfigSetRequest,
+    pub telegram_status_response: TelegramStatusResponse,
+    pub telegram_toggle_response: TelegramToggleResponse,
+    pub pdf_request: PdfRequest,
+    pub pdf_response: PdfResponse,
 }
 
 pub fn schema_json() -> String {
