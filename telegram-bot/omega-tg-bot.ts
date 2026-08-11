@@ -103,7 +103,22 @@ async function transcribeLocal(audio: ArrayBuffer, filename: string): Promise<Tr
   } catch { return { text: "", lang: "" }; }
   finally { try { unlinkSync(path); } catch {} }
 }
-async function transcribeVoice(fileId: string, filename = "voice.ogg"): Promise<Transcript> {
+// HARD outer deadline for any await inside the poll loop. AbortSignal.timeout is
+// NOT sufficient: a wedged upload/download fetch has been observed (2026-08-11,
+// dentistrygpt bot) to dangle FOREVER in Bun despite its abort signal — socket
+// gone, promise never settled — freezing the single poll loop with the poisonous
+// update unconfirmed, so every watchdog restart re-delivered the same voice note
+// and re-froze the bot, 14h straight. Promise.race resolves regardless of what
+// the inner promise does; the loser is abandoned (its own try/catch swallows any
+// late failure). Sync phases (Bun.spawnSync) block the timer too, but they carry
+// their own spawnSync timeout, so the total stays bounded either way.
+function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([p, new Promise<T>((res) => setTimeout(() => res(fallback), ms))]);
+}
+function transcribeVoice(fileId: string, filename = "voice.ogg"): Promise<Transcript> {
+  return withDeadline(transcribeVoiceInner(fileId, filename), 180_000, { text: "", lang: "" });
+}
+async function transcribeVoiceInner(fileId: string, filename: string): Promise<Transcript> {
   let audio: ArrayBuffer;
   try {
     const gf = await tg("getFile", { file_id: fileId });
@@ -140,7 +155,13 @@ function heardLine(t: Transcript): string {
 // poll loops (the operator's mission never reached any oracle) — and before, even a
 // document WAS dropped unless its mime was image/* (the gap the operator hit).
 // NOTE: Telegram's Bot API caps getFile downloads at 20 MB — larger files return "".
-async function saveIncomingFile(msg: any): Promise<string> {
+function saveIncomingFile(msg: any): Promise<string> {
+  // Same hard outer deadline as transcribeVoice: a dangling download fetch must
+  // never freeze the poll loop past the deadline (the update stays unconfirmed
+  // and every restart re-delivers the same poisonous message).
+  return withDeadline(saveIncomingFileInner(msg), 120_000, "");
+}
+async function saveIncomingFileInner(msg: any): Promise<string> {
   try {
     const photo = Array.isArray(msg?.photo) && msg.photo.length ? msg.photo[msg.photo.length - 1] : undefined; // last = largest size
     const att = msg?.document || msg?.video || msg?.audio || undefined; // any file type — NO mime filter

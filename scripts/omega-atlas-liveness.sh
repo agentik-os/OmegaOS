@@ -72,7 +72,10 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUN
 
 # busy-guard: a live agent child means the bot IS working a real task.
 busy() {  # $1 = main pid
-    ps --ppid "$1" -o comm= 2>/dev/null | grep -qiE 'claude|codex|whisper|ffmpeg'
+    # python/omega-transcribe = the local STT (faster-whisper) child transcribing a
+    # voice note: legitimate work (2026-08-11: the guard missed it and the watchdog
+    # kept restarting the dentistrygpt bot mid-transcription, every cooldown window).
+    ps --ppid "$1" -o comm= 2>/dev/null | grep -qiE 'claude|codex|whisper|ffmpeg|python|omega-transcribe'
 }
 
 # ── Pass 1: snapshot pending for every bot; keep only the suspicious ones ────
