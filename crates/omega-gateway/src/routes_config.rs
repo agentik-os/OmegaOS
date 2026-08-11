@@ -26,6 +26,27 @@
 //! not a library this crate can import; the same "twin" shape
 //! `routes_agents.rs`/`routes_audit.rs` already carry for their own
 //! CLI-mirroring logic).
+//!
+//! NOTE: `openrouter.*` is readable via `GET` but has NO writable field in
+//! [`apply_config_value`] — faithful to `set_config_value` itself (which
+//! genuinely has no `("openrouter", _)` arm), not an oversight here.
+//!
+//! REVIEW-FIX ROUND (an independent adversarial reviewer found these before
+//! the branch shipped — see `.superpowers/sdd/progress.md`'s Task C+D+E
+//! review-fix section): `ProvidersConfig::load()` silently returns
+//! `Default::default()` on ANY read/parse failure, including a genuinely
+//! CORRUPT (but present) `providers.toml` — so a naive `PUT /v1/config`
+//! against a hand-edited/truncated file would load-default, apply the ONE
+//! field the caller asked to change, then `save()` that mostly-empty
+//! struct, silently WIPING every other provider's `api_key` on the box, all
+//! from a single mobile PUT with a 200 response. [`set`] therefore uses
+//! [`load_config_or_refuse`] instead of `ProvidersConfig::load()` directly:
+//! a present-but-unparsable file is a hard refusal (500), never a silent
+//! reset. Also fixed in the same round: a `cfg.save()` I/O failure (disk
+//! full, permissions) used to fold into the SAME 400 as an allowlist
+//! validation failure, wrongly blaming the client for a server-side
+//! problem — `set` now classifies validation errors as 400 and save/read
+//! errors as 500, matching `routes_telegram.rs::toggle`'s existing split.
 
 use crate::protocol::{
     ClaudeConfigEntry, CodexConfigEntry, ConfigResponse, ConfigSetRequest, GeminiConfigEntry,
@@ -95,6 +116,34 @@ pub async fn get() -> Json<ConfigResponse> {
     Json(to_response(&cfg))
 }
 
+/// Loads `providers.toml` for a WRITE path, refusing (rather than silently
+/// defaulting, the way `ProvidersConfig::load()` itself does) when the file
+/// EXISTS but fails to parse — see this module's review-fix doc comment for
+/// the exact data-loss scenario this closes. A missing file is still a
+/// normal, expected "nothing configured yet" case (`Ok(default)`), matching
+/// `ProvidersConfig::load()`'s own posture for that case.
+///
+/// Re-derives `ProvidersConfig::path()` (`crate::config::omega_dir().join(
+/// "providers.toml")` in `omega-core/src/providers.rs`) rather than calling
+/// it: that method is private to its own module, not `pub`, so this is
+/// necessarily a duplicated join of two already-`pub` primitives
+/// (`omega_core::config::omega_dir()` + the literal filename), not a
+/// reimplementation of any real logic.
+fn load_config_or_refuse() -> Result<ProvidersConfig, String> {
+    let path = omega_core::config::omega_dir().join("providers.toml");
+    if !path.exists() {
+        return Ok(ProvidersConfig::default());
+    }
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| format!("providers.toml exists but could not be read: {e}"))?;
+    toml::from_str(&content).map_err(|e| {
+        format!(
+            "providers.toml exists but failed to parse ({e}) -- refusing to write and silently \
+             drop its other fields; fix or remove the file first"
+        )
+    })
+}
+
 /// The exact `(provider, field)` allowlist `omega-cli::set_config_value`
 /// (`crates/omega-cli/src/main.rs` ~line 4473) uses — kept byte-for-byte in
 /// sync by hand (see this module's doc comment for why it can't be
@@ -157,19 +206,16 @@ pub async fn set(Json(req): Json<ConfigSetRequest>) -> Result<Json<ConfigRespons
 
     let key = req.key.clone();
     let value = req.value.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<ProvidersConfig, String> {
-        let mut cfg = ProvidersConfig::load();
-        apply_config_value(&mut cfg, &key, &value)?;
-        cfg.save().map_err(|e| e.to_string())?;
+    let result = tokio::task::spawn_blocking(move || -> Result<ProvidersConfig, ApiError> {
+        let mut cfg = load_config_or_refuse().map_err(internal)?;
+        apply_config_value(&mut cfg, &key, &value).map_err(bad_request)?;
+        cfg.save().map_err(|e| internal(e.to_string()))?;
         Ok(cfg)
     })
     .await
-    .map_err(|e| internal(format!("config task panicked: {e}")))?;
+    .map_err(|e| internal(format!("config task panicked: {e}")))??;
 
-    match result {
-        Ok(cfg) => Ok(Json(to_response(&cfg))),
-        Err(msg) => Err(bad_request(msg)),
-    }
+    Ok(Json(to_response(&result)))
 }
 
 #[cfg(test)]

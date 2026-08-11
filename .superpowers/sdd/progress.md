@@ -392,11 +392,193 @@ touching `$OMEGA_DIR`/`OMEGA_BIN`/`OMEGA_HOME` is LOCK-guarded
    the simpler, more honest alternative to a brittle parser, and it was
    taken.
 
+## Task C+D+E — done
+
+Controller-resumed session (prior controller died mid-run, Claude
+credentials expired). The ground-truth research above for C/D/E had
+already been recorded by the dead controller before it stopped — this
+session read it, verified it against the live source (`set_config_value`,
+`OmegaTelegramConfig`, `cmd_pdf`) rather than trusting it blind, and
+implemented straight from it. Committed as one combined commit (`gateway:
+Task C+D+E — config/telegram/pdf control-plane`) rather than three, a
+pragmatic deviation from A/B's one-commit-per-task granularity: all three
+tasks touch the SAME shared files (`protocol.rs`/`server.rs`/`lib.rs`/
+`schema_test.rs`) in different regions, so a clean per-task split would
+require interactive patch-splitting with no reader-facing benefit (each
+task's OWN new files — `routes_config.rs`+`config_test.rs`, etc — are
+already cleanly separable by name if anyone needs to isolate one later).
+
+- **Task C `GET`/`PUT /v1/config`** (`routes_config.rs`) — pure in-process
+  read/write of `omega_core::providers::ProvidersConfig::{load,save}`
+  (honors `$OMEGA_DIR`). `GET` redacts every provider's `api_key` to
+  `api_key_set: bool` — confirmed live that `omega config show` leaks every
+  key in plaintext, so this is a deliberate, documented narrowing, not an
+  oversight. `PUT` validates `{key, value}` against
+  `apply_config_value`, a byte-for-byte hand-kept twin of `omega-cli`'s
+  `set_config_value` match arms (omega-cli is a BINARY crate, not
+  importable — same "twin" shape `routes_agents.rs`/`routes_audit.rs`
+  already carry). One deliberate strictness beyond the CLI: a malformed
+  `dangerously_skip_permissions` value is a 400 here, not the CLI's silent
+  `unwrap_or(false)` — a network caller gets no terminal to watch, so a
+  silent "your typo became false" is a worse failure mode over an API.
+- **Task D Telegram bridge control** (`routes_telegram.rs`) — `GET
+  /v1/telegram/status`, `POST /v1/telegram/enable`, `POST
+  /v1/telegram/disable`, all pure in-process reads/writes of
+  `omega_core::monitor::OmegaTelegramConfig::{read,write}` — no CLI
+  subprocess (`TelegramAction::Status`/`Enable`/`Disable` are themselves
+  pure file read/writes, so mirroring them in-process is simpler and more
+  robust than shelling out and parsing text, the same call Task B made for
+  `timeline`/`gate`). PATH CAVEAT: `OmegaTelegramConfig::path()` hardcodes
+  `dirs::home_dir()`, NOT `$OMEGA_DIR`/`$OMEGA_HOME` — hermetic tests
+  override `$HOME` itself (same pattern wave6 used for `UsageSnapshot`).
+  `bot_token` redacted to `bot_token_set: bool`, same posture as Task C's
+  `api_key`. `enable`/`disable` on an unconfigured bridge is a 404 (never
+  fabricates a config) — mirrors `TelegramAction::Enable`/`Disable`'s own
+  CLI bail.
+- **Task E `POST /v1/pdf`, `GET /v1/pdf/download`** (`routes_pdf.rs`) — no
+  in-process entry point exists (`pdfgen` is invoked as a subprocess by
+  `cmd_pdf` itself), so `create` shells to `omega_cli::run(&["pdf",
+  "--template", ..., "--data", ..., "--out", ...])`. `template` validated
+  against the literal known set (`whitepaper|audit|marketing|doc`) BEFORE
+  any file write or spawn. `data` (arbitrary client JSON) is written to a
+  SERVER-CHOSEN scratch path under `OMEGA_PDF_DIR/data/`; `--out` is
+  likewise always server-chosen under `OMEGA_PDF_DIR/output/` — mirrors
+  `routes_box::backup`'s server-chosen-path posture, never a
+  client-supplied filesystem path reaching either flag. `GET
+  /v1/pdf/download?path=` reduces the query value to its bare
+  `Path::file_name()` BEFORE any filesystem touch, then resolves it through
+  `routes_files::resolve_scoped_path` scoped to `OMEGA_PDF_DIR/output/`
+  ONLY — this makes traversal structurally impossible (an attacker's
+  `path=` can only ever contribute one path COMPONENT, never a chain of
+  `..`), not merely rejected after the fact, and the download scope can
+  never reach the sibling `data/` dir holding raw request input (proven by
+  `pdf_test.rs::download_cannot_reach_the_separate_data_dir`). Never passes
+  `--send`/`--caption` — this endpoint only generates + returns a path, it
+  never pushes to the operator's real Telegram from an unconfirmed API
+  call.
+
+### TDD / verification
+
+Wrote `tests/config_test.rs`, `tests/telegram_test.rs`, `tests/pdf_test.rs`
+plus inline `#[cfg(test)]` modules in each new route file BEFORE wiring the
+routes into `server.rs` (the crate didn't compile with the new `protocol.rs`
+types referenced by tests until the handlers existed), then implemented to
+make them pass. Coverage highlights: Task C — secret never round-trips on
+the wire (asserted via raw response-body string search, not just the typed
+field), unknown-key and malformed-bool both 400 pre-write (asserted via
+"file never created" on the unknown-key case), persisted value verified by
+reading `providers.toml` back off disk. Task D — unconfigured is 200
+(never an error), token redacted, enable/disable persist and 404 cleanly
+when unconfigured, a failed unauthenticated toggle attempt leaves the file
+untouched. Task E — happy path asserts the REAL argv (fake bin captures
+`$@`) never carries `--send`/`--caption`, the data scratch file is proven
+to hold the client's actual JSON (read back off disk via the captured
+`--data` path), unknown template never spawns a subprocess (capture file
+absent), non-zero exit is 502, download round-trips real bytes with
+`Content-Type: application/pdf`, and the traversal test targets a file that
+DEMONSTRABLY EXISTS on this box (`/etc/passwd`) and asserts both 404 (not
+403 — the output dir is empty in that test) AND that the response body
+never contains real `/etc/passwd` content, closing the same
+existence-oracle failure mode wave6 found in `routes_files.rs`. Every
+route gets a 401-without-token test.
+
+**Test delta: 392 → 425 (+33)**: +9 inline unit tests (5 `routes_config.rs`,
+2 `routes_telegram.rs`, 2 `routes_pdf.rs`), +24 integration tests (7
+`config_test.rs`, 8 `telegram_test.rs`, 9 `pdf_test.rs`). `cargo test -p
+omega-gateway`: 425 passed, 0 failed, 0 ignored. `cargo clippy -p
+omega-gateway --all-targets --no-deps -- -D warnings`: clean.
+
+### Task C+D+E — adversarial review-fix round
+
+A FRESH, independent adversarial reviewer (opus-tier, no prior context on
+this mission — it read the diff and the crate's own idioms itself) reviewed
+commit `5b7f625`. It ran the real build/test/clippy commands itself rather
+than trusting a summary. Verdict: **no Critical findings, SHIP WITH MINOR
+FIXES**. It explicitly tried and FAILED to break auth-gating, secret
+leakage, path traversal, argv injection, and panics on adversarial input —
+all held, with citations. Three Important findings were fixed:
+
+1. **Symlink escape via the world-writable `/tmp` default** — `pdf_root_dir`
+   defaulted to `std::env::temp_dir()`. A local unprivileged co-tenant could
+   pre-plant `/tmp/omega-gateway-pdf/output` as a symlink to e.g. `~/.ssh`
+   BEFORE this endpoint's first `create_dir_all`; the traversal guard
+   canonicalizes and prefix-checks correctly, but that proves nothing once
+   the ROOT itself has been swapped — `GET /v1/pdf/download` would then
+   serve real secrets. This is a genuinely NEW exposure class in this
+   commit: `routes_box::backup` uses the same `/tmp` convention but only
+   ever WRITES; Task E is the crate's first endpoint that READS BACK from a
+   predictable scratch path. Fixed by moving the default under the
+   operator's own `~/.omega/state/gateway-pdf` — the same trust boundary
+   every other per-purpose OmegaOS directory in this crate already uses,
+   never a directory a co-tenant process can plant a symlink into. Test:
+   `pdf_root_dir_default_lives_under_omega_state_never_world_writable_tmp`.
+2. **No concurrency cap or subprocess timeout on `POST /v1/pdf`** — `omega
+   pdf` can run an unbounded `npm install` on a cold cache with no time
+   bound, and the crate's usual `omega_cli::run` (blocking
+   `Command::output()`) cannot be cancelled once spawned. Added
+   `AppState::pdf_permits` (new `MAX_CONCURRENT_PDF_GENERATIONS = 2` in
+   `server.rs`, mirroring `orchestrate_permits`'s heavy-op reasoning) and a
+   dedicated `run_omega_pdf` in `routes_pdf.rs` using `tokio::process::
+   Command` with `.kill_on_drop(true)` wrapped in a 300s
+   `tokio::time::timeout` — a genuinely killable, bounded child, unlike the
+   rest of this crate's subprocess wraps (a deliberate, documented
+   deviation from the usual `omega_cli::run` idiom, justified by this
+   being the one endpoint that can trigger an unbounded child). Tests:
+   `concurrency_cap_returns_429_when_pdf_permits_exhausted` (exact
+   `dispatch_test.rs` idiom: a sleeping fake bin, N in-flight requests held
+   open, the N+1th gets 429).
+3. **`PUT /v1/config` could silently wipe every other provider's `api_key`
+   on a corrupt `providers.toml`** — `ProvidersConfig::load()` silently
+   returns `Default::default()` on ANY parse failure, so a PUT against a
+   hand-edited/truncated file would load-default, apply the caller's one
+   field, then `save()` that mostly-empty struct over the real one, all
+   from a single mobile PUT with a 200 response. Fixed with
+   `load_config_or_refuse` (re-derives `ProvidersConfig::path()`'s exact
+   join since that method is private to omega-core, not importable): a
+   file that EXISTS but fails to parse is now a hard 500 refusal, never a
+   silent reset; a genuinely missing file still defaults normally. Same
+   round also fixed a related Minor: a `cfg.save()` I/O failure used to
+   fold into the SAME 400 as an allowlist-validation failure (wrongly
+   blaming the client for a server-side problem) — `set` now classifies
+   validation errors as 400 and read/save errors as 500, matching
+   `routes_telegram.rs::toggle`'s existing split. Tests:
+   `put_config_refuses_to_write_over_a_corrupt_providers_toml` (asserts
+   the corrupt file is byte-for-byte UNCHANGED after the refused PUT),
+   `put_config_save_io_failure_is_500_not_400`.
+
+Also fixed two of the reviewer's Minor findings while in the area (cheap,
+directly adjacent to the Important fixes above): `GET /v1/pdf/download` now
+caps its read at `MAX_PDF_DOWNLOAD_BYTES` (64 MiB, checked via
+`metadata().len()` before any read — the same discipline
+`routes_files::MAX_FILE_READ_BYTES` already carries) and refuses any name
+in the output dir not matching this endpoint's own generated shape
+(`omega-report-*.pdf`) as defense in depth; generated filenames also now
+carry a random hex suffix (`crate::util::random_hex`, already used
+elsewhere in this crate for device ids) rather than relying on a
+millisecond timestamp alone, closing a theoretical collision window
+(chrono's `%.f` prints nothing at all when the sub-second field is exactly
+zero). NOT fixed, deliberately, as out of proportion for this wave: scratch
+file cleanup/retention (no reaper exists for any of this crate's scratch
+dirs today, including the pre-existing `routes_box::backup_dir`; adding one
+is a separate, cross-cutting piece of work), and locking `telegram.toml`'s
+read-modify-write (matches the real CLI's own behavior exactly, and the
+reviewer confirmed zero field drift against the operator's actual file).
+
+**Test delta: 425 → 432 (+7)**: +2 inline unit tests (`routes_pdf.rs`:
+`pdf_root_dir_default_lives_under_omega_state_never_world_writable_tmp`,
+`is_server_generated_pdf_name_accepts_only_the_real_shape`), +5 integration
+tests (`config_test.rs`: corrupt-file-refuses, save-io-is-500;
+`pdf_test.rs`: oversized-413, name-shape-404, concurrency-429; plus a
+Content-Disposition assertion folded into the existing download happy-path
+test). `cargo test -p omega-gateway`: 432 passed, 0 failed, 0 ignored.
+`cargo clippy -p omega-gateway --all-targets --no-deps -- -D warnings`:
+clean.
+
 ## Status
 - [x] Task A — Master/AISB-chat WS
 - [x] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)
-- [ ] Task C — Config GET/PUT
-- [ ] Task D — Telegram bridge control
-- [ ] Task E — PDF generation
+- [x] Task C — Config GET/PUT
+- [x] Task D — Telegram bridge control
+- [x] Task E — PDF generation
 - [ ] Final opus whole-branch live-binary review
 - [ ] Rebase on origin/main, leave clean, report

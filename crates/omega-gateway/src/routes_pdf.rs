@@ -4,8 +4,8 @@
 //! `omega pdf --template=<t> --data=<path> --out=<path>` has no in-process
 //! library entry point in this workspace (pdfgen is its own tool under
 //! `tools/pdfgen/`, invoked as a subprocess by the CLI itself — see
-//! `crates/omega-cli/src/main.rs::cmd_pdf`), so `POST /v1/pdf` shells to
-//! `omega_cli::run`, argv-only, exactly like `routes_box::backup` does.
+//! `crates/omega-cli/src/main.rs::cmd_pdf`), so `POST /v1/pdf` shells out,
+//! argv-only.
 //!
 //! `template` is validated against the literal known set
 //! (`whitepaper`/`audit`/`marketing`/`doc`) BEFORE any spawn. `data` is
@@ -28,7 +28,9 @@
 //! impossible here, not merely rejected after the fact. `data` scratch
 //! files live under the SEPARATE [`pdf_data_dir`] (never inside
 //! `pdf_output_dir`), so the download endpoint's scope can never reach a
-//! generation request's raw input JSON.
+//! generation request's raw input JSON. It ALSO only ever serves a name
+//! matching this endpoint's OWN generated shape (`omega-report-*.pdf`) —
+//! see [`is_server_generated_pdf_name`].
 //!
 //! `--send`/`--caption` are NEVER passed by this endpoint (documented in
 //! `.superpowers/sdd/progress.md`'s Task E ground-truth section): pushing
@@ -36,15 +38,45 @@
 //! confirmation would be exactly the kind of surprising, hard-to-reverse
 //! side effect this crate's other mutating endpoints (e.g.
 //! `routes_oracles::reap`/`resurrect`) go out of their way to avoid.
+//!
+//! REVIEW-FIX ROUND (an independent adversarial reviewer found these before
+//! the branch shipped — see `.superpowers/sdd/progress.md`'s Task C+D+E
+//! review-fix section):
+//! 1. [`pdf_root_dir`]'s default used to live under `std::env::temp_dir()`
+//!    (world-writable sticky `/tmp` on this box) — a local unprivileged
+//!    attacker could pre-plant `/tmp/omega-gateway-pdf/output` as a symlink
+//!    to e.g. `~/.ssh` before this endpoint's first `create_dir_all` call,
+//!    and `GET /v1/pdf/download` would then serve real secrets (the
+//!    traversal guard canonicalizes and prefix-checks correctly, but that
+//!    proves nothing when the ROOT itself has been swapped out from under
+//!    it). The default now lives under the operator's own `~/.omega/state`
+//!    — the same trust boundary every other `~/.omega` file already
+//!    carries, never a shared world-writable directory a co-tenant process
+//!    can pre-plant a symlink into.
+//! 2. `POST /v1/pdf` had no concurrency cap and no subprocess timeout,
+//!    while `AppState` already carries four semaphore pools for exactly
+//!    this shape of problem. Fixed with `AppState::pdf_permits` (429 on
+//!    exhaustion, mirroring `dispatch_permits`) and a real, killable
+//!    subprocess timeout (`tokio::process::Command` with
+//!    `.kill_on_drop(true)`, wrapped in `tokio::time::timeout` — see
+//!    [`run_omega_pdf`]) rather than the crate's usual blocking
+//!    `omega_cli::run` (which cannot be cancelled once spawned).
+//! 3. `GET /v1/pdf/download` read an unbounded file into memory. Fixed with
+//!    [`MAX_PDF_DOWNLOAD_BYTES`], checked via `metadata().len()` before any
+//!    read — the same discipline `routes_files::MAX_FILE_READ_BYTES`
+//!    already carries.
 
-use axum::extract::Query;
+use axum::extract::{Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::time::Duration;
 
 use crate::protocol::PdfRequest;
+use crate::server::AppState;
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
@@ -64,24 +96,53 @@ fn bad_gateway(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_GATEWAY, Json(serde_json::json!({ "error": msg.into() })))
 }
 
+fn too_many_requests(msg: impl Into<String>) -> ApiError {
+    (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
+}
+
 fn internal(msg: impl std::fmt::Display) -> ApiError {
     (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": msg.to_string() })))
 }
 
 /// The literal `--template` values `omega pdf` accepts (`crates/omega-cli/
 /// src/main.rs::Commands::Pdf` doc comment: "whitepaper, audit, marketing,
-/// doc"). Validated BEFORE any subprocess spawn.
+/// doc"). Validated BEFORE any subprocess spawn. The CLI itself does NOT
+/// validate this value (`template: String`, no clap `value_parser`) — this
+/// allowlist is the ONLY guard between a client-supplied string and
+/// pdfgen's own template resolution, so it is deliberately kept in sync by
+/// hand rather than re-derived from the CLI (which has nothing to derive
+/// from).
 const KNOWN_TEMPLATES: &[&str] = &["whitepaper", "audit", "marketing", "doc"];
 
+/// Hard ceiling on how long `omega pdf`'s subprocess may run before this
+/// endpoint kills it and reports a 502. Generous enough to cover a
+/// cold-cache `npm install` (see `cmd_pdf`) over a normal network, small
+/// enough that a hung or adversarially slow child can't pin a permit (and a
+/// blocking OS thread) forever — see this module's review-fix doc comment,
+/// finding 2.
+const PDF_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Cap on `GET /v1/pdf/download`'s read — mirrors
+/// `routes_files::MAX_FILE_READ_BYTES`'s discipline (checked via
+/// `metadata().len()` BEFORE any read). 64 MiB comfortably covers any real
+/// generated report while bounding a single request's memory footprint.
+const MAX_PDF_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Root scratch directory for this endpoint's own files — `OMEGA_PDF_DIR`
-/// env override, else `std::env::temp_dir()`, mirroring
-/// `routes_box::backup_dir`'s `OMEGA_BACKUP_DIR` convention (this is
-/// disposable scratch output, not `~/.omega` state).
+/// env override, else `~/.omega/state/gateway-pdf`. Deliberately NOT
+/// `std::env::temp_dir()` (see this module's review-fix doc comment,
+/// finding 1): every other per-purpose OmegaOS directory in this crate
+/// that a client-controlled read can later reach (`gateway_dir`,
+/// `deposit_home_dir`) already lives under the operator's own `~/.omega`,
+/// which is the right trust boundary here too — the shared world-writable
+/// `/tmp` was the one directory in this crate an endpoint actually READS
+/// back from by a predictable path, and that combination is what a
+/// pre-planted symlink can exploit.
 fn pdf_root_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("OMEGA_PDF_DIR") {
         return PathBuf::from(dir);
     }
-    std::env::temp_dir().join("omega-gateway-pdf")
+    dirs::home_dir().expect("no home dir").join(".omega").join("state").join("gateway-pdf")
 }
 
 /// Where generated PDFs land — the ONLY directory `GET /v1/pdf/download`
@@ -97,12 +158,58 @@ fn pdf_data_dir() -> PathBuf {
     pdf_root_dir().join("data")
 }
 
-/// `POST /v1/pdf` — validates `template`, writes `data` to a server-chosen
-/// scratch file, runs `omega pdf --template=<t> --data=<scratch> --out=<scratch>`,
-/// and returns the generated path + size. A non-zero exit is a real error
-/// (502) — there is no "expected non-zero" outcome for PDF generation the
-/// way there is for `omega doctor`.
-pub async fn create(Json(req): Json<PdfRequest>) -> Result<Json<crate::protocol::PdfResponse>, ApiError> {
+/// True for exactly the filename shape [`create`] itself generates
+/// (`omega-report-<ts>-<8 hex chars>.pdf`). `GET /v1/pdf/download` refuses
+/// anything else, even though it is already scoped to [`pdf_output_dir`] —
+/// defense in depth: this directory should only ever hold files this
+/// endpoint wrote, so any other name present is itself a signal something
+/// is wrong, not a legitimate download target.
+fn is_server_generated_pdf_name(name: &str) -> bool {
+    name.starts_with("omega-report-") && name.ends_with(".pdf")
+}
+
+/// Runs `omega pdf <args>` as a killable, time-bounded async child —
+/// deliberately NOT the crate's usual `omega_cli::run` (a blocking
+/// `std::process::Command::output()` with no cancellation path once
+/// spawned). `.kill_on_drop(true)` means a timeout that drops the
+/// in-flight `wait_with_output()` future actually terminates the child
+/// process rather than leaking it. See this module's review-fix doc
+/// comment, finding 2.
+async fn run_omega_pdf(args: &[&str]) -> Result<crate::omega_cli::CommandOutput, ApiError> {
+    let bin = crate::omega_cli::omega_bin();
+    let child = tokio::process::Command::new(&bin)
+        .args(args)
+        .kill_on_drop(true)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| bad_gateway(format!("failed to spawn omega pdf: {e}")))?;
+
+    match tokio::time::timeout(PDF_SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+        Ok(Ok(out)) => Ok(crate::omega_cli::CommandOutput {
+            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            success: out.status.success(),
+        }),
+        Ok(Err(e)) => Err(bad_gateway(format!("omega pdf process error: {e}"))),
+        Err(_) => Err(bad_gateway(format!(
+            "omega pdf timed out after {}s and was killed",
+            PDF_SUBPROCESS_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// `POST /v1/pdf` — validates `template`, acquires a
+/// [`AppState::pdf_permits`] permit (429 on exhaustion), writes `data` to a
+/// server-chosen scratch file, runs `omega pdf --template=<t>
+/// --data=<scratch> --out=<scratch>` under a hard timeout, and returns the
+/// generated path + size. A non-zero exit is a real error (502) — there is
+/// no "expected non-zero" outcome for PDF generation the way there is for
+/// `omega doctor`.
+pub async fn create(
+    State(state): State<AppState>,
+    Json(req): Json<PdfRequest>,
+) -> Result<Json<crate::protocol::PdfResponse>, ApiError> {
     if !KNOWN_TEMPLATES.contains(&req.template.as_str()) {
         return Err(bad_request(format!(
             "unknown template '{}' (expected one of: {})",
@@ -111,35 +218,57 @@ pub async fn create(Json(req): Json<PdfRequest>) -> Result<Json<crate::protocol:
         )));
     }
 
+    let Ok(_permit) = state.pdf_permits.clone().try_acquire_owned() else {
+        return Err(too_many_requests("too many concurrent PDF generations, try again shortly"));
+    };
+
     let ts = chrono::Local::now().format("%Y%m%d-%H%M%S%.f").to_string();
+    // A random suffix (not just the millisecond timestamp) rules out any
+    // filename collision between two requests landing in the same tick —
+    // review-fix finding: chrono's `%.f` prints nothing at all when the
+    // sub-second field is exactly zero, which would otherwise degrade to
+    // second resolution on a small fraction of requests.
+    let suffix = crate::util::random_hex(4);
     let data_dir = pdf_data_dir();
     let out_dir = pdf_output_dir();
-    let data_path = data_dir.join(format!("data-{ts}.json"));
-    let out_path = out_dir.join(format!("omega-report-{ts}.pdf"));
+    let data_path = data_dir.join(format!("data-{ts}-{suffix}.json"));
+    let out_path = out_dir.join(format!("omega-report-{ts}-{suffix}.pdf"));
     let data_path_str = data_path.to_string_lossy().to_string();
     let out_path_str = out_path.to_string_lossy().to_string();
-    let template = req.template.clone();
     let data = req.data.clone();
-    let argv_out_path_str = out_path_str.clone();
 
-    let output = tokio::task::spawn_blocking(move || -> Result<crate::omega_cli::CommandOutput, ApiError> {
-        std::fs::create_dir_all(&data_dir).map_err(|e| internal(format!("mkdir {}: {e}", data_dir.display())))?;
-        std::fs::create_dir_all(&out_dir).map_err(|e| internal(format!("mkdir {}: {e}", out_dir.display())))?;
-        let json = serde_json::to_string_pretty(&data).map_err(|e| internal(format!("serialize data: {e}")))?;
-        std::fs::write(&data_path, json).map_err(|e| internal(format!("write data file: {e}")))?;
-        crate::omega_cli::run(&[
-            "pdf",
-            "--template",
-            &template,
-            "--data",
-            &data_path_str,
-            "--out",
-            &argv_out_path_str,
-        ])
-        .map_err(|e| bad_gateway(format!("failed to run omega pdf: {e}")))
+    // Directory setup + writing the data file are plain sync fs calls —
+    // kept in spawn_blocking (this crate's convention for sync fs work off
+    // the async runtime thread); the subprocess itself runs via
+    // `run_omega_pdf` below (async, killable, timed).
+    tokio::task::spawn_blocking({
+        let data_dir = data_dir.clone();
+        let out_dir = out_dir.clone();
+        let data_path = data_path.clone();
+        move || -> Result<(), ApiError> {
+            std::fs::create_dir_all(&data_dir)
+                .map_err(|e| internal(format!("mkdir {}: {e}", data_dir.display())))?;
+            std::fs::create_dir_all(&out_dir)
+                .map_err(|e| internal(format!("mkdir {}: {e}", out_dir.display())))?;
+            let json =
+                serde_json::to_string_pretty(&data).map_err(|e| internal(format!("serialize data: {e}")))?;
+            std::fs::write(&data_path, json).map_err(|e| internal(format!("write data file: {e}")))?;
+            Ok(())
+        }
     })
     .await
-    .map_err(|e| internal(format!("pdf task panicked: {e}")))??;
+    .map_err(|e| internal(format!("pdf setup task panicked: {e}")))??;
+
+    let output = run_omega_pdf(&[
+        "pdf",
+        "--template",
+        &req.template,
+        "--data",
+        &data_path_str,
+        "--out",
+        &out_path_str,
+    ])
+    .await?;
 
     if !output.success {
         return Err(bad_gateway(format!(
@@ -148,9 +277,9 @@ pub async fn create(Json(req): Json<PdfRequest>) -> Result<Json<crate::protocol:
         )));
     }
 
-    let size_bytes = tokio::task::spawn_blocking(move || std::fs::metadata(&out_path).map(|m| m.len()))
+    let size_bytes = tokio::fs::metadata(&out_path)
         .await
-        .map_err(|e| internal(format!("stat task panicked: {e}")))?
+        .map(|m| m.len())
         .map_err(|e| bad_gateway(format!("omega pdf reported success but no file at {out_path_str}: {e}")))?;
 
     Ok(Json(crate::protocol::PdfResponse { path: out_path_str, size_bytes }))
@@ -169,6 +298,9 @@ pub async fn download(Query(query): Query<HashMap<String, String>>) -> Result<Re
     let Some(name) = std::path::Path::new(&raw).file_name().and_then(|n| n.to_str()) else {
         return Err(bad_request("path must contain a valid file name"));
     };
+    if !is_server_generated_pdf_name(name) {
+        return Err(not_found("no such generated pdf"));
+    }
     let name = name.to_string();
 
     let root = pdf_output_dir();
@@ -182,6 +314,14 @@ pub async fn download(Query(query): Query<HashMap<String, String>>) -> Result<Re
         if !meta.is_file() {
             return Err(bad_request("path is not a file"));
         }
+        if meta.len() > MAX_PDF_DOWNLOAD_BYTES {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(serde_json::json!({
+                    "error": format!("file too large ({} bytes, max {})", meta.len(), MAX_PDF_DOWNLOAD_BYTES)
+                })),
+            ));
+        }
         std::fs::read(&resolved).map_err(|e| internal(format!("read failed: {e}")))
     })
     .await
@@ -189,7 +329,10 @@ pub async fn download(Query(query): Query<HashMap<String, String>>) -> Result<Re
 
     Ok((
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/pdf")],
+        [
+            (header::CONTENT_TYPE, "application/pdf".to_string()),
+            (header::CONTENT_DISPOSITION, "attachment".to_string()),
+        ],
         bytes,
     )
         .into_response())
@@ -209,10 +352,30 @@ mod tests {
     }
 
     #[test]
+    fn pdf_root_dir_default_lives_under_omega_state_never_world_writable_tmp() {
+        std::env::remove_var("OMEGA_PDF_DIR");
+        let dir = pdf_root_dir();
+        assert!(
+            dir.ends_with(".omega/state/gateway-pdf"),
+            "expected a path under ~/.omega/state, got {}",
+            dir.display()
+        );
+    }
+
+    #[test]
     fn known_templates_match_the_cli() {
         for t in ["whitepaper", "audit", "marketing", "doc"] {
             assert!(KNOWN_TEMPLATES.contains(&t));
         }
         assert!(!KNOWN_TEMPLATES.contains(&"evil"));
+    }
+
+    #[test]
+    fn is_server_generated_pdf_name_accepts_only_the_real_shape() {
+        assert!(is_server_generated_pdf_name("omega-report-20260810-abcd1234.pdf"));
+        assert!(!is_server_generated_pdf_name("passwd"));
+        assert!(!is_server_generated_pdf_name("data-20260810-abcd1234.json"));
+        assert!(!is_server_generated_pdf_name("omega-report-evil.pdf.txt"));
+        assert!(!is_server_generated_pdf_name(".pdf"));
     }
 }

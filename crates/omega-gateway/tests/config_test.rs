@@ -169,6 +169,71 @@ async fn get_config_requires_auth() {
     clear_env();
 }
 
+/// Review-fix regression (an independent adversarial reviewer found this
+/// before the branch shipped): `ProvidersConfig::load()` silently returns
+/// defaults on a parse failure, so a naive PUT against a corrupt-but-present
+/// `providers.toml` would load-default, apply the caller's ONE field, and
+/// save that mostly-empty struct -- wiping every other provider's api_key.
+/// This must now be a clean refusal that leaves the corrupt file untouched.
+#[tokio::test]
+async fn put_config_refuses_to_write_over_a_corrupt_providers_toml() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let omega_dir = tempfile::tempdir().unwrap();
+    std::env::set_var("OMEGA_DIR", omega_dir.path());
+    let corrupt = "this is not valid TOML {{{ [[[ = = =";
+    std::fs::write(omega_dir.path().join("providers.toml"), corrupt).unwrap();
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .put(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "key": "claude.model", "value": "opus" }))
+        .send()
+        .await
+        .unwrap();
+    // A server-side data-integrity refusal, not a client validation error.
+    assert_eq!(res.status(), 500);
+
+    // The corrupt file was NEVER overwritten -- proves no silent reset.
+    let raw = std::fs::read_to_string(omega_dir.path().join("providers.toml")).unwrap();
+    assert_eq!(raw, corrupt);
+
+    clear_env();
+}
+
+/// Review-fix regression: a genuine server-side save failure (here: the
+/// configured `$OMEGA_DIR` is itself an existing FILE, so `create_dir_all`
+/// for its parent and the subsequent write both fail) must be a 500, never
+/// the same 400 an allowlist-validation failure returns -- it is not the
+/// client's fault.
+#[tokio::test]
+async fn put_config_save_io_failure_is_500_not_400() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let parent = tempfile::tempdir().unwrap();
+    // $OMEGA_DIR points at a path whose PARENT component is a plain file,
+    // not a directory -- create_dir_all must fail there.
+    let blocked_parent = parent.path().join("not-a-directory");
+    std::fs::write(&blocked_parent, b"x").unwrap();
+    let bogus_omega_dir = blocked_parent.join("omega");
+    std::env::set_var("OMEGA_DIR", &bogus_omega_dir);
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .put(format!("{base}/v1/config"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "key": "claude.model", "value": "opus" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 500);
+
+    clear_env();
+}
+
 #[tokio::test]
 async fn put_config_requires_auth() {
     let _g = LOCK.lock().await;

@@ -45,6 +45,17 @@ const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
 /// comment).
 const MAX_CONCURRENT_ORCHESTRATIONS: usize = 2;
 
+/// Global cap on concurrently-running `POST /v1/pdf` generations. `omega
+/// pdf` shells to `npx tsx bin/pdfgen.ts` and, on a cold cache, a full `npm
+/// install` first (see `crates/omega-cli/src/main.rs::cmd_pdf`) — an
+/// unbounded, potentially slow, node/npm-spawning operation with no
+/// in-process equivalent. Added in this wave's adversarial review round
+/// (finding: an authenticated caller could otherwise fire unboundedly many
+/// concurrent generations with no cap at all), mirroring
+/// [`MAX_CONCURRENT_ORCHESTRATIONS`]'s reasoning rather than
+/// [`MAX_CONCURRENT_DISPATCHES`]'s.
+const MAX_CONCURRENT_PDF_GENERATIONS: usize = 2;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -66,6 +77,9 @@ pub struct AppState {
     /// permit held for the WHOLE connection lifetime — see
     /// [`MAX_CONCURRENT_ORCHESTRATIONS`].
     pub orchestrate_permits: Arc<Semaphore>,
+    /// Caps concurrently-running `POST /v1/pdf` generations — see
+    /// [`MAX_CONCURRENT_PDF_GENERATIONS`].
+    pub pdf_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -95,6 +109,7 @@ impl AppState {
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let master_chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MASTER_CHATS));
         let orchestrate_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_ORCHESTRATIONS));
+        let pdf_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_PDF_GENERATIONS));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
@@ -107,6 +122,7 @@ impl AppState {
             dispatch_permits,
             master_chat_permits,
             orchestrate_permits,
+            pdf_permits,
             events,
             session_org,
             started_at,
