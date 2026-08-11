@@ -1674,7 +1674,17 @@ fn handle_key_normal(app: &mut App, key: KeyEvent) -> Action {
             }
             Tab::Projects => {
                 {
-                    if app.project_registry.projects.is_empty() {
+                    if app.projects_os_pinned() {
+                        // The pinned "OS System" quick-access row: jump straight
+                        // to the AgentikOS suite tab (the lazy loader in the main
+                        // loop refreshes os_entries on tab change if empty).
+                        app.leave_tab();
+                        app.tab = Tab::Os;
+                        app.detail_focused = false;
+                        app.status_message =
+                            Some("AgentikOS suite — the OS tab".to_string());
+                        Action::None
+                    } else if app.project_registry.projects.is_empty() {
                         // Empty registry: Enter opens the same add-project modal
                         // as 'n' — the literal "Enter adds a project" affordance.
                         app.input_buffer = String::new();
@@ -2818,9 +2828,59 @@ mod tests {
         app.detail_focused = false;
         app.project_registry.projects.clear();
 
-        // Empty registry: one placeholder row, the cursor has nowhere to go.
+        // Empty registry: only the pinned OS row, the cursor stays on it.
         handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(app.projects_selected, 0);
+    }
+
+    // The pinned "OS System" quick-access row is selection index 0: projects
+    // shift to 1..=N, selected_project() offsets by one, and Enter on the pinned
+    // row jumps straight to the OS tab (the operator ask: reach the suite from
+    // the Projects list without cycling tabs).
+    #[test]
+    fn projects_pinned_os_row_maps_indices_and_enter_jumps_to_os_tab() {
+        use omega_core::project_manager::ManagedProject;
+        let mk = |n: &str| ManagedProject {
+            name: n.to_string(),
+            path: std::path::PathBuf::from(format!("/tmp/{n}")),
+            telegram_topic_id: None,
+            oracle_session: None,
+            git_email: None,
+            created_at: String::new(),
+            telegram: None,
+            category: None,
+        };
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+
+        // Index 0 = pinned OS row: no project, reports pinned, Enter → OS tab.
+        let mut app = test_app();
+        app.tab = Tab::Projects;
+        app.detail_focused = false;
+        app.project_registry.projects = vec![mk("Alpha"), mk("Beta")];
+        app.projects_selected = 0;
+        assert!(app.projects_os_pinned());
+        assert!(app.selected_project().is_none());
+        let action = handle_key(&mut app, enter);
+        assert!(matches!(action, Action::None));
+        assert_eq!(app.tab, Tab::Os, "Enter on the pinned row opens the OS tab");
+        assert!(!app.detail_focused, "the jump does not leave detail focused");
+
+        // Index 1..=N are the projects, shifted one past the pinned row.
+        let mut app = test_app();
+        app.tab = Tab::Projects;
+        app.detail_focused = false;
+        app.project_registry.projects = vec![mk("Alpha"), mk("Beta")];
+        app.projects_selected = 1;
+        assert_eq!(app.selected_project().map(|p| p.name.as_str()), Some("Alpha"));
+        app.projects_selected = 2;
+        assert_eq!(app.selected_project().map(|p| p.name.as_str()), Some("Beta"));
+
+        // Arrow-nav wraps across pinned + projects (count = N + 1 = 3).
+        app.projects_selected = 2;
+        handle_key(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(app.projects_selected, 0, "Down past the last project wraps to the pinned row");
+        handle_key(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(app.projects_selected, 2, "Up from the pinned row wraps to the last project");
     }
 
     // Opening a project goes lane -> installed-agent -> action: the coding

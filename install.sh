@@ -1002,12 +1002,14 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# Six products (Mindset/Habits/Brainstorm/Blueprint/Stepper/Builder OS),
-# surfaced in the TUI's OS tab. The registry is compiled into omega-core
-# (os_products.rs); the payloads + READMEs are installed here so the tab
-# resolves a suite root even on a box with no checkout. Payloads arrive as
-# Deposit zips and are integrated under OS/<slug>/ in the repo — this copy
-# keeps a fresh install in parity (Law 0). Secrets never ship in a payload.
+# The 24 value-chain operative systems (Personal / Build chain 01..08 / Growth
+# / Systems), surfaced in the TUI's OS tab. The registry is compiled into
+# omega-core (os_products.rs); the payloads + READMEs are installed here so the
+# tab resolves a suite root even on a box with no checkout. The recursive copy
+# below (`cp -rf "$OSS_SRC/."`) picks up EVERY OS/<slug>/ automatically, so a
+# new OS needs no edit here. Payloads arrive as Deposit zips and are integrated
+# under OS/<slug>/ in the repo — this copy keeps a fresh install in parity
+# (Law 0). Secrets never ship in a payload.
 OSS_SRC="$OMEGA_SRC/OS"
 OSS_DST="$OMEGA_DIR/os"
 if [[ -d "$OSS_SRC" ]]; then

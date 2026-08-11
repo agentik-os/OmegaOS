@@ -1554,15 +1554,31 @@ impl App {
 
     pub fn refresh_projects(&mut self) {
         self.project_registry = omega_core::project_manager::ProjectRegistry::load();
-        if self.projects_selected >= self.project_registry.projects.len()
-            && !self.project_registry.projects.is_empty()
-        {
-            self.projects_selected = self.project_registry.projects.len() - 1;
+        // Selection index 0 is the pinned "OS System" quick-access row; a
+        // project lives at 1..=len (registry index = projects_selected - 1).
+        // Clamp to the last valid row (len, the last project) if we overshoot.
+        let max = self.project_registry.projects.len();
+        if self.projects_selected > max {
+            self.projects_selected = max;
         }
     }
 
+    /// The selected project, or None when the pinned "OS System" row (index 0)
+    /// is the current selection — that row is a shortcut to the OS tab, not a
+    /// project, so every project action gracefully no-ops on it.
     pub fn selected_project(&self) -> Option<&omega_core::project_manager::ManagedProject> {
-        self.project_registry.projects.get(self.projects_selected)
+        if self.projects_selected == 0 {
+            return None;
+        }
+        self.project_registry
+            .projects
+            .get(self.projects_selected - 1)
+    }
+
+    /// True when the pinned "OS System" quick-access row (always index 0 of the
+    /// Projects list) is selected. Enter on it jumps straight to the OS tab.
+    pub fn projects_os_pinned(&self) -> bool {
+        self.projects_selected == 0
     }
 
     /// (Re)load the OS-suite entries (OS tab entry / F5). Registry is static;
@@ -2659,14 +2675,15 @@ impl App {
         InfoSection::all()[self.info_section_selected.min(InfoSection::all().len() - 1)]
     }
 
-    /// Number of navigable rows in the Projects list (≥1 so the empty
-    /// "(no projects)" placeholder row stays selectable).
+    /// Number of navigable rows in the Projects list: the pinned "OS System"
+    /// quick-access row (always index 0) plus one row per registered project.
+    /// Always ≥1, so on an empty registry the pinned row stays selectable.
     fn projects_len(&self) -> usize {
-        self.project_registry.projects.len().max(1)
+        self.project_registry.projects.len() + 1
     }
 
-    /// Advance the Projects-tab cursor. Since the System sections moved to
-    /// their own tab, this list is projects and nothing else — it wraps.
+    /// Advance the Projects-tab cursor. Index 0 is the pinned OS-suite shortcut,
+    /// 1..=N the projects; the cursor wraps across the whole list.
     pub fn projects_tab_next(&mut self) {
         let plen = self.projects_len();
         self.projects_selected = (self.projects_selected + 1) % plen;

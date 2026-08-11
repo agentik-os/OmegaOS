@@ -1,8 +1,13 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). 13 operative systems in three groups: the BUILD CHAIN
-//! (01 Ideation → 02 Researcher → 03 Blueprint → 04 Designer → 05 Stepper →
-//! 06 Builder), the PERSONAL OSes (Mindset, Habits, Execution, Storytelling,
-//! Alignment, Books), and SYSTEMS & AI (AI Logic OS). Each lives under
+//! (TUI). 24 operative systems along the value chain, in four groups: PERSONAL
+//! (Mindset, Health & Energy, Habit Tracker, Alignment — the BE / ENERGY
+//! layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
+//! 03 Market Research → 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
+//! 08 Quality/Evaluation/Release), GROWTH (Storyteller, Revenue, Delivery &
+//! Customer Success, Relationship & Network, Wealth & Capital — the
+//! COMMUNICATE → SELL → DELIVER → CAPITAL layer), and SYSTEMS (Execution,
+//! Operations & Automation, Review & Governance, Context & Memory, AI Logic,
+//! Content, Books — the AUTOMATE / LEARN / meta layer). Each lives under
 //! `OS/<slug>/` in the repo (installed to `~/.omega/os/`); payloads arrive as
 //! zips via the Deposit box and are unpacked in place. This module answers,
 //! cheaply and with NO network: which OSes exist, where they live on THIS
@@ -12,17 +17,24 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Which group of the suite an OS belongs to — the TUI renders one section
-/// per group, build chain first.
+/// per group, in declaration order: Personal, Build chain, Growth, Systems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsGroup {
-    /// The product pipeline, in chain order:
-    /// 01 Ideation → 02 Researcher → 03 Blueprint → 04 Designer (UX/UI) →
-    /// 05 Stepper → 06 Builder.
-    BuildChain,
-    /// The personal operative systems (Mindset, Habits, Books, …).
+    /// The personal BE / ENERGY layer (Mindset, Health & Energy, Habit
+    /// Tracker, Alignment).
     Personal,
+    /// The product pipeline, in chain order:
+    /// 01 Strategy & Portfolio → 02 Brainstorm → 03 Market Research →
+    /// 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
+    /// 08 Quality / Evaluation / Release.
+    BuildChain,
+    /// The go-to-market layer, COMMUNICATE → SELL → DELIVER → CAPITAL
+    /// (Storyteller, Revenue, Delivery & Customer Success, Relationship &
+    /// Network, Wealth & Capital).
+    Growth,
     /// Systems / meta OSes that operate ON a system rather than a product or a
-    /// person (AI Logic OS challenges OmegaOS itself, agents and AI workflows).
+    /// person (Execution, Operations & Automation, Review & Governance,
+    /// Context & Memory, AI Logic, Content, Books).
     Systems,
 }
 
@@ -46,58 +58,133 @@ pub struct OsProduct {
 }
 
 impl OsProduct {
-    /// The suite. The BUILD CHAIN first, in pipeline order (01→06), then the
-    /// personal OSes. Chain position = index within the BuildChain group + 1.
+    /// The whole suite, grouped and contiguous: PERSONAL, then the BUILD CHAIN
+    /// in pipeline order (01→08), then GROWTH, then SYSTEMS. Chain position =
+    /// index within the BuildChain group + 1 (derived, never hand-numbered).
     pub fn all() -> &'static [OsProduct] {
         &[
+            // ── PERSONAL — the BE / ENERGY layer ───────────────────────────
             OsProduct {
-                slug: "ideation-os",
-                name: "Ideation OS",
-                tagline: "Brainstorm {OS} v3: multi-agent imagination + decision council, lineage and a frozen concept handoff.",
-                group: OsGroup::BuildChain,
+                slug: "mindset-os",
+                name: "Mindset OS",
+                tagline: "Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching, philosophy compiler, 90-day program.",
+                group: OsGroup::Personal,
                 commands: &[
                     "Claude / Codex:",
-                    "  /brainstorm · /ideation-os   run the imagination + decision council",
-                    "  depths: spark(quick) · imagination(wild) · council(multi-agent) · deep",
-                    "          red-team(attack it) · converge(decide) · audit(gaps)",
-                    "omega-ideation CLI (session state):",
-                    "  init         start a session (--title --project-id --depth)",
-                    "  frame        set scope, constraints, non-goals",
-                    "  dna          set Founder DNA + signature tension",
-                    "  add          add a typed ledger item (idea/tension/finding)",
-                    "  surface      record + select a product surface candidate",
-                    "  surface-config   configure Surface Lab / multi-surface roles",
-                    "  evolve       record an evolutionary generation + selection pressure",
-                    "  portfolio    record active ideas + portfolio coherence",
-                    "  checkpoint   record a challenge-cycle delta",
-                    "  audit        compute structural quality gates",
-                    "  freeze       version + freeze the selected concept",
-                    "  export       export a readable Markdown session",
-                    "  handoff      export a structured downstream handoff (→ Research/Blueprint)",
-                    "  summary      compact session summary   ·   validate   check the session",
+                    "  /mindset-os   Jim Rohn identity/wellbeing/wealth coach",
+                    "  labels every claim E1(established) · E2(promising) · S(spiritual)",
+                    "                     P(personal) · C(clinical → a professional)",
+                    "omega-mindset CLI (workspaces):",
+                    "  new --name --output      the weekly workspace (19 files)",
+                    "  score <scorecard.json>   validate + summarize a weekly scorecard",
+                    "  challenge --output       the 6-month identity challenge",
+                    "                           (180 daily + 26 weekly + 6 monthly + state)",
+                    "  coach <dir>              one AI growth pass now (Telegram card)",
+                    "  coach <dir> --arm        daily 07:00 auto-coaching (disarmed by default)",
+                    "  coach <dir> --disarm     stop the loop",
                 ],
             },
             OsProduct {
-                slug: "researcher-os",
-                name: "Researcher OS",
+                slug: "health-energy-os",
+                name: "Health & Energy OS",
+                tagline: "Build and protect physical and cognitive capacity: sleep, movement, training, nutrition, recovery and stress.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /health · /health-energy-os ):",
+                    "  build and protect physical and cognitive capacity",
+                    "  sleep · movement · training · nutrition · recovery",
+                    "  stress regulation · environment design · energy audits",
+                    "  knows when to escalate to a real professional",
+                    "  12 specialist agents · 18 skills · 8 protocols · 6 schemas",
+                    "→ upstream capacity provider for Habit, Execution and Strategy OS",
+                ],
+            },
+            OsProduct {
+                slug: "habit-tracker-os",
+                name: "Habit Tracker OS",
+                tagline: "Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews and seasons.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /habits · /habit-tracker-os ):",
+                    "  conversation-first habit tracker (chat is the interface)",
+                    "  build good habits · reduce unwanted ones",
+                    "  morning/evening check-ins · handle urges and lapses",
+                    "  adaptive weekly/monthly reviews · recovery seasons",
+                    "  behavior experiments · visual progress reports",
+                    "→ integrates with Mindset {OS} and Context & Memory {OS}",
+                ],
+            },
+            OsProduct {
+                slug: "alignment-os",
+                name: "Alignment OS",
+                tagline: "Alignment Coach {OS}: a wisdom + decision second brain — clarity, values, right effort, next action.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /coach · /align · /alignment-os ):",
+                    "  a wisdom + decision inner counsel (Stoic · Daoist · Rohn synthesis)",
+                    "  labels every claim E1..E5 (never metaphysics as science)",
+                    "protocols / skills (say the word or the /command):",
+                    "  /morning /evening /weekly   the daily/weekly protocols",
+                    "  /decision      a structured decision protocol",
+                    "  /true_north    reconnect to chosen values",
+                    "  /virtue_check  virtue-before-outcome check",
+                    "  /dichotomy_control   separate control from non-control",
+                    "  /wu_wei        right effort vs forcing",
+                    "  /reframe       reframe a situation   ·   /shadow   shadow work",
+                    "  /belief_audit  audit a limiting belief   ·   /fear   fear work",
+                    "  /meaning       meaning work   ·   /manifestation   grounded",
+                    "  /quantum_truth accurate quantum guardrails",
+                    "  /personal_philosophy   compile your philosophy",
+                    "  /anti_dependency   hand agency back   ·   /reset   3-min reset",
+                    "council: stoic·daoist·rohn·scientist·quantum·manifestation·shadow",
+                    "         ·compassion·challenger·action·meaning·integrator (routed)",
+                    "omega-align   open the coach master agent in a session",
+                ],
+            },
+            // ── BUILD CHAIN — CHOOSE → BUILD → CERTIFY (01→08) ──────────────
+            OsProduct {
+                slug: "strategy-portfolio-os",
+                name: "Strategy & Portfolio OS",
+                tagline: "Turn ambition, evidence and constraints into explicit choices, a ranked portfolio of bets and disciplined allocation.",
+                group: OsGroup::BuildChain,
+                commands: &[
+                    "Claude / Codex ( /strategy · /strategy-portfolio-os ):",
+                    "  turn ambition + evidence into explicit choices and a ranked portfolio",
+                    "  diagnose · set the strategy kernel · rank bets",
+                    "  fund / pause / kill each bet",
+                    "  allocate time, attention, people and capital before execution",
+                    "  12 specialist agents · 20 skills · 6 protocols · 7 schemas",
+                    "→ feeds Blueprint (a product bet) and Execution (personal outcomes)",
+                ],
+            },
+            OsProduct {
+                slug: "brainstorm-os",
+                name: "Brainstorm OS",
+                tagline: "Brainstorm {OS}: multi-agent imagination and decision council, lineage and a frozen concept handoff.",
+                group: OsGroup::BuildChain,
+                commands: &[
+                    "Claude / Codex ( /brainstorm · /brainstorm-os ):",
+                    "  run the multi-agent imagination + decision council",
+                    "  depths: spark · imagination · council · deep",
+                    "          red-team · converge · audit",
+                    "  modes: challenge · continue · evolve · go-deeper (keeps lineage)",
+                    "  independent chambers · Founder DNA · idea genomes · premortems",
+                    "→ emits a frozen concept handoff for Market Research / Blueprint",
+                ],
+            },
+            OsProduct {
+                slug: "market-research-os",
+                name: "Market Research OS",
                 tagline: "Market Research {OS}: evidence, validation and a bounded decision before Blueprint.",
                 group: OsGroup::BuildChain,
                 commands: &[
-                    "Claude / Codex:",
-                    "  /research · /researcher-os   Market Research {OS} (evidence + validation)",
-                    "  /market-research <idea>   scan · validate · diligence · deep",
-                    "                            audit · delta · continue · status · score · handoff",
+                    "Claude / Codex ( /market-research · /market-research-os ):",
+                    "  compile an idea into a decision-grade research + validation pack",
+                    "  verbs: scan · validate · diligence · deep",
+                    "         audit · delta · continue · score · handoff",
                     "  depths: SIGNAL(desk) · VALIDATION(primary) · INVESTMENT_GRADE",
                     "  decisions: GO · PIVOT · HOLD · NO-GO · INSUFFICIENT (always bounded)",
-                    "omega-research CLI (workspace state):",
-                    "  init         create a research workspace (--project-id --decision --depth)",
-                    "  validate     validate structure + machine-checkable rules",
-                    "  status       current research status",
-                    "  allocate     allocate stable IDs",
-                    "  checkpoint   restart-safe checkpoint",
-                    "  score        gate + hypothesis diagnostics",
-                    "  export       export state or a status view (→ Blueprint input manifest)",
-                    "  demo         a small validated demo workspace",
+                    "→ never validated on desk research alone; emits a Blueprint input manifest",
                 ],
             },
             OsProduct {
@@ -121,15 +208,15 @@ impl OsProduct {
                 ],
             },
             OsProduct {
-                slug: "designer-os",
-                name: "Designer OS (UX/UI)",
+                slug: "design-os",
+                name: "Design OS (UX/UI)",
                 tagline: "Design {OS}: challenge the blueprint into flows, screens, states and a validated Design Handoff.",
                 group: OsGroup::BuildChain,
                 commands: &[
-                    "Claude / Codex:",
-                    "  /design-os · /designer-os   the UX/UI compiler + adversarial flow challenger",
-                    "  it does: challenge the flow · information architecture · screen/surface",
-                    "           contracts · every async state · visual system · responsive + a11y",
+                    "Claude / Codex ( /design-os ):",
+                    "  compile an approved Blueprint into a challenged UX/UI definition",
+                    "  it does: challenge the flow · information architecture",
+                    "           screen/state contracts · visual system · responsive + a11y",
                     "  maps to shadcn/ui + STAX (the OmegaOS stack)",
                     "omega-designer CLI (contract validators):",
                     "  intake <file>     validate the Blueprint intake schema",
@@ -189,54 +276,106 @@ impl OsProduct {
                 ],
             },
             OsProduct {
-                slug: "mindset-os",
-                name: "Mindset OS",
-                tagline: "Jim Rohn identity/wellbeing/wealth OS: evidence-labeled coaching, philosophy compiler, 90-day program.",
-                group: OsGroup::Personal,
+                slug: "quality-evaluation-release-os",
+                name: "Quality, Evaluation & Release OS",
+                tagline: "Independent certification between Builder and production: conformance, observability, recovery and a go/no-go.",
+                group: OsGroup::BuildChain,
                 commands: &[
-                    "Claude / Codex:",
-                    "  /mindset-os   Jim Rohn identity/wellbeing/wealth coach",
-                    "  labels every claim E1(established) · E2(promising) · S(spiritual)",
-                    "                     P(personal) · C(clinical → a professional)",
-                    "omega-mindset CLI (workspaces):",
-                    "  new --name --output      the weekly workspace (19 files)",
-                    "  score <scorecard.json>   validate + summarize a weekly scorecard",
-                    "  challenge --output       the 6-month identity challenge",
-                    "                           (180 daily + 26 weekly + 6 monthly + state)",
-                    "  coach <dir>              one AI growth pass now (Telegram card)",
-                    "  coach <dir> --arm        daily 07:00 auto-coaching (disarmed by default)",
-                    "  coach <dir> --disarm     stop the loop",
+                    "Claude / Codex ( /quality · /quality-evaluation-release-os ):",
+                    "  independent certification between Builder and production",
+                    "  contract conformance · risk management",
+                    "  observability · recovery validation",
+                    "  controlled release readiness · a bounded go/no-go decision",
+                    "  16 specialist agents · 26 skills · 7 protocols · 8 schemas",
+                    "→ sits after Builder OS, before production",
+                ],
+            },
+            // ── GROWTH — COMMUNICATE → SELL → DELIVER → CAPITAL ─────────────
+            OsProduct {
+                slug: "storyteller-os",
+                name: "Storyteller OS",
+                tagline: "Storyteller {OS}: coach, mine, verify and shape truthful stories without erasing your voice.",
+                group: OsGroup::Growth,
+                commands: &[
+                    "Claude / Codex ( /story · /storyteller-os ):",
+                    "  /story        find + build a story from a real moment",
+                    "  /mine         mine lived material for story signal",
+                    "  /interview    a story interview (coach, don't ghost-write)",
+                    "  /deepen       make a story deeper (meaning + tension)",
+                    "  /shape        shape it into a structure (story model)",
+                    "  /write        write it, only when authorized, in YOUR voice",
+                    "  /adapt        adapt to a channel (reel/carousel/thread/keynote)",
+                    "  /truthcheck   verify claims against the evidence standard",
+                    "  /score        score the story   ·   /rehearse   perform it",
+                    "  /storybank    manage your bank of stories",
+                    "→ coach, do not ghost-write; never erase your voice",
                 ],
             },
             OsProduct {
-                slug: "habits-os",
-                name: "Habits OS",
-                tagline: "Habit Tracker {OS}: conversation-first habit system, deterministic state, adaptive reviews and seasons.",
-                group: OsGroup::Personal,
+                slug: "revenue-os",
+                name: "Revenue OS",
+                tagline: "The conversational revenue brain: offers, pricing, pipeline, invoicing, collections, cash flow and forecasting.",
+                group: OsGroup::Growth,
                 commands: &[
-                    "Claude / Codex:",
-                    "  /habits · /habits-os   conversation-first habit tracker (chat is the interface)",
-                    "omega-habits CLI (SQLite state):",
-                    "  init         create/update your profile (--user --season)",
-                    "  add          create an accepted habit contract",
-                    "  update       a superseding habit-contract version",
-                    "  list         list habit contracts",
-                    "  log          append explicit or observed evidence",
-                    "  correct      supersede a wrong log (invalidates derived reviews)",
-                    "  today        rank today's primary habits",
-                    "  review       an evidence-bounded review",
-                    "  chart        render Mermaid from known opportunities",
-                    "  context      compact LLM context   ·   export   user-owned state",
-                    "  season       change the operating season (build/crisis/maintain/recover/travel)",
-                    "  experiment   a bounded behavior experiment",
-                    "  delete       delete user-owned logs/habits/all   ·   doctor   integrity check",
+                    "Claude / Codex ( /revenue · /revenue-os ):",
+                    "  the conversational revenue brain + governed business ledger",
+                    "  offers · pricing · leads · pipeline · sales calls · proposals",
+                    "  invoicing · collections · cash flow · forecast · monthly close",
+                    "  renewal + expansion",
+                    "  24 agents · 40 skills · 10 protocols · 14 schemas",
+                    "→ owns the BUSINESS ledger only; never personal money",
                 ],
             },
+            OsProduct {
+                slug: "delivery-customer-success-os",
+                name: "Delivery & Customer Success OS",
+                tagline: "The customer journey after the sale: onboarding, delivery, adoption, value proof, renewal and expansion.",
+                group: OsGroup::Growth,
+                commands: &[
+                    "Claude / Codex ( /delivery · /delivery-customer-success-os ):",
+                    "  manage the customer journey after commercial commitment",
+                    "  handoff · onboarding · discovery · success plan",
+                    "  delivery · scope · communication · acceptance",
+                    "  adoption · value proof · renewal · expansion · offboarding",
+                    "  19 agents · 30 skills · 9 protocols · 9 schemas",
+                    "→ receives signed scope; returns value + health evidence to Revenue",
+                ],
+            },
+            OsProduct {
+                slug: "relationship-network-os",
+                name: "Relationship & Network OS",
+                tagline: "Build, protect and deepen valuable relationships: attention, memory, generous relevance, follow-through, introductions.",
+                group: OsGroup::Growth,
+                commands: &[
+                    "Claude / Codex ( /network · /relationship-network-os ):",
+                    "  build, protect and deepen valuable human relationships",
+                    "  attention · relationship memory · generous relevance",
+                    "  follow-through · boundaries · communication",
+                    "  thoughtful introductions · network stewardship",
+                    "  12 agents · 18 skills · 7 protocols · 6 schemas",
+                ],
+            },
+            OsProduct {
+                slug: "wealth-capital-os",
+                name: "Wealth & Capital OS",
+                tagline: "The personal financial brain: cash flow, savings, emergency resilience, debt, investment policy and allocation.",
+                group: OsGroup::Growth,
+                commands: &[
+                    "Claude / Codex ( /wealth · /wealth-capital-os ):",
+                    "  the personal financial brain (personal money only)",
+                    "  cash flow · savings · emergency resilience · debt · goals",
+                    "  investment policy · risk tolerance",
+                    "  life-aligned capital allocation",
+                    "  12 agents · 20 skills · 7 protocols · 7 schemas",
+                    "→ receives only verified owner distributions from Revenue OS",
+                ],
+            },
+            // ── SYSTEMS — AUTOMATE / LEARN / meta ──────────────────────────
             OsProduct {
                 slug: "execution-os",
                 name: "Execution OS",
                 tagline: "LLM-first personal execution: ambitions into focused commitments, protected work and shipped evidence.",
-                group: OsGroup::Personal,
+                group: OsGroup::Systems,
                 commands: &[
                     "/execution-os · /execute   personal execution as a closed control loop",
                     "  Capture → Clarify → Select → Commit → Focus → Prove → Review → Adapt",
@@ -257,77 +396,47 @@ impl OsProduct {
                 ],
             },
             OsProduct {
-                slug: "storytelling-os",
-                name: "Storytelling OS",
-                tagline: "Storyteller {OS}: coach, mine, verify and shape truthful stories without erasing your voice.",
-                group: OsGroup::Personal,
+                slug: "operations-automation-os",
+                name: "Operations & Automation OS",
+                tagline: "See how the work really runs, cut waste, then standardize, delegate or automate with monitoring and recovery.",
+                group: OsGroup::Systems,
                 commands: &[
-                    "Claude / Codex ( /storytelling-os · /story ):",
-                    "  /story        find + build a story from a real moment",
-                    "  /mine         mine lived material for story signal",
-                    "  /interview    a story interview (coach, don't ghost-write)",
-                    "  /deepen       make a story deeper (meaning + tension)",
-                    "  /shape        shape it into a structure (story model)",
-                    "  /write        write it — only when authorized, in YOUR voice",
-                    "  /adapt        adapt to a channel (reel/carousel/thread/keynote)",
-                    "  /truthcheck   verify claims against the evidence standard",
-                    "  /score        score the story   ·   /rehearse   perform it",
-                    "  /storybank    manage your bank of stories",
-                    "omega-story CLI (SQLite story bank):",
-                    "  init          create your story bank",
-                    "  capture       add a Story Object   ·   list / show   browse",
-                    "  update        set dotted Story Object fields",
-                    "  add-claim     a claim-ledger entry (evidence per claim)",
-                    "  add-consent   a third-party consent record",
-                    "  validate / score   validate / score one object",
-                    "  export        export Story Objects   ·   doctor   validate the bank",
+                    "Claude / Codex ( /operations · /operations-automation-os ):",
+                    "  see how the work really runs, then remove waste and control gaps",
+                    "  interview and observe · reveal waste and control gaps",
+                    "  triage: remove · simplify · standardize · delegate · automate",
+                    "  production-ready automation blueprints with monitoring + recovery",
+                    "  24 agents · 39 skills · 9 protocols · 9 schemas",
                 ],
             },
             OsProduct {
-                slug: "alignment-os",
-                name: "Alignment OS",
-                tagline: "Alignment Coach {OS}: a wisdom + decision second brain — clarity, values, right effort, next action.",
-                group: OsGroup::Personal,
+                slug: "review-governance-os",
+                name: "Review & Governance OS",
+                tagline: "Turn actions, incidents, metrics and decisions into honest learning, controlled change and explicit policy.",
+                group: OsGroup::Systems,
                 commands: &[
-                    "Claude / Codex ( /coach · /align · /alignment-os ):",
-                    "  a wisdom + decision inner counsel (Stoic · Daoist · Rohn synthesis)",
-                    "  labels every claim E1..E5 (never metaphysics as science)",
-                    "protocols / skills (say the word or the /command):",
-                    "  /morning /evening /weekly   the daily/weekly protocols",
-                    "  /decision      a structured decision protocol",
-                    "  /true_north    reconnect to chosen values",
-                    "  /virtue_check  virtue-before-outcome check",
-                    "  /dichotomy_control   separate control from non-control",
-                    "  /wu_wei        right effort vs forcing",
-                    "  /reframe       reframe a situation   ·   /shadow   shadow work",
-                    "  /belief_audit  audit a limiting belief   ·   /fear   fear work",
-                    "  /meaning       meaning work   ·   /manifestation   grounded",
-                    "  /quantum_truth accurate quantum guardrails",
-                    "  /personal_philosophy   compile your philosophy",
-                    "  /anti_dependency   hand agency back   ·   /reset   3-min reset",
-                    "council: stoic·daoist·rohn·scientist·quantum·manifestation·shadow",
-                    "         ·compassion·challenger·action·meaning·integrator (routed)",
-                    "omega-align   open the coach master agent in a session",
+                    "Claude / Codex ( /review · /review-governance-os ):",
+                    "  turn actions, incidents, metrics and decisions into honest learning",
+                    "  incident review · postmortem · retrospective",
+                    "  policy change · continuously improved systems",
+                    "  governs consequential change across every other OS (approval authority)",
+                    "  13 agents · 20 skills · 7 protocols · 7 schemas",
+                    "→ closes the learning loop with Context & Memory OS",
                 ],
             },
             OsProduct {
-                slug: "books-os",
-                name: "Books OS",
-                tagline: "Your library as an operating system: reading, retention and living knowledge.",
-                group: OsGroup::Personal,
+                slug: "context-memory-os",
+                name: "Context & Memory OS",
+                tagline: "One trustworthy, inspectable, permissioned memory layer: fact vs inference, no cross-project or identity bleed.",
+                group: OsGroup::Systems,
                 commands: &[
-                    "Claude / Codex ( /books-os = /alexandria — the librarian ):",
-                    "  /setup       calibrate on how YOU learn   ·   /language   reply language",
-                    "  /book        full X-Ray of a book   ·   /espresso   90-second version",
-                    "  /chapter     a book chapter by chapter   ·   /idea   atlas across many books",
-                    "  /compare (/vs)   authors in combat   ·   /apply   to a real business",
-                    "  /challenge   10-round sparring on your idea   ·   /decision   decision lab",
-                    "  /council     3-5 perspectives   ·   /teach   Feynman triple explanation",
-                    "  /quiz /drill   adaptive recall   ·   /cards   flashcards   ·   /review   spaced rep",
-                    "  /map (/visual)   diagram   ·   /memory   memory forge   ·   /focus   5-min session",
-                    "  /best [topic]   the 50 best books + 50 tips   ·   /bestsellers [niche]   top 100",
-                    "  /gem   an underrated idea   ·   /capture /save /applylog   feed the ledger",
-                    "omega-books CLI:   open the librarian master agent in a terminal session",
+                    "Claude / Codex ( /memory · /context-memory-os ):",
+                    "  one trustworthy, inspectable, permissioned memory layer for every OS",
+                    "  separates fact from inference and temporary state",
+                    "  no cross-project or identity bleed",
+                    "  permissioned knowledge retrieval",
+                    "  14 agents · 20 skills · 7 protocols · 8 schemas",
+                    "→ the canonical shared context layer the other OSes recover from",
                 ],
             },
             OsProduct {
@@ -353,11 +462,46 @@ impl OsProduct {
                     "omega-ailogic   open the AI Logic master agent in a session",
                 ],
             },
+            OsProduct {
+                slug: "content-os",
+                name: "Content OS",
+                tagline: "The full content lifecycle: capture, story mining, writing, production, platform-native packaging, publishing and learning.",
+                group: OsGroup::Systems,
+                commands: &[
+                    "Claude / Codex ( /content · /content-os ):",
+                    "  the full content lifecycle, positioning through performance",
+                    "  daily capture · story mining · research · writing",
+                    "  visual/audio/video briefs · platform-native packaging",
+                    "  publishing · community engagement · performance learning",
+                    "  38 agents · 44 skills · 12 protocols · 10 schemas",
+                    "→ packages narrative; Storyteller OS owns the story craft",
+                ],
+            },
+            OsProduct {
+                slug: "books-os",
+                name: "Books OS",
+                tagline: "Your library as an operating system: reading, retention and living knowledge.",
+                group: OsGroup::Systems,
+                commands: &[
+                    "Claude / Codex ( /books-os = /alexandria — the librarian ):",
+                    "  /setup       calibrate on how YOU learn   ·   /language   reply language",
+                    "  /book        full X-Ray of a book   ·   /espresso   90-second version",
+                    "  /chapter     a book chapter by chapter   ·   /idea   atlas across many books",
+                    "  /compare (/vs)   authors in combat   ·   /apply   to a real business",
+                    "  /challenge   10-round sparring on your idea   ·   /decision   decision lab",
+                    "  /council     3-5 perspectives   ·   /teach   Feynman triple explanation",
+                    "  /quiz /drill   adaptive recall   ·   /cards   flashcards   ·   /review   spaced rep",
+                    "  /map (/visual)   diagram   ·   /memory   memory forge   ·   /focus   5-min session",
+                    "  /best [topic]   the 50 best books + 50 tips   ·   /bestsellers [niche]   top 100",
+                    "  /gem   an underrated idea   ·   /capture /save /applylog   feed the ledger",
+                    "omega-books CLI:   open the librarian master agent in a terminal session",
+                ],
+            },
         ]
     }
 
-    /// "01"…"06" for build-chain OSes (their pipeline position), None for
-    /// personal OSes. Derived from registry order — never hand-numbered.
+    /// "01"…"08" for build-chain OSes (their pipeline position), None for
+    /// every other group. Derived from registry order — never hand-numbered.
     pub fn chain_position(&self) -> Option<usize> {
         if self.group != OsGroup::BuildChain {
             return None;
@@ -542,44 +686,116 @@ impl OsEntry {
 mod tests {
     use super::*;
 
+    /// The value-chain suite, in registry order, grouped and contiguous:
+    /// PERSONAL, then the BUILD CHAIN (01→08), then GROWTH, then SYSTEMS.
+    /// 24 = 23 value-chain OSes + books-os (a working OS with no value-chain
+    /// twin, kept in Systems rather than dropped).
+    const EXPECTED: &[(&str, OsGroup)] = &[
+        ("mindset-os", OsGroup::Personal),
+        ("health-energy-os", OsGroup::Personal),
+        ("habit-tracker-os", OsGroup::Personal),
+        ("alignment-os", OsGroup::Personal),
+        ("strategy-portfolio-os", OsGroup::BuildChain),
+        ("brainstorm-os", OsGroup::BuildChain),
+        ("market-research-os", OsGroup::BuildChain),
+        ("blueprint-os", OsGroup::BuildChain),
+        ("design-os", OsGroup::BuildChain),
+        ("stepper-os", OsGroup::BuildChain),
+        ("builder-os", OsGroup::BuildChain),
+        ("quality-evaluation-release-os", OsGroup::BuildChain),
+        ("storyteller-os", OsGroup::Growth),
+        ("revenue-os", OsGroup::Growth),
+        ("delivery-customer-success-os", OsGroup::Growth),
+        ("relationship-network-os", OsGroup::Growth),
+        ("wealth-capital-os", OsGroup::Growth),
+        ("execution-os", OsGroup::Systems),
+        ("operations-automation-os", OsGroup::Systems),
+        ("review-governance-os", OsGroup::Systems),
+        ("context-memory-os", OsGroup::Systems),
+        ("ai-logic-os", OsGroup::Systems),
+        ("content-os", OsGroup::Systems),
+        ("books-os", OsGroup::Systems),
+    ];
+
     #[test]
-    fn suite_has_the_six_products_in_operator_order() {
-        let slugs: Vec<&str> = OsProduct::all().iter().map(|p| p.slug).collect();
-        assert_eq!(
-            slugs,
-            vec![
-                "ideation-os",
-                "researcher-os",
-                "blueprint-os",
-                "designer-os",
-                "stepper-os",
-                "builder-os",
-                "mindset-os",
-                "habits-os",
-                "execution-os",
-                "storytelling-os",
-                "alignment-os",
-                "books-os",
-                "ai-logic-os"
-            ]
-        );
+    fn suite_is_the_full_value_chain_in_order() {
+        let got: Vec<(&str, OsGroup)> =
+            OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
+        assert_eq!(got.len(), 24, "24 = 23 value-chain OSes + books-os");
+        assert_eq!(got, EXPECTED);
     }
 
     #[test]
-    fn chain_positions_are_derived_and_personal_oses_have_none() {
-        let by_slug = |slug: &str| {
+    fn groups_are_contiguous_in_declaration_order() {
+        // Each group appears exactly once as a contiguous run, in the order
+        // Personal → BuildChain → Growth → Systems (what the TUI renders).
+        let order = [
+            OsGroup::Personal,
+            OsGroup::BuildChain,
+            OsGroup::Growth,
+            OsGroup::Systems,
+        ];
+        let mut seen: Vec<OsGroup> = Vec::new();
+        let mut last: Option<OsGroup> = None;
+        for p in OsProduct::all() {
+            if last != Some(p.group) {
+                assert!(
+                    !seen.contains(&p.group),
+                    "group {:?} is not contiguous",
+                    p.group
+                );
+                seen.push(p.group);
+                last = Some(p.group);
+            }
+        }
+        assert_eq!(seen, order, "groups render in value-chain order");
+    }
+
+    #[test]
+    fn build_chain_positions_are_01_to_08_unique() {
+        let positions: Vec<usize> = OsProduct::all()
+            .iter()
+            .filter(|p| p.group == OsGroup::BuildChain)
+            .map(|p| p.chain_position().expect("build-chain OS has a position"))
+            .collect();
+        assert_eq!(positions, (1..=8).collect::<Vec<_>>());
+        // Every non-BuildChain OS returns None.
+        for p in OsProduct::all() {
+            if p.group != OsGroup::BuildChain {
+                assert_eq!(p.chain_position(), None, "{} must have no position", p.slug);
+            }
+        }
+        // Named anchors of the chain.
+        let pos = |slug: &str| {
             OsProduct::all()
                 .iter()
                 .find(|p| p.slug == slug)
                 .unwrap()
                 .chain_position()
         };
-        assert_eq!(by_slug("ideation-os"), Some(1));
-        assert_eq!(by_slug("blueprint-os"), Some(3));
-        assert_eq!(by_slug("stepper-os"), Some(5));
-        assert_eq!(by_slug("builder-os"), Some(6));
-        assert_eq!(by_slug("books-os"), None);
-        assert_eq!(by_slug("mindset-os"), None);
+        assert_eq!(pos("strategy-portfolio-os"), Some(1));
+        assert_eq!(pos("blueprint-os"), Some(4));
+        assert_eq!(pos("builder-os"), Some(7));
+        assert_eq!(pos("quality-evaluation-release-os"), Some(8));
+        assert_eq!(pos("books-os"), None);
+        assert_eq!(pos("mindset-os"), None);
+    }
+
+    #[test]
+    fn every_slug_resolves_to_an_os_dir_when_a_root_is_present() {
+        // With OMEGA_OS_ROOT unset the suite root may not resolve on a bare
+        // CI box; only assert dir presence when a root actually resolves.
+        if let Some(root) = os_root() {
+            for p in OsProduct::all() {
+                let dir = root.join(p.slug);
+                assert!(
+                    dir.is_dir(),
+                    "OS payload dir missing for {}: {}",
+                    p.slug,
+                    dir.display()
+                );
+            }
+        }
     }
 
     #[test]

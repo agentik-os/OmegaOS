@@ -2587,21 +2587,45 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
     // Top padding.
     items.push(ListItem::new(Line::from("")));
 
-    // Grouped under thematic sub-headers derived per-machine from each project's
-    // folder under the user's configured projects root (or an explicit category).
-    // Selection is by registry index, so the registry is kept sorted in this same
-    // category order (see ManagedProject::category_rank) and arrow-nav flows
-    // top-to-bottom.
-    items.push(group_header("Projects"));
-    if app.project_registry.projects.is_empty() {
-        let current = true;
+    // Pinned quick-access row (always selection index 0): jump straight to the
+    // AgentikOS OS suite tab without cycling tabs. Visually distinct from a real
+    // project (a grid glyph + accent), and it participates in arrow-nav so the
+    // cursor can land on it. Projects therefore live at selection index 1..=N.
+    {
+        let current = app.projects_selected == 0;
         if current {
             flat_selected = items.len();
         }
+        let selected_here = current && list_focused;
+        let style = if selected_here {
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+                .fg(th::accent())
+                .add_modifier(Modifier::BOLD)
+        };
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  ▦ OS System   → the AgentikOS suite".to_string(),
+            style,
+        ))));
+        items.push(ListItem::new(Line::from("")));
+    }
+
+    // Grouped under thematic sub-headers derived per-machine from each project's
+    // folder under the user's configured projects root (or an explicit category).
+    // Selection is by registry index + 1 (the pinned row above holds index 0),
+    // so the registry is kept sorted in this same category order (see
+    // ManagedProject::category_rank) and arrow-nav flows top-to-bottom.
+    items.push(group_header("Projects"));
+    if app.project_registry.projects.is_empty() {
+        // The pinned OS row above owns the selection on an empty registry, so
+        // this placeholder is informational only (never marked current).
         items.push(section_row(
             "(no projects — press n to add)".to_string(),
-            current,
-            current && list_focused,
+            false,
+            false,
         ));
     } else {
         use omega_core::project_manager::ManagedProject;
@@ -2626,7 +2650,9 @@ fn build_projects_list(app: &App) -> (Vec<ListItem<'static>>, usize) {
                 if &project.display_category(root) != cat {
                     continue;
                 }
-                let current = i == app.projects_selected;
+                // Selection index 0 is the pinned OS row, so project `i` is
+                // selected at projects_selected == i + 1.
+                let current = i + 1 == app.projects_selected;
                 if current {
                     flat_selected = items.len();
                 }
@@ -3471,7 +3497,7 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
     let list_border = if list_focused { th::accent() } else { th::dim() };
     let detail_border = if app.detail_focused { th::accent2() } else { th::dim() };
 
-    // ── Left: the suite, grouped — Build chain (01→06) then Personal ─────────
+    // ── Left: the suite, grouped — Personal, Build chain (01..08), Growth, Systems ─
     let mut items: Vec<ListItem> = Vec::new();
     items.push(ListItem::new(Line::from("")));
     let mut rendered_selected = 1usize;
@@ -3491,8 +3517,9 @@ fn draw_os(frame: &mut Frame, app: &mut App, area: Rect) {
                     items.push(ListItem::new(Line::from("")));
                 }
                 items.push(group_header(match e.product.group {
-                    omega_core::os_products::OsGroup::BuildChain => "Build chain",
                     omega_core::os_products::OsGroup::Personal => "Personal",
+                    omega_core::os_products::OsGroup::BuildChain => "Build chain",
+                    omega_core::os_products::OsGroup::Growth => "Growth",
                     omega_core::os_products::OsGroup::Systems => "Systems & AI",
                 }));
                 last_group = Some(e.product.group);
