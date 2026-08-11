@@ -1015,6 +1015,20 @@ OSS_DST="$OMEGA_DIR/os"
 if [[ -d "$OSS_SRC" ]]; then
     mkdir -p "$OSS_DST"
     cp -rf "$OSS_SRC/." "$OSS_DST/"
+    # A suite entry carrying a root SKILL.md is itself an installable skill.
+    # Copy the complete directory, never a symlink: the registry deliberately
+    # rejects symlinked skill roots and the relative references beside SKILL.md
+    # are part of the operating contract. Canonical skills under skills/ are
+    # installed later and take precedence for the older blueprint-chain packs.
+    for _os_skill_file in "$OSS_SRC"/*/SKILL.md; do
+        [[ -f "$_os_skill_file" ]] || continue
+        _os_skill_src="${_os_skill_file%/SKILL.md}"
+        _os_skill_slug="$(basename "$_os_skill_src")"
+        _os_skill_dst="$OMEGA_DIR/skills/$_os_skill_slug"
+        mkdir -p "$_os_skill_dst"
+        cp -rf "$_os_skill_src/." "$_os_skill_dst/"
+    done
+    unset _os_skill_file _os_skill_src _os_skill_slug _os_skill_dst
     # Per-OS bin wrappers (e.g. omega-stepper) → ~/.local/bin. Symlink from the
     # CHECKOUT when it persists (dev box: git pull updates them in place), from
     # the installed copy when the source is the throwaway curl|bash clone —
@@ -2192,6 +2206,17 @@ EOF
         info "Blueprint skill $BSK not found — skipping"
     fi
 done
+
+# Install every canonical OS root command after all OS skills are in place.
+# The standalone helper is runtime-tested by scripts/verify-install.sh and
+# writes both provider surfaces, including the familiar short aliases.
+if [[ -f "$OMEGA_SRC/scripts/install-os-commands.sh" ]]; then
+    OMEGA_DIR="$OMEGA_DIR" bash "$OMEGA_SRC/scripts/install-os-commands.sh"
+    ok "OmegaOS root commands installed for Claude and Codex"
+else
+    printf 'Missing required installer helper: scripts/install-os-commands.sh\n' >&2
+    exit 1
+fi
 
 # Install the watch video-analysis skill (/watch + /omg-watch) — vendored from
 # taoufik123-collab/claude-watch @ 7871c7e (MIT). Ships SKILL.md + python

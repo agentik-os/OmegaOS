@@ -773,6 +773,54 @@ if [ -d OS ]; then
   [ "$os_parity_ok" -eq 1 ] && ok "OS suite parity: every integrated OS has payload + bin + codex + skill wired in install.sh"
 fi
 
+# Every product in the TUI registry must have a real root command on both
+# provider surfaces. Exercise the command generator against an isolated HOME;
+# a text marker alone cannot prove that the expected files are emitted.
+if [ -x scripts/install-os-commands.sh ] \
+  && grep -q 'scripts/install-os-commands.sh' install.sh; then
+  os_command_test_home="$(mktemp -d)"
+  os_command_catalog="$(scripts/install-os-commands.sh --list)"
+  os_command_products="$(printf '%s\n' "$os_command_catalog" | sed '/^$/d' | wc -l)"
+  if [ "$os_command_products" -ne 24 ]; then
+    bad "OS commands: expected 24 products, got $os_command_products"
+    os_commands_ok=0
+  else
+    os_commands_ok=1
+  fi
+  while IFS='|' read -r os_slug skill_slug aliases; do
+    [ -n "$os_slug" ] || continue
+    mkdir -p "$os_command_test_home/.omega/skills/$skill_slug"
+    printf '%s\n' '---' "name: $skill_slug" 'description: install parity fixture' '---' \
+      > "$os_command_test_home/.omega/skills/$skill_slug/SKILL.md"
+  done <<EOF
+$os_command_catalog
+EOF
+  if HOME="$os_command_test_home" OMEGA_DIR="$os_command_test_home/.omega" \
+      scripts/install-os-commands.sh >/dev/null; then
+    while IFS='|' read -r os_slug skill_slug aliases; do
+      [ -n "$os_slug" ] || continue
+      old_ifs="$IFS"; IFS=','; set -- $aliases; IFS="$old_ifs"
+      for command_name in "$@"; do
+        for exposed_name in "$command_name" "omg-$command_name"; do
+          [ -f "$os_command_test_home/.claude/commands/$exposed_name.md" ] \
+            || { bad "OS commands: Claude /$exposed_name missing for $os_slug"; os_commands_ok=0; }
+          [ -f "$os_command_test_home/.codex/prompts/$exposed_name.md" ] \
+            || { bad "OS commands: Codex /$exposed_name missing for $os_slug"; os_commands_ok=0; }
+        done
+      done
+    done <<EOF
+$os_command_catalog
+EOF
+  else
+    bad "OS command generator failed in isolated HOME"
+    os_commands_ok=0
+  fi
+  [ "$os_commands_ok" -eq 1 ] \
+    && ok "OS root commands: 24 products and every alias generated for Claude + Codex"
+else
+  bad "OS root command installer missing or not invoked by install.sh"
+fi
+
 echo "═══════════════════════════════════"
 if [ "$fail" -eq 0 ]; then
   printf '\033[32mINSTALL PARITY OK — a fresh install reproduces this system.\033[0m\n'
