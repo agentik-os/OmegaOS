@@ -8,10 +8,19 @@
 use crate::fsperm::{harden_dir, harden_file};
 use crate::protocol::{ChatAgent, ChatMeta, ChatMessage};
 use crate::util::random_hex;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 pub struct ChatStore {
     chats_dir: PathBuf,
+    /// I-5 guard: chat ids with a turn currently in flight. `chat_permits`
+    /// (see `server::AppState`) only caps the GLOBAL concurrent turn count,
+    /// so two different WebSocket connections to the SAME chat id could
+    /// each acquire a permit and each spawn a turn concurrently, racing the
+    /// transcript append and `set_provider_session` writes. This set makes
+    /// "a turn is active on chat X" an explicit, checkable fact instead.
+    active_turns: Mutex<HashSet<String>>,
 }
 
 impl ChatStore {
@@ -20,7 +29,24 @@ impl ChatStore {
         let chats_dir = gateway_dir.join("chats");
         std::fs::create_dir_all(&chats_dir).ok();
         harden_dir(&chats_dir);
-        Self { chats_dir }
+        Self { chats_dir, active_turns: Mutex::new(HashSet::new()) }
+    }
+
+    /// Marks chat `id` as having a turn in flight. Returns `true` and
+    /// records it when no turn was already active for this chat; returns
+    /// `false`, changing nothing, when one already is. The caller is
+    /// expected to call [`Self::end_turn`] on every exit path from the turn
+    /// it started (an RAII guard is the safe way to guarantee that).
+    pub fn try_start_turn(&self, id: &str) -> bool {
+        let mut set = self.active_turns.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(id.to_string())
+    }
+
+    /// Marks chat `id` as no longer having a turn in flight. A no-op if no
+    /// turn was recorded as active for this id.
+    pub fn end_turn(&self, id: &str) {
+        let mut set = self.active_turns.lock().unwrap_or_else(|e| e.into_inner());
+        set.remove(id);
     }
 
     fn dir_for(&self, id: &str) -> PathBuf {
@@ -390,6 +416,38 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, a.id, "most recently updated chat comes first");
         assert_eq!(listed[1].id, b.id);
+    }
+
+    #[test]
+    fn try_start_turn_then_second_call_is_rejected_until_end_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        let meta = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+
+        assert!(store.try_start_turn(&meta.id), "first call should start the turn");
+        assert!(!store.try_start_turn(&meta.id), "second call while active must be rejected");
+
+        store.end_turn(&meta.id);
+        assert!(store.try_start_turn(&meta.id), "after end_turn, a new turn may start");
+    }
+
+    #[test]
+    fn end_turn_on_a_never_started_id_is_a_harmless_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        store.end_turn("never-started"); // must not panic
+        assert!(store.try_start_turn("never-started"));
+    }
+
+    #[test]
+    fn try_start_turn_is_independent_per_chat_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ChatStore::open(dir.path());
+        let a = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+        let b = store.create(ChatAgent::Claude, "/tmp".to_string(), None, None);
+
+        assert!(store.try_start_turn(&a.id));
+        assert!(store.try_start_turn(&b.id), "a different chat id must not be blocked by a's active turn");
     }
 
     #[test]

@@ -42,6 +42,27 @@ fn install_fake_omega_that_must_not_run(bin_dir: &std::path::Path) {
     install_fake_omega(bin_dir, "echo 'SHOULD NEVER RUN' >&2; exit 1");
 }
 
+/// Writes an executable fake `omega` script that ALSO appends its full argv
+/// (one element per line) to `capture_file` — same idiom
+/// `sessions_create_test.rs::install_fake_omega` uses, needed here to prove
+/// the EXACT argv `close` builds (I-7).
+fn install_fake_omega_capturing(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    script_body: &str,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = bin_dir.join("omega");
+    let capture = capture_file.display();
+    std::fs::write(
+        &path,
+        format!("#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{capture}'\n{script_body}\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("OMEGA_BIN", &path);
+}
+
 #[tokio::test]
 async fn happy_path_close_of_a_plain_session() {
     let _g = LOCK.lock().await;
@@ -104,8 +125,17 @@ async fn oracle_close_with_two_cascaded_workers() {
     std::env::remove_var("OMEGA_BIN");
 }
 
+/// M-1 (Codex cross-model review, 2026-08-11) changed this test's own
+/// contract: the FAILURE-path `message` (this endpoint always returns 200,
+/// even on a REFUSED kill — see this function's own doc comment) used to be
+/// raw stdout+stderr concatenated, which can leak environment-derived
+/// secrets or other sensitive subprocess text. It is now a fixed, sanitized
+/// string; the full raw REFUSED text (and any secret it might carry) still
+/// reaches the gateway's own tracing log, never the HTTP response. `killed`
+/// and `is_oracle` — the fields that actually drive UI behavior — are
+/// unaffected and still correctly reflect the REFUSED outcome.
 #[tokio::test]
-async fn refused_kill_returns_200_with_killed_false_and_message_from_stderr() {
+async fn refused_kill_returns_200_with_killed_false_and_a_sanitized_message() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let bin_dir = tempfile::tempdir().unwrap();
@@ -133,13 +163,23 @@ async fn refused_kill_returns_200_with_killed_false_and_message_from_stderr() {
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["killed"], false);
     assert_eq!(body["is_oracle"], true);
-    assert!(body["message"].as_str().unwrap().contains("REFUSED"));
+    let message = body["message"].as_str().unwrap();
+    assert!(!message.contains("REFUSED"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
+    assert!(!message.contains("worker(s)"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
 
     std::env::remove_var("OMEGA_BIN");
 }
 
+/// M-1 (Codex cross-model review, 2026-08-11) changed this test's own
+/// contract, same reasoning as
+/// `refused_kill_returns_200_with_killed_false_and_a_sanitized_message`'s
+/// doc comment. This test's remaining real purpose: `is_oracle` must still
+/// classify off the RESOLVED name (via `resolved_oracle_name`, parsed from
+/// stdout SERVER-SIDE) even on the REFUSED path — that parsing happens
+/// before the success/failure split and is entirely independent of the
+/// now-sanitized `message` field.
 #[tokio::test]
-async fn refused_message_survives_alias_resolution_line() {
+async fn refused_kill_still_classifies_is_oracle_off_the_resolved_alias() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let bin_dir = tempfile::tempdir().unwrap();
@@ -147,9 +187,7 @@ async fn refused_message_survives_alias_resolution_line() {
     // Reproduces the exact sequence `cmd_kill` produces when the caller
     // supplies an alias-shaped name that needs `resolve_oracle_alias`: the
     // resolution line lands on stdout FIRST, then the REFUSED bail lands on
-    // stderr and the process exits non-zero. Bug 1: the old `message` logic
-    // picked stdout whenever it was non-empty, dropping the REFUSED text
-    // entirely in exactly this case.
+    // stderr and the process exits non-zero.
     install_fake_omega(
         bin_dir.path(),
         r#"printf '[i] Verba-3 resolved to the oracle session oracle-Verba-3\n'; echo 'Error: kill REFUSED — 1 worker(s) of this oracle are still running: a.' >&2; exit 1"#,
@@ -167,8 +205,46 @@ async fn refused_message_survives_alias_resolution_line() {
     assert_eq!(res.status(), 200);
     let body: serde_json::Value = res.json().await.unwrap();
     assert_eq!(body["killed"], false);
+    assert_eq!(body["is_oracle"], true, "expected classification off the RESOLVED name even on the REFUSED path");
     let message = body["message"].as_str().unwrap();
-    assert!(message.contains("REFUSED"), "message dropped the REFUSED text: {message:?}");
+    assert!(!message.contains("REFUSED"), "the failure-path message must be sanitized, not raw CLI text: {message:?}");
+
+    std::env::remove_var("OMEGA_BIN");
+}
+
+/// M-1 (Codex cross-model review, 2026-08-11): a secret-shaped string
+/// written to stdout/stderr by a failing `omega kill` must never reach the
+/// HTTP response body — only the gateway's own log.
+#[tokio::test]
+async fn failed_close_never_leaks_a_secret_shaped_string_into_the_response() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+
+    install_fake_omega(
+        bin_dir.path(),
+        "echo 'sk-ProjSECRETVALUE1234567890'; echo 'ANTHROPIC_API_KEY=sk-ProjSECRETVALUE1234567890' >&2; exit 1",
+    );
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions/worker-Foo-1/close"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let raw_body = res.text().await.unwrap();
+    assert!(
+        !raw_body.contains("sk-ProjSECRETVALUE1234567890"),
+        "response body leaked the raw secret-shaped subprocess output: {raw_body}"
+    );
+    assert!(
+        !raw_body.contains("ANTHROPIC_API_KEY"),
+        "response body leaked the raw secret-shaped subprocess output: {raw_body}"
+    );
 
     std::env::remove_var("OMEGA_BIN");
 }
@@ -256,6 +332,51 @@ async fn invalid_session_name_rejects_before_any_subprocess_spawn() {
             .unwrap();
         assert_eq!(res.status(), 400, "expected 400 for session name {bad_name}");
     }
+
+    std::env::remove_var("OMEGA_BIN");
+}
+
+/// I-7 (Codex cross-model review, 2026-08-11): `valid_session_name` permits
+/// a name whose FIRST byte is `-` (unlike `valid_new_session_name`, which
+/// rejects a leading `-`/`.` for a BRAND NEW name) -- `"-x"` only fails on
+/// `/`, `..`, NUL, or a >200-byte length, none of which apply here. Without
+/// a `"--"` separator before the positional, `close` used to build
+/// `["kill", "-x"]`, which a real clap CLI parses `-x` as an (unknown) FLAG
+/// rather than the session name. Proven directly against the recorded argv,
+/// not just the HTTP status, so a regression that silently drops the
+/// separator again is caught even if the fake CLI would still exit 0 either
+/// way.
+#[tokio::test]
+async fn close_uses_a_double_dash_separator_so_a_leading_dash_session_name_is_never_parsed_as_a_flag(
+) {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega_capturing(bin_dir.path(), &capture_file, "printf 'Killed session: -x\\n'; exit 0");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions/-x/close"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "\"-x\" must pass valid_session_name (only '/', '..', NUL, and length are checked) and reach the CLI"
+    );
+
+    let recorded = std::fs::read_to_string(&capture_file).unwrap();
+    let argv: Vec<&str> = recorded.lines().collect();
+    // Without the "--" separator this would be exactly ["kill", "-x"] --
+    // the exact bug I-7 fixes.
+    assert_eq!(argv, vec!["kill", "--", "-x"]);
 
     std::env::remove_var("OMEGA_BIN");
 }

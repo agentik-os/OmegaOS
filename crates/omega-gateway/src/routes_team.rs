@@ -47,6 +47,10 @@ fn too_many_requests(msg: impl Into<String>) -> ApiError {
     (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": msg.into() })))
 }
 
+fn gateway_timeout(msg: impl Into<String>) -> ApiError {
+    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+}
+
 /// Per-member string cap — generous for a `"name:prompt"` spec (the CLI
 /// itself parses each permissively, no length bound of its own) while still
 /// keeping an unreasonable payload from ever reaching a subprocess argv.
@@ -185,21 +189,39 @@ pub async fn create(
         for m in &members_arg {
             args.push(m);
         }
-        crate::omega_cli::run(&args)
+        // I-2 (Codex cross-model review, 2026-08-11): see
+        // routes_sessions.rs::create's identical comment.
+        crate::omega_cli::run_with_timeout(&args, crate::omega_cli::cli_timeout())
     })
     .await
     .map_err(|e| {
         (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("team task panicked: {e}") })))
     })?
     .map_err(|e| {
-        (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("failed to spawn omega: {e}") })))
+        if crate::omega_cli::is_timeout(&e) {
+            gateway_timeout(e.to_string())
+        } else {
+            (StatusCode::BAD_GATEWAY, Json(json!({ "error": format!("failed to spawn omega: {e}") })))
+        }
     })?;
 
     // Non-zero exit → 502, never fabricate a session.
+    //
+    // M-1 (Codex cross-model review, 2026-08-11): the raw stdout/stderr used
+    // to be echoed straight into the HTTP response, which can leak
+    // environment-derived secrets or other sensitive text a future CLI
+    // diagnostic writes. The FULL raw text still goes to the gateway's own
+    // tracing log; the client only ever sees a generic, sanitized message.
     if !output.success {
+        tracing::error!(
+            project = %req.project,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega team failed"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "omega team failed", "stderr": output.stderr, "stdout": output.stdout })),
+            Json(json!({ "error": "omega team failed (see gateway logs)" })),
         ));
     }
 

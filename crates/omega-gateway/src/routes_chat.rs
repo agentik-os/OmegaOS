@@ -26,6 +26,12 @@ use std::path::PathBuf;
 #[derive(Deserialize)]
 pub struct ChatCreateRequest {
     pub agent: ChatAgent,
+    /// Working directory the chat's turns run in (`current_dir` for the
+    /// spawned agent process, see `chat_driver.rs::agent_command`).
+    /// Validated (I-1: confined under `$HOME`, no NUL byte, no `..`
+    /// component, must be absolute) via `routes_sessions::dir_under_home`
+    /// before the chat is created — an authed device must not be able to
+    /// point a chat at `/etc`, `/`, or another project's private tree.
     pub cwd: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -67,6 +73,15 @@ pub async fn create(
     State(state): State<AppState>,
     Json(req): Json<ChatCreateRequest>,
 ) -> Result<(StatusCode, Json<ChatMeta>), (StatusCode, Json<serde_json::Value>)> {
+    // I-1: `cwd` must resolve under `$HOME` before the chat is ever
+    // created — reusing the same confinement guard `routes_sessions.rs`
+    // already applies to a session's `dir`. `dir_under_home` returns the
+    // caller's ORIGINAL, uncanonicalized-but-validated path (never the
+    // canonicalized ancestor, see its own doc comment); that is what gets
+    // stored, so the persisted `cwd` can never diverge from what was
+    // actually checked here.
+    let cwd = crate::routes_sessions::dir_under_home(&req.cwd)?.to_string_lossy().into_owned();
+
     if let Some(slug) = &req.account_slug {
         if !accounts::valid_slug(slug) {
             return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid account_slug" }))));
@@ -81,7 +96,7 @@ pub async fn create(
             ));
         }
     }
-    let meta = state.chats.create(req.agent, req.cwd, req.title, req.account_slug);
+    let meta = state.chats.create(req.agent, cwd, req.title, req.account_slug);
     Ok((StatusCode::CREATED, Json(meta)))
 }
 
@@ -171,6 +186,24 @@ async fn send_error_turn_done(socket: &mut WebSocket, message: impl Into<String>
     send_frame(socket, &ChatStreamServerMsg::TurnDone).await.map_err(|_| ())
 }
 
+/// I-5 RAII guard: marks chat `id`'s turn as ended (`ChatStore::end_turn`)
+/// on EVERY exit path from a turn (normal completion, an early `return`
+/// out of the read loop, or a panic unwinding through this frame), the same
+/// "fires on every exit path including a dropped future" reasoning
+/// `routes_duo.rs`'s `KillGroupOnDrop` documents for its own per-process
+/// cleanup. Holds an owned `Arc<ChatStore>` clone + owned id so it has no
+/// lifetime tied to the loop iteration's other borrows.
+struct TurnGuard {
+    chats: std::sync::Arc<crate::chat_store::ChatStore>,
+    id: String,
+}
+
+impl Drop for TurnGuard {
+    fn drop(&mut self) {
+        self.chats.end_turn(&self.id);
+    }
+}
+
 async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
     if !valid_chat_id(&id) {
         let _ = send_frame(&mut socket, &ChatStreamServerMsg::Error { message: "invalid chat id".to_string() })
@@ -217,6 +250,20 @@ async fn stream_loop(mut socket: WebSocket, id: String, state: AppState) {
             }
             continue;
         };
+
+        // I-5: `chat_permits` above is only a GLOBAL cap — it does not stop
+        // two different WebSocket connections to the SAME chat id from each
+        // starting a turn concurrently, racing the transcript append and
+        // `set_provider_session` writes. This per-chat guard rejects a
+        // second concurrent turn on one chat outright rather than letting
+        // both run.
+        if !state.chats.try_start_turn(&id) {
+            if send_error_turn_done(&mut socket, "a turn is already active on this chat").await.is_err() {
+                return;
+            }
+            continue;
+        }
+        let _turn_guard = TurnGuard { chats: state.chats.clone(), id: id.clone() };
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ChatStreamServerMsg>(64);
         let timeout = std::time::Duration::from_millis(state.cfg.chat_turn_timeout_ms);

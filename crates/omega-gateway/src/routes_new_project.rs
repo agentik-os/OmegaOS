@@ -382,8 +382,39 @@ async fn new_project_stream_loop(
     let stderr_task = tokio::spawn(forward_lines(stderr, "stderr", tx.clone()));
     drop(tx);
 
+    // I-4 (Codex cross-model review, 2026-08-11): an outer wall-clock bound
+    // on the WHOLE connection lifetime — see `routes_agents.rs::
+    // install_stream_loop`'s identical comment and
+    // `omega_cli::stream_timeout`'s doc comment for the default/env var.
+    // This bounds how long THIS ENDPOINT's own GATEWAY-controlled WS
+    // connection and its DIRECT `omega new-project` child (which normally
+    // exits in well under a second, per this function's own doc comment)
+    // can be held open — it does NOT touch, and cannot reach, the
+    // daemon-detached `<name>-setup` session's own lifecycle: that stays
+    // exactly as documented above (**THIS ENDPOINT HAS NO CANCELLATION
+    // SEMANTICS** for the bootstrap itself, by design, per the review's own
+    // suggested alternative to leave it "a separate operator-controlled
+    // operation").
+    let sleep = tokio::time::sleep(crate::omega_cli::stream_timeout());
+    tokio::pin!(sleep);
+
     loop {
         tokio::select! {
+            _ = &mut sleep => {
+                let _ = send_new_project_frame(
+                    &mut socket,
+                    &NewProjectStreamMsg::Error {
+                        message: format!(
+                            "new-project stream timed out after {}s and was closed",
+                            crate::omega_cli::stream_timeout().as_secs()
+                        ),
+                    },
+                )
+                .await;
+                kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
             frame = rx.recv() => {
                 match frame {
                     Some(frame) => {

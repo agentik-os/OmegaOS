@@ -365,7 +365,13 @@ async fn reap_nonzero_exit_surfaces_as_502() {
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["stderr"].as_str().unwrap().contains("ABORTED"));
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review): the raw stderr must never reach the client, only
+    // a generic sanitized message; the full raw text still goes to the
+    // gateway's own tracing log (not asserted here).
+    assert!(body.get("stderr").is_none());
+    assert!(body.get("stdout").is_none());
+    assert!(!body["error"].as_str().unwrap().contains("ABORTED"));
 
     clear_env();
 }
@@ -461,7 +467,12 @@ async fn resurrect_nonzero_exit_surfaces_as_502() {
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["stderr"].as_str().unwrap().contains("unreachable"));
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review): see `reap_nonzero_exit_surfaces_as_502`'s
+    // identical comment above.
+    assert!(body.get("stderr").is_none());
+    assert!(body.get("stdout").is_none());
+    assert!(!body["error"].as_str().unwrap().contains("unreachable"));
 
     clear_env();
 }

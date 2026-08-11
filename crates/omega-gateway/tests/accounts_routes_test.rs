@@ -15,10 +15,42 @@ type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 // Every test in this file that mutates a process-global env var
 // (OMEGA_CLAUDE_BIN / OMEGA_CODEX_BIN / OMEGA_CHAT_BIN / PIDFILE /
-// CAPTURE_FILE) must serialize against every other one — same pattern as
-// chat_routes_test.rs's LOCK. tokio::sync::Mutex because the guard is held
-// across .await points below.
+// CAPTURE_FILE / HOME) must serialize against every other one — same pattern
+// as chat_routes_test.rs's LOCK. tokio::sync::Mutex because the guard is
+// held across .await points below.
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// RAII guard restoring (or clearing) the `HOME` env var on drop. I-1 made
+/// `POST /v1/chats`'s `cwd` confined under `$HOME` via `dir_under_home`, so
+/// any test in this file that creates a chat and cares about a DIFFERENT
+/// validation branch (account lookup, kind mismatch, ...) must run under a
+/// `HOME` it controls rather than the ambient one, so `cwd` clears the
+/// confinement check and the test actually exercises the branch it names.
+/// Same shape as `chat_cwd_validation_test.rs::HomeRestore`.
+struct HomeRestore(Option<std::ffi::OsString>);
+impl HomeRestore {
+    fn set(new_home: &std::path::Path) -> Self {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", new_home);
+        Self(prev)
+    }
+}
+impl Drop for HomeRestore {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
+
+/// Creates `<dir>/proj` and returns it as a string, for use as a chat's
+/// `cwd` once `HomeRestore::set(dir)` is in effect.
+fn project_cwd(dir: &std::path::Path) -> String {
+    let project_dir = dir.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    project_dir.to_string_lossy().into_owned()
+}
 
 async fn spawn(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -172,6 +204,8 @@ async fn slug_path_param_routes_reject_invalid_slug_before_fs() {
 async fn chat_with_explicit_account_slug_uses_its_slot_dir_as_claude_config_dir() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let env_capture = dir.path().join("captured-env.txt");
     let bin = fake_bin(
         dir.path(),
@@ -207,7 +241,7 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
     let chat_res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "acct-a" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "acct-a" }))
         .send()
         .await
         .unwrap();
@@ -239,6 +273,8 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
 async fn chat_without_account_slug_uses_the_kinds_default_slot_dir() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let env_capture = dir.path().join("captured-env.txt");
     let bin = fake_bin(
         dir.path(),
@@ -275,7 +311,7 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
     let chat_res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd }))
         .send()
         .await
         .unwrap();
@@ -304,7 +340,10 @@ printf '%s\n' '{{"type":"result","is_error":false,"stop_reason":"end_turn","resu
 
 #[tokio::test]
 async fn chat_create_rejects_traversal_account_slug() {
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
     let base = spawn(app).await;
@@ -312,7 +351,7 @@ async fn chat_create_rejects_traversal_account_slug() {
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "../x" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "../x" }))
         .send()
         .await
         .unwrap();
@@ -321,7 +360,10 @@ async fn chat_create_rejects_traversal_account_slug() {
 
 #[tokio::test]
 async fn chat_create_rejects_nonexistent_account_slug() {
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
     let app = build_router(state.clone());
@@ -331,7 +373,7 @@ async fn chat_create_rejects_nonexistent_account_slug() {
     let res = reqwest::Client::new()
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "does-not-exist" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "does-not-exist" }))
         .send()
         .await
         .unwrap();
@@ -344,7 +386,10 @@ async fn chat_create_rejects_nonexistent_account_slug() {
 
 #[tokio::test]
 async fn chat_create_rejects_account_kind_mismatch() {
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
     let app = build_router(state.clone());
@@ -367,7 +412,7 @@ async fn chat_create_rejects_account_kind_mismatch() {
     let res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "codex-slot" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "codex-slot" }))
         .send()
         .await
         .unwrap();
@@ -380,7 +425,10 @@ async fn chat_create_rejects_account_kind_mismatch() {
 
 #[tokio::test]
 async fn chat_create_accepts_a_valid_matching_account_slug() {
+    let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    let _home = HomeRestore::set(dir.path());
+    let cwd = project_cwd(dir.path());
     let (_, token) = DeviceStore::open(dir.path()).issue("t");
     let state = AppState::new(dir.path().to_path_buf(), GatewayConfig::default());
     let app = build_router(state.clone());
@@ -398,7 +446,7 @@ async fn chat_create_accepts_a_valid_matching_account_slug() {
     let res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp", "account_slug": "claude-slot" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd, "account_slug": "claude-slot" }))
         .send()
         .await
         .unwrap();

@@ -441,9 +441,58 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["stdout"].as_str().unwrap().contains("partial output"));
-    assert!(body["stderr"].as_str().unwrap().contains("rmux daemon unreachable"));
+    // M-1 (Codex cross-model review, 2026-08-11): raw subprocess
+    // stdout/stderr is no longer echoed into the response body -- only a
+    // sanitized, generic error. The full raw text still goes to the
+    // gateway's own tracing log, never the HTTP response.
+    assert!(body.get("stdout").is_none(), "must not echo raw stdout: {body}");
+    assert!(body.get("stderr").is_none(), "must not echo raw stderr: {body}");
+    assert!(
+        !body["error"].as_str().unwrap().contains("rmux daemon unreachable"),
+        "error message must not contain the raw subprocess text: {body}"
+    );
     assert!(body.get("session").is_none(), "must never fabricate a session on failure");
+
+    clear_env();
+}
+
+/// M-1 (Codex cross-model review, 2026-08-11): a secret-shaped string
+/// written to stdout/stderr by a failing `omega team` must never reach the
+/// HTTP response body -- only the gateway's own log.
+#[tokio::test]
+async fn nonzero_exit_never_leaks_a_secret_shaped_string_into_the_response() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        "echo 'sk-ProjSECRETVALUE1234567890'; echo 'ANTHROPIC_API_KEY=sk-ProjSECRETVALUE1234567890' >&2; exit 1",
+    );
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/team"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "Acme" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 502);
+    let raw_body = res.text().await.unwrap();
+    assert!(
+        !raw_body.contains("sk-ProjSECRETVALUE1234567890"),
+        "response body leaked the raw secret-shaped subprocess output: {raw_body}"
+    );
+    assert!(
+        !raw_body.contains("ANTHROPIC_API_KEY"),
+        "response body leaked the raw secret-shaped subprocess output: {raw_body}"
+    );
 
     clear_env();
 }

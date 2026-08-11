@@ -11,8 +11,33 @@ type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 // Both OMEGA_CHAT_BIN-mutating tests must never run concurrently with each
 // other (same pattern as chat_driver_test.rs's lock). tokio::sync::Mutex
-// because the guard is held across .await points below.
+// because the guard is held across .await points below. These two tests
+// also mutate the process-global HOME env var (see `HomeRestore` below, same
+// pattern `chat_cwd_validation_test.rs` uses) since `POST /v1/chats` now
+// confines `cwd` under `$HOME` (I-1 fix) — the same LOCK already serializes
+// that too.
 static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// RAII guard restoring (or clearing) the `HOME` env var on drop, so a
+/// panicking assertion mid-test never leaves a later test in this binary
+/// running against the wrong home directory. Same shape as
+/// `chat_cwd_validation_test.rs::HomeRestore`.
+struct HomeRestore(Option<std::ffi::OsString>);
+impl HomeRestore {
+    fn set(new_home: &std::path::Path) -> Self {
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", new_home);
+        Self(prev)
+    }
+}
+impl Drop for HomeRestore {
+    fn drop(&mut self) {
+        match &self.0 {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+}
 
 async fn spawn(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -53,6 +78,13 @@ async fn recv_json(ws: &mut Ws) -> serde_json::Value {
 async fn full_turn_streams_once_and_persists_transcript() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    // I-1: `POST /v1/chats` now confines `cwd` under `$HOME` via
+    // `dir_under_home`, so this test's chat must run under a `HOME` it
+    // controls rather than the ambient ("/tmp" is never under home).
+    let _home = HomeRestore::set(dir.path());
+    let project_dir = dir.path().join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let cwd = project_dir.to_string_lossy().into_owned();
     let argv_file = dir.path().join("argv.log");
     install_fake_agent(
         dir.path(),
@@ -73,7 +105,7 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     let create_res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd }))
         .send()
         .await
         .unwrap();
@@ -149,6 +181,11 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
 async fn hung_child_double_turn_done_is_deduped() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
+    // I-1: same HOME/cwd confinement as `full_turn_streams_once_and_persists_transcript`.
+    let _home = HomeRestore::set(dir.path());
+    let project_dir = dir.path().join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let cwd = project_dir.to_string_lossy().into_owned();
     let argv_file = dir.path().join("argv.log");
     // A misbehaving/hung-then-recovered agent that emits TWO result lines
     // (i.e. two TurnDone-worthy events) in one stream, with more assistant
@@ -173,7 +210,7 @@ printf '%s\n' '{"type":"result","is_error":false,"stop_reason":"end_turn","resul
     let create_res = client
         .post(format!("{base}/v1/chats"))
         .bearer_auth(&token)
-        .json(&serde_json::json!({ "agent": "claude", "cwd": "/tmp" }))
+        .json(&serde_json::json!({ "agent": "claude", "cwd": cwd }))
         .send()
         .await
         .unwrap();

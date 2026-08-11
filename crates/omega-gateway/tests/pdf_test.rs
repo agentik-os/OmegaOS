@@ -29,6 +29,7 @@ async fn app_and_token(gateway_dir: &std::path::Path) -> (axum::Router, String) 
 fn clear_env() {
     std::env::remove_var("OMEGA_BIN");
     std::env::remove_var("OMEGA_PDF_DIR");
+    std::env::remove_var("PDF_SUBPROCESS_TIMEOUT_SECS");
 }
 
 /// Fake `omega` that captures its full argv AND actually writes fake PDF
@@ -153,6 +154,55 @@ async fn create_nonzero_exit_is_a_502() {
         .await
         .unwrap();
     assert_eq!(res.status(), 502);
+
+    clear_env();
+}
+
+/// I-3/pdf-half (Codex cross-model review, 2026-08-11): `omega pdf` invokes
+/// Node/npm tooling that can spawn a nested process; the old cleanup only
+/// terminated the direct `omega` child (`kill_on_drop(true)` alone). Here
+/// the fake `omega` backgrounds a nested `bash -c` (mirroring a real nested
+/// `npx tsx pdfgen.ts`) that sleeps well past the (test-overridden) timeout
+/// before touching a marker file. `PDF_SUBPROCESS_TIMEOUT_SECS` overrides
+/// the default 300s ceiling so this test stays fast.
+#[tokio::test]
+async fn create_timeout_kills_the_whole_process_group_not_just_the_direct_child() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let pdf_scratch = tempfile::tempdir().unwrap();
+    let marker = pdf_scratch.path().join("nested-survived.marker");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = bin_dir.path().join("omega");
+        let body = format!(
+            "#!/usr/bin/env bash\nbash -c 'sleep 4; touch \"{}\"' &\nwait\n",
+            marker.display()
+        );
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::env::set_var("OMEGA_BIN", &path);
+    }
+    std::env::set_var("OMEGA_PDF_DIR", pdf_scratch.path());
+    std::env::set_var("PDF_SUBPROCESS_TIMEOUT_SECS", "1");
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/pdf"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "template": "doc", "data": {} }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 502);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("timed out"), "body: {body}");
+
+    // Generous buffer past the nested sleep's 4s -- if the group kill
+    // missed the nested child, the marker appears around the 4s mark.
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert!(!marker.exists(), "the nested child survived the timeout kill");
 
     clear_env();
 }

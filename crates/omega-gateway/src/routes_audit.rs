@@ -274,8 +274,32 @@ async fn audit_stream_loop(mut socket: WebSocket, audit: AuditSkill, project_pat
     let stderr_task = tokio::spawn(forward_lines(stderr, "stderr", tx.clone()));
     drop(tx);
 
+    // I-4 (Codex cross-model review, 2026-08-11): an outer wall-clock bound
+    // on the WHOLE connection lifetime — see `routes_agents.rs::
+    // install_stream_loop`'s identical comment and
+    // `omega_cli::stream_timeout`'s doc comment for the default/env var. A
+    // QUIET-BUT-ALIVE child (no output, client still connected) used to
+    // hold this stream and its subprocess open indefinitely.
+    let sleep = tokio::time::sleep(crate::omega_cli::stream_timeout());
+    tokio::pin!(sleep);
+
     loop {
         tokio::select! {
+            _ = &mut sleep => {
+                let _ = send_audit_frame(
+                    &mut socket,
+                    &AuditStreamMsg::Error {
+                        message: format!(
+                            "audit timed out after {}s and was killed",
+                            crate::omega_cli::stream_timeout().as_secs()
+                        ),
+                    },
+                )
+                .await;
+                kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
             frame = rx.recv() => {
                 match frame {
                     Some(frame) => {

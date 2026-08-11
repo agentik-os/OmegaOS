@@ -233,6 +233,92 @@ fi
     std::env::remove_var("OMEGA_BIN");
 }
 
+/// (1.6) I-4 (Codex cross-model review, 2026-08-11): a QUIET-BUT-ALIVE child
+/// (no output, client STILL CONNECTED) used to hold the WS connection and
+/// subprocess open indefinitely -- the loop only ever killed on client
+/// disconnect, never on its own elapsed wall-clock time.
+/// `OMEGA_STREAM_TIMEOUT_SECS` overrides the default 1800s ceiling so this
+/// test stays fast. The fake installer prints one line then goes silent for
+/// well past the (test-overridden) timeout before touching a marker file --
+/// proving the CHILD is actually killed when the outer bound fires, not
+/// merely that the socket closes.
+#[tokio::test]
+async fn quiet_child_past_the_outer_stream_timeout_gets_killed_and_the_client_is_told() {
+    let _g = LOCK.lock().await;
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("outlived-the-outer-timeout.marker");
+    install_fake_omega(
+        dir.path(),
+        &format!(
+            r#"
+if [ "$1" = "install" ]; then
+    echo "starting"
+    sleep 5
+    touch "{marker}"
+fi
+"#,
+            marker = marker.display()
+        ),
+    );
+    std::env::set_var("OMEGA_STREAM_TIMEOUT_SECS", "1");
+    let (_, token) = DeviceStore::open(dir.path()).issue("t");
+    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let url = ws_url(&base, "/v1/agents/codex/install/stream", &token);
+    let (mut ws, _) = connect_async(url).await.unwrap();
+
+    let first = ws.next().await.unwrap().unwrap();
+    let v: serde_json::Value = serde_json::from_str(&first.into_text().unwrap()).unwrap();
+    assert_eq!(v["text"], "starting");
+
+    // Drain until the socket itself closes -- bounded so a regression (the
+    // outer timeout never firing at all) fails the test instead of hanging
+    // forever. The child's own silent sleep is 5s; the timeout is
+    // overridden to 1s, so the stream must close well before 5s elapses.
+    let drained = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        let mut saw_error_frame = false;
+        while let Some(Ok(msg)) = ws.next().await {
+            if let Ok(text) = msg.into_text() {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if v["type"] == "error" {
+                        saw_error_frame = true;
+                    }
+                }
+            }
+        }
+        saw_error_frame
+    })
+    .await;
+
+    assert!(
+        drained.is_ok(),
+        "the stream did not close within 4s -- the outer stream timeout never fired \
+         even though the child was silent well past the 1s override"
+    );
+    assert!(
+        drained.unwrap(),
+        "expected an Error frame naming the timeout before the stream closed"
+    );
+
+    std::env::remove_var("OMEGA_STREAM_TIMEOUT_SECS");
+
+    // The nested sleep touches the marker at ~5s; poll well past that to
+    // prove the child (not just the WS connection) was actually killed.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+    while tokio::time::Instant::now() < deadline {
+        assert!(
+            !marker.exists(),
+            "the marker WAS written: the child survived the outer stream-timeout kill -- \
+             only the WS connection was closed, the subprocess kept running unsupervised."
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    assert!(!marker.exists(), "the marker WAS written at the deadline");
+
+    std::env::remove_var("OMEGA_BIN");
+}
+
 /// (2) Mid-stream client disconnect: proves (or falsifies) the claim that
 /// killing on client-disconnect actually stops the real work, including
 /// the nested process the direct child itself spawns.

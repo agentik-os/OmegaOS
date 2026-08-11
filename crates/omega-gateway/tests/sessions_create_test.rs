@@ -550,8 +550,15 @@ async fn nonzero_exit_surfaces_stdout_and_stderr_as_502() {
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["stdout"].as_str().unwrap().contains("partial output"));
-    assert!(body["stderr"].as_str().unwrap().contains("session name already in use"));
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review): the raw stdout/stderr must never reach the
+    // client, only a generic sanitized message. The full raw text is still
+    // captured in the gateway's own tracing log, not asserted here.
+    let error_text = body["error"].as_str().unwrap();
+    assert!(!error_text.contains("partial output"));
+    assert!(!error_text.contains("session name already in use"));
+    assert!(body.get("stdout").is_none());
+    assert!(body.get("stderr").is_none());
     assert!(body.get("name").is_none(), "must never fabricate a session on failure");
 
     clear_env();
@@ -618,6 +625,58 @@ async fn concurrency_cap_returns_429_when_session_spawn_permits_exhausted() {
         assert_eq!(status, 200);
     }
 
+    clear_env();
+}
+
+/// I-2 (Codex cross-model review, 2026-08-11): `POST /v1/sessions` now runs
+/// `omega new` through `omega_cli::run_with_timeout` instead of the old
+/// uncancellable blocking `run` -- a hung/adversarially-slow subprocess must
+/// be killed (whole process group, including a nested child it spawned) and
+/// reported as a 504, not left running forever pinning a permit and a
+/// blocking-pool thread. `OMEGA_CLI_TIMEOUT_SECS` overrides the default
+/// ceiling for this test.
+#[tokio::test]
+async fn create_times_out_with_504_and_kills_the_whole_process_group() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    let marker = capture_dir.path().join("marker");
+    let agent = real_agent_name();
+
+    std::env::set_var("OMEGA_CLI_TIMEOUT_SECS", "1");
+    // Backgrounds a nested `bash -c` (inheriting the fake omega's process
+    // group) that sleeps well past the 1s ceiling before touching a marker
+    // file, then waits on it -- mirroring a real CLI that runs its own
+    // foreground nested work. Proves the WHOLE group is killed, not just
+    // the direct `omega` process.
+    install_fake_omega(
+        bin_dir.path(),
+        &capture_file,
+        &format!("bash -c 'sleep 4; touch \"{}\"' &\nwait\n", marker.display()),
+    );
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/sessions"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "agent": agent }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 504);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("timed out"), "body: {body}");
+
+    // Generous buffer past the nested sleep's 4s -- if the group kill
+    // missed the nested child, the marker appears around the 4s mark.
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    assert!(!marker.exists(), "the nested child survived the gateway's timeout kill");
+
+    std::env::remove_var("OMEGA_CLI_TIMEOUT_SECS");
     clear_env();
 }
 

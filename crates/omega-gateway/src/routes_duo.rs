@@ -607,17 +607,29 @@ pub async fn create(
     // on here — see this module's doc comment ("SUCCESS SIGNAL") for why
     // the JSON body's own `ok`/`agent_ok` fields are the real outcome,
     // never this endpoint's own HTTP status.
+    // M-1 (Codex cross-model review, 2026-08-11): the raw stdout/stderr used
+    // to be echoed straight into the HTTP response on an unparseable
+    // result, which can leak environment-derived secrets or other sensitive
+    // text Codex/Claude/GLM (or the bridge itself) wrote. The FULL raw text
+    // still goes to the gateway's own tracing log; the client only ever
+    // sees the parse error (a generic "expected value at line X" shape,
+    // never the offending text itself) with no raw dump attached.
     let last_line = output.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
     match serde_json::from_str::<DuoResponse>(last_line.trim()) {
         Ok(resp) => Ok(Json(resp)),
-        Err(e) => Err((
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({
-                "error": format!("omega-duo produced no parseable result: {e}"),
-                "stdout": output.stdout,
-                "stderr": output.stderr,
-            })),
-        )),
+        Err(e) => {
+            tracing::error!(
+                stdout = %output.stdout,
+                stderr = %output.stderr,
+                "omega-duo produced no parseable result: {e}"
+            );
+            Err((
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({
+                    "error": format!("omega-duo produced no parseable result: {e} (see gateway logs)"),
+                })),
+            ))
+        }
     }
 }
 

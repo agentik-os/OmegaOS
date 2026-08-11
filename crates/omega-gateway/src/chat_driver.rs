@@ -175,6 +175,19 @@ fn compact_json(v: &Value) -> String {
     serde_json::to_string(v).unwrap_or_default()
 }
 
+/// Sends `SIGKILL` to the WHOLE process group rooted at `pid` (`kill -- -
+/// <pid>`) — the same idiom as `routes_duo.rs::kill_process_group`,
+/// duplicated locally since that one is private to its own module. Needed
+/// because `child.kill()` alone (I-3) only reaches the DIRECT agent
+/// process, never a nested process it spawned into the same group (see
+/// `run_turn`'s `process_group(0)` on its `Command`).
+async fn kill_process_group(pid: u32) {
+    let _ = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+    })
+    .await;
+}
+
 /// Spawns the agent process for one chat turn, forwards parsed frames on
 /// `tx`, and returns the provider session id discovered from the stream (if
 /// any). The child is killed if `tx`'s receiver is dropped mid-stream, on
@@ -206,6 +219,11 @@ pub async fn run_turn(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
     cmd.kill_on_drop(true);
+    // I-3: place the child in its own process group so a nested process it
+    // spawns (Claude may spawn nested tool processes) stays reachable by a
+    // whole-group kill below — `child.kill()` alone only reaches this
+    // direct process, never anything nested under it.
+    cmd.process_group(0);
 
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -219,6 +237,12 @@ pub async fn run_turn(
             return None;
         }
     };
+
+    // Captured now, before `child` is consumed by anything else (`Child::
+    // id()` returns `None` once the child has been polled to completion) —
+    // used to reach a nested process via the whole-group kill on every kill
+    // path below.
+    let child_pid = child.id();
 
     let stdout = child.stdout.take().expect("stdout was piped");
     let mut lines = BufReader::new(stdout).lines();
@@ -239,8 +263,13 @@ pub async fn run_turn(
                                 if tx.send(frame).await.is_err() {
                                     // Receiver dropped: the caller no longer
                                     // wants frames, so stop reading and kill
-                                    // the child.
+                                    // the child, AND (I-3) the whole process
+                                    // group so a nested process it spawned
+                                    // does not survive it.
                                     let _ = child.kill().await;
+                                    if let Some(pid) = child_pid {
+                                        kill_process_group(pid).await;
+                                    }
                                     return;
                                 }
                             }
@@ -255,6 +284,12 @@ pub async fn run_turn(
 
     if tokio::time::timeout(timeout, read_loop).await.is_err() {
         let _ = child.kill().await;
+        // I-3: also kill the whole process group, not just this direct
+        // child, so a nested process (e.g. a tool the agent shelled out to)
+        // does not outlive the timeout.
+        if let Some(pid) = child_pid {
+            kill_process_group(pid).await;
+        }
         let _ = tx
             .send(ChatStreamServerMsg::Error {
                 message: "agent turn timed out".to_string(),

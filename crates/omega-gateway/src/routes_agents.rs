@@ -288,6 +288,17 @@ async fn install_stream_loop(mut socket: WebSocket, agent: Agent) {
     // have dropped their clones (i.e. both pipes hit EOF), not before.
     drop(tx);
 
+    // I-4 (Codex cross-model review, 2026-08-11): an outer wall-clock bound
+    // on the WHOLE connection lifetime, on top of the disconnect detection
+    // below — a QUIET-BUT-ALIVE child (no output, client still connected)
+    // used to hold this stream and its subprocess open indefinitely, since
+    // every other branch only fires on a disconnect or a forwarded frame.
+    // `tokio::time::sleep` pinned once before the loop so the SAME timer
+    // (not a fresh one per iteration) is polled by every `select!` round —
+    // see `omega_cli::stream_timeout`'s doc comment for the default/env var.
+    let sleep = tokio::time::sleep(crate::omega_cli::stream_timeout());
+    tokio::pin!(sleep);
+
     // Read-driven disconnect detection: watch BOTH the internal mpsc channel
     // (frames to forward) AND the socket itself (the client's side of the
     // connection) concurrently. Send-failure alone is NOT enough — it only
@@ -302,6 +313,21 @@ async fn install_stream_loop(mut socket: WebSocket, agent: Agent) {
     // ever being attempted.
     loop {
         tokio::select! {
+            _ = &mut sleep => {
+                let _ = send_install_frame(
+                    &mut socket,
+                    &AgentInstallStreamMsg::Error {
+                        message: format!(
+                            "install timed out after {}s and was killed",
+                            crate::omega_cli::stream_timeout().as_secs()
+                        ),
+                    },
+                )
+                .await;
+                kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
             frame = rx.recv() => {
                 match frame {
                     Some(frame) => {

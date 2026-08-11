@@ -67,6 +67,10 @@ fn too_many_requests(msg: impl Into<String>) -> ApiError {
     (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": msg.into() })))
 }
 
+fn gateway_timeout(msg: impl Into<String>) -> ApiError {
+    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+}
+
 /// Parses `omega dispatch`'s stdout into a `DispatchResponse`, per the
 /// contract documented at the top of this file. Returns `None` on any
 /// shape mismatch — the caller treats that as a 502, never a guess.
@@ -193,7 +197,9 @@ pub async fn create(
         args.push("--");
         args.push(&project);
         args.push(&mission);
-        crate::omega_cli::run(&args)
+        // I-2 (Codex cross-model review, 2026-08-11): see
+        // routes_sessions.rs::create's identical comment.
+        crate::omega_cli::run_with_timeout(&args, crate::omega_cli::cli_timeout())
     })
     .await
     .map_err(|e| {
@@ -203,24 +209,47 @@ pub async fn create(
         )
     })?
     .map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("failed to spawn omega: {e}") })),
-        )
+        if crate::omega_cli::is_timeout(&e) {
+            gateway_timeout(e.to_string())
+        } else {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("failed to spawn omega: {e}") })),
+            )
+        }
     })?;
 
     // Step 4: non-zero exit or unparseable stdout → 502, never fabricate an
     // oracle name.
+    //
+    // M-1 (Codex cross-model review, 2026-08-11): the raw stdout/stderr used
+    // to be echoed straight into the HTTP response, which can leak
+    // environment-derived secrets, file contents, or other sensitive text a
+    // future CLI diagnostic writes. The FULL raw text still goes to the
+    // gateway's own tracing log for operator debugging; the client only
+    // ever sees a generic, sanitized message.
     if !output.success {
+        tracing::error!(
+            project = %req.project,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega dispatch failed"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "omega dispatch failed", "stderr": output.stderr, "stdout": output.stdout })),
+            Json(json!({ "error": "omega dispatch failed (see gateway logs)" })),
         ));
     }
     let Some(parsed) = parse_dispatch_stdout(&output.stdout) else {
+        tracing::error!(
+            project = %req.project,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega dispatch produced unparseable output"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "unparseable omega dispatch output", "stdout": output.stdout })),
+            Json(json!({ "error": "omega dispatch produced unparseable output (see gateway logs)" })),
         ));
     };
 

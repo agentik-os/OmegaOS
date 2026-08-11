@@ -122,6 +122,19 @@ const KNOWN_TEMPLATES: &[&str] = &["whitepaper", "audit", "marketing", "doc"];
 /// finding 2.
 const PDF_SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// `PDF_SUBPROCESS_TIMEOUT_SECS` env-var override for
+/// [`PDF_SUBPROCESS_TIMEOUT`] — same env-var-overridable-constant-fn shape
+/// `routes_duo.rs::duo_timeout()` establishes for a per-endpoint subprocess
+/// timeout in this crate (added so a test can exercise the timeout path
+/// without a real 300s wait).
+fn pdf_timeout() -> Duration {
+    std::env::var("PDF_SUBPROCESS_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(PDF_SUBPROCESS_TIMEOUT)
+}
+
 /// Cap on `GET /v1/pdf/download`'s read — mirrors
 /// `routes_files::MAX_FILE_READ_BYTES`'s discipline (checked via
 /// `metadata().len()` BEFORE any read). 64 MiB comfortably covers any real
@@ -168,34 +181,74 @@ fn is_server_generated_pdf_name(name: &str) -> bool {
     name.starts_with("omega-report-") && name.ends_with(".pdf")
 }
 
+/// Sends `SIGKILL` to the WHOLE process group rooted at `pid` — the same
+/// negative-PID `kill -- -<pid>` idiom as `routes_duo.rs::
+/// kill_process_group` / `routes_agents.rs::kill_process_group`. `pid` must
+/// be the PID of a process spawned with `process_group(0)` (see
+/// [`run_omega_pdf`]), so this reaches both it and every nested child it
+/// forked that did not itself call `setpgid` — in particular the nested
+/// Node/npm process `omega pdf` invokes (I-3/pdf-half, Codex cross-model
+/// review, 2026-08-11: the old cleanup only ever reached the DIRECT `omega`
+/// child via `kill_on_drop(true)`, which does not propagate to a nested
+/// child on POSIX).
+async fn kill_process_group(pid: u32) {
+    let _ = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("kill").arg("--").arg(format!("-{pid}")).status()
+    })
+    .await;
+}
+
 /// Runs `omega pdf <args>` as a killable, time-bounded async child —
 /// deliberately NOT the crate's usual `omega_cli::run` (a blocking
 /// `std::process::Command::output()` with no cancellation path once
 /// spawned). `.kill_on_drop(true)` means a timeout that drops the
-/// in-flight `wait_with_output()` future actually terminates the child
-/// process rather than leaking it. See this module's review-fix doc
-/// comment, finding 2.
+/// in-flight `wait_with_output()` future terminates the DIRECT child
+/// process rather than leaking it — but `omega pdf` invokes Node/npm
+/// tooling that can spawn a NESTED process, which `kill_on_drop` alone
+/// never reaches (see this module's review-fix doc comment, finding 2, and
+/// [`kill_process_group`]'s doc comment). `process_group(0)` places the
+/// spawned `omega` into its own process group so a disconnect/timeout can
+/// kill the WHOLE tree at once, the same idiom `routes_duo.rs::
+/// run_omega_duo` and every WS-stream route in this crate already use.
 async fn run_omega_pdf(args: &[&str]) -> Result<crate::omega_cli::CommandOutput, ApiError> {
     let bin = crate::omega_cli::omega_bin();
     let child = tokio::process::Command::new(&bin)
         .args(args)
         .kill_on_drop(true)
+        .process_group(0)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| bad_gateway(format!("failed to spawn omega pdf: {e}")))?;
+    // Captured now, before `wait_with_output` (which takes `self` by value)
+    // ever consumes `child` — `Child::id()` returns `None` once the child
+    // has been polled to completion.
+    let child_pid = child.id();
 
-    match tokio::time::timeout(PDF_SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
+    match tokio::time::timeout(pdf_timeout(), child.wait_with_output()).await {
         Ok(Ok(out)) => Ok(crate::omega_cli::CommandOutput {
             stdout: String::from_utf8_lossy(&out.stdout).to_string(),
             stderr: String::from_utf8_lossy(&out.stderr).to_string(),
             success: out.status.success(),
         }),
         Ok(Err(e)) => Err(bad_gateway(format!("omega pdf process error: {e}"))),
-        Err(_) => Err(bad_gateway(format!(
-            "omega pdf timed out after {}s and was killed",
-            PDF_SUBPROCESS_TIMEOUT.as_secs()
-        ))),
+        Err(_) => {
+            // Past the ceiling: the timed-out future owned `child`, so
+            // dropping it here (already dropped when the future was)
+            // triggers `kill_on_drop` for the DIRECT child only — that
+            // alone does not reach a nested Node/npm process, so also send
+            // an explicit whole-group kill using the PID captured above
+            // (see [`kill_process_group`]'s doc comment). Awaited so the
+            // response is only returned once the kill syscall has actually
+            // been issued.
+            if let Some(pid) = child_pid {
+                kill_process_group(pid).await;
+            }
+            Err(bad_gateway(format!(
+                "omega pdf timed out after {}s and was killed",
+                pdf_timeout().as_secs()
+            )))
+        }
     }
 }
 
@@ -270,11 +323,20 @@ pub async fn create(
     ])
     .await?;
 
+    // M-1 (Codex cross-model review, 2026-08-11): the raw stdout/stderr used
+    // to be echoed straight into the HTTP response, which can leak
+    // environment-derived secrets or other sensitive text `omega pdf`'s
+    // underlying Node/npm tooling writes on failure. The FULL raw text
+    // still goes to the gateway's own tracing log; the client only ever
+    // sees a generic, sanitized message.
     if !output.success {
-        return Err(bad_gateway(format!(
-            "omega pdf exited non-zero: {}",
-            if output.stderr.trim().is_empty() { &output.stdout } else { &output.stderr }
-        )));
+        tracing::error!(
+            template = %req.template,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega pdf exited non-zero"
+        );
+        return Err(bad_gateway("omega pdf failed (see gateway logs)"));
     }
 
     let size_bytes = tokio::fs::metadata(&out_path)

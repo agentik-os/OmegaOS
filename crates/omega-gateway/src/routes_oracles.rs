@@ -80,6 +80,10 @@ fn bad_request(msg: impl Into<String>) -> ApiError {
     (StatusCode::BAD_REQUEST, Json(json!({ "error": msg.into() })))
 }
 
+fn gateway_timeout(msg: impl Into<String>) -> ApiError {
+    (StatusCode::GATEWAY_TIMEOUT, Json(json!({ "error": msg.into() })))
+}
+
 fn timeline_to_response(tl: omega_core::timeline::OracleTimeline) -> TimelineResponse {
     TimelineResponse {
         oracle_name: tl.oracle_name,
@@ -272,16 +276,38 @@ fn validate_session_name(name: &str) -> Result<(), ApiError> {
 pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, ApiError> {
     validate_session_name(&session)?;
     let target = session.clone();
-    let output =
-        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["reap", "--", target.as_str()]))
-            .await
-            .map_err(|e| bad_gateway(format!("reap task panicked: {e}")))?
-            .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
+    // I-2 (Codex cross-model review, 2026-08-11): see
+    // routes_sessions.rs::create's identical comment.
+    let output = tokio::task::spawn_blocking(move || {
+        crate::omega_cli::run_with_timeout(&["reap", "--", target.as_str()], crate::omega_cli::cli_timeout())
+    })
+    .await
+    .map_err(|e| bad_gateway(format!("reap task panicked: {e}")))?
+    .map_err(|e| {
+        if crate::omega_cli::is_timeout(&e) {
+            gateway_timeout(e.to_string())
+        } else {
+            bad_gateway(format!("failed to spawn omega: {e}"))
+        }
+    })?;
 
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review, same vulnerability class as the review's 5
+    // originally-listed sites): the raw stdout/stderr used to be echoed
+    // straight into the HTTP response, which can leak environment-derived
+    // secrets or other sensitive text a future CLI diagnostic writes. The
+    // FULL raw text still goes to the gateway's own tracing log; the client
+    // only ever sees a generic, sanitized message.
     if !output.success {
+        tracing::error!(
+            session = %session,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega reap failed"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "omega reap failed", "stderr": output.stderr, "stdout": output.stdout })),
+            Json(json!({ "error": "omega reap failed (see gateway logs)" })),
         ));
     }
     Ok(Json(ReapResponse { reaped: true, output: output.stdout }))
@@ -297,16 +323,36 @@ pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, Api
 pub async fn resurrect(Path(session): Path<String>) -> Result<Json<ResurrectResponse>, ApiError> {
     validate_session_name(&session)?;
     let target = session.clone();
-    let output =
-        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["resurrect", "--", target.as_str()]))
-            .await
-            .map_err(|e| bad_gateway(format!("resurrect task panicked: {e}")))?
-            .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
+    // I-2 (Codex cross-model review, 2026-08-11): see
+    // routes_sessions.rs::create's identical comment.
+    let output = tokio::task::spawn_blocking(move || {
+        crate::omega_cli::run_with_timeout(
+            &["resurrect", "--", target.as_str()],
+            crate::omega_cli::cli_timeout(),
+        )
+    })
+    .await
+    .map_err(|e| bad_gateway(format!("resurrect task panicked: {e}")))?
+    .map_err(|e| {
+        if crate::omega_cli::is_timeout(&e) {
+            gateway_timeout(e.to_string())
+        } else {
+            bad_gateway(format!("failed to spawn omega: {e}"))
+        }
+    })?;
 
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review): see `reap`'s identical comment above.
     if !output.success {
+        tracing::error!(
+            session = %session,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega resurrect failed"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": "omega resurrect failed", "stderr": output.stderr, "stdout": output.stdout })),
+            Json(json!({ "error": "omega resurrect failed (see gateway logs)" })),
         ));
     }
     Ok(Json(ResurrectResponse { resurrected: true, output: output.stdout }))

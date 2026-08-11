@@ -175,6 +175,10 @@ fn too_many_requests(msg: impl Into<String>) -> ApiError {
     (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": msg.into() })))
 }
 
+fn gateway_timeout(msg: impl Into<String>) -> ApiError {
+    (StatusCode::GATEWAY_TIMEOUT, Json(serde_json::json!({ "error": msg.into() })))
+}
+
 /// Parses `cmd_kill`'s alias-resolution line (`"[i] {name} resolved to the
 /// oracle session {resolved}"`, printed to **stdout** before anything else
 /// when the caller-supplied name needed `resolve_oracle_alias` — see
@@ -233,8 +237,14 @@ pub async fn close(
     }
 
     let session = name.clone();
-    let output = tokio::task::spawn_blocking(move || crate::omega_cli::run(&["kill", &session]))
-        .await
+    // I-7 (Codex cross-model review, 2026-08-11): `valid_session_name`
+    // permits a name whose first byte is `-` (unlike `valid_new_session_name`,
+    // which rejects a leading `-`/`.` for a brand-new name) -- a `"--"`
+    // separator before the positional is REQUIRED so a name like `-x` is
+    // never misparsed as a flag by the CLI's own clap parser.
+    let output =
+        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["kill", "--", &session]))
+            .await
         .map_err(|e| {
             (
                 StatusCode::BAD_GATEWAY,
@@ -257,10 +267,22 @@ pub async fn close(
     let cascaded_count =
         output.stdout.lines().filter(|l| l.starts_with("  cascaded worker")).count() as u32;
     let already_closed = output.stdout.contains("is already closed — nothing live to kill.");
+    // M-1 (Codex cross-model review, 2026-08-11): the SUCCESS-path `message`
+    // (stdout alone) is a documented contract other code/tests depend on
+    // (the success/already-closed/cascaded-worker informational text) and
+    // stays untouched. Only the FAILURE-path `message` — which used to be
+    // raw stdout+stderr concatenated — is sanitized: the full raw text
+    // still goes to the gateway's own tracing log, never the HTTP response.
     let message = if output.success {
         output.stdout.clone()
     } else {
-        format!("{}{}", output.stdout, output.stderr)
+        tracing::error!(
+            session = %name,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega kill failed"
+        );
+        "omega kill failed (see gateway logs)".to_string()
     };
 
     Ok(Json(CloseSessionResponse {
@@ -589,7 +611,12 @@ pub async fn create(
         }
         args.push("--");
         args.push(&name_arg);
-        crate::omega_cli::run(&args)
+        // I-2 (Codex cross-model review, 2026-08-11): a blocking `run`
+        // cannot be cancelled once spawned and has no timeout, so a
+        // hung/adversarially-slow `omega new` can pin this permit and this
+        // spawn_blocking thread forever. `run_with_timeout` bounds it and
+        // kills the whole process group past the ceiling.
+        crate::omega_cli::run_with_timeout(&args, crate::omega_cli::cli_timeout())
     })
     .await
     .map_err(|e| {
@@ -599,17 +626,35 @@ pub async fn create(
         )
     })?
     .map_err(|e| {
-        (
-            StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": format!("failed to spawn omega: {e}") })),
-        )
+        if crate::omega_cli::is_timeout(&e) {
+            gateway_timeout(e.to_string())
+        } else {
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(serde_json::json!({ "error": format!("failed to spawn omega: {e}") })),
+            )
+        }
     })?;
 
     // Non-zero exit → 502, never fabricate a session.
+    //
+    // M-1 (Codex cross-model review, 2026-08-11; gap found during
+    // whole-branch review, same vulnerability class as the review's 5
+    // originally-listed sites): the raw stdout/stderr used to be echoed
+    // straight into the HTTP response, which can leak environment-derived
+    // secrets or other sensitive text a future CLI diagnostic writes. The
+    // FULL raw text still goes to the gateway's own tracing log; the client
+    // only ever sees a generic, sanitized message.
     if !output.success {
+        tracing::error!(
+            name = %name,
+            stdout = %output.stdout,
+            stderr = %output.stderr,
+            "omega new failed"
+        );
         return Err((
             StatusCode::BAD_GATEWAY,
-            Json(serde_json::json!({ "error": "omega new failed", "stderr": output.stderr, "stdout": output.stdout })),
+            Json(serde_json::json!({ "error": "omega new failed (see gateway logs)" })),
         ));
     }
 

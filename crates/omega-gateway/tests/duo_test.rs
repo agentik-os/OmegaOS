@@ -566,7 +566,7 @@ async fn unknown_profile_rejects_with_400_no_spawn() {
 // ── malformed output ─────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn malformed_stdout_is_502_with_stdout_and_stderr_surfaced() {
+async fn malformed_stdout_is_502_with_a_sanitized_error_never_the_raw_output() {
     let _g = LOCK.lock().await;
     let gateway_dir = tempfile::tempdir().unwrap();
     let home_dir = tempfile::tempdir().unwrap();
@@ -590,7 +590,52 @@ async fn malformed_stdout_is_502_with_stdout_and_stderr_surfaced() {
         .unwrap();
     assert_eq!(res.status(), 502);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert!(body["stdout"].as_str().unwrap().contains("not json"));
+    // M-1 (Codex cross-model review, 2026-08-11): raw stdout/stderr is no
+    // longer echoed into the response body -- only the parse error itself
+    // (a generic "expected value at..." shape). The full raw text still
+    // goes to the gateway's own tracing log, never the HTTP response.
+    assert!(body.get("stdout").is_none(), "must not echo raw stdout: {body}");
+    assert!(body.get("stderr").is_none(), "must not echo raw stderr: {body}");
+    assert!(
+        !body["error"].as_str().unwrap().contains("not json"),
+        "error message must not contain the raw subprocess text: {body}"
+    );
+
+    clear_env();
+}
+
+/// M-1 (Codex cross-model review, 2026-08-11): a secret-shaped string
+/// written to stdout/stderr by a malformed `omega-duo` run must never reach
+/// the HTTP response body -- only the gateway's own log.
+#[tokio::test]
+async fn malformed_stdout_never_leaks_a_secret_shaped_string_into_the_response() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let home_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let duo_scratch = tempfile::tempdir().unwrap();
+    let capture_file = bin_dir.path().join("capture.txt");
+
+    install_fake_home(home_dir.path(), "TestProj");
+    install_fake_duo(bin_dir.path(), &capture_file, "0", "sk-ProjSECRETVALUE1234567890", 1);
+    std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/duo"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "TestProj", "prompt": "p", "profile": "build" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 502);
+    let raw_body = res.text().await.unwrap();
+    assert!(
+        !raw_body.contains("sk-ProjSECRETVALUE1234567890"),
+        "response body leaked the raw secret-shaped subprocess output: {raw_body}"
+    );
 
     clear_env();
 }

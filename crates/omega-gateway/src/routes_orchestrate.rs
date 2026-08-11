@@ -294,8 +294,43 @@ async fn orchestrate_stream_loop(
     let stderr_task = tokio::spawn(forward_lines(stderr, "stderr", tx.clone()));
     drop(tx);
 
+    // I-4 (Codex cross-model review, 2026-08-11): an outer wall-clock bound
+    // on the WHOLE connection lifetime — see `routes_agents.rs::
+    // install_stream_loop`'s identical comment and
+    // `omega_cli::stream_timeout`'s doc comment for the default/env var. A
+    // QUIET-BUT-ALIVE child (no output, client still connected) used to
+    // hold this stream and its subprocess open indefinitely.
+    //
+    // KNOWN TRADEOFF (flagged, not resolved, by this fix): `stream_timeout`'s
+    // 1800s default is SHORTER than `omega orchestrate`'s own internal
+    // `--timeout` default (3600s, this module's own doc comment) — a real,
+    // legitimately slow-but-still-working orchestrate mission that produces
+    // no output for 30 minutes would now be cut off by the GATEWAY before
+    // the CLI's own timeout ever fires. `OMEGA_STREAM_TIMEOUT_SECS` is the
+    // operator's override for this specific endpoint's deployment if 1800s
+    // proves too short in practice; a per-endpoint default was deliberately
+    // not introduced here to keep one shared, consistent constant across
+    // every WS-stream route in this crate (see `omega_cli::stream_timeout`).
+    let sleep = tokio::time::sleep(crate::omega_cli::stream_timeout());
+    tokio::pin!(sleep);
+
     loop {
         tokio::select! {
+            _ = &mut sleep => {
+                let _ = send_orchestrate_frame(
+                    &mut socket,
+                    &OrchestrateStreamMsg::Error {
+                        message: format!(
+                            "orchestrate timed out after {}s and was killed",
+                            crate::omega_cli::stream_timeout().as_secs()
+                        ),
+                    },
+                )
+                .await;
+                kill_and_drain(rx, child, child_pid, stdout_task, stderr_task).await;
+                let _ = socket.send(Message::Close(None)).await;
+                return;
+            }
             frame = rx.recv() => {
                 match frame {
                     Some(frame) => {

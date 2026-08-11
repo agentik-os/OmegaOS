@@ -9,8 +9,10 @@
 
 use crate::fsperm::{harden_dir, harden_file};
 use crate::protocol::{Account, AccountKind};
+use crate::util::random_hex;
 use anyhow::{bail, Result};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 /// Slug charset: `[a-z0-9-]{1,32}`, non-empty. Deliberately excludes `.`/`/`
 /// so a slug can never traverse out of the accounts dir (e.g. `../x`).
@@ -20,13 +22,23 @@ pub fn valid_slug(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
-/// Stateless handle over `<gateway_dir>/accounts`: every read/write goes
-/// straight to disk, so cloning (cheap: one `PathBuf`) is safe to share
-/// across async tasks (e.g. `AppState`, `spawn_blocking` closures) with no
-/// shared mutable state to synchronize.
+/// Handle over `<gateway_dir>/accounts`: every read/write goes straight to
+/// disk (no in-memory cache), so cloning (cheap: one `PathBuf` plus one
+/// `Arc`) is safe to share across async tasks (e.g. `AppState`,
+/// `spawn_blocking` closures). `lock` guards the read-modify-write sequence
+/// in `create_slot` / `remove` / `set_default`: those three read the whole
+/// registry, mutate it in memory, then write it back, so two concurrent
+/// mutators (e.g. two `POST /v1/accounts` for different slugs) could
+/// otherwise both read before either writes and silently drop one write
+/// (I-6). It is wrapped in `Arc` deliberately, not a bare field: this
+/// struct derives `Clone` and is cloned into every handler closure, and a
+/// bare `Mutex<()>` field would give each clone its own independent lock,
+/// defeating the whole point, so every clone must share the SAME mutex
+/// instance.
 #[derive(Clone)]
 pub struct AccountStore {
     accounts_dir: PathBuf,
+    lock: Arc<Mutex<()>>,
 }
 
 impl AccountStore {
@@ -35,7 +47,7 @@ impl AccountStore {
         let accounts_dir = gateway_dir.join("accounts");
         std::fs::create_dir_all(&accounts_dir).ok();
         harden_dir(&accounts_dir);
-        Self { accounts_dir }
+        Self { accounts_dir, lock: Arc::new(Mutex::new(())) }
     }
 
     fn registry_path(&self) -> PathBuf {
@@ -91,10 +103,15 @@ impl AccountStore {
         let path = self.registry_path();
         match serde_json::to_string_pretty(accounts) {
             Ok(text) => {
-                // Atomic write: temp sibling + rename, same discipline as
-                // chat_store's meta.json so a crash mid-write never leaves a
-                // torn accounts.json.
-                let tmp = path.with_extension("json.tmp");
+                // Atomic write: unique temp sibling + rename, same discipline
+                // as chat_store's meta.json (temp file, then atomic rename)
+                // plus a per-write random suffix as defense-in-depth on top
+                // of `lock`: `lock` serializes mutators WITHIN this process,
+                // but cannot help two separate gateway PROCESSES sharing the
+                // same accounts dir, and a unique temp filename means one
+                // process's in-flight write can never collide with
+                // another's on the same fixed `.json.tmp` path.
+                let tmp = path.with_extension(format!("json.tmp.{}", random_hex(4)));
                 if let Err(e) = std::fs::write(&tmp, text) {
                     tracing::error!("failed to write {}: {e}", tmp.display());
                 } else {
@@ -117,6 +134,11 @@ impl AccountStore {
         if !valid_slug(slug) {
             bail!("invalid slug: {slug:?} (must be [a-z0-9-]{{1,32}})");
         }
+        // Held across the whole read-modify-write below: two concurrent
+        // `create_slot` calls (e.g. two `POST /v1/accounts` for different
+        // slugs) must not both read the registry before either writes, or
+        // one of them silently vanishes from the persisted list (I-6).
+        let _guard = self.lock.lock().unwrap();
         let mut accounts = self.read_registry();
         if accounts.iter().any(|a| a.slug == slug) {
             bail!("account slug already exists: {slug}");
@@ -152,6 +174,8 @@ impl AccountStore {
     /// Removes an account: deletes its registry entry AND its slot directory
     /// (credentials and all). Returns false if the slug was unknown.
     pub fn remove(&self, slug: &str) -> bool {
+        // Same RMW race as `create_slot`, guarded the same way (I-6).
+        let _guard = self.lock.lock().unwrap();
         let mut accounts = self.read_registry();
         let before = accounts.len();
         accounts.retain(|a| a.slug != slug);
@@ -169,6 +193,8 @@ impl AccountStore {
     /// every other account of the SAME kind (accounts of other kinds are
     /// untouched). Returns false if the slug is unknown.
     pub fn set_default(&self, slug: &str) -> bool {
+        // Same RMW race as `create_slot`, guarded the same way (I-6).
+        let _guard = self.lock.lock().unwrap();
         let mut accounts = self.read_registry();
         let Some(kind) = accounts.iter().find(|a| a.slug == slug).map(|a| a.kind) else {
             return false;
@@ -382,6 +408,59 @@ mod tests {
         // collide with the quarantined file).
         store.create_slot("work-1", "Work", AccountKind::Claude).unwrap();
         assert_eq!(store.list().len(), 1);
+    }
+
+    /// I-6 regression: two threads calling `create_slot` concurrently, for
+    /// DIFFERENT slugs, must never lose either write. Pre-fix, `create_slot`
+    /// does a plain read-modify-write with no lock: thread A reads the
+    /// registry, thread B reads the same (still missing A's entry), A
+    /// writes, then B writes its own version, silently erasing A's entry
+    /// from `accounts.json` (A's slot directory still exists on disk,
+    /// orphaned and invisible to `list()`). A per-iteration `Barrier`
+    /// forces both threads to enter `create_slot` at (as close to) the same
+    /// instant on every round, which is what makes an otherwise
+    /// timing-sensitive race reproduce reliably across many iterations
+    /// instead of depending on luck within a single run.
+    #[test]
+    fn concurrent_create_slot_never_loses_an_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = AccountStore::open(dir.path());
+        let iterations = 150usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+        let store_a = store.clone();
+        let barrier_a = barrier.clone();
+        let handle_a = std::thread::spawn(move || {
+            for i in 0..iterations {
+                barrier_a.wait();
+                store_a.create_slot(&format!("race-a-{i}"), "A", AccountKind::Claude).unwrap();
+            }
+        });
+
+        let store_b = store.clone();
+        let barrier_b = barrier.clone();
+        let handle_b = std::thread::spawn(move || {
+            for i in 0..iterations {
+                barrier_b.wait();
+                store_b.create_slot(&format!("race-b-{i}"), "B", AccountKind::Codex).unwrap();
+            }
+        });
+
+        handle_a.join().unwrap();
+        handle_b.join().unwrap();
+
+        let listed = store.list();
+        for i in 0..iterations {
+            assert!(
+                listed.iter().any(|a| a.slug == format!("race-a-{i}")),
+                "lost race-a-{i}: concurrent create_slot dropped an account (I-6)"
+            );
+            assert!(
+                listed.iter().any(|a| a.slug == format!("race-b-{i}")),
+                "lost race-b-{i}: concurrent create_slot dropped an account (I-6)"
+            );
+        }
+        assert_eq!(listed.len(), iterations * 2, "registry must contain every created account, no lost updates");
     }
 
     #[test]
