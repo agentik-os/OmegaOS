@@ -113,7 +113,10 @@ Remplis `plan.md` : objectif, **criteres de succes verifiables** (commande de
 test/build — elle deviendra le `--verify`), fichiers touches, approche.
 
 ### 2. Critique deep (Codex, lecture seule)
-Colle le plan dans `critique-task.md`, puis :
+Colle le plan dans `critique-task.md` (garde l'interdiction de build du
+template : une review read-only qui lance cargo/npm/tests ecrit des artefacts
+et se fait rejeter en `readonly-violation` par le garde — lecture de fichiers
+UNIQUEMENT), puis :
 ```
 omega-duo run --task agentic/duo/<slug>/critique-task.md --cwd <projet> --mode plan
 ```

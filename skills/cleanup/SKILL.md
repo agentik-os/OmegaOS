@@ -20,6 +20,21 @@ Objectif : libérer de l'espace et garder une doc cohérente, **sans jamais cass
 1. **Machine au repos** : lancer `scripts/idle-check.sh`. S'il renvoie `BUSY:…` → **STOP**, lister le travail actif, ne rien supprimer.
 2. **Validation utilisateur** : pour tout ce qui touche `~/Station`, les caches d'un user, ou de la doc → présenter la liste (chemins + tailles + raison) et attendre l'accord. Les étapes "auto-sûres" (cache Docker/APT/journal) peuvent se faire sans valider chaque item, mais toujours après le garde-fou repos.
 
+## RÈGLE ABSOLUE — jamais de kill sur claude / rmux (opérateur, 2026-08-11)
+
+Pendant un cleanup, ne **JAMAIS** kill un process `claude` ni un daemon ou une
+session rmux vivante — même détachée, même vieille, même à 0% CPU. "Détaché" ≠
+"mort" : une session détachée porte des agents en plein travail, un claude à
+faible CPU attend souvent une réponse API entre deux turns, et tuer le daemon
+rmux tue TOUTES les sessions d'un coup. Incident fondateur : le 2026-08-11 un
+cleanup RAM a tué des claude actifs pris pour idle, y compris sa propre
+session. Fermer une session est un geste de l'**opérateur** (`omega kill
+<name>`, `rmux kill-server`), jamais du cleanup — même avec un go générique
+« clean up ». La récupération de RAM se limite à : workers de modèles idle
+(TTS/STT), dev servers oubliés, stacks Docker prouvées idle (avec accord),
+caches. `close-sessions.sh` porte ce garde-fou en dur et refuse tout pid
+claude/rmux.
+
 ## Périmètre INTOUCHABLE (ne jamais supprimer)
 - Tout `~/Station/**` **sauf** des artefacts de build explicitement rebuildables (`target/`, `.next/`, `dist/`) — et encore, seulement avec accord.
 - Docs canon : `vision/**`, fichiers `*PRD*`, `*feature*`, `*step*`, `Vision/`, `OMEGA.md`, `CLAUDE.md`, `AGENTS.md`, `README*`, `CHANGELOG`, `LICENSE`, `SECURITY.md`, `~/.omega/rules/**`, les **fiches** projet.
@@ -27,7 +42,7 @@ Objectif : libérer de l'espace et garder une doc cohérente, **sans jamais cass
 - Sessions / sockets actifs : `claude-*`, `rmux-*`, `tmux-*`, `rx-socketna-*`, `cloudflared`, la worktree d'un build en cours.
 
 ## Déroulé
-0. **Fermeture des sessions détachées** (si demandé) : `scripts/close-sessions.sh` ferme les tunnels cloudflared + sessions mosh/rmux détachées de `vibe`/`lab`. **Protège toujours** la connexion courante (root) et l'infra (omega-mc, bots, daemons sécurité, tailscale, sshd). Tester d'abord avec `--dry`.
+0. **Fermeture des tunnels/mosh détachés** (si demandé) : `scripts/close-sessions.sh` ferme les tunnels cloudflared + serveurs mosh détachés de `vibe`/`lab` — et RIEN d'autre : claude et rmux sont hors périmètre par la Règle absolue ci-dessus (le script refuse ces pids en dur). **Protège toujours** la connexion courante (root) et l'infra (omega-mc, bots, daemons sécurité, tailscale, sshd). Tester d'abord avec `--dry`.
 1. **Garde-fou** : `scripts/idle-check.sh`. Si occupé → rapport + stop.
 2. **Analyse** : `scripts/analyze.sh` → df, top du `/home` `/tmp` `/var`, `docker system df`.
 3. **Purge auto-sûre** : `scripts/safe-clean.sh` → `docker builder prune`, `apt-get clean`, `journalctl --vacuum-size=100M`. (rien de Station, rien de doc.)

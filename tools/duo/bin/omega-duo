@@ -1597,8 +1597,12 @@ const DUO_PLAN_TEMPLATE = (slug: string) => `# Plan — ${slug}
 
 const DUO_CRITIQUE_TEMPLATE = `Here is an implementation plan for this repository. Challenge it as a deep
 adversarial reviewer: blind spots, files that contradict the plan, a better
-approach if you see one. Do NOT write code. Do NOT modify any file. Answer in
-structured text ranked BLOCKER / MAJOR / MINOR.
+approach if you see one. Do NOT write code. Do NOT modify any file. Do NOT run
+cargo, npm, bun, make, or any build/lint/test command — a build writes
+artifacts (target/, node_modules/, dist/) and voids this read-only review: the
+worktree guard will reject the whole run as a readonly-violation. Inspect the
+code by READING files only. Answer in structured text ranked
+BLOCKER / MAJOR / MINOR.
 
 --- PLAN ---
 <paste plan.md here>
