@@ -78,6 +78,78 @@ fn argv_lines(capture_file: &std::path::Path) -> Vec<String> {
     std::fs::read_to_string(capture_file).unwrap_or_default().lines().map(str::to_string).collect()
 }
 
+/// Finding 2 (adversarial review round): writes an executable fake
+/// `omega-duo` that forks a NESTED grandchild background loop -- writing a
+/// growing marker file so its aliveness is directly observable, and its own
+/// PID to `pid_file` via bash's `$!` -- into the SAME process group as the
+/// outer script (no `setsid`/job-control subshell: bash job control is off
+/// by default in non-interactive script mode, so a plain `&` background job
+/// inherits the parent's pgid, mirroring the REAL `omega-duo` -> Codex/
+/// Claude spawn shape this crate's `routes_duo.rs` doc comment verifies: no
+/// `detached: true`, so a nested agent turn stays in the same process group
+/// `run_omega_duo` places the direct child into). The outer script then
+/// sleeps far longer than any test's disconnect window before ever printing
+/// anything, so the request can only complete within test patience via the
+/// disconnect-triggered kill this finding adds.
+fn install_fake_duo_with_nested_child(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    pid_file: &std::path::Path,
+    marker_file: &std::path::Path,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = bin_dir.join("omega-duo");
+    let body = format!(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{capture}'\n( while true; do date +%s%N >> '{marker}'; sleep 0.05; done ) &\necho $! > '{pid}'\nsleep 120\nprintf '%s' '{{}}'\nexit 0\n",
+        capture = capture_file.display(),
+        marker = marker_file.display(),
+        pid = pid_file.display(),
+    );
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("OMEGA_DUO_BIN", &path);
+}
+
+/// Finding 4 (adversarial review round): like [`install_fake_duo`], but
+/// prints a harmless stray `banner` line to stdout BEFORE the real
+/// `stdout_body` JSON line -- reproducing the real bridge's own documented
+/// shape ("the JSON result is the last line, not necessarily the whole
+/// stream").
+fn install_fake_duo_with_banner_line(
+    bin_dir: &std::path::Path,
+    capture_file: &std::path::Path,
+    banner: &str,
+    stdout_body: &str,
+    exit_code: i32,
+) {
+    use std::os::unix::fs::PermissionsExt;
+    assert!(!stdout_body.contains('\''), "test stdout body must not contain a single quote");
+    assert!(!banner.contains('\''), "test banner must not contain a single quote");
+    let path = bin_dir.join("omega-duo");
+    let capture = capture_file.display();
+    let body = format!(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > '{capture}'\nprintf '%s\\n' '{banner}'\nprintf '%s' '{stdout_body}'\nexit {exit_code}\n"
+    );
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("OMEGA_DUO_BIN", &path);
+}
+
+/// RAII guard restoring the process's current directory on drop -- used
+/// only by [`dash_prefixed_resolved_dir_is_rejected_before_any_spawn`],
+/// which must temporarily move the test binary's own cwd to reproduce
+/// Finding 3's exact precondition (a RELATIVE `dir` value that
+/// `dir_under_home` resolves against this PROCESS's own cwd). Restoring on
+/// `Drop` (rather than only at the end of the happy path) keeps a panic mid
+/// -test from leaving every later test in this same test binary running
+/// from the wrong directory.
+struct CwdRestore(std::path::PathBuf);
+impl Drop for CwdRestore {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
 /// The full real `BridgeResult` shape, filled with distinguishable
 /// non-default values in every field so a field-mapping bug (a swapped or
 /// dropped field) cannot hide behind a coincidental default.
@@ -732,6 +804,290 @@ async fn per_cwd_lock_rejects_a_second_concurrent_run_then_releases_after_the_fi
         .await
         .unwrap();
     assert_eq!(third_res.status(), 200);
+
+    clear_env();
+}
+
+// ── adversarial review round fixes ───────────────────────────────────────
+
+/// Finding 1: the per-cwd lock used to key on the raw, literal `dir` string
+/// rather than the underlying repo it resolves to, so two textually
+/// different paths into the SAME repo (a project root and a subdirectory of
+/// it, both under one shared `.git`) bypassed the lock entirely and could
+/// run concurrently against one worktree's checkpoint guard. After the fix,
+/// the lock key is the resolved REPO ROOT, so the second request collides
+/// exactly like the identical-path case already covered above.
+#[tokio::test]
+async fn per_cwd_lock_keys_on_repo_root_so_two_spellings_of_the_same_repo_collide() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let duo_scratch = tempfile::tempdir().unwrap();
+    let capture_file = bin_dir.path().join("capture.txt");
+
+    std::env::set_var("HOME", fake_home.path());
+    // A real repo root (marked by a `.git` directory) and a nested
+    // subdirectory of it -- two textually different `dir` values that
+    // resolve to the SAME underlying repo.
+    let repo_root = fake_home.path().join("Proj");
+    let nested = repo_root.join("src");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+
+    install_fake_duo(bin_dir.path(), &capture_file, "0.25", &fake_bridge_result_json().to_string(), 0);
+    std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+
+    let first = {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        let dir_str = repo_root.display().to_string();
+        tokio::spawn(async move {
+            client
+                .post(format!("{base}/v1/duo"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "dir": dir_str, "prompt": "p1", "profile": "build" }))
+                .send()
+                .await
+                .unwrap()
+                .status()
+                .as_u16()
+        })
+    };
+
+    // Give the first request time to pass validation and acquire the lock
+    // before the second one (a DIFFERENT spelling of the SAME repo) fires.
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+    let second_dir_str = nested.display().to_string();
+    let second_res = client
+        .post(format!("{base}/v1/duo"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "dir": second_dir_str, "prompt": "p2", "profile": "build" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        second_res.status(),
+        409,
+        "two textually different paths into the same repo must collide on the per-cwd lock"
+    );
+    let body: serde_json::Value = second_res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("already in flight"));
+
+    assert_eq!(first.await.unwrap(), 200);
+
+    clear_env();
+}
+
+/// Finding 2: a CLIENT disconnect (not a server-side timeout) used to only
+/// `SIGKILL` the direct `omega-duo` child (`kill_on_drop(true)` on the
+/// `tokio::process::Child` itself), never the nested Codex/Claude turn it
+/// spawned into the same process group -- and the per-cwd lock was released
+/// regardless, since `CwdLockGuard::drop` does not know or care WHY the
+/// future was dropped. So the orphaned agent kept editing files, unbounded,
+/// while a second request against the same worktree was free to start a
+/// genuinely concurrent run. After the fix, dropping the whole handler
+/// future (a real client disconnect, simulated here by aborting the client-
+/// side task) must reach the nested grandchild too, and the lock must only
+/// ever be usable again once that kill has actually happened.
+#[tokio::test]
+async fn client_disconnect_kills_the_nested_agent_and_releases_the_cwd_lock() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let duo_scratch = tempfile::tempdir().unwrap();
+    let capture_file = bin_dir.path().join("capture.txt");
+    let pid_file = bin_dir.path().join("nested.pid");
+    let marker_file = bin_dir.path().join("marker.txt");
+
+    std::env::set_var("HOME", fake_home.path());
+    let proj = fake_home.path().join("Proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    install_fake_duo_with_nested_child(bin_dir.path(), &capture_file, &pid_file, &marker_file);
+    std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+    let client = reqwest::Client::new();
+    let dir_str = proj.display().to_string();
+
+    let first = {
+        let client = client.clone();
+        let base = base.clone();
+        let token = token.clone();
+        let dir_str = dir_str.clone();
+        tokio::spawn(async move {
+            let _ = client
+                .post(format!("{base}/v1/duo"))
+                .bearer_auth(&token)
+                .json(&serde_json::json!({ "dir": dir_str, "prompt": "p1", "profile": "build" }))
+                .send()
+                .await;
+        })
+    };
+
+    // Wait for the nested grandchild to actually exist.
+    let mut nested_pid: Option<u32> = None;
+    for _ in 0..150 {
+        if let Ok(s) = std::fs::read_to_string(&pid_file) {
+            if let Ok(p) = s.trim().parse::<u32>() {
+                nested_pid = Some(p);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let nested_pid = nested_pid.expect("nested grandchild never started");
+    assert!(
+        std::path::Path::new(&format!("/proc/{nested_pid}")).exists(),
+        "the nested grandchild should be alive right after it announced its pid"
+    );
+
+    // Prove it is genuinely alive (not just a stale pid file) by watching
+    // the marker file actually grow.
+    let before = std::fs::read_to_string(&marker_file).unwrap_or_default();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let grew = std::fs::read_to_string(&marker_file).unwrap_or_default();
+    assert!(grew.len() > before.len(), "nested grandchild marker was not growing before the disconnect");
+
+    // CLIENT-side disconnect: abort the task holding the connection, never
+    // a server-side timeout.
+    first.abort();
+
+    // Bounded wait for the server's disconnect-drop kill to actually reach
+    // the nested grandchild (R-LOOP: a small number of short polls).
+    let mut died = false;
+    for _ in 0..100 {
+        if !std::path::Path::new(&format!("/proc/{nested_pid}")).exists() {
+            died = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(died, "the nested grandchild (pid {nested_pid}) survived the client disconnect");
+
+    // The per-cwd lock must have been released too, ONLY once the kill
+    // happened -- not leaked, and not letting a real orphan race a second
+    // run. Point OMEGA_DUO_BIN at a fast, ordinary fake bin so this third
+    // request does not also have to sit out a long sleep.
+    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    let third_res = client
+        .post(format!("{base}/v1/duo"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "dir": dir_str, "prompt": "p3", "profile": "build" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        third_res.status(),
+        200,
+        "the per-cwd lock must be usable again after the disconnect-triggered cleanup"
+    );
+
+    clear_env();
+}
+
+/// Finding 3: `dir_under_home` returns the caller's ORIGINAL,
+/// uncanonicalized string, and its ancestor-walk canonicalizes a RELATIVE
+/// candidate against THIS PROCESS's own cwd -- so a relative `dir` value
+/// (e.g. a bare `--verify`) that happens to name a real directory relative
+/// to gatewayd's own cwd AND resolves under `$HOME` used to reach the
+/// bridge's argv as `--cwd --verify`, which `omega-duo`'s own `parseArgs`
+/// reads as: `cwd` gets no value (falls back to the gateway's own process
+/// cwd) and `verify` gets silently set to `true` -- breaking the "we never
+/// pass `--verify`" guarantee this endpoint's own doc comment asserts.
+#[tokio::test]
+async fn dash_prefixed_resolved_dir_is_rejected_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let duo_scratch = tempfile::tempdir().unwrap();
+    let capture_file = bin_dir.path().join("capture.txt");
+
+    std::env::set_var("HOME", fake_home.path());
+    // A directory literally named `--verify`, existing under $HOME.
+    let evil_dir = fake_home.path().join("--verify");
+    std::fs::create_dir_all(&evil_dir).unwrap();
+
+    // Move this process's own cwd into $HOME so the RELATIVE `dir:
+    // "--verify"` below canonicalizes to `$HOME/--verify` -- Finding 3's
+    // exact precondition. Restored via `CwdRestore`'s `Drop`.
+    let original_cwd = std::env::current_dir().unwrap();
+    let _cwd_restore = CwdRestore(original_cwd);
+    std::env::set_current_dir(fake_home.path()).unwrap();
+
+    install_fake_duo(bin_dir.path(), &capture_file, "0", &fake_bridge_result_json().to_string(), 0);
+    std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/duo"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "dir": "--verify", "prompt": "p", "profile": "build" }))
+        .send()
+        .await
+        .unwrap();
+
+    drop(_cwd_restore); // restore cwd before any assertion can early-return
+
+    assert_eq!(res.status(), 400);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert!(body["error"].as_str().unwrap().contains("absolute"), "error: {body}");
+    assert!(!capture_file.exists(), "no subprocess was ever spawned");
+
+    clear_env();
+}
+
+/// Finding 4: the endpoint used to parse the ENTIRE stdout buffer as one
+/// JSON value, but the real bridge's own test harness deliberately parses
+/// only the LAST non-empty line (the JSON result is documented as the last
+/// line, not necessarily the whole stream). Today, any stray line BEFORE
+/// the real JSON line turned a successful, quota-burning, potentially
+/// file-mutating run into a 502 with no `checkpoint`/`diffstat`/`agent_ok`
+/// in the response.
+#[tokio::test]
+async fn stray_banner_line_before_the_json_is_still_parsed_from_the_last_line() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let home_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let duo_scratch = tempfile::tempdir().unwrap();
+    let capture_file = bin_dir.path().join("capture.txt");
+
+    install_fake_home(home_dir.path(), "TestProj");
+    let body = fake_bridge_result_json();
+    install_fake_duo_with_banner_line(
+        bin_dir.path(),
+        &capture_file,
+        "warning: some harmless banner text",
+        &body.to_string(),
+        0,
+    );
+    std::env::set_var("OMEGA_DUO_DIR", duo_scratch.path());
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new()
+        .post(format!("{base}/v1/duo"))
+        .bearer_auth(&token)
+        .json(&serde_json::json!({ "project": "TestProj", "prompt": "p", "profile": "build" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "a stray banner line before the real JSON line must not 502");
+    let resp: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(resp, body);
 
     clear_env();
 }

@@ -42,23 +42,29 @@
 //! sibling `splitArgs`, ignores every non-`--`-prefixed token entirely), so
 //! no `--` separator is needed or meaningful here.
 //!
-//! HYPHEN-LEADING VALUE RISK — VERIFIED: `parseArgs`'s value-consumption
-//! check is `!argv[i + 1].startsWith("--")` — DOUBLE dash, not single. A
-//! resolved `--cwd` value starting with a single `-` (e.g. a directory
-//! literally named `-x`) is consumed correctly as the value; only a value
-//! starting with a literal `--` would be misread as a boolean flag and the
-//! following token reparsed as a new flag. [`dir_under_home`] only ever
-//! returns an ORIGINAL (uncanonicalized) requested path, so in a
-//! pathological case (a directory that happens to be named e.g. `--evil`
-//! AND already exists under an ancestor resolvable relative to this
-//! process's own cwd) this endpoint's own argv could theoretically hand
-//! the bridge a `--`-prefixed cwd value — but even then the failure mode
-//! is a harmless bridge-side `cwd is not a directory` bad-input rejection
-//! (`cmdRun` resolves the swallowed `"true"` string, which is never a real
-//! directory), NOT an argv-injection into a different flag's semantics.
-//! `--task`/`--mode` never carry this risk at all: the task path is always
-//! this endpoint's OWN server-generated absolute scratch path, and `mode`
-//! is always one of the three literal strings [`profile_to_mode`] returns.
+//! HYPHEN-LEADING VALUE RISK — VERIFIED, and now GUARDED (Finding 3,
+//! adversarial review round): `parseArgs`'s value-consumption check is
+//! `!argv[i + 1].startsWith("--")` — DOUBLE dash, not single. A resolved
+//! `--cwd` value starting with a single `-` (e.g. a directory literally
+//! named `-x`) is consumed correctly as the value; only a value whose FULL
+//! STRING starts with a literal `--` would be misread as a boolean flag and
+//! the following token reparsed as a new flag. [`dir_under_home`] only ever
+//! returns an ORIGINAL (uncanonicalized) requested path, and its
+//! ancestor-walk canonicalizes a RELATIVE candidate against THIS PROCESS's
+//! own cwd — so a pathological case (a `dir` that is itself relative, e.g.
+//! a bare `--evil`, naming a directory that happens to exist relative to
+//! gatewayd's own cwd AND resolves under `$HOME`) could hand the bridge a
+//! `--`-prefixed `--cwd` value, silently dropping the real cwd (`cmdRun`
+//! falls back to `process.cwd()`) AND setting `verify` to `true` — a real
+//! argv-injection into a DIFFERENT flag's semantics, not just a harmless
+//! bad-input rejection. `create` now rejects any resolved target that is
+//! not an absolute path before ever building argv, which closes this
+//! exact gap (every legitimate resolved directory — a discovered project,
+//! or a `dir_under_home`-validated request — is already absolute, so
+//! nothing legitimate is rejected). `--task`/`--mode` never carried this
+//! risk at all: the task path is always this endpoint's OWN
+//! server-generated absolute scratch path, and `mode` is always one of the
+//! three literal strings [`profile_to_mode`] returns.
 //!
 //! SUCCESS SIGNAL — VERIFIED, not assumed: `emit()` (binary line 286) sets
 //! `process.exitCode = result.ok ? 0 : (result.exit_code || 1)` — the OS
@@ -84,10 +90,15 @@
 //! CONCURRENCY, two layers: (1) [`crate::server::AppState::duo_permits`], a
 //! flat cap on concurrently-running `omega-duo` subprocesses (429 on
 //! exhaustion), and (2) [`crate::server::AppState::duo_active_dirs`], an
-//! IN-PROCESS per-resolved-cwd lock (409 on a second concurrent request
-//! against the SAME cwd) — the `/duo` skill's own doc is explicit that two
-//! `omega-duo run`s on the same worktree corrupt each other's
-//! git-checkpoint guard. See [`CwdLockGuard`].
+//! IN-PROCESS lock keyed on the resolved REPO ROOT (409 on a second
+//! concurrent request against the SAME repo — see
+//! [`repo_root_for_lock`]) — the `/duo` skill's own doc is explicit that
+//! two `omega-duo run`s on the same worktree corrupt each other's
+//! git-checkpoint guard, and the real bridge itself operates on
+//! `repositoryRoot(taskCwd)`, not the literal `--cwd` value, so keying the
+//! lock on anything less than the repo root lets two textually different
+//! paths into ONE repo bypass it entirely (Finding 1, adversarial review
+//! round). See [`CwdLockGuard`].
 //!
 //! NEVER RUN A REAL Codex/Claude/GLM TURN IN TESTS: every test in
 //! `tests/duo_test.rs` points `OMEGA_DUO_BIN` at a fake script.
@@ -254,6 +265,74 @@ fn acquire_cwd_lock(set: &Arc<Mutex<HashSet<PathBuf>>>, path: PathBuf) -> Result
     Ok(CwdLockGuard { set: Arc::clone(set), path })
 }
 
+/// Best-effort canonicalization of `path`: when `path` itself resolves
+/// (the common case — an already-existing repo or subdirectory), that's the
+/// answer. Otherwise (a not-yet-existing leaf, the same shape
+/// [`dir_under_home`] in `routes_sessions.rs` already tolerates for a
+/// caller-supplied `dir` that `omega new`/`omega team` may create on
+/// demand) this walks UP to the nearest EXISTING ancestor, canonicalizes
+/// THAT, and re-appends the non-existent tail components — so the result
+/// still names the same logical location, just with every REAL, existing
+/// prefix symlink-resolved. Falls back to `path` itself, unchanged, only
+/// when NOTHING in its ancestor chain exists at all.
+fn canonicalize_best_effort(path: &std::path::Path) -> PathBuf {
+    if let Ok(canon) = std::fs::canonicalize(path) {
+        return canon;
+    }
+    let mut candidate = path.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(canon_ancestor) = std::fs::canonicalize(&candidate) {
+            let mut result = canon_ancestor;
+            for part in tail.iter().rev() {
+                result.push(part);
+            }
+            return result;
+        }
+        match candidate.file_name() {
+            Some(name) => tail.push(name.to_os_string()),
+            None => return path.to_path_buf(),
+        }
+        if !candidate.pop() {
+            return path.to_path_buf();
+        }
+    }
+}
+
+/// Resolves the [`acquire_cwd_lock`] key for an already server-validated
+/// `target` path: the nearest REPO ROOT — an ancestor of the
+/// canonicalized `target` (including `target` itself) whose `.git` entry
+/// EXISTS — falling back to the canonicalized `target` when no ancestor is
+/// a git repo at all. Existence alone is checked, deliberately not "is a
+/// directory": an ordinary clone's `.git` is a directory, but a git
+/// WORKTREE's `.git` is a FILE, and both mark a real repo root.
+///
+/// JUDGMENT CALL (Finding 1, adversarial review round): this changes ONLY
+/// the LOCK KEY, never the `--cwd` argv value actually handed to
+/// `omega-duo` — [`create`] still builds `cwd_str` from the raw,
+/// uncanonicalized `target`, exactly as before this fix. Two reasons: (1)
+/// the real bridge itself resolves `repositoryRoot(taskCwd)` internally for
+/// every checkpoint/diffstat operation regardless of the exact `--cwd`
+/// value it was given (see this module's doc comment's GROUND TRUTH
+/// section), so the correctness property this fix protects — two
+/// spellings of one repo never run concurrently — lives entirely in the
+/// LOCK, not in what string reaches argv; and (2)
+/// `happy_path_with_project_builds_exact_argv_and_maps_every_field` /
+/// `happy_path_with_dir_uses_the_dir_under_home_resolved_path` in
+/// `tests/duo_test.rs` both assert `--cwd` equals the RAW resolved path
+/// verbatim — canonicalizing it too would be a real, deliberate behavior
+/// change to what the bridge is told to operate on, not just a
+/// lock-collision fix, and nothing in the reviewer's finding demands it.
+fn repo_root_for_lock(target: &std::path::Path) -> PathBuf {
+    let canon = canonicalize_best_effort(target);
+    for ancestor in canon.ancestors() {
+        if ancestor.join(".git").exists() {
+            return ancestor.to_path_buf();
+        }
+    }
+    canon
+}
+
 /// Sends `SIGKILL` to the WHOLE process group rooted at `pid` — the same
 /// negative-PID `kill -- -<pid>` idiom as `routes_orchestrate::
 /// kill_process_group`. UNLIKE `routes_new_project.rs`'s documented
@@ -270,6 +349,58 @@ async fn kill_process_group(pid: u32) {
     .await;
 }
 
+/// RAII guard closing Finding 2 (adversarial review round): unconditionally
+/// sends a whole-process-group kill for `pid` when dropped, UNLESS
+/// [`Self::disarm`] was called first. `tokio::process::Command::
+/// kill_on_drop(true)` on `child` (in [`run_omega_duo`]) only reaches the
+/// DIRECT `omega-duo` process — never a nested Codex/Claude turn it spawned
+/// into the SAME process group (see [`kill_process_group`]'s doc comment).
+/// The explicit timeout branch already covers ITS OWN exit path with an
+/// awaited kill, but axum simply DROPS the whole handler future when the
+/// HTTP client disconnects mid-request — there is no distinguished "the
+/// client went away" branch to hang an explicit kill off, unlike a WS
+/// stream's read-driven disconnect detection in
+/// `routes_orchestrate.rs`/`routes_audit.rs`. Rust's `Drop` runs
+/// unconditionally, including when a `Future` is dropped mid-poll, so a
+/// local of this type dropped alongside the rest of [`run_omega_duo`]'s
+/// stack frame is the one mechanism that fires on EVERY exit path —
+/// disarmed on the two that already have their own, more specific handling
+/// (normal completion: nothing to kill; the explicit timeout branch: its
+/// own synchronous kill already ran) so this never fires a
+/// harmless-but-redundant second kill there.
+struct KillGroupOnDrop {
+    pid: u32,
+    armed: bool,
+}
+
+impl KillGroupOnDrop {
+    fn new(pid: u32) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let pid = self.pid;
+        // `Drop::drop` is synchronous and cannot `.await`; this fires from
+        // within the Tokio worker thread tearing down the dropped future's
+        // stack (a client disconnect — or the ordinary return path, before
+        // an explicit `disarm()`, as a belt-and-suspenders default), which
+        // is always still inside a live Tokio runtime context, so
+        // `tokio::spawn` is safe to call here.
+        tokio::spawn(async move {
+            kill_process_group(pid).await;
+        });
+    }
+}
+
 struct DuoOutput {
     stdout: String,
     stderr: String,
@@ -281,10 +412,17 @@ struct DuoOutput {
 /// rs::run_omega_pdf`'s exact idiom. `process_group(0)` here is a REAL
 /// cancellation mechanism, not decorative — see [`kill_process_group`]'s
 /// doc comment for why this differs from `routes_new_project.rs`'s
-/// documented no-op case; this endpoint is also a plain request/response
-/// handler with no WebSocket to disconnect from, so the ONLY thing that
-/// ever triggers a kill here is [`duo_timeout`] firing, never a client
-/// disconnect.
+/// documented no-op case. Two things can trigger a kill: [`duo_timeout`]
+/// firing (handled explicitly below), AND a CLIENT disconnect (Finding 2,
+/// adversarial review round) — this endpoint is a plain request/response
+/// handler with no WebSocket read loop to detect a disconnect the way
+/// `routes_orchestrate.rs`/`routes_audit.rs` do, so axum's only signal is
+/// simply DROPPING this whole handler future mid-poll. [`KillGroupOnDrop`]
+/// is the mechanism that reaches that case: it fires unconditionally on
+/// `Drop`, which Rust guarantees even for a future dropped mid-await, and
+/// is explicitly disarmed on the paths that already have their own
+/// handling (normal completion, and the timeout branch's own synchronous
+/// kill).
 async fn run_omega_duo(args: &[&str]) -> Result<DuoOutput, ApiError> {
     let bin = duo_bin();
     let mut cmd = tokio::process::Command::new(&bin);
@@ -301,20 +439,48 @@ async fn run_omega_duo(args: &[&str]) -> Result<DuoOutput, ApiError> {
     // child has been polled to completion.
     let child_pid = child.id();
 
+    // Finding 2 (adversarial review round): armed the moment the child
+    // exists, so a client disconnect ANYWHERE past this point — which
+    // simply drops this whole future, axum's only signal for a plain POST
+    // handler — still reaches the nested agent turn via `Drop`. See
+    // [`KillGroupOnDrop`]'s doc comment.
+    let mut kill_guard = child_pid.map(KillGroupOnDrop::new);
+
     match tokio::time::timeout(duo_timeout(), child.wait_with_output()).await {
-        Ok(Ok(out)) => Ok(DuoOutput {
-            stdout: String::from_utf8_lossy(&out.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&out.stderr).to_string(),
-        }),
-        Ok(Err(e)) => Err(bad_gateway(format!("omega-duo process error: {e}"))),
+        Ok(Ok(out)) => {
+            // Completed on its own — nothing to kill.
+            if let Some(g) = kill_guard.as_mut() {
+                g.disarm();
+            }
+            Ok(DuoOutput {
+                stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+            })
+        }
+        Ok(Err(e)) => {
+            // `wait_with_output` itself failed — an unusual case where the
+            // child's real state is unknown. Deliberately left ARMED: the
+            // guard's `Drop` firing a kill here is the safe default when
+            // "is anything left to clean up" cannot be answered with
+            // confidence.
+            Err(bad_gateway(format!("omega-duo process error: {e}")))
+        }
         Err(_) => {
             // The timed-out future owned `child`; dropping it here (it was
             // already dropped when the future was) triggers `kill_on_drop`
             // for the DIRECT child. That alone does not reach a nested
             // Codex/Claude turn, so also send an explicit whole-group kill
             // using the PID captured above — see [`kill_process_group`].
+            // Awaited (unlike `KillGroupOnDrop`'s fire-and-forget spawn) so
+            // the response is only returned once the kill syscall has
+            // actually been issued; the guard is then disarmed so its own
+            // `Drop` does not fire a harmless-but-redundant second kill on
+            // the way out.
             if let Some(pid) = child_pid {
                 kill_process_group(pid).await;
+            }
+            if let Some(g) = kill_guard.as_mut() {
+                g.disarm();
             }
             Err(gateway_timeout(format!(
                 "omega-duo timed out after {}s and was killed",
@@ -372,11 +538,35 @@ pub async fn create(
         (None, Some(d)) => crate::routes_sessions::dir_under_home(d)?,
     };
 
-    // Step 4: per-cwd in-process lock, BEFORE writing the scratch file or
-    // spawning anything — see [`CwdLockGuard`].
-    let _cwd_guard = acquire_cwd_lock(&state.duo_active_dirs, target.clone())?;
+    // Step 4 (Finding 3, adversarial review round): the resolved target
+    // must be an absolute path BEFORE it is ever used as a lock key or
+    // reaches argv. `dir_under_home` returns the caller's ORIGINAL,
+    // uncanonicalized string, and its ancestor-walk canonicalizes a
+    // RELATIVE candidate against THIS PROCESS's own cwd — so a `dir` that
+    // is itself relative (e.g. a bare `--verify`) could, in the
+    // pathological case where a same-named directory exists relative to
+    // gatewayd's own cwd AND resolves under `$HOME`, slip through as a
+    // target whose full string starts with `--`. See this module's doc
+    // comment's HYPHEN-LEADING VALUE RISK section for why that specific
+    // shape is a real argv-injection into `omega-duo`'s `--verify` flag,
+    // not just a harmless bad-input rejection. Requiring an absolute path
+    // is simpler and strictly more robust than a narrow
+    // `starts_with("--")` check: every legitimate resolved directory (a
+    // discovered project, or a `dir_under_home`-validated request) is
+    // already absolute, so nothing legitimate is ever rejected here.
+    if !target.is_absolute() {
+        return Err(bad_request("resolved target directory must be an absolute path"));
+    }
 
-    // Step 5: write `prompt` to a SERVER-CHOSEN scratch file — never a
+    // Step 5: per-cwd in-process lock, BEFORE writing the scratch file or
+    // spawning anything — keyed on the resolved REPO ROOT, not the raw
+    // `target` path (Finding 1, adversarial review round: see
+    // [`repo_root_for_lock`]'s doc comment for the full reasoning and the
+    // judgment call on why `--cwd` itself stays unchanged below).
+    let lock_key = repo_root_for_lock(&target);
+    let _cwd_guard = acquire_cwd_lock(&state.duo_active_dirs, lock_key)?;
+
+    // Step 6: write `prompt` to a SERVER-CHOSEN scratch file — never a
     // client-supplied path reaching `--task`.
     let tasks_dir = duo_tasks_dir();
     let task_path = tasks_dir.join(format!("{}.md", crate::util::random_hex(8)));
@@ -395,7 +585,7 @@ pub async fn create(
     .await
     .map_err(|e| internal(format!("duo setup task panicked: {e}")))??;
 
-    // Step 6: run `omega-duo run --task <scratch> --cwd <resolved> --mode
+    // Step 7: run `omega-duo run --task <scratch> --cwd <resolved> --mode
     // <mode>` — plain space-separated argv, no `--` separator and no
     // `=`-joined flags (see this module's doc comment for why both would be
     // wrong for THIS binary's own arg parser).
@@ -403,11 +593,22 @@ pub async fn create(
     let output =
         run_omega_duo(&["run", "--task", &task_path_str, "--cwd", &cwd_str, "--mode", mode]).await?;
 
-    // Step 7: parse EXACTLY one JSON line from stdout. A non-zero
-    // `omega-duo` exit is NOT gated on here — see this module's doc comment
-    // ("SUCCESS SIGNAL") for why the JSON body's own `ok`/`agent_ok` fields
-    // are the real outcome, never this endpoint's own HTTP status.
-    match serde_json::from_str::<DuoResponse>(output.stdout.trim()) {
+    // Step 8: parse EXACTLY one JSON line from stdout — the LAST non-empty
+    // line, not the whole buffer (Finding 4, adversarial review round): the
+    // real bridge's own test harness deliberately parses only the last
+    // non-empty line (`stdout.trim().split("\n").pop()`), documenting that
+    // the JSON result IS the last line, not necessarily the whole stream —
+    // a stray banner/log/warning line before it is possible. Parsing the
+    // ENTIRE buffer turned any such stray line into a 502 for what may have
+    // been a successful, quota-burning, potentially file-mutating run, with
+    // no `checkpoint`/`diffstat`/`agent_ok` in the response — the worst
+    // possible failure shape, since the caller could not tell whether the
+    // worktree was touched. A non-zero `omega-duo` exit is still NOT gated
+    // on here — see this module's doc comment ("SUCCESS SIGNAL") for why
+    // the JSON body's own `ok`/`agent_ok` fields are the real outcome,
+    // never this endpoint's own HTTP status.
+    let last_line = output.stdout.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("");
+    match serde_json::from_str::<DuoResponse>(last_line.trim()) {
         Ok(resp) => Ok(Json(resp)),
         Err(e) => Err((
             StatusCode::BAD_GATEWAY,
