@@ -67,7 +67,15 @@ fn parse_doctor_output(stdout: &str) -> Option<DoctorResponse> {
         if after_two_spaces.len() < 3 || !after_two_spaces.starts_with('[') {
             continue;
         }
-        let glyph = &after_two_spaces[0..3];
+        // `.get(0..3)` (not `&after_two_spaces[0..3]`) because this stdout is
+        // an adversarial subprocess's output, not a trusted format: a
+        // multi-byte UTF-8 character sitting where the glyph is expected
+        // (e.g. a check line reading "  [€] ...") would put byte offset 3
+        // in the MIDDLE of that character, and a raw slice panics ("byte
+        // index 3 is not a char boundary") -- `.get` returns `None` on a
+        // non-boundary range instead, so the line is just skipped like any
+        // other unrecognized glyph.
+        let Some(glyph) = after_two_spaces.get(0..3) else { continue };
         let health = match glyph {
             "[+]" => "ok",
             "[!]" => "warn",
@@ -295,5 +303,18 @@ mod tests {
         let resp = parse_backup_output("OmegaOS backup\n\n  included: home\n", "/fallback.tgz");
         assert_eq!(resp.path, "/fallback.tgz");
         assert_eq!(resp.size, None);
+    }
+
+    /// Adversarial: a check line whose glyph position holds a multi-byte
+    /// UTF-8 character (e.g. `€`, 3 bytes) instead of the expected
+    /// single-byte ASCII glyph. `after_two_spaces[0..3]` would byte-slice
+    /// into the MIDDLE of that character and panic ("byte index 3 is not a
+    /// char boundary") -- this must instead be skipped like any other
+    /// unrecognized glyph, never crash the request.
+    #[test]
+    fn parse_doctor_output_skips_multibyte_glyph_without_panicking() {
+        let resp = parse_doctor_output("OmegaOS doctor\n\n  [\u{20ac}] weird glyph\n\n[+] ok\n").unwrap();
+        assert_eq!(resp.checks.len(), 0, "the multibyte-glyph line is unrecognized and skipped");
+        assert_eq!(resp.overall, "ok");
     }
 }

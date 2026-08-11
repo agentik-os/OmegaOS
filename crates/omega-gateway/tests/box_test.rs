@@ -369,3 +369,39 @@ async fn backup_requires_auth() {
     let res = reqwest::Client::new().post(format!("{base}/v1/backup")).send().await.unwrap();
     assert_eq!(res.status(), 401);
 }
+
+/// Adversarial: `omega doctor` stdout with a check line whose glyph slot
+/// holds a multi-byte UTF-8 character (`€`) instead of the expected
+/// single-byte ASCII glyph. Before the fix, `parse_doctor_output`
+/// byte-sliced `after_two_spaces[0..3]` unconditionally and panicked
+/// ("byte index 3 is not a char boundary"), which broke the HTTP
+/// connection for that request instead of returning a clean response. The
+/// line must instead be treated like any other unrecognized glyph (skipped)
+/// and the endpoint must answer 200, proving the connection survives and a
+/// second request on the same server still succeeds.
+#[tokio::test]
+async fn doctor_survives_multibyte_glyph_in_check_line() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    install_fake_omega(
+        bin_dir.path(),
+        "cat <<'EOF2'\nOmegaOS doctor\n\n  [\u{20ac}] weird glyph line\n\n[+] ok\nEOF2\nexit 0",
+    );
+    let (_, token) = DeviceStore::open(gateway_dir.path()).issue("t");
+    let app = build_router(AppState::new(gateway_dir.path().to_path_buf(), GatewayConfig::default()));
+    let base = spawn(app).await;
+
+    let res =
+        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 200, "a malformed check line must never crash the connection");
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["checks"].as_array().unwrap().len(), 0, "the unrecognized-glyph line is skipped");
+
+    // The server process itself must still be alive for a second request.
+    let res2 =
+        reqwest::Client::new().get(format!("{base}/v1/doctor")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res2.status(), 200);
+
+    clear_env();
+}
