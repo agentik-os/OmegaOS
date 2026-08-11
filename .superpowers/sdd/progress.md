@@ -232,9 +232,169 @@ Test delta: **362 → 365** (+3: 1 unit regression test in `routes_master.rs`,
 `cargo test -p omega-gateway`: 365 passed, 0 failed, 0 ignored.
 `cargo clippy -p omega-gateway --all-targets --no-deps -- -D warnings`: clean.
 
+## Task B — done
+
+Built the five oracle-mission-ops endpoints across two files:
+
+- **B1 `GET /v1/oracles/{session}/timeline`** and **B2 `GET
+  /v1/oracles/{session}/gate`** added to `routes_oracles.rs` (extending the
+  existing `list` function's file — "operations on one oracle session" is a
+  natural fit next to the existing roster). Both are pure in-process
+  `spawn_blocking` reads of `omega_core::timeline::build` /
+  `omega_core::gate::{GateResult, Rubric}::read`, resolving `state_dir` via
+  `omega_core::config::OmegaConfig::load().state_dir` (honors `$OMEGA_DIR`,
+  the SAME resolution the real CLI uses — hermetic tests set `$OMEGA_DIR` to
+  a scratch dir, LOCK-guarded). `OracleTimeline`/`TimelineEvent`/
+  `GateResult`/`Rubric` and their nested types don't derive `JsonSchema` (and
+  several don't derive `Serialize` either) — mapped field-by-field into new
+  `protocol.rs` types (`TimelineResponse`/`TimelineEventEntry`,
+  `RubricResponse`/`RubricCriterionEntry`,
+  `GateResultResponse`/`GateGradeEntry`/`GateConsensusVoteEntry`/
+  `GateAdversarialChallengeEntry`/`GateAuditResultEntry`,
+  `GateStatusResponse`) rather than adding derives to omega-core for one
+  caller — same posture Task A took for `OracleTimeline`, and the same
+  "gateway-local mirror, never a bare foreign-crate type in the wire
+  protocol" convention `OracleEntry`/`AuditEntry`/`SkillEntry` already
+  establish. Every enum field (`GradeVerdict`/`ChallengeResult`/
+  `CriterionCategory`/`AuditConfidence`/`AuditVerdict`) is passed through as
+  its Debug-form string, matching `RuleEntry::category`'s established
+  convention for a plain enum with no `label()` method. `GateStatusResponse`
+  is an internally-tagged enum (`#[serde(tag = "status")]`) with newtype
+  variants (`Result(GateResultResponse)` / `RubricOnly(RubricResponse)`) —
+  mirrors `cmd_gate`'s own read-only fallback (a graded result wins, else
+  the rubric alone, else 404) and lets a client switch on `status` directly
+  instead of probing which optional field is populated. `GateResult`'s
+  nested `GateDetails` (`grades`/`consensus_votes`/`adversarial_challenges`)
+  is FLATTENED onto `GateResultResponse` rather than nested one level
+  deeper — a judgment call, since nothing else in this crate's wire protocol
+  consumes `GateDetails` on its own. B2 never calls `--accept`/`--mission`/
+  `--approver`/`--evidence` (all state-mutating) — read-only, full stop, per
+  the brief.
+- **B3 `POST /v1/oracles/{session}/reap`** and **B4 `POST
+  /v1/oracles/{session}/resurrect`** also added to `routes_oracles.rs` — real
+  CLI subprocess wraps via `omega_cli::run`, ALWAYS scoped to exactly the
+  path's session (`omega reap <session>` / `omega resurrect <oracle>`, never
+  the bare form that sweeps/targets every dead oracle on the box). Both
+  validate the session name (non-empty, no NUL byte) BEFORE any spawn — same
+  posture `routes_dispatch.rs::create` uses. A non-zero exit is a REAL 502
+  (with stdout/stderr) for both — unlike `omega doctor`, neither has an
+  "expected non-zero" outcome to special-case. Judgment call, documented in
+  both files: rather than hand-parsing the CLI's loosely-structured
+  per-session text (`"already closed"` / `"WOULD be reaped"` / `"no done
+  signal — still working, left alone"` for reap; `"resurrected"` / `"already
+  alive"` / `"already finished"` / `"no OracleState"` for resurrect), the
+  response is `{ reaped/resurrected: bool, output: String }` — the raw
+  stdout, honestly labeled as "CLI exit success", NOT "something was
+  actually reaped/resurrected" (a session left alone still exits 0). A
+  brittle line-parser over free-form operator text was explicitly the
+  brief's own "your call" alternative, and it breaks the moment the CLI's
+  wording changes; this doesn't.
+- **B5 `GET /v1/orchestrate/stream?project=&mission=&agent=`** — new file
+  `routes_orchestrate.rs` (materially different WS-stream shape from B1-B4,
+  per the brief's own file-split guidance), `pub mod routes_orchestrate;`
+  added to `lib.rs`. Mirrors `routes_audit.rs`'s `check`/`stream` pair 1:1 as
+  instructed (pre-upgrade rejection with plain `StatusCode::BAD_REQUEST`,
+  never upgrade-then-error; the same disconnect-safe `tokio::select!` loop
+  watching both the mpsc frame channel and the socket's own read side;
+  `process_group(0)` + `kill_on_drop(true)`; SIGKILL the whole process group
+  on disconnect) — deliberately NOT sharing code with
+  `audit_stream_loop`/`forward_lines`/`kill_process_group`/`kill_and_drain`,
+  per this crate's established convention (a full, separate,
+  carefully-commented duplicate, exactly like `routes_agents.rs` and
+  `routes_audit.rs` already are twins of each other). `--dir <project_path>`
+  IS passed (the server-resolved real project root, same as
+  `audit_stream_loop`) — `cmd_orchestrate` otherwise defaults to the
+  gatewayd daemon's own arbitrary current directory when `--dir` is
+  omitted, which would be wrong for a long-running daemon process; this is a
+  correctness fix beyond the literal brief, not a deviation from it.
+  `--timeout` is NEVER passed (accepts the CLI's own 3600s default), per the
+  brief's own suggested resolution. New `OrchestrateStreamMsg` enum in
+  `protocol.rs` (`Line`/`Exit`/`Error`, identical shape to `AuditStreamMsg`
+  but a dedicated type, per this crate's "one wire type per stream endpoint"
+  convention — see `AgentInstallStreamMsg` vs `AuditStreamMsg`).
+
+  **New finding, not previously recorded in this file's Task B ground-truth
+  section**: `omega orchestrate` genuinely has NO `--agent` flag. Confirmed
+  by reading `Commands::Orchestrate` (`crates/omega-cli/src/main.rs` ~line
+  420 — `project`, `mission`, `--dir`, `--timeout`, `--no-gate` only) and
+  `cmd_orchestrate`'s body (~line 6038), which builds an `Orchestrator` from
+  `OmegaConfig` alone; the agent it actually runs under comes from
+  `config.agent_command` deep inside `orchestration.rs`, never a per-call
+  override. Resolution (an honest gap, not a silently-dropped feature,
+  same posture Task A took on the AISB local-inbox wiring gap): `?agent=` is
+  still accepted (it is part of the endpoint signature already recorded in
+  this file before this task started) and still VALIDATED against
+  `omega_core::agents::Agent::all()` before any spawn (unknown/typo'd name →
+  clean pre-upgrade 400, same posture `routes_dispatch.rs` takes) — but it is
+  NEVER forwarded into the `omega orchestrate` argv, because there is
+  nothing to forward it to. Covered by
+  `stream_happy_path_streams_lines_then_success_exit_never_forwards_agent`,
+  which asserts a known, validated `agent=` value never lands in the
+  recorded argv.
+
+  **Judgment call beyond the literal brief**: added `AppState::
+  orchestrate_permits` (`MAX_CONCURRENT_ORCHESTRATIONS = 2` in `server.rs`,
+  one permit held for the WHOLE connection lifetime, same
+  reject-before-upgrade shape `master_chat_permits` uses) — `omega
+  orchestrate` is the heaviest, longest-running, most state-mutating
+  operation this crate exposes (a real oracle, real workers, a real quality
+  gate, up to a 3600s default timeout), and `routes_audit::stream` (its
+  literal template) has NO cap only because the underlying `omega audit run`
+  is documented as fast and side-effect-free — the opposite of orchestrate.
+  Covered by `concurrency_cap_returns_429_when_orchestrate_permits_exhausted`.
+
+### TDD / verification
+
+Wrote the two new integration test files (`tests/oracle_ops_test.rs` for
+B1-B4, `tests/orchestrate_test.rs` for B5) and the 4 unit tests inside
+`routes_orchestrate.rs`'s own `#[cfg(test)]` module BEFORE the route
+handlers existed (the crate did not compile until `routes_oracles.rs`'s new
+functions and the new `routes_orchestrate.rs` module were written), then
+implemented to make them pass. Coverage: B1 real `OracleState`/worker
+fixture → 200 with merged+sorted events (RFC3339 `at`), unknown oracle → 404
+clean; B2 a `GateResult` fixture → 200 `status:"result"`, only a `Rubric`
+fixture → 200 `status:"rubric_only"`, neither → 404; B3/B4 exact-argv
+fake-bin assertions (`["reap", "<session>"]` / `["resurrect", "<oracle>"]`),
+502 on non-zero exit with stderr surfaced, empty/NUL-byte session rejected
+with no subprocess spawned (proven via a capture-file-must-not-exist
+assertion); B5 fake-bin WS proving real Line+Exit streaming, pre-upgrade 400
+on unknown project / unknown agent / empty mission (never upgrade-then-error,
+proven via a real `connect_async` handshake attempt), disconnect-mid-stream
+process-group kill (mirrors `audit_test.rs`'s silent-nested-child
+regression test), the concurrency cap, and the never-forwards-agent
+assertion above; every route gets a 401-without-token test. Every test
+touching `$OMEGA_DIR`/`OMEGA_BIN`/`OMEGA_HOME` is LOCK-guarded
+(`tokio::sync::Mutex::const_new(())`), per this crate's established pattern.
+
+**Test delta: 365 → 392 (+27)**: +15 `tests/oracle_ops_test.rs`, +8
+`tests/orchestrate_test.rs`, +4 `routes_orchestrate.rs` inline unit tests
+(`resolve_orchestrate_request` validation). `cargo test -p omega-gateway`:
+392 passed, 0 failed, 0 ignored. `cargo clippy -p omega-gateway --all-targets
+--no-deps -- -D warnings`: clean (one `manual_contains` lint fixed in
+`orchestrate_test.rs` during the pass).
+
+### Honest notes / deviations
+
+1. The `POST /v1/orchestrate` → `GET /v1/orchestrate/stream` deviation was
+   already decided before this task started (see the Task B ground-truth
+   section above) — not re-litigated, just implemented.
+2. The `--agent` capability gap (above) is NEW: found while implementing,
+   not predicted by the ground-truth research. It is a real, provable gap
+   in `omega orchestrate` itself (confirmed by reading its clap definition
+   and its `cmd_orchestrate`/`Orchestrator` call chain), not a shortcut
+   taken in this endpoint.
+3. `GateResultResponse` flattens `GateDetails` rather than nesting it — the
+   brief left the exact response shape to judgment ("a shape you judge
+   cleaner"); flattening was chosen because nothing else in this wire
+   protocol has a standalone consumer of `GateDetails`.
+4. `reap`/`resurrect` intentionally do NOT hand-parse the CLI's per-session
+   text into a structured verdict — the brief explicitly offered this as
+   the simpler, more honest alternative to a brittle parser, and it was
+   taken.
+
 ## Status
 - [x] Task A — Master/AISB-chat WS
-- [ ] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)
+- [x] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)
 - [ ] Task C — Config GET/PUT
 - [ ] Task D — Telegram bridge control
 - [ ] Task E — PDF generation

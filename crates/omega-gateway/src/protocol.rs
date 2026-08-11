@@ -708,6 +708,200 @@ pub struct BackupResponse {
     pub size: Option<String>,
 }
 
+/// One event of `GET /v1/oracles/{session}/timeline`'s `events` array — a
+/// field-for-field mirror of `omega_core::timeline::TimelineEvent`. `at` is
+/// RFC 3339 (`DateTime<Utc>::to_rfc3339()`), never the chrono type itself
+/// (this crate's wire types stay JSON-schema-friendly strings for anything
+/// timestamped — see `ChatMeta::created_at`/`updated_at` for the same
+/// convention). `marker` is the raw glyph string (`"◆"`/`"→"`/`"●"`/a
+/// done-status glyph) `omega_core::timeline::build` already assigns, passed
+/// through verbatim rather than re-modeled as an enum, since `omega
+/// timeline`'s own CLI output already treats it as display text, not a
+/// closed vocabulary a client would switch on.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TimelineEventEntry {
+    pub at: String,
+    pub marker: String,
+    pub text: String,
+}
+
+/// `GET /v1/oracles/{session}/timeline` response body — a field-for-field
+/// mirror of `omega_core::timeline::OracleTimeline`. That type derives only
+/// `Debug, Clone` (no `Serialize`/`JsonSchema` — omega-core is a separate
+/// crate this endpoint reads in-process but never modifies, R-KARPATHY
+/// surgical), so the mapping happens gateway-side in
+/// `routes_oracles::timeline_to_response`. A 404 (no `OracleState` on disk
+/// for the session) never constructs this type — see
+/// `routes_oracles::timeline`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct TimelineResponse {
+    pub oracle_name: String,
+    pub project: String,
+    pub mission: String,
+    pub phase: String,
+    pub events: Vec<TimelineEventEntry>,
+}
+
+/// One criterion of [`RubricResponse::criteria`] — mirrors
+/// `omega_core::gate::RubricCriterion`. `category` is the `CriterionCategory`
+/// enum's Debug form (`"Functional"`/`"Quality"`/`"Performance"`/`"Security"`),
+/// matching `RuleEntry::category`'s established convention for a plain enum
+/// with no `label()` method of its own.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RubricCriterionEntry {
+    pub id: String,
+    pub description: String,
+    pub weight: f32,
+    pub category: String,
+}
+
+/// A gate rubric with no graded result yet — mirrors `omega_core::gate::
+/// Rubric`. `created_at` is RFC 3339. See [`GateStatusResponse`].
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RubricResponse {
+    pub mission: String,
+    pub criteria: Vec<RubricCriterionEntry>,
+    pub created_at: String,
+}
+
+/// One grade of [`GateResultResponse::grades`] — mirrors `omega_core::gate::
+/// GradeResult`. `verdict` is `GradeVerdict`'s Debug form
+/// (`"Satisfied"`/`"NeedsRevision"`/`"Unmet"`/`"Blocked"`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GateGradeEntry {
+    pub criterion_id: String,
+    pub verdict: String,
+    pub confidence: f32,
+    pub evidence: String,
+}
+
+/// One multi-grader vote of [`GateResultResponse::consensus_votes`] —
+/// mirrors `omega_core::gate::ConsensusVote`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GateConsensusVoteEntry {
+    pub grader: String,
+    pub verdict: String,
+    pub confidence: f32,
+    pub reasoning: String,
+}
+
+/// One Popper challenge of [`GateResultResponse::adversarial_challenges`] —
+/// mirrors `omega_core::gate::AdversarialChallenge`. `result` is
+/// `ChallengeResult`'s Debug form (`"DefectFound"`/`"NoDefect"`/
+/// `"Inconclusive"`).
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GateAdversarialChallengeEntry {
+    pub challenge: String,
+    pub result: String,
+    pub evidence: String,
+}
+
+/// One audit result of [`GateResultResponse::audit_results`] — mirrors
+/// `omega_core::audit::AuditResult`. `confidence`/`verdict` are their enums'
+/// Debug forms, `completed_at` is RFC 3339.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GateAuditResultEntry {
+    pub audit_id: String,
+    pub raw_score: f32,
+    pub max_score: u32,
+    pub normalized_score: f32,
+    pub confidence: String,
+    pub verdict: String,
+    pub findings_count: u32,
+    pub critical_findings: u32,
+    pub worker_session: Option<String>,
+    pub completed_at: String,
+}
+
+/// A graded quality-gate result — mirrors `omega_core::gate::GateResult`,
+/// flattening its nested `GateDetails` (`grades`/`consensus_votes`/
+/// `adversarial_challenges`) directly onto this struct rather than nesting a
+/// `details` object one level deeper, since the wire shape has no other
+/// consumer of `GateDetails` on its own. `timestamp` is RFC 3339.
+/// `accepted_by`/`accepted_evidence` are `Some` only on a HUMAN acceptance
+/// (`omega gate <oracle> --accept`, see `GateResult::human_acceptance`'s doc
+/// comment) — `None` on every machine-graded result, so a client can always
+/// tell a graded pass from an accepted one.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct GateResultResponse {
+    pub oracle: String,
+    pub timestamp: String,
+    pub rubric_pass: bool,
+    pub consensus_pass: bool,
+    pub adversarial_pass: bool,
+    pub regression_pass: bool,
+    pub audit_results: Vec<GateAuditResultEntry>,
+    pub audit_pass: bool,
+    pub token_budget_pass: bool,
+    pub citation_pass: bool,
+    pub overall_pass: bool,
+    pub score: f32,
+    pub grades: Vec<GateGradeEntry>,
+    pub consensus_votes: Vec<GateConsensusVoteEntry>,
+    pub adversarial_challenges: Vec<GateAdversarialChallengeEntry>,
+    pub accepted_by: Option<String>,
+    pub accepted_evidence: Option<String>,
+}
+
+/// `GET /v1/oracles/{session}/gate` response body — mirrors `cmd_gate`'s own
+/// read-only fallback (`crates/omega-cli/src/main.rs::cmd_gate`, ~line
+/// 8865): a graded [`GateResultResponse`] wins when one exists; otherwise the
+/// [`RubricResponse`] the gate WILL grade against, if one was created. A 404
+/// (neither exists) never constructs this type — see `routes_oracles::gate`.
+/// Internally tagged on `status` (`"result"` / `"rubric_only"`) so a client
+/// can switch on it directly rather than probing which optional field is
+/// present. This endpoint NEVER calls `--accept`/`--mission`/`--approver`/
+/// `--evidence` (all state-mutating) — read-only, full stop.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum GateStatusResponse {
+    Result(GateResultResponse),
+    RubricOnly(RubricResponse),
+}
+
+/// `POST /v1/oracles/{session}/reap` response body — wraps `omega reap
+/// <session>` (never bare `omega reap`, which sweeps EVERY worker on the
+/// box — the path parameter names exactly one session). `reaped` is the
+/// CLI's own exit success (`true` on exit 0), NOT a semantic "something was
+/// actually reaped" — a session with no terminal done signal is a NORMAL
+/// "still working, left alone" outcome that still exits 0, so `output` (the
+/// raw stdout) is what actually says what happened; a genuine CLI failure
+/// (non-zero exit) is a 502 and never represented by this type — see
+/// `routes_oracles::reap`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ReapResponse {
+    pub reaped: bool,
+    pub output: String,
+}
+
+/// `POST /v1/oracles/{session}/resurrect` response body — wraps `omega
+/// resurrect <oracle>` (never bare, for the same per-session reasoning as
+/// [`ReapResponse`]). `resurrected` is the CLI's own exit success; `output`
+/// (raw stdout) carries the actual per-oracle outcome line (`"resurrected"` /
+/// `"already alive"` / `"already finished"` / `"no OracleState"`) — see
+/// `routes_oracles::resurrect`.
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ResurrectResponse {
+    pub resurrected: bool,
+    pub output: String,
+}
+
+/// Server frames on `GET /v1/orchestrate/stream` — the exact shape of
+/// [`AuditStreamMsg`], for the same reasons (`Line` tags every line by the
+/// pipe it came from, `Exit` is always the last frame on a completed run,
+/// `Error` covers a spawn failure). A DEDICATED type rather than reusing
+/// `AuditStreamMsg`, per this crate's established convention: every
+/// WS-stream endpoint gets its own wire type even when the shape is
+/// identical (compare `AgentInstallStreamMsg` vs `AuditStreamMsg`), so each
+/// stays independently versionable.
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum OrchestrateStreamMsg {
+    Line { stream: String, text: String },
+    Exit { success: bool, code: Option<i32> },
+    Error { message: String },
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -770,6 +964,19 @@ pub struct Protocol {
     pub usage_response: UsageResponse,
     pub box_info_response: BoxInfoResponse,
     pub backup_response: BackupResponse,
+    pub timeline_event_entry: TimelineEventEntry,
+    pub timeline_response: TimelineResponse,
+    pub rubric_criterion_entry: RubricCriterionEntry,
+    pub rubric_response: RubricResponse,
+    pub gate_grade_entry: GateGradeEntry,
+    pub gate_consensus_vote_entry: GateConsensusVoteEntry,
+    pub gate_adversarial_challenge_entry: GateAdversarialChallengeEntry,
+    pub gate_audit_result_entry: GateAuditResultEntry,
+    pub gate_result_response: GateResultResponse,
+    pub gate_status_response: GateStatusResponse,
+    pub reap_response: ReapResponse,
+    pub resurrect_response: ResurrectResponse,
+    pub orchestrate_stream_msg: OrchestrateStreamMsg,
 }
 
 pub fn schema_json() -> String {

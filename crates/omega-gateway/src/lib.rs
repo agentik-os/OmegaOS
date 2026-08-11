@@ -23,6 +23,7 @@ pub mod routes_files;
 pub mod routes_master;
 pub mod routes_missions;
 pub mod routes_oracles;
+pub mod routes_orchestrate;
 pub mod routes_pair;
 pub mod routes_projects;
 pub mod routes_rules;

@@ -63,6 +63,19 @@ fn schema_contains_all_wire_types() {
         "UsageResponse",
         "BoxInfoResponse",
         "BackupResponse",
+        "TimelineEventEntry",
+        "TimelineResponse",
+        "RubricCriterionEntry",
+        "RubricResponse",
+        "GateGradeEntry",
+        "GateConsensusVoteEntry",
+        "GateAdversarialChallengeEntry",
+        "GateAuditResultEntry",
+        "GateResultResponse",
+        "GateStatusResponse",
+        "ReapResponse",
+        "ResurrectResponse",
+        "OrchestrateStreamMsg",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

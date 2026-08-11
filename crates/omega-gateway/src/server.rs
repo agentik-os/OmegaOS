@@ -36,6 +36,15 @@ const MAX_CONCURRENT_DISPATCHES: usize = 4;
 /// [`MAX_CONCURRENT_CHAT_TURNS`]'s.
 const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
 
+/// Global cap on concurrently-open `GET /v1/orchestrate/stream` WebSockets.
+/// `omega orchestrate` is the heaviest, longest-running, most
+/// state-mutating operation this crate exposes (a REAL oracle, real
+/// workers, a real quality gate, up to its own 3600s default timeout) — one
+/// permit held for the WHOLE connection lifetime, capped BELOW
+/// [`MAX_CONCURRENT_DISPATCHES`] (see `routes_orchestrate.rs`'s doc
+/// comment).
+const MAX_CONCURRENT_ORCHESTRATIONS: usize = 2;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -53,6 +62,10 @@ pub struct AppState {
     /// held for the WHOLE connection lifetime — see
     /// [`MAX_CONCURRENT_MASTER_CHATS`].
     pub master_chat_permits: Arc<Semaphore>,
+    /// Caps concurrently-open `GET /v1/orchestrate/stream` WebSockets, one
+    /// permit held for the WHOLE connection lifetime — see
+    /// [`MAX_CONCURRENT_ORCHESTRATIONS`].
+    pub orchestrate_permits: Arc<Semaphore>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -81,6 +94,7 @@ impl AppState {
         let chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CHAT_TURNS));
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let master_chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MASTER_CHATS));
+        let orchestrate_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_ORCHESTRATIONS));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
@@ -92,6 +106,7 @@ impl AppState {
             chat_permits,
             dispatch_permits,
             master_chat_permits,
+            orchestrate_permits,
             events,
             session_org,
             started_at,
@@ -217,6 +232,14 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::put(crate::routes_session_org::set),
         )
         .route("/v1/master/chat", get(crate::routes_master::chat))
+        .route("/v1/oracles/{session}/timeline", get(crate::routes_oracles::timeline))
+        .route("/v1/oracles/{session}/gate", get(crate::routes_oracles::gate))
+        .route("/v1/oracles/{session}/reap", axum::routing::post(crate::routes_oracles::reap))
+        .route(
+            "/v1/oracles/{session}/resurrect",
+            axum::routing::post(crate::routes_oracles::resurrect),
+        )
+        .route("/v1/orchestrate/stream", get(crate::routes_orchestrate::stream))
         .route("/v1/doctor", get(crate::routes_box::doctor))
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
