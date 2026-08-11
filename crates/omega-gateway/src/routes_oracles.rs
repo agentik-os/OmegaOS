@@ -227,6 +227,23 @@ pub async fn gate(Path(session): Path<String>) -> Result<Json<GateStatusResponse
 /// non-empty and NUL-free before it ever reaches a subprocess argv — same
 /// defensive posture `routes_dispatch.rs::create` uses for `project`/
 /// `mission`.
+///
+/// REVIEW-FIX (final whole-branch review, CRITICAL): also rejects a name
+/// that STARTS WITH `-`. This is belt-and-braces on top of the real fix in
+/// [`reap`]/[`resurrect`] (a `"--"` argv separator before the positional,
+/// the exact idiom `routes_dispatch.rs` and `routes_orchestrate.rs` already
+/// use) — without EITHER fix, a session path segment of `"--"` reaches
+/// clap as `reap --` / `resurrect --`, which clap parses as "no positional
+/// given" (proven live against the real binary: `omega workers` and `omega
+/// workers --` render identically, while `omega workers <anything-else>`
+/// clearly takes a positional). `omega reap` with `name: None` sweeps EVERY
+/// live Worker session on the box; `omega resurrect` with `oracle: None`
+/// resurrects every dead oracle — the exact "never the bare form" behavior
+/// this module's own doc comment says never happens. Kept as a second,
+/// independent layer (not the only fix) because a value of exactly `"-"`
+/// or `"-x"` a caller did not intend as a flag should still be rejected
+/// outright rather than silently reaching the CLI as a positional that
+/// looks like an unknown flag to a human reading logs.
 fn validate_session_name(name: &str) -> Result<(), ApiError> {
     if name.trim().is_empty() {
         return Err(bad_request("session must not be empty"));
@@ -234,26 +251,32 @@ fn validate_session_name(name: &str) -> Result<(), ApiError> {
     if name.contains('\0') {
         return Err(bad_request("session must not contain a NUL byte"));
     }
+    if name.starts_with('-') {
+        return Err(bad_request("session must not start with '-'"));
+    }
     Ok(())
 }
 
-/// `POST /v1/oracles/{session}/reap` — runs `omega reap <session>` (never
-/// bare). A non-zero exit is a REAL error here (502, with stdout/stderr) —
-/// unlike `omega doctor`, `omega reap` either does its job or it doesn't,
-/// there is no "expected non-zero" outcome to special-case. On success,
-/// `output` is the raw stdout rather than a hand-parsed structure: the CLI's
-/// own per-session lines (`"already closed"` / `"WOULD be reaped"` / `"no
-/// done signal — still working, left alone"`) are loosely-structured
-/// operator text, and a brittle parser over it would break the moment the
-/// CLI's wording changes — see `cmd_reap`, `crates/omega-cli/src/main.rs`
-/// ~line 5481.
+/// `POST /v1/oracles/{session}/reap` — runs `omega reap -- <session>` (never
+/// bare). The `"--"` separator is REQUIRED, not cosmetic — see
+/// [`validate_session_name`]'s doc comment for the live-proven clap
+/// behavior it closes. A non-zero exit is a REAL error here (502, with
+/// stdout/stderr) — unlike `omega doctor`, `omega reap` either does its job
+/// or it doesn't, there is no "expected non-zero" outcome to special-case.
+/// On success, `output` is the raw stdout rather than a hand-parsed
+/// structure: the CLI's own per-session lines (`"already closed"` / `"WOULD
+/// be reaped"` / `"no done signal — still working, left alone"`) are
+/// loosely-structured operator text, and a brittle parser over it would
+/// break the moment the CLI's wording changes — see `cmd_reap`,
+/// `crates/omega-cli/src/main.rs` ~line 5481.
 pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, ApiError> {
     validate_session_name(&session)?;
     let target = session.clone();
-    let output = tokio::task::spawn_blocking(move || crate::omega_cli::run(&["reap", target.as_str()]))
-        .await
-        .map_err(|e| bad_gateway(format!("reap task panicked: {e}")))?
-        .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
+    let output =
+        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["reap", "--", target.as_str()]))
+            .await
+            .map_err(|e| bad_gateway(format!("reap task panicked: {e}")))?
+            .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
 
     if !output.success {
         return Err((
@@ -264,19 +287,21 @@ pub async fn reap(Path(session): Path<String>) -> Result<Json<ReapResponse>, Api
     Ok(Json(ReapResponse { reaped: true, output: output.stdout }))
 }
 
-/// `POST /v1/oracles/{session}/resurrect` — runs `omega resurrect <oracle>`
-/// (never bare, for the same per-session reasoning as [`reap`]). `output`
-/// carries the real per-oracle line (`"resurrected"` / `"already alive"` /
-/// `"already finished"` / `"no OracleState"` — see `cmd_resurrect`,
+/// `POST /v1/oracles/{session}/resurrect` — runs `omega resurrect --
+/// <oracle>` (never bare, for the same per-session reasoning and the same
+/// REQUIRED `"--"` separator as [`reap`]). `output` carries the real
+/// per-oracle line (`"resurrected"` / `"already alive"` / `"already
+/// finished"` / `"no OracleState"` — see `cmd_resurrect`,
 /// `crates/omega-cli/src/main.rs` ~line 7271) rather than a hand-parsed
 /// structure, for the same reason [`reap`] documents.
 pub async fn resurrect(Path(session): Path<String>) -> Result<Json<ResurrectResponse>, ApiError> {
     validate_session_name(&session)?;
     let target = session.clone();
-    let output = tokio::task::spawn_blocking(move || crate::omega_cli::run(&["resurrect", target.as_str()]))
-        .await
-        .map_err(|e| bad_gateway(format!("resurrect task panicked: {e}")))?
-        .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
+    let output =
+        tokio::task::spawn_blocking(move || crate::omega_cli::run(&["resurrect", "--", target.as_str()]))
+            .await
+            .map_err(|e| bad_gateway(format!("resurrect task panicked: {e}")))?
+            .map_err(|e| bad_gateway(format!("failed to spawn omega: {e}")))?;
 
     if !output.success {
         return Err((

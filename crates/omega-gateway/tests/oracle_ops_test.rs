@@ -300,8 +300,43 @@ async fn reap_runs_omega_reap_with_exactly_the_session_argv() {
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
     // Never bare `omega reap` (that sweeps every worker on the box) — always
-    // scoped to exactly the one session named in the path.
-    assert_eq!(argv, vec!["reap", "oracle-Acme-worker-auth"]);
+    // scoped to exactly the one session named in the path, behind a "--"
+    // separator (review-fix: without it, a session literally named "--"
+    // would clap-parse as no positional at all and hit the bare sweep).
+    assert_eq!(argv, vec!["reap", "--", "oracle-Acme-worker-auth"]);
+
+    clear_env();
+}
+
+/// Review-fix regression (final whole-branch review, CRITICAL): a session
+/// path segment starting with `-` used to reach `omega reap`'s argv with NO
+/// `"--"` separator, so `POST /v1/oracles/--/reap` ran `omega reap --`,
+/// which clap parses IDENTICALLY to bare `omega reap` (no positional) —
+/// proven live against the real binary before this fix landed. Now rejected
+/// at the validation layer, before any spawn, AND the argv itself carries a
+/// `"--"` separator as a second independent layer of defense.
+#[tokio::test]
+async fn reap_rejects_a_dash_leading_session_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    for evil in ["--", "-x", "--dry-run"] {
+        let res = reqwest::Client::new()
+            .post(format!("{base}/v1/oracles/{evil}/reap"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "session={evil}");
+        assert!(!capture_file.exists(), "omega subprocess was spawned for session={evil}");
+    }
 
     clear_env();
 }
@@ -400,7 +435,8 @@ async fn resurrect_runs_omega_resurrect_with_exactly_the_oracle_argv() {
 
     let recorded = std::fs::read_to_string(&capture_file).unwrap();
     let argv: Vec<&str> = recorded.lines().collect();
-    assert_eq!(argv, vec!["resurrect", "oracle-Acme-1"]);
+    // "--" separator: same review-fix reasoning as reap's argv assertion above.
+    assert_eq!(argv, vec!["resurrect", "--", "oracle-Acme-1"]);
 
     clear_env();
 }
@@ -452,6 +488,37 @@ async fn resurrect_rejects_empty_session_before_any_spawn() {
         .unwrap();
     assert_eq!(res.status(), 400);
     assert!(!capture_file.exists(), "omega subprocess was spawned for a blank session");
+
+    clear_env();
+}
+
+/// Review-fix regression (final whole-branch review, CRITICAL): same class
+/// of bug as `reap_rejects_a_dash_leading_session_before_any_spawn` — a
+/// dash-leading oracle name used to reach `omega resurrect`'s argv with no
+/// "--" separator, which clap would parse identically to the bare
+/// "resurrect every dead oracle" form.
+#[tokio::test]
+async fn resurrect_rejects_a_dash_leading_session_before_any_spawn() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let bin_dir = tempfile::tempdir().unwrap();
+    let capture_dir = tempfile::tempdir().unwrap();
+    let capture_file = capture_dir.path().join("argv.txt");
+    install_fake_omega(bin_dir.path(), &capture_file, "echo 'SHOULD NEVER RUN' >&2; exit 1");
+
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    for evil in ["--", "-x", "--help"] {
+        let res = reqwest::Client::new()
+            .post(format!("{base}/v1/oracles/{evil}/resurrect"))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "session={evil}");
+        assert!(!capture_file.exists(), "omega subprocess was spawned for session={evil}");
+    }
 
     clear_env();
 }

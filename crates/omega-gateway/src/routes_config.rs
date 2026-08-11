@@ -110,16 +110,28 @@ fn to_response(cfg: &ProvidersConfig) -> ConfigResponse {
     }
 }
 
-/// `GET /v1/config` — see this module's doc comment.
-pub async fn get() -> Json<ConfigResponse> {
-    let cfg = tokio::task::spawn_blocking(ProvidersConfig::load).await.unwrap_or_default();
-    Json(to_response(&cfg))
+/// `GET /v1/config` — see this module's doc comment. Uses
+/// [`load_config_or_refuse`] rather than `ProvidersConfig::load()` directly
+/// (review-fix, Minor: the final whole-branch review found the write path
+/// hardened against a corrupt `providers.toml` but the READ path still
+/// silently reported "nothing configured" — a box that is actually FULLY
+/// configured would render as empty to the app, which is misleading in the
+/// exact same way the write-path bug was dangerous). A file that exists but
+/// fails to parse is now a 500, matching `set`'s posture; a missing file is
+/// still the normal "nothing configured yet" 200.
+pub async fn get() -> Result<Json<ConfigResponse>, ApiError> {
+    let cfg = tokio::task::spawn_blocking(load_config_or_refuse)
+        .await
+        .map_err(|e| internal(format!("config task panicked: {e}")))?
+        .map_err(internal)?;
+    Ok(Json(to_response(&cfg)))
 }
 
-/// Loads `providers.toml` for a WRITE path, refusing (rather than silently
-/// defaulting, the way `ProvidersConfig::load()` itself does) when the file
-/// EXISTS but fails to parse — see this module's review-fix doc comment for
-/// the exact data-loss scenario this closes. A missing file is still a
+/// Loads `providers.toml`, refusing (rather than silently defaulting, the
+/// way `ProvidersConfig::load()` itself does) when the file EXISTS but
+/// fails to parse — see this module's review-fix doc comment for the exact
+/// data-loss scenario this closes on the write side, and [`get`]'s doc
+/// comment for why the read side uses it too. A missing file is still a
 /// normal, expected "nothing configured yet" case (`Ok(default)`), matching
 /// `ProvidersConfig::load()`'s own posture for that case.
 ///
@@ -166,6 +178,14 @@ fn apply_config_value(cfg: &mut ProvidersConfig, key: &str, value: &str) -> Resu
         ("claude", "model") => cfg.claude.model = value.to_string(),
         ("claude", "effort") => cfg.claude.effort = value.to_string(),
         ("claude", "api_key") => cfg.claude.api_key = value.to_string(),
+        // NOTE (review-fix, doc-only): this is the single highest-impact
+        // field this endpoint can remotely write -- setting it `true` stops
+        // every future agent spawn on the box from asking permission at
+        // all. In-allowlist and CLI-parity, so left writable (an operator
+        // who can already reach this endpoint can already do far more via
+        // `POST /v1/dispatch`), but flagged here explicitly since this
+        // module's security reasoning otherwise discusses only `api_key`
+        // READ blast radius, not this field's WRITE blast radius.
         ("claude", "dangerously_skip_permissions") => {
             cfg.claude.dangerously_skip_permissions = value
                 .parse()

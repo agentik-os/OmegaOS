@@ -342,8 +342,17 @@ pub async fn download(Query(query): Query<HashMap<String, String>>) -> Result<Re
 mod tests {
     use super::*;
 
+    // pdf_root_dir_honors_env_override and
+    // pdf_root_dir_default_lives_under_omega_state_never_world_writable_tmp
+    // both mutate the process-global OMEGA_PDF_DIR env var; without a lock
+    // they race across cargo's parallel test threads (review-fix: reproduced
+    // live, ~1-in-8 flake rate — the crate's established convention is a
+    // guarding mutex for exactly this, see omega_cli.rs's own LOCK).
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn pdf_root_dir_honors_env_override() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::set_var("OMEGA_PDF_DIR", "/tmp/omega-pdf-test-root");
         assert_eq!(pdf_root_dir(), PathBuf::from("/tmp/omega-pdf-test-root"));
         assert_eq!(pdf_output_dir(), PathBuf::from("/tmp/omega-pdf-test-root/output"));
@@ -353,6 +362,7 @@ mod tests {
 
     #[test]
     fn pdf_root_dir_default_lives_under_omega_state_never_world_writable_tmp() {
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         std::env::remove_var("OMEGA_PDF_DIR");
         let dir = pdf_root_dir();
         assert!(

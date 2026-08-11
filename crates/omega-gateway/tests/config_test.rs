@@ -203,6 +203,28 @@ async fn put_config_refuses_to_write_over_a_corrupt_providers_toml() {
     clear_env();
 }
 
+/// Review-fix regression (final whole-branch review, Minor): the PUT-side
+/// fix above closed the write path, but GET still silently reported "nothing
+/// configured" on a corrupt file -- misleading in the same spirit as the
+/// write-side bug (a box that IS fully configured renders as empty to an
+/// app). GET now refuses the same way PUT does.
+#[tokio::test]
+async fn get_config_on_a_corrupt_providers_toml_is_500_not_a_silent_empty_view() {
+    let _g = LOCK.lock().await;
+    let gateway_dir = tempfile::tempdir().unwrap();
+    let omega_dir = tempfile::tempdir().unwrap();
+    std::env::set_var("OMEGA_DIR", omega_dir.path());
+    let corrupt = "this is not valid TOML {{{ [[[ = = =";
+    std::fs::write(omega_dir.path().join("providers.toml"), corrupt).unwrap();
+    let (app, token) = app_and_token(gateway_dir.path()).await;
+    let base = spawn(app).await;
+
+    let res = reqwest::Client::new().get(format!("{base}/v1/config")).bearer_auth(&token).send().await.unwrap();
+    assert_eq!(res.status(), 500);
+
+    clear_env();
+}
+
 /// Review-fix regression: a genuine server-side save failure (here: the
 /// configured `$OMEGA_DIR` is itself an existing FILE, so `create_dir_all`
 /// for its parent and the subsequent write both fail) must be a 500, never

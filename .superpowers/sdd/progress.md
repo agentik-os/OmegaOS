@@ -574,11 +574,135 @@ test). `cargo test -p omega-gateway`: 432 passed, 0 failed, 0 ignored.
 `cargo clippy -p omega-gateway --all-targets --no-deps -- -D warnings`:
 clean.
 
+## Final whole-branch review (opus, live binary) — done
+
+A FRESH opus-tier reviewer with no prior context reviewed the whole branch
+(`0a487c2`, all 5 commits, +4263 lines) and — the part that matters —
+actually RAN the real release binary against live HTTP for almost every
+claim in this ledger, not just read code. It re-enumerated every protected
+route from `server.rs` itself (51 method+path pairs) and hit all of them
+unauthenticated (all 401), used the REAL `omega-gatewayd pair` flow (not
+the test-harness shortcut) to get a real device token, read the operator's
+REAL `providers.toml` (3 real configured keys) and REAL `telegram.toml`
+through `GET /v1/config`/`GET /v1/telegram/status` and grepped the actual
+key values against the response bodies (zero matches), ran a real end-to-
+end `POST /v1/pdf` (pdfgen's `node_modules` was already installed, so no
+slow cold-install) and diffed the downloaded bytes against the file on
+disk (identical), tried 11 traversal variants plus 2 symlink-plant attempts
+against `GET /v1/pdf/download` (all blocked), fired live concurrent
+requests at the new `pdf_permits` cap (3rd request genuinely 429 in 1ms
+while the first two were still in flight), and round-tripped a TOML-
+injection attempt through `PUT /v1/config` (escaped safely, no section
+hijack). It started 5 isolated `omega-gatewayd` instances and paired 5
+scratch devices to do all of this without ever touching the operator's
+real device store, real provider config, real Telegram bridge, or
+launching a real oracle/worker/reap/resurrect — confirmed by re-hashing
+the real `providers.toml`/`telegram.toml` unchanged after the review, and
+by explicitly revoking every scratch device and killing every scratch
+gatewayd process before reporting.
+
+**Verdict as filed: BLOCKED ON CRITICAL FINDINGS — one finding.** Fixed
+below before this branch is considered done.
+
+### CRITICAL — `reap`/`resurrect` had no `"--"` argv separator, so a
+### `-`-leading session name collapsed to the BARE (box-wide) command
+
+`routes_oracles.rs`'s `reap`/`resurrect` built `["reap", target]` /
+`["resurrect", target]` directly — no `"--"` before the positional. Proven
+live (with a fake `OMEGA_BIN` recording the argv the real `omega` would
+receive) BEFORE this fix: `POST /v1/oracles/--/reap` → `200
+{"reaped":true,"output":"FAKE omega invoked with: reap --\n"}`, and
+`crate::omega reap --` was shown to clap-parse IDENTICALLY to bare `omega
+reap` (proven on the read-only twin `omega workers`: `omega workers` and
+`omega workers --` render the exact same "no worker" text, while `omega
+workers <anything-else>` clearly takes a positional). `cmd_reap`'s `None`
+arm (`crates/omega-cli/src/main.rs` ~line 5514) sweeps EVERY live Worker
+session on the box; `cmd_resurrect`'s `None` arm resurrects every dead
+oracle — real, destructive, box-wide operations reachable from a per-
+session endpoint whose own doc comment (`routes_oracles.rs:29-32`)
+explicitly said this "never" happens. The crate already carries the exact
+fix as a documented convention two files over
+(`routes_dispatch.rs`/`routes_orchestrate.rs`: named flags first, then a
+bare `"--"`, then positionals last) — this endpoint alone had never
+applied it.
+
+**Fix, two independent layers** (`routes_oracles.rs`):
+1. `validate_session_name` now also rejects any name starting with `-`
+   (400, before any spawn) — belt-and-braces on a name a caller plausibly
+   never intended as a positional at all.
+2. `reap`/`resurrect`'s argv now carries a `"--"` separator:
+   `["reap", "--", target]` / `["resurrect", "--", target]` — the REAL
+   fix, since (1) alone would still leave a hypothetical future caller
+   that bypasses HTTP-layer validation exposed to the same clap ambiguity.
+
+Regression tests: `reap_rejects_a_dash_leading_session_before_any_spawn` /
+`resurrect_rejects_a_dash_leading_session_before_any_spawn` (3 evil names
+each: `"--"`, `"-x"`, `"--dry-run"`/`"--help"` — 400, no subprocess spawn
+proven via capture-file-absent). The two pre-existing exact-argv tests
+(`reap_runs_omega_reap_with_exactly_the_session_argv` /
+`resurrect_runs_omega_resurrect_with_exactly_the_oracle_argv`) updated to
+assert the `"--"` is actually present.
+
+### Also fixed from the same review round (Important + 2 cheap Minors)
+
+- **Important — flaky test, reproduced live (~1-in-8) on this exact
+  branch**: `routes_pdf.rs`'s two `pdf_root_dir_*` unit tests both mutate
+  the process-global `OMEGA_PDF_DIR` env var with no lock, racing across
+  cargo's parallel test threads — this crate's own established convention
+  (`omega_cli.rs`, `account_login.rs`) is a guarding `static LOCK:
+  std::sync::Mutex<()>` for exactly this shape of test. Added; stress-run
+  10/10 clean afterward (was intermittently failing before).
+- **Minor — `GET /v1/config` silently reported "nothing configured" on a
+  corrupt `providers.toml`**, while the earlier round only hardened the
+  WRITE path (`PUT`) against that same corrupt file. A box that is
+  actually fully configured would render as empty to the app — misleading
+  in the same spirit as the write-side bug, if not destructive. `get()`
+  now goes through the same `load_config_or_refuse` `set()` already uses:
+  500 on a present-but-corrupt file, normal 200-empty on a genuinely
+  missing one. Test:
+  `get_config_on_a_corrupt_providers_toml_is_500_not_a_silent_empty_view`.
+- **Minor, doc-only — `dangerously_skip_permissions` is the single
+  highest-impact field `PUT /v1/config` can remotely write** (stops every
+  future agent spawn on the box from asking permission). Left writable
+  (in-allowlist, CLI-parity, and a caller who can already reach this
+  endpoint can do far more via `POST /v1/dispatch`) but flagged explicitly
+  in `apply_config_value`'s match arm, since the module's existing
+  security reasoning only discussed `api_key` READ blast radius, never
+  this field's WRITE blast radius.
+
+### Findings deliberately NOT fixed (documented, not silently dropped)
+
+- Minor — `dirs::home_dir().expect("no home dir")` inside
+  `routes_pdf.rs::pdf_root_dir()` (a request-handling path, not just
+  startup) could panic if `$HOME`/passwd resolution ever fails. Left
+  as-is: this is the EXACT SAME idiom every `*_dir()` helper in this crate
+  already uses in a request path (`config.rs::gateway_dir/home_dir/
+  deposit_home_dir`, `omega_cli.rs::omega_bin`) — fixing only the one
+  newest instance would be an isolated, inconsistent deviation from an
+  established crate-wide convention, not a genuine hardening of this
+  endpoint specifically. A real fix belongs in a crate-wide pass, out of
+  proportion for this wave.
+- Nits (`Content-Disposition` missing `filename=`, `PdfResponse.path`
+  exposing the server's absolute home-dir layout, `chat_id` returned
+  verbatim while `allow_user_ids` is reduced to a count, master-chat's
+  WS loop not reading the socket mid-poll) — cosmetic/UX or already
+  bounded by an existing mechanism; not fixed, per L5 (meet the floor,
+  don't gold-plate).
+
+**Test delta: 432 → 435 (+3)**: 2 new integration tests
+(`reap_rejects_a_dash_leading_session_before_any_spawn`,
+`resurrect_rejects_a_dash_leading_session_before_any_spawn` — each firing
+3 evil names, still counted as 1 test each) plus
+`get_config_on_a_corrupt_providers_toml_is_500_not_a_silent_empty_view`.
+`cargo test -p omega-gateway`: 435 passed, 0 failed, 0 ignored (stress-run
+10x on the previously-flaky `routes_pdf` lib tests: 10/10 clean). `cargo
+clippy -p omega-gateway --all-targets --no-deps -- -D warnings`: clean.
+
 ## Status
 - [x] Task A — Master/AISB-chat WS
 - [x] Task B — Oracle mission ops (orchestrate/reap/resurrect/timeline/gate)
 - [x] Task C — Config GET/PUT
 - [x] Task D — Telegram bridge control
 - [x] Task E — PDF generation
-- [ ] Final opus whole-branch live-binary review
+- [x] Final opus whole-branch live-binary review (1 Critical found + fixed)
 - [ ] Rebase on origin/main, leave clean, report
