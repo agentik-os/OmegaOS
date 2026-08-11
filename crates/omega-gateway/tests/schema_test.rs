@@ -80,6 +80,7 @@ fn schema_contains_all_wire_types() {
         "ReapResponse",
         "ResurrectResponse",
         "OrchestrateStreamMsg",
+        "NewProjectStreamMsg",
         "ClaudeConfigEntry",
         "CodexConfigEntry",
         "GeminiConfigEntry",

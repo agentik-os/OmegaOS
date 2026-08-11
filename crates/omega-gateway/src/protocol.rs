@@ -961,6 +961,24 @@ pub enum OrchestrateStreamMsg {
     Error { message: String },
 }
 
+// ── Task B (wave8): new-project bootstrap stream ─────────────────────────
+
+/// Server frames on `GET /v1/new-project/stream` — the exact shape of
+/// [`OrchestrateStreamMsg`] (`Line` tags every line by the pipe it came
+/// from, `Exit` is always the last frame on a completed run, `Error` covers
+/// a spawn failure). A DEDICATED type rather than reusing
+/// `OrchestrateStreamMsg`, per this crate's established convention: every
+/// WS-stream endpoint gets its own wire type even when the shape is
+/// identical (compare `AgentInstallStreamMsg` vs `AuditStreamMsg` vs
+/// `OrchestrateStreamMsg`), so each stays independently versionable.
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum NewProjectStreamMsg {
+    Line { stream: String, text: String },
+    Exit { success: bool, code: Option<i32> },
+    Error { message: String },
+}
+
 // ── Task C: provider config (`GET`/`PUT /v1/config`) ────────────────────
 
 /// One provider's REDACTED config snapshot — mirrors `omega_core::providers::
@@ -1186,6 +1204,7 @@ pub struct Protocol {
     pub reap_response: ReapResponse,
     pub resurrect_response: ResurrectResponse,
     pub orchestrate_stream_msg: OrchestrateStreamMsg,
+    pub new_project_stream_msg: NewProjectStreamMsg,
     pub claude_config_entry: ClaudeConfigEntry,
     pub codex_config_entry: CodexConfigEntry,
     pub gemini_config_entry: GeminiConfigEntry,

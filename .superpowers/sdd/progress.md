@@ -164,7 +164,27 @@ contract, one task at a time, its own commit(s).
   live path is fake-only this wave.
 
 ## Task A — status: DONE (routes_sessions.rs::create + routes_team.rs::create,
-tests/sessions_create_test.rs + tests/team_test.rs, 469 tests total, 34 new)
-## Task B — status: not started
+tests/sessions_create_test.rs + tests/team_test.rs). Commit 7e9601b (435→469
+tests), then a fresh adversarial reviewer found 4 Important findings (no
+Critical): a `dir_under_home` traversal bypass via `..` behind a
+not-yet-existing path component, no concurrency permit on either new heavy
+endpoint, an unbounded `members` vector on `/v1/team` (200k members accepted
+in one request), and the echoed `name`/`session` could diverge from the REAL
+rmux session name (`sanitize_session_name` truncates/trims differently than
+this crate's `valid_new_session_name` charset check). All 4 fixed TDD, plus
+a Minor (`--prompt`/`--dir` values starting with `-` now emitted as single
+`--flag=value` argv tokens) — commit 9c10ea0.
+**Test count after Task A: 480, 0 failed. Clippy clean.**
+## Task B — status: DONE (routes_new_project.rs::stream,
+tests/new_project_test.rs). Ground truth re-confirmed live via `omega
+new-project --help` before implementing: matches progress.md exactly
+(NAME charset `^[a-z0-9-]+$`, STACK positional 2 hardcoded `nextstack`,
+CATEGORY positional 3 default `works`, closed set `works | client | 1-life
+| AgentikOS`, `--group <GROUP>` real flag defaulting to `"default"` in the
+CLI itself when omitted here). New `NewProjectStreamMsg` (protocol.rs) +
+`AppState::new_project_permits` (`MAX_CONCURRENT_NEW_PROJECT_SPAWNS = 2`,
+mirrors `orchestrate_permits`). Route wired above `route_layer`.
+**Test count after Task B: 501, 0 failed (480→501, 21 new: 9 integration +
+12 inline unit). Clippy clean. Release build OK.**
 ## Task C — status: not started
 ## Task D — status: not started

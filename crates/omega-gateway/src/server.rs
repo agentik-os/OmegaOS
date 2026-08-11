@@ -45,6 +45,16 @@ const MAX_CONCURRENT_MASTER_CHATS: usize = 4;
 /// comment).
 const MAX_CONCURRENT_ORCHESTRATIONS: usize = 2;
 
+/// Global cap on concurrently-open `GET /v1/new-project/stream` WebSockets.
+/// The `omega new-project` subprocess this endpoint spawns returns fast
+/// (see `routes_new_project.rs`'s doc comment), but what it SPAWNS does not:
+/// a real Codex session running the whole vision -> PRD -> brand -> planner
+/// -> build bootstrap pipeline asynchronously, invisible to this endpoint.
+/// Capped the same as [`MAX_CONCURRENT_ORCHESTRATIONS`], for the same
+/// reason: both endpoints spawn a real Codex session plus a real
+/// downstream pipeline, not a bounded, self-contained subprocess.
+const MAX_CONCURRENT_NEW_PROJECT_SPAWNS: usize = 2;
+
 /// Global cap on concurrently-running `POST /v1/pdf` generations. `omega
 /// pdf` shells to `npx tsx bin/pdfgen.ts` and, on a cold cache, a full `npm
 /// install` first (see `crates/omega-cli/src/main.rs::cmd_pdf`) — an
@@ -93,6 +103,10 @@ pub struct AppState {
     /// permit held for the WHOLE connection lifetime — see
     /// [`MAX_CONCURRENT_ORCHESTRATIONS`].
     pub orchestrate_permits: Arc<Semaphore>,
+    /// Caps concurrently-open `GET /v1/new-project/stream` WebSockets, one
+    /// permit held for the WHOLE connection lifetime — see
+    /// [`MAX_CONCURRENT_NEW_PROJECT_SPAWNS`].
+    pub new_project_permits: Arc<Semaphore>,
     /// Caps concurrently-running `POST /v1/pdf` generations — see
     /// [`MAX_CONCURRENT_PDF_GENERATIONS`].
     pub pdf_permits: Arc<Semaphore>,
@@ -129,6 +143,7 @@ impl AppState {
         let dispatch_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DISPATCHES));
         let master_chat_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_MASTER_CHATS));
         let orchestrate_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_ORCHESTRATIONS));
+        let new_project_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_NEW_PROJECT_SPAWNS));
         let pdf_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_PDF_GENERATIONS));
         let session_spawn_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_SESSION_SPAWNS));
         let events = EventHub::new();
@@ -143,6 +158,7 @@ impl AppState {
             dispatch_permits,
             master_chat_permits,
             orchestrate_permits,
+            new_project_permits,
             pdf_permits,
             session_spawn_permits,
             events,
@@ -282,6 +298,7 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(crate::routes_oracles::resurrect),
         )
         .route("/v1/orchestrate/stream", get(crate::routes_orchestrate::stream))
+        .route("/v1/new-project/stream", get(crate::routes_new_project::stream))
         .route("/v1/doctor", get(crate::routes_box::doctor))
         .route("/v1/usage", get(crate::routes_box::usage))
         .route("/v1/box-info", get(crate::routes_box::box_info))
