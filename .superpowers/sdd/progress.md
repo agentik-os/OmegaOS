@@ -277,3 +277,33 @@ genuinely reaches the nested agent turn). Never runs a real Codex/Claude/
 GLM in tests (fake `OMEGA_DUO_BIN` only). Commit `a7b01e6`.
 **Test count after Task D: 539, 0 failed (516→539, 23 new). Clippy clean.
 Release build OK.**
+
+Commit `a7b01e6`, then a fresh adversarial reviewer verdict "BLOCKED ON 2
+IMPORTANT FINDINGS" (no Critical, and BOTH of the implementer's own
+ground-truth corrections were independently re-verified true): the per-cwd
+lock keyed on the RAW resolved path while `omega-duo` itself operates on
+the REPO ROOT, so two textually-different paths into the same git repo
+(a project root and a subdirectory, or a symlinked spelling) bypassed the
+lock and raced two runs on one checkpoint guard; and a client disconnect
+(vs an explicit timeout) only SIGKILLed the direct `omega-duo` child, never
+the nested agent's process group, orphaning a live, unbounded, file-editing
+AI agent while `CwdLockGuard::drop` released the lock anyway, letting a
+second request start a genuinely concurrent run against the same worktree.
+Plus 2 Minor (a `--`-prefixed `dir` reaching the bridge's argv unguarded;
+a whole-buffer JSON parse throwing away a successful run on one stray
+stdout line, when the bridge's own test harness only trusts the LAST
+line). Fixed: the lock now keys on the canonicalized repo root (walks up
+for the nearest `.git`, `--cwd` itself deliberately left as the raw
+resolved path — the bridge resolves its own root internally); a new
+`KillGroupOnDrop` RAII guard fires an unconditional group-kill on ANY drop
+of the run future (disconnect, timeout, or an early return), disarmed only
+on confirmed normal completion; an absolute-path guard rejects a
+non-absolute resolved target before any spawn; the JSON parse now takes
+the last non-empty stdout line. Commit `1a5ef34`.
+**Test count after Task D fix round: 543, 0 failed. Clippy clean.**
+
+## Wave summary — all 4 tasks (A-D) done, each with an implementer +
+independent adversarial reviewer + TDD fix round. Total: 435 → 543 tests
+(+108). Next: rebase on origin/main (done), a final opus whole-branch
+review that RUNS THE BINARY against live HTTP, controller runtime verify
+of the safe endpoints, report.
