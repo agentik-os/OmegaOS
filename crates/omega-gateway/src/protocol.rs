@@ -1163,6 +1163,96 @@ pub struct PdfResponse {
     pub size_bytes: u64,
 }
 
+// ── wave8 Task D: DUO binome bridge (`POST /v1/duo`) ──────────────────────
+
+/// Body of `POST /v1/duo` — wraps `omega-duo run --task <scratch-file>
+/// --cwd <resolved> --mode <mapped>` (see `routes_duo.rs`'s doc comment for
+/// the full ground truth read off the real bridge binary). Exactly ONE of
+/// `project`/`dir` must be given; `profile` is validated against the closed
+/// set `build`/`review`/`reflect` (the `/duo` skill's own three real
+/// profiles), mapping 1:1 to the bridge's `--mode` (`code`/`review`/`plan`).
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct DuoRequest {
+    #[serde(default)]
+    pub project: Option<String>,
+    #[serde(default)]
+    pub dir: Option<String>,
+    pub prompt: String,
+    pub profile: String,
+}
+
+/// Mirrors the bridge's `Capabilities` interface — see `routes_duo.rs`'s
+/// doc comment for the full `BridgeResult` contract [`DuoResponse`] mirrors
+/// field-for-field.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuoCapabilities {
+    pub shell_exec: bool,
+    pub worktree_read: bool,
+}
+
+/// Mirrors the bridge's `GuardError` interface. `code` is always the
+/// literal `"guard-error"` on the wire — kept as a plain `String` rather
+/// than a unit enum since this crate never branches on it, only surfaces it
+/// to the caller verbatim.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuoGuardError {
+    pub code: String,
+    pub message: String,
+}
+
+/// Mirrors the bridge's `VerifyReport` interface. This endpoint never
+/// passes `--verify` (see `routes_duo.rs`'s doc comment), so in practice
+/// this is always `None` in a response this wave produces — the field
+/// stays on the wire type because the bridge's own JSON contract always
+/// includes the key (as `null` when absent) and a future wave may opt in.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuoVerifyReport {
+    pub cmd: String,
+    pub exit_code: i64,
+    pub ok: bool,
+    pub timed_out: bool,
+    pub tail: String,
+}
+
+/// Mirrors the bridge's `Checkpoint` interface. The wire key is literally
+/// named `ref` (`#[serde(rename = "ref")]`) — `ref` is a Rust keyword, so
+/// the struct field is named `git_ref` instead.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuoCheckpoint {
+    pub head: Option<String>,
+    pub stash: Option<String>,
+    #[serde(rename = "ref")]
+    pub git_ref: Option<String>,
+}
+
+/// `POST /v1/duo` response body — a field-for-field mirror of the bridge's
+/// real `BridgeResult` JSON contract (see `routes_duo.rs`'s doc comment,
+/// which cites the exact binary source lines this was read from). Parsed
+/// DIRECTLY from `omega-duo run`'s single stdout JSON line via
+/// `serde_json::from_str::<DuoResponse>` — every field name matches the
+/// bridge's own snake_case keys exactly, so no separate raw/intermediate
+/// struct is needed. `ok`/`agent_ok` are the MEANINGFUL success signal,
+/// never this endpoint's own HTTP status — see `routes_duo.rs`'s doc
+/// comment for why a non-zero `omega-duo` process exit is NOT automatically
+/// surfaced as an HTTP error.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DuoResponse {
+    pub agent: Option<String>,
+    pub ok: bool,
+    pub output: String,
+    pub fell_back: bool,
+    pub reason: Option<String>,
+    pub exit_code: i64,
+    pub log: Option<String>,
+    pub sandbox_degraded: bool,
+    pub capabilities: DuoCapabilities,
+    pub guard_error: Option<DuoGuardError>,
+    pub verify: Option<DuoVerifyReport>,
+    pub checkpoint: Option<DuoCheckpoint>,
+    pub diffstat: Option<String>,
+    pub agent_ok: Option<bool>,
+}
+
 /// Umbrella type so one schema document carries every wire type.
 /// Only JsonSchema is needed: this type is never serialized itself.
 #[derive(JsonSchema)]
@@ -1258,6 +1348,12 @@ pub struct Protocol {
     pub telegram_toggle_response: TelegramToggleResponse,
     pub pdf_request: PdfRequest,
     pub pdf_response: PdfResponse,
+    pub duo_request: DuoRequest,
+    pub duo_capabilities: DuoCapabilities,
+    pub duo_guard_error: DuoGuardError,
+    pub duo_verify_report: DuoVerifyReport,
+    pub duo_checkpoint: DuoCheckpoint,
+    pub duo_response: DuoResponse,
 }
 
 pub fn schema_json() -> String {

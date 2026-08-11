@@ -96,6 +96,12 @@ fn schema_contains_all_wire_types() {
         "TelegramToggleResponse",
         "PdfRequest",
         "PdfResponse",
+        "DuoRequest",
+        "DuoCapabilities",
+        "DuoGuardError",
+        "DuoVerifyReport",
+        "DuoCheckpoint",
+        "DuoResponse",
     ] {
         assert!(defs.contains_key(ty), "missing {ty} in schema");
     }

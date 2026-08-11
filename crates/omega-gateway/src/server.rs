@@ -94,6 +94,15 @@ const MAX_CONCURRENT_PDF_GENERATIONS: usize = 2;
 /// dispatch.
 const MAX_CONCURRENT_SESSION_SPAWNS: usize = 4;
 
+/// Global cap on concurrently-running `POST /v1/duo` runs. `omega-duo run`
+/// is a bounded subprocess call into a real Codex/Claude turn — no
+/// in-process equivalent, and a single run can genuinely take many minutes
+/// (see `routes_duo.rs`'s doc comment on [`crate::routes_duo::duo_bin`]'s
+/// timeout). Mirrors [`MAX_CONCURRENT_PDF_GENERATIONS`]'s reasoning
+/// (heavier than a single request/response, no WS connection to hold a
+/// permit across) rather than [`MAX_CONCURRENT_DISPATCHES`]'s.
+const MAX_CONCURRENT_DUO_RUNS: usize = 2;
+
 #[derive(Clone)]
 pub struct AppState {
     pub dir: PathBuf,
@@ -126,6 +135,20 @@ pub struct AppState {
     /// requests, SHARED across both — see
     /// [`MAX_CONCURRENT_SESSION_SPAWNS`].
     pub session_spawn_permits: Arc<Semaphore>,
+    /// Caps concurrently-running `POST /v1/duo` runs — see
+    /// [`MAX_CONCURRENT_DUO_RUNS`].
+    pub duo_permits: Arc<Semaphore>,
+    /// IN-PROCESS per-resolved-cwd lock for `POST /v1/duo`: two
+    /// `omega-duo run`s against the SAME cwd corrupt each other's
+    /// git-checkpoint guard (the `/duo` skill's own doc is explicit —
+    /// "jamais deux runs sur le meme worktree"), so a resolved cwd already
+    /// present here means a second concurrent request against it is
+    /// refused with 409 rather than allowed to race. A plain
+    /// `std::sync::Mutex`, not `tokio::sync::Mutex`: every access is a
+    /// synchronous insert/remove with no `.await` held across the lock, so
+    /// the lighter std primitive is the right one (see
+    /// `routes_duo.rs::CwdLockGuard`).
+    pub duo_active_dirs: Arc<std::sync::Mutex<std::collections::HashSet<PathBuf>>>,
     /// Event bus for `/v1/events` (mission updates, alerts, heartbeat).
     /// Cloning `AppState` shares this hub, so a test (or a future
     /// in-process alert source) can hold its own clone and call
@@ -158,6 +181,8 @@ impl AppState {
         let new_project_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_NEW_PROJECT_SPAWNS));
         let pdf_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_PDF_GENERATIONS));
         let session_spawn_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_SESSION_SPAWNS));
+        let duo_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_DUO_RUNS));
+        let duo_active_dirs = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let events = EventHub::new();
         let session_org = Arc::new(SessionOrgStore::open(&dir));
         let started_at = std::time::Instant::now();
@@ -173,6 +198,8 @@ impl AppState {
             new_project_permits,
             pdf_permits,
             session_spawn_permits,
+            duo_permits,
+            duo_active_dirs,
             events,
             session_org,
             started_at,
@@ -331,6 +358,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/v1/pdf", axum::routing::post(crate::routes_pdf::create))
         .route("/v1/pdf/download", get(crate::routes_pdf::download))
+        .route("/v1/duo", axum::routing::post(crate::routes_duo::create))
         // IMPORTANT: route_layer only wraps routes registered BEFORE it is
         // called. Add every new protected .route(...) ABOVE this line, or it
         // ships unauthenticated.

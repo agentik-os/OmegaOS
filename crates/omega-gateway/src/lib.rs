@@ -19,6 +19,7 @@ pub mod routes_chat;
 pub mod routes_config;
 pub mod routes_deposit;
 pub mod routes_dispatch;
+pub mod routes_duo;
 pub mod routes_events;
 pub mod routes_files;
 pub mod routes_marketing;
