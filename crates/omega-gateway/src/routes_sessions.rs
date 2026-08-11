@@ -90,6 +90,7 @@ async fn stream_loop(mut socket: WebSocket, name: String, state: AppState, color
 /// snippet) while staying far below anything that would matter for argv
 /// size or subprocess latency.
 const MAX_SEND_KEYS_BYTES: usize = 8192;
+const PASTE_SETTLE_MS: u64 = 100;
 
 /// Session names this endpoint will act on: mirrors `routes_chat.rs`'s
 /// `valid_chat_id` shape — reject anything that could path-traverse or
@@ -148,6 +149,14 @@ pub async fn send_keys(
         })?;
 
     if req.enter {
+        // Full-screen agent composers process a literal paste asynchronously.
+        // Sending Enter in the immediately following rmux subprocess can land
+        // before the composer has accepted the paste, leaving a visibly typed
+        // but unsubmitted prompt. Keep Enter as its own key event, and allow a
+        // short settle window only when this request actually pasted text.
+        if !req.data.is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(PASTE_SETTLE_MS)).await;
+        }
         let session = name.clone();
         tokio::task::spawn_blocking(move || crate::rmux::send_enter(&session))
             .await
