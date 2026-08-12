@@ -297,7 +297,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/skills", get(crate::routes_skills::list))
         .route(
             "/v1/skills/{name}",
-            get(crate::routes_skills::get).put(crate::routes_skills::update),
+            get(crate::routes_skills::get)
+                .put(crate::routes_skills::update)
+                .delete(crate::routes_skills::delete),
+        )
+        .route(
+            "/v1/skills/{name}/rename",
+            axum::routing::post(crate::routes_skills::rename),
         )
         .route(
             "/v1/skills/{name}/agent",

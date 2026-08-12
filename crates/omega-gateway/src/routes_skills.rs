@@ -2,7 +2,7 @@
 
 use crate::protocol::{
     CreateSessionRequest, SkillAgentRequest, SkillAgentResponse, SkillDetail, SkillDetailResponse,
-    SkillEntry, SkillUpdateRequest, SkillsResponse,
+    SkillDeleteRequest, SkillEntry, SkillRenameRequest, SkillUpdateRequest, SkillsResponse,
 };
 use crate::server::AppState;
 use axum::extract::{Path, Query, State};
@@ -121,6 +121,88 @@ fn update_at_root(root: &FsPath, name: &str, content: &str) -> anyhow::Result<Sk
     }
 }
 
+/// A skill directory name the operator may create. Deliberately narrower than
+/// what the filesystem accepts: no separator, no dot-segment, no leading dot,
+/// so a rename can never walk out of the skills root or shadow a hidden file.
+fn validate_skill_name(name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        (1..=64).contains(&name.len()),
+        "a skill name is 1 to 64 characters"
+    );
+    anyhow::ensure!(
+        name.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "a skill name may only contain letters, digits, '-' and '_'"
+    );
+    Ok(())
+}
+
+/// The directory that holds a skill: `<root>/<name>/SKILL.md` -> `<root>/<name>`.
+/// Derived from the CANONICALIZED, root-checked file path, never from the
+/// caller's string, so the traversal guard covers the directory too.
+fn skill_dir_of(root: &FsPath, skill: &Skill) -> anyhow::Result<PathBuf> {
+    let file = safe_skill_path(root, skill)?;
+    let dir = file
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("skill file has no parent"))?
+        .to_path_buf();
+    anyhow::ensure!(
+        dir != root.canonicalize()?,
+        "a skill directory cannot be the skills root"
+    );
+    Ok(dir)
+}
+
+fn rename_at_root(root: &FsPath, name: &str, new_name: &str) -> anyhow::Result<()> {
+    validate_skill_name(new_name)?;
+    let _guard = write_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("skill write lock poisoned"))?;
+
+    let registry = SkillRegistry::discover(root)?;
+    let skill = registry
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("skill not found"))?;
+    anyhow::ensure!(!skill.read_only, "skill is read-only");
+    if new_name == name {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        registry.get(new_name).is_none(),
+        "a skill with that name already exists"
+    );
+
+    let from = skill_dir_of(root, &skill)?;
+    let to = root.canonicalize()?.join(new_name);
+    anyhow::ensure!(!to.exists(), "a skill with that name already exists");
+    fs::rename(&from, &to)?;
+    Ok(())
+}
+
+fn delete_at_root(root: &FsPath, name: &str, confirm_name: &str) -> anyhow::Result<()> {
+    // Deleting a skill is irreversible and there is no undo behind this API,
+    // so the caller must name the exact skill a second time (R-DESTRUCT).
+    anyhow::ensure!(
+        confirm_name == name,
+        "confirm_name must repeat the skill name exactly"
+    );
+    let _guard = write_lock()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("skill write lock poisoned"))?;
+
+    let registry = SkillRegistry::discover(root)?;
+    let skill = registry
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("skill not found"))?;
+    anyhow::ensure!(!skill.read_only, "skill is read-only");
+
+    let dir = skill_dir_of(root, &skill)?;
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
 pub async fn list(Query(params): Query<HashMap<String, String>>) -> Json<SkillsResponse> {
     let response = tokio::task::spawn_blocking(move || {
         let registry = match SkillRegistry::discover_default() {
@@ -207,6 +289,64 @@ pub async fn get(Path(name): Path<String>) -> Result<Json<SkillDetailResponse>, 
         api_error(status, error.to_string())
     })?;
     Ok(Json(SkillDetailResponse { skill: detail }))
+}
+
+/// Maps a skill write failure onto a status. Shared by rename and delete so
+/// the two never drift into reporting the same condition differently.
+fn write_error_status(message: &str) -> StatusCode {
+    if message == "skill not found" {
+        StatusCode::NOT_FOUND
+    } else if message == "skill is read-only" {
+        StatusCode::FORBIDDEN
+    } else if message == "a skill with that name already exists" {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::BAD_REQUEST
+    }
+}
+
+pub async fn rename(
+    Path(name): Path<String>,
+    Json(request): Json<SkillRenameRequest>,
+) -> Result<StatusCode, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        let registry = SkillRegistry::discover_default()?;
+        rename_at_root(registry.skills_dir(), &name, request.new_name.trim())
+    })
+    .await
+    .map_err(|error| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("skill task panicked: {error}"),
+        )
+    })?
+    .map_err(|error| {
+        let message = error.to_string();
+        api_error(write_error_status(&message), message)
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete(
+    Path(name): Path<String>,
+    Json(request): Json<SkillDeleteRequest>,
+) -> Result<StatusCode, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        let registry = SkillRegistry::discover_default()?;
+        delete_at_root(registry.skills_dir(), &name, request.confirm_name.trim())
+    })
+    .await
+    .map_err(|error| {
+        api_error(
+            StatusCode::BAD_GATEWAY,
+            format!("skill task panicked: {error}"),
+        )
+    })?
+    .map_err(|error| {
+        let message = error.to_string();
+        api_error(write_error_status(&message), message)
+    })?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn update(
@@ -314,6 +454,63 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn rename_moves_the_directory_and_keeps_the_content() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "alpha", false);
+        rename_at_root(root.path(), "alpha", "beta").unwrap();
+        assert!(!root.path().join("alpha").exists());
+        assert!(root.path().join("beta").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn rename_refuses_a_name_that_could_escape_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "alpha", false);
+        for candidate in ["../escaped", "a/b", "..", ".hidden", ""] {
+            assert!(
+                rename_at_root(root.path(), "alpha", candidate).is_err(),
+                "should refuse {candidate:?}"
+            );
+        }
+        // The skill is untouched by every refusal.
+        assert!(root.path().join("alpha").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn rename_refuses_an_occupied_name_and_a_read_only_skill() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "alpha", false);
+        skill(root.path(), "beta", false);
+        assert!(rename_at_root(root.path(), "alpha", "beta").is_err());
+        assert!(root.path().join("alpha").join("SKILL.md").exists());
+
+        skill(root.path(), "locked", true);
+        assert!(rename_at_root(root.path(), "locked", "unlocked").is_err());
+        assert!(root.path().join("locked").join("SKILL.md").exists());
+    }
+
+    #[test]
+    fn delete_requires_the_name_repeated_exactly() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "alpha", false);
+        assert!(delete_at_root(root.path(), "alpha", "Alpha").is_err());
+        assert!(delete_at_root(root.path(), "alpha", "").is_err());
+        assert!(root.path().join("alpha").exists());
+
+        delete_at_root(root.path(), "alpha", "alpha").unwrap();
+        assert!(!root.path().join("alpha").exists());
+    }
+
+    #[test]
+    fn delete_refuses_a_read_only_skill_and_an_unknown_one() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "locked", true);
+        assert!(delete_at_root(root.path(), "locked", "locked").is_err());
+        assert!(root.path().join("locked").exists());
+        assert!(delete_at_root(root.path(), "ghost", "ghost").is_err());
     }
 
     #[test]

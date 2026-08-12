@@ -351,6 +351,18 @@ pub struct SkillUpdateRequest {
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillRenameRequest {
+    pub new_name: String,
+}
+
+/// Deleting a skill is irreversible, so the caller repeats the exact name it
+/// intends to destroy. A mis-click on a list row cannot satisfy this.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct SkillDeleteRequest {
+    pub confirm_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct SkillAgentRequest {
     pub prompt: Option<String>,
 }
