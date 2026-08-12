@@ -1639,7 +1639,11 @@ Run the full $name protocol. Read and follow the complete forensic instructions 
 
 Execute every phase exactly as written — no streamlined or custom variant.
 EOF
-            [[ -n "$AUDIT_CODEX_DST" ]] && cp -f "$AUDIT_CMD_DST/$cmd.md" "$AUDIT_CODEX_DST/$cmd.md"
+            # NOT `[[ … ]] && cp`: under `set -e` that AND-list returns 1 on a
+            # box with no Codex and kills the whole installer.
+            if [[ -n "$AUDIT_CODEX_DST" ]]; then
+                cp -f "$AUDIT_CMD_DST/$cmd.md" "$AUDIT_CODEX_DST/$cmd.md"
+            fi
         done
         AUDIT_STUBS=$((AUDIT_STUBS + 1))
     done
