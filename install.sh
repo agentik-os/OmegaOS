@@ -1138,7 +1138,7 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# The 24 value-chain operative systems (Personal / Build chain 01..08 / Growth
+# The 25 value-chain operative systems (Personal / Build chain 01..08 / Growth
 # / Systems), surfaced in the TUI's OS tab. The registry is compiled into
 # omega-core (os_products.rs); the payloads + READMEs are installed here so the
 # tab resolves a suite root even on a box with no checkout. The recursive copy
@@ -2173,7 +2173,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os ai-logic-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2308,6 +2308,30 @@ Protocols: /morning /evening /weekly /decision /true_north /virtue_check
 /dichotomy_control /wu_wei /reframe /shadow /belief_audit /fear /meaning
 /manifestation /quantum_truth /personal_philosophy /anti_dependency /reset.
 Labels every claim E1..E5. Anti-dependency: ends in a concrete next action.
+MREOF
+            done; unset _c
+        fi
+        # Seductive OS (personal magnetism) registers /seduction + /charisma
+        # aliases. Consent-first by construction: the ethical spine is loaded
+        # with the skill, never as an optional reference.
+        if [[ "$BSK" == "seductive-os" ]]; then
+            for _c in seduction charisma; do
+                cat > "$BCMD/$_c.md" <<MREOF
+# /$_c
+
+Seductive {OS} — the personal magnetism coach (presence, conversation craft,
+warmth, style, social calibration, romantic confidence and the inner game
+underneath). Read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Modes: /presence /conversation /innergame /style /calibrate /flirt /date
+/apps /rejection /desire /audit /practice /debrief /reset.
+Builds a more compelling PERSON, never scripts, lines or routines.
+Consent is the product, not the constraint: references/ethics-and-consent.md
+and references/refusals.md are ALWAYS in force. Labels every claim
+E1(replicated) / E2(thin) / E3(craft) / P(personal) / C(clinical → route to a
+professional). safety-and-boundaries.md routes real distress to a professional.
 MREOF
             done; unset _c
         fi

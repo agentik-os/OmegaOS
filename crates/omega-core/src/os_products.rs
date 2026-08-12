@@ -1,7 +1,7 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). 24 operative systems along the value chain, in four groups: PERSONAL
-//! (Mindset, Health & Energy, Habit Tracker, Alignment — the BE / ENERGY
-//! layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
+//! (TUI). 25 operative systems along the value chain, in four groups: PERSONAL
+//! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive — the BE /
+//! ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
 //! 03 Market Research → 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
 //! 08 Quality/Evaluation/Release), GROWTH (Storyteller, Revenue, Delivery &
 //! Customer Success, Relationship & Network, Wealth & Capital — the
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsGroup {
     /// The personal BE / ENERGY layer (Mindset, Health & Energy, Habit
-    /// Tracker, Alignment).
+    /// Tracker, Alignment, Seductive).
     Personal,
     /// The product pipeline, in chain order:
     /// 01 Strategy & Portfolio → 02 Brainstorm → 03 Market Research →
@@ -160,6 +160,33 @@ impl OsProduct {
                     "council: stoic·daoist·rohn·scientist·quantum·manifestation·shadow",
                     "         ·compassion·challenger·action·meaning·integrator (routed)",
                     "omega-align   open the coach master agent in a session",
+                ],
+            },
+            OsProduct {
+                slug: "seductive-os",
+                name: "Seductive OS",
+                tagline: "Seductive {OS}: personal magnetism — presence, conversation, warmth, style and romantic confidence, consent-first.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /seduction · /charisma · /seductive-os ):",
+                    "  the personal magnetism coach (presence, conversation, inner game)",
+                    "  builds a more compelling PERSON, never scripts, lines or routines",
+                    "  labels every claim E1(replicated) · E2(thin) · E3(craft)",
+                    "                     P(personal taste) · C(clinical → a professional)",
+                    "modes (say the word or the /command):",
+                    "  /presence      embodiment, voice, stillness, attention",
+                    "  /conversation  curiosity, stories, humour, depth   ·   /style",
+                    "  /innergame     self-worth under the skill   ·   /rejection",
+                    "  /calibrate     read real interest vs your own inference",
+                    "  /flirt         consent-gated   ·   /date   design a real one",
+                    "  /apps          the digital half   ·   /desire   long-term",
+                    "  /audit /practice /debrief /reset",
+                    "ethics: consent is the product, not the constraint — refusals.md",
+                    "        names the manipulative playbook it declines, and why each",
+                    "        one also fails on YOUR terms. Ethics guardian holds a veto.",
+                    "omega-seduction   open the magnetism master agent in a session",
+                    "→ pairs with Mindset (identity), Health & Energy (the substrate),",
+                    "  Alignment (values) and Relationship & Network (the platonic half)",
                 ],
             },
             // ── BUILD CHAIN — CHOOSE → BUILD → CERTIFY (01→08) ──────────────
@@ -1136,13 +1163,15 @@ mod tests {
 
     /// The value-chain suite, in registry order, grouped and contiguous:
     /// PERSONAL, then the BUILD CHAIN (01→08), then GROWTH, then SYSTEMS.
-    /// 24 = 23 value-chain OSes + books-os (a working OS with no value-chain
-    /// twin, kept in Systems rather than dropped).
+    /// 25 = 23 value-chain OSes + books-os (a working OS with no value-chain
+    /// twin, kept in Systems rather than dropped) + seductive-os (the personal
+    /// magnetism layer, Personal group).
     const EXPECTED: &[(&str, OsGroup)] = &[
         ("mindset-os", OsGroup::Personal),
         ("health-energy-os", OsGroup::Personal),
         ("habit-tracker-os", OsGroup::Personal),
         ("alignment-os", OsGroup::Personal),
+        ("seductive-os", OsGroup::Personal),
         ("strategy-portfolio-os", OsGroup::BuildChain),
         ("brainstorm-os", OsGroup::BuildChain),
         ("market-research-os", OsGroup::BuildChain),
@@ -1169,7 +1198,11 @@ mod tests {
     fn suite_is_the_full_value_chain_in_order() {
         let got: Vec<(&str, OsGroup)> =
             OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
-        assert_eq!(got.len(), 24, "24 = 23 value-chain OSes + books-os");
+        assert_eq!(
+            got.len(),
+            25,
+            "25 = 23 value-chain OSes + books-os + seductive-os"
+        );
         assert_eq!(got, EXPECTED);
     }
 
