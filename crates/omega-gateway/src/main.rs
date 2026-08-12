@@ -185,9 +185,46 @@ fn hostname_or_default() -> String {
 
 /// Builds the explicit mobile-app pairing route printed in the terminal QR.
 /// Pairing remains user-confirmed by the app; the link only carries the
-/// one-time host and code values needed to prefill its pairing form.
+/// one-time gateway URL and code values needed to prefill its pairing form.
 fn pairing_deep_link(host: &str, code: &str) -> String {
-    format!("omegaapp://pair?host={host}&code={code}")
+    let gateway_url = gateway_url(host);
+    format!(
+        "omegaapp://pair?host={}&code={}",
+        percent_encode_query_component(&gateway_url),
+        percent_encode_query_component(code)
+    )
+}
+
+/// Turns the hostname printed by `omega-gatewayd pair` into the HTTP endpoint
+/// consumed by the mobile client. The daemon's default port is 4477; preserve
+/// an explicitly supplied port and bracket bare IPv6 literals for URL syntax.
+fn gateway_url(host: &str) -> String {
+    let host = host.trim();
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("http://[{host}]:4477")
+    } else if host.starts_with('[')
+        || host
+            .rsplit_once(':')
+            .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
+    {
+        format!("http://{host}")
+    } else {
+        format!("http://{host}:4477")
+    }
+}
+
+/// RFC 3986 query-component encoding for a deep-link parameter.
+fn percent_encode_query_component(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            encoded.push(byte as char);
+        } else {
+            encoded.push('%');
+            encoded.push_str(&format!("{byte:02X}"));
+        }
+    }
+    encoded
 }
 
 #[cfg(test)]
@@ -237,7 +274,19 @@ mod tests {
     fn pairing_deep_link_targets_the_omega_app_scheme() {
         assert_eq!(
             pairing_deep_link("gateway.tailnet:4477", "8bebbdbf"),
-            "omegaapp://pair?host=gateway.tailnet:4477&code=8bebbdbf"
+            "omegaapp://pair?host=http%3A%2F%2Fgateway.tailnet%3A4477&code=8bebbdbf"
+        );
+        assert_eq!(
+            pairing_deep_link("gateway.tailnet", "8bebbdbf"),
+            "omegaapp://pair?host=http%3A%2F%2Fgateway.tailnet%3A4477&code=8bebbdbf"
+        );
+    }
+
+    #[test]
+    fn pairing_deep_link_brackets_and_encodes_ipv6_hosts() {
+        assert_eq!(
+            pairing_deep_link("2001:db8::1", "8bebbdbf"),
+            "omegaapp://pair?host=http%3A%2F%2F%5B2001%3Adb8%3A%3A1%5D%3A4477&code=8bebbdbf"
         );
     }
 
