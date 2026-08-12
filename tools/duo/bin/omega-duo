@@ -1983,10 +1983,14 @@ async function cmdSelftest(): Promise<number> {
           "-",
         ]),
     );
+    // Compare canonical paths: on macOS TMPDIR hands back /var/folders/… while the
+    // agent records process.cwd() as /private/var/folders/… — same directory, two
+    // strings, because /var is a symlink to /private/var.
+    const canonicalRequestedCwd = realpathSync(requestedCwd);
     check(
       "preflight and task preserve the requested process cwd",
       cleanCalls.length >= 2 &&
-        cleanCalls.every((call) => call.cwd === requestedCwd),
+        cleanCalls.every((call) => realpathSync(call.cwd) === canonicalRequestedCwd),
     );
     check(
       "read probe prompt uses no absolute repository path",
