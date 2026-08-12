@@ -61,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Pair => {
             let pc = PairingCode::create(&dir, 300)?;
             let host = hostname_or_default();
-            let payload = format!("omega://pair?host={host}&code={}", pc.code);
+            let payload = pairing_deep_link(&host, &pc.code);
             qr2term::print_qr(&payload).ok();
             println!("Pairing code: {}  (valid 5 minutes)", pc.code);
             println!("Payload: {payload}");
@@ -183,6 +183,13 @@ fn hostname_or_default() -> String {
         .unwrap_or_else(|_| "unknown".into())
 }
 
+/// Builds the explicit mobile-app pairing route printed in the terminal QR.
+/// Pairing remains user-confirmed by the app; the link only carries the
+/// one-time host and code values needed to prefill its pairing form.
+fn pairing_deep_link(host: &str, code: &str) -> String {
+    format!("omegaapp://pair?host={host}&code={code}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +231,14 @@ mod tests {
     #[test]
     fn cli_rejects_account_add_missing_args() {
         assert!(Cli::try_parse_from(["omega-gatewayd", "account-add", "only-slug"]).is_err());
+    }
+
+    #[test]
+    fn pairing_deep_link_targets_the_omega_app_scheme() {
+        assert_eq!(
+            pairing_deep_link("gateway.tailnet:4477", "8bebbdbf"),
+            "omegaapp://pair?host=gateway.tailnet:4477&code=8bebbdbf"
+        );
     }
 
     #[test]
