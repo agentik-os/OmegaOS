@@ -62,9 +62,35 @@ async fn main() -> anyhow::Result<()> {
             let pc = PairingCode::create(&dir, 300)?;
             let host = hostname_or_default();
             let payload = pairing_deep_link(&host, &pc.code);
-            qr2term::print_qr(&payload).ok();
-            println!("Pairing code: {}  (valid 5 minutes)", pc.code);
-            println!("Payload: {payload}");
+            match directory_url() {
+                // Simple path: the operator types ONE code into the signed-in
+                // app, no host, no URL, no QR to scan from a headless VPS.
+                Some(base) => {
+                    println!("Pairing code: {}  (valid 5 minutes)", pc.code);
+                    println!("Type it into the Omega App, signed in. Waiting…");
+                    let box_id = omega_gateway::routes_box::read_or_create_box_id(&dir)?;
+                    let cfg = GatewayConfig::load(&dir);
+                    let port = cfg
+                        .bind
+                        .rsplit(':')
+                        .next()
+                        .and_then(|p| p.parse::<u16>().ok())
+                        .unwrap_or(4477);
+                    let body = redeem_request(&pc.code, &box_id, &host, port, None);
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                    if await_claim(&base, &body, deadline).await {
+                        println!("Paired. This machine is now on your account.");
+                    } else {
+                        println!("Pairing code expired before it was claimed. Run `pair` again.");
+                        std::process::exit(1);
+                    }
+                }
+                None => {
+                    qr2term::print_qr(&payload).ok();
+                    println!("Pairing code: {}  (valid 5 minutes)", pc.code);
+                    println!("Payload: {payload}");
+                }
+            }
         }
         Command::Schema => println!("{}", omega_gateway::protocol::schema_json()),
         Command::Devices => {
@@ -177,6 +203,67 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The Convex directory this box registers into when the operator has pointed
+/// it at one. Absent = the pre-existing behaviour: print the code and let the
+/// app take the host by hand.
+fn directory_url() -> Option<String> {
+    std::env::var("OMEGA_DIRECTORY_URL")
+        .ok()
+        .map(|s| s.trim().trim_end_matches('/').to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// SHA-256 hex of the pairing code. The directory stores and compares only
+/// this, so the code itself never leaves the machine and a directory dump
+/// never yields a usable one.
+fn code_hash(code: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(code.as_bytes());
+    hasher.finalize().iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The Convex HTTP mutation envelope for `boxPairing:redeem`. Built as data so
+/// the shape is testable without a directory to talk to.
+fn redeem_request(
+    code: &str,
+    box_id: &str,
+    label: &str,
+    gateway_port: u16,
+    tailscale_host: Option<&str>,
+) -> serde_json::Value {
+    let mut args = serde_json::json!({
+        "codeHash": code_hash(code),
+        "boxId": box_id,
+        "label": label,
+        "gatewayPort": gateway_port,
+    });
+    if let Some(host) = tailscale_host {
+        args["tailscaleHost"] = serde_json::Value::String(host.to_string());
+    }
+    serde_json::json!({ "path": "boxPairing:redeem", "args": args, "format": "json" })
+}
+
+/// Polls the directory until the operator has typed the code into the signed-in
+/// app. The code is minted locally and never uploaded, so this call only ever
+/// succeeds AFTER an authenticated owner claimed it — that ordering is what
+/// keeps the flow free of an unauthenticated mint endpoint.
+async fn await_claim(base: &str, body: &serde_json::Value, deadline: std::time::Instant) -> bool {
+    let client = reqwest::Client::new();
+    let endpoint = format!("{base}/api/mutation");
+    while std::time::Instant::now() < deadline {
+        if let Ok(res) = client.post(&endpoint).json(body).send().await {
+            if let Ok(payload) = res.json::<serde_json::Value>().await {
+                if payload.get("status").and_then(|s| s.as_str()) == Some("success") {
+                    return true;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    false
+}
+
 fn hostname_or_default() -> String {
     std::fs::read_to_string("/etc/hostname")
         .map(|s| s.trim().to_string())
@@ -230,6 +317,38 @@ fn percent_encode_query_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_hash_is_sha256_hex_and_never_the_code() {
+        // Known vector: SHA-256("abc").
+        assert_eq!(
+            code_hash("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        let hashed = code_hash("a1b2c3d4");
+        assert_eq!(hashed.len(), 64);
+        assert!(hashed.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(!hashed.contains("a1b2c3d4"));
+    }
+
+    #[test]
+    fn redeem_request_sends_the_hash_and_omits_an_absent_tailscale_host() {
+        let body = redeem_request("a1b2c3d4", "station-vps", "Station VPS", 4477, None);
+        assert_eq!(body["path"], "boxPairing:redeem");
+        assert_eq!(body["format"], "json");
+        assert_eq!(body["args"]["codeHash"], code_hash("a1b2c3d4"));
+        assert_eq!(body["args"]["boxId"], "station-vps");
+        assert_eq!(body["args"]["gatewayPort"], 4477);
+        assert!(body["args"].get("tailscaleHost").is_none());
+        // The plaintext code must never appear anywhere in the payload.
+        assert!(!body.to_string().contains("a1b2c3d4"));
+    }
+
+    #[test]
+    fn redeem_request_carries_a_tailscale_host_when_there_is_one() {
+        let body = redeem_request("a1b2c3d4", "b", "L", 4477, Some("station.tail64d114.ts.net"));
+        assert_eq!(body["args"]["tailscaleHost"], "station.tail64d114.ts.net");
+    }
 
     #[test]
     fn parse_account_kind_accepts_claude_and_codex_case_insensitively() {

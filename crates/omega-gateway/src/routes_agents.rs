@@ -70,7 +70,7 @@ fn resolve_installable_agent(name: &str) -> Result<Agent, (StatusCode, String)> 
 
 /// `POST /v1/agents/{name}/install` — a THIN, synchronous pre-flight check.
 /// It validates `{name}` (unknown -> 400; installable check -> 400 for
-/// `kimi`/`shell`, the only two agents with no `install_command`) and
+/// `shell`, the only agent with no `install_command`) and
 /// reports `already_available`, but it spawns NOTHING: the real install
 /// runs only over the `install/stream` WebSocket (C2), because `omega
 /// install` shells out to `curl|sh`/`npm install`, which can run for tens of
@@ -397,12 +397,13 @@ mod resolve_installable_agent_tests {
         assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
     }
 
+    /// Kimi shipped a real installer (`code.kimi.com/kimi-code/install.sh`) and
+    /// gained an `install_command`, so it is now accepted like any other agent.
+    /// This test used to assert the opposite and outlived the fact.
     #[test]
-    fn rejects_kimi_with_a_clear_message() {
-        let err = resolve_installable_agent("kimi").unwrap_err();
-        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
-        assert!(err.1.contains("kimi"), "message should name the agent: {}", err.1);
-        assert!(err.1.contains("omega install"), "message should say omega install: {}", err.1);
+    fn accepts_kimi_now_that_it_ships_an_installer() {
+        let agent = resolve_installable_agent("kimi").unwrap();
+        assert_eq!(agent.name(), "kimi");
     }
 
     #[test]

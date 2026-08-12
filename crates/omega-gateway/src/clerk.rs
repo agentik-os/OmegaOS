@@ -524,9 +524,23 @@ mod tests {
                 .await,
             Err(ClerkVerifyError::InvalidClaims)
         );
-        let mut bad_signature = sign_token("user", TEST_ISSUER, now, now + 300);
-        bad_signature.pop();
-        bad_signature.push('A');
+        // Corrupt the FIRST character of the signature segment, never the last.
+        // A 2048-bit RS256 signature base64url-encodes to 342 characters whose
+        // LAST one carries only 2 significant bits, so replacing it with 'A'
+        // decodes to the SAME bytes for every original value below 16 — the
+        // signature stayed valid and this assertion failed about one run in
+        // four. The first character carries a full 6 bits, so changing it
+        // always changes the signature.
+        let bad_signature = {
+            let (head, signature) = sign_token("user", TEST_ISSUER, now, now + 300)
+                .rsplit_once('.')
+                .map(|(h, s)| (h.to_string(), s.to_string()))
+                .expect("a JWT has three dot-separated segments");
+            let mut chars = signature.chars();
+            let first = chars.next().expect("a non-empty signature");
+            let replacement = if first == 'A' { 'B' } else { 'A' };
+            format!("{head}.{replacement}{}", chars.as_str())
+        };
         assert_eq!(
             verifier.verify(&bad_signature).await,
             Err(ClerkVerifyError::InvalidSignature)

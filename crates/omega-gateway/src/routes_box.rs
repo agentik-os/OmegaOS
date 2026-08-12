@@ -242,7 +242,7 @@ static BOX_ID_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// observable at its final name -- no window where a concurrent reader (a
 /// different process, or a curious `ls` from another local user) could see
 /// it at default (umask) permissions before it gets hardened.
-pub(crate) fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
+pub fn read_or_create_box_id(dir: &Path) -> std::io::Result<String> {
     std::fs::create_dir_all(dir)?;
     harden_dir(dir);
     let path = box_id_path(dir);

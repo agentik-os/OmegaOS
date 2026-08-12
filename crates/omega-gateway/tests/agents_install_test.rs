@@ -77,30 +77,6 @@ async fn install_check_rejects_unknown_agent_name() {
 }
 
 #[tokio::test]
-async fn install_check_rejects_kimi_with_a_clear_message() {
-    let _g = LOCK.lock().await;
-    let dir = tempfile::tempdir().unwrap();
-    install_fake_omega_that_must_not_run(dir.path());
-    let (_, token) = DeviceStore::open(dir.path()).issue("t");
-    let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
-    let base = spawn(app).await;
-
-    let res = reqwest::Client::new()
-        .post(format!("{base}/v1/agents/kimi/install"))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 400);
-    let body: serde_json::Value = res.json().await.unwrap();
-    let msg = body["error"].as_str().unwrap();
-    assert!(msg.to_lowercase().contains("kimi"), "message should name kimi: {msg}");
-    assert!(msg.contains("omega install"), "message should say omega install: {msg}");
-
-    std::env::remove_var("OMEGA_BIN");
-}
-
-#[tokio::test]
 async fn install_check_rejects_shell() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
@@ -212,7 +188,9 @@ async fn install_stream_rejects_unknown_agent_before_any_spawn() {
 }
 
 #[tokio::test]
-async fn install_stream_rejects_kimi_before_any_spawn() {
+/// `shell` is the one agent left with no `install_command` — kimi gained a
+/// real installer, so it is no longer the exemplar of "not installable".
+async fn install_stream_rejects_a_non_installable_agent_before_any_spawn() {
     let _g = LOCK.lock().await;
     let dir = tempfile::tempdir().unwrap();
     install_fake_omega_that_must_not_run(dir.path());
@@ -220,7 +198,7 @@ async fn install_stream_rejects_kimi_before_any_spawn() {
     let app = build_router(AppState::new(dir.path().to_path_buf(), GatewayConfig::default()));
     let base = spawn(app).await;
 
-    let url = ws_url(&base, "/v1/agents/kimi/install/stream", &token);
+    let url = ws_url(&base, "/v1/agents/shell/install/stream", &token);
     let err = connect_async(url).await.unwrap_err();
     assert!(err.to_string().contains("400"), "unexpected error: {err}");
 
