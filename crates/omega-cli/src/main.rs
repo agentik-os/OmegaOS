@@ -897,17 +897,53 @@ fn command_launches_provider(command: &Option<Commands>) -> bool {
     }
 }
 
+/// The TUI owns the whole screen. A tracing record written to stderr while it
+/// is up lands ON TOP of the rendered frame and stays there until the next full
+/// redraw, so the operator reads log text over the interface. `read_all` is the
+/// deliberately tolerant OracleState reader used by the TUI's refresh loop
+/// (oracle_lifecycle.rs), and it WARNs on every sweep that skips an entry —
+/// once per refresh, forever. Logging must therefore never share the terminal
+/// with a full-screen renderer: for TUI commands the records go to a file and
+/// stay readable there. Every other command keeps stderr byte-identical.
+fn command_renders_tui(command: &Option<Commands>) -> bool {
+    matches!(command, None | Some(Commands::Menu))
+}
+
+/// Append-only log sink for TUI runs. Returns None when the file cannot be
+/// opened — logging must never keep the OS from starting.
+fn tui_log_writer() -> Option<std::sync::Mutex<std::fs::File>> {
+    let dir = omega_core::config::omega_dir().join("logs");
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("omega-tui.log"))
+        .ok()
+        .map(std::sync::Mutex::new)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("omega=info".parse()?),
-        )
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .init();
-
     let cli = Cli::parse();
+
+    let filter = || -> Result<tracing_subscriber::EnvFilter> {
+        Ok(tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive("omega=info".parse()?))
+    };
+    match command_renders_tui(&cli.command).then(tui_log_writer).flatten() {
+        Some(file) => tracing_subscriber::fmt()
+            .with_env_filter(filter()?)
+            .with_target(false)
+            .with_ansi(false)
+            .with_writer(file)
+            .init(),
+        None => tracing_subscriber::fmt()
+            .with_env_filter(filter()?)
+            .with_target(false)
+            .with_writer(std::io::stderr)
+            .init(),
+    }
+
     let owns_codex_reconciliation = command_owns_codex_reconciliation(&cli.command);
     let launches_provider = command_launches_provider(&cli.command);
 

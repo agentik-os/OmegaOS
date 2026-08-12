@@ -859,11 +859,19 @@ impl OracleState {
     }
 
     /// Explicitly tolerant diagnostics for TUI/status/liveness views.
+    ///
+    /// The TUI refresh loop calls this on every tick, so the skipped-entry
+    /// signal is emitted ONCE per process. Warning per tick turned a single
+    /// unsafe entry into an unbounded log stream that, before logging was moved
+    /// off the terminal for TUI runs, rendered on top of the interface.
     pub fn read_all(state_dir: &Path) -> Vec<Self> {
+        static SWEEP_REPORTED: std::sync::Once = std::sync::Once::new();
         match Self::read_all_strict(state_dir) {
             Ok(states) => states,
             Err(error) => {
-                tracing::warn!(error = %error, "OracleState diagnostic sweep omitted unsafe entries");
+                SWEEP_REPORTED.call_once(|| {
+                    tracing::warn!(error = %error, "OracleState diagnostic sweep omitted unsafe entries");
+                });
                 read_oracle_states_tolerant(state_dir)
             }
         }

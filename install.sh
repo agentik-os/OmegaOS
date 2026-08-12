@@ -1611,6 +1611,17 @@ if [[ -d "$AUDITS_SRC" ]]; then
     # protocol file rather than inlining it. Idempotent + non-fatal.
     AUDIT_CMD_DST="$HOME/.claude/commands"
     mkdir -p "$AUDIT_CMD_DST"
+    # Codex parity. OmegaOS dispatches Codex workers (`omega new --agent codex`,
+    # /duo), and a measured 0 of the registered protocols reached them: the
+    # whole quality system was Claude-only, so a Codex worker could not run the
+    # audit its own brief demanded. Codex custom prompts are flat markdown under
+    # ~/.codex/prompts/, and the stub is identical because it only points at the
+    # installed protocol file.
+    AUDIT_CODEX_DST=""
+    if [[ -d "$HOME/.codex" || -n "$(command -v codex 2>/dev/null)" ]]; then
+        AUDIT_CODEX_DST="$HOME/.codex/prompts"
+        mkdir -p "$AUDIT_CODEX_DST"
+    fi
     AUDIT_STUBS=0
     for skill_md in "$AUDITS_DST"/*/SKILL.md; do
         [[ -f "$skill_md" ]] || continue
@@ -1628,10 +1639,16 @@ Run the full $name protocol. Read and follow the complete forensic instructions 
 
 Execute every phase exactly as written — no streamlined or custom variant.
 EOF
+            [[ -n "$AUDIT_CODEX_DST" ]] && cp -f "$AUDIT_CMD_DST/$cmd.md" "$AUDIT_CODEX_DST/$cmd.md"
         done
         AUDIT_STUBS=$((AUDIT_STUBS + 1))
     done
-    ok "Audit slash commands installed ($AUDIT_STUBS callable protocols → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
+    if [[ -n "$AUDIT_CODEX_DST" ]]; then
+        ok "Audit slash commands installed ($AUDIT_STUBS callable protocols → /<name> + /omg-<name>, Claude AND Codex)"
+    else
+        ok "Audit slash commands installed ($AUDIT_STUBS callable protocols → /<name> + /omg-<name> in $AUDIT_CMD_DST/)"
+    fi
+    unset AUDIT_CODEX_DST
     unset AUDIT_REGISTERED AUDIT_PROTOCOLS AUDIT_HELPERS
 
     # Quality Arsenal RUNTIME. The audit SKILLs invoke the hybrid orchestrator
