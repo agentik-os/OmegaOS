@@ -880,6 +880,19 @@ fn command_owns_codex_reconciliation(command: &Option<Commands>) -> bool {
 /// Credential topology repair is a mutation. Run it only immediately before a
 /// command that can launch an agent, never as hidden startup work for JSON,
 /// diagnostics, report-only, or explicitly dry-run surfaces.
+///
+/// `Commands::Doctor` is deliberately NOT in this list, and the question was
+/// asked and settled rather than left open. Three reasons: (1) doctor is the
+/// diagnostic surface this contract names by name; (2) `omega doctor --fix`
+/// runs unattended from the self-heal cron every 3h (install.sh:3113), and the
+/// heal is not cosmetic — `ensure_legacy_symlink("claude")` can rename the
+/// native credential into the canonical store and back the original up as
+/// `.credentials.json.pre-omega` (credentials.rs:254-283, 547-584); (3) a
+/// diagnostic that repairs what it measures can never report it — doctor would
+/// heal the desync, then print "healthy", and the operator would never learn
+/// the topology drifted. Doctor now resolves the credential through
+/// `oauth::credentials_path()` instead (doctor.rs, check #10), so it reads the
+/// truth without touching it.
 fn command_launches_provider(command: &Option<Commands>) -> bool {
     match command {
         None | Some(Commands::Menu) => true,
