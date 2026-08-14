@@ -347,6 +347,119 @@ fn check_agents_override_shadowing() -> Check {
     }
 }
 
+/// The distinguishable states of the Claude credential chain. One warning for
+/// three different worlds is not a diagnosis: "you were never logged in",
+/// "your token ran out" and "you are logged in, only the two paths drifted
+/// apart" need three different sentences and only two of them are problems.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeCred {
+    /// A live credential, read from the canonical store. Nothing to report.
+    Valid,
+    /// A live credential, but the resolver had to fall back to the path Claude
+    /// itself writes because the canonical store carries no usable token. The
+    /// user IS connected; only the topology drifted. Informative, never an alarm.
+    ValidUnlinked,
+    /// A credential exists and parses, but its token is past expiry.
+    Expired,
+    /// No readable credential at either path.
+    Absent,
+}
+
+/// Expiry (epoch ms) out of a Claude credential document. The token nests under
+/// `claudeAiOauth`; the top-level fallback keeps older/alternate formats readable,
+/// exactly as before. Kept content-shaped so the macOS Keychain payload — which
+/// never touches the filesystem — goes through the same parser.
+fn parse_claude_expires_ms(content: &str) -> Option<i128> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|v| {
+            v.get("claudeAiOauth")
+                .and_then(|o| o.get("expiresAt"))
+                .or_else(|| v.get("expiresAt"))
+                .and_then(|e| e.as_i64())
+                .map(|n| n as i128)
+        })
+}
+
+/// Same, read off a path. An unreadable or unparseable file is `None` — the
+/// caller reads that as "no credential here", never as "expired".
+fn claude_expires_ms_at(path: &std::path::Path) -> Option<i128> {
+    std::fs::read_to_string(path)
+        .ok()
+        .as_deref()
+        .and_then(parse_claude_expires_ms)
+}
+
+/// Classify the Claude credential chain from the path the SHARED resolver
+/// (`oauth::credentials_path()`) picked, compared against the canonical store.
+///
+/// Reading the canonical store ALONE declared a perfectly connected user broken,
+/// and it did so at exactly the step `install.sh` tells the user to run after
+/// installing ("5. Verify: omega doctor — every line should be [+]",
+/// install.sh:3822). The topology a fresh install plus a real login produces is:
+/// `install.sh` creates the canonical file at ZERO bytes (install.sh:1430) and
+/// symlinks Claude's native path onto it (`migrate_creds`, install.sh:1290-1322),
+/// then Claude's `/login` writes ATOMICALLY (temp + rename(2)) — and rename
+/// REPLACES the symlink with a regular file instead of writing through it. So
+/// the credential lands at the native path and the canonical stays empty. Only
+/// macOS had a fallback (its Keychain), so every Linux install failed its own
+/// verification step while being perfectly authenticated.
+///
+/// The resolution itself is NOT re-derived here: `oauth::credentials_path()`
+/// already encodes it (canonical first, but only when it holds a real refresh
+/// token, otherwise the native path — oauth.rs:596-620), and it is what every
+/// other read in the codebase goes through. Doctor asks that resolver and
+/// compares its answer to the canonical path; a second resolver would drift.
+fn claude_cred_state(
+    resolved: &std::path::Path,
+    canonical: &std::path::Path,
+    now_ms: i128,
+) -> ClaudeCred {
+    let Some(expires_at) = claude_expires_ms_at(resolved) else {
+        return ClaudeCred::Absent;
+    };
+    if expires_at < now_ms {
+        return ClaudeCred::Expired;
+    }
+    if resolved == canonical {
+        ClaudeCred::Valid
+    } else {
+        ClaudeCred::ValidUnlinked
+    }
+}
+
+/// The sentence doctor prints for each state. Split from the classifier so the
+/// wording is testable without a filesystem.
+fn claude_oauth_check(state: ClaudeCred, resolved: &std::path::Path) -> Check {
+    match state {
+        ClaudeCred::Valid => Check::ok("claude oauth", "Claude OAuth valid"),
+        // Health::Ok on purpose: the operator is connected. Saying otherwise is
+        // the false alarm this check exists to stop — and a Warn here would also
+        // hand the 3-hourly `omega doctor --fix` self-heal (install.sh:3113) a
+        // credential "problem" to repair that does not exist.
+        ClaudeCred::ValidUnlinked => Check::ok(
+            "claude oauth",
+            format!(
+                "Claude OAuth valid (credential at {}; canonical store not linked — \
+                 any omega command that launches an agent re-links it, e.g. omega menu)",
+                resolved.display()
+            ),
+        ),
+        ClaudeCred::Expired => Check::warn(
+            "claude oauth",
+            format!(
+                "Claude OAuth expired at {} — run: claude → /login",
+                resolved.display()
+            ),
+        ),
+        ClaudeCred::Absent => Check::warn(
+            "claude oauth",
+            "no Claude credential found (checked ~/.omega/credentials/claude.json and \
+             ~/.claude/.credentials.json) — run: claude → /login",
+        ),
+    }
+}
+
 /// Run every health check. Each is independent and never panics.
 pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
     let mut checks = Vec::new();
@@ -744,40 +857,25 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
         }
     }
 
-    // 10. Claude OAuth credential — the agent CLI needs a live token.
+    // 10. Claude OAuth credential — the agent CLI needs a live token. Ask the
+    //     SAME resolver every other read goes through instead of hard-coding the
+    //     canonical path: see `claude_cred_state` for why the canonical file is
+    //     legitimately empty on a freshly installed, freshly logged-in box.
     {
         let omega_dir = config.state_dir.parent().map(|p| p.to_path_buf());
-        let cred = omega_dir.map(|d| d.join("credentials/claude.json"));
+        let canonical = omega_dir
+            .map(|d| d.join("credentials/claude.json"))
+            .unwrap_or_else(crate::oauth::credentials_path);
+        let resolved = crate::oauth::credentials_path();
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i128)
             .unwrap_or(0);
-        let parse_expires = |content: &str| {
-            serde_json::from_str::<serde_json::Value>(content)
-                .ok()
-                .and_then(|v| {
-                    // The Claude credential nests the token under `claudeAiOauth`;
-                    // fall back to a top-level field for older/alternate formats.
-                    v.get("claudeAiOauth")
-                        .and_then(|o| o.get("expiresAt"))
-                        .or_else(|| v.get("expiresAt"))
-                        .and_then(|e| e.as_i64())
-                        .map(|n| n as i128)
-                })
-        };
-        let file_expires = cred
-            .and_then(|p| std::fs::read_to_string(&p).ok())
-            .and_then(|c| parse_expires(&c));
-        match file_expires {
-            Some(exp) if exp < now_ms => checks.push(Check::warn(
-                "claude oauth",
-                "Claude OAuth expired — refresh required",
-            )),
-            Some(_) => checks.push(Check::ok("claude oauth", "Claude OAuth valid")),
-            // No (parseable) credential FILE. On macOS the Claude CLI stores it
-            // in the login Keychain instead — probe it before warning, so a
-            // healthy Mac doesn't report a broken credential chain.
-            None => {
+        match claude_cred_state(&resolved, &canonical, now_ms) {
+            // No credential at either path. On macOS the Claude CLI stores it in
+            // the login Keychain instead — probe it before warning, so a healthy
+            // Mac doesn't report a broken credential chain.
+            ClaudeCred::Absent => {
                 let keychain_expires = if cfg!(target_os = "macos") {
                     std::process::Command::new("security")
                         .args([
@@ -789,7 +887,7 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                         .output()
                         .ok()
                         .filter(|o| o.status.success())
-                        .and_then(|o| parse_expires(&String::from_utf8_lossy(&o.stdout)))
+                        .and_then(|o| parse_claude_expires_ms(&String::from_utf8_lossy(&o.stdout)))
                 } else {
                     None
                 };
@@ -802,12 +900,10 @@ pub async fn run_all(config: &OmegaConfig) -> Vec<Check> {
                         "claude oauth",
                         "Claude OAuth valid (macOS Keychain)",
                     )),
-                    None => checks.push(Check::warn(
-                        "claude oauth",
-                        "claude.json missing/unreadable — agent CLI will fail",
-                    )),
+                    None => checks.push(claude_oauth_check(ClaudeCred::Absent, &resolved)),
                 }
             }
+            state => checks.push(claude_oauth_check(state, &resolved)),
         }
     }
 
@@ -1523,6 +1619,119 @@ mod tests {
         assert!(!cmdline_is_tg_bot(
             "bash -c claude --brief run /usr/local/bin/bun /home/vibe/.omega/telegram-bot/omega-tg-bot.ts"
         ));
+    }
+
+    // ── check #10, claude oauth ─────────────────────────────────────────────
+    // Every one of these builds its own tempdir and names only paths inside it:
+    // nothing here reads $HOME, `dirs::home_dir()` or the operator's real
+    // credentials, and nothing here writes outside the tempdir.
+
+    /// A fixed clock. Wall time in a test is a flake waiting to happen.
+    const NOW_MS: i128 = 1_800_000_000_000;
+
+    /// A credential document shaped exactly like the one Claude writes.
+    fn write_claude_cred(path: &std::path::Path, expires_at_ms: i128) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            path,
+            format!(
+                r#"{{"claudeAiOauth":{{"accessToken":"at","refreshToken":"rt","expiresAt":{expires_at_ms}}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    /// (a) THE REGRESSION. A fresh install plus a real `claude → /login` leaves
+    /// the canonical store at zero bytes (install.sh:1430 creates it empty, and
+    /// Claude's atomic login write replaces the symlink onto it with a regular
+    /// file at the native path). Doctor must read that as connected — it is the
+    /// state install.sh:3822 sends every new user to verify.
+    #[test]
+    fn empty_canonical_with_a_valid_native_credential_reads_as_connected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join(".omega/credentials/claude.json");
+        let native = tmp.path().join(".claude/.credentials.json");
+        std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+        std::fs::write(&canonical, "").unwrap();
+        write_claude_cred(&native, NOW_MS + 3_600_000);
+
+        // Premise, evaluated by the resolver's OWN reader (oauth.rs:605-610):
+        // the canonical carries no usable token, the native one does — so
+        // `oauth::credentials_path()` resolves to the native path here.
+        assert!(
+            crate::oauth::read_credentials(&canonical).is_err(),
+            "premise: an empty canonical holds no usable token"
+        );
+        assert!(
+            crate::oauth::read_credentials(&native).is_ok(),
+            "premise: the native path holds the real credential"
+        );
+
+        let state = claude_cred_state(&native, &canonical, NOW_MS);
+        assert_eq!(state, ClaudeCred::ValidUnlinked);
+        let check = claude_oauth_check(state, &native);
+        assert_eq!(
+            check.health,
+            Health::Ok,
+            "a logged-in user must not be told they are broken: {}",
+            check.detail
+        );
+        assert!(check.detail.contains("valid"), "{}", check.detail);
+    }
+
+    /// (b) Nothing anywhere is a REAL problem: the resolver's last resort is the
+    /// canonical path, which does not exist.
+    #[test]
+    fn no_credential_anywhere_is_reported_as_a_real_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join(".omega/credentials/claude.json");
+
+        let state = claude_cred_state(&canonical, &canonical, NOW_MS);
+        assert_eq!(state, ClaudeCred::Absent);
+        let check = claude_oauth_check(state, &canonical);
+        assert_eq!(check.health, Health::Warn);
+        assert!(
+            check.detail.contains("no Claude credential"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("/login"), "{}", check.detail);
+    }
+
+    /// (c) Expired is its own state, and must not be worded like absence: one
+    /// says reconnect, the other says connect for the first time.
+    #[test]
+    fn an_expired_credential_is_distinct_from_a_missing_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join(".omega/credentials/claude.json");
+        write_claude_cred(&canonical, NOW_MS - 60_000);
+
+        let state = claude_cred_state(&canonical, &canonical, NOW_MS);
+        assert_eq!(state, ClaudeCred::Expired);
+        assert_ne!(state, ClaudeCred::Absent);
+        let check = claude_oauth_check(state, &canonical);
+        assert_eq!(check.health, Health::Warn);
+        assert!(check.detail.contains("expired"), "{}", check.detail);
+        assert!(
+            !check.detail.contains("no Claude credential"),
+            "an expired token is not a missing one: {}",
+            check.detail
+        );
+    }
+
+    /// (d) Non-regression: a populated canonical store stays the quiet, plain
+    /// healthy line it has always been.
+    #[test]
+    fn a_valid_canonical_credential_stays_healthy_and_quiet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let canonical = tmp.path().join(".omega/credentials/claude.json");
+        write_claude_cred(&canonical, NOW_MS + 3_600_000);
+
+        let state = claude_cred_state(&canonical, &canonical, NOW_MS);
+        assert_eq!(state, ClaudeCred::Valid);
+        let check = claude_oauth_check(state, &canonical);
+        assert_eq!(check.health, Health::Ok);
+        assert_eq!(check.detail, "Claude OAuth valid");
     }
 
     #[test]
