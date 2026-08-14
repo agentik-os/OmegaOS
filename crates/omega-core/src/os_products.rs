@@ -1,7 +1,7 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). 25 operative systems along the value chain, in four groups: PERSONAL
-//! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive — the BE /
-//! ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
+//! (TUI). 26 operative systems along the value chain, in four groups: PERSONAL
+//! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive, Intuitive —
+//! the BE / ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
 //! 03 Market Research → 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
 //! 08 Quality/Evaluation/Release), GROWTH (Storyteller, Revenue, Delivery &
 //! Customer Success, Relationship & Network, Wealth & Capital — the
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsGroup {
     /// The personal BE / ENERGY layer (Mindset, Health & Energy, Habit
-    /// Tracker, Alignment, Seductive).
+    /// Tracker, Alignment, Seductive, Intuitive).
     Personal,
     /// The product pipeline, in chain order:
     /// 01 Strategy & Portfolio → 02 Brainstorm → 03 Market Research →
@@ -187,6 +187,36 @@ impl OsProduct {
                     "omega-seduction   open the magnetism master agent in a session",
                     "→ pairs with Mindset (identity), Health & Energy (the substrate),",
                     "  Alignment (values) and Relationship & Network (the platonic half)",
+                ],
+            },
+            OsProduct {
+                slug: "intuitive-os",
+                name: "Intuitive OS",
+                tagline: "Intuitive {OS}: train intuition as a measurable skill — capture, classify, forecast, score, calibrate.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /intuition · /intuitive-os ):",
+                    "  turns instinct into a measurable learning loop, never a feeling as fact",
+                    "  intuition is a HYPOTHESIS; the raw capture happens before analysis",
+                    "  five layers never collapse: observation · interpretation · affect",
+                    "                             · intuition · decision",
+                    "  provenance: expert pattern · weak signal · emotion · incentive",
+                    "              · bias · noise (several may hold at once)",
+                    "modes (say the word or the /command):",
+                    "  setup      domains, baselines, cadence   ·   capture   raw, uncontaminated",
+                    "  signal     facts → anomalies → alternatives → baseline → test",
+                    "  predict    a falsifiable 1-99% forecast with a resolution date",
+                    "  decide     the full protocol (base rates, counter-evidence,",
+                    "             reversibility, second-order effects, premortem)",
+                    "  counter    red-team the hunch   ·   review   resolve and score",
+                    "  daily /weekly /patterns /models /profile /90d",
+                    "discipline: original predictions are IMMUTABLE after the outcome,",
+                    "  domains score SEPARATELY, decision quality != outcome quality,",
+                    "  small samples are flagged, never dressed as reliability.",
+                    "engine: Brier score + calibration buckets (stdlib, deterministic)",
+                    "omega-intuition   open the calibration master agent in a session",
+                    "→ pairs with Alignment (values, decisions) and Mindset (identity);",
+                    "  feeds Execution and Strategy with calibrated forecasts",
                 ],
             },
             // ── BUILD CHAIN — CHOOSE → BUILD → CERTIFY (01→08) ──────────────
@@ -1163,15 +1193,16 @@ mod tests {
 
     /// The value-chain suite, in registry order, grouped and contiguous:
     /// PERSONAL, then the BUILD CHAIN (01→08), then GROWTH, then SYSTEMS.
-    /// 25 = 23 value-chain OSes + books-os (a working OS with no value-chain
-    /// twin, kept in Systems rather than dropped) + seductive-os (the personal
-    /// magnetism layer, Personal group).
+    /// 26 = 23 value-chain OSes + books-os (a working OS with no value-chain
+    /// twin, kept in Systems rather than dropped) + seductive-os (personal
+    /// magnetism) + intuitive-os (judgment calibration), both Personal group.
     const EXPECTED: &[(&str, OsGroup)] = &[
         ("mindset-os", OsGroup::Personal),
         ("health-energy-os", OsGroup::Personal),
         ("habit-tracker-os", OsGroup::Personal),
         ("alignment-os", OsGroup::Personal),
         ("seductive-os", OsGroup::Personal),
+        ("intuitive-os", OsGroup::Personal),
         ("strategy-portfolio-os", OsGroup::BuildChain),
         ("brainstorm-os", OsGroup::BuildChain),
         ("market-research-os", OsGroup::BuildChain),
@@ -1200,8 +1231,8 @@ mod tests {
             OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
         assert_eq!(
             got.len(),
-            25,
-            "25 = 23 value-chain OSes + books-os + seductive-os"
+            26,
+            "26 = 23 value-chain OSes + books-os + seductive-os + intuitive-os"
         );
         assert_eq!(got, EXPECTED);
     }

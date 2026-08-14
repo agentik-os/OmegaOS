@@ -1138,7 +1138,7 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# The 25 value-chain operative systems (Personal / Build chain 01..08 / Growth
+# The 26 value-chain operative systems (Personal / Build chain 01..08 / Growth
 # / Systems), surfaced in the TUI's OS tab. The registry is compiled into
 # omega-core (os_products.rs); the payloads + READMEs are installed here so the
 # tab resolves a suite root even on a box with no checkout. The recursive copy
@@ -2173,7 +2173,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os ai-logic-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os intuitive-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2334,6 +2334,29 @@ E1(replicated) / E2(thin) / E3(craft) / P(personal) / C(clinical → route to a
 professional). safety-and-boundaries.md routes real distress to a professional.
 MREOF
             done; unset _c
+        fi
+        # Intuitive OS (judgment calibration) registers the short `/intuition`
+        # alias — the pack's own canonical command surface.
+        if [[ "$BSK" == "intuitive-os" ]]; then
+            cat > "$BCMD/intuition.md" <<MREOF
+# /intuition
+
+Intuitive {OS} — train, test and calibrate intuition as a measurable skill.
+Alias of /intuitive-os: read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Then \`prompt/INTUITIVE_OS_SYSTEM.md\` for the full contract.
+Modes: setup · capture · signal · predict · decide · counter · review · daily
+· weekly · patterns · models · profile · 90d.
+Intuition is a hypothesis, never automatic truth. Capture the RAW intuition
+before analysis; never collapse observation / interpretation / affect /
+intuition / decision. Resolvable claims get a 1-99% probability with a
+resolution date, and stored predictions are IMMUTABLE after the outcome.
+Score domains separately; decision quality is not outcome quality; flag small
+samples. High-stakes medical, legal or financial calls route to real evidence
+and expert review.
+MREOF
         fi
         # AI Logic OS registers /ai-logic + /ailogic aliases.
         if [[ "$BSK" == "ai-logic-os" ]]; then
