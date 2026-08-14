@@ -95,28 +95,61 @@ fn chmod_600(path: &std::path::Path) {
 #[cfg(not(unix))]
 fn chmod_600(_path: &std::path::Path) {}
 
-/// Copy a credential file to `dst` without ever exposing it group/world-readable.
-/// `std::fs::copy` creates the destination under the process umask (typically
-/// 0664) and only later chmods it, leaving a window where another local user can
-/// read the OAuth refresh token. On Unix we create the destination up-front with
-/// mode 0600 (O_CREAT|O_TRUNC) so the bytes are written into an already-locked
-/// file; on other platforms we fall back to the plain copy.
-#[cfg(unix)]
-fn secure_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut reader = std::fs::File::open(src)?;
-    let mut writer = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(dst)?;
-    std::io::copy(&mut reader, &mut writer)?;
-    Ok(())
+/// How many symlink hops to follow by hand when the target does not exist yet.
+/// Only the dangling tail needs this (`canonicalize` resolves everything else),
+/// and the bound is what stops a symlink cycle from spinning forever.
+const MAX_LINK_HOPS: usize = 8;
+
+/// Resolve the file a write to `path` must actually land on.
+///
+/// Symlinks are FOLLOWED, never replaced: `~/.claude/.credentials.json` is a
+/// link into the omega store (itself a link to a shared store on multi-user
+/// hosts), so renaming a fresh file onto the LINK would silently fork the
+/// credential — omega would keep reading a store nothing writes any more.
+/// `canonicalize` covers the normal case; a target that does not exist yet
+/// (fresh install, link created before the first login) is followed hop by hop
+/// instead, so a write still lands THROUGH the link.
+fn resolve_write_target(path: &std::path::Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        let Ok(link) = std::fs::read_link(&current) else {
+            break;
+        };
+        current = match current.parent() {
+            Some(parent) if link.is_relative() => parent.join(link),
+            _ => link,
+        };
+    }
+    current
 }
-#[cfg(not(unix))]
+
+/// Copy a credential file to `dst` atomically, without ever exposing it
+/// group/world-readable and without truncating a live credential in place.
+///
+/// Two hazards, one write. (1) `std::fs::copy` creates the destination under the
+/// process umask (typically 0664) and only later chmods it, leaving a window
+/// where another local user can read the OAuth refresh token. (2) Opening `dst`
+/// with `O_TRUNC` emptied the REAL shared credential in place and refilled it
+/// byte by byte — `dst` is normally a symlink chain ending in the store every
+/// session reads — so a concurrent reader (Atlas, a live session, the 30-minute
+/// refresh cron) could read a truncated JSON, and a crash mid-copy destroyed the
+/// credential outright and disconnected the whole system. This path is the
+/// `/account` switch, so it is really taken.
+///
+/// Instead: resolve the link to the file it actually points at, stage a temp we
+/// own beside it at mode 0600, then `rename(2)` over it — a reader sees the old
+/// file whole or the new file whole, never a half-written one. Same technique as
+/// `oauth::sync_credentials_to_omega`; the staging itself is the crate's one
+/// crash-safe implementation, `config::atomic_write_private` (which also carries
+/// the unix-only mode bits, so this needs no per-platform variant of its own).
 fn secure_copy(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    std::fs::copy(src, dst).map(|_| ())
+    let bytes = std::fs::read(src)?;
+    let target = resolve_write_target(dst);
+    crate::config::atomic_write_private(&target, &bytes)
+        .map_err(|e| std::io::Error::other(format!("{e:#}")))
 }
 
 /// High-level view of an account for the Telegram UI.
@@ -493,5 +526,97 @@ mod tests {
         let m = AccountsMeta::load();
         // No assertions on contents — file may exist on the test host.
         let _ = m;
+    }
+
+    // secure_copy tests run entirely inside their own tempdir: they take
+    // explicit paths, so they never touch the real HOME or real credentials.
+
+    /// The switch writes to `~/.claude/.credentials.json`, which is a SYMLINK
+    /// into the omega store. Two things must hold: the link survives as a link,
+    /// and the file behind it is never emptied in place. The hard link is what
+    /// makes the second one deterministic — it holds the old inode open, so a
+    /// truncate-in-place would show up in it as the new bytes, while a
+    /// stage-then-rename leaves it holding the old file whole.
+    #[cfg(unix)]
+    #[test]
+    fn secure_copy_writes_through_a_symlink_without_truncating_it() {
+        use std::os::unix::fs::MetadataExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("claude.json");
+        std::fs::write(&store, b"{\"old\":true}").unwrap();
+        let witness = tmp.path().join("witness.json");
+        std::fs::hard_link(&store, &witness).unwrap();
+        let link = tmp.path().join(".credentials.json");
+        std::os::unix::fs::symlink(&store, &link).unwrap();
+        let src = tmp.path().join("profile.json");
+        std::fs::write(&src, b"{\"new\":true,\"refresh\":\"fresh\"}").unwrap();
+
+        secure_copy(&src, &link).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the symlink was replaced by a regular file — the credential forked"
+        );
+        assert_eq!(
+            std::fs::read(&store).unwrap(),
+            b"{\"new\":true,\"refresh\":\"fresh\"}"
+        );
+        assert_eq!(
+            std::fs::read(&witness).unwrap(),
+            b"{\"old\":true}",
+            "the old inode was written in place, so a concurrent reader could see a truncated file"
+        );
+        assert_ne!(
+            std::fs::metadata(&store).unwrap().ino(),
+            std::fs::metadata(&witness).unwrap().ino()
+        );
+    }
+
+    /// Fresh install: the link exists before the store it points at. The write
+    /// must still land THROUGH the link, not replace it.
+    #[cfg(unix)]
+    #[test]
+    fn secure_copy_follows_a_link_whose_target_does_not_exist_yet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = tmp.path().join("credentials").join("claude.json");
+        let link = tmp.path().join(".credentials.json");
+        std::os::unix::fs::symlink(&store, &link).unwrap();
+        let src = tmp.path().join("profile.json");
+        std::fs::write(&src, b"{\"fresh\":true}").unwrap();
+
+        secure_copy(&src, &link).unwrap();
+
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read(&store).unwrap(), b"{\"fresh\":true}");
+    }
+
+    /// The file holds an OAuth refresh token: it must land owner-only, even when
+    /// the destination it replaces was group/world readable.
+    #[cfg(unix)]
+    #[test]
+    fn secure_copy_leaves_the_destination_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dst = tmp.path().join("claude.json");
+        std::fs::write(&dst, b"{\"old\":true}").unwrap();
+        std::fs::set_permissions(&dst, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let src = tmp.path().join("profile.json");
+        std::fs::write(&src, b"{\"refresh\":\"secret\"}").unwrap();
+
+        secure_copy(&src, &dst).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&dst).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read(&dst).unwrap(), b"{\"refresh\":\"secret\"}");
     }
 }
