@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::session::SessionManager;
+use crate::session::{sanitize_session_name, SessionManager};
 
 pub const REAUTH_SESSION: &str = "aisb-reauth";
 pub const COOLDOWN_SEC: u64 = 30;
@@ -159,6 +159,10 @@ pub struct ReauthResult {
     pub email: String,
     pub expires_min: i64,
     pub pane_tail: String,
+    /// Live sessions that were already running when the fresh credentials
+    /// landed, and therefore still hold the PREVIOUS authentication. Empty on
+    /// a failed login (nothing was rotated, so nothing went stale).
+    pub stale_sessions: Vec<StaleSession>,
 }
 
 /// Spawn the reauth session, send `/login`, and return the captured auth URL.
@@ -432,11 +436,26 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
 
     // On success, sync the fresh creds Claude wrote at its native path back
     // into the omega canonical store + re-establish the symlink.
+    let mut stale_sessions = Vec::new();
     if success {
         if let Err(e) = sync_credentials_to_omega() {
             tracing::warn!(error = %e, "failed to sync credentials to omega store");
         } else {
             tracing::info!("synced fresh credentials to ~/.omega/credentials/claude.json");
+        }
+
+        // The fresh token is on disk, and every session started BEFORE this
+        // moment is still holding the old one: a `claude` session reads its
+        // authentication once at launch and is never told the file changed.
+        // Report them (see `sessions_with_stale_auth`) so the operator learns
+        // it here instead of from a 401 hours later. Detection only: nothing
+        // below ever kills, restarts, or interrupts a session.
+        stale_sessions = sessions_with_stale_auth(mgr).await;
+        if !stale_sessions.is_empty() {
+            tracing::warn!(
+                count = stale_sessions.len(),
+                "live sessions are still running on the previous authentication"
+            );
         }
     }
 
@@ -467,6 +486,7 @@ pub async fn handle_code(mgr: &SessionManager, code: &str) -> Result<ReauthResul
         email,
         expires_min,
         pane_tail,
+        stale_sessions,
     })
 }
 
@@ -801,6 +821,197 @@ fn read_refresh_token(path: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+// ─────────────────── sessions left on the previous auth ───────────────────
+//
+// A successful login rewrites the credentials file, and NOTHING tells the
+// sessions already running about it. Atlas survives this because it re-execs a
+// fresh `claude -p` per message and therefore re-reads the file every time; an
+// rmux session does not, because it is one long-lived `claude` process that
+// read its authentication once at launch and closed the file. Measured on the
+// operator's box: live `claude` processes 10 to 19 days old against a
+// credentials file rewritten the same day. The 30-minute token-refresh cron
+// makes it worse, since it ROTATES the refresh token and follows the rotation
+// into exactly one consumer.
+//
+// So the login knows something the operator does not, and the whole point of
+// this section is to say it out loud. DETECT AND REPORT ONLY: nothing here
+// kills, restarts, signals, or interrupts a session. Killing one would destroy
+// whatever work it is holding, and the decision belongs to the operator.
+
+/// A live session still running on the authentication that preceded the login
+/// that just completed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StaleSession {
+    /// rmux session name, exactly as `omega sessions` lists it.
+    pub name: String,
+    /// Epoch seconds at which this session's agent process was launched.
+    pub started_at: i64,
+    /// How long it has been running, in seconds.
+    pub running_for_secs: i64,
+}
+
+impl StaleSession {
+    /// Coarse human age ("19d", "6h", "12m") for operator-facing text.
+    pub fn running_for_human(&self) -> String {
+        let secs = self.running_for_secs.max(0);
+        match secs {
+            s if s >= 86_400 => format!("{}d", s / 86_400),
+            s if s >= 3_600 => format!("{}h", s / 3_600),
+            s if s >= 60 => format!("{}m", s / 60),
+            s => format!("{s}s"),
+        }
+    }
+}
+
+/// The pure core: of the live Claude-bearing sessions and the instant each one
+/// started, which ones started BEFORE the credentials file was written?
+///
+/// Split out from the rmux/filesystem lookups precisely so this decision is
+/// testable without a live daemon or a real process.
+///
+/// A session that started at exactly `credentials_written_at` is NOT reported.
+/// One-second mtime granularity cannot order those two events, and an
+/// unprovable claim about the operator's running work is worse than a missed
+/// one: the report has to be trustworthy to be worth printing at all.
+/// Oldest first, then by name, so the same input always renders the same way.
+pub fn select_stale_auth_sessions(
+    sessions: &[(String, i64)],
+    credentials_written_at: i64,
+    now: i64,
+) -> Vec<StaleSession> {
+    let mut stale: Vec<StaleSession> = sessions
+        .iter()
+        .filter(|(_, started_at)| *started_at < credentials_written_at)
+        .map(|(name, started_at)| StaleSession {
+            name: name.clone(),
+            started_at: *started_at,
+            running_for_secs: (now - *started_at).max(0),
+        })
+        .collect();
+    stale.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.name.cmp(&b.name)));
+    stale
+}
+
+/// Epoch seconds at which OmegaOS launched `session`'s agent process.
+///
+/// Read from the provider record `SessionManager` writes beside every typed
+/// agent session — the same file `list_sessions` already reads the provider
+/// out of, so this is one more field of a record we are holding anyway rather
+/// than a second mechanism for tracking sessions. It is also the RIGHT
+/// instant: `relaunch_agent_session_with_opts` rewrites the record when it
+/// replaces a pane's agent, so the timestamp follows the process that actually
+/// holds the token, not merely the session's creation.
+///
+/// `None` when the record is absent, unreadable, or names a different session
+/// (mirroring `read_session_provider`'s own guard). An unknown age cannot be
+/// compared to anything, so such a session is left out of the report.
+fn session_agent_started_at(name: &str) -> Option<i64> {
+    let path = crate::config::omega_dir().join("state").join(format!(
+        "session-provider-{}.json",
+        sanitize_session_name(name)
+    ));
+    agent_start_from_record(&path, name)
+}
+
+/// The parsing half of `session_agent_started_at`, split off the `$OMEGA_DIR`
+/// lookup so it can be tested against a real record on disk without an
+/// environment override.
+fn agent_start_from_record(path: &std::path::Path, name: &str) -> Option<i64> {
+    let payload: serde_json::Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    if payload.get("session")?.as_str()? != sanitize_session_name(name) {
+        return None;
+    }
+    let recorded_at = payload.get("recorded_at")?.as_str()?;
+    Some(
+        chrono::DateTime::parse_from_rfc3339(recorded_at)
+            .ok()?
+            .timestamp(),
+    )
+}
+
+/// Every live Claude session that is still running on the authentication from
+/// before the current credentials were written.
+///
+/// Enumerates through `SessionManager::list_sessions` — the one mechanism the
+/// patrol and the TUI already use — and keeps the sessions whose recorded
+/// provider is Claude, since those are the ones that read this credentials
+/// file. Codex, GLM and plain shells authenticate elsewhere and are not
+/// affected by a Claude login.
+///
+/// Never fails the caller: a login that genuinely succeeded must not be
+/// reported as broken because a report about it could not be assembled, so
+/// every unreadable input degrades to "nothing to report" plus a log line.
+pub async fn sessions_with_stale_auth(mgr: &SessionManager) -> Vec<StaleSession> {
+    let creds_path = credentials_path();
+    let Some(written_at) = creds_path
+        .metadata()
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+    else {
+        tracing::warn!(
+            path = %creds_path.display(),
+            "cannot read credentials mtime — skipping the stale-session report"
+        );
+        return Vec::new();
+    };
+
+    let sessions = match mgr.list_sessions().await {
+        Ok(sessions) => sessions,
+        Err(e) => {
+            tracing::warn!(error = %e, "cannot list sessions — skipping the stale-session report");
+            return Vec::new();
+        }
+    };
+
+    let started: Vec<(String, i64)> = sessions
+        .into_iter()
+        // The reauth session is this login's own plumbing, killed moments from
+        // now by `handle_code`. Reporting it as the operator's stale work would
+        // be a false positive on the very first line of the report.
+        .filter(|s| s.name != REAUTH_SESSION)
+        .filter(|s| s.provider.as_deref() == Some("claude"))
+        .filter_map(|s| session_agent_started_at(&s.name).map(|started| (s.name, started)))
+        .collect();
+
+    select_stale_auth_sessions(&started, written_at, now_epoch_secs() as i64)
+}
+
+/// The operator-facing sentence for a stale-session report, or `None` when
+/// every live Claude session is already on the fresh token.
+///
+/// Says how many, says which, and says the only remedy that exists: open a new
+/// session. It deliberately does NOT offer to restart or kill anything —
+/// OmegaOS will not end a session that is holding the operator's work, so
+/// suggesting it here would promise something the system must never do.
+pub fn stale_auth_notice(stale: &[StaleSession]) -> Option<String> {
+    if stale.is_empty() {
+        return None;
+    }
+    const SHOWN: usize = 8;
+    let mut named: Vec<String> = stale
+        .iter()
+        .take(SHOWN)
+        .map(|s| format!("{} (running {})", s.name, s.running_for_human()))
+        .collect();
+    if stale.len() > SHOWN {
+        named.push(format!("and {} more", stale.len() - SHOWN));
+    }
+    let (subject, they) = if stale.len() == 1 {
+        ("1 live session is".to_string(), "it")
+    } else {
+        (format!("{} live sessions are", stale.len()), "they")
+    };
+    Some(format!(
+        "{subject} still running on the PREVIOUS authentication: {}. Each read its token once at \
+         launch and is never told the file changed, so {they} keep using the old one. Open a NEW \
+         session to work on the fresh login; OmegaOS will not restart or interrupt a running \
+         session.",
+        named.join(", ")
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -995,6 +1206,202 @@ mod tests {
             Some("rate_limit_error")
         );
         assert!(detect_auth_failure("everything is fine").is_none());
+    }
+
+    // ─────────── sessions left on the previous auth (pure core) ───────────
+    //
+    // The selector is split out from rmux and the filesystem so these run with
+    // no daemon, no real process and no credentials file: the whole decision
+    // is (session start instants, credential write instant) in, names out.
+
+    /// Names + start instants, in the shape `select_stale_auth_sessions` takes.
+    fn starts(pairs: &[(&str, i64)]) -> Vec<(String, i64)> {
+        pairs
+            .iter()
+            .map(|(name, at)| ((*name).to_string(), *at))
+            .collect()
+    }
+
+    fn names(stale: &[StaleSession]) -> Vec<&str> {
+        stale.iter().map(|s| s.name.as_str()).collect()
+    }
+
+    /// The load-bearing case: a login at T=1000 leaves everything started
+    /// before T=1000 on the old token, and only those. The age is measured
+    /// against `now`, not against the login, because what the operator needs to
+    /// recognise a session is how long it has been running.
+    #[test]
+    fn select_stale_auth_reports_exactly_the_sessions_that_predate_the_login() {
+        let sessions = starts(&[
+            ("verba-claude", 100),
+            ("oracle-loumna", 900),
+            ("OmegaOS-claude", 1_500),
+        ]);
+        let stale = select_stale_auth_sessions(&sessions, 1_000, 2_000);
+
+        assert_eq!(names(&stale), vec!["verba-claude", "oracle-loumna"]);
+        assert_eq!(stale[0].started_at, 100);
+        assert_eq!(stale[0].running_for_secs, 1_900);
+        assert_eq!(stale[1].running_for_secs, 1_100);
+    }
+
+    /// The zero case. Every live session started after the credentials landed,
+    /// so there is nothing to report and the login says nothing extra. An empty
+    /// list is the answer, never a defensive "could not tell".
+    #[test]
+    fn select_stale_auth_is_empty_when_every_session_is_fresh() {
+        let sessions = starts(&[("a", 1_200), ("b", 1_800)]);
+        assert!(select_stale_auth_sessions(&sessions, 1_000, 2_000).is_empty());
+        assert!(select_stale_auth_sessions(&[], 1_000, 2_000).is_empty());
+    }
+
+    /// No false positive, which is the defect that would kill this feature's
+    /// credibility fastest: a session opened AFTER the login already holds the
+    /// fresh token, and telling the operator to reopen it is a lie that trains
+    /// them to ignore the whole report. The equal-instant case counts as fresh
+    /// too: one-second mtime granularity cannot order those two events, so the
+    /// claim is unprovable and is not made.
+    #[test]
+    fn select_stale_auth_never_reports_a_session_started_after_the_login() {
+        let after = starts(&[("opened-after", 1_001)]);
+        assert!(select_stale_auth_sessions(&after, 1_000, 2_000).is_empty());
+
+        let same_second = starts(&[("opened-during", 1_000)]);
+        assert!(
+            select_stale_auth_sessions(&same_second, 1_000, 2_000).is_empty(),
+            "a session started in the same second the file was written is not provably stale"
+        );
+
+        // And the boundary one tick earlier IS reported, so the guard above is
+        // a real boundary rather than a filter that never fires.
+        let just_before = starts(&[("opened-just-before", 999)]);
+        assert_eq!(
+            names(&select_stale_auth_sessions(&just_before, 1_000, 2_000)),
+            vec!["opened-just-before"]
+        );
+    }
+
+    /// Oldest first, then by name. The operator reads this list to decide what
+    /// to reopen, and the session that has been drifting for 19 days is the one
+    /// that has to be on the first line.
+    #[test]
+    fn select_stale_auth_orders_oldest_first_then_by_name() {
+        let sessions = starts(&[("zebra", 500), ("alpha", 500), ("ancient", 10)]);
+        assert_eq!(
+            names(&select_stale_auth_sessions(&sessions, 1_000, 2_000)),
+            vec!["ancient", "alpha", "zebra"]
+        );
+    }
+
+    #[test]
+    fn running_for_human_is_coarse_and_readable() {
+        let age = |secs| StaleSession {
+            name: "s".into(),
+            started_at: 0,
+            running_for_secs: secs,
+        }
+        .running_for_human();
+
+        assert_eq!(age(19 * 86_400), "19d");
+        assert_eq!(age(6 * 3_600), "6h");
+        assert_eq!(age(12 * 60), "12m");
+        assert_eq!(age(5), "5s");
+    }
+
+    /// Silence when there is nothing to say. A login that left no session
+    /// behind must not print a reassuring paragraph nobody needs to read.
+    #[test]
+    fn stale_auth_notice_is_silent_when_nothing_is_stale() {
+        assert_eq!(stale_auth_notice(&[]), None);
+    }
+
+    /// The message the operator actually acts on: how many, which ones, and the
+    /// only remedy that exists. It must NEVER offer to restart or kill a
+    /// session — OmegaOS will not end a session holding live work, so promising
+    /// it here would be promising something the system must refuse to do.
+    #[test]
+    fn stale_auth_notice_names_the_sessions_and_never_offers_a_kill() {
+        let stale = select_stale_auth_sessions(
+            &starts(&[("verba-claude", 0), ("oracle-loumna", 100)]),
+            1_000,
+            19 * 86_400,
+        );
+        let notice = stale_auth_notice(&stale).expect("two stale sessions must produce a notice");
+
+        assert!(notice.contains("2 live sessions are"), "got {notice:?}");
+        assert!(notice.contains("verba-claude (running 19d)"), "got {notice:?}");
+        assert!(notice.contains("oracle-loumna"), "got {notice:?}");
+        assert!(notice.contains("Open a NEW session"), "got {notice:?}");
+        for banned in ["kill", "restart it", "terminate", "/kill"] {
+            assert!(
+                !notice.to_lowercase().contains(banned),
+                "the notice must not suggest ending a session ({banned}): {notice:?}"
+            );
+        }
+
+        // Singular reads as a sentence too, not "1 live sessions are".
+        let one = select_stale_auth_sessions(&starts(&[("solo", 0)]), 1_000, 3_600);
+        let notice = stale_auth_notice(&one).expect("one stale session must produce a notice");
+        assert!(notice.starts_with("1 live session is"), "got {notice:?}");
+    }
+
+    /// A box with dozens of live sessions must not emit an unbounded wall of
+    /// names into a Telegram card: the list is capped and the remainder is
+    /// counted, so the total stays honest either way.
+    #[test]
+    fn stale_auth_notice_caps_the_list_but_keeps_the_count_honest() {
+        let many: Vec<(String, i64)> = (0..12)
+            .map(|i| (format!("session-{i:02}"), i as i64))
+            .collect();
+        let stale = select_stale_auth_sessions(&many, 1_000, 2_000);
+        assert_eq!(stale.len(), 12);
+
+        let notice = stale_auth_notice(&stale).expect("12 stale sessions must produce a notice");
+        assert!(notice.contains("12 live sessions are"), "got {notice:?}");
+        assert!(notice.contains("and 4 more"), "got {notice:?}");
+        assert!(!notice.contains("session-08"), "got {notice:?}");
+    }
+
+    /// The start instant is read from the provider record `SessionManager`
+    /// writes at launch, in the exact shape it writes it (this fixture is a
+    /// verbatim copy of a live `session-provider-*.json` from the operator's
+    /// box, whose `recorded_at` matched rmux's own "created" line to the
+    /// second). A record that names a DIFFERENT session is refused rather than
+    /// trusted, mirroring `read_session_provider`'s own guard: a stale file
+    /// left by a killed-and-recreated session must not date a live one.
+    #[test]
+    fn agent_start_is_read_from_the_provider_record_and_rejects_a_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-provider-verba-claude.json");
+        std::fs::write(
+            &path,
+            r#"{"session":"verba-claude","provider":"claude",
+                "recorded_at":"2026-08-11T20:45:12.567119067+00:00"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            agent_start_from_record(&path, "verba-claude"),
+            Some(1_786_481_112),
+        );
+        assert_eq!(
+            agent_start_from_record(&path, "some-other-session"),
+            None,
+            "a record naming another session cannot date this one"
+        );
+
+        assert_eq!(
+            agent_start_from_record(&tmp.path().join("absent.json"), "verba-claude"),
+            None
+        );
+
+        let broken = tmp.path().join("session-provider-broken.json");
+        std::fs::write(&broken, r#"{"session":"broken","provider":"claude"}"#).unwrap();
+        assert_eq!(
+            agent_start_from_record(&broken, "broken"),
+            None,
+            "a record with no recorded_at yields no age, never a fabricated one"
+        );
     }
 
     #[test]
