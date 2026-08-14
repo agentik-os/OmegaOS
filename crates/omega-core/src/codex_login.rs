@@ -46,6 +46,14 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 const TERMINATE_TIMEOUT: Duration = Duration::from_secs(5);
 const SUPERVISOR_SHELL: &str = "/bin/sh";
 const SUPERVISOR_GATE_TOKEN: &str = "omega-codex-login-go";
+/// How long a recorded flow must have existed before a dead supervisor lets
+/// Omega treat it as abandoned. The window covers the interval in which a
+/// supervisor has died but the Codex child it backgrounded is not yet
+/// observable, so a crash that is still unfolding is never settled underneath
+/// a process that can still write `auth.json`.
+const ABANDONED_FLOW_GRACE: Duration = Duration::from_secs(120);
+/// The trailing argv of every Codex device-login child Omega starts.
+const DEVICE_LOGIN_ARGV_TAIL: [&str; 2] = ["login", "--device-auth"];
 
 #[derive(Debug, Clone)]
 struct LoginPaths {
@@ -181,6 +189,29 @@ fn abort_result(result: FinishResult, aborted: bool) -> AbortResult {
         flow_succeeded: result.flow_succeeded,
         aborted,
     }
+}
+
+/// The result of resetting a device flow whose supervisor is gone. Every
+/// variant is a normal outcome: refusing to touch a flow is an answer, not a
+/// failure, so callers decide their own exit code from the variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum ResetOutcome {
+    /// No flow was recorded. The reset is idempotent and this is what a second
+    /// call returns.
+    NothingToReset,
+    /// The recorded flow was abandoned and has been settled: the canonical
+    /// credential was reconciled (restored from the flow backup when that was
+    /// the only valid copy), the native symlink was rebuilt, and the record was
+    /// erased. A later login can start immediately.
+    Settled {
+        id: String,
+        status: LoginStatus,
+        restored: bool,
+        flow_succeeded: bool,
+    },
+    /// A flow is recorded but is not provably abandoned. Nothing was signalled,
+    /// no credential was touched, and the record was left in place.
+    Refused { id: String, reason: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1045,6 +1076,235 @@ fn settle_success(
     })
 }
 
+/// Whether a Codex device-login child bound to this `CODEX_HOME` is still
+/// alive. A supervisor shell backgrounds its Codex child, so killing or
+/// rebooting out from under the shell can leave that child running and still
+/// able to write `auth.json`. Absence is only ever concluded from a scan that
+/// actually ran.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveFlowChild {
+    Absent,
+    Present,
+    Indeterminate,
+}
+
+/// Omega always launches the child as `<codex-bin> login --device-auth`, and
+/// the supervisor's own argv ends with the same two arguments.
+#[cfg(any(target_os = "linux", test))]
+fn is_device_login_argv(argv: &[String]) -> bool {
+    argv.len() > DEVICE_LOGIN_ARGV_TAIL.len()
+        && argv[argv.len() - DEVICE_LOGIN_ARGV_TAIL.len()..] == DEVICE_LOGIN_ARGV_TAIL
+}
+
+#[cfg(target_os = "linux")]
+fn device_login_child_match(paths: &LoginPaths, pid: u32) -> LiveFlowChild {
+    use std::os::unix::ffi::OsStrExt;
+
+    match process_argv(pid) {
+        ProcessProbe::Found(argv) if is_device_login_argv(&argv) => {}
+        // A kernel thread has no argv and an unreadable one belongs to another
+        // user, so neither can be a child of this session's supervisor.
+        ProcessProbe::Found(_) | ProcessProbe::Exited | ProcessProbe::Unknown => {
+            return LiveFlowChild::Absent
+        }
+    }
+    // The supervisor exports CODEX_HOME, so the real child always carries it.
+    // `environ` is owner-only: a permission failure proves the process belongs
+    // to another user and therefore cannot be this flow's child.
+    let environ = match std::fs::read(format!("/proc/{pid}/environ")) {
+        Ok(environ) => environ,
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            return LiveFlowChild::Absent
+        }
+        Err(_) => return LiveFlowChild::Indeterminate,
+    };
+    let matches_home = environ
+        .split(|byte| *byte == 0)
+        .filter_map(|entry| entry.strip_prefix(b"CODEX_HOME=".as_slice()))
+        .any(|value| Path::new(std::ffi::OsStr::from_bytes(value)) == paths.codex_home);
+    if matches_home {
+        LiveFlowChild::Present
+    } else {
+        LiveFlowChild::Absent
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn live_flow_child(paths: &LoginPaths) -> LiveFlowChild {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return LiveFlowChild::Indeterminate;
+    };
+    let mut indeterminate = false;
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        match device_login_child_match(paths, pid) {
+            LiveFlowChild::Present => return LiveFlowChild::Present,
+            LiveFlowChild::Indeterminate => indeterminate = true,
+            LiveFlowChild::Absent => {}
+        }
+    }
+    if indeterminate {
+        LiveFlowChild::Indeterminate
+    } else {
+        LiveFlowChild::Absent
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn live_flow_child(_paths: &LoginPaths) -> LiveFlowChild {
+    // No lossless argv or environment reader here. `ps` renders argv joined by
+    // spaces, so a real `codex login --device-auth` always contains the marker:
+    // this can over-report (which only refuses a reset) but never miss a live
+    // child. It cannot narrow the match to one CODEX_HOME, so any device login
+    // on the machine holds the reset back.
+    match Command::new("ps")
+        .args(["-A", "-o", "command="])
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            if String::from_utf8_lossy(&output.stdout).contains(&DEVICE_LOGIN_ARGV_TAIL.join(" ")) {
+                LiveFlowChild::Present
+            } else {
+                LiveFlowChild::Absent
+            }
+        }
+        _ => LiveFlowChild::Indeterminate,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AbandonedVerdict {
+    /// The recorded supervisor is provably gone and left nothing behind.
+    Settle,
+    /// Not provably abandoned. Nothing may be touched.
+    Keep(String),
+}
+
+/// Decide whether a recorded flow may be settled as abandoned. Pure: every
+/// probe is taken as an argument so the decision itself is testable.
+fn classify_abandoned_flow(
+    record: &FlowRecord,
+    process: RecordedProcess,
+    child: LiveFlowChild,
+    now_unix_ms: u128,
+) -> AbandonedVerdict {
+    match process {
+        // The guarantee this path must never weaken: a live recorded supervisor
+        // owns the flow, and two concurrent device logins are forbidden.
+        RecordedProcess::Running => {
+            return AbandonedVerdict::Keep("the recorded supervisor is still running".to_string())
+        }
+        RecordedProcess::Unknown => {
+            return AbandonedVerdict::Keep(
+                "the recorded supervisor's state is indeterminate".to_string(),
+            )
+        }
+        // The launch gate proves Codex never ran while the record still had
+        // pid 0, so there is nothing left behind to wait for.
+        RecordedProcess::Unspawned => return AbandonedVerdict::Settle,
+        RecordedProcess::Exited | RecordedProcess::IdentityMismatch => {}
+    }
+    match child {
+        LiveFlowChild::Present => {
+            return AbandonedVerdict::Keep(
+                "a Codex device login is still running for this CODEX_HOME".to_string(),
+            )
+        }
+        LiveFlowChild::Indeterminate => {
+            return AbandonedVerdict::Keep(
+                "could not prove that no Codex device login survived the supervisor".to_string(),
+            )
+        }
+        LiveFlowChild::Absent => {}
+    }
+    if now_unix_ms
+        < record
+            .started_unix_ms
+            .saturating_add(ABANDONED_FLOW_GRACE.as_millis())
+    {
+        return AbandonedVerdict::Keep(format!(
+            "the flow is still inside its {}s abandonment grace period",
+            ABANDONED_FLOW_GRACE.as_secs()
+        ));
+    }
+    AbandonedVerdict::Settle
+}
+
+/// Settle one recorded flow through the existing primitives, sentinel first: a
+/// flow that really did succeed is adopted rather than rolled back, and every
+/// other shape goes through the monotonic reconciler, which can only promote a
+/// credential or quarantine it.
+fn settle_recorded_flow(
+    paths: &LoginPaths,
+    store: &CredentialStore,
+    record: &FlowRecord,
+) -> Result<FinishResult> {
+    match read_exit_code(paths, record) {
+        Ok(Some(0)) => settle_success(paths, store, record),
+        // An unreadable sentinel is not a reason to keep the operator locked
+        // out: settle_abandoned restores the backup and never deletes a valid
+        // credential without preserving it first.
+        Ok(_) | Err(_) => settle_abandoned(paths, store, record),
+    }
+}
+
+/// Settle the recorded flow when, and only when, it is provably abandoned.
+/// Caller holds the flow lock.
+fn settle_if_abandoned(paths: &LoginPaths, record: &FlowRecord) -> Result<ResetOutcome> {
+    let process = recorded_process(paths, record);
+    let child = if matches!(
+        process,
+        RecordedProcess::Exited | RecordedProcess::IdentityMismatch
+    ) {
+        live_flow_child(paths)
+    } else {
+        // Not consulted for the other states, and the fail-closed value anyway.
+        LiveFlowChild::Indeterminate
+    };
+    let now_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if let AbandonedVerdict::Keep(reason) =
+        classify_abandoned_flow(record, process, child, now_unix_ms)
+    {
+        return Ok(ResetOutcome::Refused {
+            id: record.id.clone(),
+            reason,
+        });
+    }
+
+    let store = paths.store()?;
+    let mut record = record.clone();
+    // settle_abandoned only feeds the backup to the monotonic reconciler when
+    // the record claims one. Trust the file over the flag: a valid backup must
+    // reach the reconciler, which quarantines every distinct losing copy,
+    // before cleanup_flow removes the flow directory it lives in.
+    if !record.had_valid_backup && inspect_codex_credential(&paths.backup(&record.id)).is_valid() {
+        record.had_valid_backup = true;
+    }
+    let settled = settle_recorded_flow(paths, &store, &record)?;
+    Ok(ResetOutcome::Settled {
+        id: record.id,
+        status: settled.status,
+        restored: settled.restored,
+        flow_succeeded: settled.flow_succeeded,
+    })
+}
+
 fn settlement_failure(context: &str, error: anyhow::Error) -> FinishResult {
     FinishResult {
         status: LoginStatus::Unknown {
@@ -1145,11 +1405,18 @@ pub fn status() -> LoginStatus {
 fn start_with(paths: &LoginPaths, runtime: &Runtime) -> Result<DeviceLogin> {
     let _lock = try_flow_lock(paths)?;
     if let Some(active) = read_record(paths)? {
-        anyhow::bail!(
-            "Codex device login flow {} is already recorded (pid {}); settle it before starting another",
-            active.id,
-            active.supervisor_pid
-        );
+        // A supervisor killed by a reboot or a SIGKILL never writes its exit
+        // sentinel, and its record would otherwise refuse every later login for
+        // good. Settle it exactly as the explicit reset does, and refuse only
+        // while the flow is still live or its state cannot be established.
+        if let ResetOutcome::Refused { reason, .. } = settle_if_abandoned(paths, &active)? {
+            anyhow::bail!(
+                "Codex device login flow {} is already recorded (pid {}); settle it before starting another: {}",
+                active.id,
+                active.supervisor_pid,
+                reason
+            );
+        }
     }
 
     let store = paths.store()?;
@@ -1619,6 +1886,39 @@ fn abort_with(paths: &LoginPaths, requested_pid: u32) -> AbortResult {
 /// Stop and settle only the recorded supervisor whose identity and exact argv match.
 pub fn abort(pid: u32) -> AbortResult {
     abort_with(&LoginPaths::current(), pid)
+}
+
+/// Settle a device flow whose supervisor died without settling it, so an
+/// interrupted login (reboot, SIGKILL, severed connection) can never lock every
+/// later login out of the machine.
+///
+/// A flow is abandoned only when its recorded supervisor is provably gone
+/// (exited without its sentinel, or its PID was recycled by an unrelated
+/// process), no Codex device login is still running for this `CODEX_HOME`, and
+/// the flow has outlived [`ABANDONED_FLOW_GRACE`]. Settling restores the flow
+/// backup when it holds the only valid credential, rebuilds the native symlink
+/// and erases the record.
+///
+/// Safe to call at any time, and safe to repeat:
+/// - with nothing recorded it returns [`ResetOutcome::NothingToReset`];
+/// - a live recorded supervisor is never touched, never signalled, and returns
+///   [`ResetOutcome::Refused`], which keeps two concurrent logins impossible;
+/// - no valid credential is ever destroyed: every copy goes through the
+///   monotonic reconciler first, which promotes the freshest one and preserves
+///   every distinct loser in the owner-only quarantine.
+///
+/// Errors are reserved for a store or filesystem failure. A refusal is a normal
+/// outcome carried in the return value, so a caller chooses its own exit code.
+pub fn reset_abandoned_flow() -> Result<ResetOutcome> {
+    reset_abandoned_flow_with(&LoginPaths::current())
+}
+
+fn reset_abandoned_flow_with(paths: &LoginPaths) -> Result<ResetOutcome> {
+    let _lock = try_flow_lock(paths)?;
+    let Some(record) = read_record(paths)? else {
+        return Ok(ResetOutcome::NothingToReset);
+    };
+    settle_if_abandoned(paths, &record)
 }
 
 fn auth_diagnostic(text: &str) -> Option<AuthProbe> {
@@ -2689,6 +2989,355 @@ exit 1
         assert!(exact_auth_marker("\x1b[32mAUTH_OK\x1b[0m\n"));
         assert!(!exact_auth_marker("I should reply AUTH_OK"));
         assert!(!exact_auth_marker("AUTH_OK extra"));
+    }
+
+    /// A PID that is certain to be gone: spawned, waited on, and reaped.
+    #[cfg(target_os = "linux")]
+    fn reaped_pid() -> u32 {
+        let mut child = Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    /// The record a reboot or a SIGKILL leaves behind: a real backup, no exit
+    /// sentinel, and a supervisor that can no longer be found.
+    #[cfg(target_os = "linux")]
+    fn crashed_record(
+        paths: &LoginPaths,
+        store: &CredentialStore,
+        supervisor_pid: u32,
+        identity: &str,
+    ) -> FlowRecord {
+        prepare_state(paths).unwrap();
+        let id = unique_flow_id();
+        set_owner_only_dir(&paths.flow_dir(&id)).unwrap();
+        let mut record = FlowRecord {
+            id,
+            supervisor_pid,
+            process_identity: Some(identity.to_string()),
+            process_argv: Some(vec!["true".to_string()]),
+            started_unix_ms: 0,
+            had_valid_backup: false,
+        };
+        record.had_valid_backup =
+            copy_valid_backup(&store.active_path("codex"), &paths.backup(&record.id)).unwrap();
+        write_record(paths, &record).unwrap();
+        record
+    }
+
+    #[test]
+    fn only_a_device_login_argv_tail_counts_as_a_flow_child() {
+        assert!(is_device_login_argv(&[
+            "codex".to_string(),
+            "login".to_string(),
+            "--device-auth".to_string()
+        ]));
+        assert!(is_device_login_argv(&expected_supervisor_argv(
+            "/tmp/omega/child-exit",
+            Path::new("/usr/local/bin/codex")
+        )));
+        assert!(!is_device_login_argv(&[
+            "codex".to_string(),
+            "login".to_string(),
+            "status".to_string()
+        ]));
+        assert!(!is_device_login_argv(&[
+            "login".to_string(),
+            "--device-auth".to_string()
+        ]));
+        assert!(!is_device_login_argv(&[
+            "sh".to_string(),
+            "-c".to_string(),
+            "task text mentioning login --device-auth".to_string()
+        ]));
+    }
+
+    #[test]
+    fn abandonment_needs_a_dead_supervisor_no_live_child_and_the_grace_period() {
+        let record = FlowRecord {
+            id: "grace".to_string(),
+            supervisor_pid: 42,
+            process_identity: None,
+            process_argv: None,
+            started_unix_ms: 10_000,
+            had_valid_backup: false,
+        };
+        let settled_at = record.started_unix_ms + ABANDONED_FLOW_GRACE.as_millis();
+
+        for process in [RecordedProcess::Running, RecordedProcess::Unknown] {
+            assert!(
+                matches!(
+                    classify_abandoned_flow(&record, process, LiveFlowChild::Absent, settled_at),
+                    AbandonedVerdict::Keep(_)
+                ),
+                "{process:?} must never be settled"
+            );
+        }
+        for child in [LiveFlowChild::Present, LiveFlowChild::Indeterminate] {
+            assert!(
+                matches!(
+                    classify_abandoned_flow(&record, RecordedProcess::Exited, child, settled_at),
+                    AbandonedVerdict::Keep(_)
+                ),
+                "{child:?} must hold the settlement back"
+            );
+        }
+        assert!(matches!(
+            classify_abandoned_flow(
+                &record,
+                RecordedProcess::Exited,
+                LiveFlowChild::Absent,
+                settled_at - 1
+            ),
+            AbandonedVerdict::Keep(_)
+        ));
+
+        assert_eq!(
+            classify_abandoned_flow(
+                &record,
+                RecordedProcess::Exited,
+                LiveFlowChild::Absent,
+                settled_at
+            ),
+            AbandonedVerdict::Settle
+        );
+        assert_eq!(
+            classify_abandoned_flow(
+                &record,
+                RecordedProcess::IdentityMismatch,
+                LiveFlowChild::Absent,
+                settled_at
+            ),
+            AbandonedVerdict::Settle
+        );
+        // The launch gate proves Codex never ran, so nothing can be left behind.
+        assert_eq!(
+            classify_abandoned_flow(
+                &record,
+                RecordedProcess::Unspawned,
+                LiveFlowChild::Indeterminate,
+                0
+            ),
+            AbandonedVerdict::Settle
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reset_settles_a_supervisor_that_died_without_its_sentinel() {
+        let (_tmp, paths, store) = setup();
+        let record = crashed_record(&paths, &store, reaped_pid(), "exited-test-process");
+        let flow_dir = paths.flow_dir(&record.id);
+        let canonical_before = std::fs::read(store.active_path("codex")).unwrap();
+        std::fs::remove_file(paths.native_auth()).unwrap();
+
+        let outcome = reset_abandoned_flow_with(&paths).unwrap();
+        assert!(
+            matches!(
+                &outcome,
+                ResetOutcome::Settled {
+                    id,
+                    status: LoginStatus::LoggedIn { .. },
+                    restored: true,
+                    flow_succeeded: false,
+                } if *id == record.id
+            ),
+            "reset outcome: {outcome:?}"
+        );
+        assert!(!paths.active().exists(), "the record must be erased");
+        assert!(!flow_dir.exists());
+        assert!(expected_native_link(&paths, &store));
+        assert_eq!(
+            std::fs::read(store.active_path("codex")).unwrap(),
+            canonical_before
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reset_settles_a_flow_whose_pid_was_recycled() {
+        let (_tmp, paths, store) = setup();
+        // A live PID that is demonstrably not the recorded supervisor: exactly
+        // what a reboot leaves when the kernel hands the number to someone else.
+        let record = crashed_record(
+            &paths,
+            &store,
+            std::process::id(),
+            "deliberately-not-this-process",
+        );
+        assert_eq!(
+            recorded_process(&paths, &record),
+            RecordedProcess::IdentityMismatch
+        );
+        let canonical_before = std::fs::read(store.active_path("codex")).unwrap();
+        std::fs::remove_file(paths.native_auth()).unwrap();
+
+        let outcome = reset_abandoned_flow_with(&paths).unwrap();
+        assert!(
+            matches!(outcome, ResetOutcome::Settled { restored: true, .. }),
+            "reset outcome: {outcome:?}"
+        );
+        assert!(!paths.active().exists());
+        assert!(!paths.flow_dir(&record.id).exists());
+        assert!(expected_native_link(&paths, &store));
+        assert_eq!(
+            std::fs::read(store.active_path("codex")).unwrap(),
+            canonical_before
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reset_never_touches_a_live_recorded_supervisor() {
+        let (tmp, paths, store) = setup();
+        let fake = tmp.path().join("fake-codex-live-reset");
+        script(
+            &fake,
+            r#"#!/bin/sh
+if [ "$1 $2" = "login --device-auth" ]; then
+  printf 'HOLD-12345\n'
+  sleep 1
+  exit 1
+fi
+exit 2
+"#,
+        );
+        let runtime = test_runtime(&fake);
+        let canonical = store.active_path("codex");
+        let login = start_with(&paths, &runtime).unwrap();
+        let canonical_before = std::fs::read(&canonical).unwrap();
+        let native_before = std::fs::read(paths.native_auth()).unwrap();
+
+        let outcome = reset_abandoned_flow_with(&paths).unwrap();
+        assert!(
+            matches!(outcome, ResetOutcome::Refused { .. }),
+            "a live supervisor must be refused: {outcome:?}"
+        );
+        assert!(paths.active().exists(), "the record must survive");
+        assert_eq!(std::fs::read(&canonical).unwrap(), canonical_before);
+        assert_eq!(std::fs::read(paths.native_auth()).unwrap(), native_before);
+        // The anti-concurrency guarantee still holds through the reset path.
+        let second = start_with(&paths, &runtime).unwrap_err().to_string();
+        assert!(
+            second.contains("already recorded") || second.contains("holds the flow lock"),
+            "unexpected second-start error: {second}"
+        );
+
+        wait_for_exit(&paths, login.pid);
+        let cleanup = finish_with(&paths, &runtime, Some(login.pid));
+        assert!(!cleanup.flow_succeeded, "cleanup result: {cleanup:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_new_login_starts_after_an_abandoned_flow_is_reset() {
+        let (tmp, paths, store) = setup();
+        let record = crashed_record(&paths, &store, reaped_pid(), "exited-test-process");
+
+        assert!(matches!(
+            reset_abandoned_flow_with(&paths).unwrap(),
+            ResetOutcome::Settled { .. }
+        ));
+
+        let fake = tmp.path().join("fake-codex-after-reset");
+        script(
+            &fake,
+            r#"#!/bin/sh
+if [ "$1 $2" = "login --device-auth" ]; then
+  printf 'RSET-12345\n'
+  exit 1
+fi
+exit 2
+"#,
+        );
+        let runtime = test_runtime(&fake);
+        let login = start_with(&paths, &runtime).unwrap();
+        let fresh = read_record(&paths).unwrap().unwrap();
+        assert_ne!(fresh.id, record.id, "a genuinely new flow must be recorded");
+        assert_eq!(fresh.supervisor_pid, login.pid);
+
+        wait_for_exit(&paths, login.pid);
+        let result = finish_with(&paths, &runtime, Some(login.pid));
+        assert!(!result.flow_succeeded);
+        assert!(expected_native_link(&paths, &store));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn start_settles_an_abandoned_flow_instead_of_refusing_forever() {
+        let (tmp, paths, store) = setup();
+        let record = crashed_record(&paths, &store, reaped_pid(), "exited-test-process");
+        let flow_dir = paths.flow_dir(&record.id);
+        std::fs::remove_file(paths.native_auth()).unwrap();
+
+        let fake = tmp.path().join("fake-codex-after-crash");
+        script(
+            &fake,
+            r#"#!/bin/sh
+if [ "$1 $2" = "login --device-auth" ]; then
+  printf 'CRSH-12345\n'
+  exit 1
+fi
+exit 2
+"#,
+        );
+        let runtime = test_runtime(&fake);
+        // Before this change the recorded flow made every later login bail.
+        let login = start_with(&paths, &runtime).unwrap();
+        assert_ne!(login.pid, record.supervisor_pid);
+        assert!(!flow_dir.exists(), "the crashed flow must be swept");
+
+        wait_for_exit(&paths, login.pid);
+        let result = finish_with(&paths, &runtime, Some(login.pid));
+        assert!(!result.flow_succeeded);
+        assert!(expected_native_link(&paths, &store));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reset_is_idempotent_and_restores_the_only_valid_credential() {
+        let (_tmp, paths, store) = setup();
+        let canonical = store.active_path("codex");
+        assert_eq!(
+            reset_abandoned_flow_with(&paths).unwrap(),
+            ResetOutcome::NothingToReset,
+            "a reset with nothing to settle is a no-op, never an error"
+        );
+
+        let record = crashed_record(&paths, &store, reaped_pid(), "exited-test-process");
+        assert!(record.had_valid_backup);
+        let backup_bytes = std::fs::read(paths.backup(&record.id)).unwrap();
+        // Reproduce the destructive device-auth window: the flow backup now
+        // holds the only valid credential on the machine.
+        std::fs::remove_file(paths.native_auth()).unwrap();
+        std::fs::remove_file(&canonical).unwrap();
+
+        let outcome = reset_abandoned_flow_with(&paths).unwrap();
+        assert!(
+            matches!(
+                outcome,
+                ResetOutcome::Settled {
+                    status: LoginStatus::LoggedIn { .. },
+                    restored: true,
+                    ..
+                }
+            ),
+            "reset outcome: {outcome:?}"
+        );
+        assert_eq!(
+            std::fs::read(&canonical).unwrap(),
+            backup_bytes,
+            "the only valid credential must be restored, never destroyed"
+        );
+        assert!(expected_native_link(&paths, &store));
+
+        assert_eq!(
+            reset_abandoned_flow_with(&paths).unwrap(),
+            ResetOutcome::NothingToReset
+        );
+        assert_eq!(std::fs::read(&canonical).unwrap(), backup_bytes);
+        assert!(expected_native_link(&paths, &store));
     }
 
     #[test]
