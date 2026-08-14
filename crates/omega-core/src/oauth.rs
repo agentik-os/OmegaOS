@@ -3,8 +3,7 @@
 //!
 //! The flow:
 //!   1. `request_reauth` spawns a dedicated rmux session `aisb-reauth` running
-//!      `claude --dangerously-skip-permissions`, sends `/login`, and captures
-//!      the OAuth URL from the pane.
+//!      `claude`, sends `/login`, and captures the OAuth URL from the pane.
 //!   2. The bridge sends the URL to the user via Telegram.
 //!   3. The user clicks → authorizes → pastes the code back into Telegram.
 //!   4. `handle_code` pastes the code into the waiting rmux session, watches
@@ -36,6 +35,37 @@ pub const AUTH_FAILURE_MARKERS: &[&str] = &[
     "Invalid bearer token",
     "Token expired",
     "authentication failed",
+    // Emitted when the authorize step itself is refused and when a pasted code
+    // is rejected. Without them the poll loop below has nothing to short-circuit
+    // on, so a login that has ALREADY failed still burns its full 15s and then
+    // reports a timeout — hiding the real answer behind the wrong error.
+    "OAuth error",
+    "Invalid code",
+];
+
+/// Modal dialogs that can hold the reauth pane BEFORE its input box exists,
+/// as `(human name, signatures that must ALL be on screen)`.
+///
+/// Nothing here DRIVES a modal — the pane is launched so that none of them can
+/// appear (see the command in `request_reauth`). This exists so that when one
+/// shows up anyway, the failure NAMES it instead of reporting a bare timeout.
+/// The Bypass Permissions dialog can still be raised by an operator's own
+/// `~/.claude/settings.json` (`permissions.defaultMode: bypassPermissions`),
+/// which no flag of ours controls.
+///
+/// Signatures are required as a SET, never singly: "Bypass Permissions mode" on
+/// its own is a phrase ordinary prose carries, and the option strings are shared
+/// between dialogs (folder-trust and Bypass Permissions both offer "No, exit").
+/// Pairing a subject with that dialog's own accept option is what makes this a
+/// modal detector and not a keyword grep.
+const BLOCKING_MODALS: &[(&str, &[&str])] = &[
+    (
+        "Bypass Permissions confirmation (default answer is \"No, exit\")",
+        &["Bypass Permissions mode", "Yes, I accept"],
+    ),
+    // A rendered menu option, not a phrase prose produces on its own, so it
+    // needs no second signature to be unambiguous.
+    ("folder-trust confirmation", &["Yes, I trust this folder"]),
 ];
 
 /// Authorization-URL prefixes Claude can present on its `/login` screen.
@@ -221,7 +251,23 @@ pub async fn request_reauth(
         .context("persisting pending reauth authority before session spawn")?;
 
     // Spawn the reauth session.
-    let cmd = "claude --dangerously-skip-permissions";
+    //
+    // Deliberately WITHOUT `--dangerously-skip-permissions`. This pane types
+    // `/login` and nothing else — it never calls a tool, never edits a file,
+    // never runs a command — so the flag bought it no capability it uses, while
+    // costing it a blocking modal: on any machine where the operator has not
+    // already accepted that dialog (a FRESH INSTALL, which is exactly what the
+    // symptom reports), `claude --dangerously-skip-permissions` stops on
+    // "WARNING: Claude Code running in Bypass Permissions mode" whose
+    // pre-selected option is "No, exit". The single Enter this flow sends
+    // therefore ANSWERED NO and killed the pane, `/login` was never interpreted,
+    // no URL was ever painted, and the operator got the 15s timeout below
+    // instead of a link. Verified at runtime on 2.1.232 against a fresh HOME:
+    // with the flag the pane holds on that modal; without it the pane lands on
+    // the input box reading "Not logged in · Run /login", which is precisely the
+    // state `/login` needs. The folder-trust gate is unchanged by this (it fires
+    // on the directory, not the mode) and is still dismissed below.
+    let cmd = "claude";
     let cwd = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     if let Err(e) = mgr
         .create_session(REAUTH_SESSION, Some(&cwd), Some(cmd))
@@ -281,7 +327,7 @@ pub async fn request_reauth(
             return Err(anyhow::anyhow!(
                 "auth failure during /login (marker: {}). Pane tail: {}",
                 marker,
-                pane.chars().rev().take(300).collect::<String>()
+                pane_tail(&pane)
             ));
         }
     }
@@ -289,9 +335,24 @@ pub async fn request_reauth(
     if url.is_empty() {
         let _ = mgr.kill_session(REAUTH_SESSION).await;
         PendingReauth::clear().context("clearing reauth authority after URL timeout")?;
+        // Say what actually blocked. "could not extract OAuth URL" describes our
+        // parser, not the operator's problem: when a modal is still holding the
+        // pane, `/login` was never interpreted at all, and naming that dialog is
+        // the difference between an actionable report and a dead end.
+        let cause = match detect_blocking_modal(&pane) {
+            Some(modal) => format!(
+                "the pane is still held by the {modal}, so /login was never \
+                 interpreted — accept that dialog once in an interactive \
+                 `claude` session, then retry"
+            ),
+            None => "no known modal was on screen and /login painted no \
+                     authorize URL"
+                .to_string(),
+        };
         return Err(anyhow::anyhow!(
-            "could not extract OAuth URL from /login output (15s timeout). Pane tail: {}",
-            pane.chars().rev().take(300).collect::<String>()
+            "could not extract OAuth URL from /login output (15s timeout): {}. Pane tail: {}",
+            cause,
+            pane_tail(&pane)
         ));
     }
 
@@ -477,6 +538,40 @@ pub fn detect_auth_failure(pane_text: &str) -> Option<&'static str> {
         .iter()
         .find(|&&marker| lower.contains(&marker.to_lowercase()))
         .copied()
+}
+
+/// Name the modal dialog currently holding the pane, if any.
+///
+/// A modal is reported only when EVERY signature `BLOCKING_MODALS` lists for it
+/// is on screen, which is what keeps ordinary prose that happens to mention
+/// permissions or bypassing from reading as a dialog.
+pub fn detect_blocking_modal(pane_text: &str) -> Option<&'static str> {
+    let lower = pane_text.to_lowercase();
+    BLOCKING_MODALS
+        .iter()
+        .find(|(_, signatures)| {
+            signatures
+                .iter()
+                .all(|sig| lower.contains(&sig.to_lowercase()))
+        })
+        .map(|(name, _)| *name)
+}
+
+/// The last 300 chars of a pane capture, IN READING ORDER.
+///
+/// `chars().rev().take(n).collect()` yields the tail BACKWARDS — it reverses to
+/// reach the end and never reverses back, so the operator is handed a mirrored
+/// wall of text at the exact moment they most need to read it. The second `rev`
+/// is the whole point; `handle_code` already carries this pattern.
+fn pane_tail(pane_text: &str) -> String {
+    pane_text
+        .chars()
+        .rev()
+        .take(300)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect()
 }
 
 /// Does this look like a COMPLETE authorize URL, not a half-painted one?
@@ -995,6 +1090,138 @@ mod tests {
             Some("rate_limit_error")
         );
         assert!(detect_auth_failure("everything is fine").is_none());
+    }
+
+    /// Captured verbatim from `claude 2.1.232` launched with
+    /// `--dangerously-skip-permissions` against a HOME that had never accepted
+    /// the dialog. Note the pre-selected option: `❯ 1. No, exit`.
+    const BYPASS_MODAL_PANE: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+  WARNING: Claude Code running in Bypass Permissions mode
+
+  In Bypass Permissions mode, Claude Code will not ask for your approval
+  before running potentially dangerous commands.
+  This mode should only be used in a sandboxed container/VM that has
+  restricted internet access and can easily be restored if damaged.
+
+  By proceeding, you accept all responsibility for actions taken while running
+  in Bypass Permissions mode.
+
+  https://code.claude.com/docs/en/security
+
+  ❯ 1. No, exit
+    2. Yes, I accept
+
+  Enter to confirm · Esc to cancel
+";
+
+    /// Captured verbatim from the SAME binary launched in an untrusted folder.
+    /// It is the dialog this flow already dismisses, and the one the Bypass
+    /// detector must never be confused by: both are modals, both offer
+    /// "No, exit", both link the security guide.
+    const TRUST_MODAL_PANE: &str = "\
+────────────────────────────────────────────────────────────────────────────────
+ Accessing workspace:
+
+ /home/vibe
+
+ Quick safety check: Is this a project you created or one you trust? (Like your
+ own code, a well-known open source project, or work from your team). If not,
+ take a moment to review what's in this folder first.
+
+ Claude Code'll be able to read, edit, and execute files here.
+
+ Security guide
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel
+";
+
+    /// The modal that used to end this flow in silence. It is raised whenever
+    /// the session runs in bypassPermissions mode without the dialog having been
+    /// accepted, its default answer is "No, exit", and the single Enter this
+    /// flow sends therefore ANSWERED NO — so `/login` was never interpreted and
+    /// the operator got a 15s timeout instead of a link.
+    #[test]
+    fn detect_blocking_modal_names_the_bypass_dialog() {
+        let name = detect_blocking_modal(BYPASS_MODAL_PANE)
+            .expect("the real Bypass Permissions pane must be recognised");
+        assert!(name.contains("Bypass Permissions"), "got {name:?}");
+    }
+
+    /// Two modals, one flow. Telling the operator to accept a folder-trust
+    /// prompt when the pane is actually held by the Bypass dialog sends them
+    /// after the wrong dialog, so the detector must discriminate, not merely
+    /// fire.
+    #[test]
+    fn detect_blocking_modal_does_not_confuse_trust_with_bypass() {
+        let name = detect_blocking_modal(TRUST_MODAL_PANE)
+            .expect("the real folder-trust pane must be recognised");
+        assert!(
+            name.contains("folder-trust"),
+            "the trust dialog was reported as {name:?}"
+        );
+        assert!(
+            !name.contains("Bypass"),
+            "the trust dialog was mistaken for the Bypass modal: {name:?}"
+        );
+    }
+
+    /// A detector that fires on prose is worse than no detector: it would name a
+    /// modal that is not there and send the operator to accept a dialog nobody
+    /// is showing. Each fixture carries the words but not the dialog.
+    #[test]
+    fn detect_blocking_modal_ignores_ordinary_prose() {
+        for prose in [
+            "We had to bypass permissions on the socket before the daemon started.",
+            "Added a --dangerously-skip-permissions flag that will bypass permissions prompts.",
+            "Yes, I accept that the retry budget is spent.",
+            // The modal's own body, caught mid-paint before its options exist:
+            // a subject with no accept option is not yet a dialog to answer.
+            "In Bypass Permissions mode, Claude Code will not ask for your approval \
+             before running potentially dangerous commands.",
+            "Not logged in · Run /login",
+        ] {
+            assert_eq!(
+                detect_blocking_modal(prose),
+                None,
+                "prose read as a modal: {prose:?}"
+            );
+        }
+    }
+
+    /// Both markers are failures the flow could previously only discover by
+    /// timing out: the pane already said the login was refused, and the poll
+    /// loop kept asking for 15s anyway.
+    #[test]
+    fn detect_auth_failure_catches_oauth_error_and_invalid_code() {
+        assert_eq!(
+            detect_auth_failure("OAuth error: access_denied"),
+            Some("OAuth error")
+        );
+        assert_eq!(
+            detect_auth_failure("Invalid code. Please try again."),
+            Some("Invalid code")
+        );
+        assert!(AUTH_FAILURE_MARKERS.contains(&"OAuth error"));
+        assert!(AUTH_FAILURE_MARKERS.contains(&"Invalid code"));
+    }
+
+    /// The tail is what the operator actually reads when the flow fails, and it
+    /// was being handed to them REVERSED: `chars().rev().take(n)` walks back
+    /// from the end and never turns around again.
+    #[test]
+    fn pane_tail_reads_forwards_not_mirrored() {
+        let pane = format!("{}\nPaste code here:", "x".repeat(400));
+        let tail = pane_tail(&pane);
+        assert!(tail.ends_with("Paste code here:"), "got {tail:?}");
+        assert!(
+            !tail.starts_with(':'),
+            "the tail came back mirrored: {tail:?}"
+        );
+        assert_eq!(tail.chars().count(), 300);
     }
 
     #[test]
