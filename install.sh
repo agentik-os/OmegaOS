@@ -1314,11 +1314,25 @@ migrate_creds() {
     # Ensure parent dir of legacy exists so the symlink can be created.
     mkdir -p "$(dirname "$legacy")"
 
-    # Create the symlink (target may not exist yet — that is fine; the LLM
-    # will write through it on first login).
-    if [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
+    # Link ONLY when the canonical file already exists. A symlink to a missing
+    # target is NOT written through on first login: Claude and Gemini persist
+    # credentials with an ATOMIC write (write .tmp, then rename), and rename(2)
+    # does not follow a symlink — it REPLACES it with a real file. So a link
+    # planted here before the first login is destroyed by that login and the
+    # canonical store is never fed (docs/INSTALL-AND-CREDENTIALS.md, "GOTCHA").
+    #
+    # A never-logged-in box therefore gets NO link, and that is the honest
+    # state: the first login lands a real file at the legacy path, and
+    # CredentialStore::ensure_legacy_symlink (crates/omega-core/src/
+    # credentials.rs) is what reconciles it — it moves that file into the
+    # canonical store and creates the link, on the next omega command that
+    # starts a provider. Same rule as that reconciler, which likewise links
+    # only once the canonical exists.
+    if [ -f "$canonical" ] && [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
         ln -s "$canonical" "$legacy"
         ok "$provider creds: linked $legacy -> $canonical"
+    elif [ ! -e "$legacy" ] && [ ! -L "$legacy" ]; then
+        info "$provider creds: none yet — omega adopts them into $canonical after your first login"
     fi
 }
 
