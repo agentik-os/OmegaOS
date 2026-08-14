@@ -38,6 +38,20 @@ pub const AUTH_FAILURE_MARKERS: &[&str] = &[
     "authentication failed",
 ];
 
+/// Authorization-URL prefixes Claude can present on its `/login` screen.
+///
+/// The binary ships MORE THAN ONE: 2.1.232 carries both the historical
+/// `claude.com/cai/…` form and a `platform.claude.com/…` variant, and which one
+/// a given login paints is not ours to predict. Recognising only the first made
+/// `extract_auth_url` return "" for the second, so the poll loop in
+/// `start_reauth` ran out its 15s and the operator got "Link not generated"
+/// instead of a link. Every prefix test in this module reads THIS list, so a
+/// third form is one line here, never three edits scattered across the parser.
+pub const AUTHORIZE_URL_PREFIXES: &[&str] = &[
+    "https://claude.com/cai/oauth/authorize",
+    "https://platform.claude.com/oauth/authorize",
+];
+
 /// Module-level cooldown timestamp (epoch seconds of last reauth attempt).
 /// Prevents double-tap re-trigger when the user retries quickly.
 static REAUTH_COOLDOWN_TS: AtomicU64 = AtomicU64::new(0);
@@ -480,10 +494,26 @@ fn auth_url_is_complete(url: &str) -> bool {
     }
 }
 
+/// Byte offset of the EARLIEST `AUTHORIZE_URL_PREFIXES` match in `line`.
+///
+/// Earliest, not first-in-the-list: the pane may prefix the link with a label,
+/// and the leftmost match is the start of the URL whichever form it takes.
+fn find_authorize_prefix(line: &str) -> Option<usize> {
+    AUTHORIZE_URL_PREFIXES
+        .iter()
+        .filter_map(|p| line.find(p))
+        .min()
+}
+
+/// Does `s` BEGIN with one of the recognised authorization-URL prefixes?
+fn starts_with_authorize_prefix(s: &str) -> bool {
+    AUTHORIZE_URL_PREFIXES.iter().any(|p| s.starts_with(p))
+}
+
 /// Extract the OAuth URL from the captured pane.
 ///
 /// Strategy:
-///   1. Scan lines for one starting with `https://claude.com/cai/oauth/authorize`.
+///   1. Scan lines for one carrying an `AUTHORIZE_URL_PREFIXES` prefix.
 ///   2. Continue concatenating subsequent non-empty lines that look like a URL
 ///      continuation (no whitespace, no prompt markers).
 ///   3. Trim trailing punctuation/whitespace.
@@ -501,11 +531,9 @@ pub fn extract_auth_url(pane_text: &str) -> String {
     for line in pane_text.lines() {
         let stripped = line.trim();
         if !in_url {
-            if stripped.contains("https://claude.com/cai/oauth/authorize") {
+            if let Some(idx) = find_authorize_prefix(stripped) {
                 in_url = true;
-                if let Some(idx) = stripped.find("https://claude.com/cai/oauth/authorize") {
-                    parts.push(stripped[idx..].to_string());
-                }
+                parts.push(stripped[idx..].to_string());
             }
         } else {
             if stripped.is_empty()
@@ -527,7 +555,7 @@ pub fn extract_auth_url(pane_text: &str) -> String {
     let mut out = String::with_capacity(candidate.len());
     let mut started = false;
     for c in candidate.chars() {
-        if !started && candidate.starts_with("https://claude.com/cai/oauth/authorize") {
+        if !started && starts_with_authorize_prefix(&candidate) {
             started = true;
         }
         if !started {
@@ -849,6 +877,112 @@ mod tests {
             Paste code here:\n\
         ";
         let url = extract_auth_url(pane);
+        assert!(url.contains("redirect_uri=https%3A"), "got {url:?}");
+        assert!(url.ends_with("state=xyz"), "got {url:?}");
+    }
+
+    /// The 2.1.232 binary carries a SECOND authorize host beside the historical
+    /// one (`platform.claude.com/oauth/authorize`, verified with a strings grep
+    /// over the binary). The extractor recognised only the historical form, so a
+    /// login that painted the platform variant returned "" on all 30 poll ticks
+    /// and the operator got "Link not generated" instead of a link.
+    #[test]
+    fn extract_auth_url_accepts_the_platform_form() {
+        let pane = "\
+            Browser didn't open? Use the url below to sign in:\n\
+            https://platform.claude.com/oauth/authorize?code=true&client_id=abc\
+&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=xyz\n\
+            Paste code here:\n\
+        ";
+        let url = extract_auth_url(pane);
+        assert!(
+            url.starts_with("https://platform.claude.com/oauth/authorize"),
+            "got {url:?}"
+        );
+        assert!(url.contains("client_id=abc"), "got {url:?}");
+        assert!(url.contains("redirect_uri=https%3A"), "got {url:?}");
+        assert!(url.ends_with("state=xyz"), "got {url:?}");
+    }
+
+    /// Every form flows through the SAME constant, and gaining the new host must
+    /// not cost the old one: an operator on an older Claude still gets the
+    /// `claude.com/cai/…` screen, so dropping it would only move the outage.
+    /// A prefix listed and not honoured is the exact defect the list prevents.
+    #[test]
+    fn extract_auth_url_accepts_every_listed_prefix() {
+        assert!(AUTHORIZE_URL_PREFIXES.contains(&"https://claude.com/cai/oauth/authorize"));
+        assert!(AUTHORIZE_URL_PREFIXES.contains(&"https://platform.claude.com/oauth/authorize"));
+
+        for prefix in AUTHORIZE_URL_PREFIXES {
+            let pane = format!(
+                "Some pre-text\n\
+                 {prefix}?code=true&client_id=abc&response_type=code\
+&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&state=xyz\n\
+                 Paste code here:\n"
+            );
+            let url = extract_auth_url(&pane);
+            assert!(url.starts_with(*prefix), "prefix {prefix} yielded {url:?}");
+            assert!(
+                url.ends_with("state=xyz"),
+                "prefix {prefix} yielded {url:?}"
+            );
+        }
+    }
+
+    /// The truncation guard covers the platform form too. `start_reauth` breaks
+    /// on the first non-empty extraction, so a platform URL caught mid-paint has
+    /// to read as NOT FOUND and let the poll wait one more repaint — otherwise
+    /// widening the prefix list would trade a missing link for a dead one.
+    /// Both shapes of incomplete are checked: no `redirect_uri` at all, and the
+    /// bare `redirect_uri=` that `auth_url_is_complete` rejects on an empty tail.
+    #[test]
+    fn extract_auth_url_rejects_a_half_painted_platform_url() {
+        let half = "\
+            https://platform.claude.com/oauth/authorize?code=true&client_id=abc\n\
+        ";
+        assert_eq!(
+            extract_auth_url(half),
+            "",
+            "a platform URL without redirect_uri is half-rendered, not a link"
+        );
+
+        let bare_param = "\
+            https://platform.claude.com/oauth/authorize?code=true&client_id=abc&redirect_uri=\n\
+        ";
+        assert_eq!(
+            extract_auth_url(bare_param),
+            "",
+            "a bare redirect_uri= is the same half-render, one paint later"
+        );
+
+        // Positive control: the SAME pane once the tail lands. Without it both
+        // assertions above stay green on a build that simply never recognised
+        // the platform prefix, which is the very bug under test.
+        let complete = "\
+            https://platform.claude.com/oauth/authorize?code=true&client_id=abc\
+&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback\n\
+        ";
+        assert!(
+            extract_auth_url(complete).contains("redirect_uri=https%3A"),
+            "the same URL must extract once redirect_uri has painted"
+        );
+    }
+
+    /// The platform URL is LONGER than the historical one, so the terminal folds
+    /// it at least as often. Rejoining must work on it identically.
+    #[test]
+    fn extract_auth_url_rejoins_a_wrapped_platform_url() {
+        let pane = "\
+            https://platform.claude.com/oauth/authorize?code=true&client_id=abc&response_type=code\n\
+            &redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback\n\
+            &state=xyz\n\
+            Paste code here:\n\
+        ";
+        let url = extract_auth_url(pane);
+        assert!(
+            url.starts_with("https://platform.claude.com/oauth/authorize"),
+            "got {url:?}"
+        );
         assert!(url.contains("redirect_uri=https%3A"), "got {url:?}");
         assert!(url.ends_with("state=xyz"), "got {url:?}");
     }
