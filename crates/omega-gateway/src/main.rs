@@ -60,11 +60,16 @@ async fn main() -> anyhow::Result<()> {
     match cli.command.unwrap_or(Command::Serve) {
         Command::Pair => {
             let pc = PairingCode::create(&dir, 300)?;
-            let host = hostname_or_default();
+            let cfg = GatewayConfig::load(&dir);
+            let host = reachable_host_url(&cfg.bind);
             let payload = format!("omega://pair?host={host}&code={}", pc.code);
             qr2term::print_qr(&payload).ok();
+            println!();
             println!("Pairing code: {}  (valid 5 minutes)", pc.code);
-            println!("Payload: {payload}");
+            println!("Machine:      {host}");
+            println!();
+            println!("Paste this whole line into the app, or scan the QR:");
+            println!("{payload}");
         }
         Command::Schema => println!("{}", omega_gateway::protocol::schema_json()),
         Command::Devices => {
@@ -176,10 +181,48 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn hostname_or_default() -> String {
-    std::fs::read_to_string("/etc/hostname")
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "unknown".into())
+/// The address another device can actually reach this gateway on, as a full
+/// URL.
+///
+/// This used to return /etc/hostname: a bare name with no scheme and no port,
+/// which the apps could not use and no other machine could resolve. The pairing
+/// payload (and its QR) is meant to be the WHOLE answer, so it has to carry an
+/// address that works from the device doing the pairing.
+///
+/// Preference order, most-reachable first: the tailnet address (works from
+/// anywhere on the tailnet, which is how these machines are actually reached),
+/// then the LAN address of the default route, then loopback for a same-machine
+/// pairing.
+fn reachable_host_url(bind: &str) -> String {
+    let port = bind.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(4477);
+
+    if let Some(ip) = tailscale_ipv4() {
+        return format!("http://{ip}:{port}");
+    }
+    if let Some(ip) = lan_ipv4() {
+        return format!("http://{ip}:{port}");
+    }
+    format!("http://127.0.0.1:{port}")
+}
+
+fn tailscale_ipv4() -> Option<String> {
+    let out = std::process::Command::new("tailscale").args(["ip", "-4"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let ip = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
+    if ip.is_empty() { None } else { Some(ip) }
+}
+
+/// The local address the OS would use to reach the outside world. Opening a UDP
+/// socket and reading its local address sends no traffic; it just asks the
+/// routing table which interface would be chosen.
+fn lan_ipv4() -> Option<String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    let addr = socket.local_addr().ok()?;
+    let ip = addr.ip().to_string();
+    if ip.starts_with("127.") { None } else { Some(ip) }
 }
 
 #[cfg(test)]
