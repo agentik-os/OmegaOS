@@ -1138,7 +1138,7 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# The 27 value-chain operative systems (Personal / Build chain 01..08 / Growth
+# The 28 value-chain operative systems (Personal / Build chain 01..08 / Growth
 # / Systems), surfaced in the TUI's OS tab. The registry is compiled into
 # omega-core (os_products.rs); the payloads + READMEs are installed here so the
 # tab resolves a suite root even on a box with no checkout. The recursive copy
@@ -2174,7 +2174,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os intuitive-os identity-shift-os ai-logic-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os intuitive-os identity-shift-os journal-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2380,6 +2380,33 @@ sleep, sobriety and recovery are never traded for vanity metrics, and
 medically sensitive goals keep the ambition but switch to safe constraints and
 professional evaluation. Journal private by default.
 Inside OmegaOS it decides WHY and WHAT NEXT; specialists decide HOW.
+MREOF
+        fi
+        # Journal OS registers the short `/journal` alias — the pack's own
+        # canonical command surface (MIRROR, the nightly journal agent).
+        if [[ "$BSK" == "journal-os" ]]; then
+            cat > "$BCMD/journal.md" <<MREOF
+# /journal
+
+Journal {OS} — MIRROR, the nightly daily-journal agent. Alias of /journal-os:
+read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Then \`MIRROR_SYSTEM_PROMPT.md\` for the full contract.
+Open with "DAY [N]. Start wherever you want. Talk me through your day from when
+you woke up until now. What happened, what mattered, and how did you feel?"
+then interview ONE QUESTION AT A TIME, voice-first, French or English.
+Keep FACT / EMOTION / INTERPRETATION / LESSON apart. Challenge without
+hostility and never shame. A contradiction needs a PATTERN, never one day.
+Behavioral language only ("you avoided the task for 90 minutes", never "you are
+lazy"). No artificial positivity and no artificial negativity: a failed day is
+a failed day and lessons are never manufactured. Tomorrow gets at most THREE
+missions, each with a success condition.
+Philosophy (Stoicism, Rohn, Taoism) is a lens on evidence: at most one per
+entry, usually none, never a consolation for an honest failure.
+THE JOURNAL IS PRIVATE BY DEFAULT and MIRROR NEVER writes social posts: it
+stops at the Content Handoff. Life first, content downstream.
 MREOF
         fi
         # AI Logic OS registers /ai-logic + /ailogic aliases.

@@ -1,7 +1,7 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). 27 operative systems along the value chain, in four groups: PERSONAL
+//! (TUI). 28 operative systems along the value chain, in four groups: PERSONAL
 //! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive, Intuitive,
-//! Identity Shift — the BE / ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
+//! Identity Shift, Journal — the BE / ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
 //! 03 Market Research → 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
 //! 08 Quality/Evaluation/Release), GROWTH (Storyteller, Revenue, Delivery &
 //! Customer Success, Relationship & Network, Wealth & Capital — the
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsGroup {
     /// The personal BE / ENERGY layer (Mindset, Health & Energy, Habit
-    /// Tracker, Alignment, Seductive, Intuitive, Identity Shift).
+    /// Tracker, Alignment, Seductive, Intuitive, Identity Shift, Journal).
     Personal,
     /// The product pipeline, in chain order:
     /// 01 Strategy & Portfolio → 02 Brainstorm → 03 Market Research →
@@ -245,6 +245,36 @@ impl OsProduct {
                     "omega-identity   open the transformation master agent in a session",
                     "→ hands off to Mindset (identity), Habits (consistency), Execution",
                     "  (delivery), Intuitive (judgment), Alignment (values), and the chain",
+                ],
+            },
+            OsProduct {
+                slug: "journal-os",
+                name: "Journal OS",
+                tagline: "Journal {OS}: MIRROR, the nightly journal — reconstruct the day truthfully and turn it into evidence.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /journal · /journal-os ):",
+                    "  MIRROR interviews you ONE question at a time, voice-first, FR/EN",
+                    "  it does not motivate, flatter, or make your day sound interesting",
+                    "  keeps FACT · EMOTION · INTERPRETATION · LESSON strictly apart",
+                    "modes (say the word or the /command):",
+                    "  /journal       the full nightly session   ·   quick   depleted pass",
+                    "  mirror         the honest pass over a captured day",
+                    "  tomorrow       regenerate the protocol (max 3 missions)",
+                    "  contradiction  declared intention vs where the time went",
+                    "  loops /memory /weekly /content",
+                    "discipline: a contradiction needs a PATTERN, never one day; only",
+                    "  behavioral language (avoided the task 90 min, never 'you are lazy');",
+                    "  no artificial positivity AND no artificial negativity, so a failed",
+                    "  day stays a failed day and no lesson is manufactured.",
+                    "philosophy: Stoicism · Jim Rohn · Taoism as a LENS on the evidence,",
+                    "  at most one per entry and usually none. Seneca's De Ira III.36 is",
+                    "  the nightly review itself; Meditations was a private journal.",
+                    "privacy: private by default, third parties by first name only, and",
+                    "  MIRROR NEVER writes a post (it stops at the content handoff).",
+                    "omega-journal   open MIRROR in a session",
+                    "→ Journal owns the interview and the artifact; Identity Shift",
+                    "  consumes it into longitudinal state and decides what next",
                 ],
             },
             // ── BUILD CHAIN — CHOOSE → BUILD → CERTIFY (01→08) ──────────────
@@ -1221,10 +1251,11 @@ mod tests {
 
     /// The value-chain suite, in registry order, grouped and contiguous:
     /// PERSONAL, then the BUILD CHAIN (01→08), then GROWTH, then SYSTEMS.
-    /// 27 = 23 value-chain OSes + books-os (a working OS with no value-chain
+    /// 28 = 23 value-chain OSes + books-os (a working OS with no value-chain
     /// twin, kept in Systems rather than dropped) + seductive-os (personal
     /// magnetism) + intuitive-os (judgment calibration) + identity-shift-os
-    /// (evidence-based transformation), all three Personal group.
+    /// (evidence-based transformation) + journal-os (the nightly MIRROR
+    /// review), all four Personal group.
     const EXPECTED: &[(&str, OsGroup)] = &[
         ("mindset-os", OsGroup::Personal),
         ("health-energy-os", OsGroup::Personal),
@@ -1233,6 +1264,7 @@ mod tests {
         ("seductive-os", OsGroup::Personal),
         ("intuitive-os", OsGroup::Personal),
         ("identity-shift-os", OsGroup::Personal),
+        ("journal-os", OsGroup::Personal),
         ("strategy-portfolio-os", OsGroup::BuildChain),
         ("brainstorm-os", OsGroup::BuildChain),
         ("market-research-os", OsGroup::BuildChain),
@@ -1261,9 +1293,9 @@ mod tests {
             OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
         assert_eq!(
             got.len(),
-            27,
-            "27 = 23 value-chain OSes + books-os + seductive-os + intuitive-os\
-             + identity-shift-os"
+            28,
+            "28 = 23 value-chain OSes + books-os + seductive-os + intuitive-os\
+             + identity-shift-os + journal-os"
         );
         assert_eq!(got, EXPECTED);
     }
