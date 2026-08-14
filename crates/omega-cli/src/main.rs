@@ -2439,17 +2439,9 @@ async fn run_tui_loop(
                     tokio::spawn(async move {
                         let result = match SessionManager::connect().await {
                             Ok(mgr) => match omega_core::oauth::handle_code(&mgr, &code).await {
-                                // The stale-session notice rides along with the
-                                // success line: the sessions already running
-                                // kept the OLD token, and this screen is where
-                                // the operator is looking when it happens.
                                 Ok(res) if res.success => ReauthStatus::Done(format!(
-                                    "Logged in as {} — expires in {} min{}",
-                                    res.email,
-                                    res.expires_min,
-                                    omega_core::oauth::stale_auth_notice(&res.stale_sessions)
-                                        .map(|note| format!(". {note}"))
-                                        .unwrap_or_default()
+                                    "Logged in as {} — expires in {} min",
+                                    res.email, res.expires_min
                                 )),
                                 Ok(res) => ReauthStatus::Error(format!(
                                     "login did not refresh credentials. {}",
@@ -7317,15 +7309,7 @@ async fn cmd_codex_reconcile(json: bool) -> Result<()> {
 
 /// `omega claude-login-code <code>` — finish the OAuth re-login by pasting the
 /// authorize code into the waiting reauth session. Prints
-/// `{"ok":bool,"email":...,"expires_min":...,"stale_sessions":[...],
-/// "stale_sessions_note":...}`; exits non-zero on failure.
-///
-/// `stale_sessions` is the half of the answer the operator was never given: a
-/// fresh token does NOT reach the sessions that were already running, because
-/// each `claude` process read its authentication once at launch. The engine
-/// enumerates them (`oauth::sessions_with_stale_auth`) and they are printed
-/// HERE, in the JSON the Telegram bridge parses, because a detection nobody
-/// renders is a detection that did not happen.
+/// `{"ok":bool,"email":...,"expires_min":...}`; exits non-zero on failure.
 async fn cmd_claude_login_code(code: &str) -> Result<()> {
     let mgr = match SessionManager::connect().await {
         Ok(m) => m,
@@ -7345,10 +7329,6 @@ async fn cmd_claude_login_code(code: &str) -> Result<()> {
                     "ok": res.success,
                     "email": res.email,
                     "expires_min": res.expires_min,
-                    "stale_sessions": res.stale_sessions,
-                    "stale_sessions_count": res.stale_sessions.len(),
-                    "stale_sessions_note":
-                        omega_core::oauth::stale_auth_notice(&res.stale_sessions),
                 })
             );
             if !res.success {
