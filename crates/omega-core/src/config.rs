@@ -210,6 +210,14 @@ pub(crate) fn with_private_file_lock<T>(
 }
 
 pub(crate) fn acquire_private_file_lock(path: &Path) -> Result<PrivateFileLock> {
+    let lock_path = private_lock_path_for(path)?;
+    acquire_private_lock_path(&lock_path)
+        .with_context(|| format!("locking authority file {}", path.display()))
+}
+
+/// The lock file an authority file is serialized on: a sibling of the target,
+/// so the blocking and the bounded acquisition always agree on one path.
+fn private_lock_path_for(path: &Path) -> Result<PathBuf> {
     let parent = path
         .parent()
         .with_context(|| format!("{} has no parent directory", path.display()))?;
@@ -217,15 +225,69 @@ pub(crate) fn acquire_private_file_lock(path: &Path) -> Result<PrivateFileLock> 
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("omega-state");
-    let lock_path = parent.join(format!(".{filename}.omega-lock"));
-    acquire_private_lock_path(&lock_path)
-        .with_context(|| format!("locking authority file {}", path.display()))
+    Ok(parent.join(format!(".{filename}.omega-lock")))
+}
+
+/// Sleep between two attempts of [`try_acquire_private_file_lock`]. Short enough
+/// that a lock released mid-budget is picked up almost at once, long enough that
+/// a fully spent budget costs a handful of syscalls rather than a spin.
+const PRIVATE_LOCK_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
+/// Bounded, NEVER-BLOCKING sibling of [`acquire_private_file_lock`]: try to take
+/// the very same lock, retry until `budget` is spent, then answer `Ok(None)`
+/// instead of waiting on a holder that may never let go.
+///
+/// [`acquire_private_file_lock`] keeps its blocking `lock_exclusive` for callers
+/// whose transaction must be serialized at any cost. This variant exists for the
+/// opposite trade: a best-effort caller on a hot path, for which waiting on a
+/// live-but-stuck holder is a worse outcome than doing the work unserialized.
+pub(crate) fn try_acquire_private_file_lock(
+    path: &Path,
+    budget: std::time::Duration,
+) -> Result<Option<PrivateFileLock>> {
+    let lock_path = private_lock_path_for(path)?;
+    let file = open_private_lock_file(&lock_path)
+        .with_context(|| format!("locking authority file {}", path.display()))?;
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(Some(PrivateFileLock(file))),
+            Err(error) if is_lock_contended(&error) => {
+                let now = std::time::Instant::now();
+                if now >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(PRIVATE_LOCK_RETRY_INTERVAL.min(deadline - now));
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("locking private file {}", lock_path.display()));
+            }
+        }
+    }
+}
+
+/// A live holder is reported by `try_lock_exclusive` through a platform-specific
+/// errno; fs2 exposes the exact one it raises, so contention is told apart from a
+/// real I/O failure by value instead of guessed from the message.
+fn is_lock_contended(error: &std::io::Error) -> bool {
+    error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
 /// Acquire an exact private lock path for subsystems with an established lock
 /// filename. Unlike [`acquire_private_file_lock`], this does not derive a
 /// sibling name from an authority target.
 pub(crate) fn acquire_private_lock_path(lock_path: &Path) -> Result<PrivateFileLock> {
+    let file = open_private_lock_file(lock_path)?;
+    file.lock_exclusive()
+        .with_context(|| format!("locking private file {}", lock_path.display()))?;
+    Ok(PrivateFileLock(file))
+}
+
+/// Open (and validate the identity of) the lock file, up to but NOT including
+/// the lock call itself, so the blocking and bounded acquisitions above take the
+/// exact same descriptor through the exact same checks.
+fn open_private_lock_file(lock_path: &Path) -> Result<File> {
     let parent = lock_path
         .parent()
         .with_context(|| format!("{} has no parent directory", lock_path.display()))?;
@@ -262,9 +324,7 @@ pub(crate) fn acquire_private_lock_path(lock_path: &Path) -> Result<PrivateFileL
         file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("tightening authority lock {}", lock_path.display()))?;
     }
-    file.lock_exclusive()
-        .with_context(|| format!("locking private file {}", lock_path.display()))?;
-    Ok(PrivateFileLock(file))
+    Ok(file)
 }
 
 pub(crate) fn private_revision(bytes: &[u8]) -> PrivateRevision {
