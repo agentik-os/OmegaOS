@@ -153,6 +153,47 @@ fn skill_dir_of(root: &FsPath, skill: &Skill) -> anyhow::Result<PathBuf> {
     Ok(dir)
 }
 
+/// True when `install.sh` owns this skill directory (it stamps `.omega-managed`
+/// after mirroring). Those directories are SSOT mirrors kept in sync with
+/// `rsync --delete`, so a rename would leave a duplicate under both names and
+/// a delete would resurrect the skill on the next install. Refusing with a
+/// reason beats a destructive action that silently undoes itself.
+fn is_install_managed(dir: &FsPath) -> bool {
+    dir.join(".omega-managed").exists()
+}
+
+/// Rewrite the frontmatter `name:` of a SKILL.md.
+///
+/// A skill's IDENTITY is that field, not its directory name, so moving the
+/// directory alone leaves a skill still called by its old name sitting in a
+/// directory called something else — it then resolves under neither. Only the
+/// first `name:` inside the leading `---` block is touched; a `name:` in the
+/// body is prose and must survive untouched.
+fn rewrite_frontmatter_name(content: &str, new_name: &str) -> anyhow::Result<String> {
+    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
+    anyhow::ensure!(
+        lines.first().map(|l| l.trim()) == Some("---"),
+        "skill has no frontmatter block"
+    );
+    let end = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.trim() == "---")
+        .map(|i| i + 1)
+        .ok_or_else(|| anyhow::anyhow!("skill frontmatter is unterminated"))?;
+    let target = lines[1..end]
+        .iter()
+        .position(|l| l.trim_start().starts_with("name:"))
+        .map(|i| i + 1)
+        .ok_or_else(|| anyhow::anyhow!("skill frontmatter has no name field"))?;
+    lines[target] = format!("name: {new_name}");
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
 fn rename_at_root(root: &FsPath, name: &str, new_name: &str) -> anyhow::Result<()> {
     validate_skill_name(new_name)?;
     let _guard = write_lock()
@@ -174,9 +215,31 @@ fn rename_at_root(root: &FsPath, name: &str, new_name: &str) -> anyhow::Result<(
     );
 
     let from = skill_dir_of(root, &skill)?;
+    anyhow::ensure!(!is_install_managed(&from), "skill is installer-managed");
     let to = root.canonicalize()?.join(new_name);
     anyhow::ensure!(!to.exists(), "a skill with that name already exists");
+
+    // The directory move and the identity rewrite must both land or neither:
+    // a skill whose frontmatter still says the old name resolves under NO
+    // name at all once its directory has moved.
+    let file = from.join("SKILL.md");
+    let original = fs::read_to_string(&file)?;
+    let renamed = rewrite_frontmatter_name(&original, new_name)?;
     fs::rename(&from, &to)?;
+    let moved = to.join("SKILL.md");
+    let settled = atomic_replace(&moved, renamed.as_bytes())
+        .and_then(|()| SkillRegistry::discover(root))
+        .and_then(|registry| {
+            registry
+                .get(new_name)
+                .map(|_| ())
+                .ok_or_else(|| anyhow::anyhow!("the renamed skill no longer resolves"))
+        });
+    if let Err(error) = settled {
+        let _ = atomic_replace(&moved, original.as_bytes());
+        let _ = fs::rename(&to, &from);
+        return Err(error);
+    }
     Ok(())
 }
 
@@ -199,6 +262,7 @@ fn delete_at_root(root: &FsPath, name: &str, confirm_name: &str) -> anyhow::Resu
     anyhow::ensure!(!skill.read_only, "skill is read-only");
 
     let dir = skill_dir_of(root, &skill)?;
+    anyhow::ensure!(!is_install_managed(&dir), "skill is installer-managed");
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
@@ -300,6 +364,8 @@ fn write_error_status(message: &str) -> StatusCode {
         StatusCode::FORBIDDEN
     } else if message == "a skill with that name already exists" {
         StatusCode::CONFLICT
+    } else if message == "skill is installer-managed" {
+        StatusCode::FORBIDDEN
     } else {
         StatusCode::BAD_REQUEST
     }
@@ -456,6 +522,55 @@ mod tests {
         .unwrap();
     }
 
+    /// An installer-owned skill is a `rsync --delete` mirror: renaming it
+    /// would leave a duplicate under both names and deleting it would
+    /// resurrect it on the next install. Both must be refused, not performed.
+    #[test]
+    fn an_installer_managed_skill_can_be_neither_renamed_nor_deleted() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "shipped", false);
+        fs::write(root.path().join("shipped").join(".omega-managed"), "").unwrap();
+
+        assert!(rename_at_root(root.path(), "shipped", "mine").is_err());
+        assert!(delete_at_root(root.path(), "shipped", "shipped").is_err());
+        assert!(root.path().join("shipped").join("SKILL.md").exists());
+        assert!(!root.path().join("mine").exists());
+
+        // A skill the operator created carries no stamp and stays editable.
+        skill(root.path(), "mine-own", false);
+        rename_at_root(root.path(), "mine-own", "renamed").unwrap();
+        delete_at_root(root.path(), "renamed", "renamed").unwrap();
+        assert!(!root.path().join("renamed").exists());
+    }
+
+    /// A skill's identity is its frontmatter `name:`, not its directory, so a
+    /// rename that only moves the directory produces a skill resolvable under
+    /// NEITHER name. This is the regression that test caught.
+    #[test]
+    fn rename_moves_the_identity_too_not_just_the_directory() {
+        let root = tempfile::tempdir().unwrap();
+        skill(root.path(), "before", false);
+        rename_at_root(root.path(), "before", "after").unwrap();
+
+        let registry = SkillRegistry::discover(root.path()).unwrap();
+        assert!(registry.get("after").is_some(), "the new name must resolve");
+        assert!(registry.get("before").is_none(), "the old name must be gone");
+        let content = fs::read_to_string(root.path().join("after").join("SKILL.md")).unwrap();
+        assert!(content.contains("name: after"));
+    }
+
+    #[test]
+    fn rewrite_frontmatter_name_touches_only_the_frontmatter() {
+        let content = "---\nname: old\ndescription: D\n---\n# Body\nname: not-frontmatter\n";
+        let rewritten = rewrite_frontmatter_name(content, "new").unwrap();
+        assert!(rewritten.starts_with("---\nname: new\ndescription: D\n---\n"));
+        assert!(rewritten.contains("name: not-frontmatter"), "body prose survives");
+        assert!(rewritten.ends_with('\n'), "the trailing newline survives");
+
+        assert!(rewrite_frontmatter_name("# no frontmatter\n", "new").is_err());
+        assert!(rewrite_frontmatter_name("---\ndescription: D\n---\n", "new").is_err());
+    }
+
     #[test]
     fn rename_moves_the_directory_and_keeps_the_content() {
         let root = tempfile::tempdir().unwrap();
@@ -574,3 +689,4 @@ mod tests {
         }
     }
 }
+

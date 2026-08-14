@@ -3621,6 +3621,25 @@ if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
     unset SKMIRROR_REJECTED installed_md rejected_dir
 fi
 
+# Stamp every skill this installer OWNS. These directories are SSOT mirrors
+# (`rsync --delete` above), so a rename or a delete performed through the app
+# would silently come back on the next install: the rename would leave a
+# duplicate under both names, and the delete would resurrect the skill. The
+# gateway refuses to rename or delete a stamped skill for exactly that reason
+# (routes_skills::is_install_managed) — a delete that lies is worse than a
+# delete that is refused with a reason. User-created skills carry no stamp and
+# stay fully editable, which is the case the feature exists for.
+if [[ -d "$OMEGA_DIR/skills" ]]; then
+    for _sk_src in "$OMEGA_SRC"/skills/*/; do
+        [[ -d "$_sk_src" ]] || continue
+        _sk_name="$(basename "$_sk_src")"
+        if [[ -d "$OMEGA_DIR/skills/$_sk_name" ]]; then
+            : > "$OMEGA_DIR/skills/$_sk_name/.omega-managed" 2>/dev/null || true
+        fi
+    done
+    unset _sk_src _sk_name
+fi
+
 # Earlier versions of the installer could leave an unchanged flat third-party
 # mirror beside the identical nested canonical pack. That makes the strict
 # catalog rightly reject the whole provider projection. Normalize only the
