@@ -1923,6 +1923,7 @@ if [[ -d "$DI_SRC" ]]; then
             cp -r "$di_dir/." "$OMEGA_DIR/skills/$di_name/" 2>/dev/null || true
         fi
         find "$OMEGA_DIR/skills/$di_name" -name '*.sh' -exec chmod +x {} + 2>/dev/null || true
+        : > "$OMEGA_DIR/skills/$di_name/.omega-managed" 2>/dev/null || true
         DI_N=$((DI_N + 1))
     done
     ok "Design-intelligence pack installed ($DI_N skills → ~/.omega/skills/ ; routed by R-DESIGN)"
@@ -3615,6 +3616,9 @@ if [[ -d "$SKILLS_REPO_DIR/.git" ]]; then
         else
             cp -r "$sk_dir/." "$OMEGA_DIR/skills/$sk_name/" 2>/dev/null || true
         fi
+        # Stamped AFTER the mirror, so the `--delete` pass cannot strip it.
+        # See the stamping block further down for why this matters.
+        : > "$OMEGA_DIR/skills/$sk_name/.omega-managed" 2>/dev/null || true
         SKMIRROR=$((SKMIRROR + 1))
     done < <(find "$SKILLS_REPO_DIR" -mindepth 2 -maxdepth 3 -name SKILL.md -not -path '*/.git/*' 2>/dev/null)
     ok "Agentik-Skills mirrored → $OMEGA_DIR/skills/ ($SKMIRROR schema-valid skills; $SKMIRROR_REJECTED rejected)"
@@ -3629,15 +3633,23 @@ fi
 # (routes_skills::is_install_managed) — a delete that lies is worse than a
 # delete that is refused with a reason. User-created skills carry no stamp and
 # stay fully editable, which is the case the feature exists for.
+# Deliberately errs toward UNDER-stamping. A pack skill left unstamped is a
+# cosmetic surprise (delete it, the next install brings it back); a USER skill
+# wrongly stamped is a functional regression (they cannot delete their own
+# work). So this walks the source trees the installer actually owns rather
+# than blanket-stamping whatever happens to be on disk.
 if [[ -d "$OMEGA_DIR/skills" ]]; then
-    for _sk_src in "$OMEGA_SRC"/skills/*/; do
-        [[ -d "$_sk_src" ]] || continue
-        _sk_name="$(basename "$_sk_src")"
-        if [[ -d "$OMEGA_DIR/skills/$_sk_name" ]]; then
-            : > "$OMEGA_DIR/skills/$_sk_name/.omega-managed" 2>/dev/null || true
-        fi
+    for _sk_root in "$OMEGA_SRC/skills" "$OMEGA_SRC/OS"; do
+        [[ -d "$_sk_root" ]] || continue
+        for _sk_src in "$_sk_root"/*/; do
+            [[ -d "$_sk_src" ]] || continue
+            _sk_name="$(basename "$_sk_src")"
+            if [[ -d "$OMEGA_DIR/skills/$_sk_name" ]]; then
+                : > "$OMEGA_DIR/skills/$_sk_name/.omega-managed" 2>/dev/null || true
+            fi
+        done
     done
-    unset _sk_src _sk_name
+    unset _sk_root _sk_src _sk_name
 fi
 
 # Earlier versions of the installer could leave an unchanged flat third-party
