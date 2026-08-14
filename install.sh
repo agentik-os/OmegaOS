@@ -1138,7 +1138,7 @@ else
 fi
 
 # ─── OS suite — the AgentikOS operative systems (OS/ → ~/.omega/os) ─────────
-# The 26 value-chain operative systems (Personal / Build chain 01..08 / Growth
+# The 27 value-chain operative systems (Personal / Build chain 01..08 / Growth
 # / Systems), surfaced in the TUI's OS tab. The registry is compiled into
 # omega-core (os_products.rs); the payloads + READMEs are installed here so the
 # tab resolves a suite root even on a box with no checkout. The recursive copy
@@ -2174,7 +2174,7 @@ fi
 # the canonical stack (Next.js + Convex + Clerk + Stripe + Stax). /stack pulls the
 # live Stax checkout at ~/.omega/repos/stax before every scaffold — installed by
 # the Stax block just above, so this block deliberately runs after it.
-for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os intuitive-os ai-logic-os stack; do
+for BSK in blueprint-os builder-os market-research-os mindset-os brainstorm-os habit-tracker-os design-os execution-os storyteller-os alignment-os seductive-os intuitive-os identity-shift-os ai-logic-os stack; do
     BSK_SRC="$OMEGA_SRC/skills/$BSK"
     BSK_DST="$OMEGA_DIR/skills/$BSK"
     if [[ -d "$BSK_SRC" ]]; then
@@ -2357,6 +2357,29 @@ resolution date, and stored predictions are IMMUTABLE after the outcome.
 Score domains separately; decision quality is not outcome quality; flag small
 samples. High-stakes medical, legal or financial calls route to real evidence
 and expert review.
+MREOF
+        fi
+        # Identity Shift OS (transformation) registers the short `/identity`
+        # alias — the pack's own canonical command surface.
+        if [[ "$BSK" == "identity-shift-os" ]]; then
+            cat > "$BCMD/identity.md" <<MREOF
+# /identity
+
+Identity Shift {OS} — convert a declared future identity into daily evidence.
+Alias of /identity-shift-os: read and follow the complete instructions in:
+
+\`$BSK_DST/SKILL.md\`
+
+Then \`SYSTEM_PROMPT.md\` for the full contract.
+Modes: start · journal · mirror · tomorrow · weekly · monthly · 180 · content
+· contradiction · reset.
+IDENTITY = REPEATED EVIDENCE. Do not praise identity claims, track evidence.
+Do not punish lapses, diagnose them. Life first, content second. Maximum 3
+major daily objectives. Contradictions are DATA, never moral failure. Health,
+sleep, sobriety and recovery are never traded for vanity metrics, and
+medically sensitive goals keep the ambition but switch to safe constraints and
+professional evaluation. Journal private by default.
+Inside OmegaOS it decides WHY and WHAT NEXT; specialists decide HOW.
 MREOF
         fi
         # AI Logic OS registers /ai-logic + /ailogic aliases.

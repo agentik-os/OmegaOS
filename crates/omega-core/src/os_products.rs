@@ -1,7 +1,7 @@
 //! The AgentikOS operative-systems suite — registry + status for the OS tab
-//! (TUI). 26 operative systems along the value chain, in four groups: PERSONAL
-//! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive, Intuitive —
-//! the BE / ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
+//! (TUI). 27 operative systems along the value chain, in four groups: PERSONAL
+//! (Mindset, Health & Energy, Habit Tracker, Alignment, Seductive, Intuitive,
+//! Identity Shift — the BE / ENERGY layer), the BUILD CHAIN (01 Strategy & Portfolio → 02 Brainstorm →
 //! 03 Market Research → 04 Blueprint → 05 Design → 06 Stepper → 07 Builder →
 //! 08 Quality/Evaluation/Release), GROWTH (Storyteller, Revenue, Delivery &
 //! Customer Success, Relationship & Network, Wealth & Capital — the
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OsGroup {
     /// The personal BE / ENERGY layer (Mindset, Health & Energy, Habit
-    /// Tracker, Alignment, Seductive, Intuitive).
+    /// Tracker, Alignment, Seductive, Intuitive, Identity Shift).
     Personal,
     /// The product pipeline, in chain order:
     /// 01 Strategy & Portfolio → 02 Brainstorm → 03 Market Research →
@@ -217,6 +217,34 @@ impl OsProduct {
                     "omega-intuition   open the calibration master agent in a session",
                     "→ pairs with Alignment (values, decisions) and Mindset (identity);",
                     "  feeds Execution and Strategy with calibrated forecasts",
+                ],
+            },
+            OsProduct {
+                slug: "identity-shift-os",
+                name: "Identity Shift OS",
+                tagline: "Identity Shift {OS}: identity is accumulated evidence — contract, journal, mirror, contradictions, tomorrow.",
+                group: OsGroup::Personal,
+                commands: &[
+                    "Claude / Codex ( /identity · /identity-shift-os ):",
+                    "  converts a declared future identity into DAILY EVIDENCE",
+                    "  identity is not a statement, it is what the record shows",
+                    "  loop: vision → contract → journal → mirror → gap → tomorrow",
+                    "        → action → evidence → memory → review → adaptation",
+                    "modes (say the word or the /command):",
+                    "  journal    what actually happened   ·   mirror   the honest pass",
+                    "  tomorrow   max 3 objectives, each with a success condition",
+                    "  contradiction   declared priority vs where the time went",
+                    "  weekly /monthly /180   the review and recalibration cadence",
+                    "  content    score it, then PUBLISH / LATER / PRIVATE / NO",
+                    "  start /reset",
+                    "discipline: life first and content second, NO shame (a gap is data,",
+                    "  never moral failure), challenge proportional to capacity, and",
+                    "  health/sleep/sobriety are never traded for vanity metrics.",
+                    "  Journal is private by default; medical territory routes out.",
+                    "orchestration: decides WHY and WHAT NEXT, specialists decide HOW",
+                    "omega-identity   open the transformation master agent in a session",
+                    "→ hands off to Mindset (identity), Habits (consistency), Execution",
+                    "  (delivery), Intuitive (judgment), Alignment (values), and the chain",
                 ],
             },
             // ── BUILD CHAIN — CHOOSE → BUILD → CERTIFY (01→08) ──────────────
@@ -1193,9 +1221,10 @@ mod tests {
 
     /// The value-chain suite, in registry order, grouped and contiguous:
     /// PERSONAL, then the BUILD CHAIN (01→08), then GROWTH, then SYSTEMS.
-    /// 26 = 23 value-chain OSes + books-os (a working OS with no value-chain
+    /// 27 = 23 value-chain OSes + books-os (a working OS with no value-chain
     /// twin, kept in Systems rather than dropped) + seductive-os (personal
-    /// magnetism) + intuitive-os (judgment calibration), both Personal group.
+    /// magnetism) + intuitive-os (judgment calibration) + identity-shift-os
+    /// (evidence-based transformation), all three Personal group.
     const EXPECTED: &[(&str, OsGroup)] = &[
         ("mindset-os", OsGroup::Personal),
         ("health-energy-os", OsGroup::Personal),
@@ -1203,6 +1232,7 @@ mod tests {
         ("alignment-os", OsGroup::Personal),
         ("seductive-os", OsGroup::Personal),
         ("intuitive-os", OsGroup::Personal),
+        ("identity-shift-os", OsGroup::Personal),
         ("strategy-portfolio-os", OsGroup::BuildChain),
         ("brainstorm-os", OsGroup::BuildChain),
         ("market-research-os", OsGroup::BuildChain),
@@ -1231,8 +1261,9 @@ mod tests {
             OsProduct::all().iter().map(|p| (p.slug, p.group)).collect();
         assert_eq!(
             got.len(),
-            26,
-            "26 = 23 value-chain OSes + books-os + seductive-os + intuitive-os"
+            27,
+            "27 = 23 value-chain OSes + books-os + seductive-os + intuitive-os\
+             + identity-shift-os"
         );
         assert_eq!(got, EXPECTED);
     }

@@ -28,6 +28,7 @@ Personal OSes:
 | Execution OS | `execution-os` | Execution {OS} v2: LLM-first personal delivery loop | **integrated** |
 | Storytelling OS | `storytelling-os` | Storyteller {OS}: coach + shape truthful stories, a story bank | **integrated** |
 | Alignment OS | `alignment-os` | Alignment Coach {OS}: wisdom + decision second brain | **integrated** |
+| Identity Shift OS | `identity-shift-os` | Identity Shift {OS}: declared identity into daily evidence, contradictions surfaced as data | **integrated** |
 | Intuitive OS | `intuitive-os` | Intuitive {OS}: train intuition as a measurable skill, forecasting + calibration | **integrated** |
 | Seductive OS | `seductive-os` | Seductive {OS}: personal magnetism — presence, conversation, style, romantic confidence, consent-first | **integrated** |
 
