@@ -97,14 +97,68 @@ fn binary_provenance(config: &OmegaConfig) -> Check {
         Some(installed) if installed == head => {
             Check::ok("binary provenance", format!("built from HEAD ({head})"))
         }
-        Some(installed) => Check::fail(
-            "binary provenance",
-            format!(
-                "installed binary is from {installed}, checkout HEAD is {head} — \
-                 run: cd {} && ./install.sh",
-                src.display()
-            ),
-        ),
+        Some(installed) => {
+            // DIRECTION MATTERS, and getting it wrong is how a fixed binary
+            // gets silently replaced by a stale one. A box can hold more than
+            // one checkout; when the resolved one is BEHIND the installed
+            // binary, "run ./install.sh here" is advice to downgrade, and an
+            // operator who follows it reinstalls the very bug they just had
+            // fixed. Only a checkout that is AHEAD means the binary is stale.
+            let count = |range: String| -> Option<u32> {
+                std::process::Command::new("git")
+                    .args(["rev-list", "--count", &range])
+                    .current_dir(&src)
+                    .output()
+                    .ok()
+                    .filter(|out| out.status.success())
+                    .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
+            };
+            let ahead = count(format!("{installed}..{head}"));
+            let behind = count(format!("{head}..{installed}"));
+            match (ahead, behind) {
+                // The checkout carries work the binary lacks, and nothing the
+                // other way: the binary really is stale.
+                (Some(a), Some(0)) if a > 0 => Check::fail(
+                    "binary provenance",
+                    format!(
+                        "installed binary is from {installed}, checkout HEAD is {head} \
+                         ({a} commit(s) behind) — run: cd {} && ./install.sh",
+                        src.display()
+                    ),
+                ),
+                // The binary is ahead. Reinstalling here would DOWNGRADE the
+                // box, which is precisely how a just-fixed binary gets
+                // silently replaced by a stale one.
+                (Some(0), Some(b)) if b > 0 => Check::warn(
+                    "binary provenance",
+                    format!(
+                        "the installed binary ({installed}) is NEWER than {} (HEAD {head}, \
+                         {b} commit(s) behind it) — reinstalling from there would DOWNGRADE it; \
+                         update that checkout first",
+                        src.display()
+                    ),
+                ),
+                (Some(a), Some(b)) if a > 0 && b > 0 => Check::warn(
+                    "binary provenance",
+                    format!(
+                        "{} has DIVERGED from the installed binary: {a} commit(s) it has and the \
+                         binary lacks, {b} the binary has and it lacks — reconcile that checkout \
+                         before installing from it",
+                        src.display()
+                    ),
+                ),
+                // Unknown ancestry (a shallow clone, a missing object): say so
+                // rather than guess a direction and hand out the wrong command.
+                _ => Check::warn(
+                    "binary provenance",
+                    format!(
+                        "installed binary is from {installed} and {} is at {head}; their \
+                         relationship could not be determined here",
+                        src.display()
+                    ),
+                ),
+            }
+        }
         None => Check::warn(
             "binary provenance",
             format!(
