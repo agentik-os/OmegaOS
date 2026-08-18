@@ -62,6 +62,7 @@ async fn main() -> anyhow::Result<()> {
             let pc = PairingCode::create(&dir, 300)?;
             let cfg = GatewayConfig::load(&dir);
             let host = reachable_host_url(&cfg.bind);
+            let port_hint = cfg.bind.rsplit(':').next().unwrap_or("4477");
             let payload = format!("omega://pair?host={host}&code={}", pc.code);
             qr2term::print_qr(&payload).ok();
             println!();
@@ -70,6 +71,13 @@ async fn main() -> anyhow::Result<()> {
             println!();
             println!("Paste this whole line into the app, or scan the QR:");
             println!("{payload}");
+            if is_loopback_only(&cfg.bind) {
+                println!();
+                println!("NOTE: this gateway listens on {} — loopback only.", cfg.bind);
+                println!("      Only an app on THIS machine can pair with it. To pair from");
+                println!("      another device, set bind = \"0.0.0.0:{port_hint}\" in");
+                println!("      {}/gateway.toml and restart it.", dir.display());
+            }
         }
         Command::Schema => println!("{}", omega_gateway::protocol::schema_json()),
         Command::Devices => {
@@ -196,6 +204,21 @@ async fn main() -> anyhow::Result<()> {
 fn reachable_host_url(bind: &str) -> String {
     let port = bind.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()).unwrap_or(4477);
 
+    // The address has to be one THIS gateway serves on, which is decided by the
+    // bind and nothing else. Reading the machine's interfaces instead was worse
+    // than the bare hostname it replaced: with the default loopback bind it
+    // advertised a tailnet address that another process answers (and 400s),
+    // so pairing failed with a plausible-looking address instead of an
+    // obviously wrong one.
+    if !binds_all_interfaces(bind) {
+        // A specific bind: advertise exactly it. Loopback means same machine
+        // only, which the caller states plainly rather than papering over.
+        let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or("127.0.0.1");
+        let host = host.trim_matches(|c| c == '[' || c == ']');
+        return format!("http://{host}:{port}");
+    }
+
+    // Bound to every interface, so a remote address genuinely reaches us.
     if let Some(ip) = tailscale_ipv4() {
         return format!("http://{ip}:{port}");
     }
@@ -203,6 +226,23 @@ fn reachable_host_url(bind: &str) -> String {
         return format!("http://{ip}:{port}");
     }
     format!("http://127.0.0.1:{port}")
+}
+
+/// Whether the bind accepts connections on every interface (`0.0.0.0`, `::`,
+/// or a bare `:port`), which is the only case where an address other than the
+/// bind's own can be honestly advertised.
+fn binds_all_interfaces(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or("");
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    host.is_empty() || host == "0.0.0.0" || host == "::" || host == "*"
+}
+
+/// True when the gateway only answers on loopback, so no other device can pair
+/// with it whatever address the payload carries.
+fn is_loopback_only(bind: &str) -> bool {
+    let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or("");
+    let host = host.trim_matches(|c| c == '[' || c == ']');
+    host.starts_with("127.") || host == "localhost" || host == "::1"
 }
 
 fn tailscale_ipv4() -> Option<String> {
