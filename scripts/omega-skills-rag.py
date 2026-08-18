@@ -79,6 +79,18 @@ def _corpus(atlas=None):
         rows.append({"name": r["name"], "text": f'{r["name"]}. {r.get("description","")}',
                      "commands": [], "source": r.get("source", "powerup"),
                      "group": r.get("group", ""), "path": r.get("path", "")})
+    # Anthropic reference recipes. The embedded text deliberately carries the
+    # recipe TITLE and the category INTENT phrasing on top of the description:
+    # a plain-language need ("how do I evaluate my prompt") has to retrieve the
+    # Evals recipes, and registry descriptions alone do not contain those words.
+    for r in a.get("cookbooks", []):
+        text = ". ".join(part for part in (
+            r.get("title", r["name"]), r.get("description", ""), r.get("intent", "")
+        ) if part)
+        rows.append({"name": r["name"], "text": text,
+                     "commands": [], "source": r.get("source", "cookbook"),
+                     "group": r.get("group", ""), "path": r.get("path", ""),
+                     "url": r.get("url", ""), "local": r.get("local", "")})
     return rows
 
 def _rows_hash(rows):
@@ -193,13 +205,21 @@ def query(text, k=6, as_json=False):
     if as_json:
         print(json.dumps([{"name": r["name"], "score": round(s, 4), "source": r["source"],
                            "commands": r["commands"], "path": r["path"],
+                           **({"url": r["url"]} if r.get("url") else {}),
+                           **({"local": r["local"]} if r.get("local") else {}),
                            "description": r["text"].split(". ", 1)[-1][:200]}
                           for r, s in results], ensure_ascii=False, indent=2))
         return
     be = meta.get("backend", "bm25")
     print(f"\033[2m[rag: {be}]  query: {text}\033[0m")
     for r, s in results:
-        cmd = ("  " + " ".join(r["commands"])) if r["commands"] else "  (library)"
+        if r["commands"]:
+            cmd = "  " + " ".join(r["commands"])
+        elif r["source"] == "cookbook":
+            # never claim a recipe is on disk when only the index shipped
+            cmd = "  (cookbook)" if r.get("local") else "  (cookbook ↗)"
+        else:
+            cmd = "  (library)"
         d = re.sub(r"\s+", " ", r["text"].split(". ", 1)[-1])[:100]
         print(f"  \033[1m{r['name']}\033[0m\033[36m{cmd}\033[0m  \033[2m{s:.3f}\033[0m")
         print(f"      {d}")

@@ -13,6 +13,8 @@ OMEGA = os.environ.get("OMEGA_DIR") or os.path.join(HOME, ".omega")
 NATIVE = os.path.join(OMEGA, "skills")
 CATALOG = os.environ.get("OMEGA_SKILL_CATALOG") or os.path.join(OMEGA, "skill-catalog-v1.json")
 POWERUP_MANIFEST = os.path.join(OMEGA, "skills-library/youraipowerup/MANIFEST.json")
+COOKBOOK_INDEX = os.path.join(OMEGA, "cookbooks-index.json")
+COOKBOOK_CORPUS = os.path.join(OMEGA, "cookbooks")
 EXCLUDED_DIRS = {".git", ".venv", "build", "dist", "node_modules", "target", "vendor"}
 MAX_SKILL_BYTES = 2 * 1024 * 1024
 MAX_SKILLS = 10_000
@@ -146,6 +148,53 @@ def legacy_native():
     validate_unique(rows)
     return rows
 
+def cookbook_recipes():
+    """Anthropic's own reference recipes (anthropics/claude-cookbooks, MIT).
+
+    The index ships in the OmegaOS repo and is installed unconditionally, so
+    these rows exist on a bare clone. The notebook CORPUS is optional
+    (tools/cookbooks/install-cookbooks.sh); when it is absent the row still
+    carries the pinned upstream URL, so a recipe is never advertised as local
+    when it is not — the same guard the Power-Up router uses.
+    """
+    if not os.path.isfile(COOKBOOK_INDEX):
+        return []
+    try:
+        data = json.load(open(COOKBOOK_INDEX, encoding="utf-8"))
+        if data.get("schema_version") != 1:
+            raise ValueError(f"unsupported schema_version {data.get('schema_version')!r}")
+        recipes = data.get("recipes")
+        if not isinstance(recipes, list):
+            raise ValueError("cookbook index has no recipes list")
+        commit = str(data.get("commit", ""))[:7]
+        have_corpus = os.path.isdir(COOKBOOK_CORPUS)
+        rows = []
+        for r in recipes:
+            name, path = r.get("name"), r.get("path")
+            title = r.get("title") or name
+            if not all(isinstance(v, str) and v.strip() for v in (name, path, title)):
+                raise ValueError("cookbook recipe is missing name, path, or title")
+            local = os.path.join(COOKBOOK_CORPUS, path) if have_corpus else ""
+            rows.append({
+                "name": name,
+                "title": title,
+                "description": r.get("description", ""),
+                # the RAG embeds `text`; the intent phrasing is what makes a
+                # plain-language need retrieve the right recipe
+                "intent": r.get("intent", ""),
+                "commands": [],
+                "group": r.get("group", "Cookbook"),
+                "source": "cookbook",
+                "path": path,
+                "url": r.get("url", ""),
+                "local": local if (local and os.path.isfile(local)) else "",
+                "commit": commit,
+            })
+        rows.sort(key=lambda row: (identity(row["group"]), identity(row["name"])))
+        return rows
+    except Exception as exc:
+        print(f"[atlas] cookbook index invalid ({exc}); skipping", file=sys.stderr)
+        return []
 native, catalog_hash = canonical_native()
 if native is None:
     native = legacy_native()
@@ -166,20 +215,26 @@ if os.path.isfile(POWERUP_MANIFEST):
         })
 powerups.sort(key=lambda row: (identity(row["name"]), row.get("path", "")))
 
+# ---- 2b. Anthropic cookbook recipes ----
+cookbooks = cookbook_recipes()
+
 atlas = {
     "generated": datetime.date.today().isoformat(),
     "schema_version": 2,
     "catalog_hash": catalog_hash,
     "native_count": len(native),
     "powerup_count": len(powerups),
-    "total": len(native) + len(powerups),
+    "cookbook_count": len(cookbooks),
+    "total": len(native) + len(powerups) + len(cookbooks),
     "native": native,
     "powerups": powerups,
+    "cookbooks": cookbooks,
 }
 hash_payload = {
     "catalog_hash": catalog_hash,
     "native": native,
     "powerups": powerups,
+    "cookbooks": cookbooks,
 }
 atlas["atlas_hash"] = hashlib.sha256(json.dumps(
     hash_payload, ensure_ascii=False, sort_keys=True,
@@ -216,6 +271,10 @@ for r in native:
 pu_groups = {}
 for r in powerups:
     pu_groups.setdefault((r["source"], r["group"]), []).append(r)
+# group cookbook recipes by their registry category
+cb_groups = {}
+for r in cookbooks:
+    cb_groups.setdefault(r["group"], []).append(r)
 
 native_html = []
 for g in sorted(native_groups, key=lambda x: (x != "Skills", x)):
@@ -228,7 +287,30 @@ for (src, cat), items in sorted(pu_groups.items()):
     badge = "bundle" if src == "bundle-501" else "power-up"
     pu_html.append(f'<section class="cat pu" data-tab="powerup"><h2>{esc(cat)} <span class="src {badge}">{esc(src)}</span> <span class="ct">{len(items)}</span></h2><div class="grid">{render_cards(items, show_cmd=False)}</div></section>')
 
-nc, pc, tot, gen = atlas["native_count"], atlas["powerup_count"], atlas["total"], atlas["generated"]
+cb_html = []
+for cat in sorted(cb_groups):
+    items = sorted(cb_groups[cat], key=lambda r: r["name"].lower())
+    cards = []
+    for r in items:
+        where = "local" if r.get("local") else "upstream"
+        link = esc(r.get("url", ""))
+        cards.append(
+            f'<div class="card" data-s="{esc(r["name"]).lower()} {esc(r["title"]).lower()} '
+            f'{esc(r["description"]).lower()} {esc(r["intent"]).lower()}">'
+            f'<div class="nm">{esc(r["title"])}</div>'
+            f'<div class="cmds"><code class="cmd">{esc(r["path"])}</code>'
+            f'<span class="src {where}">{where}</span></div>'
+            f'<div class="ds">{esc(r["description"])[:280]}</div>'
+            f'{f"<div class=ds><a href={link} target=_blank rel=noopener>open upstream &rsaquo;</a></div>" if link else ""}'
+            f'</div>')
+    cb_html.append(
+        f'<section class="cat" data-tab="cookbook"><h2>{esc(cat)} '
+        f'<span class="ct">{len(items)}</span></h2>'
+        f'<div class="grid">{"".join(cards)}</div></section>')
+
+nc, pc, cc, tot, gen = (atlas["native_count"], atlas["powerup_count"],
+                        atlas["cookbook_count"], atlas["total"], atlas["generated"])
+cb_commit = (cookbooks[0]["commit"] if cookbooks else "")
 
 doc = f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -254,6 +336,10 @@ h1{{font-size:30px;margin:0 0 4px;font-weight:680}}.sub{{color:var(--soft);margi
 .src{{font-size:10.5px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.04em}}
 .src.bundle{{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}}
 .src.power-up{{background:color-mix(in srgb,var(--lime) 20%,transparent);color:var(--lime)}}
+.src.local{{background:color-mix(in srgb,var(--lime) 20%,transparent);color:var(--lime)}}
+.src.upstream{{background:color-mix(in srgb,var(--soft) 22%,transparent);color:var(--soft)}}
+.card a{{color:var(--accent);text-decoration:none;font-weight:600}}
+.card a:hover{{text-decoration:underline}}
 .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;margin-top:13px}}
 .card{{background:var(--card);border:1px solid var(--hair);border-radius:12px;padding:13px 15px}}
 .nm{{font-weight:680;font-size:14px;margin-bottom:6px;word-break:break-word}}
@@ -270,24 +356,28 @@ code.cmd{{background:var(--codebg);color:var(--accent);font:12px/1.3 ui-monospac
 <div class="stat"><b>{tot}</b><span>total skills</span></div>
 <div class="stat"><b>{nc}</b><span>OmegaOS native</span></div>
 <div class="stat"><b>{pc}</b><span>Power-Up library</span></div>
+<div class="stat"><b>{cc}</b><span>Anthropic cookbooks</span></div>
 </div>
 <div class="tabs">
 <button class="tab on" data-t="native">OmegaOS native &middot; {nc}</button>
 <button class="tab" data-t="powerup">Power-Up library &middot; {pc}</button>
+<button class="tab" data-t="cookbook">Anthropic cookbooks &middot; {cc}</button>
 </div>
 <input id="q" placeholder="Search skills, commands, descriptions…" autocomplete="off">
 <div id="native-wrap">{''.join(native_html)}</div>
 <div id="powerup-wrap" class="hidden">{''.join(pu_html)}</div>
+<div id="cookbook-wrap" class="hidden">{''.join(cb_html)}</div>
 <div class="foot">
 <b>Run a native skill:</b> type its command (e.g. <code>/uiuxaudit</code>, <code>/higgsfield-generate</code>) or ask for it by name; Claude invokes it via the Skill tool. Most also answer to <code>/omg-&lt;name&gt;</code>.<br>
 <b>CLI:</b> <code>omega-skills</code> lists all &middot; <code>omega-skills &lt;term&gt;</code> searches &middot; <code>omega-skills --powerups &lt;term&gt;</code> searches the library.<br>
-<b>Power-Up library</b> (paid, private): activate one by copying its folder from <code>~/.omega/skills-library/youraipowerup/</code> into <code>~/.claude/skills/</code>, or upload a <code>.plugin</code> via Claude &rsaquo; Customize &rsaquo; Plugins.
+<b>Power-Up library</b> (paid, private): activate one by copying its folder from <code>~/.omega/skills-library/youraipowerup/</code> into <code>~/.claude/skills/</code>, or upload a <code>.plugin</code> via Claude &rsaquo; Customize &rsaquo; Plugins.<br>
+<b>Anthropic cookbooks</b> (MIT, pinned @ <code>{cb_commit}</code>): Anthropic's own reference recipes. Find one with <code>omega-skills --rag "&lt;your need&gt;"</code> or <code>/cookbook</code>; install the notebooks locally with <code>tools/cookbooks/install-cookbooks.sh</code>.
 </div></div>
 <script>
-const q=document.getElementById('q'),nw=document.getElementById('native-wrap'),pw=document.getElementById('powerup-wrap');
+const q=document.getElementById('q'),nw=document.getElementById('native-wrap'),pw=document.getElementById('powerup-wrap'),cw=document.getElementById('cookbook-wrap');
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{{
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));b.classList.add('on');
- const t=b.dataset.t;nw.classList.toggle('hidden',t!=='native');pw.classList.toggle('hidden',t!=='powerup');filt();
+ const t=b.dataset.t;nw.classList.toggle('hidden',t!=='native');pw.classList.toggle('hidden',t!=='powerup');cw.classList.toggle('hidden',t!=='cookbook');filt();
 }}));
 function filt(){{const t=q.value.trim().toLowerCase();
  document.querySelectorAll('.card').forEach(c=>{{c.classList.toggle('hidden',!!t&&!c.dataset.s.includes(t))}});
@@ -302,5 +392,5 @@ html_tmp = html_path + ".tmp"
 with open(html_tmp, "w", encoding="utf-8") as handle:
     handle.write(doc)
 os.replace(html_tmp, html_path)
-print(f"native={nc} powerup={pc} total={tot}")
+print(f"native={nc} powerup={pc} cookbook={cc} total={tot}")
 print("wrote ~/.omega/skills-atlas.json + ~/.omega/artifacts/omega-skill-atlas.html")

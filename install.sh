@@ -1782,6 +1782,73 @@ elif [[ -d "$PU_SRC" ]]; then
     info "Power-Ups corpus not present at $PU_CORPUS — router skipped (paid content, not in this repo)"
 fi
 
+# Install the Anthropic cookbook integration (R-COOKBOOK) — Anthropic's own 94
+# reference recipes from anthropics/claude-cookbooks (MIT), pinned in
+# tools/cookbooks/COOKBOOKS.lock.
+#
+# Two halves, deliberately split:
+#   INDEX  (~76K) ships in this repo and installs UNCONDITIONALLY, so
+#          `omega-skills --rag "<need>"` finds the right recipe on a bare clone
+#          and hands back the pinned upstream URL.
+#   CORPUS (~99M) is an opt-in local clone via tools/cookbooks/install-cookbooks.sh,
+#          the same ship-the-markdown / opt-in-the-payload boundary OmegaOS draws
+#          for zernflow, higgsfield and browser-use.
+# The RAG label stays honest either way: `(cookbook)` = notebook on disk,
+# `(cookbook ↗)` = index only. Never advertise a recipe that is not there.
+CB_SRC="$OMEGA_SRC/tools/cookbooks"
+if [[ -f "$CB_SRC/recipes.json" ]]; then
+    # 1. the index the atlas reads
+    install -m 644 "$CB_SRC/recipes.json" "$OMEGA_DIR/cookbooks-index.json"
+
+    # 2. the tooling, so the operator can pull the corpus without the repo
+    mkdir -p "$OMEGA_DIR/tools/cookbooks"
+    for f in install-cookbooks.sh build-index.py COOKBOOKS.lock; do
+        [[ -f "$CB_SRC/$f" ]] && cp -f "$CB_SRC/$f" "$OMEGA_DIR/tools/cookbooks/$f"
+    done
+    chmod +x "$OMEGA_DIR/tools/cookbooks/install-cookbooks.sh" 2>/dev/null || true
+    chmod +x "$OMEGA_DIR/tools/cookbooks/build-index.py" 2>/dev/null || true
+
+    # 3. the router skill + its slash stubs
+    CB_CMD="$HOME/.claude/commands"; mkdir -p "$CB_CMD"
+    if [[ -f "$OMEGA_SRC/skills/cookbook/SKILL.md" ]]; then
+        mkdir -p "$OMEGA_DIR/skills/cookbook"
+        cp -f "$OMEGA_SRC/skills/cookbook/SKILL.md" "$OMEGA_DIR/skills/cookbook/SKILL.md"
+        for cmd in cookbook omg-cookbook; do
+            cat > "$CB_CMD/$cmd.md" <<'CBEOF'
+# /cookbook
+
+Route into Anthropic's own reference recipes (anthropics/claude-cookbooks, MIT,
+pinned). Read and follow the complete instructions in:
+
+`~/.omega/skills/cookbook/SKILL.md`
+
+Find the recipe with `omega-skills --rag "<the need>"` first, then READ it and
+adapt the method — never re-derive from memory what Anthropic already published.
+CBEOF
+        done
+    fi
+
+    # 4. the three recipes substantial enough to be real skills, flattened to
+    #    top-level ~/.omega/skills/<name>/ like the design-intelligence pack.
+    #    An OmegaOS-vendored name is canon and is never overwritten.
+    CB_N=0
+    for skill_md in "$OMEGA_SRC"/skills/cookbook-skills/*/SKILL.md; do
+        [[ -f "$skill_md" ]] || continue
+        cb_dir="$(dirname "$skill_md")"; cb_name="$(basename "$cb_dir")"
+        [[ -d "$OMEGA_SRC/skills/$cb_name" ]] && continue
+        mkdir -p "$OMEGA_DIR/skills/$cb_name"
+        cp -rf "$cb_dir/." "$OMEGA_DIR/skills/$cb_name/" 2>/dev/null || true
+        CB_N=$((CB_N + 1))
+    done
+
+    CB_COUNT="$(/usr/bin/python3 -c "import json;print(json.load(open('$OMEGA_DIR/cookbooks-index.json'))['count'])" 2>/dev/null || echo '?')"
+    CB_PIN="$(sed -n 's/^COMMIT=//p' "$CB_SRC/COOKBOOKS.lock" 2>/dev/null | head -1)"
+    ok "Cookbook index installed ($CB_COUNT recipes @ ${CB_PIN:0:7} → /cookbook + omega-skills --rag; $CB_N skills vendored)"
+    info "Notebooks are opt-in: ~/.omega/tools/cookbooks/install-cookbooks.sh (~99M)"
+else
+    info "Cookbook index not found — skipping"
+fi
+
 # Install the maintenance skills (cleanup, project-tidy) — VPS/disk cleanup +
 # project tidying (docs/ + agentic/ convention, doc↔app coherence). Portable
 # scripts (no machine-specific paths). Mirrors the design loop: copy →
