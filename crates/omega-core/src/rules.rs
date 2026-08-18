@@ -1693,6 +1693,74 @@ mod tests {
         assert!(claude.markdown.contains("[R-MODEL]"));
     }
 
+    /// EVERY provider gets the SAME doctrine, byte for byte.
+    ///
+    /// The compiler filters rules through `ProviderApplicability::includes`,
+    /// so a single rule marked `Only(Claude)` would silently strip doctrine
+    /// from every Codex-backed oracle and worker — a Codex session running
+    /// without a Law it cannot know it is missing. `compile_metadata` pins
+    /// applicability to `Any` today; this test is what makes that a promise
+    /// rather than a coincidence, and it fails the moment anyone narrows it.
+    #[test]
+    fn every_provider_receives_byte_identical_doctrine() {
+        for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
+            for mission in [None, Some("ship the feature and verify production")] {
+                let reference = compile_rule_context_for_provider(
+                    scope,
+                    mission,
+                    ProviderFamily::Neutral,
+                )
+                .expect("neutral context must compile");
+
+                for provider in [
+                    ProviderFamily::Claude,
+                    ProviderFamily::Codex,
+                    ProviderFamily::Gemini,
+                    ProviderFamily::Other,
+                ] {
+                    let compiled = compile_rule_context_for_provider(scope, mission, provider)
+                        .unwrap_or_else(|e| panic!("{provider:?} context must compile: {e}"));
+                    assert_eq!(
+                        compiled.markdown, reference.markdown,
+                        "{provider:?} received different doctrine than neutral at {scope:?}"
+                    );
+                    assert_eq!(compiled.digest, reference.digest, "{provider:?} digest differs");
+                }
+            }
+        }
+    }
+
+    /// The seven Laws are inviolable, so they must be present in FULL for
+    /// every scope and every provider — never indexed away like a domain rule.
+    #[test]
+    fn every_law_reaches_every_provider_in_full() {
+        let laws: Vec<&str> = all_rules()
+            .iter()
+            .filter(|r| matches!(r.kind, RuleKind::Law))
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(laws.len(), 7, "the law kernel is seven: {laws:?}");
+
+        for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
+            for provider in [
+                ProviderFamily::Claude,
+                ProviderFamily::Codex,
+                ProviderFamily::Gemini,
+                ProviderFamily::Other,
+            ] {
+                let compiled =
+                    compile_rule_context_for_provider(scope, Some("any mission"), provider)
+                        .expect("context must compile");
+                for law in &laws {
+                    assert!(
+                        compiled.markdown.contains(law),
+                        "{law} missing for {provider:?} at {scope:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn compiler_is_deterministic_and_within_budget() {
         for scope in [RuleScope::Master, RuleScope::Oracle, RuleScope::Worker] {
