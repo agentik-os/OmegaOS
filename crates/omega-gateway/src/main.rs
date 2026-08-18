@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
             println!();
             println!("Paste this whole line into the app, or scan the QR:");
             println!("{payload}");
-            if is_loopback_only(&cfg.bind) {
+            if is_loopback_only(&cfg.bind) && !host.starts_with("https://") {
                 println!();
                 println!("NOTE: this gateway listens on {} — loopback only.", cfg.bind);
                 println!("      Only an app on THIS machine can pair with it. To pair from");
@@ -210,6 +210,14 @@ fn reachable_host_url(bind: &str) -> String {
     // advertised a tailnet address that another process answers (and 400s),
     // so pairing failed with a plausible-looking address instead of an
     // obviously wrong one.
+    // A `tailscale serve` mapping in front of this port is the best answer
+    // available: it reaches other devices over TLS on the tailnet while the
+    // gateway itself stays on loopback, so nothing is exposed to the public
+    // interface this machine may also have.
+    if let Some(url) = tailscale_serve_url(port) {
+        return url;
+    }
+
     if !binds_all_interfaces(bind) {
         // A specific bind: advertise exactly it. Loopback means same machine
         // only, which the caller states plainly rather than papering over.
@@ -243,6 +251,36 @@ fn is_loopback_only(bind: &str) -> bool {
     let host = bind.rsplit_once(':').map(|(h, _)| h).unwrap_or("");
     let host = host.trim_matches(|c| c == '[' || c == ']');
     host.starts_with("127.") || host == "localhost" || host == "::1"
+}
+
+/// The `https://<node>.<tailnet>:<port>` URL when `tailscale serve` already
+/// fronts this port. Parsed from `tailscale serve status`, whose listing pairs
+/// each served URL with the local target it proxies to.
+fn tailscale_serve_url(port: u16) -> Option<String> {
+    let out = std::process::Command::new("tailscale").args(["serve", "status"]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("https://") {
+            // "https://host:port (tailnet only)" — keep the URL itself.
+            current = trimmed.split_whitespace().next().map(|s| s.trim_end_matches('/').to_string());
+            continue;
+        }
+        // A mapping line points at the local target, e.g. "|-- / proxy http://127.0.0.1:4477".
+        if trimmed.starts_with("|--") && trimmed.contains(&format!("127.0.0.1:{port}")) {
+            if let Some(url) = &current {
+                // Only a root mapping serves the whole API surface.
+                if trimmed.split_whitespace().nth(1) == Some("/") {
+                    return Some(url.clone());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn tailscale_ipv4() -> Option<String> {
