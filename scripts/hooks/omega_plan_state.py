@@ -109,6 +109,51 @@ def is_preflight(text):
     return hits >= PREFLIGHT_MIN_FAMILIES
 
 
+# R-PLAN wants a RECORDED enumeration proving no ask was dropped. A plan tool is
+# the usual way to record one, but not every harness exposes TaskCreate /
+# TodoWrite / update_plan — and in a session that has none, the planless-work
+# check could never be satisfied, so it burned its whole block budget refusing a
+# stop the agent had no way to earn. Measured on this box before the fix: 305
+# sessions blocked, 62 of them driven to the 3-block ceiling.
+#
+# So the enumeration itself is accepted, wherever it is recorded. The final
+# message qualifies when it lists several distinct items AND marks their state
+# — a checklist, a status table, or done/verified markers. Ordinary prose does
+# not accidentally satisfy both conditions, so this cannot silently switch the
+# guard off: the agent still has to produce the enumeration R-PLAN is asking for.
+ENUM_MIN_ITEMS = 3
+ENUM_ITEM_RES = (
+    re.compile(r"^[ \t]*[-*+][ \t]*\[[ xX~/-]\]", re.M),      # - [x] checklist
+    re.compile(r"^[ \t]*\|?[ \t]*\[[ xX~/-]\][ \t]", re.M),  # [x] in a table cell
+    re.compile(r"^[ \t]*(?:[0-9]+[.)]|[-*+])[ \t].*"
+               r"(?:\bdone\b|\bshipped\b|\bverified\b|\bfait\b|\bverifie)", re.M),
+    re.compile(r"^[ \t]*\|.*\|.*(?:\bdone\b|\bverified\b|\bshipped\b"
+               r"|\bfait\b|\bverifie)", re.M),                 # | ask | done |
+)
+
+
+def is_enumeration(text):
+    """True when `text` records a per-item enumeration with completion state.
+
+    Pure function of the text, like is_preflight(), so it is testable alone.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    folded = _fold(text)
+    for regex in ENUM_ITEM_RES:
+        if len(regex.findall(folded)) >= ENUM_MIN_ITEMS:
+            return True
+    return False
+
+
+# Evidence that this harness has NO plan tool at all: the agent asked the tool
+# registry for one by name and the registry said there is none. Real transcript
+# evidence, never a guess — absent this string the guard assumes plan tools ARE
+# available and keeps its full strictness.
+NO_PLAN_TOOL_RE = re.compile(
+    r"no matching deferred tools found", re.I)
+PLAN_TOOL_NAMES = ("taskcreate", "todowrite", "update_plan", "taskupdate")
+
 SHELL_TOOLS = (
     "Bash",
     "shell",
@@ -118,6 +163,35 @@ SHELL_TOOLS = (
     "local_shell",
 )
 MUTATION_TOOLS = ("Write", "Edit", "NotebookEdit", "apply_patch")
+
+# A shell command can write a file just as surely as the Write tool, and some
+# harnesses actively instruct the agent to prefer Bash heredocs over Write/Edit.
+# Counting only the typed tools therefore reported "0 file mutations" for a
+# session that had rewritten twenty files — cosmetic in the planless-work
+# message, but NOT cosmetic at stop-verify-hook.sh's preflight branch, which is
+# gated on `mutations == 0`: a session that had already written files via Bash
+# could still claim the legal preflight pause that R-PREFLIGHT grants only
+# BEFORE the first write. This closes that hole, so the fix makes the guard
+# stricter, never looser.
+#
+# WRITES only, deliberately — the typed MUTATION_TOOLS are all writes, and
+# deletion has its own doctrine (R-DESTRUCT). `/dev/*` and fd dups (`2>&1`)
+# are excluded so ordinary output silencing never scores.
+SHELL_WRITE_RES = (
+    # > file  /  >> file   (not /dev/…, not >&2, not a pipe or another verb)
+    re.compile(r">>?\s*(?!/dev/|&|\s*\|)[\w./~$@{}-]*[\w./~}-]"),
+    re.compile(r"\btee\b(?!\s+/dev/)"),
+    re.compile(r"\bsed\b[^|;&]*\s-i\b"),
+    re.compile(r"\b(?:cp|mv|install|truncate)\s+-?"),
+    re.compile(r"\b(?:patch|git\s+apply)\b"),
+)
+
+
+def _is_shell_write(command):
+    """True when a shell command plausibly writes a file to disk."""
+    if not command or not isinstance(command, str):
+        return False
+    return any(r.search(command) for r in SHELL_WRITE_RES)
 DONE_STATES = ("completed", "done", "deleted", "cancelled")
 CUSTOM_CMD_RE = re.compile(r'\bcmd\s*:\s*("(?:\\.|[^"\\])*")', re.S)
 
@@ -243,7 +317,7 @@ def analyze(transcript_path):
     callers can fail open — a hook must never break a session.
 
     Keys: open_items, total_tasks, plan_ever, edited, verified, mutations,
-    tool_calls, final_message, preflight.
+    tool_calls, final_message, preflight, enumeration, plan_tools_missing.
     """
     if not transcript_path or not os.path.isfile(transcript_path):
         return None
@@ -251,6 +325,8 @@ def analyze(transcript_path):
     created, status_of, todos = [], {}, None
     edited = verified = plan_ever = False
     mutations = tool_calls = 0
+    plan_tools_missing = False
+    saw_plan_tool_lookup = False
     pending_verifications = {}
     final_message = ""
 
@@ -269,6 +345,19 @@ def analyze(transcript_path):
                     continue
                 # The LAST assistant text wins: a preflight is the final word of
                 # the turn, and any later prose replaces it.
+                # A tool_result saying the registry has no plan tool, on a
+                # lookup that named one, is evidence this harness cannot record
+                # a plan the typed way (see NO_PLAN_TOOL_RE).
+                # The lookup and its answer arrive in SEPARATE records (the
+                # query names the tools, the tool_result carries the verdict),
+                # so the two halves are correlated across the stream rather
+                # than required to coincide.
+                if not plan_tools_missing:
+                    blob = json.dumps(rec).lower()
+                    if any(n in blob for n in PLAN_TOOL_NAMES):
+                        saw_plan_tool_lookup = True
+                    if saw_plan_tool_lookup and NO_PLAN_TOOL_RE.search(blob):
+                        plan_tools_missing = True
                 if _is_assistant_record(rec):
                     text = _assistant_text(rec)
                     if text:
@@ -299,6 +388,13 @@ def analyze(transcript_path):
                         plan_ever = True
                     else:
                         tool_calls += 1
+                        if name in SHELL_TOOLS:
+                            cmd = inp.get("command") or inp.get("cmd") or ""
+                            if isinstance(cmd, (list, tuple)):
+                                cmd = " ".join(str(x) for x in cmd)
+                            if _is_shell_write(cmd):
+                                mutations += 1
+                                edited = True
                         if name in MUTATION_TOOLS:
                             edited = True
                             mutations += 1
@@ -350,6 +446,8 @@ def analyze(transcript_path):
         "tool_calls": tool_calls,
         "final_message": final_message,
         "preflight": is_preflight(final_message),
+        "enumeration": is_enumeration(final_message),
+        "plan_tools_missing": plan_tools_missing,
     }
 
 

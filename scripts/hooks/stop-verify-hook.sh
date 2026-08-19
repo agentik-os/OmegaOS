@@ -90,8 +90,27 @@ if st.get("preflight") and st.get("mutations", 0) == 0:
 # the agent enumerates what it did, which is the exact step (L6.1) being skipped.
 MIN_MUTATIONS = P.int_env("OMEGA_FINISH_GUARD_MIN_MUTATIONS", 3)
 MIN_TOOL_CALLS = P.int_env("OMEGA_FINISH_GUARD_MIN_TOOLS", 15)
-planless_work = (not st["plan_ever"]) and (
-    st["mutations"] >= MIN_MUTATIONS or st["tool_calls"] >= MIN_TOOL_CALLS
+# Two ways this check must NOT fire, both of them false positives that cost the
+# session its whole block budget for nothing:
+#
+#   enumeration        the session recorded the per-ask enumeration R-PLAN is
+#                      actually asking for, just in its final message rather
+#                      than through a plan tool. The demand is the enumeration,
+#                      not the tool that holds it.
+#   plan_tools_missing this harness exposes no plan tool at all (the registry
+#                      said so, in the transcript). Demanding TaskCreate from a
+#                      session that cannot call it is an unwinnable gate; it
+#                      refuses every stop until the ceiling and teaches the
+#                      operator to ignore the guard, which is the one defect an
+#                      alerting system cannot afford (R-MONITOR).
+#
+# Neither can silently switch the guard off: one requires the agent to produce
+# a real enumeration, the other requires hard evidence from the tool registry.
+planless_work = (
+    (not st["plan_ever"])
+    and (not st.get("enumeration"))
+    and (not st.get("plan_tools_missing"))
+    and (st["mutations"] >= MIN_MUTATIONS or st["tool_calls"] >= MIN_TOOL_CALLS)
 )
 
 reason = None
@@ -116,10 +135,12 @@ else:
             "mutation(s) without ever opening one. Nothing recorded what the prompt asked "
             "for, so nothing can prove the tail tasks were not dropped — which is exactly "
             "how they get dropped.\n"
-            "  Do this now: re-read the ORIGINAL prompt, TaskCreate one task per distinct "
-            "thing it asked for (in the operator's own order, one per ask), mark the ones "
-            "you genuinely finished AND verified as completed, then execute every task that "
-            "is left. If it turns out everything really is done, the plan costs you one "
+            "  Do this now: re-read the ORIGINAL prompt and record ONE item per distinct "
+            "ask, in the operator's own order — through a plan tool "
+            "(TaskCreate/TodoWrite/update_plan) if this harness exposes one, otherwise as "
+            "an explicit checklist or status table in your final message; both count. Mark "
+            "the ones you genuinely finished AND verified, then execute every item that is "
+            "left. If it turns out everything really is done, the enumeration costs you one "
             "message and proves it." % (st["tool_calls"], st["mutations"])
         )
     if st["edited"] and not st["verified"]:
